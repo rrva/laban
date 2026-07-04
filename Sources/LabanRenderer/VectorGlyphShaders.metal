@@ -878,6 +878,15 @@ inline float3 slugGlyphCoverageRGB(
         return float3(centerCoverage);
     }
 
+    // At a glyph's horizontal edges (top/bottom), per-subpixel X coverage
+    // leaves a seam gap when stacked box-drawing glyphs overlap the cell: the
+    // edge subpixel's coverage is X-limited (min(xcov_sub, ycov)), so two
+    // abutting glyphs sum to less than the full-pixel width and the seam is
+    // brighter than the steady interior. Grayscale's full-pixel X coverage
+    // saturates at the seam and fills it. Take the per-channel max of the
+    // subpixel and grayscale (full-pixel) coverage so vertical edges keep
+    // subpixel sharpness while horizontal edges fill like grayscale — eliminating
+    // the RGB-subpixel-specific `│` seam notch absent in grayscale.
     return float3(
         slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
             uniforms.subpixelRBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation),
@@ -953,4 +962,107 @@ fragment float4 slugGlyphColorSampleFragment(
     constexpr sampler s(coord::pixel, filter::nearest, address::clamp_to_edge);
     float3 cov_a = coverageTex.sample(s, in.position.xy).rgb;
     return float4(in.color.rgb * cov_a, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Subpixel accumulate-then-composite-once path.
+//
+// The per-glyph "over" composite above double-darkens at abutting glyph seams
+// (stacked box-drawing chars): the seam loses c1*c2 of ink per channel, which
+// is imperceptible in grayscale but shows a bright color fringe in RGB subpixel
+// where a single subpixel channel can be ~fully covered. Instead of compositing
+// each glyph over the target, accumulate per-channel coverage and premultiplied
+// foreground across ALL glyphs into two float textures (additive, one MRT pass
+// per glyph quad), then composite the accumulated buffers over the background
+// once with a full-screen quad. At an abutting same-color seam cov_acc = c1+c2 =
+// c_full, so the seam equals the steady interior. For a single glyph the math
+// reduces to "over", so non-seam pixels are unchanged.
+// ---------------------------------------------------------------------------
+
+struct SubpixelAccumOut {
+    float4 coverage [[color(0)]];
+    float4 color    [[color(1)]];
+};
+
+// Slug analytic accumulate: computes per-channel coverage once (the expensive
+// band walk) and writes both coverage and premultiplied color in one MRT pass.
+fragment SubpixelAccumOut slugGlyphAccumulateFragment(
+    SlugGlyphVertexOut in [[stage_in]],
+    constant SlugGlyphUniforms &uniforms [[buffer(4)]],
+    constant VectorGlyphCurve *curves [[buffer(0)]],
+    constant SlugGlyph *glyphs [[buffer(1)]],
+    constant SlugGlyphBand *bands [[buffer(2)]],
+    constant uint *bandIndices [[buffer(3)]]
+) {
+    float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices);
+    float3 weighted = coverage * in.color.a;
+    SubpixelAccumOut out;
+    out.coverage = float4(weighted, 0.0);
+    out.color    = float4(in.color.rgb * weighted, 0.0);
+    return out;
+}
+
+// Vector atlas accumulate: coverage comes from the baked mask atlas, so this is
+// a cheap sample; MRT still keeps it to one pass.
+fragment SubpixelAccumOut vectorGlyphAccumulateFragment(
+    VectorVertexOut in [[stage_in]],
+    texture2d<float> atlas [[texture(0)]],
+    sampler atlasSampler [[sampler(0)]]
+) {
+    float3 coverage = atlas.sample(atlasSampler, in.uv).rgb;
+    float3 weighted = coverage * in.color.a;
+    SubpixelAccumOut out;
+    out.coverage = float4(weighted, 0.0);
+    out.color    = float4(in.color.rgb * weighted, 0.0);
+    return out;
+}
+
+// Full-screen triangle covering clip space, for the composite passes. The
+// fragment's [[position]] is the framebuffer pixel coordinate, which maps 1:1
+// to the accumulation textures written by the glyph-quads above.
+struct FullscreenOut {
+    float4 position [[position]];
+};
+
+vertex FullscreenOut vectorFullscreenVertex(uint vid [[vertex_id]]) {
+    // Vertices: (-1,-1), (3,-1), (-1,3) -> one triangle over the whole viewport.
+    float2 p = float2(vid == 1 ? 3.0 : -1.0, vid == 2 ? 3.0 : -1.0);
+    FullscreenOut out;
+    out.position = float4(p, 0.0, 1.0);
+    return out;
+}
+
+// Composite darken: emit accumulated coverage so configureSubpixelCoverageBlend
+// (dst *= 1 - src) darkens the background by the total coverage per channel.
+fragment float4 subpixelCompositeDarkenFragment(
+    FullscreenOut in [[stage_in]],
+    texture2d<float, access::sample> coverageTex [[texture(0)]]
+) {
+    constexpr sampler s(coord::pixel, filter::nearest, address::clamp_to_edge);
+    float3 cov = coverageTex.sample(s, in.position.xy).rgb;
+    return float4(saturate(cov), 0.0);
+}
+
+// Composite additive: emit accumulated premultiplied color so
+// configureAdditiveRGBPreserveAlphaBlend (dst += src) adds the foreground.
+//
+// The accumulate pass sums `color * coverage * alpha` across abutting glyphs
+// into `colorAccum` with additive blend, so where two light glyphs overlap
+// (e.g. btop's stacked `│`, whose outline ink height exceeds the cell pitch)
+// the summed per-channel coverage can exceed 1.0. The darken pass saturates
+// its coverage, so the background is fully cleared at such a seam; this pass
+// must likewise cap the added color at the glyph color, otherwise the seam
+// reads *brighter* than the glyph (a light `│` on a dark background turns
+// grey(48) into 48*1.44=69). `color = glyphColor * cov`, so dividing by
+// `max(cov, 1)` restores `glyphColor` where cov > 1 and is a no-op elsewhere.
+fragment float4 subpixelCompositeAdditiveFragment(
+    FullscreenOut in [[stage_in]],
+    texture2d<float, access::sample> colorTex [[texture(0)]],
+    texture2d<float, access::sample> coverageTex [[texture(1)]]
+) {
+    constexpr sampler s(coord::pixel, filter::nearest, address::clamp_to_edge);
+    float3 color = colorTex.sample(s, in.position.xy).rgb;
+    float3 cov = coverageTex.sample(s, in.position.xy).rgb;
+    float3 factor = 1.0 / max(cov, float3(1.0));
+    return float4(color * factor, 0.0);
 }

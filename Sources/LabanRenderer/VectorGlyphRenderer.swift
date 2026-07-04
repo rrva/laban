@@ -2442,6 +2442,28 @@ func configureAdditiveRGBPreserveAlphaBlend(
   attachment.destinationAlphaBlendFactor = .one
 }
 
+/// Additive accumulation blend for the subpixel accumulate-then-composite path.
+/// Each glyph quad adds its per-channel coverage (and premultiplied color) into
+/// a float accumulation texture; overlapping/abutting quads therefore SUM, so
+/// abutting same-color glyphs reach c1 + c2 = c_full at a seam instead of the
+/// c1 + c2 - c1*c2 that the per-glyph "over" operator produces. Coverage is
+/// clamped to [0,1] when the composite pass reads it back, not here, so the
+/// float texture can overshoot momentarily without losing energy to clamping
+/// order. Alpha is left at the clear value (0) since the accumulation textures
+/// only carry RGB.
+func configureAdditiveAccumBlend(
+  _ attachment: MTLRenderPipelineColorAttachmentDescriptor?
+) {
+  guard let attachment else { return }
+  attachment.isBlendingEnabled = true
+  attachment.rgbBlendOperation = .add
+  attachment.alphaBlendOperation = .add
+  attachment.sourceRGBBlendFactor = .one
+  attachment.destinationRGBBlendFactor = .one
+  attachment.sourceAlphaBlendFactor = .zero
+  attachment.destinationAlphaBlendFactor = .one
+}
+
 extension VectorGlyphRenderer: GestureZoomRenderable {
   public var zoomDiagnostics: RendererZoomDiagnostics {
     RendererZoomDiagnostics(
