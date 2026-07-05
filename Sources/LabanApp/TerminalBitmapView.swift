@@ -1752,7 +1752,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     return [
       "configured": layout.name,
-      "effective": backend.rendererStatus.vectorSubpixelLayout ?? "?"
+      "effective": backend.rendererStatus.vectorSubpixelLayout ?? "?",
     ]
   }
 
@@ -2864,7 +2864,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       if let payloadFailure = (backend as? MetalRenderer)?.lastGPUCellPayloadBuildFailure {
         autoDumpGPUCellPayloadFailure(payloadFailure)
       }
-      let failureReason = (backend as? MetalRenderer)?.lastRenderFailureReason
+      let failureReason =
+        (backend as? MetalRenderer)?.lastRenderFailureReason
         ?? (backend as? SlugGlyphRenderer)?.lastRenderFailureReason
       // GPU/compositor backpressure gets one display-link-paced retry. If that
       // retry finds no work except the carried invalidation, park instead of

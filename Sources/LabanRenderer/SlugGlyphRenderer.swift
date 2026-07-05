@@ -382,7 +382,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let slugAccumulateFragment = library.makeFunction(name: "slugGlyphAccumulateFragment"),
       let fullscreenVertex = library.makeFunction(name: "vectorFullscreenVertex"),
       let compositeDarkenFragment = library.makeFunction(name: "subpixelCompositeDarkenFragment"),
-      let compositeAdditiveFragment = library.makeFunction(name: "subpixelCompositeAdditiveFragment")
+      let compositeAdditiveFragment = library.makeFunction(
+        name: "subpixelCompositeAdditiveFragment")
     else { return nil }
 
     let layer = CAMetalLayer()
@@ -871,7 +872,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let slugGlyphBuffer = glyphBuffer
     let slugBandBuffer = bandBuffer
     let slugBandIndexBuffer = bandIndexBuffer
-    let slugBuffersReady = slugInstanceBuffer != nil
+    let slugBuffersReady =
+      slugInstanceBuffer != nil
       && slugCurveBuffer != nil
       && slugGlyphBuffer != nil
       && slugBandBuffer != nil

@@ -119,7 +119,8 @@ func computeTextAAMetrics(
         let rawChroma = max(Int(p.r), Int(p.g), Int(p.b)) - min(Int(p.r), Int(p.g), Int(p.b))
         edgeChromas.append(Double(rawChroma))
         let coverages = channelCoverages(p)
-        let spread = max(coverages.r, coverages.g, coverages.b)
+        let spread =
+          max(coverages.r, coverages.g, coverages.b)
           - min(coverages.r, coverages.g, coverages.b)
         coverageSpreads.append(spread)
         if coverage < 0.85 {

@@ -44,10 +44,12 @@ final class DirtyYRangeSetTests: XCTestCase {
       DirtyYRange(y: 0, height: 5),
       DirtyYRange(y: 100, height: 5),
     ])
-    XCTAssertEqual(set.ranges, [
-      DirtyYRange(y: 0, height: 5),
-      DirtyYRange(y: 100, height: 5),
-    ])
+    XCTAssertEqual(
+      set.ranges,
+      [
+        DirtyYRange(y: 0, height: 5),
+        DirtyYRange(y: 100, height: 5),
+      ])
   }
 
   func testEmptyInputIsEmpty() {
@@ -59,10 +61,12 @@ final class DirtyYRangeSetTests: XCTestCase {
     let a = DirtyYRangeSet([DirtyYRange(y: 0, height: 5)])
     let b = DirtyYRangeSet([DirtyYRange(y: 4, height: 5), DirtyYRange(y: 50, height: 2)])
     let union = a.union(b)
-    XCTAssertEqual(union.ranges, [
-      DirtyYRange(y: 0, height: 9),
-      DirtyYRange(y: 50, height: 2),
-    ])
+    XCTAssertEqual(
+      union.ranges,
+      [
+        DirtyYRange(y: 0, height: 9),
+        DirtyYRange(y: 50, height: 2),
+      ])
   }
 
   func testUnionWithEmptyIsIdentity() {

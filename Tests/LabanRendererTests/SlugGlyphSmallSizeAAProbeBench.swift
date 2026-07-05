@@ -53,7 +53,9 @@ final class SlugGlyphSmallSizeAAProbeBench: XCTestCase {
     let pixelHeight = 140
     let crop = CGRect(x: 16, y: 8, width: 860, height: 120)
     let lineSpacing = pointSize * 1.6
-    let commands = probeCommands(x: 10, y: 12, lineSpacing: lineSpacing, background: themeBackground, foreground: themeForeground)
+    let commands = probeCommands(
+      x: 10, y: 12, lineSpacing: lineSpacing, background: themeBackground,
+      foreground: themeForeground)
 
     let software = SoftwareBackend(
       fontAtlas: FontAtlas(pointSize: pointSize),

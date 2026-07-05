@@ -79,14 +79,16 @@ final class CaptureRenderBisect: XCTestCase {
     // share the row.
     print("---- glyph runs containing 'bypass' (rows=\(rows), cellH=\(cellH)) ----")
     for cmd in cmds {
-      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _) = cmd, text.contains("bypass") {
+      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _) = cmd, text.contains("bypass")
+      {
         print("  bypass-run: y=\(origin.y) x=\(origin.x) text=\"\(text)\"")
       }
     }
     print("---- glyph runs sharing the y of the 'bypass' run ----")
     var bypassY: CGFloat? = nil
     for cmd in cmds {
-      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _) = cmd, text.contains("bypass") {
+      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _) = cmd, text.contains("bypass")
+      {
         bypassY = origin.y
         break
       }

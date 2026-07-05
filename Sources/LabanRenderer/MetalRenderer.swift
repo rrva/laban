@@ -1219,8 +1219,9 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     let outputTexture: MTLTexture
     let drawableToPresent: (any CAMetalDrawable)?
     if usesDisplayLinkPresent {
-      guard let presentationTarget = ensurePresentationTargetTexture(
-        width: surfaceWPx, height: surfaceHPx)
+      guard
+        let presentationTarget = ensurePresentationTargetTexture(
+          width: surfaceWPx, height: surfaceHPx)
       else {
         lastRenderFailureReason = .targetTextureUnavailable
         scheduledFrame.finish()
@@ -2285,7 +2286,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       switch cmd {
       case .rect(let rect, _, let source) where source == .terminal:
         include(rect)
-      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _) where source == .terminal:
+      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _)
+      where source == .terminal:
         guard !text.isEmpty else { continue }
         include(
           CGRect(

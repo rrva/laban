@@ -22,7 +22,9 @@ final class SlugGlyphDamageTests: XCTestCase {
 
   private func makeFontAtlas() -> FontAtlas { FontAtlas(pointSize: pointSize) }
 
-  private func makeRenderer(layout: VectorSubpixelLayout, cellSize: (width: CGFloat, height: CGFloat)) throws
+  private func makeRenderer(
+    layout: VectorSubpixelLayout, cellSize: (width: CGFloat, height: CGFloat)
+  ) throws
     -> SlugGlyphRenderer
   {
     let renderer = try XCTUnwrap(
@@ -53,7 +55,8 @@ final class SlugGlyphDamageTests: XCTestCase {
     }
   }
 
-  private func damageForRow(_ row: Int, cellSize: (width: CGFloat, height: CGFloat)) -> RenderDamage {
+  private func damageForRow(_ row: Int, cellSize: (width: CGFloat, height: CGFloat)) -> RenderDamage
+  {
     .partial(yRanges: [DirtyYRange(y: CGFloat(row) * cellSize.height, height: cellSize.height)])
   }
 
@@ -83,10 +86,14 @@ final class SlugGlyphDamageTests: XCTestCase {
   /// `origin.y = row * cellSize.height` places array index 0 at the bottom
   /// of the surface (y-up CG points), matching `damageForRow`'s convention
   /// directly (no top/bottom flip needed between the two).
-  private func frameCommands(text: [String], cellSize: (width: CGFloat, height: CGFloat)) -> [FrameCommand] {
+  private func frameCommands(text: [String], cellSize: (width: CGFloat, height: CGFloat))
+    -> [FrameCommand]
+  {
     var commands: [FrameCommand] = [
       .rect(
-        CGRect(x: 0, y: 0, width: CGFloat(cols) * cellSize.width, height: CGFloat(rows) * cellSize.height),
+        CGRect(
+          x: 0, y: 0, width: CGFloat(cols) * cellSize.width, height: CGFloat(rows) * cellSize.height
+        ),
         color: 0x1010_10ff,
         source: .terminal)
     ]
@@ -194,7 +201,8 @@ final class SlugGlyphDamageTests: XCTestCase {
       DirtyYRange(y: CGFloat(1) * cellSize.height, height: cellSize.height),
       DirtyYRange(y: CGFloat(7) * cellSize.height, height: cellSize.height),
     ])
-    XCTAssertTrue(partial.render(frameCommands(text: textB, cellSize: cellSize), damage: sparseDamage))
+    XCTAssertTrue(
+      partial.render(frameCommands(text: textB, cellSize: cellSize), damage: sparseDamage))
     let partialHash = hash(try XCTUnwrap(partial.pngData))
 
     // Expected: rows 1 and 7 take textB's content, every other row (including
@@ -204,7 +212,8 @@ final class SlugGlyphDamageTests: XCTestCase {
     expectedText[1] = textB[1]
     expectedText[7] = textB[7]
     let expected = try makeRenderer(layout: .grayscale, cellSize: cellSize)
-    XCTAssertTrue(expected.render(frameCommands(text: expectedText, cellSize: cellSize), damage: .full))
+    XCTAssertTrue(
+      expected.render(frameCommands(text: expectedText, cellSize: cellSize), damage: .full))
     let expectedHash = hash(try XCTUnwrap(expected.pngData))
 
     XCTAssertEqual(partialHash, expectedHash)
@@ -216,7 +225,9 @@ final class SlugGlyphDamageTests: XCTestCase {
     try skipIfNoMetal()
     let cellSize = makeFontAtlas().cellSize
     let text = asciiText()
-    let cursorRect = CGRect(x: CGFloat(3) * cellSize.width, y: CGFloat(3) * cellSize.height, width: cellSize.width, height: cellSize.height)
+    let cursorRect = CGRect(
+      x: CGFloat(3) * cellSize.width, y: CGFloat(3) * cellSize.height, width: cellSize.width,
+      height: cellSize.height)
     let commandsNoCursor = frameCommands(text: text, cellSize: cellSize)
     let commandsWithCursor = commandsNoCursor + [.cursor(cursorRect, color: 0xffff_ffff)]
 
@@ -281,7 +292,8 @@ final class SlugGlyphDamageTests: XCTestCase {
 
     XCTAssertTrue(ok, "empty effective damage must still report success")
     XCTAssertEqual(
-      renderer.targetRingCursorForTesting, cursorBefore, "empty effective damage must not rotate the ring")
+      renderer.targetRingCursorForTesting, cursorBefore,
+      "empty effective damage must not rotate the ring")
     XCTAssertEqual(completions, 1, "empty effective damage must still call onFrameCompleted")
   }
 }

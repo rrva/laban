@@ -54,7 +54,8 @@ final class StyleAttributePlumbingTests: XCTestCase {
     for (seq, label, expected) in cases {
       let cmds = try runWithText(seq + "\r\n")
       guard
-        case .glyphRun(_, _, _, _, _, _, let style, _, _, _)? = firstGlyphRun(cmds, containing: label)
+        case .glyphRun(_, _, _, _, _, _, let style, _, _, _)? = firstGlyphRun(
+          cmds, containing: label)
       else {
         XCTFail("missing glyph run for \(label)")
         continue

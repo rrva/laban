@@ -135,9 +135,10 @@ public func cgColorFrom(_ rgba: UInt32) -> CGColor {
     CGFloat((rgba >> 8) & 0xFF) / 255.0,
     CGFloat(rgba & 0xFF) / 255.0,
   ]
-  guard let color = CGColor(
-    colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
-    components: components)
+  guard
+    let color = CGColor(
+      colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+      components: components)
   else {
     assertionFailure("BitmapSurface could not create sRGB color")
     return CGColor(gray: 0, alpha: components[3])

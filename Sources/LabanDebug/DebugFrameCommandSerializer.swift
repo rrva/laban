@@ -71,7 +71,8 @@ struct DebugFrameCommandSerializer {
       return TraceCommand(
         id: id, index: index, kind: "rect",
         source: source.rawValue, rect: Self.rectResponse(rect))
-    case .glyphRun(let origin, let text, _, _, let attributes, let source, _, _, _, let displayCellCount):
+    case .glyphRun(
+      let origin, let text, _, _, let attributes, let source, _, _, _, let displayCellCount):
       let approxWidth = CGFloat((displayCellCount ?? text.count) * cellWidth)
       let approxRect = CGRect(
         x: origin.x, y: origin.y,

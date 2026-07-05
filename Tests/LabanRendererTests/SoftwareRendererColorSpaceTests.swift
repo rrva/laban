@@ -17,7 +17,8 @@ import XCTest
 ///    cross-space conversion, so this must still hold.
 final class SoftwareRendererColorSpaceTests: XCTestCase {
 
-  private func renderSolidRect(_ color: UInt32, width: Int = 16, height: Int = 16) -> BitmapSurface {
+  private func renderSolidRect(_ color: UInt32, width: Int = 16, height: Int = 16) -> BitmapSurface
+  {
     let surface = BitmapSurface(width: width, height: height)
     let renderer = SoftwareRenderer(surface: surface, fontAtlas: FontAtlas())
     renderer.render([

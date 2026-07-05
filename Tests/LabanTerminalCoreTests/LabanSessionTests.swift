@@ -1391,7 +1391,8 @@ final class LabanSessionTests: XCTestCase {
   func testPTYSpawnEnvironmentDropsInheritedNonUtf8LC_ALL() {
     withProcessLocaleEnvironment(lcAll: "C") {
       let exe = "/bin/sh"
-      let command = "printf '%s|%s|%s\\n' \"${LANG-unset}\" \"${LC_CTYPE-unset}\" \"${LC_ALL-unset}\""
+      let command =
+        "printf '%s|%s|%s\\n' \"${LANG-unset}\" \"${LC_CTYPE-unset}\" \"${LC_ALL-unset}\""
       let argStrings = ["/bin/sh", "-c", command]
 
       exe.withCString { exeCStr in

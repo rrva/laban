@@ -352,8 +352,7 @@ final class SlugGlyphFrameTimeBench: XCTestCase {
   /// One full-screen frame, then `timedFrames` frames each introducing ~20
   /// previously unseen glyphs by walking up the Unicode plane, to time the
   /// full-array geometry re-upload path (`ensureGeometryBuffersIfNeeded`).
-  private func newGlyphBurstWorkloadFrames() -> [(commands: [FrameCommand], damage: RenderDamage)]
-  {
+  private func newGlyphBurstWorkloadFrames() -> [(commands: [FrameCommand], damage: RenderDamage)] {
     var text = asciiText(cols: cols, rows: rows)
     var result: [(commands: [FrameCommand], damage: RenderDamage)] = [
       (frameCommands(text: text, pixelW: pixelW, pixelH: pixelH), .full)

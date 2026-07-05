@@ -61,7 +61,8 @@ final class SubpixelSeamAccumulateTests: XCTestCase {
     let commands = stackedBarCommands(
       spacingPoints: spacingPoints, pixelHeight: pixelHeight)
     let renderer = try XCTUnwrap(
-      SlugGlyphRenderer(fontAtlas: atlas, pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale))
+      SlugGlyphRenderer(
+        fontAtlas: atlas, pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale))
     renderer.waitForFrameCompletion = true
     renderer.presentsToLayer = false
     renderer.setSubpixelLayout(.rgbStripe)
@@ -121,7 +122,8 @@ final class SubpixelSeamAccumulateTests: XCTestCase {
           source: .terminal))
     }
     let renderer = try XCTUnwrap(
-      SlugGlyphRenderer(fontAtlas: atlas, pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale))
+      SlugGlyphRenderer(
+        fontAtlas: atlas, pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale))
     renderer.waitForFrameCompletion = true
     renderer.presentsToLayer = false
     renderer.setSubpixelLayout(.rgbStripe)
@@ -203,7 +205,8 @@ final class SubpixelSeamAccumulateTests: XCTestCase {
     var bestX = 0
     var bestMeanLuma = Double.infinity
     let probeMinY = max(0, Int(originYDevice) - 4)
-    let probeMaxY = min(image.height, Int(originYDevice) + Int(CGFloat(glyphCount) * spacingDevice) + 4)
+    let probeMaxY = min(
+      image.height, Int(originYDevice) + Int(CGFloat(glyphCount) * spacingDevice) + 4)
     for x in 0..<image.width {
       var sum = 0.0
       var count = 0
@@ -263,7 +266,8 @@ final class SubpixelSeamAccumulateTests: XCTestCase {
     var bestX = 0
     var bestMeanLuma = -Double.infinity
     let probeMinY = max(0, Int(originYDevice) - 4)
-    let probeMaxY = min(image.height, Int(originYDevice) + Int(CGFloat(glyphCount) * spacingDevice) + 4)
+    let probeMaxY = min(
+      image.height, Int(originYDevice) + Int(CGFloat(glyphCount) * spacingDevice) + 4)
     for x in 0..<image.width {
       var sum = 0.0
       var count = 0

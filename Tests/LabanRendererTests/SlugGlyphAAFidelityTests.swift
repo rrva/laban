@@ -415,12 +415,14 @@ final class SlugGlyphAAFidelityTests: XCTestCase {
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
       scale: scale)
-    XCTAssertTrue(software.render(probeCommands(
-      x: 12,
-      y: 16,
-      lineSpacing: 24,
-      background: themeBackground,
-      foreground: themeForeground), damage: .full))
+    XCTAssertTrue(
+      software.render(
+        probeCommands(
+          x: 12,
+          y: 16,
+          lineSpacing: 24,
+          background: themeBackground,
+          foreground: themeForeground), damage: .full))
     let softwareImage = try decodePNGToRGBA(try XCTUnwrap(software.pngData))
     let softwareMetrics = computeTextAAMetrics(
       image: softwareImage,
@@ -438,7 +440,8 @@ final class SlugGlyphAAFidelityTests: XCTestCase {
       foreground: themeForeground,
       crop: crop)
 
-    let inkDelta = abs(slugMetrics.inkMass - softwareMetrics.inkMass)
+    let inkDelta =
+      abs(slugMetrics.inkMass - softwareMetrics.inkMass)
       / max(softwareMetrics.inkMass, 1)
     XCTAssertLessThanOrEqual(inkDelta, 0.10, "ink mass delta vs native reference")
     XCTAssertGreaterThanOrEqual(
@@ -516,7 +519,8 @@ final class SlugGlyphAAFidelityTests: XCTestCase {
         background: themeBackground,
         foreground: themeForeground,
         crop: crop)
-      let inkDelta = abs(shifted.inkMass - calibratedMetrics.inkMass)
+      let inkDelta =
+        abs(shifted.inkMass - calibratedMetrics.inkMass)
         / max(calibratedMetrics.inkMass, 1)
       maxInkDelta = max(maxInkDelta, inkDelta)
     }
