@@ -86,7 +86,122 @@ public enum TerminalCJKFontPolicy {
   }
 
   public static var fallbackOrderDescription: [String] {
-    ["primary terminal font"] + candidateFontDisplayNames + ["CoreText cascade"]
+    var names = ["primary terminal font"]
+    if let customName = customPreferenceDisplayName() {
+      names.append(customName)
+    }
+    names += candidateFontDisplayNamesInPreferenceOrder(excluding: customPreferenceDisplayName())
+    names.append("CoreText cascade")
+    return names
+  }
+
+  public static func isUsableForCJKFallback(_ font: CTFont) -> Bool {
+    glyphAdvance(for: representativeScalar, font: font) != nil
+  }
+
+  public static func isCustomFontUsable(
+    postScriptName: String,
+    baseFont: CTFont
+  ) -> Bool {
+    resolvedCustomFont(postScriptName: postScriptName, baseFont: baseFont) != nil
+  }
+
+  /// The first explicit CJK fallback font for the current preference.
+  public static func resolvedPreferenceFont(baseFont: CTFont) -> CTFont? {
+    explicitCascadeFonts(for: baseFont).first
+  }
+
+  /// The resolved font for a curated preset, ignoring the current preference.
+  public static func resolvedPresetFont(
+    _ preference: CJKFontPreference,
+    baseFont: CTFont
+  ) -> CTFont? {
+    let pointSize = CTFontGetSize(baseFont)
+    let traits = CTFontGetSymbolicTraits(baseFont).intersection([.traitBold, .traitItalic])
+    for candidate in candidates where candidate.displayName == preference.displayName {
+      if let font = resolvedCandidateFont(candidate, pointSize: pointSize, traits: traits) {
+        return font
+      }
+    }
+    return nil
+  }
+
+  public static func isAvailable(
+    _ preference: CJKFontPreference,
+    baseFont: CTFont
+  ) -> Bool {
+    let pointSize = CTFontGetSize(baseFont)
+    let traits = CTFontGetSymbolicTraits(baseFont).intersection([.traitBold, .traitItalic])
+    for candidate in candidates where candidate.displayName == preference.displayName {
+      if resolvedCandidateFont(candidate, pointSize: pointSize, traits: traits) != nil {
+        return true
+      }
+    }
+    return false
+  }
+
+  public struct UserStatus: Sendable {
+    public let message: String
+    public let isDegraded: Bool
+  }
+
+  public static func userStatus(baseFont: CTFont, cellWidth: CGFloat) -> UserStatus {
+    let preference = CJKFontSettings.current()
+    let diagnostics = diagnostics(baseFont: baseFont, cellWidth: cellWidth)
+    let active = activeFallbackDescription(diagnostics)
+    let chosenName = CJKFontSettings.currentDisplayName(baseFont: baseFont)
+
+    if preference == .custom {
+      let postScriptName = CJKFontSettings.customPostScriptName() ?? ""
+      let customInstalled = isCustomFontUsable(
+        postScriptName: postScriptName,
+        baseFont: baseFont)
+      if !customInstalled {
+        return UserStatus(
+          message: "Not installed: \(chosenName). Using \(active).",
+          isDegraded: true)
+      }
+      if !diagnostics.glyphAvailable {
+        return UserStatus(
+          message: "\(chosenName) has no usable Han glyph. Using \(active).",
+          isDegraded: true)
+      }
+      return UserStatus(
+        message: "Using \(diagnostics.selectedFamilyName) (\(diagnostics.selectedSource)).",
+        isDegraded: false)
+    }
+
+    let preferenceInstalled = isAvailable(preference, baseFont: baseFont)
+
+    if !preferenceInstalled {
+      return UserStatus(
+        message: "Not installed: \(preference.displayName). Using \(active).",
+        isDegraded: true)
+    }
+    if !diagnostics.glyphAvailable {
+      return UserStatus(
+        message:
+          "\(preference.displayName) has no usable Han glyph. Using \(active).",
+        isDegraded: true)
+    }
+    if diagnostics.selectedFamilyName.isEmpty {
+      return UserStatus(
+        message: "Using CoreText cascade · \(diagnostics.glyphAvailable ? "available" : "missing glyph").",
+        isDegraded: !diagnostics.glyphAvailable)
+    }
+    return UserStatus(
+      message: "Using \(diagnostics.selectedFamilyName) (\(diagnostics.selectedSource)).",
+      isDegraded: false)
+  }
+
+  private static func activeFallbackDescription(_ diagnostics: TerminalCJKFontDiagnostics) -> String
+  {
+    if diagnostics.selectedFamilyName.isEmpty {
+      return diagnostics.glyphAvailable
+        ? "CoreText cascade"
+        : "CoreText cascade (missing glyph)"
+    }
+    return "\(diagnostics.selectedFamilyName) (\(diagnostics.selectedSource))"
   }
 
   public static func containsCJK(_ text: String) -> Bool {
@@ -145,7 +260,13 @@ public enum TerminalCJKFontPolicy {
     var result: [CTFont] = []
     var seen: Set<String> = []
 
-    for candidate in candidates {
+    if let custom = resolvedCustomPreferenceFont(for: baseFont) {
+      let postScriptName = CTFontCopyPostScriptName(custom) as String
+      seen.insert(postScriptName)
+      result.append(custom)
+    }
+
+    for candidate in candidatesInPresetPreferenceOrder() {
       guard let font = resolvedCandidateFont(candidate, pointSize: pointSize, traits: traits)
       else { continue }
       let postScriptName = CTFontCopyPostScriptName(font) as String
@@ -200,6 +321,71 @@ public enum TerminalCJKFontPolicy {
       glyphAdvance: advance ?? 0,
       targetCellWidth: targetCellWidth,
       scaleX: scaleX)
+  }
+
+  private static func candidatesInPresetPreferenceOrder() -> [Candidate] {
+    let preferred =
+      CJKFontSettings.current() == .custom
+      ? nil
+      : CJKFontSettings.current().displayName
+    var displayOrder = candidateFontDisplayNames
+    if let preferred, let index = displayOrder.firstIndex(of: preferred) {
+      displayOrder.remove(at: index)
+      displayOrder.insert(preferred, at: 0)
+    }
+    var result: [Candidate] = []
+    for displayName in displayOrder {
+      for candidate in candidates where candidate.displayName == displayName {
+        result.append(candidate)
+      }
+    }
+    return result
+  }
+
+  private static func candidateFontDisplayNamesInPreferenceOrder(
+    excluding excludedDisplayName: String? = nil
+  ) -> [String] {
+    if CJKFontSettings.current() == .custom {
+      return candidateFontDisplayNames.filter { $0 != excludedDisplayName }
+    }
+    let preferred = CJKFontSettings.current().displayName
+    var names = candidateFontDisplayNames.filter { $0 != excludedDisplayName }
+    if let index = names.firstIndex(of: preferred) {
+      names.remove(at: index)
+      names.insert(preferred, at: 0)
+    }
+    return names
+  }
+
+  private static func customPreferenceDisplayName() -> String? {
+    guard CJKFontSettings.current() == .custom,
+      let postScriptName = CJKFontSettings.customPostScriptName(),
+      !postScriptName.isEmpty
+    else { return nil }
+    let font = CTFontCreateWithName(postScriptName as CFString, 14, nil)
+    let family = CTFontCopyFamilyName(font) as String
+    if !family.isEmpty { return family }
+    return CTFontCopyDisplayName(font) as String? ?? postScriptName
+  }
+
+  private static func resolvedCustomPreferenceFont(for baseFont: CTFont) -> CTFont? {
+    guard CJKFontSettings.current() == .custom,
+      let postScriptName = CJKFontSettings.customPostScriptName()
+    else { return nil }
+    return resolvedCustomFont(postScriptName: postScriptName, baseFont: baseFont)
+  }
+
+  private static func resolvedCustomFont(
+    postScriptName: String,
+    baseFont: CTFont
+  ) -> CTFont? {
+    guard !postScriptName.isEmpty else { return nil }
+    let pointSize = CTFontGetSize(baseFont)
+    let traits = CTFontGetSymbolicTraits(baseFont).intersection([.traitBold, .traitItalic])
+    let base = CTFontCreateWithName(postScriptName as CFString, pointSize, nil)
+    guard isUsableForCJKFallback(base) else { return nil }
+    guard !traits.isEmpty else { return base }
+    return CTFontCreateCopyWithSymbolicTraits(base, pointSize, nil, traits, traits) ?? base
   }
 
   private static func resolvedCandidateFont(

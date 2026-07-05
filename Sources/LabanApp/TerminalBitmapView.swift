@@ -290,6 +290,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var reduceMotionObserver: NSObjectProtocol?
   private var cursorSettingsObserver: NSObjectProtocol?
   private var emojiRenderingObserver: NSObjectProtocol?
+  private var cjkFontSettingsObserver: NSObjectProtocol?
   private var vectorSubpixelLayoutObserver: NSObjectProtocol?
   private var vectorTextWeightObserver: NSObjectProtocol?
   private var vectorSmoothScrollObserver: NSObjectProtocol?
@@ -759,6 +760,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       (self.backend as? MetalRenderer)?.invalidateContentForThemeChange()
       (self.backend as? VectorGlyphRenderer)?.refreshEmojiRenderingMode()
       (self.backend as? SlugGlyphRenderer)?.refreshEmojiRenderingMode()
+      self.renderInvalidated = true
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    cjkFontSettingsObserver = NotificationCenter.default.addObserver(
+      forName: CJKFontSettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      (self.backend as? MetalRenderer)?.refreshCJKFontCascade()
+      (self.backend as? VectorGlyphRenderer)?.refreshCJKFontCascade()
+      (self.backend as? SlugGlyphRenderer)?.refreshCJKFontCascade()
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
@@ -2103,6 +2117,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if let emojiRenderingObserver {
       NotificationCenter.default.removeObserver(emojiRenderingObserver)
+    }
+    if let cjkFontSettingsObserver {
+      NotificationCenter.default.removeObserver(cjkFontSettingsObserver)
     }
     if let vectorTextWeightObserver {
       NotificationCenter.default.removeObserver(vectorTextWeightObserver)

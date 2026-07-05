@@ -372,6 +372,7 @@ struct AtlasTextureResponse: Encodable {
 }
 
 struct AtlasCJKFontResponse: Encodable {
+  var preference: String
   var font: String
   var family: String
   var source: String

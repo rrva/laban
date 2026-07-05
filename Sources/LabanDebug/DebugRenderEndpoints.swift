@@ -1,5 +1,6 @@
 import CoreText
 import Foundation
+import LabanRenderer
 import LabanTerminalCore
 
 extension HeadlessDebugRuntime {
@@ -17,6 +18,7 @@ extension HeadlessDebugRuntime {
             baseline: max(Int(ceil(fontAtlas.ascent)), 0)
           ),
           cjkFont: AtlasCJKFontResponse(
+            preference: CJKFontSettings.currentDisplayName(baseFont: fontAtlas.font),
             font: cjk.selectedFontPostScriptName,
             family: cjk.selectedFamilyName,
             source: cjk.selectedSource,

@@ -23,6 +23,77 @@ final class CJKFontMetricsTests: XCTestCase {
     XCTAssertEqual(diagnostics.fallbackOrder.last, "CoreText cascade")
   }
 
+  func testFallbackOrderPutsUserPreferenceFirst() {
+    let saved = UserDefaults.standard.string(forKey: CJKFontSettings.defaultsKey)
+    defer {
+      if let saved {
+        UserDefaults.standard.set(saved, forKey: CJKFontSettings.defaultsKey)
+      } else {
+        UserDefaults.standard.removeObject(forKey: CJKFontSettings.defaultsKey)
+      }
+    }
+
+    CJKFontSettings.set(.sarasaTermSC)
+    XCTAssertEqual(TerminalCJKFontPolicy.fallbackOrderDescription[1], "Sarasa Term SC")
+    CJKFontSettings.set(.pingFangSC)
+    XCTAssertEqual(TerminalCJKFontPolicy.fallbackOrderDescription[1], "PingFang SC")
+  }
+
+  func testPingFangIsAvailableOnMacOS() {
+    let baseFont = CTFontCreateWithName("Helvetica" as CFString, 14, nil)
+    XCTAssertTrue(TerminalCJKFontPolicy.isAvailable(.pingFangSC, baseFont: baseFont))
+  }
+
+  func testCustomFontIsPreferredInCascade() throws {
+    let savedPreference = UserDefaults.standard.string(forKey: CJKFontSettings.defaultsKey)
+    let savedCustom = UserDefaults.standard.string(forKey: CJKFontSettings.customPostScriptNameKey)
+    defer {
+      if let savedPreference {
+        UserDefaults.standard.set(savedPreference, forKey: CJKFontSettings.defaultsKey)
+      } else {
+        UserDefaults.standard.removeObject(forKey: CJKFontSettings.defaultsKey)
+      }
+      if let savedCustom {
+        UserDefaults.standard.set(savedCustom, forKey: CJKFontSettings.customPostScriptNameKey)
+      } else {
+        UserDefaults.standard.removeObject(forKey: CJKFontSettings.customPostScriptNameKey)
+      }
+    }
+
+    let baseFont = CTFontCreateWithName("Helvetica" as CFString, 14, nil)
+    guard
+      let presetFont = TerminalCJKFontPolicy.resolvedPresetFont(.pingFangSC, baseFont: baseFont)
+    else {
+      throw XCTSkip("PingFang SC unavailable")
+    }
+    let postScriptName = CTFontCopyPostScriptName(presetFont) as String
+    CJKFontSettings.setCustom(postScriptName: postScriptName)
+    let selected = TerminalCJKFontPolicy.resolvedPreferenceFont(baseFont: baseFont)
+    XCTAssertEqual(CTFontCopyPostScriptName(selected ?? baseFont) as String, postScriptName)
+  }
+
+  func testUserStatusReportsMissingPreference() {
+    let saved = UserDefaults.standard.string(forKey: CJKFontSettings.defaultsKey)
+    defer {
+      if let saved {
+        UserDefaults.standard.set(saved, forKey: CJKFontSettings.defaultsKey)
+      } else {
+        UserDefaults.standard.removeObject(forKey: CJKFontSettings.defaultsKey)
+      }
+    }
+
+    CJKFontSettings.set(.sarasaTermSC)
+    let baseFont = CTFontCreateWithName("Helvetica" as CFString, 14, nil)
+    let status = TerminalCJKFontPolicy.userStatus(baseFont: baseFont, cellWidth: 9)
+    if TerminalCJKFontPolicy.isAvailable(.sarasaTermSC, baseFont: baseFont) {
+      XCTAssertFalse(status.isDegraded)
+    } else {
+      XCTAssertTrue(status.isDegraded)
+      XCTAssertTrue(status.message.contains("Not installed: Sarasa Term SC"))
+      XCTAssertTrue(status.message.contains("Using "))
+    }
+  }
+
   func testHanziInkTileStaysInsideTwoTerminalCells() throws {
     guard let device = MTLCreateSystemDefaultDevice() else {
       throw XCTSkip("no Metal device available")

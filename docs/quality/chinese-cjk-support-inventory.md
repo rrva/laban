@@ -20,8 +20,9 @@ edge cases, observability, and product scope.
 | Priority | Count | Theme |
 | --- | --- | --- |
 | P1 — should fix now | 2 | child-shell locale; gpuDriven preedit width consistency |
-| P2 — fix soon | 3 | decoration width math; CJK font observability; Rime/Squirrel verification |
-| P3 — product/spec gated | 3 | bundled CJK font / picker; ambiguous-width setting; zh-Hans UI |
+| P2 — fix soon | 1 | decoration width math |
+| P2 — verification | 1 | Rime/Squirrel manual acceptance |
+| P3 — product/spec gated | 2 | ambiguous-width setting; zh-Hans UI |
 | P4 — deferred/tracked | 2 | legacy GB18030/GBK; selection-scroll bug |
 
 ---
@@ -86,19 +87,12 @@ underline span.
 
 ---
 
-### 4. CJK font fallback is not observable to users
+### 4. ~~CJK font fallback is not observable to users~~ (resolved 2026-07-05)
 
-**Why it matters:** If PingFang SC is missing, disabled, or the user installs a
-preferred CJK font, the cascade silently changes. Today the only way to see
-which CJK font was selected is `GET /debug/atlas`, which is not user-facing.
-
-**Evidence:** `Sources/LabanRenderer/TerminalCJKFontPolicy.swift:25-76` defines
-the cascade; `Sources/LabanDebug/DebugRenderEndpoints.swift` exposes it only
-through the debug HTTP endpoint.
-
-**Suggested fix:** Surface the selected CJK font name and `glyphAvailable` state
-in the Settings window or in a startup log line. This makes fallback degradation
-easy to diagnose without requiring a debug client.
+**Resolution:** Settings → Appearance shows active CJK fallback status; startup
+logs report preference, selected family, and `glyphAvailable`. See
+`SettingsWindowController.refreshCJKFontControls()` and
+`MainWindowController.makeAndShow`.
 
 ---
 
@@ -119,25 +113,17 @@ ExecPlan’s Review Gate checklist.
 
 ---
 
-## P3 — product/spec gated
+### 6. ~~No bundled CJK font or user-selectable CJK font~~ (resolved 2026-07-05)
 
-### 6. No bundled CJK font or user-selectable CJK font
-
-**Why it matters:** The current policy relies on system PingFang SC. Users who
-prefer a monospaced Hanzi look (e.g. Noto Sans Mono CJK SC or Sarasa Term SC)
-have no way to choose it. If PingFang SC is unavailable, the app falls through
-to CoreText’s cascade non-deterministically.
-
-**Evidence:** `docs/adr/0025-cjk-font-pairing-and-metrics.md:46-47` and
-`Sources/LabanRenderer/TerminalCJKFontPolicy.swift:25-76`.
-
-**Suggested fix:** Add a Settings row for CJK font selection (default
-PingFang SC, with installed Noto/Sarasa as explicit candidates). If evidence
-shows system fonts are insufficient, evaluate bundling Noto Sans Mono CJK SC or
-Sarasa Term SC and update `Package.swift`/licenses. Requires a `spec.md`
-amendment.
+**Resolution:** Settings → Appearance exposes a CJK font popup (default PingFang SC)
+with installed Noto/Sarasa candidates. Preference persists in
+`LabanCJKFontPreference`, reorders the explicit cascade live, and is reported in
+startup logs and `GET /debug/atlas`. Bundling fonts remains deferred; see
+`docs/product/spec.md` §25 and ADR 0025.
 
 ---
+
+## P3 — product/spec gated
 
 ### 7. No ambiguous-width character override
 

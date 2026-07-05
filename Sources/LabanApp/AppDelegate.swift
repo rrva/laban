@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import CoreText
 import LabanControl
 import LabanCore
 import LabanRenderer
@@ -23,10 +24,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     renderer: rendererModeMenuController,
     backend: terminalBackendMenuController,
     onChangeFont: { [weak self] in self?.showFontPicker(nil) },
+    onChangeCJKFont: { [weak self] in self?.showCJKFontPicker(nil) },
     onTestNotification: { [weak self] in self?.postSettingsTestNotification() }
   )
   private var updateCheckInFlight = false
   private static let secureKeyboardEntryDefaultsKey = "LabanSecureKeyboardEntry"
+  private enum FontPanelPurpose {
+    case terminal
+    case cjk
+  }
+  private var fontPanelPurpose: FontPanelPurpose = .terminal
   /// Whether `EnableSecureEventInput()` is currently in effect. The Enable/
   /// Disable calls are reference-counted and process-global, so we track
   /// engagement to keep them balanced and never strand the system in secure
@@ -383,6 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   /// persist the choice; size changes apply live through the zoom path,
   /// while family changes still require a restart.
   @objc func showFontPicker(_ sender: Any?) {
+    fontPanelPurpose = .terminal
     let panel = NSFontPanel.shared
     let initialFont = Self.currentFontForFontPanel(
       activeFont: windowController?.terminalView?.terminalFontPanelFont,
@@ -394,6 +402,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     panel.makeKeyAndOrderFront(self)
   }
 
+  /// Open NSFontPanel for a custom CJK fallback font. Size follows the
+  /// primary terminal font; picks are rejected when the font lacks a usable `中` glyph.
+  @objc func showCJKFontPicker(_ sender: Any?) {
+    fontPanelPurpose = .cjk
+    let panel = NSFontPanel.shared
+    panel.setPanelFont(Self.currentCJKFontForFontPanel(), isMultiple: false)
+    NSFontManager.shared.target = self
+    NSFontManager.shared.action = #selector(changeCJKFont(_:))
+    panel.makeKeyAndOrderFront(self)
+  }
+
+  @objc func changeCJKFont(_ sender: Any?) {
+    guard fontPanelPurpose == .cjk else { return }
+    let pointSize = FontAtlas.persistedTerminalPointSize
+    let current = Self.currentCJKFontForFontPanel()
+    let selected = NSFontManager.shared.convert(current)
+    let baseFont = CTFontCreateWithName(selected.fontName as CFString, pointSize, nil)
+    guard TerminalCJKFontPolicy.isUsableForCJKFallback(baseFont) else {
+      NSSound.beep()
+      let alert = NSAlert()
+      alert.messageText = "Font cannot render CJK text"
+      alert.informativeText =
+        "\(selected.displayName ?? selected.fontName) does not provide a usable "
+        + "Han glyph at the terminal size. Pick a font that includes simplified "
+        + "Chinese, traditional Chinese, Japanese, or Korean characters."
+      alert.runModal()
+      return
+    }
+    if let preset = Self.matchingPreset(forPostScriptName: selected.fontName) {
+      CJKFontSettings.set(preset)
+    } else {
+      CJKFontSettings.setCustom(postScriptName: selected.fontName)
+    }
+    AppLog.app.info("CJK font picked: \(selected.fontName)")
+    EventLog.shared.log("cjkFont.set", ["name": selected.fontName])
+  }
+
+  static func currentCJKFontForFontPanel() -> NSFont {
+    let pointSize = FontAtlas.persistedTerminalPointSize
+    if CJKFontSettings.current() == .custom,
+      let postScriptName = CJKFontSettings.customPostScriptName(),
+      let font = NSFont(name: postScriptName, size: pointSize)
+    {
+      return font
+    }
+    let baseFont = CTFontCreateWithName("Helvetica" as CFString, pointSize, nil)
+    if let resolved = TerminalCJKFontPolicy.resolvedPreferenceFont(baseFont: baseFont),
+      let font = NSFont(
+        name: CTFontCopyPostScriptName(resolved) as String,
+        size: pointSize)
+    {
+      return font
+    }
+    return NSFont(name: "PingFangSC-Regular", size: pointSize)
+      ?? NSFont.systemFont(ofSize: pointSize)
+  }
+
+  private static func matchingPreset(forPostScriptName name: String) -> CJKFontPreference? {
+    let pointSize = FontAtlas.persistedTerminalPointSize
+    let baseFont = CTFontCreateWithName("Helvetica" as CFString, pointSize, nil)
+    for preset in CJKFontPreference.presetCases {
+      guard let resolved = TerminalCJKFontPolicy.resolvedPresetFont(preset, baseFont: baseFont)
+      else { continue }
+      if (CTFontCopyPostScriptName(resolved) as String) == name {
+        return preset
+      }
+    }
+    return nil
+  }
+
   /// AppKit calls this on the font-manager target whenever the user
   /// picks a face or size in NSFontPanel. Persist both. A size-only
   /// change applies live (TerminalBitmapView observes the notification
@@ -401,6 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   /// relaunch — it invalidates fallback-font discovery in ways a size
   /// change does not.
   @objc func changeFont(_ sender: Any?) {
+    guard fontPanelPurpose == .terminal else { return }
     let fm = NSFontManager.shared
     let current = Self.currentFontForFontPanel(
       activeFont: windowController?.terminalView?.terminalFontPanelFont,

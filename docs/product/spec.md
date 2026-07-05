@@ -210,6 +210,30 @@ The debug server `/debug/state` endpoint includes a `cursorSettings` object with
 the active session. Headless runs accept `-LabanCursorStyle <value>` and
 `-LabanCursorBlink <YES|NO>` argument-domain defaults.
 
+## 25. CJK font fallback settings
+
+The Settings window (⌘,) exposes a **CJK font** quick-pick popup and a **Choose…**
+button on the Appearance tab. The popup lists curated presets (PingFang SC,
+Noto Sans Mono CJK SC, Sarasa variants); **Choose…** opens the system font panel
+for any other installed font. Picks are validated with a representative Han
+glyph (`中`) at the terminal size; invalid fonts are rejected with an alert. A status line under the popup shows
+the active fallback family, source (`system` vs `user/system`), and whether the
+representative Han glyph (`中`) is available. When the chosen font is not
+installed or has no usable Han glyph, the status turns orange and names the
+font actually in use (for example, `Not installed: Sarasa Term SC. Using
+PingFang SC (system).`).
+
+The choice reorders the shared explicit CJK cascade documented in ADR 0025; it
+does not change primary terminal font metrics. Changes apply live and persist
+across relaunches via UserDefaults key `LabanCJKFontPreference`. Startup logs
+and `GET /debug/atlas` report both the user preference and the resolved active
+fallback.
+
+Laban does not bundle CJK fonts. Bundling Noto or Sarasa remains a separate
+decision if system fonts prove insufficient.
+
+---
+
 ## 24. Agent control plane (live GUI control over loopback)
 
 > **Scope (amended 2026-06-20): observe-first.** The first delivery is *observe* —

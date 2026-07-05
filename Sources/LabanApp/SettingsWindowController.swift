@@ -12,13 +12,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let rendererController: RendererModeMenuController
   private let backendController: TerminalBackendMenuController
   private let onChangeFont: () -> Void
+  private let onChangeCJKFont: () -> Void
   private let onTestNotification: () -> Void
 
   private let themePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let followSystemCheckbox = NSButton(
     checkboxWithTitle: "Follow system appearance", target: nil, action: nil)
   private let fontLabel = NSTextField(labelWithString: "")
-  private let cjkFontLabel = NSTextField(labelWithString: "")
+  private let cjkFontPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let cjkFontStatusLabel = NSTextField(labelWithString: "")
   private let rendererPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let backendPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let identityPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -73,6 +75,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let scrollModeOptions: [ScrollSettings.Mode] = ScrollSettings.Mode.allCases
   private let graphemeWidthOptions: [GraphemeWidthMode] = GraphemeWidthMode.allCases
   private let emojiRenderingOptions: [EmojiRenderingMode] = EmojiRenderingMode.allCases
+  private let cjkFontOptions: [CJKFontPreference] = CJKFontPreference.presetCases
   private let vectorSubpixelLayoutOptions: [VectorSubpixelLayoutPreset] =
     VectorSubpixelLayoutPreset.settingsCases
   private let vectorSmoothScrollOptions: [VectorSmoothScrollMode] =
@@ -83,12 +86,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     renderer: RendererModeMenuController,
     backend: TerminalBackendMenuController,
     onChangeFont: @escaping () -> Void,
+    onChangeCJKFont: @escaping () -> Void,
     onTestNotification: @escaping () -> Void
   ) {
     self.themeController = theme
     self.rendererController = renderer
     self.backendController = backend
     self.onChangeFont = onChangeFont
+    self.onChangeCJKFont = onChangeCJKFont
     self.onTestNotification = onTestNotification
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 460, height: 10),
@@ -104,6 +109,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       self,
       selector: #selector(fontDidChange(_:)),
       name: FontAtlas.didChangeNotification,
+      object: nil)
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(cjkFontSettingsDidChange(_:)),
+      name: CJKFontSettings.didChangeNotification,
       object: nil)
     window.delegate = self
     buildLayout()
@@ -152,10 +162,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     fontRow.spacing = 8
     fontRow.alignment = .firstBaseline
 
-    cjkFontLabel.lineBreakMode = .byTruncatingTail
-    cjkFontLabel.usesSingleLineMode = true
-    cjkFontLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-    cjkFontLabel.textColor = .secondaryLabelColor
+    cjkFontPopUp.target = self
+    cjkFontPopUp.action = #selector(cjkFontChanged(_:))
+    for option in cjkFontOptions {
+      cjkFontPopUp.addItem(withTitle: option.displayName)
+    }
+    cjkFontPopUp.toolTip =
+      "Quick picks for common CJK fallback fonts. Use Choose… for any installed "
+      + "CJK font."
+
+    let changeCJKFontButton = NSButton(
+      title: "Choose…", target: self, action: #selector(changeCJKFontClicked(_:)))
+    changeCJKFontButton.bezelStyle = .rounded
+    changeCJKFontButton.toolTip =
+      "Pick any installed font with Hanzi coverage. Size follows the primary "
+      + "terminal font; fonts without a usable 中 glyph are rejected."
+    let cjkFontRow = NSStackView(views: [cjkFontPopUp, changeCJKFontButton])
+    cjkFontRow.orientation = .horizontal
+    cjkFontRow.spacing = 8
+    cjkFontRow.alignment = .firstBaseline
+
+    cjkFontStatusLabel.lineBreakMode = .byTruncatingTail
+    cjkFontStatusLabel.usesSingleLineMode = true
+    cjkFontStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    cjkFontStatusLabel.textColor = .secondaryLabelColor
 
     rendererPopUp.target = self
     rendererPopUp.action = #selector(rendererChanged(_:))
@@ -291,7 +321,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel("Theme:"), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
       [makeLabel("Font:"), fontRow],
-      [makeLabel("CJK font:"), cjkFontLabel],
+      [makeLabel("CJK font:"), cjkFontRow],
+      [NSGridCell.emptyContentView, cjkFontStatusLabel],
       [makeLabel("Cursor:"), cursorStylePopUp],
       [NSGridCell.emptyContentView, blinkCheckbox],
     ])
@@ -507,7 +538,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
     followSystemCheckbox.state = themeController.followsSystemAppearance ? .on : .off
     fontLabel.stringValue = currentFontDisplayName()
-    cjkFontLabel.stringValue = currentCJKFontDisplayName()
+    refreshCJKFontControls()
     if let row = rendererOptions.firstIndex(of: rendererSelection) {
       rendererPopUp.selectItem(at: row)
     }
@@ -577,7 +608,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     onChangeFont()
   }
 
+  @objc private func changeCJKFontClicked(_ sender: Any?) {
+    onChangeCJKFont()
+  }
+
   @objc private func fontDidChange(_ notification: Notification) {
+    refresh()
+  }
+
+  @objc private func cjkFontSettingsDidChange(_ notification: Notification) {
     refresh()
   }
 
@@ -833,14 +872,52 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
   }
 
-  private func currentCJKFontDisplayName() -> String {
+  private func refreshCJKFontControls() {
+    let preference = CJKFontSettings.current()
     let atlas = FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize)
-    let d = atlas.cjkFontDiagnostics
-    let status = d.glyphAvailable ? "available" : "missing glyph"
-    if d.selectedFamilyName.isEmpty {
-      return "CoreText cascade (\(status))"
+    for (index, option) in cjkFontOptions.enumerated() {
+      let installed = TerminalCJKFontPolicy.isAvailable(option, baseFont: atlas.font)
+      let title =
+        installed ? option.displayName : "\(option.displayName) (not installed)"
+      cjkFontPopUp.item(at: index)?.title = title
+      cjkFontPopUp.item(at: index)?.isEnabled = installed
+      cjkFontPopUp.item(at: index)?.toolTip =
+        installed
+        ? "Use \(option.displayName) for CJK fallback."
+        : "Install \(option.displayName) to enable this choice."
     }
-    return "\(d.selectedFamilyName) (\(d.selectedSource)) · \(status)"
+    if preference != .custom, let row = cjkFontOptions.firstIndex(of: preference) {
+      cjkFontPopUp.selectItem(at: row)
+    } else {
+      cjkFontPopUp.select(nil)
+    }
+    let status = TerminalCJKFontPolicy.userStatus(
+      baseFont: atlas.font,
+      cellWidth: atlas.cellSize.width)
+    if preference == .custom {
+      let customName = CJKFontSettings.currentDisplayName(baseFont: atlas.font)
+      cjkFontStatusLabel.stringValue = "Custom: \(customName). \(status.message)"
+    } else {
+      cjkFontStatusLabel.stringValue = status.message
+    }
+    cjkFontStatusLabel.textColor = status.isDegraded ? .systemOrange : .secondaryLabelColor
+    cjkFontPopUp.toolTip =
+      status.isDegraded
+      ? status.message
+      : "Quick picks for common CJK fallback fonts."
+  }
+
+  @objc private func cjkFontChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < cjkFontOptions.count else { return }
+    let option = cjkFontOptions[row]
+    guard sender.item(at: row)?.isEnabled == true else {
+      NSSound.beep()
+      refreshCJKFontControls()
+      return
+    }
+    CJKFontSettings.set(option)
+    refreshCJKFontControls()
   }
 
   private func currentFontDisplayName() -> String {

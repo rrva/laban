@@ -691,6 +691,10 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     fallbackAtlasRebuildCount += 1
   }
 
+  public func refreshCJKFontCascade() {
+    rebuildFallbackAtlases()
+  }
+
   /// Lightweight live-zoom size change — the per-gesture-frame path for
   /// continuous pinch / Cmd+scroll on the vector backend.
   ///

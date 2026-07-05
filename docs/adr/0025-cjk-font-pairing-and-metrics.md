@@ -44,7 +44,8 @@ renderers:
 3. CoreText's remaining cascade as a final fallback.
 
 The default shipped policy relies on system PingFang SC. Laban does not bundle a
-CJK font and does not add a CJK font picker in this milestone.
+CJK font. Users choose their preferred CJK fallback in Settings (Appearance →
+CJK font); the choice reorders the explicit cascade and applies live.
 
 The Metal glyph atlas treats a single CJK `Character` as a two-cell tile when it
 rasterizes the glyph. The tile's logical width is exactly `2 * cellWidth`; if a
@@ -71,8 +72,8 @@ fallback degradation without a debug client.
   terminal cells. Laban preserves that shape rather than stretching it; the
   terminal core's two-cell occupancy remains authoritative.
 - Bundling Noto or Sarasa is deferred until evidence shows PingFang SC is not
-  good enough. Adding a user-selectable CJK font is product/settings scope and
-  needs a separate plan.
+  good enough. User-selectable CJK font preference is exposed in Settings and
+  persisted in `LabanCJKFontPreference`.
 
 ## Applies To New Code
 

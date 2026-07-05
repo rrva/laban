@@ -622,6 +622,52 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     cellGlyphUploadRanges.removeAll(keepingCapacity: true)
   }
 
+  /// Rebuild glyph atlases after the explicit CJK cascade preference changes.
+  /// Cached atlas entries are keyed by the primary font, not the resolved CJK
+  /// fallback, so stale Hanzi tiles must be dropped when the preference moves.
+  public func refreshCJKFontCascade() {
+    let cell = fontAtlas.cellSize
+    let sidebarCell = sidebarFontAtlas.cellSize
+    if let fresh = MetalGlyphAtlas(
+      device: device,
+      cellWidth: cell.width,
+      cellHeight: cell.height,
+      descent: fontAtlas.descent,
+      scale: layer.contentsScale,
+      textureSize: glyphAtlas.textureSize)
+    {
+      glyphAtlas = fresh
+    }
+    if let fresh = ColorGlyphAtlas(
+      device: device,
+      cellWidth: cell.width,
+      cellHeight: cell.height,
+      descent: fontAtlas.descent,
+      scale: layer.contentsScale,
+      textureSize: colorGlyphAtlas.textureSize)
+    {
+      colorGlyphAtlas = fresh
+    }
+    if sidebarFontAtlas === fontAtlas {
+      sidebarGlyphAtlas = glyphAtlas
+    } else if let fresh = MetalGlyphAtlas(
+      device: device,
+      cellWidth: sidebarCell.width,
+      cellHeight: sidebarCell.height,
+      descent: sidebarFontAtlas.descent,
+      scale: layer.contentsScale,
+      textureSize: sidebarGlyphAtlas.textureSize)
+    {
+      sidebarGlyphAtlas = fresh
+    }
+    fontCache.removeAll(keepingCapacity: true)
+    scalarEntryCacheGeneration &+= 1
+    colorGlyphInstances.removeAll(keepingCapacity: true)
+    cellGlyphBuffer = nil
+    colorGlyphBuffer = nil
+    invalidateContentForThemeChange()
+  }
+
   var targetNeedsFullRedrawForTesting: Bool { targetNeedsFullRedraw }
   var lastRenderedThemeRevisionForTesting: UInt64 { lastRenderedThemeRevision }
 

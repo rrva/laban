@@ -645,6 +645,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     emojiRenderingMode = EmojiRenderingSettings.current()
   }
 
+  public func refreshCJKFontCascade() {
+    rasterAtlas = Self.makeRasterGlyphAtlas(
+      device: device,
+      fontAtlas: fontAtlas,
+      scale: scale)
+  }
+
   @discardableResult
   public func setDisplayDownsampled(_ downsampled: Bool) -> Bool {
     guard downsampled != displayDownsampled else { return false }

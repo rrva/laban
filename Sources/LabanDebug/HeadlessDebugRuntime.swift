@@ -96,6 +96,7 @@ public final class HeadlessDebugRuntime {
   var lastCaptureManifestPath: String?
   var lastCaptureRunId: String?
   var lastCaptureDirectory: String?
+  private var cjkFontSettingsObserver: NSObjectProtocol?
   var accessibilityDisplayFlags = AccessibilityDisplayFlagsResponse(
     increaseContrast: false,
     differentiateWithoutColor: false,
@@ -131,6 +132,12 @@ public final class HeadlessDebugRuntime {
       scale: 1)
     enableBackendReadbackIfNeededUnlocked()
     syncSoftwareRendererIfNeededUnlocked()
+  }
+
+  func refreshCJKFontCascadeUnlocked() {
+    (rendererBackend as? MetalRenderer)?.refreshCJKFontCascade()
+    (rendererBackend as? VectorGlyphRenderer)?.refreshCJKFontCascade()
+    (rendererBackend as? SlugGlyphRenderer)?.refreshCJKFontCascade()
   }
 
   func resizeRendererBackendUnlocked() {
@@ -433,10 +440,24 @@ public final class HeadlessDebugRuntime {
       self?.recordWorkingDirectoryEvent(tabId: tabId, cwd: cwd)
     }
 
+    cjkFontSettingsObserver = NotificationCenter.default.addObserver(
+      forName: CJKFontSettings.didChangeNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      self.withRuntimeLock {
+        self.refreshCJKFontCascadeUnlocked()
+      }
+    }
+
     renderFrameUnlocked()
   }
 
   deinit {
+    if let cjkFontSettingsObserver {
+      NotificationCenter.default.removeObserver(cjkFontSettingsObserver)
+    }
     shutdown(interrupted: true)
   }
 

@@ -20,6 +20,7 @@
     "cjkFont": {
       "type": "object",
       "required": [
+        "preference",
         "font",
         "family",
         "source",
@@ -31,6 +32,7 @@
         "scaleX"
       ],
       "properties": {
+        "preference": {"type": "string"},
         "font": {"type": "string"},
         "family": {"type": "string"},
         "source": {"type": "string"},
