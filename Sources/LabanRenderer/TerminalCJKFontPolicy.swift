@@ -185,8 +185,9 @@ public enum TerminalCJKFontPolicy {
         isDegraded: true)
     }
     if diagnostics.selectedFamilyName.isEmpty {
+      let availability = diagnostics.glyphAvailable ? "available" : "missing glyph"
       return UserStatus(
-        message: "Using CoreText cascade · \(diagnostics.glyphAvailable ? "available" : "missing glyph").",
+        message: "Using CoreText cascade · \(availability).",
         isDegraded: !diagnostics.glyphAvailable)
     }
     return UserStatus(

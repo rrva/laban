@@ -1,5 +1,4 @@
 import CoreText
-import CoreText
 import Foundation
 
 /// User-selected CJK fallback font. The primary terminal font still governs cell
