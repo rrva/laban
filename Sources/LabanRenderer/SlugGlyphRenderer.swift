@@ -280,6 +280,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// `MetalDrawableScheduler`; Slug uses a dedicated semaphore because its
   /// present path is driven by `VectorPresentDisplayLink` rather than by
   /// main-thread drawable acquisition.
+  ///
+  /// `DispatchSemaphore` is not formally `Sendable`, but this instance is safe
+  /// to capture across threads: it is a `let`-bound, thread-safe reference type
+  /// signaled once per `wait()` from the command-buffer completion handler on a
+  /// Metal worker thread. The two captures below (`addCompletedHandler`) carry
+  /// this rationale.
   private let frameInFlight = DispatchSemaphore(value: 1)
   private var targetRing: [MTLTexture] = []
   private var targetRingCursor = 0
@@ -1109,6 +1115,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     let completion = onFrameCompleted
     if #available(macOS 14.0, *), presentDisplayLink != nil {
+      // `frameInFlight` is non-Sendable but thread-safe; see its declaration.
       commandBuffer.addCompletedHandler { [weak self, frameInFlight] _ in
         _ = retainedBuffers
         if self?.presentsToLayer == true {
@@ -1135,6 +1142,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       commandBuffer.present(drawable)
     }
 
+    // `frameInFlight` is non-Sendable but thread-safe; see its declaration.
     commandBuffer.addCompletedHandler { [frameInFlight] _ in
       _ = retainedBuffers
       completion?()
