@@ -482,7 +482,7 @@ private func freezeSample(
   tabChanged: Bool = false,
   scrollAnimating: Bool = false,
   rendered: Bool,
-  renderFailureReason: MetalRenderer.RenderFailureReason?,
+  renderFailureReason: RenderFailureReason?,
   metalFrameCompletions: Int = 0,
   now: Date = Date(timeIntervalSince1970: 1_800_000_000)
 ) -> GPURenderFreezeDetector.Sample {

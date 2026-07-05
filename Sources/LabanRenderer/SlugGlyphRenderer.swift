@@ -275,6 +275,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var latestPresentedTarget: MTLTexture?
   private let presentTargetLock = NSLock()
   private var presentQueue: MTLCommandQueue?
+  /// Serializes render frames so only one is in flight on `queue` at a time.
+  /// `MetalRenderer` and `VectorGlyphRenderer` get the same contract through
+  /// `MetalDrawableScheduler`; Slug uses a dedicated semaphore because its
+  /// present path is driven by `VectorPresentDisplayLink` rather than by
+  /// main-thread drawable acquisition.
+  private let frameInFlight = DispatchSemaphore(value: 1)
   private var targetRing: [MTLTexture] = []
   private var targetRingCursor = 0
 
@@ -301,6 +307,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   public var onFrameCompleted: (() -> Void)?
   public var waitForFrameCompletion: Bool = false
   public var presentsToLayer: Bool = true
+
+  /// Set by the host view for the next frame only: when true, a frame whose
+  /// render pipeline is already busy is *dropped* rather than blocked on.
+  /// Mirrors `MetalRenderer.dropNextFrameWhenBusy` and
+  /// `VectorGlyphRenderer.dropNextFrameWhenBusy`.
+  public var dropNextFrameWhenBusy = false
+
+  /// Why the most recent `render(_:damage:)` returned `false`. Cleared to `nil`
+  /// at the start of every `render` and left `nil` on a successful frame.
+  public private(set) var lastRenderFailureReason: RenderFailureReason?
 
   /// Number of size-independent glyph geometry entries built by this renderer.
   /// Used by tests to prove active point-size changes do not rebuild curves/bands.
@@ -792,6 +808,23 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     previousCursorRects = currentCursorRects
     snapshotConfigForNextFrame()
 
+    lastRenderFailureReason = nil
+    let dropIfBusy = dropNextFrameWhenBusy
+    dropNextFrameWhenBusy = false
+    let needsFullFrame = !dropIfBusy || damage == .full
+    let timeout: DispatchTime =
+      (needsFullFrame && !dropIfBusy) ? .now() + .milliseconds(16) : .now()
+    guard frameInFlight.wait(timeout: timeout) == .success else {
+      lastRenderFailureReason = .previousFrameInFlight
+      return false
+    }
+    var releaseFrameOnExit = true
+    defer {
+      if releaseFrameOnExit {
+        frameInFlight.signal()
+      }
+    }
+
     guard let target = commitRingSlot(slot, rebuild: ringRebuild),
       let commandBuffer = queue.makeCommandBuffer()
     else { return false }
@@ -1076,18 +1109,20 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     let completion = onFrameCompleted
     if #available(macOS 14.0, *), presentDisplayLink != nil {
-      commandBuffer.addCompletedHandler { [weak self] _ in
+      commandBuffer.addCompletedHandler { [weak self, frameInFlight] _ in
         _ = retainedBuffers
         if self?.presentsToLayer == true {
           self?.publishLatestTarget(target)
         }
         completion?()
+        frameInFlight.signal()
       }
       commandBuffer.commit()
       lastCommandBuffer = commandBuffer
       if waitForFrameCompletion {
         commandBuffer.waitUntilCompleted()
       }
+      releaseFrameOnExit = false
       return true
     }
 
@@ -1100,15 +1135,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       commandBuffer.present(drawable)
     }
 
-    commandBuffer.addCompletedHandler { _ in
+    commandBuffer.addCompletedHandler { [frameInFlight] _ in
       _ = retainedBuffers
       completion?()
+      frameInFlight.signal()
     }
     commandBuffer.commit()
     lastCommandBuffer = commandBuffer
     if waitForFrameCompletion {
       commandBuffer.waitUntilCompleted()
     }
+    releaseFrameOnExit = false
     return true
   }
 

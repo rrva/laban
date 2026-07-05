@@ -44,7 +44,7 @@ final class RenderJournal {
     var metalInstances: MetalInstanceCounts?
     var drawableAcquire: MetalDrawableAcquireDiagnostic?
     var gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure?
-    var renderFailureReason: MetalRenderer.RenderFailureReason?
+    var renderFailureReason: RenderFailureReason?
     var freeze: FreezeSnapshot?
     var rendered: Bool?
   }
@@ -195,7 +195,7 @@ final class RenderJournal {
     var tabChanged: Bool
     var scrollAnimating: Bool
     var rendered: Bool
-    var renderFailureReason: MetalRenderer.RenderFailureReason?
+    var renderFailureReason: RenderFailureReason?
     var metalFrameCompletions: Int
     var lastAcceptedFrame: Int?
     var completionCountAtLastAcceptedFrame: Int?
@@ -361,7 +361,7 @@ final class RenderJournal {
     metalInstances: MetalRenderer.RenderInstanceCounts? = nil,
     drawableAcquire: MetalDrawableAcquireDiagnostic? = nil,
     gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure? = nil,
-    renderFailureReason: MetalRenderer.RenderFailureReason? = nil,
+    renderFailureReason: RenderFailureReason? = nil,
     freeze: FreezeSnapshot? = nil,
     rendered: Bool? = nil
   ) -> Entry {
@@ -580,7 +580,7 @@ final class GPURenderFreezeDetector {
     var tabChanged: Bool
     var scrollAnimating: Bool
     var rendered: Bool
-    var renderFailureReason: MetalRenderer.RenderFailureReason?
+    var renderFailureReason: RenderFailureReason?
     var metalFrameCompletions: Int
     var now: Date
 
@@ -699,7 +699,7 @@ final class GPURenderFreezeDetector {
   }
 
   private static func isNoProgressFailure(
-    _ reason: MetalRenderer.RenderFailureReason?
+    _ reason: RenderFailureReason?
   ) -> Bool {
     switch reason {
     case .previousFrameInFlight,

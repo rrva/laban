@@ -964,6 +964,88 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     XCTAssertGreaterThan(maxDelta, tolerance, file: file, line: line)
   }
 
+  // MARK: - Frame-in-flight backpressure
+
+  /// Slug must not block the caller on `makeCommandBuffer()` when the previous
+  /// frame is still in flight. With `dropNextFrameWhenBusy` set, a surplus
+  /// render returns `false` and reports `.previousFrameInFlight` so the host
+  /// view can retry on the next display-link tick.
+  func testDropWhenBusyDoesNotBlockAndReportsBackpressure() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try makeBackpressureRenderer()
+
+    // Prime the renderer and drain so the in-flight slot starts free.
+    renderer.waitForFrameCompletion = true
+    XCTAssertTrue(renderer.render(commands(), damage: .full))
+
+    // Fire an async frame that leaves the slot held until GPU completion.
+    renderer.waitForFrameCompletion = false
+    XCTAssertTrue(renderer.render(commands(), damage: .full))
+
+    // A drop-don't-block render while the previous frame is in flight must
+    // return promptly and report backpressure.
+    renderer.dropNextFrameWhenBusy = true
+    let start = DispatchTime.now().uptimeNanoseconds
+    let committed = renderer.render(commands(), damage: .full)
+    let elapsedMs =
+      Double(DispatchTime.now().uptimeNanoseconds &- start) / 1_000_000.0
+    XCTAssertLessThan(
+      elapsedMs,
+      50.0,
+      "drop-don't-block render took \(elapsedMs) ms — it blocked instead of dropping")
+    if !committed {
+      XCTAssertEqual(
+        renderer.lastRenderFailureReason,
+        .previousFrameInFlight,
+        "dropped frame should report previousFrameInFlight")
+    }
+
+    // Drain the in-flight frame and prove the renderer recovers.
+    _ = renderer.pngData
+    renderer.dropNextFrameWhenBusy = false
+    XCTAssertTrue(renderer.render(commands(), damage: .full))
+  }
+
+  /// `dropNextFrameWhenBusy` is consumed each render call (one-shot), matching
+  /// `MetalRenderer` and `VectorGlyphRenderer`.
+  func testDropFlagIsOneShot() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try makeBackpressureRenderer()
+    renderer.waitForFrameCompletion = true
+    renderer.dropNextFrameWhenBusy = true
+    XCTAssertTrue(renderer.render(commands(), damage: .full))
+    renderer.dropNextFrameWhenBusy = false
+    XCTAssertTrue(renderer.render(commands(), damage: .full))
+  }
+
+  private func makeBackpressureRenderer() throws -> SlugGlyphRenderer {
+    try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 14),
+        pixelWidth: 320,
+        pixelHeight: 160,
+        scale: 1))
+  }
+
+  private func commands() -> [FrameCommand] {
+    [
+      .rect(
+        CGRect(x: 0, y: 0, width: 320, height: 160),
+        color: 0x00_00_00_FF, source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 4, y: 12),
+        text: "backpressure",
+        foreground: 0xFF_FF_FF_FF,
+        background: 0x00_00_00_FF,
+        attributes: [],
+        source: .terminal),
+    ]
+  }
+
   private func withTemporaryUserDefault(
     _ key: String,
     value: Bool,

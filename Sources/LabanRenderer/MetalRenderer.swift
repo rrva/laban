@@ -199,43 +199,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   /// `Bool`; this disambiguates them for the render journal and blank-frame
   /// triage. Cleared to `nil` at the start of every `render` and left `nil` on a
   /// successful frame.
-  public enum RenderFailureReason: String, Codable, Equatable, Sendable {
-    /// The drawable scheduler coalesced this frame because the previous GPU
-    /// frame had not retired yet (backpressure, not an error).
-    case previousFrameInFlight
-    /// `MTLCommandQueue.makeCommandBuffer()` returned nil.
-    case commandBufferUnavailable
-    /// The persistent terminal-content target texture could not be allocated.
-    case targetTextureUnavailable
-    /// A full redraw was required but the content pass produced nothing — e.g.
-    /// a cell-payload build failure or a command-fed grid-geometry change that
-    /// demands a full repaint. The frame is dropped and retried full next time;
-    /// `lastGPUCellPayloadBuildFailure` carries the payload-specific detail.
-    case fullRedrawProducedNoContent
-    /// `CAMetalLayer` had no drawable available to present into.
-    case drawableUnavailable
-    /// The layer resized between target allocation and drawable acquisition, so
-    /// the mismatched drawable was dropped and a full repaint forced.
-    case drawableSizeMismatch
-
-    /// GPU/compositor backpressure rather than a recoverable-by-retrying error:
-    /// either the previous frame is still in flight or the display has not yet
-    /// drained a drawable. Retrying on the same main-loop turn just spins
-    /// against the stall, so the caller should leave the frame invalidated and
-    /// let the next display-link tick repaint at the display's own cadence. The
-    /// other reasons (size mismatch, no-content full redraw, unavailable command
-    /// buffer/target) are transient resource hiccups where an immediate retry is
-    /// correct.
-    public var isGPUBackpressure: Bool {
-      switch self {
-      case .previousFrameInFlight, .drawableUnavailable:
-        return true
-      case .commandBufferUnavailable, .targetTextureUnavailable,
-        .fullRedrawProducedNoContent, .drawableSizeMismatch:
-        return false
-      }
-    }
-  }
+  public private(set) var lastRenderFailureReason: RenderFailureReason?
 
   /// A GPU command buffer that completed with `.error`. The completion handler
   /// runs off the main thread, so this is published under `frameSampleLock` and
@@ -257,7 +221,6 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
   public private(set) var lastInstanceCounts = RenderInstanceCounts()
   public private(set) var lastGPUCellPayloadBuildFailure: GPUCellPayloadBuildFailure?
-  public private(set) var lastRenderFailureReason: RenderFailureReason?
   public private(set) var lastDrawableAcquireDiagnostic: MetalDrawableAcquireDiagnostic?
   /// Set off the main thread when a command buffer completes with `.error`;
   /// the next `render` consumes it to force a full repaint, recovering from a

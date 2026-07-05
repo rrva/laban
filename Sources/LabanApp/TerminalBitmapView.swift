@@ -2665,6 +2665,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // blocked on `nextDrawable()` and dropped ~5–8% of scroll frames.
     let vectorRenderer = backend as? VectorGlyphRenderer
     vectorRenderer?.dropNextFrameWhenBusy = dropFrameWhenBusy
+    let slugRenderer = backend as? SlugGlyphRenderer
+    slugRenderer?.dropNextFrameWhenBusy = dropFrameWhenBusy
     // Attention pulse frames repaint the sidebar in the renderer's dedicated
     // scissored strip pass instead of forcing full-damage terminal repaints.
     // (The software backend ignores damage and repaints every command, so it
@@ -2854,6 +2856,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         autoDumpGPUCellPayloadFailure(payloadFailure)
       }
       let failureReason = (backend as? MetalRenderer)?.lastRenderFailureReason
+        ?? (backend as? SlugGlyphRenderer)?.lastRenderFailureReason
       // GPU/compositor backpressure gets one display-link-paced retry. If that
       // retry finds no work except the carried invalidation, park instead of
       // sustaining a no-progress render loop.
@@ -3077,8 +3080,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let includesMetalFailureDetails = event == .renderFailed || event == .freezeDetected
     let gpuCellPayloadFailure =
       includesMetalFailureDetails ? metalRenderer?.lastGPUCellPayloadBuildFailure : nil
+    let slugRenderer = backend as? SlugGlyphRenderer
     let renderFailureReason =
-      includesMetalFailureDetails ? metalRenderer?.lastRenderFailureReason : nil
+      includesMetalFailureDetails
+      ? (metalRenderer?.lastRenderFailureReason
+        ?? slugRenderer?.lastRenderFailureReason)
+      : nil
     let commandList = surfaceFrame?.commands ?? commands
     let overlayCommands = surfaceFrame?.overlayCommands ?? []
     let entry = renderJournal.makeEntry(
@@ -3158,7 +3165,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         tabChanged: tabChanged,
         scrollAnimating: scrollAnimating,
         rendered: rendered,
-        renderFailureReason: (backend as? MetalRenderer)?.lastRenderFailureReason,
+        renderFailureReason: (backend as? MetalRenderer)?.lastRenderFailureReason
+          ?? (backend as? SlugGlyphRenderer)?.lastRenderFailureReason,
         metalFrameCompletions: gpuFrameCompletionCount,
         now: Date()))
     guard let detection else { return }
