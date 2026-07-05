@@ -234,7 +234,8 @@ as dominant); new fallback-rate telemetry beyond the existing
 - [x] M3: small-size AA sample-count validation. Answered no: measured 2/4/8
       samples at 9/11 pt, evidence shows no fidelity win and real cost;
       discarded, shader define confirmed restored to 2. See M3 results.
-- [ ] M4 (conditional on M0 evidence): incremental geometry buffer upload.
+- [x] M4 (conditional on M0 evidence): incremental geometry buffer upload,
+      landed with a measured win on the burst workload. See M4 results.
 
 ## Milestones
 
@@ -494,7 +495,8 @@ to prove zoom does not re-upload).
   `appendGlyphRun`/`ensureGlyph` and `render()`; M2 damage state
   (per-slot accumulators, previous cursor rects, previous zoom/layout/weight
   snapshot), scissor computation, load-action switching, empty-damage early
-  out; M4 buffer management if entered.
+  out; M4 `ensureGeometryBuffersIfNeeded`/new `ensureIncrementalBuffer<T>`
+  helper and per-array uploaded-count tracking.
 - `Sources/LabanRenderer/TerminalCJKFontPolicy.swift`: M1 item 2 overload.
 - `Sources/LabanRenderer/VectorGlyphShaders.metal`: M3 only
   (`kSlugAreaAASampleCount` region); no shader changes in M1/M2 (scissor is
@@ -506,6 +508,9 @@ to prove zoom does not re-upload).
 - `Tests/LabanRendererTests/SlugGlyphSmallSizeAAProbeBench.swift`: new in M3,
   print-only small-size probes (see Decision Log for why this is a new file
   rather than an extension of `SlugGlyphAAFidelityTests.swift`).
+- `Tests/LabanRendererTests/SlugGlyphIncrementalGeometryUploadTests.swift`:
+  new in M4 (byte-identical incremental-vs-fresh-upload gate, zoom-still-
+  does-not-upload regression).
 - `Sources/LabanRenderer/DirtyYRangeSet.swift`: new in M2 (normalized y-band
   set + `Tests/LabanRendererTests/DirtyYRangeSetTests.swift` covering
   normalization: drop non-positive heights, sort, epsilon-merge overlapping
@@ -575,7 +580,12 @@ Phrased as behavior:
 3. After M3: the plan contains a metric table for sample counts 2/4/8 at 9 and
    11 pt, and either the size-dependent sample count is landed with green
    fidelity/bench gates or the discard is recorded with evidence.
-4. Throughout: renderer replay of the M0 capture stays byte-identical, and the
+4. After M4 (if entered): the new-glyph-burst workload's CPU-encode p50 drops
+   materially vs the pre-M4 baseline (record the numbers), incremental
+   buffer growth is proven byte-identical to a fresh single-shot upload
+   across a capacity-doubling boundary, and `geometryBufferUploadCount`
+   semantics stay intact (zoom does not re-upload).
+5. Throughout: renderer replay of the M0 capture stays byte-identical, and the
    existing Slug test suites (`SlugGlyphCorrectnessTests`,
    `SlugGlyphAAFidelityTests`, `SlugWeightCoreTextParityTests`) stay green.
 
@@ -666,6 +676,8 @@ for that milestone.
       Slug-prefixed identifier. (M2)
 - [ ] `git diff Sources/LabanRenderer/VectorGlyphShaders.metal` is empty (the
       M3 sample-count define is confirmed back at its default of 2). (M3)
+- [ ] `swift test --filter SlugGlyphIncrementalGeometryUploadTests` exits 0.
+      (M4)
 - [ ] The plan's Artifacts and Notes section contains recorded baseline and
       post-change bench numbers for every landed milestone, and the Progress
       checkboxes match the actual state of the working tree. (all)
@@ -709,7 +721,12 @@ No new external dependencies. End state per milestone:
 
   in `Sources/LabanRenderer/DirtyYRangeSet.swift`, renderer-neutral (imports
   `CoreGraphics` only, no Slug types), so other backends can migrate later.
-- M3: shader-side only; sample count selected from existing `unitsPerPixel`.
+- M3: no shipped interface change. Explored shader-side promotion (sample
+  count selected from existing `unitsPerPixel`) but discarded on evidence;
+  `kSlugAreaAASampleCount` stays fixed at 2. See M3 results.
+- M4: no `SlugGlyphRenderer` public-interface change;
+  `geometryBufferUploadCount`'s existing semantics (increments once per
+  `render()` call that pushes new geometry bytes) are preserved unchanged.
 - M0: `HeadlessDebugRuntime` can select `slugGlyph` (only if it cannot today).
 
 ## Artifacts and Notes
@@ -1079,4 +1096,80 @@ Decision: **discarded.** `kSlugAreaAASampleCount` and its sample array in
 the original 2-sample definition (`git diff` on that file is empty). The
 milestone is answered rather than left open: the sample-count question is
 closed with evidence, not merely deferred.
+Date/Author: 2026-07-05 / plan author.
+
+### M4 results (2026-07-05): landed
+
+`ensureGeometryBuffersIfNeeded` (`SlugGlyphRenderer.swift`) now tracks a
+per-array uploaded-element count (`curveBufferUploadedCount`/
+`glyphBufferUploadedCount`/`bandBufferUploadedCount`/
+`bandIndexBufferUploadedCount`) alongside each `MTLBuffer`, via a new generic
+`ensureIncrementalBuffer<T>` helper: when the existing buffer's capacity
+already covers the array's current count, only the newly appended tail
+(`values[uploadedCount...]`) is memcpy'd in at the right offset; capacity
+only grows (starting at 1024 elements, doubling) when the array has outgrown
+the buffer, and a doubling reallocates fresh and re-copies from the CPU-side
+array (the source of truth) rather than migrating bytes from the old,
+smaller buffer. `bandIndices`' pre-existing empty-array placeholder fallback
+(before the first glyph's bands exist) is kept as a separate, non-incremental
+branch so that defensive, in-practice-unreachable edge case cannot corrupt
+the tracked count. `geometryBufferUploadCount` keeps its exact pre-M4
+semantics (incremented once per `render()` call that actually pushed new
+geometry bytes, regardless of whether that was a tail-append or a
+reallocation-copy), since the existing zoom/point-size tests assert it stays
+flat when no new glyph is introduced.
+
+Correctness: new `Tests/LabanRendererTests/SlugGlyphIncrementalGeometryUploadTests.swift`
+(2 tests):
+`testIncrementalBufferGrowthMatchesFreshSingleShotUpload` introduces 800 new
+glyphs across 40 frames (comfortably forcing multiple capacity-doubling
+reallocations on all four arrays, since `bands` alone grows by 128 elements
+per glyph against a 1024-element starting capacity), then renders a final
+frame with every introduced glyph and asserts its `pngData` hash is
+byte-identical to a *fresh* renderer given only that final frame in one shot
+(single-allocation upload, no incremental growth) — proving tail-append and
+capacity-doubling-reallocate produce exactly the same buffer contents as a
+from-scratch upload, regardless of how they got there.
+`testGestureZoomStillDoesNotTriggerGeometryUpload` re-asserts the existing
+"zoom never re-uploads geometry" contract holds under the new incremental
+path. Both pass. Full `swift test --filter SlugGlyph` (53 tests, up from 51):
+0 failures, including the pre-existing `geometryBufferUploadCount` zoom/
+point-size tests in `SlugGlyphRendererTests.swift` (M4 does not change their
+semantics) and the M0 capture's byte-identical replay gate
+(`SlugGlyphCaptureReplayTests`).
+
+Performance: interleaved A/B (`git stash -u`/`pop` around paired runs, same
+methodology as M1/M2), `-c release`, new-glyph-burst workload (200 frames,
+~20 previously-unseen glyphs/frame), 2 pairs:
+
+| mode | metric | pre-M4 (pair 1) | post-M4 (pair 1) | pre-M4 (pair 2) | post-M4 (pair 2) |
+| --- | --- | --- | --- | --- | --- |
+| grayscale | cpu-encode p50 | 4.584 ms | 2.896 ms | 4.275 ms | 2.868 ms |
+| grayscale | cpu-encode p99 | 15.958 ms | 13.469 ms | 16.037 ms | 13.130 ms |
+| grayscale | wall p50 | 5.704 ms | 3.781 ms | 4.806 ms | 4.133 ms |
+| grayscale | wall p99 | 9.039 ms | 6.515 ms | 7.405 ms | 7.354 ms |
+| rgbStripe | cpu-encode p50 | 4.085 ms | 2.823 ms | 3.860 ms | 2.844 ms |
+| rgbStripe | wall p50 | 5.232 ms | 4.695 ms | 5.729 ms | 4.706 ms |
+
+Reading: cpu-encode p50 dropped ~33-37% in both pairs, and the p99 spike
+(the M0 evidence that entered this milestone: full-array re-upload cost
+scaling with total accumulated geometry rather than the frame's actual new
+glyphs) shrank ~13-18% — a real but partial win. The residual p99 spike is
+expected and inherent to the doubling strategy: a capacity-doubling
+reallocation still copies the *entire* current array (not just the tail),
+and those events, while now `O(log n)` in the number of new glyphs rather
+than happening every single frame, still land on some frames. The dominant,
+consistent win is p50: the common-case frame (capacity already sufficient)
+now pays only for its own new glyphs' tail bytes instead of the whole
+accumulated geometry every time, matching the plan's stated fix for what
+`ensureGeometryBuffersIfNeeded`'s full-array re-upload was doing. Full-screen
+and other workload numbers (which introduce no new glyphs after warmup) are
+unaffected by design — no code on that path changed.
+
+Decision: landed as specified, no further stage needed. The plan's own
+gate ("land only with a measured win on the burst workload") is satisfied by
+the p50 drop; further chasing the residual p99 spike (e.g. a non-doubling
+growth strategy, or amortizing the reallocation copy across frames) is not
+required by this plan's acceptance and is left as a candidate follow-up if
+future evidence shows it still matters in practice.
 Date/Author: 2026-07-05 / plan author.

@@ -251,6 +251,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var glyphBuffer: MTLBuffer?
   private var bandBuffer: MTLBuffer?
   private var bandIndexBuffer: MTLBuffer?
+  // M4: how many of the corresponding CPU-side array's (append-only)
+  // elements are already present in the matching `MTLBuffer`. A capacity
+  // overflow reallocates (doubling) and re-copies from the CPU array (the
+  // source of truth); otherwise growth is a tail-only memcpy of just the
+  // newly appended elements. See `ensureIncrementalBuffer`.
+  private var curveBufferUploadedCount = 0
+  private var glyphBufferUploadedCount = 0
+  private var bandBufferUploadedCount = 0
+  private var bandIndexBufferUploadedCount = 0
   private var subpixelCoverageAccum: MTLTexture?
   private var subpixelColorAccum: MTLTexture?
   private var geometryBuffersDirty = false
@@ -1688,17 +1697,82 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     guard glyphsNeeded else { return true }
     guard geometryBuffersDirty || curveBuffer == nil else { return true }
     guard !curves.isEmpty, !glyphs.isEmpty else { return false }
-    guard let curveBuffer = makeBuffer(curves),
-      let glyphBuffer = makeBuffer(glyphs),
-      let bandBuffer = makeBuffer(bands),
-      let bandIndexBuffer = makeBuffer(bandIndices.isEmpty ? [UInt32(0)] : bandIndices)
+    guard
+      ensureIncrementalBuffer(
+        curves, buffer: &curveBuffer, uploadedCount: &curveBufferUploadedCount),
+      ensureIncrementalBuffer(
+        glyphs, buffer: &glyphBuffer, uploadedCount: &glyphBufferUploadedCount),
+      ensureIncrementalBuffer(
+        bands, buffer: &bandBuffer, uploadedCount: &bandBufferUploadedCount)
     else { return false }
-    self.curveBuffer = curveBuffer
-    self.glyphBuffer = glyphBuffer
-    self.bandBuffer = bandBuffer
-    self.bandIndexBuffer = bandIndexBuffer
+    // `bandIndices` can only be empty before the first glyph's bands are
+    // appended, which the `curves`/`glyphs` emptiness guard above already
+    // excludes in practice; kept as a defensive fallback (matching the
+    // pre-M4 behavior) rather than folded into the incremental path so an
+    // unreachable edge case cannot corrupt the tracked upload count.
+    if bandIndices.isEmpty {
+      if bandIndexBuffer == nil {
+        guard let placeholder = makeBuffer([UInt32(0)]) else { return false }
+        bandIndexBuffer = placeholder
+      }
+    } else {
+      guard
+        ensureIncrementalBuffer(
+          bandIndices, buffer: &bandIndexBuffer, uploadedCount: &bandIndexBufferUploadedCount)
+      else { return false }
+    }
     geometryBuffersDirty = false
     geometryBufferUploadCount += 1
+    return true
+  }
+
+  /// Uploads `values[uploadedCount...]` into `buffer`, the M4 incremental
+  /// geometry upload path (see
+  /// `execplans/active/slug-render-loop-perf-and-aa-quality.md` M4): the
+  /// geometry arrays (`curves`/`glyphs`/`bands`/`bandIndices`) only ever grow
+  /// by appending whole new glyphs, so once a buffer has spare capacity, a
+  /// later call only needs to copy the newly appended tail, not the whole
+  /// array. Capacity doubles (starting from `minimumCapacity`) only when the
+  /// existing buffer cannot hold `values.count` elements; a reallocation
+  /// re-copies from `values` (the CPU-side source of truth) rather than
+  /// migrating bytes from the old, smaller buffer.
+  private func ensureIncrementalBuffer<T>(
+    _ values: [T],
+    buffer: inout MTLBuffer?,
+    uploadedCount: inout Int,
+    minimumCapacity: Int = 1024
+  ) -> Bool {
+    guard !values.isEmpty else { return true }
+    guard values.count != uploadedCount || buffer == nil else { return true }
+    let stride = MemoryLayout<T>.stride
+    let existingCapacity = buffer.map { $0.length / stride } ?? 0
+    if buffer == nil || existingCapacity < values.count {
+      let newCapacity = max(minimumCapacity, values.count, existingCapacity * 2)
+      guard
+        let newBuffer = device.makeBuffer(
+          length: newCapacity * stride, options: .storageModeShared)
+      else { return false }
+      let copied: Bool = values.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return false }
+        newBuffer.contents().copyMemory(from: base, byteCount: values.count * stride)
+        return true
+      }
+      guard copied else { return false }
+      buffer = newBuffer
+      uploadedCount = values.count
+      return true
+    }
+    guard let existingBuffer = buffer, values.count > uploadedCount else { return true }
+    let tailCount = values.count - uploadedCount
+    let copied: Bool = values.withUnsafeBytes { raw in
+      guard let base = raw.baseAddress else { return false }
+      let destination = existingBuffer.contents().advanced(by: uploadedCount * stride)
+      let source = base.advanced(by: uploadedCount * stride)
+      destination.copyMemory(from: source, byteCount: tailCount * stride)
+      return true
+    }
+    guard copied else { return false }
+    uploadedCount = values.count
     return true
   }
 
