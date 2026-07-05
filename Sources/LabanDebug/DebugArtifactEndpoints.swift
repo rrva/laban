@@ -6,7 +6,11 @@ extension HeadlessDebugRuntime {
     let screenshot = withRuntimeLock { () -> ArtifactSnapshotScreenshot in
       let frame = currentFrame
       let start = DispatchTime.now()
-      let pngData = surface.pngData
+      // The active renderer's own PNG, not the internal software-only
+      // `surface` (which only tracks `SoftwareBackend` selections and stays
+      // blank for Metal-backed renderers such as slugGlyph/vectorGlyph/
+      // classic/gpuDriven).
+      let pngData = rendererBackend.pngData
       timing.screenshotMs =
         Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
       if pngData != nil {
@@ -15,8 +19,8 @@ extension HeadlessDebugRuntime {
       return ArtifactSnapshotScreenshot(
         frame: frame,
         data: pngData,
-        width: surface.width,
-        height: surface.height
+        width: rendererBackend.surfaceWidth,
+        height: rendererBackend.surfaceHeight
       )
     }
 

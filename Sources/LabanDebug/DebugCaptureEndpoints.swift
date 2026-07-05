@@ -142,7 +142,10 @@ extension HeadlessDebugRuntime {
         "input-log.json": (try? encoder.encode(logs.inputLogResponse(since: 0))) ?? Data(),
         "frame-commands.json": (try? encoder.encode(frameCommandBody)) ?? Data(),
       ]
-      if let png = surface.pngData {
+      // The active renderer's own PNG, not the internal software-only `surface`
+      // (which only tracks `SoftwareBackend` selections and stays blank for
+      // Metal-backed renderers such as slugGlyph/vectorGlyph/classic/gpuDriven).
+      if let png = rendererBackend.pngData {
         files["screenshot.png"] = png
       }
       do {
@@ -161,11 +164,13 @@ extension HeadlessDebugRuntime {
       return nil
     }
 
+    // The active renderer's own PNG (see captureSnapshot() for why `surface`,
+    // the internal software-only surface, is the wrong source here).
     let finalPNG: Data?
     if recorder.screenshots == .none {
       finalPNG = nil
     } else {
-      finalPNG = surface.pngData
+      finalPNG = rendererBackend.pngData
     }
     let manifest = try recorder.finish(
       interrupted: interrupted,
