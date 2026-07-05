@@ -231,8 +231,9 @@ as dominant); new fallback-rate telemetry beyond the existing
       redraw across content + accumulate + composite passes, per-ring-slot
       damage accumulation). Stage B (CPU-side command filtering) was not
       needed; see M2 results.
-- [ ] M3: small-size AA sample-count validation (promote size-dependent sample
-      count or record evidence and close).
+- [x] M3: small-size AA sample-count validation. Answered no: measured 2/4/8
+      samples at 9/11 pt, evidence shows no fidelity win and real cost;
+      discarded, shader define confirmed restored to 2. See M3 results.
 - [ ] M4 (conditional on M0 evidence): incremental geometry buffer upload.
 
 ## Milestones
@@ -502,7 +503,9 @@ to prove zoom does not re-upload).
   is missing.
 - `Tests/LabanRendererTests/SlugGlyphFrameTimeBench.swift`: M0 workloads.
 - `Tests/LabanRendererTests/SlugGlyphDamageTests.swift`: new in M2.
-- `Tests/LabanRendererTests/SlugGlyphAAFidelityTests.swift`: M3 probes.
+- `Tests/LabanRendererTests/SlugGlyphSmallSizeAAProbeBench.swift`: new in M3,
+  print-only small-size probes (see Decision Log for why this is a new file
+  rather than an extension of `SlugGlyphAAFidelityTests.swift`).
 - `Sources/LabanRenderer/DirtyYRangeSet.swift`: new in M2 (normalized y-band
   set + `Tests/LabanRendererTests/DirtyYRangeSetTests.swift` covering
   normalization: drop non-positive heights, sort, epsilon-merge overlapping
@@ -619,6 +622,19 @@ Phrased as behavior:
   rest of M5 is product-parity work unrelated to perf/quality and stays with
   the old plan.
   Date/Author: 2026-07-05 / plan author.
+- Decision: M3's small-size probes landed as a new, separate,
+  `LABAN_RUN_PERF_BENCH`-gated print-only file
+  (`SlugGlyphSmallSizeAAProbeBench.swift`) instead of extending
+  `SlugGlyphAAFidelityTests.swift` with hard assertions.
+  Rationale: at the time these probes were written, the right tolerance
+  band was unknown (that is what the probes were for), and the outcome was
+  "discard" — landing hard-gated assertions pinned to a sample count that was
+  reverted would either assert against the wrong (discarded) configuration or
+  need immediate deletion. A print-only exploration file mirrors the existing
+  `SlugGlyphFrameTimeBench.swift` convention and stays as a reusable probe for
+  any future revisit of this question without carrying assertion maintenance
+  cost for a milestone that answered "no change."
+  Date/Author: 2026-07-05 / plan author.
 
 ## Review Gate
 
@@ -648,6 +664,8 @@ for that milestone.
 - [ ] `grep -n 'import' Sources/LabanRenderer/DirtyYRangeSet.swift` shows no
       import beyond CoreGraphics/Foundation, and the file contains no
       Slug-prefixed identifier. (M2)
+- [ ] `git diff Sources/LabanRenderer/VectorGlyphShaders.metal` is empty (the
+      M3 sample-count define is confirmed back at its default of 2). (M3)
 - [ ] The plan's Artifacts and Notes section contains recorded baseline and
       post-change bench numbers for every landed milestone, and the Progress
       checkboxes match the actual state of the working tree. (all)
@@ -990,3 +1008,75 @@ Surprises & Discoveries:
   re-running in isolation. This is `VectorGlyphRenderer` drawable-scheduling
   flakiness unrelated to `SlugGlyphRenderer`/M2 and out of this plan's scope;
   not investigated further here.
+
+### M3 results (2026-07-05): answered no
+
+Added a print-only exploration harness,
+`Tests/LabanRendererTests/SlugGlyphSmallSizeAAProbeBench.swift` (gated behind
+`LABAN_RUN_PERF_BENCH=1`, mirrors the existing bench-gating convention),
+measuring Slug-vs-`SoftwareBackend` fidelity (ink-mass delta, mean-gradient
+ratio, edge-pixel-ratio delta, mean edge chroma, mean coverage spread) at 9
+and 11 pt, scales 1 and 2, grayscale and `calibratedRGB`, on a themed probe.
+A/B'd `kSlugAreaAASampleCount` (`VectorGlyphShaders.metal:654`) at 2
+(baseline), 4 (standard RGSS rotated-grid pattern), and 8 (standard D3D/Vulkan
+fixed 8-sample pattern) by editing the shader define and its sample array,
+rebuilding (`swift build --target LabanRenderer`), and re-running the probe
+between each.
+
+| pt | scale | mode | samples | ink %Δ vs software | mean-grad ratio | edge-ratio %Δ | edge chroma | coverage spread |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 9 | 1 | grayscale | 2 | 14.49% | 0.897 | -0.83% | 16.65 | 0.0274 |
+| 9 | 1 | grayscale | 4 | 16.23% | 0.854 | -0.64% | 16.95 | 0.0272 |
+| 9 | 1 | grayscale | 8 | 17.23% | 0.842 | -0.57% | 17.09 | 0.0268 |
+| 9 | 1 | calibratedRGB | 2 | 12.68% | 0.919 | -1.21% | 41.72 | 0.1849 |
+| 9 | 1 | calibratedRGB | 4 | 14.64% | 0.889 | -0.70% | 39.16 | 0.1726 |
+| 9 | 1 | calibratedRGB | 8 | 15.26% | 0.881 | -0.70% | 38.60 | 0.1696 |
+| 9 | 2 | grayscale | 2 | 14.17% | 1.074 | 10.63% | 17.05 | 0.0198 |
+| 9 | 2 | grayscale | 4 | 14.91% | 1.065 | 11.05% | 17.19 | 0.0196 |
+| 9 | 2 | grayscale | 8 | 15.13% | 1.062 | 11.14% | 17.26 | 0.0196 |
+| 9 | 2 | calibratedRGB | 2 | 13.42% | 1.081 | 10.48% | 34.51 | 0.1372 |
+| 9 | 2 | calibratedRGB | 4 | 14.04% | 1.073 | 10.89% | 33.39 | 0.1323 |
+| 9 | 2 | calibratedRGB | 8 | 14.19% | 1.072 | 10.99% | 33.12 | 0.1305 |
+| 11 | 1 | grayscale | 2 | 11.27% | 0.998 | 5.75% | 16.67 | 0.0236 |
+| 11 | 1 | grayscale | 4 | 12.73% | 0.966 | 6.30% | 16.91 | 0.0233 |
+| 11 | 1 | grayscale | 8 | 13.17% | 0.958 | 6.24% | 17.03 | 0.0234 |
+| 11 | 1 | calibratedRGB | 2 | 10.13% | 1.016 | 5.58% | 38.28 | 0.1615 |
+| 11 | 1 | calibratedRGB | 4 | 11.06% | 0.995 | 6.18% | 37.28 | 0.1573 |
+| 11 | 1 | calibratedRGB | 8 | 11.53% | 0.989 | 6.18% | 36.87 | 0.1553 |
+| 11 | 2 | grayscale | 2 | 9.43% | 1.210 | -5.28% | 17.02 | 0.0154 |
+| 11 | 2 | grayscale | 4 | 9.79% | 1.202 | -4.82% | 17.14 | 0.0155 |
+| 11 | 2 | grayscale | 8 | 10.16% | 1.197 | -4.82% | 17.25 | 0.0153 |
+| 11 | 2 | calibratedRGB | 2 | 8.88% | 1.208 | -5.33% | 30.82 | 0.1073 |
+| 11 | 2 | calibratedRGB | 4 | 9.31% | 1.198 | -4.86% | 30.03 | 0.1040 |
+| 11 | 2 | calibratedRGB | 8 | 9.59% | 1.199 | -4.86% | 29.95 | 0.1034 |
+
+Reading: every metric is essentially flat from 2 to 4 to 8 samples (values
+converge by 4, 8 adds nothing further), and where anything moves, it moves
+*away* from the software envelope, not toward it (ink-mass delta increases
+monotonically with sample count at every size/scale/mode combination tested).
+This says the small-size fidelity gap versus `SoftwareBackend`/CoreText is not
+caused by insufficient edge-sample density — `slugGlyphAreaCoverage`'s single
+analytic center sample already resolves the edge correctly; adding more
+samples of the same analytic function just re-samples the same (correct)
+answer and cannot fix a gap whose source is elsewhere (most likely CoreText's
+hinting/rendering differing systematically from Slug's unhinted analytic
+outlines at small ppem, which is out of this plan's scope to chase further).
+
+Cost check confirms the same conclusion from the other direction: full-screen
+bench (`-c release`, `testSlugRendererFrameTimeFullScreenIs120HzFlatAcrossPointSize`)
+at 8 samples measured wall p50/p95/p99 of 4.10/4.73/5.59 ms (9 pt), 6.07/7.47/7.60
+ms (14 pt), 6.96/8.49/9.21 ms (28 pt) — roughly 2x the 2-sample baseline
+(M0/M1/M2 runs measured 2.5-3.8 ms p50 across the same sizes), and 28 pt
+verdict flips to OVER the 8.33 ms/120 Hz budget. Per the plan's promotion
+gate ("(a) at least one small-size metric moves toward the software envelope
+... and (b) full-screen bench p99 stays at or under 8.33 ms"), neither
+condition holds, so promotion criterion (a) alone is sufficient to decide
+against landing a size-dependent sample count; (b)'s budget violation would
+have blocked it even if (a) had passed.
+
+Decision: **discarded.** `kSlugAreaAASampleCount` and its sample array in
+`Sources/LabanRenderer/VectorGlyphShaders.metal` are confirmed restored to
+the original 2-sample definition (`git diff` on that file is empty). The
+milestone is answered rather than left open: the sample-count question is
+closed with evidence, not merely deferred.
+Date/Author: 2026-07-05 / plan author.
