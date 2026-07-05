@@ -220,6 +220,29 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var lastFrameSlugGlyphsCount = 0
   private var lastFrameRasterGlyphsCount = 0
   private var lastFrameColorGlyphsCount = 0
+
+  // MARK: - M2 damage-aware rendering state
+  //
+  // See execplans/active/slug-render-loop-perf-and-aa-quality.md M2. One
+  // `DirtyYRangeSet` accumulator and one "needs a hard full redraw" flag per
+  // target-ring slot (ring depth 1 outside the display-link present path,
+  // see `ringDepth`): a ring slot's texture is `ringDepth - 1` frames stale
+  // when it is next drawn into, so a partial redraw into slot `i` must cover
+  // everything that changed since slot `i` was last drawn, not just what
+  // changed since the previous frame.
+  private var slotDamageAccumulators: [DirtyYRangeSet] = []
+  /// Sticky per-slot flag: true means the next render into that slot must be
+  /// a full redraw regardless of incoming damage, because that slot's cached
+  /// content is invalid (fresh/uninitialized texture, or drawn under a zoom/
+  /// subpixel-layout/text-weight/emoji-mode/upstream-full-damage state that
+  /// no longer matches). Consumed (set false) the render after it is used.
+  private var slotNeedsForceFull: [Bool] = []
+  private var previousCursorRects: [CGRect] = []
+  private var previousGestureZoom: CGFloat?
+  private var previousGestureZoomAnchor: CGPoint?
+  private var previousEffectiveSubpixelLayout: VectorSubpixelLayout?
+  private var previousTextWeight: Double?
+  private var previousEmojiRenderingMode: EmojiRenderingMode?
   private var curves: [SlugGlyphGPUCurve] = []
   private var glyphs: [SlugGlyphGPUGlyph] = []
   private var bands: [SlugGlyphGPUBand] = []
@@ -637,10 +660,134 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     return true
   }
 
+  /// Stage A (GPU) scissoring for M2: `.full` draws unscissored exactly like
+  /// pre-M2 code (Metal defaults an encoder's scissor rect to the whole
+  /// attachment). `.bands` carries one device-pixel `MTLScissorRect` per
+  /// exact damage band — never collapsed to one min/max scissor, since with
+  /// per-slot accumulation disjoint bands (prompt row plus a status line) are
+  /// the common case. See `repeatingBands(_:on:draw:)` for how these are
+  /// applied: draws repeat once per band with the fragment stage exactly
+  /// culled outside it.
+  private enum SlugScissorPlan {
+    case full
+    case bands([MTLScissorRect])
+  }
+
+  private func scissorPlan(for damage: RenderDamage) -> SlugScissorPlan {
+    guard case .partial(let yRanges) = damage else { return .full }
+    let rects = yRanges.compactMap { slugScissorRect(for: $0) }
+    return rects.isEmpty ? .full : .bands(rects)
+  }
+
+  /// y-up CG-point damage band to y-down device-pixel Metal scissor rect.
+  /// Same conversion as `MetalRenderer.scissorRectFromYRanges`
+  /// (`MetalRenderer.swift:2192`), applied per exact band here instead of to
+  /// a collapsed min/max union.
+  private func slugScissorRect(for range: DirtyYRange) -> MTLScissorRect? {
+    guard range.height > 0 else { return nil }
+    let surfaceHeightPoints = CGFloat(pixelHeight) / scale
+    let topPx = max(
+      0, Int(((surfaceHeightPoints - (range.y + range.height)) * scale).rounded(.down)))
+    let bottomPx = min(
+      pixelHeight, Int(((surfaceHeightPoints - range.y) * scale).rounded(.up)))
+    let height = max(0, bottomPx - topPx)
+    guard height > 0 else { return nil }
+    return MTLScissorRect(x: 0, y: topPx, width: pixelWidth, height: height)
+  }
+
+  /// Repeats `draw` once per band, setting that band's scissor first. `.full`
+  /// calls `draw` exactly once, unscissored. Encoder state set before this
+  /// call (pipeline, buffers) is preserved across `setScissorRect` calls, so
+  /// only the draw call itself needs to repeat.
+  private func repeatingBands(
+    _ plan: SlugScissorPlan,
+    on encoder: MTLRenderCommandEncoder,
+    draw: () -> Void
+  ) {
+    switch plan {
+    case .full:
+      draw()
+    case .bands(let rects):
+      for rect in rects {
+        encoder.setScissorRect(rect)
+        draw()
+      }
+    }
+  }
+
+  /// Resolves the damage this frame must actually redraw, applying M2's
+  /// per-ring-slot accumulation, cursor-blink correctness, and force-full
+  /// rules (see execplans/active/slug-render-loop-perf-and-aa-quality.md).
+  /// Returns `nil` when the effective damage is empty (skip encoding, do not
+  /// rotate the ring); the caller has already been told to re-present and
+  /// call the completion handler in that case via `EffectiveDamageOutcome`.
+  private enum EffectiveDamageOutcome {
+    case render(damage: RenderDamage, slot: Int, ringRebuild: Bool)
+    case skip
+  }
+
+  private func resolveEffectiveDamage(
+    damage: RenderDamage,
+    currentCursorRects: [CGRect]
+  ) -> EffectiveDamageOutcome {
+    let (slot, ringRebuild) = peekNextRingSlot()
+    ensureSlotDamageStateSized(rebuild: ringRebuild)
+
+    let forcesEveryone = ringRebuild || configChangedSincePreviousFrame() || damage == .full
+    if forcesEveryone {
+      for i in slotNeedsForceFull.indices { slotNeedsForceFull[i] = true }
+    }
+
+    if slotNeedsForceFull[slot] {
+      slotDamageAccumulators[slot] = DirtyYRangeSet([])
+      slotNeedsForceFull[slot] = false
+      return .render(damage: .full, slot: slot, ringRebuild: ringRebuild)
+    }
+
+    let incoming: DirtyYRangeSet
+    if case .partial(let yRanges) = damage {
+      incoming = DirtyYRangeSet(yRanges).union(
+        cursorDamage(previous: previousCursorRects, current: currentCursorRects))
+    } else {
+      incoming = cursorDamage(previous: previousCursorRects, current: currentCursorRects)
+    }
+    if !incoming.isEmpty {
+      for i in slotDamageAccumulators.indices {
+        slotDamageAccumulators[i] = slotDamageAccumulators[i].union(incoming)
+      }
+    }
+    let combined = slotDamageAccumulators[slot]
+    slotDamageAccumulators[slot] = DirtyYRangeSet([])
+    guard !combined.isEmpty else { return .skip }
+    return .render(damage: .partial(yRanges: combined.ranges), slot: slot, ringRebuild: ringRebuild)
+  }
+
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
-    guard let target = ensureTargetTexture(), let commandBuffer = queue.makeCommandBuffer()
+    let currentCursorRects = cursorRects(in: commands)
+    let outcome = resolveEffectiveDamage(damage: damage, currentCursorRects: currentCursorRects)
+
+    guard case .render(let effectiveDamage, let slot, let ringRebuild) = outcome else {
+      // Empty effective damage: nothing changed since this slot was last
+      // fully current (including cursor position). Skip encoding entirely
+      // and do not rotate the ring, but keep the present link fed and honor
+      // the completion contract.
+      previousCursorRects = currentCursorRects
+      snapshotConfigForNextFrame()
+      if presentsToLayer, let currentTarget = targetTexture {
+        publishLatestTarget(currentTarget)
+      }
+      onFrameCompleted?()
+      return true
+    }
+    previousCursorRects = currentCursorRects
+    snapshotConfigForNextFrame()
+
+    guard let target = commitRingSlot(slot, rebuild: ringRebuild),
+      let commandBuffer = queue.makeCommandBuffer()
     else { return false }
+
+    let scissorPlan = self.scissorPlan(for: effectiveDamage)
 
     var solids: [SlugSolidInstance] = []
     var slugGlyphs: [SlugGlyphGPUInstance] = []
@@ -724,20 +871,34 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         accumEncoder.setFragmentBuffer(slugGlyphBuffer, offset: 0, index: 1)
         accumEncoder.setFragmentBuffer(slugBandBuffer, offset: 0, index: 2)
         accumEncoder.setFragmentBuffer(slugBandIndexBuffer, offset: 0, index: 3)
-        accumEncoder.drawPrimitives(
-          type: .triangle,
-          vertexStart: 0,
-          vertexCount: 6,
-          instanceCount: slugGlyphs.count)
+        repeatingBands(scissorPlan, on: accumEncoder) {
+          accumEncoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 6,
+            instanceCount: slugGlyphs.count)
+        }
         accumEncoder.endEncoding()
       }
     }
 
+    // M2: a partial frame loads (rather than clears) the content target and
+    // relies on the frame's own background-rect commands to repaint inside
+    // the scissored bands (`MTLLoadAction.clear` always clears the whole
+    // attachment regardless of scissor, which is why the accumulate
+    // textures above stay unconditionally `.clear` — a tile-clear is
+    // effectively free and correctness only depends on the content pass's
+    // load action here).
     let descriptor = MTLRenderPassDescriptor()
     descriptor.colorAttachments[0].texture = target
-    descriptor.colorAttachments[0].loadAction = .clear
     descriptor.colorAttachments[0].storeAction = .store
-    descriptor.colorAttachments[0].clearColor = Self.linearizedClearColor(commands)
+    switch scissorPlan {
+    case .full:
+      descriptor.colorAttachments[0].loadAction = .clear
+      descriptor.colorAttachments[0].clearColor = Self.linearizedClearColor(commands)
+    case .bands:
+      descriptor.colorAttachments[0].loadAction = .load
+    }
     guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
       return false
     }
@@ -759,11 +920,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         &vectorUniforms,
         length: MemoryLayout<SlugVectorUniforms>.stride,
         index: 1)
-      encoder.drawPrimitives(
-        type: .triangle,
-        vertexStart: 0,
-        vertexCount: 6,
-        instanceCount: solids.count)
+      repeatingBands(scissorPlan, on: encoder) {
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: solids.count)
+      }
     }
 
     if slugBuffersReady {
@@ -782,11 +945,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         encoder.setFragmentBuffer(slugBandBuffer, offset: 0, index: 2)
         encoder.setFragmentBuffer(slugBandIndexBuffer, offset: 0, index: 3)
         encoder.setRenderPipelineState(glyphAlphaPipeline)
-        encoder.drawPrimitives(
-          type: .triangle,
-          vertexStart: 0,
-          vertexCount: 6,
-          instanceCount: slugGlyphs.count)
+        repeatingBands(scissorPlan, on: encoder) {
+          encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 6,
+            instanceCount: slugGlyphs.count)
+        }
       } else if subpixelAccumReady, let coverageAccum, let colorAccum {
         // Composite the accumulated coverage + premultiplied color over the
         // background once with a full-screen quad: darken (dst *= 1 - cov) then
@@ -801,19 +966,23 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
             znear: 0, zfar: 1))
         encoder.setRenderPipelineState(subpixelCompositeDarkenPipeline)
         encoder.setFragmentTexture(coverageAccum, index: 0)
-        encoder.drawPrimitives(
-          type: .triangle,
-          vertexStart: 0,
-          vertexCount: 3,
-          instanceCount: 1)
+        repeatingBands(scissorPlan, on: encoder) {
+          encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 3,
+            instanceCount: 1)
+        }
         encoder.setRenderPipelineState(subpixelCompositeAdditivePipeline)
         encoder.setFragmentTexture(colorAccum, index: 0)
         encoder.setFragmentTexture(coverageAccum, index: 1)
-        encoder.drawPrimitives(
-          type: .triangle,
-          vertexStart: 0,
-          vertexCount: 3,
-          instanceCount: 1)
+        repeatingBands(scissorPlan, on: encoder) {
+          encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 3,
+            instanceCount: 1)
+        }
       } else {
         // Fallback if the accumulation textures could not be allocated:
         // recompute coverage and composite per glyph (the original two-pass
@@ -832,17 +1001,21 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         encoder.setFragmentBuffer(slugBandBuffer, offset: 0, index: 2)
         encoder.setFragmentBuffer(slugBandIndexBuffer, offset: 0, index: 3)
         encoder.setRenderPipelineState(glyphCoveragePipeline)
-        encoder.drawPrimitives(
-          type: .triangle,
-          vertexStart: 0,
-          vertexCount: 6,
-          instanceCount: slugGlyphs.count)
+        repeatingBands(scissorPlan, on: encoder) {
+          encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 6,
+            instanceCount: slugGlyphs.count)
+        }
         encoder.setRenderPipelineState(glyphColorPipeline)
-        encoder.drawPrimitives(
-          type: .triangle,
-          vertexStart: 0,
-          vertexCount: 6,
-          instanceCount: slugGlyphs.count)
+        repeatingBands(scissorPlan, on: encoder) {
+          encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 6,
+            instanceCount: slugGlyphs.count)
+        }
       }
     }
 
@@ -859,11 +1032,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         index: 1)
       encoder.setFragmentTexture(rasterAtlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle,
-        vertexStart: 0,
-        vertexCount: 6,
-        instanceCount: rasterGlyphs.count)
+      repeatingBands(scissorPlan, on: encoder) {
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: rasterGlyphs.count)
+      }
     }
 
     if !colorGlyphs.isEmpty,
@@ -879,11 +1054,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         index: 1)
       encoder.setFragmentTexture(colorGlyphAtlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle,
-        vertexStart: 0,
-        vertexCount: 6,
-        instanceCount: colorGlyphs.count)
+      repeatingBands(scissorPlan, on: encoder) {
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: colorGlyphs.count)
+      }
     }
 
     encoder.endEncoding()
@@ -1646,42 +1823,134 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
   }
 
-  private func ensureTargetTexture() -> MTLTexture? {
+  /// Test-only (not `public`): lets `SlugGlyphDamageTests` prove an
+  /// empty-effective-damage frame does not rotate the ring, without
+  /// extending the renderer's public contract.
+  var targetRingCursorForTesting: Int { targetRingCursor }
+
+  /// Number of ring slots `render()` rotates through. 3 under the
+  /// display-link present path (a slot is `ringDepth - 1` frames stale when
+  /// next drawn into); 1 outside it (headless/legacy single persistent
+  /// target, the degenerate case where a slot is never stale).
+  private var ringDepth: Int { presentQueue != nil ? Self.targetRingDepth : 1 }
+
+  /// Pure query: which slot `render()` would draw into next, and whether that
+  /// requires (re)allocating textures, without mutating any ring state. Used
+  /// by M2's empty-effective-damage fast path to decide whether to render at
+  /// all before committing to rotating the ring (see `render(_:damage:)`).
+  private func peekNextRingSlot() -> (slot: Int, needsRebuild: Bool) {
     if presentQueue != nil {
-      if targetRing.count == Self.targetRingDepth,
-        targetRing[0].width == pixelWidth,
-        targetRing[0].height == pixelHeight
-      {
-        targetRingCursor = (targetRingCursor + 1) % Self.targetRingDepth
-        let texture = targetRing[targetRingCursor]
-        targetTexture = texture
-        return texture
+      let ringValid =
+        targetRing.count == Self.targetRingDepth
+        && targetRing[0].width == pixelWidth
+        && targetRing[0].height == pixelHeight
+      guard ringValid else { return (0, true) }
+      return ((targetRingCursor + 1) % Self.targetRingDepth, false)
+    }
+    let legacyValid =
+      targetTexture != nil
+      && targetTexture!.width == pixelWidth
+      && targetTexture!.height == pixelHeight
+    return (0, !legacyValid)
+  }
+
+  /// Mutating counterpart to `peekNextRingSlot()`: actually rotates the ring
+  /// cursor (or (re)allocates textures) to `slot`. Must be called with the
+  /// exact result `peekNextRingSlot()` returned for this frame.
+  private func commitRingSlot(_ slot: Int, rebuild: Bool) -> MTLTexture? {
+    if presentQueue != nil {
+      if rebuild {
+        targetRing.removeAll(keepingCapacity: true)
+        for i in 0..<Self.targetRingDepth {
+          guard
+            let texture = makeTexture(
+              pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
+          else { return nil }
+          texture.label = "laban.slug.target.\(i)"
+          targetRing.append(texture)
+        }
+        targetRingCursor = 0
+        targetTexture = targetRing[0]
+        return targetRing[0]
       }
-      targetRing.removeAll(keepingCapacity: true)
-      for i in 0..<Self.targetRingDepth {
-        guard
-          let texture = makeTexture(
-            pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
-        else { return nil }
-        texture.label = "laban.slug.target.\(i)"
-        targetRing.append(texture)
-      }
-      targetRingCursor = 0
-      targetTexture = targetRing[0]
-      return targetRing[0]
+      targetRingCursor = slot
+      let texture = targetRing[slot]
+      targetTexture = texture
+      return texture
     }
 
-    if let targetTexture,
-      targetTexture.width == pixelWidth,
-      targetTexture.height == pixelHeight
-    {
-      return targetTexture
+    if rebuild {
+      let texture = makeTexture(
+        pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
+      texture?.label = "laban.slug.target"
+      targetTexture = texture
+      return texture
     }
-    let texture = makeTexture(
-      pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
-    texture?.label = "laban.slug.target"
-    targetTexture = texture
-    return texture
+    return targetTexture
+  }
+
+  private func ensureTargetTexture() -> MTLTexture? {
+    let (slot, rebuild) = peekNextRingSlot()
+    return commitRingSlot(slot, rebuild: rebuild)
+  }
+
+  /// Resizes `slotDamageAccumulators`/`slotNeedsForceFull` to `ringDepth`
+  /// whenever the ring is (re)allocated, marking every slot as needing a hard
+  /// full redraw (fresh textures have undefined content).
+  private func ensureSlotDamageStateSized(rebuild: Bool) {
+    let depth = ringDepth
+    guard rebuild || slotDamageAccumulators.count != depth else { return }
+    slotDamageAccumulators = Array(repeating: DirtyYRangeSet([]), count: depth)
+    slotNeedsForceFull = Array(repeating: true, count: depth)
+  }
+
+  private func cursorRects(in commands: [FrameCommand]) -> [CGRect] {
+    var rects: [CGRect] = []
+    for command in commands {
+      if case .cursor(let rect, _) = command {
+        rects.append(rect)
+      }
+    }
+    return rects
+  }
+
+  /// Cursor rects arrive as ordinary solids, so a cursor blink frame (same
+  /// text, toggled cursor) looks like "nothing changed" to the terminal's own
+  /// damage tracking. Unioning the previous and current cursor rects into the
+  /// incoming damage before it reaches the per-slot accumulators guarantees
+  /// an empty-partial blink frame still redraws exactly the cursor cells.
+  private func cursorDamage(previous: [CGRect], current: [CGRect]) -> DirtyYRangeSet {
+    guard !previous.isEmpty || !current.isEmpty else { return DirtyYRangeSet([]) }
+    var ranges: [DirtyYRange] = []
+    ranges.reserveCapacity(previous.count + current.count)
+    for rect in previous {
+      ranges.append(DirtyYRange(y: rect.origin.y, height: rect.size.height))
+    }
+    for rect in current {
+      ranges.append(DirtyYRange(y: rect.origin.y, height: rect.size.height))
+    }
+    return DirtyYRangeSet(ranges)
+  }
+
+  /// True when any state that changes what every pixel on screen looks like
+  /// (independent of the terminal's own row-dirty tracking) moved since the
+  /// last `render()` call. `gestureZoom` is Slug/Vector-side gesture state the
+  /// caller's damage computation does not know about; the rest can change via
+  /// live-setting observers between frames.
+  private func configChangedSincePreviousFrame() -> Bool {
+    previousGestureZoom != gestureZoom
+      || previousGestureZoomAnchor != gestureZoomAnchor
+      || previousEffectiveSubpixelLayout != effectiveSubpixelLayout
+      || previousTextWeight != textWeight
+      || previousEmojiRenderingMode != emojiRenderingMode
+  }
+
+  private func snapshotConfigForNextFrame() {
+    previousGestureZoom = gestureZoom
+    previousGestureZoomAnchor = gestureZoomAnchor
+    previousEffectiveSubpixelLayout = effectiveSubpixelLayout
+    previousTextWeight = textWeight
+    previousEmojiRenderingMode = emojiRenderingMode
   }
 
   /// GPU-private, 1:1 with the render target. The accumulate pass writes

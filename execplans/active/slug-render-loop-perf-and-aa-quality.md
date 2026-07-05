@@ -227,9 +227,10 @@ as dominant); new fallback-rate telemetry beyond the existing
       deferred pending a manual app launch; see Artifacts and Notes.)
 - [x] M1: per-cell CPU cost reduction in `appendGlyphRun` (run-level color
       gate, allocation-free CJK check, cheaper resolve key, reserveCapacity).
-- [ ] M2: damage-aware rendering (empty-partial fast path, scissored partial
+- [x] M2: damage-aware rendering (empty-partial fast path, scissored partial
       redraw across content + accumulate + composite passes, per-ring-slot
-      damage accumulation; then measured damage-scoped instance build).
+      damage accumulation). Stage B (CPU-side command filtering) was not
+      needed; see M2 results.
 - [ ] M3: small-size AA sample-count validation (promote size-dependent sample
       count or record evidence and close).
 - [ ] M4 (conditional on M0 evidence): incremental geometry buffer upload.
@@ -881,3 +882,111 @@ mirrors the existing `timeRun` machinery against 200 identical full-screen
 ASCII frames with `.full` damage, `waitForFrameCompletion = false`, print-only,
 gated behind `LABAN_RUN_PERF_BENCH=1`.
 Date/Author: 2026-07-05 / plan author.
+
+### M2 results (2026-07-05)
+
+Implemented the design as specified: `DirtyYRangeSet` (new file, see below),
+per-ring-slot `DirtyYRangeSet` accumulators plus a sticky `slotNeedsForceFull`
+flag (`resolveEffectiveDamage` in `SlugGlyphRenderer.swift`), previous-cursor-
+rect tracking unioned into incoming damage (`cursorDamage`), a force-full
+snapshot of `gestureZoom`/`gestureZoomAnchor`/`effectiveSubpixelLayout`/
+`textWeight`/`emojiRenderingMode` (`configChangedSincePreviousFrame`/
+`snapshotConfigForNextFrame`), an empty-effective-damage fast path that skips
+encoding and ring rotation but still republishes the latest target and calls
+`onFrameCompleted`, and per-band `MTLScissorRect` application
+(`SlugScissorPlan`/`repeatingBands`) across the accumulate pass, the content
+pass (solids, direct-glyph, subpixel composite x2, coverage/color fallback x2),
+and the raster/color fallback passes. The content target's load action
+switches `.clear` (full) to `.load` (partial), matching the plan; the
+subpixel accumulate textures keep unconditional whole-texture `.clear`.
+`ensureTargetTexture()` was split into a pure `peekNextRingSlot()` query and a
+mutating `commitRingSlot()` so the empty-damage path can decide to skip before
+committing to a ring rotation.
+
+**Stage B (CPU-side command filtering) was not entered.** Per the plan's own
+gate ("If stage A already makes typing cheap enough that stage B is below
+noise, record that and skip it"), stage A's wall-time win already satisfies
+the M2 acceptance criterion (see below); CPU-encode for grayscale typing/
+cursor-blink did not regress, so there is no material CPU cost left to cut by
+filtering commands. Skipping stage B also avoids the exact-band CPU filtering
+complexity the plan flagged as risky (a naive union filter would rebuild every
+row between two distant dirty rows).
+
+Correctness: new `Tests/LabanRendererTests/SlugGlyphDamageTests.swift` (6
+tests: byte-identical partial-vs-full redraw, 4+ consecutive partial frames
+across ring ages, sparse dirty bands leaving rows between them untouched,
+cursor blink via empty partial confined to cursor cells, gesture-zoom forcing
+full redraw, empty effective damage not rotating the ring) — all green. Full
+`swift test --filter LabanRendererTests` (skipping the pre-existing unrelated
+`VectorZoomGlyphSizeConsistencyTests` flake, see Surprises below): 292 tests,
+0 failures. Full `swift test --filter LabanDebugTests` (skipping the
+pre-existing `DiscoveryEndpointParityTests` failure, see M0/M1 history): 213
+tests, 0 failures, including `SlugGlyphCaptureReplayTests` (the M0 capture's
+byte-identical replay gate stays green with M2 applied).
+
+Review-gate greps: `grep -n 'case .partial'
+Sources/LabanRenderer/SlugGlyphRenderer.swift` returns 2 hits;
+`grep -n 'setScissorRect' Sources/LabanRenderer/SlugGlyphRenderer.swift`
+returns 1 hit; `Sources/LabanRenderer/DirtyYRangeSet.swift` exists, imports
+only `CoreGraphics`/`Foundation`, and contains no Slug-prefixed identifier
+(one doc-comment mention of `SlugGlyphRenderer` for context, not an
+identifier).
+
+Performance: measured with the same interleaved A/B methodology as M1 (AC
+power, `lowpowermode 0` confirmed via `pmset`; `git stash`/`pop` the M2 diff
+around paired runs of the same bench invocation), 200-frame typing and
+cursor-blink workloads, `-c release`, 2 interleaved pairs:
+
+| workload (grayscale) | pre-M2 cpu-encode p50 | post-M2 cpu-encode p50 | pre-M2 wall p50 | post-M2 wall p50 |
+| --- | --- | --- | --- | --- |
+| typing (pair 1) | 1.029 ms | 0.882 ms | 3.230 ms | 1.780 ms |
+| typing (pair 2) | 1.014 ms | 0.942 ms | 3.254 ms | 1.874 ms |
+| cursor-blink (pair 1) | 1.015 ms | 0.906 ms | 3.257 ms | 1.809 ms |
+| cursor-blink (pair 2) | 0.998 ms | 0.933 ms | 3.234 ms | 1.826 ms |
+
+| workload (rgbStripe) | pre-M2 cpu-encode p50 | post-M2 cpu-encode p50 | pre-M2 wall p50 | post-M2 wall p50 |
+| --- | --- | --- | --- | --- |
+| typing (pair 1) | 12.052 ms | 1.096 ms | 13.008 ms | 2.660 ms |
+| typing (pair 2) | 12.050 ms | 1.052 ms | 12.620 ms | 2.678 ms |
+| cursor-blink (pair 1) | 12.250 ms | 0.973 ms | 12.680 ms | 2.135 ms |
+| cursor-blink (pair 2) | 12.180 ms | 1.041 ms | 12.694 ms | 2.195 ms |
+
+Reading: wall p50 for both workloads dropped ~42-44% in grayscale and
+~79-83% in rgbStripe — consistent with theory, since scissoring cuts fragment
+work to 1-2 rows instead of the full screen, and subpixel mode's
+accumulate-plus-two-composite full-screen passes were the larger GPU cost to
+begin with. Grayscale cpu-encode improved modestly (~8-14%); rgbStripe
+cpu-encode dropped by roughly 12x at p50 while p95/p99 stayed near the old
+full-frame cost (12-15 ms) in both pairs — see Surprises & Discoveries for the
+unresolved part of this. Full-screen scroll (all rows dirty, forces `.full`)
+is unchanged by design: `testSlugRendererFrameTimeFullScreenIs120HzFlatAcrossPointSize`
+and `testSlugRendererCJKFrameTimeFullScreenIsMeasured` numbers stayed within
+the same range as M0/M1 (9/14/28 pt wall p50 2.5-3.8 ms both before and after
+M2 in this run).
+
+GPU trace comparison against `.build/slug-baseline.json` remains blocked on
+the same manual app-launch step as M0 (see M0 Artifacts); not re-attempted
+here.
+
+Surprises & Discoveries:
+
+- The rgbStripe cpu-encode p50 drop (~12 ms to ~1 ms) is larger than stage
+  A's design predicts: stage A only scopes GPU fragment work, and CPU-encode
+  timing (`waitForFrameCompletion = false`) should in theory track the CPU
+  instance-build cost, which stage A does not touch (stage B was not
+  entered). The bimodal pattern — low p50, p95/p99 still near the old
+  full-frame ~13-15 ms — reproduced identically across both interleaved
+  pairs, so it is a real, consistent effect of the code change and not run
+  noise, but the exact mechanism (most likely something in Metal's CPU-side
+  encoding cost for a 2-attachment `rgba16Float` MRT pass scaling with
+  scissored vs. full tile coverage) was not root-caused. Treat the wall-time
+  numbers above as the primary, well-understood evidence for M2's win; the
+  cpu-encode rgbStripe number is recorded as an observed bonus, not a
+  claimed, understood mechanism.
+- `VectorZoomGlyphSizeConsistencyTests.testGlyphSizesStaySingleAcrossZoomCommits`
+  fails (12 assertion failures, "renderer never produced a non-dropped frame")
+  on a clean tree at commit `44fcc0b`, i.e. before any M2 change — verified by
+  stashing all M2 work (including untracked files via `git stash -u`) and
+  re-running in isolation. This is `VectorGlyphRenderer` drawable-scheduling
+  flakiness unrelated to `SlugGlyphRenderer`/M2 and out of this plan's scope;
+  not investigated further here.
