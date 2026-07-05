@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import LabanCore
+import LabanRenderer
 import LabanTerminalCore
 
 /// One end of a view selection. The captured viewport offset is libghostty's

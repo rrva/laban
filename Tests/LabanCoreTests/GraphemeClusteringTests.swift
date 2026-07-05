@@ -31,7 +31,7 @@ final class GraphemeClusteringTests: XCTestCase {
   private func terminalGlyphTexts(_ cmds: [FrameCommand]) -> [String] {
     var out: [String] = []
     for cmd in cmds {
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _) = cmd, src == .terminal {
+      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _) = cmd, src == .terminal {
         out.append(text)
       }
     }

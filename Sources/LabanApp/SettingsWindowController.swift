@@ -18,6 +18,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let followSystemCheckbox = NSButton(
     checkboxWithTitle: "Follow system appearance", target: nil, action: nil)
   private let fontLabel = NSTextField(labelWithString: "")
+  private let cjkFontLabel = NSTextField(labelWithString: "")
   private let rendererPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let backendPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let identityPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -150,6 +151,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     fontRow.orientation = .horizontal
     fontRow.spacing = 8
     fontRow.alignment = .firstBaseline
+
+    cjkFontLabel.lineBreakMode = .byTruncatingTail
+    cjkFontLabel.usesSingleLineMode = true
+    cjkFontLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    cjkFontLabel.textColor = .secondaryLabelColor
 
     rendererPopUp.target = self
     rendererPopUp.action = #selector(rendererChanged(_:))
@@ -285,6 +291,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel("Theme:"), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
       [makeLabel("Font:"), fontRow],
+      [makeLabel("CJK font:"), cjkFontLabel],
       [makeLabel("Cursor:"), cursorStylePopUp],
       [NSGridCell.emptyContentView, blinkCheckbox],
     ])
@@ -500,6 +507,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
     followSystemCheckbox.state = themeController.followsSystemAppearance ? .on : .off
     fontLabel.stringValue = currentFontDisplayName()
+    cjkFontLabel.stringValue = currentCJKFontDisplayName()
     if let row = rendererOptions.firstIndex(of: rendererSelection) {
       rendererPopUp.selectItem(at: row)
     }
@@ -823,6 +831,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     case .fluid: return "Fluid"
     case .perPhase: return "Crisp"
     }
+  }
+
+  private func currentCJKFontDisplayName() -> String {
+    let atlas = FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize)
+    let d = atlas.cjkFontDiagnostics
+    let status = d.glyphAvailable ? "available" : "missing glyph"
+    if d.selectedFamilyName.isEmpty {
+      return "CoreText cascade (\(status))"
+    }
+    return "\(d.selectedFamilyName) (\(d.selectedSource)) · \(status)"
   }
 
   private func currentFontDisplayName() -> String {

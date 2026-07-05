@@ -268,7 +268,7 @@ snapshot's per-cell `wide` flag — it reconstructs text from a `String`-only
 scrollback extraction (`Sources/LabanTerminalCore/scrollback_extract.c` feeding
 the Swift scrollback model). That `String` has no width metadata, so the Swift
 side recomputes width with a *pinned table*,
-`Sources/LabanCore/TerminalDisplayWidth.swift` (`cells(of:)`, `isWide(_:)`). That
+`Sources/LabanRenderer/TerminalDisplayWidth.swift` (`cells(of:)`, `isWide(_:)`). That
 table deliberately implements the **legacy / mode-2027-OFF** rule (sum width per
 Unicode scalar). Its own doc comment (recently added, lines ~4–8) pins the
 assumption:
@@ -647,7 +647,7 @@ static `current`/`set(...)` accessors over a small enum. Copy that exact pattern
 - Note as future work: a "force legacy / freeze mode against program toggles"
   setting option, which needs an engine frozen-mode capability (cf. Contour
   `frozen_dec_modes`) not in the current C API.
-- Update `Sources/LabanCore/TerminalDisplayWidth.swift` doc comment to reflect its
+- Update `Sources/LabanRenderer/TerminalDisplayWidth.swift` doc comment to reflect its
   demoted role (fallback, not the model).
 
 ## Decision Log

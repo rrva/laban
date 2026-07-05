@@ -125,7 +125,8 @@ public enum FrameCommand: Sendable {
     source: FrameSource,
     underlineStyle: UnderlineStyle = .none,
     underlineColor: UInt32? = nil,
-    hyperlink: String? = nil
+    hyperlink: String? = nil,
+    displayCellCount: Int? = nil
   )
   case cursor(CGRect, color: UInt32)
   case selection(CGRect, color: UInt32)

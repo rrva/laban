@@ -1,5 +1,6 @@
 import Foundation
 import LabanCore
+import LabanTerminalCore
 
 struct DebugPreeditActions {
   private unowned let runtime: HeadlessDebugRuntime
@@ -22,7 +23,17 @@ struct DebugPreeditActions {
     if text.isEmpty {
       runtime.preeditBySession.removeValue(forKey: tab.sessionId)
     } else {
-      let maxCaretCells = FrameProducer.preeditCaretCells(for: text)
+      let graphemeClusterMode: Bool
+      if let session = runtime.model.session(forTab: tab.id),
+        let snapshot = session.snapshot()
+      {
+        defer { laban_snapshot_destroy(snapshot) }
+        graphemeClusterMode = snapshot.pointee.grapheme_cluster_2027 != 0
+      } else {
+        graphemeClusterMode = false
+      }
+      let maxCaretCells = FrameProducer.preeditCaretCells(
+        for: text, graphemeClusterMode: graphemeClusterMode)
       let requestedCaret = request.caretCells ?? maxCaretCells
       let caretCells = min(max(0, requestedCaret), maxCaretCells)
       runtime.preeditBySession[tab.sessionId] = (text: text, caretCells: caretCells)

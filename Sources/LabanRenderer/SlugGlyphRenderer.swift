@@ -1211,7 +1211,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, _
+        let underlineStyle, let underlineColor, _, _
       ):
         appendGlyphRun(
           text,
@@ -1378,7 +1378,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     guard
       let layout = TextDecorationLayout.make(
         origin: origin,
-        cellCount: text.count,
+        cellCount: TerminalDisplayWidth.cells(of: text),
         attributes: attributes,
         underlineStyle: underlineStyle,
         cellAdvance: atlas.cellSize.width,

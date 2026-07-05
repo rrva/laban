@@ -19,7 +19,7 @@ final class FrameProducerScrollOffsetContinuityTests: XCTestCase {
 
   private func glyphY(_ commands: [FrameCommand], lineText: String) -> CGFloat? {
     for cmd in commands {
-      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _) = cmd,
+      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _) = cmd,
         text.contains(lineText)
       {
         return origin.y

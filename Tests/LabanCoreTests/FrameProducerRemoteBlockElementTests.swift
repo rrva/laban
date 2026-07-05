@@ -71,7 +71,7 @@ final class FrameProducerRemoteBlockElementTests: XCTestCase {
     var rectAtCol1 = false
     for cmd in cmds {
       switch cmd {
-      case .glyphRun(_, let text, _, _, _, let src, _, _, _) where src == .terminal:
+      case .glyphRun(_, let text, _, _, _, let src, _, _, _, _) where src == .terminal:
         if text.contains("\u{2588}") { glyphsContainBlock = true }
       case .rect(let rect, _, let src) where src == .terminal:
         // The default-background rect spans cols*cw wide; ignore it.

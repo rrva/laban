@@ -67,7 +67,7 @@ public final class SoftwareRenderer {
 
       case .glyphRun(
         let origin, let text, let fg, let bg, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _
+        let underlineStyle, let underlineColor, _, _
       ):
         let atlas = runSource == .sidebar ? sidebarFontAtlas : fontAtlas
         let advance = runSource == .sidebar ? sidebarCellAdvance : glyphCellAdvance
@@ -412,7 +412,7 @@ public final class SoftwareRenderer {
     guard
       let layout = TextDecorationLayout.make(
         origin: origin,
-        cellCount: text.count,
+        cellCount: TerminalDisplayWidth.cells(of: text),
         attributes: attributes,
         underlineStyle: underlineStyle,
         cellAdvance: cellAdvance,

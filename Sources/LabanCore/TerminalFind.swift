@@ -1,4 +1,5 @@
 import Foundation
+import LabanRenderer
 import LabanTerminalCore
 
 public struct TerminalFindMatch: Codable, Equatable, Sendable {

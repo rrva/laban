@@ -114,7 +114,7 @@ public struct SidebarProducer {
       guard
         case .glyphRun(
           let origin, let text, _, let background, let attributes, let source,
-          let underlineStyle, let underlineColor, let hyperlink) = cmds[marker.commandIndex]
+          let underlineStyle, let underlineColor, let hyperlink, let displayCellCount) = cmds[marker.commandIndex]
       else { continue }
       let color = AttentionPulse.applyAlpha(
         Theme.current.attention, AttentionPulse.markerAlpha(elapsed: elapsed))
@@ -127,7 +127,8 @@ public struct SidebarProducer {
         source: source,
         underlineStyle: underlineStyle,
         underlineColor: underlineColor,
-        hyperlink: hyperlink)
+        hyperlink: hyperlink,
+        displayCellCount: displayCellCount)
       if let halo = AttentionPulse.halo(elapsed: elapsed) {
         let side = max(cellWidth, cellHeight) * CGFloat(halo.scale)
         let rect = CGRect(

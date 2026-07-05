@@ -1,4 +1,5 @@
 import LabanCore
+import LabanRenderer
 import LabanTerminalCore
 import XCTest
 

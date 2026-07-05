@@ -56,7 +56,9 @@ baseline because the atlas still draws at the same renderer descent.
 `GET /debug/atlas` reports the selected CJK font, candidate list, fallback
 order, glyph availability, natural advance, target two-cell width, and any
 horizontal scale factor. This makes font pairing and metric drift observable in
-headless tests.
+headless tests. The active CJK font and glyph-available state are also surfaced
+in the native Settings window and in the startup log so users can diagnose
+fallback degradation without a debug client.
 
 ## Consequences
 

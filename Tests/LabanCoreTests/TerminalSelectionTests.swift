@@ -536,7 +536,7 @@ final class TerminalSelectionTests: XCTestCase {
       case .selection:
         firstSelIndex = min(firstSelIndex, i)
         lastSelIndex = max(lastSelIndex, i)
-      case .glyphRun(_, _, _, _, _, let src, _, _, _) where src == .terminal:
+      case .glyphRun(_, _, _, _, _, let src, _, _, _, _) where src == .terminal:
         firstGlyphIndex = min(firstGlyphIndex, i)
       default:
         break
@@ -601,7 +601,7 @@ final class TerminalSelectionTests: XCTestCase {
       return false
     }
     let firstGlyph = cmds.firstIndex { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command, source == .terminal {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command, source == .terminal {
         return true
       }
       return false

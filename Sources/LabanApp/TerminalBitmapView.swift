@@ -513,6 +513,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var markedTextCaretCells: Int = 0
   var markedTextCaretCellsForTesting: Int { markedTextCaretCells }
 
+  private var activeGraphemeClusterMode: Bool {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let snap = session.snapshot()
+    else { return false }
+    defer { laban_snapshot_destroy(snap) }
+    return snap.pointee.grapheme_cluster_2027 != 0
+  }
+
   // Active key descriptor during interpretKeyEvents dispatch
   private var currentKeyDescriptor: TerminalKeyDescriptor?
 
@@ -4897,7 +4906,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let caretUTF16 =
       selectedRange.location == NSNotFound
       ? ns.length : min(max(NSMaxRange(selectedRange), 0), ns.length)
-    markedTextCaretCells = TerminalDisplayWidth.cells(of: ns.substring(to: caretUTF16))
+    markedTextCaretCells = FrameProducer.preeditCaretCells(
+      for: ns.substring(to: caretUTF16),
+      graphemeClusterMode: activeGraphemeClusterMode)
     // The live composition (dictation transcript / IME preedit) is drawn inline
     // at the cursor by FrameProducer; force a fresh full-damage frame so the
     // updated marked text repaints the cursor row immediately as the user

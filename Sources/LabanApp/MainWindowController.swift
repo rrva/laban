@@ -60,6 +60,12 @@ final class MainWindowController: NSWindowController {
   {
     let fontAtlas = FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize)
     let sidebarFontAtlas = FontAtlas(pointSize: FontAtlas.persistedSidebarPointSize)
+    let cjkDiagnostics = fontAtlas.cjkFontDiagnostics
+    AppLog.app.info(
+      "CJK font: \(cjkDiagnostics.selectedFamilyName) (\(cjkDiagnostics.selectedSource)), "
+        + "glyphAvailable=\(cjkDiagnostics.glyphAvailable), "
+        + "advance=\(String(format: "%.2f", Double(cjkDiagnostics.glyphAdvance)))pt, "
+        + "target=\(String(format: "%.2f", Double(cjkDiagnostics.targetCellWidth)))pt")
     let cellSize = fontAtlas.cellSize
     let cellW = Int(cellSize.width)
     let cellH = Int(cellSize.height)

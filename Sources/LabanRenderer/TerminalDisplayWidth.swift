@@ -16,6 +16,21 @@ public enum TerminalDisplayWidth {
     text.reduce(0) { $0 + cells(of: $1) }
   }
 
+  /// Display-cell count under DEC mode 2027 (grapheme-cluster width). Each
+  /// `Character` is one grapheme cluster; a cluster is two cells if any of its
+  /// scalars is wide, zero if all are zero-width, and one otherwise. This
+  /// matches libghostty's mode-2027 layout for preedit text that has not yet
+  /// entered the grid and therefore has no engine-carried width metadata.
+  public static func cells(of text: String, graphemeClusterMode: Bool) -> Int {
+    guard graphemeClusterMode else { return cells(of: text) }
+    return text.reduce(0) { total, cluster in
+      let scalars = cluster.unicodeScalars
+      if scalars.allSatisfy(isZeroWidth) { return total }
+      if scalars.contains(where: isWide) { return total + 2 }
+      return total + 1
+    }
+  }
+
   public static func cells(of character: Character) -> Int {
     var width = 0
 

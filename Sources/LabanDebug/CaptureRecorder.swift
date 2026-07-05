@@ -608,6 +608,7 @@ public struct CapturedFrameCommand: Codable, Equatable, Sendable {
   public var underlineStyle: String?
   public var underlineColor: UInt32?
   public var hyperlink: String?
+  public var displayCellCount: Int?
 }
 
 public struct CapturedRect: Codable, Equatable, Sendable {
@@ -644,7 +645,7 @@ public enum FrameCommandCaptureCodec {
           rect: CapturedRect(rect), color: color)
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, let hyperlink
+        let underlineStyle, let underlineColor, let hyperlink, let displayCellCount
       ):
         let attrNames = attributes.names
         return CapturedFrameCommand(
@@ -654,7 +655,8 @@ public enum FrameCommandCaptureCodec {
           attributes: attrNames.isEmpty ? nil : attrNames,
           underlineStyle: underlineStyle.name,
           underlineColor: underlineColor,
-          hyperlink: hyperlink)
+          hyperlink: hyperlink,
+          displayCellCount: displayCellCount)
       case .cursor(let rect, let color):
         return CapturedFrameCommand(
           index: index, kind: "cursor", source: FrameSource.cursor.rawValue,
@@ -704,7 +706,8 @@ public enum FrameCommandCaptureCodec {
           source: source,
           underlineStyle: underlineStyle,
           underlineColor: item.underlineColor,
-          hyperlink: item.hyperlink)
+          hyperlink: item.hyperlink,
+          displayCellCount: item.displayCellCount)
       case "cursor":
         guard let rect = item.rect, let color = item.color else { return nil }
         return .cursor(rect.cgRect, color: color)
