@@ -93,6 +93,13 @@ public enum TerminalCJKFontPolicy {
     text.unicodeScalars.contains(where: isCJKScalar)
   }
 
+  /// Allocation-free per-cluster check: no `String(cluster)` construction.
+  /// Prefer this over `containsCJK(String(cluster))` on any per-cell hot path.
+  @inline(__always)
+  public static func containsCJK(_ cluster: Character) -> Bool {
+    cluster.unicodeScalars.contains(where: isCJKScalar)
+  }
+
   public static func terminalCellCount(for text: String) -> Int? {
     guard text.count == 1, containsCJK(text) else { return nil }
     return 2

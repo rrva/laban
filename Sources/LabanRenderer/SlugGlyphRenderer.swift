@@ -80,11 +80,18 @@ private struct SlugGlyphGeometryKey: Hashable {
   var glyph: CGGlyph
 }
 
-private struct SlugGlyphResolveKey: Hashable {
+/// Identifies a (reference PostScript name, bold, italic) triple. Interned to
+/// a small `Int` once per glyph run (`SlugGlyphRenderer.internedFontID`) so
+/// the per-cell resolve-cache key below never re-hashes a `String`.
+private struct SlugFontIdentityKey: Hashable {
   var postScriptName: String
-  var cluster: Character
   var bold: Bool
   var italic: Bool
+}
+
+private struct SlugGlyphResolveKey: Hashable {
+  var fontID: Int
+  var cluster: Character
 }
 
 private struct SlugGlyphEntry {
@@ -203,6 +210,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private let curveStore = GlyphCurveStore()
   private var entriesByKey: [SlugGlyphGeometryKey: SlugGlyphEntry] = [:]
   private var entriesByResolveKey: [SlugGlyphResolveKey: SlugGlyphEntry] = [:]
+  private var fontIdentityIntern: [SlugFontIdentityKey: Int] = [:]
+  private var nextFontIdentityID = 0
+  /// Font color-glyph trait, keyed like `VectorGlyphRenderer.fontCache`
+  /// (attrs bits | atlas bit). The trait is invariant per font; this avoids
+  /// re-probing `CTFontGetSymbolicTraits` every glyph run.
+  private var colorTraitCache: [UInt32: Bool] = [:]
+  private var lastFrameSolidsCount = 0
+  private var lastFrameSlugGlyphsCount = 0
+  private var lastFrameRasterGlyphsCount = 0
+  private var lastFrameColorGlyphsCount = 0
   private var curves: [SlugGlyphGPUCurve] = []
   private var glyphs: [SlugGlyphGPUGlyph] = []
   private var bands: [SlugGlyphGPUBand] = []
@@ -629,6 +646,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     var slugGlyphs: [SlugGlyphGPUInstance] = []
     var rasterGlyphs: [SlugTextureInstance] = []
     var colorGlyphs: [SlugTextureInstance] = []
+    solids.reserveCapacity(lastFrameSolidsCount)
+    slugGlyphs.reserveCapacity(lastFrameSlugGlyphsCount)
+    rasterGlyphs.reserveCapacity(lastFrameRasterGlyphsCount)
+    colorGlyphs.reserveCapacity(lastFrameColorGlyphsCount)
     frameGlyphFontSizes.removeAll(keepingCapacity: true)
     frameQuadHeights.removeAll(keepingCapacity: true)
     buildInstances(
@@ -637,6 +658,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       glyphs: &slugGlyphs,
       rasterGlyphs: &rasterGlyphs,
       colorGlyphs: &colorGlyphs)
+    lastFrameSolidsCount = solids.count
+    lastFrameSlugGlyphsCount = slugGlyphs.count
+    lastFrameRasterGlyphsCount = rasterGlyphs.count
+    lastFrameColorGlyphsCount = colorGlyphs.count
     lastFrameGlyphFontSizes = frameGlyphFontSizes.sorted()
     lastFrameQuadHeights = frameQuadHeights.sorted()
     lastRasterFallbackGlyphs = rasterGlyphs.count + colorGlyphs.count
@@ -1051,11 +1076,26 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let activeVariant = activeAtlas.styledFontVariant(bold: bold, italic: italic)
     let referenceVariant = referenceAtlas.styledFontVariant(bold: bold, italic: italic)
     let referencePostScriptName = FontAtlas.postScriptName(of: referenceVariant.font)
+    let fontID = internedFontID(postScriptName: referencePostScriptName, bold: bold, italic: italic)
     frameGlyphFontSizes.insert(Double(activeAtlas.pointSize))
+
+    // Run-level gates (mirrors VectorGlyphRenderer, see execplans/active/
+    // slug-render-loop-perf-and-aa-quality.md M1): hoist the color/CJK probes
+    // out of the per-cell loop so plain ASCII/Latin rows, the common case,
+    // pay neither a per-cell color-glyph probe nor a per-cell CJK check.
+    let runWantsColor: Bool
+    if source != .sidebar, emojiRenderingMode == .color {
+      let hasColorTrait = fontHasColorTrait(bold: bold, italic: italic, font: activeVariant.font)
+      runWantsColor = ColorGlyphSupport.textMayContainColor(
+        text: text, fontHasColorTrait: hasColorTrait)
+    } else {
+      runWantsColor = false
+    }
+    let runMayContainCJK = TerminalCJKFontPolicy.containsCJK(text)
+
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
-      if source != .sidebar,
-        emojiRenderingMode == .color,
+      if runWantsColor,
         ColorGlyphSupport.clusterMayBeColor(cluster),
         let colorFallback = colorGlyphInstance(
           cluster: cluster,
@@ -1067,7 +1107,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         colorGlyphs.append(colorFallback)
         continue
       }
-      if TerminalCJKFontPolicy.containsCJK(String(cluster)),
+      if runMayContainCJK,
+        TerminalCJKFontPolicy.containsCJK(cluster),
         let fallback = rasterGlyphInstance(
           cluster: cluster,
           font: activeVariant.font,
@@ -1084,9 +1125,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           for: cluster,
           referenceAtlas: referenceAtlas,
           referenceVariant: referenceVariant,
-          referencePostScriptName: referencePostScriptName,
-          bold: bold,
-          italic: italic,
+          fontID: fontID,
           attributes: attributes)
       else {
         if let fallback = rasterGlyphInstance(
@@ -1189,6 +1228,33 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
   }
 
+  /// Interns (reference PostScript name, bold, italic) to a small `Int` once
+  /// per glyph run, so the per-cell resolve-cache key never re-hashes a
+  /// `String`. Semantics stay visual-font-identity (ADR 0027): this interns
+  /// identity, not size, and geometry stays keyed separately in `entriesByKey`.
+  private func internedFontID(postScriptName: String, bold: Bool, italic: Bool) -> Int {
+    let key = SlugFontIdentityKey(postScriptName: postScriptName, bold: bold, italic: italic)
+    if let existing = fontIdentityIntern[key] { return existing }
+    let id = nextFontIdentityID
+    nextFontIdentityID += 1
+    fontIdentityIntern[key] = id
+    return id
+  }
+
+  /// Font color-glyph trait, cached per (bold, italic) so the per-run cost is
+  /// a cheap `UInt32` dictionary lookup instead of `CTFontGetSymbolicTraits`.
+  /// Only called for `source != .sidebar` fonts (see `appendGlyphRun`), so no
+  /// atlas bit is needed in the key.
+  private func fontHasColorTrait(bold: Bool, italic: Bool, font: CTFont) -> Bool {
+    var key: UInt32 = 0
+    if bold { key |= 0x1 }
+    if italic { key |= 0x2 }
+    if let cached = colorTraitCache[key] { return cached }
+    let value = ColorGlyphSupport.fontHasColorGlyphTrait(font)
+    colorTraitCache[key] = value
+    return value
+  }
+
   private func ensureGlyph(
     for cluster: Character,
     referenceAtlas: FontAtlas,
@@ -1197,13 +1263,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let bold = attributes.contains(.bold)
     let italic = attributes.contains(.italic)
     let referenceVariant = referenceAtlas.styledFontVariant(bold: bold, italic: italic)
+    let fontID = internedFontID(
+      postScriptName: FontAtlas.postScriptName(of: referenceVariant.font),
+      bold: bold,
+      italic: italic)
     return ensureGlyph(
       for: cluster,
       referenceAtlas: referenceAtlas,
       referenceVariant: referenceVariant,
-      referencePostScriptName: FontAtlas.postScriptName(of: referenceVariant.font),
-      bold: bold,
-      italic: italic,
+      fontID: fontID,
       attributes: attributes)
   }
 
@@ -1211,16 +1279,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     for cluster: Character,
     referenceAtlas: FontAtlas,
     referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool),
-    referencePostScriptName: String,
-    bold: Bool,
-    italic: Bool,
+    fontID: Int,
     attributes: TextAttributes
   ) -> SlugGlyphEntry? {
-    let resolveKey = SlugGlyphResolveKey(
-      postScriptName: referencePostScriptName,
-      cluster: cluster,
-      bold: bold,
-      italic: italic)
+    let resolveKey = SlugGlyphResolveKey(fontID: fontID, cluster: cluster)
     if let cached = entriesByResolveKey[resolveKey] { return cached }
     guard
       let resolved = resolveGlyph(

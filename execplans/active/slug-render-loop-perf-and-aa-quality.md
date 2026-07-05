@@ -222,9 +222,10 @@ as dominant); new fallback-rate telemetry beyond the existing
 
 ## Progress
 
-- [ ] M0: baseline measurements, typing-workload bench, headless slug
-      selectability, baseline capture recorded.
-- [ ] M1: per-cell CPU cost reduction in `appendGlyphRun` (run-level color
+- [x] M0: baseline measurements, typing-workload bench, headless slug
+      selectability, baseline capture recorded. (GPU trace baseline remains
+      deferred pending a manual app launch; see Artifacts and Notes.)
+- [x] M1: per-cell CPU cost reduction in `appendGlyphRun` (run-level color
       gate, allocation-free CJK check, cheaper resolve key, reserveCapacity).
 - [ ] M2: damage-aware rendering (empty-partial fast path, scissored partial
       redraw across content + accumulate + composite passes, per-ring-slot
@@ -711,6 +712,27 @@ CPU-encode numbers below (measured with `waitForFrameCompletion = false`,
 isolated from GPU/present contention) as the more load-independent signal for
 M1 comparisons.
 
+**Power-state correction (2026-07-05, later same day):** the numbers below
+were recorded while this machine was running on battery, which (confirmed via
+`pmset -g batt` / `lowpowermode` after the fact) most likely had macOS Low
+Power Mode engaged — this throttles CPU/GPU clocks system-wide independent of
+which app is frontmost. Once plugged into AC power with Low Power Mode off,
+re-measuring the identical pre-M1 code (via `git stash` of the M1 diff, same
+bench, same machine) gave grayscale cpu-encode p50s roughly 25-30% lower than
+recorded here (e.g. typing 1.51 ms vs 2.06 ms below) with much tighter p95/p99
+spread. The numbers below are kept as the historical record of what M0
+observed, but **M1's acceptance comparison uses a freshly re-measured,
+power-controlled pre-M1 baseline** (see M1 Artifacts below) rather than these
+numbers, because the two were not recorded under comparable conditions. RGB
+subpixel numbers are dominated by the accumulate/composite GPU passes and are
+much less sensitive to this effect (M1's before/after subpixel numbers stayed
+within noise of each other either way, as expected since M1 only touches
+per-cell CPU cost). Lesson for future milestones: confirm AC power and Low
+Power Mode off (`pmset -g batt`) before recording any baseline this plan will
+diff against, and prefer interleaved A/B (`git stash`/`pop` around single runs
+of the same bench invocation, alternating) over separated before/after runs to
+cancel out any remaining ambient load drift.
+
 Typing workload (one dirty row/frame, 200 frames, 160x48 grid, scale 2):
 
 | mode | cpu-encode p50/p95/p99 ms | wall p50/p95/p99 ms |
@@ -794,3 +816,68 @@ Ask the user to launch/relaunch `~/Laban.app`, switch it to `slugGlyph`
 `--scroll-debug` armed) and scroll, then this command records the baseline.
 Recorded here once captured; M2's GPU trace comparison depends on this file
 existing.
+
+### M1 results (2026-07-05)
+
+Implemented all four work items in `appendGlyphRun`/`ensureGlyph`/`render()`:
+run-level color gate (`runWantsColor`, cached `fontHasColorTrait`), run-level
+CJK pre-gate (`runMayContainCJK` plus a new allocation-free
+`TerminalCJKFontPolicy.containsCJK(Character)` overload), font-identity
+interning (`SlugFontIdentityKey` -> `Int`, `SlugGlyphResolveKey` now
+`(fontID, Character)` instead of re-hashing a `String` per cell), and
+`reserveCapacity` on the four instance arrays using the previous frame's
+counts.
+
+Correctness: `swift test --filter SlugGlyph` (44 tests, includes
+`SlugGlyphCorrectnessTests`, `SlugGlyphAAFidelityTests`,
+`SlugGlyphCaptureReplayTests`, `SlugGlyphFrameTimeBench`) and
+`swift test --filter SlugWeightCoreTextParityTests` both green, 0 failures.
+`SlugGlyphCaptureReplayTests` (the M0 capture's byte-identical replay gate)
+passes with M1 applied.
+
+Review-gate greps: `grep -n 'containsCJK(String(cluster))'
+Sources/LabanRenderer/SlugGlyphRenderer.swift` returns zero hits;
+`grep -n 'textMayContainColor' Sources/LabanRenderer/SlugGlyphRenderer.swift`
+returns one hit.
+
+Performance: measured with a fresh, power-controlled baseline (AC power,
+`lowpowermode 0`, confirmed via `pmset`), using interleaved A/B (`git stash`
+the M1 diff, run, `git stash pop`, run again, repeat) to cancel ambient load
+drift, 200-frame workloads, `-c release`. Full-screen CPU-encode is the
+plan's M1 acceptance metric (measured by a new print-only
+`testSlugFullScreenCPUEncodeIsMeasured`, since M0 only recorded full-screen
+*wall* time; see Decision Log):
+
+| workload (grayscale) | pre-M1 cpu-encode p50 | post-M1 cpu-encode p50 | delta |
+| --- | --- | --- | --- |
+| full-screen (3 interleaved pairs) | 1.514 / 1.502 / 1.491 ms | 1.031 / 0.984 / 1.009 ms | ~-33%, zero overlap across all 3 pairs |
+| typing (1 dirty row/frame) | 1.513 / 1.510 ms | 0.985 / 1.036 ms | ~-33% |
+| cursor-blink (empty partial) | 1.543 / 1.525 ms | 1.020 / 1.013 ms | ~-34% |
+| new-glyph-burst (~20 new glyphs/frame) | 5.136 / 5.265 ms | 4.614 / 4.562 ms | ~-12% |
+
+Wall p50 (grayscale) moved with it: typing 3.98 ms to 3.33 ms, cursor-blink
+4.05 ms to 3.46 ms, new-glyph-burst ~7.2 ms to ~6.6 ms.
+
+RGB-subpixel (`rgbStripe`) numbers stayed flat within noise before/after
+(full-screen ~12.5 ms both sides, typing ~12.2-12.6 ms both sides,
+cursor-blink ~12.3-12.6 ms both sides, burst ~13.2 ms pre vs ~12.2-12.8 ms
+post) — expected, since the accumulate/composite GPU passes dominate subpixel
+mode and M1 only touches per-cell CPU cost. This confirms the plan's M1
+acceptance ("full-screen CPU-encode p50 lower than the M0 number... beyond
+the noise band") on the corrected baseline: three tightly-clustered
+interleaved pairs with no overlap between the pre- and post-M1 ranges is
+stronger evidence than the plan's suggested 5 separated runs.
+
+New-glyph-burst's p99 spike relative to p50 persists after M1 (pre: p50 5.1-5.3
+ms, p99 16-30 ms; post: p50 4.6 ms, p99 16-17 ms) — M1 shaved the per-cell
+baseline cost but did not touch `ensureGeometryBuffersIfNeeded`'s full-array
+re-upload, so **M4 stays entered** on this evidence too.
+
+Decision: added `testSlugFullScreenCPUEncodeIsMeasured` to
+`SlugGlyphFrameTimeBench.swift` because M0 only measured full-screen *wall*
+time (the existing 120 Hz gate), not CPU-encode, and the M1 acceptance
+criterion is phrased in terms of full-screen CPU-encode p50. The new test
+mirrors the existing `timeRun` machinery against 200 identical full-screen
+ASCII frames with `.full` damage, `waitForFrameCompletion = false`, print-only,
+gated behind `LABAN_RUN_PERF_BENCH=1`.
+Date/Author: 2026-07-05 / plan author.

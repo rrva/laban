@@ -99,6 +99,35 @@ final class SlugGlyphFrameTimeBench: XCTestCase {
     XCTAssertGreaterThan(result.wallP99, 0)
   }
 
+  /// Full-screen CPU-encode only (no GPU wait), print-only. This is the
+  /// number `slug-render-loop-perf-and-aa-quality.md`'s M1 acceptance
+  /// compares against the M0 baseline ("a full-screen CPU-encode p50 lower
+  /// than the M0 number"); the wall-clock full-screen gate above stays
+  /// GPU-bound and does not isolate the per-cell CPU cost M1 targets.
+  func testSlugFullScreenCPUEncodeIsMeasured() throws {
+    guard enabled() else { return }
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let text = asciiText(cols: cols, rows: rows)
+    let commands = frameCommands(text: text, pixelW: pixelW, pixelH: pixelH)
+    let frames: [(commands: [FrameCommand], damage: RenderDamage)] =
+      Array(repeating: (commands, RenderDamage.full), count: timedFrames)
+
+    print("\n=== Slug full-screen CPU-encode (\(timedFrames) frames, \(cols)x\(rows) grid) ===")
+    print("  mode        cpu-encode p50/p95/p99 ms")
+    for layout in [VectorSubpixelLayout.grayscale, .rgbStripe] {
+      let samples = try timeRun(layout: layout, frames: frames, waitForCompletion: false)
+      print(
+        String(
+          format: "  %-10@  %7.3f/%7.3f/%7.3f",
+          layout.name as NSString,
+          percentile(samples, 0.50),
+          percentile(samples, 0.95),
+          percentile(samples, 0.99)))
+    }
+  }
+
   // MARK: - M0 workloads (typing, cursor-blink, new-glyph-burst)
   //
   // Each workload reports CPU-encode time (render() timed with
