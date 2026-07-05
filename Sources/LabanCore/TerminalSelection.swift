@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import LabanRenderer
 import LabanTerminalCore
 
 public struct TerminalCellCoordinate: Codable, Equatable, Sendable {

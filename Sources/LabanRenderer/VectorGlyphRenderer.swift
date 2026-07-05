@@ -1165,7 +1165,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
 
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, _
+        let underlineStyle, let underlineColor, _, _
       ):
         let atlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
         appendGlyphRun(
@@ -1308,6 +1308,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
           _,
           let attributes,
           let source,
+          _,
           _,
           _,
           _
@@ -1479,7 +1480,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     guard
       let layout = TextDecorationLayout.make(
         origin: origin,
-        cellCount: text.count,
+        cellCount: TerminalDisplayWidth.cells(of: text),
         attributes: attributes,
         underlineStyle: underlineStyle,
         cellAdvance: atlas.cellSize.width,

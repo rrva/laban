@@ -32,6 +32,53 @@ static bool envp_overrides_entry(const char *const *envp, const char *entry) {
     return false;
 }
 
+static bool locale_value_is_utf8(const char *value) {
+    if (!value) return false;
+    const char *dot = strrchr(value, '.');
+    if (!dot) return false;
+    /* Accept .UTF-8, .utf8, and variants with a trailing @modifier
+     * (e.g. en_US.UTF-8@euro). */
+    const char *end = dot + 1;
+    while (*end && *end != '@') end++;
+    size_t len = (size_t)(end - (dot + 1));
+    if (len == 5 && strncasecmp(dot, ".UTF-8", 6) == 0) return true;
+    if (len == 4 && strncasecmp(dot, ".utf8", 5) == 0) return true;
+    return false;
+}
+
+static const char *env_entries_get_value(char **entries, size_t count, const char *name) {
+    for (size_t i = 0; i < count; i++) {
+        if (env_entry_has_name(entries[i], name)) {
+            const char *eq = strchr(entries[i], '=');
+            return eq ? eq + 1 : NULL;
+        }
+    }
+    return NULL;
+}
+
+static bool locale_values_effective_utf8(const char *lc_all, const char *lc_ctype,
+                                         const char *lang) {
+    if (lc_all) return locale_value_is_utf8(lc_all);
+    if (lc_ctype) return locale_value_is_utf8(lc_ctype);
+    if (lang) return locale_value_is_utf8(lang);
+    return false;
+}
+
+static bool env_entries_effective_locale_is_utf8(char **entries, size_t count) {
+    return locale_values_effective_utf8(
+      env_entries_get_value(entries, count, "LC_ALL"),
+      env_entries_get_value(entries, count, "LC_CTYPE"),
+      env_entries_get_value(entries, count, "LANG"));
+}
+
+static bool envp_has_locale_name(const char *const *envp, const char *name) {
+    if (!envp) return false;
+    for (int i = 0; envp[i]; i++) {
+        if (env_entry_has_name(envp[i], name)) return true;
+    }
+    return false;
+}
+
 static char **build_spawn_env(const char *const *overrides) {
     size_t inherited_count = 0;
     while (environ && environ[inherited_count]) inherited_count++;
@@ -41,6 +88,13 @@ static char **build_spawn_env(const char *const *overrides) {
 
     char **env = calloc(inherited_count + override_count + 4, sizeof(char *));
     if (!env) return NULL;
+
+    /* If the caller explicitly sets any locale variable, do not inject a
+     * default; their choice wins even if it is not UTF-8. */
+    const bool caller_sets_locale =
+      envp_has_locale_name(overrides, "LANG") ||
+      envp_has_locale_name(overrides, "LC_CTYPE") ||
+      envp_has_locale_name(overrides, "LC_ALL");
 
     size_t out = 0;
     for (size_t i = 0; i < inherited_count; i++) {
@@ -58,6 +112,17 @@ static char **build_spawn_env(const char *const *overrides) {
         /* A leaked Windows Terminal marker makes tools suppress features
          * (OSC 9;4 progress checks WT_SESSION explicitly). Never inherit. */
         if (env_entry_has_name(entry, "WT_SESSION")) continue;
+        /* Non-UTF-8 locale variables are overridden below with a safe default
+         * so CJK tools see a usable locale. Drop the inherited entry to avoid
+         * a duplicate-name race in getenv(3). LC_ALL is included because it
+         * would otherwise win over LANG/LC_CTYPE. */
+        if (!caller_sets_locale &&
+            (env_entry_has_name(entry, "LANG") ||
+             env_entry_has_name(entry, "LC_CTYPE") ||
+             env_entry_has_name(entry, "LC_ALL"))) {
+            const char *eq = strchr(entry, '=');
+            if (eq && !locale_value_is_utf8(eq + 1)) continue;
+        }
         if (envp_overrides_entry(overrides, entry)) continue;
         env[out++] = (char *)entry;
     }
@@ -70,6 +135,12 @@ static char **build_spawn_env(const char *const *overrides) {
     }
     if (!envp_has_name(overrides, "TERM_PROGRAM")) {
         env[out++] = (char *)"TERM_PROGRAM=Laban";
+    }
+    /* CJK tools (ls, grep, git, less) trust LANG/LC_CTYPE. After dropping
+     * non-UTF-8 locale entries, inject a safe default only when LC_ALL, then
+     * LC_CTYPE, then LANG still do not yield a UTF-8 effective locale. */
+    if (!caller_sets_locale && !env_entries_effective_locale_is_utf8(env, out)) {
+        env[out++] = (char *)"LANG=en_US.UTF-8";
     }
 
     for (size_t i = 0; i < override_count; i++) {

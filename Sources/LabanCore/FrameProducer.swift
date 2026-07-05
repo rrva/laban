@@ -61,8 +61,8 @@ public struct FrameProducer {
     self.accessibilityVisualOptions = accessibilityVisualOptions
   }
 
-  public static func preeditCaretCells(for text: String) -> Int {
-    TerminalDisplayWidth.cells(of: text)
+  public static func preeditCaretCells(for text: String, graphemeClusterMode: Bool = false) -> Int {
+    TerminalDisplayWidth.cells(of: text, graphemeClusterMode: graphemeClusterMode)
   }
 
   private var accessibilityOutlineRequired: Bool {
@@ -441,7 +441,8 @@ public struct FrameProducer {
         rows: rows,
         cols: cols,
         foreground: snapshot.default_foreground_rgba,
-        background: defaultBg)
+        background: defaultBg,
+        graphemeClusterMode: snapshot.grapheme_cluster_2027 != 0)
     }
 
     // Exit banner overlays the bottom terminal row after all terminal cells
@@ -548,7 +549,8 @@ public struct FrameProducer {
         rows: rows,
         cols: cols,
         foreground: snapshot.default_foreground_rgba,
-        background: terminalBackgroundColor(snapshot.default_background_rgba))
+        background: terminalBackgroundColor(snapshot.default_background_rgba),
+        graphemeClusterMode: snapshot.grapheme_cluster_2027 != 0)
     }
 
     return cmds
@@ -569,7 +571,8 @@ public struct FrameProducer {
     rows: Int,
     cols: Int,
     foreground: UInt32,
-    background: UInt32
+    background: UInt32,
+    graphemeClusterMode: Bool
   ) {
     guard !text.isEmpty, rows > 0, cols > 0 else { return }
     let row = min(max(cursorRow, 0), rows - 1)
@@ -578,7 +581,8 @@ public struct FrameProducer {
     let ch = CGFloat(cellHeight)
     let cx = originX + CGFloat(col) * cw
     let cy = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
-    let runWidth = CGFloat(TerminalDisplayWidth.cells(of: text)) * cw
+    let displayCellCount = TerminalDisplayWidth.cells(of: text, graphemeClusterMode: graphemeClusterMode)
+    let runWidth = CGFloat(displayCellCount) * cw
     cmds.append(
       .rect(
         CGRect(x: cx, y: cy, width: runWidth, height: ch),
@@ -595,7 +599,8 @@ public struct FrameProducer {
         source: .preedit,
         underlineStyle: .single,
         underlineColor: nil,
-        hyperlink: nil
+        hyperlink: nil,
+        displayCellCount: displayCellCount
       ))
   }
 
@@ -1582,7 +1587,8 @@ public struct FrameProducer {
         rows: rows,
         cols: cols,
         foreground: Theme.current.fg0,
-        background: defaultBg)
+        background: defaultBg,
+        graphemeClusterMode: false)
     }
 
     appendRemoteExitBanner(snapshot, cols: cols, cellHeight: ch, commands: &cmds)

@@ -18,8 +18,11 @@ final class TerminalWidthPolicyGuardTests: XCTestCase {
       "LabanCore/FrameProducer.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanCore/TerminalFind.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanCore/TerminalSelection.swift": ["TerminalDisplayWidth.cells(of:"],
-      "LabanApp/TerminalBitmapView.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanApp/TerminalSelectionInput.swift": ["TerminalDisplayWidth.isWide("],
+      "LabanRenderer/SoftwareRenderer.swift": ["TerminalDisplayWidth.cells(of:"],
+      "LabanRenderer/SlugGlyphRenderer.swift": ["TerminalDisplayWidth.cells(of:"],
+      "LabanRenderer/VectorGlyphRenderer.swift": ["TerminalDisplayWidth.cells(of:"],
+      "LabanRenderer/MetalRenderer.swift": ["TerminalDisplayWidth.cells(of:"],
     ]
 
     var matchedFiles = Set<String>()

@@ -2107,7 +2107,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
         appendSolid(rect: rect, color: color)
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, .sidebar,
-        let underlineStyle, let underlineColor, _
+        let underlineStyle, let underlineColor, _, _
       ):
         let font = styledFont(for: attrs, in: sidebarFontAtlas)
         let traits = CTFontGetSymbolicTraits(font)
@@ -2285,7 +2285,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       switch cmd {
       case .rect(let rect, _, let source) where source == .terminal:
         include(rect)
-      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _) where source == .terminal:
+      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _) where source == .terminal:
         guard !text.isEmpty else { continue }
         include(
           CGRect(
@@ -2645,7 +2645,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
             color: rgbaToFloat4(color)))
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _
+        let underlineStyle, let underlineColor, _, _
       ) where runSource == .sidebar:
         let runHeight = sidebarCellHeight
         if let damageBounds, !damageBounds.overlaps(y: origin.y, height: runHeight) {
@@ -2975,7 +2975,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       guard
         case .glyphRun(
           let origin, let text, let fg, let bg, let attrs, let runSource,
-          let underlineStyle, let underlineColor, _
+          let underlineStyle, let underlineColor, _, let displayCellCount
         ) = cmd, runSource == .preedit, !text.isEmpty
       else { continue }
       // Opaque background over the composition cells, appended AFTER the
@@ -2989,14 +2989,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
       let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
       let preeditCellCount =
-        commands
-        .compactMap { cmd -> Int? in
-          if case .rect(let rect, _, .preedit) = cmd {
-            return Int((rect.width / glyphCellAdvance).rounded(.up))
-          }
-          return nil
-        }
-        .first
+        displayCellCount
         ?? text.reduce(into: 0) { total, cluster in
           if let entry = glyphAtlas.entry(
             character: cluster, font: font,
@@ -3338,7 +3331,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _
+        let underlineStyle, let underlineColor, _, _
       ):
         let isSidebar = runSource == .sidebar
         let runHeight = isSidebar ? sidebarCellHeight : glyphCellHeight
@@ -3613,7 +3606,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _
+        let underlineStyle, let underlineColor, _, _
       ):
         let isSidebar = runSource == .sidebar
         let runHeight = isSidebar ? sidebarCellHeight : glyphCellHeight
@@ -3766,7 +3759,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     appendSolid: (CGRect, UInt32) -> Void
   ) {
     emitDecorations(
-      cellCount: text.count,
+      cellCount: TerminalDisplayWidth.cells(of: text),
       at: origin,
       attributes: attributes,
       cellAdvance: cellAdvance,
@@ -3838,7 +3831,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     guard emojiRenderingMode == .color else { return false }
     for command in commands {
       guard
-        case .glyphRun(_, let text, _, _, let attrs, let source, _, _, _) = command,
+        case .glyphRun(_, let text, _, _, let attrs, let source, _, _, _, _) = command,
         source != .sidebar,
         !text.isEmpty
       else { continue }

@@ -18,11 +18,12 @@ struct DebugFrameCommandSerializer {
         rect: Self.rectResponse(rect), color: Self.rgbaArray(color))
     case .glyphRun(
       let origin, let text, let foreground, let background, let attributes, let source,
-      let underlineStyle, let underlineColor, let hyperlink
+      let underlineStyle, let underlineColor, let hyperlink, let displayCellCount
     ):
+      let approxWidth = CGFloat((displayCellCount ?? text.count) * cellWidth)
       let approxRect = CGRect(
         x: origin.x, y: origin.y,
-        width: CGFloat(text.count * cellWidth), height: CGFloat(cellHeight)
+        width: approxWidth, height: CGFloat(cellHeight)
       )
       let attributeNames = attributes.names
       return FrameCommandResponse(
@@ -70,10 +71,11 @@ struct DebugFrameCommandSerializer {
       return TraceCommand(
         id: id, index: index, kind: "rect",
         source: source.rawValue, rect: Self.rectResponse(rect))
-    case .glyphRun(let origin, let text, _, _, let attributes, let source, _, _, _):
+    case .glyphRun(let origin, let text, _, _, let attributes, let source, _, _, _, let displayCellCount):
+      let approxWidth = CGFloat((displayCellCount ?? text.count) * cellWidth)
       let approxRect = CGRect(
         x: origin.x, y: origin.y,
-        width: CGFloat(text.count * cellWidth), height: CGFloat(cellHeight)
+        width: approxWidth, height: CGFloat(cellHeight)
       )
       let attributeNames = attributes.names
       return TraceCommand(

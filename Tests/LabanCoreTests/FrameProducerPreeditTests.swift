@@ -15,10 +15,18 @@ final class FrameProducerPreeditTests: XCTestCase {
   private func snapshotAfterWriting(_ text: String) throws
     -> (Session, UnsafeMutablePointer<LabanSnapshot>)
   {
+    try snapshotAfterWriting(text, graphemeClusterMode: false)
+  }
+
+  private func snapshotAfterWriting(
+    _ text: String,
+    graphemeClusterMode: Bool
+  ) throws -> (Session, UnsafeMutablePointer<LabanSnapshot>) {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
     let session = try Session.fixture(size: size)
+    session.setGraphemeClusterMode(graphemeClusterMode)
     session.write(Array(text.utf8))
     session.poll()
     guard let snap = session.snapshot() else {
@@ -32,7 +40,7 @@ final class FrameProducerPreeditTests: XCTestCase {
     -> (origin: CGPoint, text: String, attrs: TextAttributes, underline: UnderlineStyle)?
   {
     for cmd in cmds {
-      if case .glyphRun(let origin, let text, _, _, let attrs, .preedit, let uStyle, _, _) = cmd {
+      if case .glyphRun(let origin, let text, _, _, let attrs, .preedit, let uStyle, _, _, _) = cmd {
         return (origin, text, attrs, uStyle)
       }
     }
@@ -42,6 +50,13 @@ final class FrameProducerPreeditTests: XCTestCase {
   private func preeditMaskRect(in cmds: [FrameCommand]) -> CGRect? {
     for cmd in cmds {
       if case .rect(let rect, _, .preedit) = cmd { return rect }
+    }
+    return nil
+  }
+
+  private func preeditDisplayCellCount(in cmds: [FrameCommand]) -> Int? {
+    for cmd in cmds {
+      if case .glyphRun(_, _, _, _, _, .preedit, _, _, _, let count) = cmd { return count }
     }
     return nil
   }
@@ -224,6 +239,93 @@ final class FrameProducerPreeditTests: XCTestCase {
     XCTAssertEqual(
       composedCaret.origin.y, baseCaret.origin.y, accuracy: 0.5,
       "the caret stays on the cursor row while composing")
+  }
+
+  func testOverlayPreeditMaskUsesGraphemeClusterWidthForZWJUnderMode2027() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ", graphemeClusterMode: true)
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+
+    let cw = 8
+    let ch = 16
+    let composition = "👩\u{200D}💻"
+    let cmds = FrameProducer(cellWidth: cw, cellHeight: ch)
+      .overlayCommands(from: snap, selection: nil, cursorBlinkVisible: true, preedit: composition)
+
+    let mask = try XCTUnwrap(
+      preeditMaskRect(in: cmds),
+      "overlay preedit must emit a background mask for clustered emoji")
+    XCTAssertEqual(
+      mask.width,
+      CGFloat(2 * cw),
+      accuracy: 0.5,
+      "under DEC mode 2027 the ZWJ emoji preedit mask must span 2 cells, not 4")
+
+    let run = try XCTUnwrap(
+      preeditGlyphRun(in: cmds),
+      "overlay preedit must emit a glyph run for clustered emoji")
+    XCTAssertEqual(
+      run.origin.x + mask.width,
+      CGFloat(Int(snap.pointee.cursor_col) + 2) * CGFloat(cw),
+      accuracy: 0.5,
+      "the preedit run origin + mask width must match the 2-cell advance")
+  }
+
+  func testPreeditGlyphRunCarriesDisplayCellCount() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+
+    let cw = 8
+    let ch = 16
+    let composition = "中👩\u{200D}💻a"
+    let expectedLegacyCells = TerminalDisplayWidth.cells(of: composition)
+    let cmds = FrameProducer(cellWidth: cw, cellHeight: ch)
+      .commands(from: snap, selection: nil, cursorBlinkVisible: true, preedit: composition)
+
+    let run = try XCTUnwrap(preeditGlyphRun(in: cmds))
+    XCTAssertEqual(run.origin.x, CGFloat(Int(snap.pointee.cursor_col)) * CGFloat(cw), accuracy: 0.5)
+    // With mode 2027 off by default, the carried count follows the legacy
+    // scalar fallback so the renderer never has to re-derive it from the mask.
+    XCTAssertNotNil(
+      preeditDisplayCellCount(in: cmds),
+      "preedit glyphRun must carry a displayCellCount for renderer consistency")
+    XCTAssertEqual(preeditDisplayCellCount(in: cmds), expectedLegacyCells)
+  }
+
+  func testPreeditCarriesDisplayCellCountForRendererConsistency() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ", graphemeClusterMode: true)
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+
+    let cw = 8
+    let ch = 16
+    let composition = "👩\u{200D}💻"
+    let cmds = FrameProducer(cellWidth: cw, cellHeight: ch)
+      .commands(from: snap, selection: nil, cursorBlinkVisible: true, preedit: composition)
+
+    let mask = try XCTUnwrap(preeditMaskRect(in: cmds))
+    let run = try XCTUnwrap(preeditGlyphRun(in: cmds))
+    XCTAssertEqual(
+      mask.width,
+      CGFloat(2 * cw),
+      accuracy: 0.5,
+      "mask must be sized to the mode-2027 display cell count")
+    XCTAssertEqual(
+      run.origin.x,
+      mask.origin.x,
+      accuracy: 0.5,
+      "run and mask must share the same origin")
+    XCTAssertEqual(
+      preeditDisplayCellCount(in: cmds),
+      2,
+      "the producer must carry the mode-2027 display cell count on the glyph run")
   }
 
   func testPreeditMaskUsesDisplayCellWidthForWideText() throws {

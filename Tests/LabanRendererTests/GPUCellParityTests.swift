@@ -423,11 +423,13 @@ final class GPUCellParityTests: XCTestCase {
       case .rect(let rect, let color, let source):
         return .rect(rect.offsetBy(dx: dx, dy: 0), color: color, source: source)
       case .glyphRun(
-        let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link):
+        let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link,
+        let displayCellCount):
         return .glyphRun(
           origin: CGPoint(x: origin.x + dx, y: origin.y),
           text: text, foreground: fg, background: bg, attributes: attrs, source: source,
-          underlineStyle: us, underlineColor: uc, hyperlink: link)
+          underlineStyle: us, underlineColor: uc, hyperlink: link,
+          displayCellCount: displayCellCount)
       default:
         return command
       }

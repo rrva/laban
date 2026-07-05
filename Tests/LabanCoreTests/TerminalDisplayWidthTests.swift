@@ -1,5 +1,6 @@
 import Foundation
 import LabanCore
+import LabanRenderer
 import XCTest
 
 // Direct coverage for the display-width helper that maps Unicode scalars to

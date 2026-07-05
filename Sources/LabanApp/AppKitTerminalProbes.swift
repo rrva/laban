@@ -79,10 +79,10 @@ final class AppKitFrameProbe {
     var cursors: [ProbeCursor] = []
     for command in commands {
       switch command {
-      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _)
+      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _)
       where source == .terminal:
         terminalGlyphs.append(ProbeGlyph(x: Double(origin.x), y: Double(origin.y), text: text))
-      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _)
+      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _)
       where source == .sidebar:
         sidebarGlyphs.append(ProbeGlyph(x: Double(origin.x), y: Double(origin.y), text: text))
       case .rect(let rect, _, let source) where source == .sidebar:

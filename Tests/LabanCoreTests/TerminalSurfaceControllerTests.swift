@@ -62,7 +62,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       return "rect|\(rectKey(rect))|\(color)|\(source.rawValue)"
     case .glyphRun(
       let origin, let text, let foreground, let background, let attributes, let source,
-      let underlineStyle, let underlineColor, let hyperlink):
+      let underlineStyle, let underlineColor, let hyperlink, _):
       let scalars = text.unicodeScalars.map { String($0.value, radix: 16) }.joined(separator: ".")
       return
         "glyph|\(pointKey(origin))|chars=\(text.count)|scalars=\(scalars)|fg=\(foreground)"
@@ -134,7 +134,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(hasSidebarRect)
 
     let terminalText = frame.commands.compactMap { command -> String? in
-      if case .glyphRun(_, let text, _, _, _, let source, _, _, _) = command,
+      if case .glyphRun(_, let text, _, _, _, let source, _, _, _, _) = command,
         source == .terminal
       {
         return text
@@ -158,7 +158,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
 
     func sidebarTexts(_ cmds: [FrameCommand]) -> [String] {
       cmds.compactMap { cmd in
-        if case .glyphRun(_, let text, _, _, _, let source, _, _, _) = cmd, source == .sidebar {
+        if case .glyphRun(_, let text, _, _, _, let source, _, _, _, _) = cmd, source == .sidebar {
           return text
         }
         return nil
@@ -259,7 +259,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
 
     func markerAlpha(_ cmds: [FrameCommand]) -> UInt32? {
       cmds.compactMap { cmd -> UInt32? in
-        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "◆" {
+        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _) = cmd, text == "◆" {
           return fg & 0xFF
         }
         return nil
@@ -332,7 +332,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(
       payload.glyphs.contains { $0.scalarValue == Character("h").unicodeScalars.first?.value })
     let terminalGlyphCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
         return source == .terminal
       }
       return false
@@ -522,7 +522,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(payload.glyphs.contains { $0.attributes.contains(.strikethrough) })
     XCTAssertTrue(payload.glyphs.contains { $0.attributes.contains(.overline) })
     let terminalGlyphCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
         return source == .terminal
       }
       return false
@@ -564,7 +564,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let terminalCommands = frame.commands.filter { command in
       switch command {
       case .rect(_, _, let source),
-        .glyphRun(_, _, _, _, _, let source, _, _, _):
+        .glyphRun(_, _, _, _, _, let source, _, _, _, _):
         return source == .terminal
       default:
         return false
@@ -612,7 +612,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(payload.glyphs.contains { $0.hasHyperlink })
     XCTAssertTrue(payload.glyphs.contains { $0.hasHyperlink && $0.attributes.contains(.underline) })
     let terminalCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
         return source == .terminal
       }
       return false
@@ -773,7 +773,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertNil(payload.fallbackReason)
     XCTAssertTrue(payload.glyphs.contains { $0.wide == UInt8(LABAN_CELL_WIDE_WIDE) })
     let terminalGlyphCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
         return source == .terminal
       }
       return false
@@ -862,7 +862,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let terminalCommands = frame.commands.filter { command in
       switch command {
       case .rect(_, _, let source),
-        .glyphRun(_, _, _, _, _, let source, _, _, _):
+        .glyphRun(_, _, _, _, _, let source, _, _, _, _):
         return source == .terminal
       default:
         return false
@@ -912,7 +912,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
         return false
       })
     let terminalGlyphCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
         return source == .terminal
       }
       return false

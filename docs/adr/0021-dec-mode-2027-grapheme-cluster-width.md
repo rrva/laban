@@ -44,7 +44,7 @@ The one genuine gap was Swift-side: the **scrollback fallback** path
 (`Sources/LabanTerminalCore/scrollback_extract.c` → `Session.scrollbackBlock` →
 find/copy) reconstructs scrolled-off rows as a `String` with no per-cell width and
 recomputed width from a pinned per-scalar table
-(`Sources/LabanCore/TerminalDisplayWidth.swift`) that implements the *legacy* rule
+(`Sources/LabanRenderer/TerminalDisplayWidth.swift`) that implements the *legacy* rule
 only. Under mode 2027 ON that table drifts (counts the farmer as 4 columns when the
 engine used 2).
 
@@ -102,6 +102,18 @@ engine used 2).
   `frozen_dec_modes`) the current C API does not expose.
 - Kitty's OSC-based **text-sizing protocol** is a separate, competing mechanism and
   is an explicit **non-goal** here; supporting it is independent future work.
+
+## Decision Log
+
+- **2026-07-05 — Ambiguous-width characters.** East-Asian users sometimes expect
+  ambiguous-width characters (`±`, `§`, arrows, box-drawing) to render as two
+  cells. Laban has no user-facing control for this today: grid width is owned by
+  libghostty, and the Swift fallback table (`TerminalDisplayWidth`) is hardcoded.
+  We intentionally do **not** add a Swift-only ambiguous-width toggle, because that
+  would create a second width truth next to the engine. The correct path is to
+  coordinate with libghostty to expose an ambiguous-width C API knob (or
+  environment variable) and then surface it in Settings. Until that upstream
+  capability exists, behavior follows libghostty's current rule.
 
 ## Applies To New Code
 
