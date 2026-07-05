@@ -90,6 +90,34 @@ private let bellProbeCallback: LabanBellCallback = { userdata, _, count in
   probe.counts.append(count)
 }
 
+private let localeEnvironmentLock = NSLock()
+
+private func withProcessLocaleEnvironment(
+  lang: String? = nil,
+  lcCtype: String? = nil,
+  lcAll: String? = nil,
+  _ body: () -> Void
+) {
+  localeEnvironmentLock.lock()
+  defer { localeEnvironmentLock.unlock() }
+
+  let oldLang = getenv("LANG").map { String(cString: $0) }
+  let oldLcCtype = getenv("LC_CTYPE").map { String(cString: $0) }
+  let oldLcAll = getenv("LC_ALL").map { String(cString: $0) }
+
+  if let lang { setenv("LANG", lang, 1) } else { unsetenv("LANG") }
+  if let lcCtype { setenv("LC_CTYPE", lcCtype, 1) } else { unsetenv("LC_CTYPE") }
+  if let lcAll { setenv("LC_ALL", lcAll, 1) } else { unsetenv("LC_ALL") }
+
+  defer {
+    if let oldLang { setenv("LANG", oldLang, 1) } else { unsetenv("LANG") }
+    if let oldLcCtype { setenv("LC_CTYPE", oldLcCtype, 1) } else { unsetenv("LC_CTYPE") }
+    if let oldLcAll { setenv("LC_ALL", oldLcAll, 1) } else { unsetenv("LC_ALL") }
+  }
+
+  body()
+}
+
 final class LabanSessionTests: XCTestCase {
 
   private func makeFixtureSession(rows: Int32 = 24, cols: Int32 = 80) -> OpaquePointer? {
@@ -1196,401 +1224,396 @@ final class LabanSessionTests: XCTestCase {
   }
 
   func testPTYSpawnEnvironmentDefaultsToUTF8Locale() {
-    let oldLang = getenv("LANG").map { String(cString: $0) }
-    let oldLcCtype = getenv("LC_CTYPE").map { String(cString: $0) }
-    let oldLcAll = getenv("LC_ALL").map { String(cString: $0) }
-    unsetenv("LANG")
-    unsetenv("LC_CTYPE")
-    unsetenv("LC_ALL")
-    defer {
-      if let oldLang { setenv("LANG", oldLang, 1) } else { unsetenv("LANG") }
-      if let oldLcCtype { setenv("LC_CTYPE", oldLcCtype, 1) } else { unsetenv("LC_CTYPE") }
-      if let oldLcAll { setenv("LC_ALL", oldLcAll, 1) } else { unsetenv("LC_ALL") }
-    }
+    withProcessLocaleEnvironment {
+      let exe = "/bin/sh"
+      let command = "printf '%s|%s\\n' \"$LANG\" \"${LC_CTYPE-unset}\""
+      let argStrings = ["/bin/sh", "-c", command]
 
-    let exe = "/bin/sh"
-    let command = "printf '%s|%s\\n' \"$LANG\" \"${LC_CTYPE-unset}\""
-    let argStrings = ["/bin/sh", "-c", command]
+      exe.withCString { exeCStr in
+        withCArgv(argStrings) { argvPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.fixture_mode = 0
 
-    exe.withCString { exeCStr in
-      withCArgv(argStrings) { argvPtr in
-        var config = LabanLaunchConfig()
-        config.executable = exeCStr
-        config.argv = argvPtr
-        config.fixture_mode = 0
+          var size = LabanTerminalSize()
+          size.rows = 8
+          size.cols = 80
 
-        var size = LabanTerminalSize()
-        size.rows = 8
-        size.cols = 80
-
-        var session: OpaquePointer?
-        guard laban_session_create(&config, size, &session) == 0, let session else {
-          XCTFail("laban_session_create failed for UTF-8 locale default test")
-          return
-        }
-        defer { laban_session_destroy(session) }
-
-        var snap: UnsafeMutablePointer<LabanSnapshot>?
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-          XCTAssertEqual(laban_session_poll(session), 0)
-          if let current = snap {
-            laban_snapshot_destroy(current)
-            snap = nil
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for UTF-8 locale default test")
+            return
           }
-          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          defer { laban_session_destroy(session) }
+
+          var snap: UnsafeMutablePointer<LabanSnapshot>?
+          let deadline = Date().addingTimeInterval(2.0)
+          while Date() < deadline {
+            XCTAssertEqual(laban_session_poll(session), 0)
+            if let current = snap {
+              laban_snapshot_destroy(current)
+              snap = nil
+            }
+            guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+            let text = visibleText(from: UnsafePointer(s))
+            if text.contains("en_US.UTF-8") { break }
+            if s.pointee.status != 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+          }
+          defer { laban_snapshot_destroy(snap) }
+
+          guard let s = snap else {
+            XCTFail("no snapshot obtained after polling for locale output")
+            return
+          }
+
           let text = visibleText(from: UnsafePointer(s))
-          if text.contains("en_US.UTF-8") { break }
-          if s.pointee.status != 0 { break }
-          Thread.sleep(forTimeInterval: 0.02)
+          XCTAssertTrue(
+            text.contains("en_US.UTF-8|unset"),
+            "spawn env should default LANG to UTF-8 when none is inherited; got "
+              + text.debugDescription)
         }
-        defer { laban_snapshot_destroy(snap) }
-
-        guard let s = snap else {
-          XCTFail("no snapshot obtained after polling for locale output")
-          return
-        }
-
-        let text = visibleText(from: UnsafePointer(s))
-        XCTAssertTrue(
-          text.contains("en_US.UTF-8|unset"),
-          "spawn env should default LANG to UTF-8 when none is inherited; got "
-            + text.debugDescription)
       }
     }
   }
 
   func testPTYSpawnEnvironmentReplacesInheritedNonUtf8LANG() {
-    let oldLang = getenv("LANG").map { String(cString: $0) }
-    let oldLcCtype = getenv("LC_CTYPE").map { String(cString: $0) }
-    let oldLcAll = getenv("LC_ALL").map { String(cString: $0) }
-    setenv("LANG", "C", 1)
-    unsetenv("LC_CTYPE")
-    unsetenv("LC_ALL")
-    defer {
-      if let oldLang { setenv("LANG", oldLang, 1) } else { unsetenv("LANG") }
-      if let oldLcCtype { setenv("LC_CTYPE", oldLcCtype, 1) } else { unsetenv("LC_CTYPE") }
-      if let oldLcAll { setenv("LC_ALL", oldLcAll, 1) } else { unsetenv("LC_ALL") }
-    }
+    withProcessLocaleEnvironment(lang: "C") {
+      let exe = "/bin/sh"
+      let command = "printf '%s|%s|%s\\n' \"$LANG\" \"${LC_CTYPE-unset}\" \"${LC_ALL-unset}\""
+      let argStrings = ["/bin/sh", "-c", command]
 
-    let exe = "/bin/sh"
-    let command = "printf '%s|%s|%s\\n' \"$LANG\" \"${LC_CTYPE-unset}\" \"${LC_ALL-unset}\""
-    let argStrings = ["/bin/sh", "-c", command]
+      exe.withCString { exeCStr in
+        withCArgv(argStrings) { argvPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.fixture_mode = 0
 
-    exe.withCString { exeCStr in
-      withCArgv(argStrings) { argvPtr in
-        var config = LabanLaunchConfig()
-        config.executable = exeCStr
-        config.argv = argvPtr
-        config.fixture_mode = 0
+          var size = LabanTerminalSize()
+          size.rows = 8
+          size.cols = 80
 
-        var size = LabanTerminalSize()
-        size.rows = 8
-        size.cols = 80
-
-        var session: OpaquePointer?
-        guard laban_session_create(&config, size, &session) == 0, let session else {
-          XCTFail("laban_session_create failed for non-UTF-8 LANG test")
-          return
-        }
-        defer { laban_session_destroy(session) }
-
-        var snap: UnsafeMutablePointer<LabanSnapshot>?
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-          XCTAssertEqual(laban_session_poll(session), 0)
-          if let current = snap {
-            laban_snapshot_destroy(current)
-            snap = nil
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for non-UTF-8 LANG test")
+            return
           }
-          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          defer { laban_session_destroy(session) }
+
+          var snap: UnsafeMutablePointer<LabanSnapshot>?
+          let deadline = Date().addingTimeInterval(2.0)
+          while Date() < deadline {
+            XCTAssertEqual(laban_session_poll(session), 0)
+            if let current = snap {
+              laban_snapshot_destroy(current)
+              snap = nil
+            }
+            guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+            let text = visibleText(from: UnsafePointer(s))
+            if text.contains("en_US.UTF-8") { break }
+            if s.pointee.status != 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+          }
+          defer { laban_snapshot_destroy(snap) }
+
+          guard let s = snap else {
+            XCTFail("no snapshot obtained after polling for locale output")
+            return
+          }
+
           let text = visibleText(from: UnsafePointer(s))
-          if text.contains("en_US.UTF-8") { break }
-          if s.pointee.status != 0 { break }
-          Thread.sleep(forTimeInterval: 0.02)
+          XCTAssertTrue(
+            text.contains("en_US.UTF-8|unset|unset"),
+            "spawn env should replace non-UTF-8 LANG with LANG=UTF-8; got "
+              + text.debugDescription)
         }
-        defer { laban_snapshot_destroy(snap) }
-
-        guard let s = snap else {
-          XCTFail("no snapshot obtained after polling for locale output")
-          return
-        }
-
-        let text = visibleText(from: UnsafePointer(s))
-        XCTAssertTrue(
-          text.contains("en_US.UTF-8|unset|unset"),
-          "spawn env should replace non-UTF-8 LANG with LANG=UTF-8; got "
-            + text.debugDescription)
       }
     }
   }
 
   func testPTYSpawnEnvironmentPreservesInheritedUTF8Locale() {
-    let oldLang = getenv("LANG").map { String(cString: $0) }
-    let oldLcCtype = getenv("LC_CTYPE").map { String(cString: $0) }
-    let oldLcAll = getenv("LC_ALL").map { String(cString: $0) }
-    setenv("LANG", "ja_JP.UTF-8", 1)
-    unsetenv("LC_CTYPE")
-    unsetenv("LC_ALL")
-    defer {
-      if let oldLang { setenv("LANG", oldLang, 1) } else { unsetenv("LANG") }
-      if let oldLcCtype { setenv("LC_CTYPE", oldLcCtype, 1) } else { unsetenv("LC_CTYPE") }
-      if let oldLcAll { setenv("LC_ALL", oldLcAll, 1) } else { unsetenv("LC_ALL") }
-    }
+    withProcessLocaleEnvironment(lang: "ja_JP.UTF-8") {
+      let exe = "/bin/sh"
+      let command = "printf '%s|%s\\n' \"$LANG\" \"${LC_CTYPE-unset}\""
+      let argStrings = ["/bin/sh", "-c", command]
 
-    let exe = "/bin/sh"
-    let command = "printf '%s|%s\\n' \"$LANG\" \"${LC_CTYPE-unset}\""
-    let argStrings = ["/bin/sh", "-c", command]
+      exe.withCString { exeCStr in
+        withCArgv(argStrings) { argvPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.fixture_mode = 0
 
-    exe.withCString { exeCStr in
-      withCArgv(argStrings) { argvPtr in
-        var config = LabanLaunchConfig()
-        config.executable = exeCStr
-        config.argv = argvPtr
-        config.fixture_mode = 0
+          var size = LabanTerminalSize()
+          size.rows = 8
+          size.cols = 80
 
-        var size = LabanTerminalSize()
-        size.rows = 8
-        size.cols = 80
-
-        var session: OpaquePointer?
-        guard laban_session_create(&config, size, &session) == 0, let session else {
-          XCTFail("laban_session_create failed for inherited UTF-8 locale test")
-          return
-        }
-        defer { laban_session_destroy(session) }
-
-        var snap: UnsafeMutablePointer<LabanSnapshot>?
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-          XCTAssertEqual(laban_session_poll(session), 0)
-          if let current = snap {
-            laban_snapshot_destroy(current)
-            snap = nil
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for inherited UTF-8 locale test")
+            return
           }
-          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          defer { laban_session_destroy(session) }
+
+          var snap: UnsafeMutablePointer<LabanSnapshot>?
+          let deadline = Date().addingTimeInterval(2.0)
+          while Date() < deadline {
+            XCTAssertEqual(laban_session_poll(session), 0)
+            if let current = snap {
+              laban_snapshot_destroy(current)
+              snap = nil
+            }
+            guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+            let text = visibleText(from: UnsafePointer(s))
+            if text.contains("ja_JP.UTF-8") { break }
+            if s.pointee.status != 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+          }
+          defer { laban_snapshot_destroy(snap) }
+
+          guard let s = snap else {
+            XCTFail("no snapshot obtained after polling for locale output")
+            return
+          }
+
           let text = visibleText(from: UnsafePointer(s))
-          if text.contains("ja_JP.UTF-8") { break }
-          if s.pointee.status != 0 { break }
-          Thread.sleep(forTimeInterval: 0.02)
+          XCTAssertTrue(
+            text.contains("ja_JP.UTF-8|unset"),
+            "spawn env should preserve an inherited UTF-8 LANG and not inject a default; got "
+              + text.debugDescription)
         }
-        defer { laban_snapshot_destroy(snap) }
-
-        guard let s = snap else {
-          XCTFail("no snapshot obtained after polling for locale output")
-          return
-        }
-
-        let text = visibleText(from: UnsafePointer(s))
-        XCTAssertTrue(
-          text.contains("ja_JP.UTF-8|unset"),
-          "spawn env should preserve an inherited UTF-8 LANG and not inject a default; got "
-            + text.debugDescription)
       }
     }
   }
 
   func testPTYSpawnEnvironmentDropsInheritedNonUtf8LC_ALL() {
-    let oldLang = getenv("LANG").map { String(cString: $0) }
-    let oldLcCtype = getenv("LC_CTYPE").map { String(cString: $0) }
-    let oldLcAll = getenv("LC_ALL").map { String(cString: $0) }
-    unsetenv("LANG")
-    unsetenv("LC_CTYPE")
-    setenv("LC_ALL", "C", 1)
-    defer {
-      if let oldLang { setenv("LANG", oldLang, 1) } else { unsetenv("LANG") }
-      if let oldLcCtype { setenv("LC_CTYPE", oldLcCtype, 1) } else { unsetenv("LC_CTYPE") }
-      if let oldLcAll { setenv("LC_ALL", oldLcAll, 1) } else { unsetenv("LC_ALL") }
-    }
+    withProcessLocaleEnvironment(lcAll: "C") {
+      let exe = "/bin/sh"
+      let command = "printf '%s|%s|%s\\n' \"${LANG-unset}\" \"${LC_CTYPE-unset}\" \"${LC_ALL-unset}\""
+      let argStrings = ["/bin/sh", "-c", command]
 
-    let exe = "/bin/sh"
-    let command = "printf '%s|%s|%s\\n' \"${LANG-unset}\" \"${LC_CTYPE-unset}\" \"${LC_ALL-unset}\""
-    let argStrings = ["/bin/sh", "-c", command]
+      exe.withCString { exeCStr in
+        withCArgv(argStrings) { argvPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.fixture_mode = 0
 
-    exe.withCString { exeCStr in
-      withCArgv(argStrings) { argvPtr in
-        var config = LabanLaunchConfig()
-        config.executable = exeCStr
-        config.argv = argvPtr
-        config.fixture_mode = 0
+          var size = LabanTerminalSize()
+          size.rows = 8
+          size.cols = 80
 
-        var size = LabanTerminalSize()
-        size.rows = 8
-        size.cols = 80
-
-        var session: OpaquePointer?
-        guard laban_session_create(&config, size, &session) == 0, let session else {
-          XCTFail("laban_session_create failed for non-UTF-8 LC_ALL test")
-          return
-        }
-        defer { laban_session_destroy(session) }
-
-        var snap: UnsafeMutablePointer<LabanSnapshot>?
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-          XCTAssertEqual(laban_session_poll(session), 0)
-          if let current = snap {
-            laban_snapshot_destroy(current)
-            snap = nil
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for non-UTF-8 LC_ALL test")
+            return
           }
-          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          defer { laban_session_destroy(session) }
+
+          var snap: UnsafeMutablePointer<LabanSnapshot>?
+          let deadline = Date().addingTimeInterval(2.0)
+          while Date() < deadline {
+            XCTAssertEqual(laban_session_poll(session), 0)
+            if let current = snap {
+              laban_snapshot_destroy(current)
+              snap = nil
+            }
+            guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+            let text = visibleText(from: UnsafePointer(s))
+            if text.contains("en_US.UTF-8") { break }
+            if s.pointee.status != 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+          }
+          defer { laban_snapshot_destroy(snap) }
+
+          guard let s = snap else {
+            XCTFail("no snapshot obtained after polling for locale output")
+            return
+          }
+
           let text = visibleText(from: UnsafePointer(s))
-          if text.contains("en_US.UTF-8") { break }
-          if s.pointee.status != 0 { break }
-          Thread.sleep(forTimeInterval: 0.02)
+          XCTAssertTrue(
+            text.contains("en_US.UTF-8|unset|unset"),
+            "spawn env should replace non-UTF-8 LC_ALL with LANG=UTF-8; got "
+              + text.debugDescription)
         }
-        defer { laban_snapshot_destroy(snap) }
+      }
+    }
+  }
 
-        guard let s = snap else {
-          XCTFail("no snapshot obtained after polling for locale output")
-          return
+  func testPTYSpawnEnvironmentDropsNonUtf8LC_ALLDespiteInheritedUTF8LANG() {
+    withProcessLocaleEnvironment(lang: "en_US.UTF-8", lcAll: "C") {
+      let exe = "/bin/sh"
+      let command = "printf '%s|%s|%s\\n' \"$LANG\" \"${LC_CTYPE-unset}\" \"${LC_ALL-unset}\""
+      let argStrings = ["/bin/sh", "-c", command]
+
+      exe.withCString { exeCStr in
+        withCArgv(argStrings) { argvPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.fixture_mode = 0
+
+          var size = LabanTerminalSize()
+          size.rows = 8
+          size.cols = 80
+
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for mixed locale precedence test")
+            return
+          }
+          defer { laban_session_destroy(session) }
+
+          var snap: UnsafeMutablePointer<LabanSnapshot>?
+          let deadline = Date().addingTimeInterval(2.0)
+          while Date() < deadline {
+            XCTAssertEqual(laban_session_poll(session), 0)
+            if let current = snap {
+              laban_snapshot_destroy(current)
+              snap = nil
+            }
+            guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+            let text = visibleText(from: UnsafePointer(s))
+            if text.contains("en_US.UTF-8|unset|unset") { break }
+            if s.pointee.status != 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+          }
+          defer { laban_snapshot_destroy(snap) }
+
+          guard let s = snap else {
+            XCTFail("no snapshot obtained after polling for locale output")
+            return
+          }
+
+          let text = visibleText(from: UnsafePointer(s))
+          XCTAssertTrue(
+            text.contains("en_US.UTF-8|unset|unset"),
+            "spawn env should drop non-UTF-8 LC_ALL even when LANG is UTF-8; got "
+              + text.debugDescription)
         }
-
-        let text = visibleText(from: UnsafePointer(s))
-        XCTAssertTrue(
-          text.contains("en_US.UTF-8|unset|unset"),
-          "spawn env should replace non-UTF-8 LC_ALL with LANG=UTF-8; got "
-            + text.debugDescription)
       }
     }
   }
 
   func testPTYSpawnEnvironmentCallerLocaleOverrideWins() {
-    let oldLang = getenv("LANG").map { String(cString: $0) }
-    let oldLcCtype = getenv("LC_CTYPE").map { String(cString: $0) }
-    let oldLcAll = getenv("LC_ALL").map { String(cString: $0) }
-    unsetenv("LANG")
-    unsetenv("LC_CTYPE")
-    unsetenv("LC_ALL")
-    defer {
-      if let oldLang { setenv("LANG", oldLang, 1) } else { unsetenv("LANG") }
-      if let oldLcCtype { setenv("LC_CTYPE", oldLcCtype, 1) } else { unsetenv("LC_CTYPE") }
-      if let oldLcAll { setenv("LC_ALL", oldLcAll, 1) } else { unsetenv("LC_ALL") }
-    }
+    withProcessLocaleEnvironment {
+      let exe = "/bin/sh"
+      let command = "printf '%s|%s|%s\\n' \"${LANG-unset}\" \"${LC_CTYPE-unset}\" \"$LC_ALL\""
+      let argStrings = ["/bin/sh", "-c", command]
 
-    let exe = "/bin/sh"
-    let command = "printf '%s|%s|%s\\n' \"${LANG-unset}\" \"${LC_CTYPE-unset}\" \"$LC_ALL\""
-    let argStrings = ["/bin/sh", "-c", command]
+      exe.withCString { exeCStr in
+        withCArgv(argStrings) { argvPtr in
+          var envp: [UnsafeMutablePointer<CChar>?] = [strdup("LC_ALL=C"), nil]
+          defer { for p in envp where p != nil { free(p) } }
 
-    exe.withCString { exeCStr in
-      withCArgv(argStrings) { argvPtr in
-        var envp: [UnsafeMutablePointer<CChar>?] = [strdup("LC_ALL=C"), nil]
-        defer { for p in envp where p != nil { free(p) } }
-
-        var config = LabanLaunchConfig()
-        config.executable = exeCStr
-        config.argv = argvPtr
-        config.fixture_mode = 0
-        envp.withUnsafeMutableBufferPointer { envBuf in
-          envBuf.baseAddress!.withMemoryRebound(
-            to: UnsafePointer<CChar>?.self, capacity: envBuf.count
-          ) { envRebound in
-            config.envp = UnsafePointer(envRebound)
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.fixture_mode = 0
+          envp.withUnsafeMutableBufferPointer { envBuf in
+            envBuf.baseAddress!.withMemoryRebound(
+              to: UnsafePointer<CChar>?.self, capacity: envBuf.count
+            ) { envRebound in
+              config.envp = UnsafePointer(envRebound)
+            }
           }
-        }
 
-        var size = LabanTerminalSize()
-        size.rows = 8
-        size.cols = 80
+          var size = LabanTerminalSize()
+          size.rows = 8
+          size.cols = 80
 
-        var session: OpaquePointer?
-        guard laban_session_create(&config, size, &session) == 0, let session else {
-          XCTFail("laban_session_create failed for caller locale override test")
-          return
-        }
-        defer { laban_session_destroy(session) }
-
-        var snap: UnsafeMutablePointer<LabanSnapshot>?
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-          XCTAssertEqual(laban_session_poll(session), 0)
-          if let current = snap {
-            laban_snapshot_destroy(current)
-            snap = nil
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for caller locale override test")
+            return
           }
-          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          defer { laban_session_destroy(session) }
+
+          var snap: UnsafeMutablePointer<LabanSnapshot>?
+          let deadline = Date().addingTimeInterval(2.0)
+          while Date() < deadline {
+            XCTAssertEqual(laban_session_poll(session), 0)
+            if let current = snap {
+              laban_snapshot_destroy(current)
+              snap = nil
+            }
+            guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+            let text = visibleText(from: UnsafePointer(s))
+            if text.contains("LC_ALL=C") { break }
+            if s.pointee.status != 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+          }
+          defer { laban_snapshot_destroy(snap) }
+
+          guard let s = snap else {
+            XCTFail("no snapshot obtained after polling for locale output")
+            return
+          }
+
           let text = visibleText(from: UnsafePointer(s))
-          if text.contains("LC_ALL=C") { break }
-          if s.pointee.status != 0 { break }
-          Thread.sleep(forTimeInterval: 0.02)
+          XCTAssertTrue(
+            text.contains("unset|unset|C"),
+            "caller-provided LC_ALL override must win and suppress default LANG; got "
+              + text.debugDescription)
         }
-        defer { laban_snapshot_destroy(snap) }
-
-        guard let s = snap else {
-          XCTFail("no snapshot obtained after polling for locale output")
-          return
-        }
-
-        let text = visibleText(from: UnsafePointer(s))
-        XCTAssertTrue(
-          text.contains("unset|unset|C"),
-          "caller-provided LC_ALL override must win and suppress default LANG; got "
-            + text.debugDescription)
       }
     }
   }
 
   func testPTYSpawnEnvironmentRecognizesUTF8WithModifier() {
-    let oldLang = getenv("LANG").map { String(cString: $0) }
-    let oldLcCtype = getenv("LC_CTYPE").map { String(cString: $0) }
-    let oldLcAll = getenv("LC_ALL").map { String(cString: $0) }
-    setenv("LANG", "de_DE.UTF-8@euro", 1)
-    unsetenv("LC_CTYPE")
-    unsetenv("LC_ALL")
-    defer {
-      if let oldLang { setenv("LANG", oldLang, 1) } else { unsetenv("LANG") }
-      if let oldLcCtype { setenv("LC_CTYPE", oldLcCtype, 1) } else { unsetenv("LC_CTYPE") }
-      if let oldLcAll { setenv("LC_ALL", oldLcAll, 1) } else { unsetenv("LC_ALL") }
-    }
+    withProcessLocaleEnvironment(lang: "de_DE.UTF-8@euro") {
+      let exe = "/bin/sh"
+      let command = "printf '%s|%s\\n' \"$LANG\" \"${LC_CTYPE-unset}\""
+      let argStrings = ["/bin/sh", "-c", command]
 
-    let exe = "/bin/sh"
-    let command = "printf '%s|%s\\n' \"$LANG\" \"${LC_CTYPE-unset}\""
-    let argStrings = ["/bin/sh", "-c", command]
+      exe.withCString { exeCStr in
+        withCArgv(argStrings) { argvPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.fixture_mode = 0
 
-    exe.withCString { exeCStr in
-      withCArgv(argStrings) { argvPtr in
-        var config = LabanLaunchConfig()
-        config.executable = exeCStr
-        config.argv = argvPtr
-        config.fixture_mode = 0
+          var size = LabanTerminalSize()
+          size.rows = 8
+          size.cols = 80
 
-        var size = LabanTerminalSize()
-        size.rows = 8
-        size.cols = 80
-
-        var session: OpaquePointer?
-        guard laban_session_create(&config, size, &session) == 0, let session else {
-          XCTFail("laban_session_create failed for UTF-8@euro locale test")
-          return
-        }
-        defer { laban_session_destroy(session) }
-
-        var snap: UnsafeMutablePointer<LabanSnapshot>?
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-          XCTAssertEqual(laban_session_poll(session), 0)
-          if let current = snap {
-            laban_snapshot_destroy(current)
-            snap = nil
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for UTF-8@euro locale test")
+            return
           }
-          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          defer { laban_session_destroy(session) }
+
+          var snap: UnsafeMutablePointer<LabanSnapshot>?
+          let deadline = Date().addingTimeInterval(2.0)
+          while Date() < deadline {
+            XCTAssertEqual(laban_session_poll(session), 0)
+            if let current = snap {
+              laban_snapshot_destroy(current)
+              snap = nil
+            }
+            guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+            let text = visibleText(from: UnsafePointer(s))
+            if text.contains("de_DE.UTF-8@euro") { break }
+            if s.pointee.status != 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+          }
+          defer { laban_snapshot_destroy(snap) }
+
+          guard let s = snap else {
+            XCTFail("no snapshot obtained after polling for locale output")
+            return
+          }
+
           let text = visibleText(from: UnsafePointer(s))
-          if text.contains("de_DE.UTF-8@euro") { break }
-          if s.pointee.status != 0 { break }
-          Thread.sleep(forTimeInterval: 0.02)
+          XCTAssertTrue(
+            text.contains("de_DE.UTF-8@euro|unset"),
+            "spawn env should preserve UTF-8 locale with @modifier and not inject a default; got "
+              + text.debugDescription)
         }
-        defer { laban_snapshot_destroy(snap) }
-
-        guard let s = snap else {
-          XCTFail("no snapshot obtained after polling for locale output")
-          return
-        }
-
-        let text = visibleText(from: UnsafePointer(s))
-        XCTAssertTrue(
-          text.contains("de_DE.UTF-8@euro|unset"),
-          "spawn env should preserve UTF-8 locale with @modifier and not inject a default; got "
-            + text.debugDescription)
       }
     }
   }

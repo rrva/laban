@@ -46,19 +46,29 @@ static bool locale_value_is_utf8(const char *value) {
     return false;
 }
 
-static bool envp_has_utf8_locale(const char *const *envp) {
-    if (!envp) return false;
-    for (int i = 0; envp[i]; i++) {
-        const char *entry = envp[i];
-        if (!env_entry_has_name(entry, "LANG") &&
-            !env_entry_has_name(entry, "LC_CTYPE") &&
-            !env_entry_has_name(entry, "LC_ALL")) {
-            continue;
+static const char *env_entries_get_value(char **entries, size_t count, const char *name) {
+    for (size_t i = 0; i < count; i++) {
+        if (env_entry_has_name(entries[i], name)) {
+            const char *eq = strchr(entries[i], '=');
+            return eq ? eq + 1 : NULL;
         }
-        const char *eq = strchr(entry, '=');
-        if (eq && locale_value_is_utf8(eq + 1)) return true;
     }
+    return NULL;
+}
+
+static bool locale_values_effective_utf8(const char *lc_all, const char *lc_ctype,
+                                         const char *lang) {
+    if (lc_all) return locale_value_is_utf8(lc_all);
+    if (lc_ctype) return locale_value_is_utf8(lc_ctype);
+    if (lang) return locale_value_is_utf8(lang);
     return false;
+}
+
+static bool env_entries_effective_locale_is_utf8(char **entries, size_t count) {
+    return locale_values_effective_utf8(
+      env_entries_get_value(entries, count, "LC_ALL"),
+      env_entries_get_value(entries, count, "LC_CTYPE"),
+      env_entries_get_value(entries, count, "LANG"));
 }
 
 static bool envp_has_locale_name(const char *const *envp, const char *name) {
@@ -79,7 +89,6 @@ static char **build_spawn_env(const char *const *overrides) {
     char **env = calloc(inherited_count + override_count + 4, sizeof(char *));
     if (!env) return NULL;
 
-    const bool has_utf8_locale = envp_has_utf8_locale((const char *const *)environ) || envp_has_utf8_locale(overrides);
     /* If the caller explicitly sets any locale variable, do not inject a
      * default; their choice wins even if it is not UTF-8. */
     const bool caller_sets_locale =
@@ -107,7 +116,7 @@ static char **build_spawn_env(const char *const *overrides) {
          * so CJK tools see a usable locale. Drop the inherited entry to avoid
          * a duplicate-name race in getenv(3). LC_ALL is included because it
          * would otherwise win over LANG/LC_CTYPE. */
-        if (!has_utf8_locale && !caller_sets_locale &&
+        if (!caller_sets_locale &&
             (env_entry_has_name(entry, "LANG") ||
              env_entry_has_name(entry, "LC_CTYPE") ||
              env_entry_has_name(entry, "LC_ALL"))) {
@@ -127,10 +136,10 @@ static char **build_spawn_env(const char *const *overrides) {
     if (!envp_has_name(overrides, "TERM_PROGRAM")) {
         env[out++] = (char *)"TERM_PROGRAM=Laban";
     }
-    /* CJK tools (ls, grep, git, less) trust LANG/LC_CTYPE. If neither the
-     * inherited environment nor the caller overrides provide a UTF-8 locale,
-     * default to en_US.UTF-8 so multibyte input is never mangled. */
-    if (!has_utf8_locale && !caller_sets_locale) {
+    /* CJK tools (ls, grep, git, less) trust LANG/LC_CTYPE. After dropping
+     * non-UTF-8 locale entries, inject a safe default only when LC_ALL, then
+     * LC_CTYPE, then LANG still do not yield a UTF-8 effective locale. */
+    if (!caller_sets_locale && !env_entries_effective_locale_is_utf8(env, out)) {
         env[out++] = (char *)"LANG=en_US.UTF-8";
     }
 
