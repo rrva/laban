@@ -160,6 +160,19 @@ final class ControlDefaultOnTests: XCTestCase {
     XCTAssertEqual(status, 401)
   }
 
+  func testPersistenceObserverTabCreatedHookChainsControlShellRegistration() {
+    var order: [String] = []
+    var handler: ((Int) -> Void)!
+    handler = { _ in order.append("control") }
+    let priorForObserver = handler!
+    handler = { value in
+      priorForObserver(value)
+      order.append("observer")
+    }
+    handler(0)
+    XCTAssertEqual(order, ["control", "observer"])
+  }
+
   func testPreallocatedSessionIDMatchesRedeemedScope() throws {
     let coordinator = ControlSessionLaunchCoordinator()
     let model = try AppModel(
