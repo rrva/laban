@@ -62,7 +62,9 @@ public func makeRendererBackend(
   sidebarFontAtlas: FontAtlas? = nil,
   pixelWidth: Int = 1,
   pixelHeight: Int = 1,
-  scale: CGFloat = 1
+  scale: CGFloat = 1,
+  prebuiltRasterAtlas: MetalGlyphAtlas? = nil,
+  prebuiltSidebarRasterAtlas: MetalGlyphAtlas? = nil
 ) -> RendererBackend {
   let resolved = selection.isAvailableOnCurrentOS ? selection : .classic
   let sidebar = sidebarFontAtlas ?? fontAtlas
@@ -131,7 +133,9 @@ public func makeRendererBackend(
       sidebarFontAtlas: sidebar,
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
-      scale: scale)
+      scale: scale,
+      prebuiltRasterAtlas: prebuiltRasterAtlas,
+      prebuiltSidebarRasterAtlas: prebuiltSidebarRasterAtlas)
     {
       vector.setSubpixelLayout(VectorSubpixelLayout.persisted())
       return vector
@@ -182,7 +186,8 @@ public func makeRendererBackend(
       sidebarFontAtlas: sidebar,
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
-      scale: scale)
+      scale: scale,
+      prebuiltRasterAtlas: prebuiltRasterAtlas)
     {
       slug.setSubpixelLayout(VectorSubpixelLayout.persisted())
       return slug

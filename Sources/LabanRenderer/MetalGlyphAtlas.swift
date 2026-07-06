@@ -88,6 +88,26 @@ public final class MetalGlyphAtlas {
   /// Diagnostic: the cell height this fallback atlas was built for. Used to
   /// detect a stale-size raster fallback during a zoom commit.
   public var cellHeightForDiagnostics: CGFloat { cellHeight }
+
+  /// Whether this atlas can be reused as-is for a renderer being constructed
+  /// with the given device and cell geometry: adopting it produces
+  /// byte-for-byte the same result as building a fresh, empty atlas for that
+  /// geometry would, just already warm. Used by callers (for example
+  /// `VectorGlyphRenderer.init`) that may have a prewarmed atlas available
+  /// from a background prewarm pass and want to adopt it only when it truly
+  /// matches, so a wrongly-sized atlas is never silently adopted on a fresh
+  /// construction path.
+  func isCompatible(
+    device: MTLDevice,
+    cellWidth: CGFloat,
+    cellHeight: CGFloat,
+    scale: CGFloat
+  ) -> Bool {
+    texture.device === device
+      && self.cellWidth == cellWidth
+      && self.cellHeight == cellHeight
+      && self.scale == max(scale, 1)
+  }
   private let descent: CGFloat
   private let colorSpace = CGColorSpaceCreateDeviceGray()
 

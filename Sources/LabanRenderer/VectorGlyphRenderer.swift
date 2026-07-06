@@ -212,6 +212,19 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   private var rasterAtlas: MetalGlyphAtlas?
   private var sidebarRasterAtlas: MetalGlyphAtlas?
   private var colorGlyphAtlas: ColorGlyphAtlas?
+  /// A prewarmed raster atlas supplied by a background cold-launch prewarm
+  /// pass, held aside until the first atlas (re)build whose scale matches it,
+  /// then adopted one-shot instead of building cold. Nil outside a cold launch
+  /// into this renderer. See `adoptPrewarmedRasterAtlas(forFontAtlas:scale:)`
+  /// and the inline adoption in `init`.
+  private var prewarmedRasterAtlas: MetalGlyphAtlas? = nil
+  private var prewarmedSidebarRasterAtlas: MetalGlyphAtlas? = nil
+
+  /// Test accessor for the active raster atlas, so prebuilt-atlas adoption
+  /// tests can assert identity (`===`) against a prebuilt atlas passed into
+  /// `init` or adopted later at `resize`.
+  public var debugRasterAtlasForTesting: MetalGlyphAtlas? { rasterAtlas }
+  public var debugSidebarRasterAtlasForTesting: MetalGlyphAtlas? { sidebarRasterAtlas }
   private var emojiRenderingMode: EmojiRenderingMode = EmojiRenderingSettings.current()
   private var textWeight: Double = VectorTextWeightSettings.current()
   private var smoothScrollMode: VectorSmoothScrollMode = VectorSmoothScrollSettings.current()
@@ -246,7 +259,9 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     sidebarFontAtlas: FontAtlas? = nil,
     pixelWidth: Int = 1,
     pixelHeight: Int = 1,
-    scale: CGFloat = 1
+    scale: CGFloat = 1,
+    prebuiltRasterAtlas: MetalGlyphAtlas? = nil,
+    prebuiltSidebarRasterAtlas: MetalGlyphAtlas? = nil
   ) {
     guard let device = MTLCreateSystemDefaultDevice(),
       let queue = device.makeCommandQueue(),
@@ -317,11 +332,35 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     self.pixelWidth = max(1, pixelWidth)
     self.pixelHeight = max(1, pixelHeight)
     self.scale = max(scale, 1)
-    self.rasterAtlas = Self.makeRasterAtlas(device: device, fontAtlas: fontAtlas, scale: scale)
-    self.sidebarRasterAtlas = Self.makeRasterAtlas(
-      device: device,
-      fontAtlas: sidebarFontAtlas ?? fontAtlas,
-      scale: scale)
+    self.prewarmedRasterAtlas = prebuiltRasterAtlas
+    self.prewarmedSidebarRasterAtlas = prebuiltSidebarRasterAtlas
+    let sidebarSource = sidebarFontAtlas ?? fontAtlas
+    if let prebuilt = prebuiltRasterAtlas,
+      prebuilt.isCompatible(
+        device: device,
+        cellWidth: fontAtlas.cellSize.width,
+        cellHeight: fontAtlas.cellSize.height,
+        scale: scale)
+    {
+      self.rasterAtlas = prebuilt
+      self.prewarmedRasterAtlas = nil
+    } else {
+      self.rasterAtlas = Self.makeRasterAtlas(
+        device: device, fontAtlas: fontAtlas, scale: scale)
+    }
+    if let prebuilt = prebuiltSidebarRasterAtlas,
+      prebuilt.isCompatible(
+        device: device,
+        cellWidth: sidebarSource.cellSize.width,
+        cellHeight: sidebarSource.cellSize.height,
+        scale: scale)
+    {
+      self.sidebarRasterAtlas = prebuilt
+      self.prewarmedSidebarRasterAtlas = nil
+    } else {
+      self.sidebarRasterAtlas = Self.makeRasterAtlas(
+        device: device, fontAtlas: sidebarSource, scale: scale)
+    }
     self.colorGlyphAtlas = Self.makeColorGlyphAtlas(
       device: device,
       fontAtlas: fontAtlas,
@@ -503,6 +542,44 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       scale: scale)
   }
 
+  /// If a prewarm pass left a compatible raster atlas held aside for `scale`,
+  /// adopt it (one-shot) and clear the held reference; otherwise return nil so
+  /// the caller builds a fresh atlas. Used at `resize`'s scale-changed rebuild
+  /// so a cold-launch-prewarmed atlas is adopted at the first build whose scale
+  /// matches it instead of being rasterized cold. `init` does its own inline
+  /// adoption (it cannot call this instance method before all stored properties
+  /// are set), which handles the case where the prewarm scale already matches
+  /// `init`'s scale.
+  private func adoptPrewarmedRasterAtlas(
+    forFontAtlas fontAtlas: FontAtlas,
+    scale: CGFloat
+  ) -> MetalGlyphAtlas? {
+    guard let atlas = prewarmedRasterAtlas,
+      atlas.isCompatible(
+        device: device,
+        cellWidth: fontAtlas.cellSize.width,
+        cellHeight: fontAtlas.cellSize.height,
+        scale: scale)
+    else { return nil }
+    prewarmedRasterAtlas = nil
+    return atlas
+  }
+
+  private func adoptPrewarmedSidebarRasterAtlas(
+    forFontAtlas fontAtlas: FontAtlas,
+    scale: CGFloat
+  ) -> MetalGlyphAtlas? {
+    guard let atlas = prewarmedSidebarRasterAtlas,
+      atlas.isCompatible(
+        device: device,
+        cellWidth: fontAtlas.cellSize.width,
+        cellHeight: fontAtlas.cellSize.height,
+        scale: scale)
+    else { return nil }
+    prewarmedSidebarRasterAtlas = nil
+    return atlas
+  }
+
   private static func makeColorGlyphAtlas(
     device: MTLDevice,
     fontAtlas: FontAtlas,
@@ -614,11 +691,15 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       // Keys, so a scale change must invalidate them too — otherwise the next
       // frame reserves wrong-sized atlas slots and bakes garbled glyphs.
       descriptorCache.removeAll(keepingCapacity: true)
-      rasterAtlas = Self.makeRasterAtlas(device: device, fontAtlas: fontAtlas, scale: newScale)
-      sidebarRasterAtlas = Self.makeRasterAtlas(
-        device: device,
-        fontAtlas: sidebarFontAtlas,
-        scale: newScale)
+      rasterAtlas =
+        adoptPrewarmedRasterAtlas(forFontAtlas: fontAtlas, scale: newScale)
+        ?? Self.makeRasterAtlas(device: device, fontAtlas: fontAtlas, scale: newScale)
+      sidebarRasterAtlas =
+        adoptPrewarmedSidebarRasterAtlas(forFontAtlas: sidebarFontAtlas, scale: newScale)
+        ?? Self.makeRasterAtlas(
+          device: device,
+          fontAtlas: sidebarFontAtlas,
+          scale: newScale)
       colorGlyphAtlas = Self.makeColorGlyphAtlas(
         device: device,
         fontAtlas: fontAtlas,

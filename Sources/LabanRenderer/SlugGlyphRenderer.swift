@@ -293,6 +293,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var targetTexture: MTLTexture?
   private var lastCommandBuffer: MTLCommandBuffer?
   private var rasterAtlas: MetalGlyphAtlas?
+  /// A prewarmed raster atlas supplied by a background cold-launch prewarm
+  /// pass, held aside until the first atlas (re)build whose scale matches it,
+  /// then adopted one-shot instead of building cold. Nil outside a cold launch
+  /// into this renderer. See `adoptPrewarmedRasterAtlas(forFontAtlas:scale:)`.
+  private var prewarmedRasterAtlas: MetalGlyphAtlas? = nil
+
+  /// Test accessor for the active raster atlas, so prebuilt-atlas adoption
+  /// tests can assert identity (`===`) against a prebuilt atlas passed into
+  /// `init` or adopted later at `resize`.
+  public var debugRasterAtlasForTesting: MetalGlyphAtlas? { rasterAtlas }
   private var colorGlyphAtlas: ColorGlyphAtlas?
   private var pixelWidth: Int
   private var pixelHeight: Int
@@ -352,7 +362,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     sidebarFontAtlas: FontAtlas? = nil,
     pixelWidth: Int = 1,
     pixelHeight: Int = 1,
-    scale: CGFloat = 1
+    scale: CGFloat = 1,
+    prebuiltRasterAtlas: MetalGlyphAtlas? = nil
   ) {
     guard let device = MTLCreateSystemDefaultDevice(),
       let queue = device.makeCommandQueue()
@@ -523,10 +534,22 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       device: device,
       fontAtlas: fontAtlas,
       scale: self.scale)
-    self.rasterAtlas = Self.makeRasterGlyphAtlas(
-      device: device,
-      fontAtlas: fontAtlas,
-      scale: self.scale)
+    self.prewarmedRasterAtlas = prebuiltRasterAtlas
+    if let prebuilt = prebuiltRasterAtlas,
+      prebuilt.isCompatible(
+        device: device,
+        cellWidth: fontAtlas.cellSize.width,
+        cellHeight: fontAtlas.cellSize.height,
+        scale: self.scale)
+    {
+      self.rasterAtlas = prebuilt
+      self.prewarmedRasterAtlas = nil
+    } else {
+      self.rasterAtlas = Self.makeRasterGlyphAtlas(
+        device: device,
+        fontAtlas: fontAtlas,
+        scale: self.scale)
+    }
 
     if #available(macOS 14.0, *), Self.presentDisplayLinkEnabled,
       let presentQueue = device.makeCommandQueue()
@@ -691,10 +714,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         device: device,
         fontAtlas: fontAtlas,
         scale: newScale)
-      rasterAtlas = Self.makeRasterGlyphAtlas(
-        device: device,
-        fontAtlas: fontAtlas,
-        scale: newScale)
+      rasterAtlas =
+        adoptPrewarmedRasterAtlas(forFontAtlas: fontAtlas, scale: newScale)
+        ?? Self.makeRasterGlyphAtlas(
+          device: device,
+          fontAtlas: fontAtlas,
+          scale: newScale)
     }
     return true
   }
@@ -1878,6 +1903,28 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       cellHeight: fontAtlas.cellSize.height,
       descent: fontAtlas.descent,
       scale: scale)
+  }
+
+  /// If a prewarm pass left a compatible raster atlas held aside for `scale`,
+  /// adopt it (one-shot) and clear the held reference; otherwise return nil so
+  /// the caller builds a fresh atlas. Used at `resize`'s scale-changed rebuild
+  /// so a cold-launch-prewarmed atlas is adopted at the first build whose scale
+  /// matches it instead of being rasterized cold. `init` does its own inline
+  /// adoption for the case where the prewarm scale already matches `init`'s
+  /// scale.
+  private func adoptPrewarmedRasterAtlas(
+    forFontAtlas fontAtlas: FontAtlas,
+    scale: CGFloat
+  ) -> MetalGlyphAtlas? {
+    guard let atlas = prewarmedRasterAtlas,
+      atlas.isCompatible(
+        device: device,
+        cellWidth: fontAtlas.cellSize.width,
+        cellHeight: fontAtlas.cellSize.height,
+        scale: scale)
+    else { return nil }
+    prewarmedRasterAtlas = nil
+    return atlas
   }
 
   private static func srgbToLinear(_ c: Float) -> Float {

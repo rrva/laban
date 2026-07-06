@@ -102,6 +102,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     var retriedAfterResize: Bool
   }
 
+  /// Prewarmed glyph atlases produced by `ColdLaunchAtlasPrewarmer` on a
+  /// background queue, held for `beginPendingBackendSwap` to thread into the
+  /// real vector/slug backend being constructed. Either field may be nil if
+  /// Metal allocation failed for that atlas; the renderer then builds a fresh
+  /// (cold) one as today. Cleared (one-shot) by `beginPendingBackendSwap`.
+  private struct ColdLaunchPrewarmedAtlases {
+    let terminal: MetalGlyphAtlas?
+    let sidebar: MetalGlyphAtlas?
+  }
+
   typealias BackendFactoryForTesting =
     (RendererSelection, FontAtlas, FontAtlas) -> RendererBackend
   static var backendFactoryForTesting: BackendFactoryForTesting?
@@ -141,6 +151,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// True when `backend` self-presents — TerminalBitmapView skips its own
   /// draw() blit and lets the layer composite directly.
   private var backendSelfPresents: Bool
+  /// The persisted vector/slug selection a cold launch is deferring while a
+  /// fast temporary backend is shown first. Non-nil only between `init` (which
+  /// installed the fast backend) and the `viewDidMoveToWindow` kickoff that
+  /// starts the background prewarm. `intendedRendererSelection` already reports
+  /// this value immediately, so Settings UI and tests see the user's real
+  /// choice even while the fast backend is temporarily active.
+  private var coldLaunchPendingRealSelection: RendererSelection? = nil
+  /// Prewarmed atlases produced by the cold-launch prewarm, awaiting
+  /// `beginPendingBackendSwap`. Set on the main thread (in the prewarm
+  /// completion handler) just before `applyRendererSelection`; read and
+  /// cleared (one-shot) inside `beginPendingBackendSwap`.
+  private var pendingColdLaunchAtlas: ColdLaunchPrewarmedAtlases? = nil
   private(set) var cellWidth: Int
   private(set) var cellHeight: Int
   private let sidebarWidth: CGFloat = SidebarLayout.defaultWidth
@@ -690,12 +712,33 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let selection =
       Self.launchForcesSoftwareRenderer ? .software : RendererSelection.persisted()
     let resolvedSelection = selection.isAvailableOnCurrentOS ? selection : .classic
-    self.activeRendererSelection = resolvedSelection
     self.intendedRendererSelection = resolvedSelection
-    self.backend = Self.makeBackend(
-      selection: resolvedSelection,
-      fontAtlas: fontAtlas,
-      sidebarFontAtlas: sidebarFontAtlas)
+    // Cold-launch fast path: when the persisted renderer is vector/slug and
+    // Metal is available, show a fast temporary backend (.classic, which
+    // makeRendererBackend itself falls back to .software if a Metal pipeline
+    // can't be built) so the window is interactive immediately, then prewarm
+    // the vector/slug glyph atlas in the background and swap to the real
+    // backend through the existing applyRendererSelection / PendingBackendSwap
+    // path once warm. This avoids the multi-hundred-ms blank/white window
+    // caused by synchronous first-frame CoreText glyph rasterization on the
+    // main thread. See execplans/active/vector-glyph-cold-launch-stall.md.
+    let coldLaunchNeedsFastBackend =
+      (resolvedSelection == .vectorGlyph || resolvedSelection == .slugGlyph)
+      && MTLCreateSystemDefaultDevice() != nil
+    if coldLaunchNeedsFastBackend {
+      self.backend = Self.makeBackend(
+        selection: .classic,
+        fontAtlas: fontAtlas,
+        sidebarFontAtlas: sidebarFontAtlas)
+      self.activeRendererSelection = .classic
+      self.coldLaunchPendingRealSelection = resolvedSelection
+    } else {
+      self.backend = Self.makeBackend(
+        selection: resolvedSelection,
+        fontAtlas: fontAtlas,
+        sidebarFontAtlas: sidebarFontAtlas)
+      self.activeRendererSelection = resolvedSelection
+    }
     self.backendSelfPresents = backend.presentationLayer != nil
     super.init(frame: .zero)
     registerForDraggedTypes(TerminalDrop.acceptedTypes)
@@ -1073,7 +1116,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private static func makeBackend(
     selection: RendererSelection,
     fontAtlas: FontAtlas,
-    sidebarFontAtlas: FontAtlas
+    sidebarFontAtlas: FontAtlas,
+    prebuiltRasterAtlas: MetalGlyphAtlas? = nil,
+    prebuiltSidebarRasterAtlas: MetalGlyphAtlas? = nil
   ) -> RendererBackend {
     if let backendFactoryForTesting {
       return backendFactoryForTesting(selection, fontAtlas, sidebarFontAtlas)
@@ -1081,7 +1126,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return makeRendererBackend(
       selection: selection,
       fontAtlas: fontAtlas,
-      sidebarFontAtlas: sidebarFontAtlas)
+      sidebarFontAtlas: sidebarFontAtlas,
+      prebuiltRasterAtlas: prebuiltRasterAtlas,
+      prebuiltSidebarRasterAtlas: prebuiltSidebarRasterAtlas)
   }
 
   private func configurePresentationForCurrentBackend() {
@@ -1222,10 +1269,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func beginPendingBackendSwap(to resolved: RendererSelection) {
+    // Pick up a cold-launch-prewarmed atlas if one is waiting (set by the
+    // cold-launch prewarm completion handler just before applyRendererSelection
+    // called here), and clear it one-shot so it can never leak into a later
+    // mid-session swap. Nil for ordinary mid-session switches, so the shared
+    // swap path is unchanged when no prewarm ran.
+    let prebuilt = pendingColdLaunchAtlas
+    pendingColdLaunchAtlas = nil
     let newBackend = Self.makeBackend(
       selection: resolved,
       fontAtlas: fontAtlas,
-      sidebarFontAtlas: sidebarFontAtlas)
+      sidebarFontAtlas: sidebarFontAtlas,
+      prebuiltRasterAtlas: prebuilt?.terminal,
+      prebuiltSidebarRasterAtlas: prebuilt?.sidebar)
     nextBackendSwapToken &+= 1
     let token = nextBackendSwapToken
     let metrics = currentSurfaceMetrics()
@@ -1319,6 +1375,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   var debugPendingRendererSwapSelection: RendererSelection? {
     pendingBackendSwap?.selection
+  }
+
+  /// Test accessor: the effective renderer of the current (or pending) backend,
+  /// so cold-launch tests can assert which backend is actually active
+  /// (`.classic` immediately on a vector-glyph cold launch, `.vectorGlyph`
+  /// after the prewarmed swap completes).
+  var debugBackendEffectiveRenderer: RendererSelection? {
+    RendererSelection(
+      rawValue: (pendingBackendSwap?.backend ?? backend).rendererStatus.effectiveRenderer)
   }
 
   @discardableResult
@@ -1506,11 +1571,81 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
     startLabandSnapshotGenerationMonitor()
     scheduleResizeAutomationIfRequested()
+    kickOffColdLaunchPrewarmIfNeeded()
     // Defer ladder prebuild past the first frame so startup latency never
     // pays for it; until it lands, zoom uses the synchronous fallback.
     DispatchQueue.main.async { [weak self] in
       self?.ensureAtlasLadder()
     }
+  }
+
+  /// Kick off the cold-launch glyph-atlas prewarm (vector/slug) now that the
+  /// view knows its real backing scale, so the atlas is built at the same scale
+  /// `preparePendingBackendSwap`'s `resize` will use. No-op unless a
+  /// cold-launch fast backend is pending (`coldLaunchPendingRealSelection`).
+  /// One-shot: the starter clears the pending selection before starting, so a
+  /// re-parented window never starts a second prewarm.
+  private func kickOffColdLaunchPrewarmIfNeeded() {
+    guard let realSelection = coldLaunchPendingRealSelection,
+      window != nil
+    else { return }
+    let scale = currentSurfaceMetrics().scale
+    beginColdLaunchPrewarm(for: realSelection, scale: scale)
+  }
+
+  /// Start the background prewarm for `realSelection` at `scale`, then swap to
+  /// the real backend via `applyRendererSelection` when it completes (hopping
+  /// to main first). Aborts the swap if the user changed the renderer in the
+  /// brief window since launch. If Metal is unavailable, swaps immediately to
+  /// the real selection (which `makeRendererBackend` falls back to .software).
+  private func beginColdLaunchPrewarm(for realSelection: RendererSelection, scale: CGFloat) {
+    coldLaunchPendingRealSelection = nil
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      applyRendererSelection(realSelection)
+      return
+    }
+    let fontAtlas = self.fontAtlas
+    let sidebarFontAtlas = self.sidebarFontAtlas
+    ColdLaunchAtlasPrewarmer.prewarm(
+      device: device,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas,
+      scale: scale
+    ) { [weak self] terminalAtlas, sidebarAtlas in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        guard self.intendedRendererSelection == realSelection else { return }
+        self.pendingColdLaunchAtlas = ColdLaunchPrewarmedAtlases(
+          terminal: terminalAtlas, sidebar: sidebarAtlas)
+        self.applyRendererSelection(realSelection)
+      }
+    }
+  }
+
+  /// Test/debug seam: synchronously perform the cold-launch prewarm (if one is
+  /// pending) and swap to the real backend, bypassing the background queue and
+  /// the `viewDidMoveToWindow` + `window != nil` gate. Lets headless tests
+  /// drive the cold-launch swap deterministically without waiting on real
+  /// async hops or a window. Returns false if no cold-launch swap was pending.
+  @discardableResult
+  func debugPerformColdLaunchSwapSynchronously(scale: CGFloat = 1) -> Bool {
+    guard let realSelection = coldLaunchPendingRealSelection else { return false }
+    coldLaunchPendingRealSelection = nil
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      applyRendererSelection(realSelection)
+      return true
+    }
+    let result = ColdLaunchAtlasPrewarmer.prewarmSync(
+      device: device,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas,
+      scale: scale)
+    guard intendedRendererSelection == realSelection else { return true }
+    pendingColdLaunchAtlas = ColdLaunchPrewarmedAtlases(
+      terminal: result.terminal, sidebar: result.sidebar)
+    applyRendererSelection(realSelection)
+    debugFlushPendingRendererSwap()
+    return true
   }
 
   /// Create (or recreate after a backing-scale change) the prebuilt atlas

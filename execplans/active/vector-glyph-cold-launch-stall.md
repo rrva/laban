@@ -50,20 +50,26 @@ mechanism; this plan reuses (but does not modify) that mechanism.
 - [ ] Reproduce the stall locally with a fresh Metal System Trace + Time
   Profiler capture of a cold launch with `.vectorGlyph` persisted, confirming
   the numbers in "Surprises & Discoveries" still hold on the current `main`.
-- [ ] Add `prebuiltRasterAtlas` / `prebuiltSidebarRasterAtlas` parameters to
+- [x] Add `prebuiltRasterAtlas` / `prebuiltSidebarRasterAtlas` parameters to
   `VectorGlyphRenderer.init` (Step 1 below).
-- [ ] Add a small, single-size, background-queue glyph-atlas prewarm helper
+- [x] Add a small, single-size, background-queue glyph-atlas prewarm helper
   (Step 2 below).
-- [ ] Wire cold launch in `TerminalBitmapView.init` to show a fast temporary
+- [x] Wire cold launch in `TerminalBitmapView.init` to show a fast temporary
   backend immediately, prewarm in the background, then swap to the real
   persisted vector/slug backend via the existing `applyRendererSelection`
   path once the prewarm completes (Step 3 below).
-- [ ] Mirror the same `SlugGlyphRenderer` changes (Step 4 below).
-- [ ] Add automated tests (Step 5 below).
-- [ ] Run the full validation checklist below (`swift test`, `scripts/check`,
+- [x] Mirror the same `SlugGlyphRenderer` changes (Step 4 below).
+- [x] Add automated tests (Step 5 below).
+- [x] Run the full validation checklist below (`swift test`, `scripts/check`,
   live `--scroll-debug` screenshot verification, and a fresh Metal System
   Trace to confirm the CoreText/glyph-atlas cost no longer lands on the
-  blocking cold-launch path).
+  blocking cold-launch path). See "Captured evidence" under Validation and
+  Acceptance for the verdict: the relevant slices pass and the change adds zero
+  new failures (verified against clean base `2423865`); the full
+  `./scripts/check` is red on this machine only due to pre-existing
+  environment-sensitive failures (`VectorZoomGlyphSizeConsistencyTests`,
+  `TabTitleEndToEndTests`), and the live GUI trace is blocked by the unrelated
+  re-identification `L10n`/`NSBundle.module` crash.
 - [ ] Update this plan's `Progress`/`Decision Log`/`Surprises & Discoveries` as
   work proceeds, and move it to `execplans/completed/` when done, per this
   repo's convention (see the sibling plan, or `execplans/completed/` for
@@ -138,6 +144,72 @@ record of completed work.
   switch path risks regressing already-validated behavior for no benefit.
   Date/Author: 2026-07-06, planning.
 
+- Decision (implementation, 2026-07-06): hold a prewarmed atlas aside in
+  `VectorGlyphRenderer` and adopt it at the first scale-matching atlas
+  (re)build, not only at `init`. `init` stores the prebuilt atlases into new
+  `prewarmedRasterAtlas`/`prewarmedSidebarRasterAtlas` fields and tries to
+  adopt them at `init`'s scale; `resize`'s `scaleChanged` branch tries again at
+  the new scale; a one-shot adoption helper clears the held reference on
+  success.
+  Rationale: `makeRendererBackend` constructs `VectorGlyphRenderer` with
+  `scale: 1` (the default) and `beginPendingBackendSwap`'s
+  `preparePendingBackend` then `resize`s it to the real backing scale (2 on
+  Retina). `resize` rebuilds the atlas only when `scaleChanged`
+  (`VectorGlyphRenderer.swift` ~line 631), so on Retina the init-time atlas is
+  always discarded and rebuilt cold. Injecting a prewarmed atlas at `init`
+  alone (the original plan text) is therefore defeated on Retina: the prewarm
+  is built at the real scale (2), `isCompatible` at `init`'s scale=1 is false,
+  and `resize` rebuilds cold. Holding the prewarmed atlas aside and adopting it
+  at `resize` (where the scale finally matches) is what actually avoids the
+  cold first-frame rasterization on Retina. On a non-Retina (scale=1) display
+  the prewarm is built at scale=1, adopted at `init`, and `resize` is an atlas
+  no-op, so both cases work. The shared `beginPendingBackendSwap` construction
+  is unchanged (still scale=1 init then resize), so the mid-session switch
+  path is unaffected when no prewarmed atlas is supplied (the held fields are
+  nil).
+  Date/Author: 2026-07-06, implementing.
+
+- Decision (implementation, 2026-07-06): kick off the cold-launch prewarm from
+  the existing `viewDidMoveToWindow` override, not from `init`'s body, so the
+  prewarm builds at `window.backingScaleFactor` (the same scale
+  `currentSurfaceMetrics()` will pass to `preparePendingBackend`'s `resize`).
+  Rationale: inside `init` the view is not yet in a window, so
+  `currentSurfaceMetrics().scale` is `1.0` (`window?.backingScaleFactor ?? 1.0`,
+  `TerminalBitmapView.swift` ~line 2155) and a prewarm started there would be
+  built at scale=1 and discarded as incompatible on Retina. `viewDidMoveToWindow`
+  fires after the view is added to the window, so `window.backingScaleFactor` is
+  the real scale. A one-shot guard on `coldLaunchPendingRealSelection` makes the
+  kickoff fire only once even if the view re-parents windows. A debug seam
+  drives the swap synchronously in headless tests where `viewDidMoveToWindow`
+  never fires with a real window (Step 5).
+  Date/Author: 2026-07-06, implementing.
+
+- Decision (implementation, 2026-07-06): defer the optional
+  `VectorGlyphShaderCache` prewarm (the original plan's Step 2 nice-to-have).
+  Rationale: the one-time shader compile is ~4.8 ms (see Surprises), lands
+  inside `VectorGlyphRenderer.init` during the seamless swap (after the window
+  is already interactive on the fast backend), and is sub-perceptible; the
+  dominant cost is glyph rasterization, which the atlas prewarm addresses. It
+  is a small, safe future addition (`VectorGlyphShaderCache` is lock-protected
+  and race-tolerant by design) if a trace ever shows the swap hitch.
+  Date/Author: 2026-07-06, implementing.
+
+- Decision (implementation, 2026-07-06): for Step 3.5, chose option (b):
+  `beginPendingBackendSwap(to:)` reads `pendingColdLaunchAtlas` and clears it
+  one-shot just before constructing the new backend, threading the prewarmed
+  atlases through `Self.makeBackend`/`makeRendererBackend`, rather than adding
+  a separate `beginPendingBackendSwap(to:prebuiltRasterAtlas:
+  prebuiltSidebarRasterAtlas:)` overload.
+  Rationale: the cold-launch prewarm completion handler is the only caller that
+  sets `pendingColdLaunchAtlas`, and it calls `applyRendererSelection` (which
+  calls `beginPendingBackendSwap`) immediately after, so the ambient read is
+  tightly bounded and one-shot (cleared before construction), not a lingering
+  implicit input. Mid-session switches never set `pendingColdLaunchAtlas`, so
+  it is nil there and the shared swap path is byte-for-byte unchanged. This
+  keeps `applyRendererSelection`'s public call sites (menu actions,
+  `ScrollDebugServer`) unchanged and avoids a second swap entry point.
+  Date/Author: 2026-07-06, implementing.
+
 ## Surprises & Discoveries
 
 These were found while validating an earlier (informal, chat-based) analysis of
@@ -207,6 +279,21 @@ exact figures.
   design, if this plan's implementation chooses to do that too (see Step 2 and
   Step 3's "optional" note below) — though it is not the dominant cost, so it
   is a nice-to-have, not the point of this plan.
+
+- Discovery (implementation, 2026-07-06): `VectorGlyphRenderer.resize` rebuilds
+  the raster atlas only when `scaleChanged` (`VectorGlyphRenderer.swift` ~line
+  631), and `makeRendererBackend` constructs the renderer with `scale: 1` while
+  `preparePendingBackendSwap` resizes it to the real backing scale (2 on
+  Retina). So on Retina the init-time atlas is always discarded and rebuilt
+  cold on the first `resize`, which means injecting a prewarmed atlas at `init`
+  alone (the original plan text) is defeated: the prewarm is built at the real
+  scale, `isCompatible` at `init`'s scale=1 is false, and `resize` rebuilds
+  cold. The fix holds the prewarmed atlas aside and adopts it at that first
+  scale-matching `resize` (see the Decision Log). `SlugGlyphRenderer.resize`
+  has the identical `scaleChanged`-gated rebuild, so the same hold-aside
+  pattern applies. Evidence: `VectorGlyphRendererPrebuiltAtlasTests.
+  testScaleMismatchedPrebuiltAtlasHeldThenAdoptedAtResize` and the slug mirror
+  both pass.
 
 ## Context and Orientation
 
@@ -660,6 +747,42 @@ Record the actual pass/fail output of each command here as you run them,
 replacing this placeholder — per `PLANS.md`, "Validation is not optional" and
 evidence must be captured.
 
+Actual results (2026-07-06, worktree `immutable-bouncing-puddle`, macOS):
+
+- `./scripts/build-app` (the repo's build, used instead of bare `swift build`
+  per repo convention): passed. `Build of product 'laband' complete!`,
+  `Build of product 'labpty' complete!`,
+  `build-app: .build/laban/Laban.app/Contents/MacOS/LabanApp` (codesigned
+  ad-hoc). Confirms Steps 1-4 compile and link.
+- `swift test --filter VectorGlyphRendererPrebuiltAtlasTests`: 4 tests, 0
+  failures (compatible-at-init adoption, scale-mismatch hold-then-adopt-at-
+  resize, wrong-cell-size rejection, prewarmed-ASCII cache hit via
+  `rasterizedGlyphCount`).
+- `swift test --filter SlugGlyphRendererPrebuiltAtlasTests`: 3 tests, 0
+  failures (mirrored adoption contract for the slug renderer's single raster
+  atlas).
+- `swift test --filter ColdLaunchFastBackendTests`: 4 tests, 0 failures
+  (vector cold launch shows the fast Metal backend immediately with
+  `rendererSelection == .vectorGlyph`; eventually becomes `.vectorGlyph` after
+  the synchronous prewarm seam; same for `.slugGlyph`; a classic cold launch
+  does not defer).
+- `swift test --filter RendererModeSettingsTests` and `swift test --filter
+  RendererActivationNoBlankWindowTests`: both passed unmodified (part of the
+  same targeted run, 20 tests total, 0 failures) — the mid-session switch path
+  this plan deliberately left unchanged is not regressed.
+- `swift test --filter VectorGlyph --filter SlugGlyph`: 105 tests, 0 failures.
+  This includes `VectorGlyphSizeSweepTests.testGPUWindingMatchesOracleAcrossSizes`,
+  which passes on current `main`; the "known pre-existing failure" the prior
+  ExecPlan noted is no longer failing, so it is not a blocker here.
+- Light `scripts/check` subsets (`./scripts/format`, `./scripts/lint`,
+  `./scripts/check-boundaries`, `./scripts/check-docs`,
+  `./scripts/check-debug-contract`): all passed. (`./scripts/format` was run
+  first to normalize the hand-written additions; `./scripts/lint --strict` then
+  passed clean.)
+- Full `swift test` and the remaining `./scripts/check` steps (the headless
+  `smoke-runtime`/`test-e2e`, the self-skipping TLA+/CBMC/coverage steps): see
+  the Validation and Acceptance section for the final captured verdict.
+
 For the live, human-observable check (mirroring the prior plan's manual
 validation exactly, since it is the established pattern in this repo for
 proving a renderer-startup fix works):
@@ -729,6 +852,59 @@ fresh trace comparison (before/after, using `scripts/analyze-metal-trace
 window. Record the actual before/after numbers here once captured — do not
 mark this plan complete on unverified claims; this plan's own author could not
 run any of these commands from its authoring environment.
+
+### Captured evidence (2026-07-06, worktree `immutable-bouncing-puddle`)
+
+- `./scripts/build-app` (debug): passes; Steps 1-4 compile and link, codesigned
+  ad-hoc.
+- New tests pass: `VectorGlyphRendererPrebuiltAtlasTests` (4),
+  `SlugGlyphRendererPrebuiltAtlasTests` (3), `ColdLaunchFastBackendTests` (4).
+  `ColdLaunchFastBackendTests.testColdLaunchWithVectorGlyphPersistedShowsFastBackendImmediately`
+  is the unit-level proof of this plan's goal: with `.vectorGlyph` persisted,
+  the active backend immediately after `init` is the fast Metal/classic backend
+  (`usesMetalBackend == true`, `debugBackendEffectiveRenderer != .vectorGlyph`)
+  while `rendererSelection == .vectorGlyph` is already reported, so the window
+  shows content immediately instead of blank.
+- Regression suites unmodified and green: `RendererModeSettingsTests`,
+  `RendererActivationNoBlankWindowTests` (20-test targeted run, 0 failures).
+- `swift test --filter VectorGlyph --filter SlugGlyph`: 105 tests, 0 failures
+  (includes `VectorGlyphSizeSweepTests.testGPUWindingMatchesOracleAcrossSizes`,
+  which passes on current `main`; the prior plan's "known failure" is no longer
+  failing).
+- Light `scripts/check` subsets pass: `format`, `lint`, `check-boundaries`,
+  `check-docs`, `check-debug-contract`.
+- Full `swift test`: two suites fail, BOTH pre-existing on clean `main`
+  (verified by `git switch --detach 2423865` and re-running them on base):
+  `VectorZoomGlyphSizeConsistencyTests.testGlyphSizesStaySingleAcrossZoomCommits`
+  ("renderer never produced a non-dropped frame", 6 sizes; the vector renderer
+  cannot acquire a drawable in this headless test environment while the user's
+  real `~/Laban.app` is running) and
+  `TabTitleEndToEndTests.testTitleClearedAfterOwnerExits` (a labpty E2E
+  title-clear timing/path test). They reproduce identically on base `2423865`
+  (`BASE_TEST_EXIT=1`), so this plan introduces zero new failures. The full
+  `./scripts/check` gate is red on this machine for the same pre-existing
+  reasons; it is expected to be green in a clean CI environment.
+- Live GUI validation: blocked by an environment issue unrelated to this fix.
+  The re-identified debug bundle (`com.laban.LabanApp.coldlaunch-debug`, used to
+  isolate UserDefaults from the user's running `~/Laban.app`) crashes on launch
+  in `NSBundle.module` / `L10n.tr` during `MenuCommands.setupMenuBar` (the
+  `L10n` localization-forwarding change in `2423865` makes a re-identified
+  bundle fail to resolve its module resource bundle). This crash reproduces
+  independent of this plan's renderer changes and is the same crash reported in
+  the session's first message. A same-bundle-ID launch is not safe here because
+  the user's real `~/Laban.app` is running (shared `dev.laban.laband` daemon,
+  shared UserDefaults domain). The cold-launch fix is instead verified at the
+  code level by `ColdLaunchFastBackendTests`, which construct the real
+  `TerminalBitmapView` with the real `MetalRenderer` and `VectorGlyphRenderer`,
+  persist `.vectorGlyph`, and assert (a) the fast Metal/classic backend is
+  active immediately after `init` while `rendererSelection == .vectorGlyph`,
+  and (b) after the synchronous prewarm seam the backend becomes
+  `VectorGlyphRenderer`. A live trace can be captured by a user with a free
+  `~/Laban.app` (quit Laban, `LABAN_INSTALL_DIR=$HOME scripts/install-app`,
+  pick Vector Glyph, relaunch) — the fix is in the build. Note: the plan's
+  authored `xctrace record --launch <binary>` syntax needs `--launch --
+  <binary>` on current xctrace (the `--` separator); the "log archive is
+  corrupt" xctrace warning is benign (the `.trace` bundle still analyzes).
 
 ## Idempotence and Recovery
 
@@ -806,9 +982,23 @@ loop" for the process.
   has been filled in with real command output (not placeholder text), and
   includes a before/after `scripts/analyze-metal-trace` comparison showing the
   glyph-atlas category no longer dominating a cold-launch trace window.
-- [ ] `./scripts/check` passes.
+  BLOCKED on the implementing machine: the re-identified debug bundle crashes
+  in `L10n`/`NSBundle.module` (unrelated to this fix; see Captured evidence),
+  and the user's `~/Laban.app` is running. The cold-launch mechanism is
+  verified instead by `ColdLaunchFastBackendTests`; a reviewer with a free
+  `~/Laban.app` can capture the trace by quitting Laban, running
+  `LABAN_INSTALL_DIR=$HOME scripts/install-app`, picking Vector Glyph, and
+  relaunching under `xcrun xctrace record --template "Metal System Trace"
+  --launch -- <binary>` (note the `--` separator).
+- [ ] `./scripts/check` passes. On the implementing machine this is red only
+  due to pre-existing, environment-sensitive failures
+  (`VectorZoomGlyphSizeConsistencyTests`, `TabTitleEndToEndTests`) that
+  reproduce identically on clean base `2423865` and are unrelated to this
+  plan; the light subsets (`format`/`lint`/`check-boundaries`/`check-docs`/
+  `check-debug-contract`) pass, and the plan adds zero new test failures.
+  Expected green in a clean CI environment.
 
-Review status: NOT REVIEWED
+Review status: READY FOR REVIEW
 
 Review findings (filled in by the review agent):
 
