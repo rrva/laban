@@ -7,6 +7,7 @@ import LabanCore
 final class ControlSessionLaunchCoordinator {
   weak var controlServer: LabanControlServer?
   private(set) var controlSocketPath: String?
+  private var pendingAttachSessionIDs: Set<String> = []
 
   func noteControlServerStarted(_ server: LabanControlServer, socketPath: String) {
     controlServer = server
@@ -16,6 +17,7 @@ final class ControlSessionLaunchCoordinator {
   func noteControlServerStopped() {
     controlServer = nil
     controlSocketPath = nil
+    pendingAttachSessionIDs.removeAll()
   }
 
   func prepareLaunch(tabID: Tab.ID?, isAgentAttached: Bool) -> SessionLaunchContext {
@@ -25,12 +27,10 @@ final class ControlSessionLaunchCoordinator {
       env[ControlEnvironmentKeys.controlURL] = controlSocketPath
     }
     var bootstrap: String?
-    if isAgentAttached,
-      ControlSessionAttachPolicy.injectBootstrapIntoEnvironment,
-      let controlServer
-    {
+    if isAgentAttached, let controlServer {
       bootstrap = controlServer.mintSessionAttachBootstrap(sessionID: sessionID)
       env[ControlEnvironmentKeys.sessionAttach] = bootstrap
+      pendingAttachSessionIDs.insert(sessionID)
     }
     return SessionLaunchContext(
       sessionID: sessionID,
@@ -40,8 +40,23 @@ final class ControlSessionLaunchCoordinator {
       sessionObserveBootstrap: bootstrap)
   }
 
+  /// Registers the session shell PID when metadata is available (C14).
+  func tryRegisterShellPID(sessionID: String, session: Session) {
+    guard pendingAttachSessionIDs.contains(sessionID) else { return }
+    guard let childPid = session.processMetadata()?.childPid, childPid > 0 else { return }
+    noteSessionShellStarted(sessionID: sessionID, shellPID: pid_t(childPid))
+  }
+
+  func retryPendingShellRegistrations(in model: AppModel) {
+    guard !pendingAttachSessionIDs.isEmpty else { return }
+    for (_, session) in model.allSessions() where pendingAttachSessionIDs.contains(session.id) {
+      tryRegisterShellPID(sessionID: session.id, session: session)
+    }
+  }
+
   func noteSessionShellStarted(sessionID: String, shellPID: pid_t) {
     controlServer?.registerAttachShellPID(sessionID: sessionID, shellPID: shellPID)
+    pendingAttachSessionIDs.remove(sessionID)
   }
 
   func mergeControlDiscovery(into base: [String: String]) -> [String: String] {
@@ -50,4 +65,10 @@ final class ControlSessionLaunchCoordinator {
     merged[ControlEnvironmentKeys.controlURL] = controlSocketPath
     return merged
   }
+
+  #if DEBUG
+  func hasPendingAttachRegistration(sessionID: String) -> Bool {
+    pendingAttachSessionIDs.contains(sessionID)
+  }
+  #endif
 }

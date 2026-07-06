@@ -7905,6 +7905,41 @@ extension TerminalBitmapView: ControlAgentAttachedIndicatorHost {
   var isAgentAttachedIndicatorVisible: Bool {
     agentAttachedIndicatorView?.isHidden == false
   }
+
+  /// Terminal selection for the live control plane (`selection.read`).
+  func terminalSelection(forSessionID sessionID: Session.ID, model: AppModel) -> TerminalSelection? {
+    syncSelectionStateToActiveTab()
+    guard let tab = model.tabs.first(where: { $0.sessionId == sessionID }),
+      let session = model.session(forTab: tab.id)
+    else { return nil }
+
+    let viewportOffset: Int
+    if tab.id == model.activeTab?.id {
+      viewportOffset = currentViewportOffset()
+    } else if let vs = session.viewportState() {
+      viewportOffset = vs.viewportOffset
+    } else {
+      viewportOffset = 0
+    }
+
+    let anchor: TerminalSelectionPoint?
+    let focus: TerminalSelectionPoint?
+    if tab.id == model.activeTab?.id {
+      anchor = selectionAnchor
+      focus = selectionFocus
+    } else if let stored = selectionsByTab[tab.id] {
+      anchor = stored.anchor
+      focus = stored.focus
+    } else {
+      return nil
+    }
+
+    return TerminalSelectionInput.terminalSelection(
+      sessionId: sessionID,
+      anchor: anchor,
+      focus: focus,
+      currentViewportOffset: viewportOffset)
+  }
 }
 
 // MARK: - NSEvent modifier conversion for mouse events
