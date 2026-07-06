@@ -25,6 +25,7 @@ func usage() -> String {
                                control surface (default port 8787) and write a
                                viewport trace under
                                ~/Library/Logs/Laban/scroll-trace/. Debug-only.
+    --agent-attached-session   Open the first tab as agent-attached (C13/C14).
     --profile-recorder[=<url>]  Enable the in-process sampling profiler. With no
                                value, listens under ~/Library/Application Support/
                                Laban/profiling/. Overrides the Settings toggle and
