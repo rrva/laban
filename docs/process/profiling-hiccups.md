@@ -154,3 +154,30 @@ Common levers:
 - Decouple GPU glyph-bake work from the present command buffer (`vector-drawable-pacing-120hz.md` Milestone 3).
 - Ensure `LabanVectorPresentDisplayLink` is not disabled.
 - Use a fixture session instead of a live shell for reproducible comparisons.
+
+## In-process CPU sampling vs GPU tracing
+
+Laban has two complementary profilers. Pick by what you are measuring.
+
+- Use the in-process sampling profiler (swift-profile-recorder; enable via the
+  Settings toggle / `--profile-recorder` / `PROFILE_RECORDER_SERVER_URL[_PATTERN]`,
+  capture with `scripts/capture-profile`) for CPU and host-side work: main-thread
+  hotspots, cell/glyph build, PTY drain, and off-CPU waits (locks, sleeps,
+  blocking syscalls — it records waiting threads too). It needs no ptrace
+  privileges and works headless.
+- Use a Metal System Trace (see the scroll-jank sections above) for GPU work:
+  render/compute passes, shader cost, GPU counters, and present timing. The
+  in-process sampler cannot see GPU execution; it only sees the CPU side that
+  encodes and submits.
+
+Rule of thumb: if the question is "which Swift/C function is burning CPU or
+blocking?", sample in-process; if it is "which pass/shader is slow on the GPU?",
+take a Metal System Trace.
+
+## Sampler baseline overhead
+
+Idle in-process profiles are dominated by the profiler's own SwiftNIO threads,
+which sit in `kevent` inside `Selector.whenReady0`. That is the sampler waiting
+for the next `/sample` request, not your app. Do not read it as "NIO is 80% of
+my app". When analysing, either filter those NIO selector threads out, or
+compare against an idle baseline captured the same way and look at the delta.

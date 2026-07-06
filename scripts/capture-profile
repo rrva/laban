@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Capture a CPU/off-CPU sample from a running LabanApp built with the
+# in-process sampling profiler enabled, demangle it, and write a Linux
+# perf-format .perf under ~/Library/Logs/Laban/profiles/.
+#
+# The app must have been launched with the profiler on (Settings toggle,
+# --profile-recorder, PROFILE_RECORDER_SERVER_URL[_PATTERN]). See
+# execplans/active/in-process-sampling-profiler.md for how to enable it.
+#
+# Usage:
+#   scripts/capture-profile [--pid N] [--socket PATH] [--samples N]
+#       [--interval "10 ms"] [--out FILE]
+#
+# Defaults: newest LabanApp process; default socket under Application Support
+# (falls back to $TMPDIR and /tmp); 1000 samples at 10 ms; timestamped output.
+set -euo pipefail
+
+pid=""
+socket=""
+samples=1000
+interval="10 ms"
+out=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pid) pid="$2"; shift 2;;
+    --socket) socket="$2"; shift 2;;
+    --samples) samples="$2"; shift 2;;
+    --interval) interval="$2"; shift 2;;
+    --out) out="$2"; shift 2;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0;;
+    *) echo "unknown argument: $1" >&2; exit 2;;
+  esac
+done
+
+if [ -z "$pid" ]; then
+  # Newest process whose executable is named LabanApp.
+  pid=$(pgrep -n -x LabanApp || true)
+fi
+if [ -z "$pid" ]; then
+  echo "no running LabanApp found; launch it with the profiler enabled first" >&2
+  exit 1
+fi
+
+if [ -z "$socket" ]; then
+  tmpdir="${TMPDIR:-/tmp}"; tmpdir="${tmpdir%/}/"   # normalise trailing slash
+  for candidate in \
+    "$HOME/Library/Application Support/Laban/profiling/laban-samples-${pid}.sock" \
+    "${tmpdir}laban-samples-${pid}.sock" \
+    "/tmp/laban-samples-${pid}.sock"; do
+    if [ -S "$candidate" ]; then socket="$candidate"; break; fi
+  done
+fi
+if [ -z "$socket" ] || [ ! -S "$socket" ]; then
+  echo "could not find profiler socket for PID ${pid}." >&2
+  echo "pass --socket PATH (check the app log line 'sampling profiler listening')." >&2
+  exit 1
+fi
+
+out_dir="$HOME/Library/Logs/Laban/profiles"
+mkdir -p "$out_dir"
+if [ -z "$out" ]; then
+  out="$out_dir/$(date +%Y%m%d-%H%M%S).perf"
+fi
+
+echo "sampling PID ${pid} via ${socket} (${samples} samples @ ${interval}) ..." >&2
+curl --fail --silent --show-error --unix-socket "$socket" \
+  -d "{\"numberOfSamples\":${samples},\"timeInterval\":\"${interval}\"}" \
+  http://localhost/sample | swift demangle --compact > "$out"
+
+echo "wrote $out" >&2
+echo "view: drag onto https://speedscope.app or https://profiler.firefox.com" >&2
+echo "$out"

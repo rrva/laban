@@ -37,7 +37,7 @@ final class ProfileRecorderSettingsTests: XCTestCase {
       environment: ["PROFILE_RECORDER_SERVER_URL_PATTERN": "unix:///tmp/env.sock"],
       arguments: ["LabanApp"], defaults: d)
     XCTAssertEqual(cfg.pattern, "unix:///tmp/env.sock")
-    XCTAssertEqual(cfg.source, .environment)
+    XCTAssertEqual(cfg.source, .environmentPattern)
   }
 
   func testUserDefaultToggleEnablesDefaultPattern() {
@@ -46,5 +46,26 @@ final class ProfileRecorderSettingsTests: XCTestCase {
     let cfg = ProfileRecorderSettings.resolve(environment: [:], arguments: ["LabanApp"], defaults: d)
     XCTAssertEqual(cfg.pattern, ProfileRecorderSettings.defaultURLPattern)
     XCTAssertEqual(cfg.source, .userDefault)
+  }
+
+  func testDirectURLBeatsPattern() {
+    let cfg = ProfileRecorderSettings.resolve(
+      environment: [
+        "PROFILE_RECORDER_SERVER_URL": "unix:///tmp/direct.sock",
+        "PROFILE_RECORDER_SERVER_URL_PATTERN": "unix:///tmp/pattern.sock",
+      ],
+      arguments: ["LabanApp"],
+      defaults: makeDefaults())
+    XCTAssertEqual(cfg.pattern, "unix:///tmp/direct.sock")
+    XCTAssertEqual(cfg.source, .environmentDirectURL)
+  }
+
+  func testDirectURLEnablesWhenOnlyKeySet() {
+    let cfg = ProfileRecorderSettings.resolve(
+      environment: ["PROFILE_RECORDER_SERVER_URL": "unix:///tmp/direct.sock"],
+      arguments: ["LabanApp"],
+      defaults: makeDefaults())
+    XCTAssertEqual(cfg.pattern, "unix:///tmp/direct.sock")
+    XCTAssertEqual(cfg.source, .environmentDirectURL)
   }
 }

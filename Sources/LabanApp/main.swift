@@ -26,9 +26,9 @@ func usage() -> String {
                                viewport trace under
                                ~/Library/Logs/Laban/scroll-trace/. Debug-only.
     --profile-recorder[=<url>]  Enable the in-process sampling profiler. With no
-                               value, listens on unix:///tmp/laban-samples-{PID}.sock.
-                               Overrides the Settings toggle and
-                               PROFILE_RECORDER_SERVER_URL_PATTERN.
+                               value, listens under ~/Library/Application Support/
+                               Laban/profiling/. Overrides the Settings toggle and
+                               PROFILE_RECORDER_SERVER_URL[_PATTERN].
     --smoke                    Print a startup smoke line and exit.
     --help, -h                 Show this help.
   """
@@ -52,6 +52,7 @@ if smokeMode {
 #if canImport(ProfileRecorderServer)
 let profileGate = ProfileRecorderSettings.resolve()
 if let pattern = profileGate.pattern {
+  ProfileRecorderSettings.prepareDefaultDirectoryIfNeeded(for: pattern)
   // Upstream checks PROFILE_RECORDER_SERVER_URL before the pattern key; clear
   // any inherited direct URL so the resolved pattern is what the server binds.
   unsetenv("PROFILE_RECORDER_SERVER_URL")
@@ -63,11 +64,36 @@ if let pattern = profileGate.pattern {
   Task.detached {
     do {
       let configuration = try await ProfileRecorderServerConfiguration.parseFromEnvironment()
-      await ProfileRecorderServer(configuration: configuration)
-        .runIgnoringFailures(logger: profilerLogger)
+      try await ProfileRecorderServer(configuration: configuration)
+        .withProfileRecordingServer(logger: profilerLogger) { info in
+          switch info.startResult {
+          case .successful(let address):
+            let socket = address.pathname ?? "\(address)"
+            profilerLogger.info(
+              "sampling profiler listening",
+              metadata: [
+                "socketPath": "\(socket)",
+                "capture": """
+                  curl --unix-socket \(socket) -sd \
+                  '{"numberOfSamples":1000,"timeInterval":"10 ms"}' \
+                  http://localhost/sample | swift demangle --compact > ~/laban.perf
+                  """,
+              ])
+          case .couldNotStart(let error):
+            profilerLogger.info(
+              "sampling profiler could not start, continuing regardless",
+              metadata: ["error": "\(error)"])
+            return
+          case .notAttemptedToStartProfileRecordingServer:
+            return
+          }
+          while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 100_000_000_000)
+          }
+        }
     } catch {
       profilerLogger.info(
-        "profile recorder configuration failed, continuing regardless",
+        "profile recorder failed, continuing regardless",
         metadata: ["error": "\(error)"])
     }
   }

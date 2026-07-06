@@ -66,6 +66,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     checkboxWithTitle: "Blink cursor", target: nil, action: nil)
   private let profileRecorderCheckbox = NSButton(
     checkboxWithTitle: "Enable sampling profiler (applies on next launch)", target: nil, action: nil)
+  private let profileRecorderHelpLabel = NSTextField(wrappingLabelWithString: "")
 
   /// Theme index (into `themeController.orderedThemes`) behind each popup row,
   /// or -1 for the dark/light separator. Maps a popup selection back to a theme.
@@ -239,8 +240,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     profileRecorderCheckbox.target = self
     profileRecorderCheckbox.action = #selector(profileRecorderChanged(_:))
     profileRecorderCheckbox.toolTip =
-      "Starts an in-process sampling profiler on the next launch. When enabled, "
-      + "capture profiles with curl against the UNIX socket under /tmp."
+      "Starts an in-process sampling profiler on the next launch. Copy the socket "
+      + "path below and run scripts/capture-profile, or pipe curl /sample through "
+      + "swift demangle --compact."
+
+    profileRecorderHelpLabel.isEditable = false
+    profileRecorderHelpLabel.isSelectable = true
+    profileRecorderHelpLabel.isBezeled = false
+    profileRecorderHelpLabel.drawsBackground = false
+    profileRecorderHelpLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    profileRecorderHelpLabel.textColor = .secondaryLabelColor
+    profileRecorderHelpLabel.preferredMaxLayoutWidth = 420
 
     scrollModePopUp.target = self
     scrollModePopUp.action = #selector(scrollModeChanged(_:))
@@ -340,6 +350,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
       [NSGridCell.emptyContentView, profileRecorderCheckbox],
+      [NSGridCell.emptyContentView, profileRecorderHelpLabel],
       [makeLabel("Identity:"), identityPopUp],
       [NSGridCell.emptyContentView, optionAsMetaCheckbox],
     ])
@@ -556,6 +567,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
     restoreCheckbox.state = RestoreOnLaunchSettings.isEnabled ? .on : .off
     profileRecorderCheckbox.state = ProfileRecorderSettings.persisted() ? .on : .off
+    profileRecorderHelpLabel.stringValue = ProfileRecorderSettings.settingsHelpText
     if let row = identityOptions.firstIndex(of: TerminalIdentitySettings.identity()) {
       identityPopUp.selectItem(at: row)
     }
