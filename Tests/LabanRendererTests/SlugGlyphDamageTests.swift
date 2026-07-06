@@ -86,15 +86,15 @@ final class SlugGlyphDamageTests: XCTestCase {
   /// `origin.y = row * cellSize.height` places array index 0 at the bottom
   /// of the surface (y-up CG points), matching `damageForRow`'s convention
   /// directly (no top/bottom flip needed between the two).
-  private func frameCommands(text: [String], cellSize: (width: CGFloat, height: CGFloat))
-    -> [FrameCommand]
-  {
+  private func frameCommands(
+    text: [String], cellSize: (width: CGFloat, height: CGFloat), bgColor: UInt32 = 0x1010_10ff
+  ) -> [FrameCommand] {
     var commands: [FrameCommand] = [
       .rect(
         CGRect(
           x: 0, y: 0, width: CGFloat(cols) * cellSize.width, height: CGFloat(rows) * cellSize.height
         ),
-        color: 0x1010_10ff,
+        color: bgColor,
         source: .terminal)
     ]
     commands.reserveCapacity(text.count + 1)
@@ -295,5 +295,30 @@ final class SlugGlyphDamageTests: XCTestCase {
       renderer.targetRingCursorForTesting, cursorBefore,
       "empty effective damage must not rotate the ring")
     XCTAssertEqual(completions, 1, "empty effective damage must still call onFrameCompleted")
+  }
+
+  // MARK: - Clear color changes
+
+  func testClearColorChangeForcesFullRedraw() throws {
+    try skipIfNoMetal()
+    let cellSize = makeFontAtlas().cellSize
+    let text = asciiText()
+    let commandsA = frameCommands(text: text, cellSize: cellSize, bgColor: 0x1010_10ff)
+    let commandsB = frameCommands(text: text, cellSize: cellSize, bgColor: 0x2020_20ff)
+
+    let partial = try makeRenderer(layout: .grayscale, cellSize: cellSize)
+    warmAllRingSlots(partial, commands: commandsA)
+
+    // Send a frame with no cell damage (yRanges: []) but with a new clear color.
+    // This must trigger a full redraw instead of getting skipped.
+    XCTAssertTrue(partial.render(commandsB, damage: .partial(yRanges: [])))
+    let partialHash = hash(try XCTUnwrap(partial.pngData))
+
+    // Compare with a full redraw renderer given the same frame
+    let expected = try makeRenderer(layout: .grayscale, cellSize: cellSize)
+    XCTAssertTrue(expected.render(commandsB, damage: .full))
+    let expectedHash = hash(try XCTUnwrap(expected.pngData))
+
+    XCTAssertEqual(partialHash, expectedHash, "partial renderer must successfully repaint background after clear color changes")
   }
 }

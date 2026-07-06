@@ -243,6 +243,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var previousEffectiveSubpixelLayout: VectorSubpixelLayout?
   private var previousTextWeight: Double?
   private var previousEmojiRenderingMode: EmojiRenderingMode?
+  private var previousClearColor: MTLClearColor?
   private var curves: [SlugGlyphGPUCurve] = []
   private var glyphs: [SlugGlyphGPUGlyph] = []
   private var bands: [SlugGlyphGPUBand] = []
@@ -792,12 +793,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   private func resolveEffectiveDamage(
     damage: RenderDamage,
-    currentCursorRects: [CGRect]
+    currentCursorRects: [CGRect],
+    clearColor: MTLClearColor
   ) -> EffectiveDamageOutcome {
     let (slot, ringRebuild) = peekNextRingSlot()
     ensureSlotDamageStateSized(rebuild: ringRebuild)
 
-    let forcesEveryone = ringRebuild || configChangedSincePreviousFrame() || damage == .full
+    let forcesEveryone = ringRebuild || configChangedSincePreviousFrame(clearColor: clearColor) || damage == .full
     if forcesEveryone {
       for i in slotNeedsForceFull.indices { slotNeedsForceFull[i] = true }
     }
@@ -828,24 +830,25 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
+    let clearColor = Self.linearizedClearColor(commands)
     let currentCursorRects = cursorRects(in: commands)
-    let outcome = resolveEffectiveDamage(damage: damage, currentCursorRects: currentCursorRects)
+    let outcome = resolveEffectiveDamage(
+      damage: damage,
+      currentCursorRects: currentCursorRects,
+      clearColor: clearColor)
 
     guard case .render(let effectiveDamage, let slot, let ringRebuild) = outcome else {
       // Empty effective damage: nothing changed since this slot was last
       // fully current (including cursor position). Skip encoding entirely
-      // and do not rotate the ring, but keep the present link fed and honor
-      // the completion contract.
+      // and do not rotate the ring; the last completed handler publication
+      // remains visible. Honor the completion contract only.
       previousCursorRects = currentCursorRects
-      snapshotConfigForNextFrame()
-      if presentsToLayer, let currentTarget = targetTexture {
-        publishLatestTarget(currentTarget)
-      }
+      snapshotConfigForNextFrame(clearColor: clearColor)
       onFrameCompleted?()
       return true
     }
     previousCursorRects = currentCursorRects
-    snapshotConfigForNextFrame()
+    snapshotConfigForNextFrame(clearColor: clearColor)
 
     lastRenderFailureReason = nil
     let dropIfBusy = dropNextFrameWhenBusy
@@ -2112,20 +2115,26 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// last `render()` call. `gestureZoom` is Slug/Vector-side gesture state the
   /// caller's damage computation does not know about; the rest can change via
   /// live-setting observers between frames.
-  private func configChangedSincePreviousFrame() -> Bool {
-    previousGestureZoom != gestureZoom
+  private func configChangedSincePreviousFrame(clearColor: MTLClearColor) -> Bool {
+    guard let previousClearColor else { return true }
+    return previousGestureZoom != gestureZoom
       || previousGestureZoomAnchor != gestureZoomAnchor
       || previousEffectiveSubpixelLayout != effectiveSubpixelLayout
       || previousTextWeight != textWeight
       || previousEmojiRenderingMode != emojiRenderingMode
+      || previousClearColor.red != clearColor.red
+      || previousClearColor.green != clearColor.green
+      || previousClearColor.blue != clearColor.blue
+      || previousClearColor.alpha != clearColor.alpha
   }
 
-  private func snapshotConfigForNextFrame() {
+  private func snapshotConfigForNextFrame(clearColor: MTLClearColor) {
     previousGestureZoom = gestureZoom
     previousGestureZoomAnchor = gestureZoomAnchor
     previousEffectiveSubpixelLayout = effectiveSubpixelLayout
     previousTextWeight = textWeight
     previousEmojiRenderingMode = emojiRenderingMode
+    previousClearColor = clearColor
   }
 
   /// GPU-private, 1:1 with the render target. The accumulate pass writes
