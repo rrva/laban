@@ -105,9 +105,9 @@ final class SessionModeCLITests: XCTestCase {
     XCTAssertEqual(
       submenu.items.map(\.title),
       [
-        "Local Sessions",
-        "Background Sessions",
-        "Detached Sessions",
+        L10n.trEn("Local Sessions"),
+        L10n.trEn("Background Sessions"),
+        L10n.trEn("Detached Sessions"),
       ])
     XCTAssertEqual(submenu.items[1].state, .on)
 

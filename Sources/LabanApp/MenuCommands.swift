@@ -10,12 +10,12 @@ enum MenuCommands {
     let appMenu = NSMenu()
     appItem.submenu = appMenu
     appMenu.addItem(
-      withTitle: "About Laban",
+      withTitle: L10n.tr("About Laban"),
       action: #selector(AppDelegate.showAbout(_:)),
       keyEquivalent: ""
     )
     appMenu.addItem(
-      withTitle: "Check for Updates…",
+      withTitle: L10n.tr("Check for Updates…"),
       action: #selector(AppDelegate.checkForUpdates(_:)),
       keyEquivalent: ""
     )
@@ -24,33 +24,33 @@ enum MenuCommands {
     // backend, and restore-on-launch (previously scattered across the View
     // and Workspace menus).
     appMenu.addItem(
-      withTitle: "Settings…",
+      withTitle: L10n.tr("Settings…"),
       action: #selector(AppDelegate.showSettings(_:)),
       keyEquivalent: ","
     )
     appMenu.addItem(NSMenuItem.separator())
     // Checkmark is driven by AppDelegate.validateMenuItem.
     appMenu.addItem(
-      withTitle: "Secure Keyboard Entry",
+      withTitle: L10n.tr("Secure Keyboard Entry"),
       action: #selector(AppDelegate.toggleSecureKeyboardEntry(_:)),
       keyEquivalent: ""
     )
     appMenu.addItem(NSMenuItem.separator())
     // Standard Hide group. nil targets route up the responder chain to NSApp.
     appMenu.addItem(
-      withTitle: "Hide Laban",
+      withTitle: L10n.tr("Hide Laban"),
       action: #selector(NSApplication.hide(_:)),
       keyEquivalent: "h"
     )
     let hideOthers = NSMenuItem(
-      title: "Hide Others",
+      title: L10n.tr("Hide Others"),
       action: #selector(NSApplication.hideOtherApplications(_:)),
       keyEquivalent: "h"
     )
     hideOthers.keyEquivalentModifierMask = [.command, .option]
     appMenu.addItem(hideOthers)
     appMenu.addItem(
-      withTitle: "Show All",
+      withTitle: L10n.tr("Show All"),
       action: #selector(NSApplication.unhideAllApplications(_:)),
       keyEquivalent: ""
     )
@@ -59,33 +59,33 @@ enum MenuCommands {
     // its own process and is not a child of LabanApp, so it survives
     // the swap — the new instance reconnects to the existing socket.
     let restartItem = NSMenuItem(
-      title: "Restart Laban",
+      title: L10n.tr("Restart Laban"),
       action: #selector(AppDelegate.restartApp(_:)),
       keyEquivalent: "r"
     )
     restartItem.keyEquivalentModifierMask = [.command, .option]
     appMenu.addItem(restartItem)
     appMenu.addItem(
-      withTitle: "Quit Laban",
+      withTitle: L10n.tr("Quit Laban"),
       action: #selector(NSApplication.terminate(_:)),
       keyEquivalent: "q"
     )
 
     // File menu — tab lifecycle
-    let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+    let fileItem = NSMenuItem(title: L10n.tr("File"), action: nil, keyEquivalent: "")
     mainMenu.addItem(fileItem)
-    let fileMenu = NSMenu(title: "File")
+    let fileMenu = NSMenu(title: L10n.tr("File"))
     fileItem.submenu = fileMenu
 
     fileMenu.addItem(
       NSMenuItem(
-        title: "New Tab",
+        title: L10n.tr("New Tab"),
         action: #selector(TerminalBitmapView.newTab(_:)),
         keyEquivalent: "t"
       ))
     fileMenu.addItem(
       NSMenuItem(
-        title: "Close Tab",
+        title: L10n.tr("Close Tab"),
         action: #selector(TerminalBitmapView.closeTab(_:)),
         keyEquivalent: "w"
       ))
@@ -96,96 +96,96 @@ enum MenuCommands {
     // asciinema v2 cast. Default Cmd-E exports the last 10 s; the
     // submenu offers other windows.
     let exportTen = NSMenuItem(
-      title: "Export Last 10 s as Cast",
+      title: L10n.tr("Export Last 10 s as Cast"),
       action: #selector(TerminalBitmapView.exportLastTenSeconds(_:)),
       keyEquivalent: "e")
     fileMenu.addItem(exportTen)
 
     let exportRecent = NSMenuItem(
-      title: "Export Recent…", action: nil, keyEquivalent: "")
+      title: L10n.tr("Export Recent…"), action: nil, keyEquivalent: "")
     fileMenu.addItem(exportRecent)
-    let exportSubmenu = NSMenu(title: "Export Recent")
+    let exportSubmenu = NSMenu(title: L10n.tr("Export Recent…"))
     exportRecent.submenu = exportSubmenu
     exportSubmenu.addItem(
       NSMenuItem(
-        title: "Last 5 s as Cast",
+        title: L10n.tr("Last 5 s as Cast"),
         action: #selector(TerminalBitmapView.exportLastFiveSeconds(_:)),
         keyEquivalent: ""))
     exportSubmenu.addItem(
       NSMenuItem(
-        title: "Last 10 s as Cast",
+        title: L10n.tr("Last 10 s as Cast"),
         action: #selector(TerminalBitmapView.exportLastTenSeconds(_:)),
         keyEquivalent: ""))
     exportSubmenu.addItem(
       NSMenuItem(
-        title: "Last 30 s as Cast",
+        title: L10n.tr("Last 30 s as Cast"),
         action: #selector(TerminalBitmapView.exportLastThirtySeconds(_:)),
         keyEquivalent: ""))
     exportSubmenu.addItem(
       NSMenuItem(
-        title: "Last 60 s as Cast",
+        title: L10n.tr("Last 60 s as Cast"),
         action: #selector(TerminalBitmapView.exportLastSixtySeconds(_:)),
         keyEquivalent: ""))
 
     // Edit menu — clipboard + selection
-    let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+    let editItem = NSMenuItem(title: L10n.tr("Edit"), action: nil, keyEquivalent: "")
     mainMenu.addItem(editItem)
-    let editMenu = NSMenu(title: "Edit")
+    let editMenu = NSMenu(title: L10n.tr("Edit"))
     editItem.submenu = editMenu
 
     editMenu.addItem(
-      NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+      NSMenuItem(title: L10n.tr("Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
     editMenu.addItem(
-      NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+      NSMenuItem(title: L10n.tr("Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
     // Select All routes via the responder chain: the terminal view selects the
     // whole buffer; a focused find field selects its text.
     editMenu.addItem(
       NSMenuItem(
-        title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        title: L10n.tr("Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
     // Quick Look the selection if it names a file. The terminal can't use
     // Space (it types), so ⌘Y is the keyboard path; force-click / three-finger
     // tap on a word is the gesture path (TerminalBitmapView.quickLook(with:)).
     editMenu.addItem(
       NSMenuItem(
-        title: "Quick Look",
+        title: L10n.tr("Quick Look"),
         action: #selector(TerminalBitmapView.quickLookSelection(_:)),
         keyEquivalent: "y"))
     editMenu.addItem(NSMenuItem.separator())
     editMenu.addItem(
-      NSMenuItem(title: "Find…", action: #selector(TerminalBitmapView.find(_:)), keyEquivalent: "f")
+      NSMenuItem(title: L10n.tr("Find…"), action: #selector(TerminalBitmapView.find(_:)), keyEquivalent: "f")
     )
 
     // View menu — Enter Full Screen. AppKit renames this item to "Exit Full
     // Screen" automatically while the window is full screen.
-    let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+    let viewItem = NSMenuItem(title: L10n.tr("View"), action: nil, keyEquivalent: "")
     mainMenu.addItem(viewItem)
-    let viewMenu = NSMenu(title: "View")
+    let viewMenu = NSMenu(title: L10n.tr("View"))
     viewItem.submenu = viewMenu
 
     // Live font-size zoom — mirrors the Cmd++ / Cmd+- / Cmd+0 key chords
     // routed through TerminalKeyDescriptor.routeCommand().
     viewMenu.addItem(
       NSMenuItem(
-        title: "Bigger Text",
+        title: L10n.tr("Bigger Text"),
         action: #selector(TerminalBitmapView.increaseFontSize(_:)),
         keyEquivalent: "+"
       ))
     viewMenu.addItem(
       NSMenuItem(
-        title: "Smaller Text",
+        title: L10n.tr("Smaller Text"),
         action: #selector(TerminalBitmapView.decreaseFontSize(_:)),
         keyEquivalent: "-"
       ))
     viewMenu.addItem(
       NSMenuItem(
-        title: "Default Text Size",
+        title: L10n.tr("Default Text Size"),
         action: #selector(TerminalBitmapView.resetFontSize(_:)),
         keyEquivalent: "0"
       ))
     viewMenu.addItem(NSMenuItem.separator())
 
     let fullScreenItem = NSMenuItem(
-      title: "Enter Full Screen",
+      title: L10n.tr("Enter Full Screen"),
       action: #selector(NSWindow.toggleFullScreen(_:)),
       keyEquivalent: "f"
     )
@@ -193,13 +193,13 @@ enum MenuCommands {
     viewMenu.addItem(fullScreenItem)
 
     // Tab-select menu — Cmd+1…9
-    let tabItem = NSMenuItem(title: "Tab", action: nil, keyEquivalent: "")
+    let tabItem = NSMenuItem(title: L10n.tr("Tab"), action: nil, keyEquivalent: "")
     mainMenu.addItem(tabItem)
-    let tabMenu = NSMenu(title: "Tab")
+    let tabMenu = NSMenu(title: L10n.tr("Tab"))
     tabItem.submenu = tabMenu
 
     let previousItem = NSMenuItem(
-      title: "Previous Tab",
+      title: L10n.tr("Previous Tab"),
       action: #selector(TerminalBitmapView.selectPreviousTab(_:)),
       keyEquivalent: UnicodeScalar(UInt32(NSLeftArrowFunctionKey)).map(String.init) ?? ""
     )
@@ -207,7 +207,7 @@ enum MenuCommands {
     tabMenu.addItem(previousItem)
 
     let nextItem = NSMenuItem(
-      title: "Next Tab",
+      title: L10n.tr("Next Tab"),
       action: #selector(TerminalBitmapView.selectNextTab(_:)),
       keyEquivalent: UnicodeScalar(UInt32(NSRightArrowFunctionKey)).map(String.init) ?? ""
     )
@@ -218,7 +218,7 @@ enum MenuCommands {
 
     for i in 1...8 {
       let item = NSMenuItem(
-        title: "Select Tab \(i)",
+        title: String(format: L10n.tr("Select Tab %lld"), i),
         action: #selector(TerminalBitmapView.selectTabByIndex(_:)),
         keyEquivalent: "\(i)"
       )
@@ -228,21 +228,21 @@ enum MenuCommands {
 
     tabMenu.addItem(
       NSMenuItem(
-        title: "Select Last Tab",
+        title: L10n.tr("Select Last Tab"),
         action: #selector(TerminalBitmapView.selectLastTab(_:)),
         keyEquivalent: "9"
       ))
 
     // Debug menu — capture mode for reproducing rendering bugs
-    let debugItem = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")
+    let debugItem = NSMenuItem(title: L10n.tr("Debug"), action: nil, keyEquivalent: "")
     mainMenu.addItem(debugItem)
-    let debugMenu = NSMenu(title: "Debug")
+    let debugMenu = NSMenu(title: L10n.tr("Debug"))
     debugItem.submenu = debugMenu
 
     // Single persistent item; TerminalBitmapView.validateMenuItem flips the
     // title between "Start"/"Stop PTY Capture" based on live capture state.
     let captureItem = NSMenuItem(
-      title: "Start PTY Capture",
+      title: L10n.tr("Start PTY Capture"),
       action: #selector(TerminalBitmapView.toggleCapture(_:)),
       keyEquivalent: "r"
     )
@@ -250,7 +250,7 @@ enum MenuCommands {
     debugMenu.addItem(captureItem)
 
     let renderJournalItem = NSMenuItem(
-      title: "Dump Render Journal",
+      title: L10n.tr("Dump Render Journal"),
       action: #selector(TerminalBitmapView.dumpRenderJournal(_:)),
       keyEquivalent: "j"
     )
@@ -259,20 +259,20 @@ enum MenuCommands {
 
     debugMenu.addItem(
       NSMenuItem(
-        title: "Dump Tab Journal",
+        title: L10n.tr("Dump Tab Journal"),
         action: #selector(AppDelegate.dumpTabJournal(_:)),
         keyEquivalent: ""
       ))
 
     debugMenu.addItem(
       NSMenuItem(
-        title: "Capture CPU Profile…",
+        title: L10n.tr("Capture CPU Profile…"),
         action: #selector(AppDelegate.captureProfile(_:)),
         keyEquivalent: ""
       ))
 
     let profileSessionItem = NSMenuItem(
-      title: "Start CPU Recording",
+      title: L10n.tr("Start CPU Recording"),
       action: #selector(AppDelegate.toggleProfileSessionRecording(_:)),
       keyEquivalent: ""
     )
@@ -280,7 +280,7 @@ enum MenuCommands {
 
     debugMenu.addItem(
       NSMenuItem(
-        title: "Export CPU Profile…",
+        title: L10n.tr("Export CPU Profile…"),
         action: #selector(AppDelegate.exportProfileSession(_:)),
         keyEquivalent: ""
       ))
@@ -288,33 +288,33 @@ enum MenuCommands {
     debugMenu.addItem(NSMenuItem.separator())
     debugMenu.addItem(
       NSMenuItem(
-        title: "Send Diagnostics…",
+        title: L10n.tr("Send Diagnostics…"),
         action: #selector(AppDelegate.sendDiagnostics(_:)),
         keyEquivalent: ""
       ))
 
     // Window menu — standard window management. Setting NSApp.windowsMenu lets
     // AppKit append and check-mark the open-window list automatically.
-    let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+    let windowItem = NSMenuItem(title: L10n.tr("Window"), action: nil, keyEquivalent: "")
     mainMenu.addItem(windowItem)
-    let windowMenu = NSMenu(title: "Window")
+    let windowMenu = NSMenu(title: L10n.tr("Window"))
     windowItem.submenu = windowMenu
     windowMenu.addItem(
       NSMenuItem(
-        title: "Minimize",
+        title: L10n.tr("Minimize"),
         action: #selector(NSWindow.performMiniaturize(_:)),
         keyEquivalent: "m"
       ))
     windowMenu.addItem(
       NSMenuItem(
-        title: "Zoom",
+        title: L10n.tr("Zoom"),
         action: #selector(NSWindow.performZoom(_:)),
         keyEquivalent: ""
       ))
     windowMenu.addItem(NSMenuItem.separator())
     windowMenu.addItem(
       NSMenuItem(
-        title: "Bring All to Front",
+        title: L10n.tr("Bring All to Front"),
         action: #selector(NSApplication.arrangeInFront(_:)),
         keyEquivalent: ""
       ))
@@ -322,13 +322,13 @@ enum MenuCommands {
 
     // Help menu — setting NSApp.helpMenu also enables the system Help search
     // field, which indexes every menu command.
-    let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+    let helpItem = NSMenuItem(title: L10n.tr("Help"), action: nil, keyEquivalent: "")
     mainMenu.addItem(helpItem)
-    let helpMenu = NSMenu(title: "Help")
+    let helpMenu = NSMenu(title: L10n.tr("Help"))
     helpItem.submenu = helpMenu
     helpMenu.addItem(
       NSMenuItem(
-        title: "Reveal Log Folder in Finder",
+        title: L10n.tr("Reveal Log Folder in Finder"),
         action: #selector(AppDelegate.revealLogFolder(_:)),
         keyEquivalent: ""
       ))

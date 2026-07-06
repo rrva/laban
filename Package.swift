@@ -83,7 +83,10 @@ let package = Package(
         "LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore", "LabanControl",
         .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
       ],
-      resources: [.copy("Resources/AppIcon.icns")],
+      resources: [
+        .copy("Resources/AppIcon.icns"),
+        .process("Resources/Localizable.xcstrings"),
+      ],
       swiftSettings: _releaseExclusivity
     ),
     .executableTarget(

@@ -47,12 +47,12 @@ final class RendererModeSettingsTests: XCTestCase {
     XCTAssertEqual(
       submenu.items.map(\.title),
       [
-        "Software Renderer",
-        "Classic Metal Renderer",
+        L10n.trEn("Software Renderer"),
+        L10n.trEn("Classic Metal Renderer"),
         RendererMode.gpuDriven.isAvailableOnCurrentOS
-          ? "GPU-driven Renderer" : "GPU-driven Renderer (requires macOS 26)",
-        "Vector Glyph Renderer",
-        "Slug Glyph Renderer",
+          ? L10n.trEn("GPU-driven Renderer") : L10n.trEn("GPU-driven Renderer (requires macOS 26)"),
+        L10n.trEn("Vector Glyph Renderer"),
+        L10n.trEn("Slug Glyph Renderer"),
       ])
     XCTAssertEqual(submenu.items[0].state, .off)
     if RendererMode.gpuDriven.isAvailableOnCurrentOS {

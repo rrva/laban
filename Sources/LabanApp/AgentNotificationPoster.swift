@@ -76,12 +76,12 @@ final class AttentionNotificationPermissionExplainer:
     didShowDeniedHelp = true
 
     let alert = NSAlert()
-    alert.messageText = "Notifications are off for Laban"
+    alert.messageText = L10n.tr("Notifications are off for Laban")
     alert.informativeText =
-      "Enable Laban in System Settings > Notifications, and choose Banners or Alerts, "
-      + "to receive tab attention notifications."
-    alert.addButton(withTitle: "Open Settings")
-    alert.addButton(withTitle: "OK")
+      L10n.tr(
+        "Enable Laban in System Settings > Notifications, and choose Banners or Alerts, to receive tab attention notifications.")
+    alert.addButton(withTitle: L10n.tr("Open Settings"))
+    alert.addButton(withTitle: L10n.tr("OK"))
     let response = alert.runModal()
     if response == .alertFirstButtonReturn,
       let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
@@ -217,7 +217,7 @@ final class AgentNotificationPoster {
     logDelivery(event: event, outcome: "submit", error: nil)
     let content = UNMutableNotificationContent()
     let trimmedTitle = event.title.trimmingCharacters(in: .whitespacesAndNewlines)
-    content.title = trimmedTitle.isEmpty ? "Terminal" : trimmedTitle
+    content.title = trimmedTitle.isEmpty ? L10n.tr("Terminal") : trimmedTitle
     content.body = body
     content.threadIdentifier = "tab-\(event.tabId)"
     content.userInfo = [

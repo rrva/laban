@@ -25,7 +25,7 @@ final class ProfileSessionRecorder: @unchecked Sendable {
 
   /// Debug-menu title for the Start/Stop toggle.
   static func menuTitle(recording: Bool) -> String {
-    recording ? "Stop CPU Recording" : "Start CPU Recording"
+    recording ? L10n.tr("Stop CPU Recording") : L10n.tr("Start CPU Recording")
   }
 
   /// Each chunk is 500 samples at 10 ms (~5 s). The next chunk starts as soon

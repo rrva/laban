@@ -21,12 +21,12 @@ final class RendererModeMenuController: NSObject {
   }
 
   func makeMenuItem() -> NSMenuItem {
-    let parent = NSMenuItem(title: "Renderer", action: nil, keyEquivalent: "")
-    let submenu = NSMenu(title: "Renderer")
+    let parent = NSMenuItem(title: L10n.tr("Renderer"), action: nil, keyEquivalent: "")
+    let submenu = NSMenu(title: L10n.tr("Renderer"))
     parent.submenu = submenu
 
     let software = NSMenuItem(
-      title: "Software Renderer",
+      title: L10n.tr("Software Renderer"),
       action: #selector(selectSoftware(_:)),
       keyEquivalent: "")
     software.target = self
@@ -34,7 +34,7 @@ final class RendererModeMenuController: NSObject {
     softwareItem = software
 
     let classic = NSMenuItem(
-      title: "Classic Metal Renderer",
+      title: L10n.tr("Classic Metal Renderer"),
       action: #selector(selectClassic(_:)),
       keyEquivalent: "")
     classic.target = self
@@ -51,7 +51,7 @@ final class RendererModeMenuController: NSObject {
     gpuDrivenItem = gpuDriven
 
     let vectorGlyph = NSMenuItem(
-      title: "Vector Glyph Renderer",
+      title: L10n.tr("Vector Glyph Renderer"),
       action: #selector(selectVectorGlyph(_:)),
       keyEquivalent: "")
     vectorGlyph.target = self
@@ -59,7 +59,7 @@ final class RendererModeMenuController: NSObject {
     vectorGlyphItem = vectorGlyph
 
     let slugGlyph = NSMenuItem(
-      title: "Slug Glyph Renderer",
+      title: L10n.tr("Slug Glyph Renderer"),
       action: #selector(selectSlugGlyph(_:)),
       keyEquivalent: "")
     slugGlyph.target = self
@@ -92,9 +92,9 @@ final class RendererModeMenuController: NSObject {
 
   private var gpuDrivenTitle: String {
     if RendererMode.gpuDriven.isAvailableOnCurrentOS {
-      return "GPU-driven Renderer"
+      return L10n.tr("GPU-driven Renderer")
     }
-    return "GPU-driven Renderer (requires macOS 26)"
+    return L10n.tr("GPU-driven Renderer (requires macOS 26)")
   }
 
   /// The renderer currently persisted (and applied). Used to preselect the

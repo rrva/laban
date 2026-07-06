@@ -5574,10 +5574,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case .tooLarge(let bytes):
       let alert = NSAlert()
       alert.alertStyle = .warning
-      alert.messageText = "Paste too large"
+      alert.messageText = L10n.tr("Paste too large")
       alert.informativeText =
         "Refusing to paste \(bytes) bytes (limit is \(TerminalClipboard.hardLimitBytes))."
-      alert.addButton(withTitle: "OK")
+      alert.addButton(withTitle: L10n.tr("OK"))
       alert.runModal()
       EventLog.shared.log("paste.refused.size", ["bytes": bytes])
       return
@@ -5603,10 +5603,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if bytes.count > TerminalClipboard.warnLimitBytes {
       let alert = NSAlert()
       alert.alertStyle = .warning
-      alert.messageText = "Large paste"
-      alert.informativeText = "About to paste \(bytes.count) bytes. Continue?"
-      alert.addButton(withTitle: "Paste")
-      alert.addButton(withTitle: "Cancel")
+      alert.messageText = L10n.tr("Large paste")
+      alert.informativeText = String(format: L10n.tr("About to paste %lld bytes. Continue?"), bytes.count)
+      alert.addButton(withTitle: L10n.tr("Paste"))
+      alert.addButton(withTitle: L10n.tr("Cancel"))
       if alert.runModal() != .alertFirstButtonReturn {
         EventLog.shared.log("paste.cancelled.size", ["bytes": bytes.count])
         return
@@ -5631,11 +5631,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       } else {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Paste contains control characters or newlines"
-        alert.informativeText =
-          "The active program isn't using bracketed paste. Pasting may run each line as a command. Continue?"
-        alert.addButton(withTitle: "Paste")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = L10n.tr("Paste contains control characters or newlines")
+        alert.informativeText = L10n.tr(
+          "The active program isn't using bracketed paste. Pasting may run each line as a command. Continue?")
+        alert.addButton(withTitle: L10n.tr("Paste"))
+        alert.addButton(withTitle: L10n.tr("Cancel"))
         if alert.runModal() != .alertFirstButtonReturn {
           EventLog.shared.log("paste.cancelled.unsafe", ["bytes": bytes.count])
           return
@@ -7341,7 +7341,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// always fit.
   private func exportRecentBytes(seconds: TimeInterval) {
     guard let tabId = model.activeTab?.id else {
-      showCastAlert(title: "No active tab", message: "Open a tab and try again.")
+      showCastAlert(title: L10n.tr("No active tab"), message: L10n.tr("Open a tab and try again."))
       return
     }
     guard let ring = model.transcriptDelegate?.recentByteRing(forTabId: tabId) else {
@@ -7442,9 +7442,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       Review the file before sharing it publicly.
       """
     alert.addButton(withTitle: "Open in Browser")
-    alert.addButton(withTitle: "Reveal in Finder")
+    alert.addButton(withTitle: L10n.tr("Reveal in Finder"))
     alert.addButton(withTitle: "Copy Path")
-    alert.addButton(withTitle: "Done")
+    alert.addButton(withTitle: L10n.tr("Done"))
     switch alert.runModal() {
     case .alertFirstButtonReturn:
       do {
@@ -7531,7 +7531,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let alert = NSAlert()
     alert.messageText = title
     alert.informativeText = message
-    alert.addButton(withTitle: "OK")
+    alert.addButton(withTitle: L10n.tr("OK"))
     alert.runModal()
   }
 
@@ -7564,7 +7564,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let alert = NSAlert()
     alert.messageText = "Render Journal Is Disabled"
     alert.informativeText = advice
-    alert.addButton(withTitle: "OK")
+    alert.addButton(withTitle: L10n.tr("OK"))
     alert.runModal()
   }
 

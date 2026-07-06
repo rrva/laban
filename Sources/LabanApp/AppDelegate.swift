@@ -366,8 +366,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
       """
     alert.addButton(withTitle: "Speedscope")
     alert.addButton(withTitle: "Firefox Profiler")
-    alert.addButton(withTitle: "Reveal in Finder")
-    alert.addButton(withTitle: "Done")
+    alert.addButton(withTitle: L10n.tr("Reveal in Finder"))
+    alert.addButton(withTitle: L10n.tr("Done"))
     switch alert.runModal() {
     case .alertFirstButtonReturn:
       openCapturedProfile(profileURL, viewer: .speedscope)
@@ -405,15 +405,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     let alert = NSAlert()
     alert.messageText = title
     alert.informativeText = message
-    alert.addButton(withTitle: "OK")
+    alert.addButton(withTitle: L10n.tr("OK"))
     alert.runModal()
   }
 
   private func showStartupFailure(_ error: Error) {
     let alert = NSAlert()
-    alert.messageText = "Laban failed to start"
+    alert.messageText = L10n.tr("Laban failed to start")
     alert.informativeText = "\(error)"
-    alert.addButton(withTitle: "Quit")
+    alert.addButton(withTitle: L10n.tr("Quit"))
     alert.runModal()
     NSApp.terminate(nil)
   }
@@ -429,10 +429,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     let shouldFallback: Bool
     if originalSelection.source.isOverride {
       let alert = NSAlert()
-      alert.messageText = "Background terminal sessions failed to start"
+      alert.messageText = L10n.tr("Background terminal sessions failed to start")
       alert.informativeText = "\(error)"
-      alert.addButton(withTitle: "Use Local Sessions")
-      alert.addButton(withTitle: "Quit")
+      alert.addButton(withTitle: L10n.tr("Use Local Sessions"))
+      alert.addButton(withTitle: L10n.tr("Quit"))
       shouldFallback = alert.runModal() == .alertFirstButtonReturn
     } else {
       shouldFallback = true
@@ -642,8 +642,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     let alert = NSAlert()
     alert.messageText = "Font set to \(new.displayName ?? new.fontName), \(sizeText)"
     alert.informativeText = "Restart Laban to apply."
-    alert.addButton(withTitle: "Restart Now")  // .firstButtonReturn
-    alert.addButton(withTitle: "Later")  // .secondButtonReturn
+    alert.addButton(withTitle: L10n.tr("Restart Now"))  // .firstButtonReturn
+    alert.addButton(withTitle: L10n.tr("Later"))  // .secondButtonReturn
     if alert.runModal() == .alertFirstButtonReturn {
       Self.restartApp()
     }
@@ -779,7 +779,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     let alert = NSAlert()
     alert.messageText = title
     alert.informativeText = message
-    alert.addButton(withTitle: "OK")
+    alert.addButton(withTitle: L10n.tr("OK"))
     alert.runModal()
   }
 

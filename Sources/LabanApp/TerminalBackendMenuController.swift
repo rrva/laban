@@ -31,12 +31,12 @@ final class TerminalBackendMenuController: NSObject {
   }
 
   func makeMenuItem() -> NSMenuItem {
-    let parent = NSMenuItem(title: "Terminal Sessions", action: nil, keyEquivalent: "")
-    let submenu = NSMenu(title: "Terminal Sessions")
+    let parent = NSMenuItem(title: L10n.tr("Terminal Sessions"), action: nil, keyEquivalent: "")
+    let submenu = NSMenu(title: L10n.tr("Terminal Sessions"))
     parent.submenu = submenu
 
     let local = NSMenuItem(
-      title: "Local Sessions",
+      title: L10n.tr("Local Sessions"),
       action: #selector(selectLocal(_:)),
       keyEquivalent: "")
     local.target = self
@@ -44,7 +44,7 @@ final class TerminalBackendMenuController: NSObject {
     localItem = local
 
     let background = NSMenuItem(
-      title: "Background Sessions",
+      title: L10n.tr("Background Sessions"),
       action: #selector(selectBackground(_:)),
       keyEquivalent: "")
     background.target = self
@@ -52,7 +52,7 @@ final class TerminalBackendMenuController: NSObject {
     backgroundItem = background
 
     let detached = NSMenuItem(
-      title: "Detached Sessions",
+      title: L10n.tr("Detached Sessions"),
       action: #selector(selectDetached(_:)),
       keyEquivalent: "")
     detached.target = self
@@ -110,23 +110,23 @@ final class TerminalBackendMenuController: NSObject {
     let selectedName: String
     switch selectedBackend {
     case .inProcess:
-      selectedName = "local"
+      selectedName = L10n.tr("Local")
     case .labpty:
-      selectedName = "background"
+      selectedName = L10n.tr("Background")
     case .laband:
-      selectedName = "detached"
+      selectedName = L10n.tr("Detached")
     }
     let alert = NSAlert()
-    alert.messageText = "Restart Laban to use \(selectedName) sessions?"
+    alert.messageText = String(format: L10n.tr("Restart Laban to use %@ sessions?"), selectedName)
     if source.isOverride {
       alert.informativeText =
         "This launch is using a command-line or environment override. Remove that override for the saved menu choice to apply on restart."
     } else {
-      alert.informativeText =
-        "Existing tabs stay on the current session backend until Laban restarts."
+      alert.informativeText = L10n.tr(
+        "Existing tabs stay on the current session backend until Laban restarts.")
     }
-    alert.addButton(withTitle: "Restart Now")
-    alert.addButton(withTitle: "Later")
+    alert.addButton(withTitle: L10n.tr("Restart Now"))
+    alert.addButton(withTitle: L10n.tr("Later"))
     if alert.runModal() == .alertFirstButtonReturn {
       AppDelegate.restartApp()
     }

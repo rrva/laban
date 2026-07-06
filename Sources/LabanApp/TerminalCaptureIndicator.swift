@@ -13,7 +13,7 @@ enum TerminalCaptureIndicator {
   /// Mutating Debug-menu title. AppKit keeps one persistent NSMenuItem and one
   /// action (`toggleCapture(_:)`); only the title flips, like Show/Hide Sidebar.
   static func menuTitle(active: Bool) -> String {
-    active ? "Stop PTY Capture" : "Start PTY Capture"
+    active ? L10n.tr("Stop PTY Capture") : L10n.tr("Start PTY Capture")
   }
 
   /// Window-title suffix while PTY capture is active; empty when idle.
@@ -41,7 +41,7 @@ final class TerminalCaptureIndicatorView: NSView {
 
   init(
     text: String = TerminalCaptureIndicator.ptyPillText,
-    accessibilityLabel: String = "Recording PTY capture"
+    accessibilityLabel: String = L10n.tr("Recording PTY capture")
   ) {
     super.init(frame: .zero)
     translatesAutoresizingMaskIntoConstraints = true

@@ -67,7 +67,7 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
     }
     items.append(NSMenuItem.separator())
     let follows = NSMenuItem(
-      title: "Follow System Appearance",
+      title: L10n.tr("Follow System Appearance"),
       action: #selector(toggleFollowsSystemAppearance(_:)),
       keyEquivalent: ""
     )

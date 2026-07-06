@@ -17,7 +17,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   private let themePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let followSystemCheckbox = NSButton(
-    checkboxWithTitle: "Follow system appearance", target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Follow system appearance"), target: nil, action: nil)
   private let fontLabel = NSTextField(labelWithString: "")
   private let cjkFontPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let cjkFontStatusLabel = NSTextField(labelWithString: "")
@@ -25,7 +25,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let backendPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let identityPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let restoreCheckbox = NSButton(
-    checkboxWithTitle: "Restore tabs on launch", target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Restore tabs on launch"), target: nil, action: nil)
   private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let scrollModePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let graphemeWidthPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -35,7 +35,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorSubpixelGField = NSTextField(frame: .zero)
   private let vectorSubpixelBField = NSTextField(frame: .zero)
   private let vectorSubpixelWidthField = NSTextField(frame: .zero)
-  private let vectorSubpixelApplyButton = NSButton(title: "Apply", target: nil, action: nil)
+  private let vectorSubpixelApplyButton = NSButton(title: L10n.tr("Apply"), target: nil, action: nil)
   private let vectorTextWeightSlider = NSSlider(
     value: VectorTextWeightSettings.defaultWeight, minValue: 0,
     maxValue: VectorTextWeightSettings.maxWeight,
@@ -45,27 +45,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   // Held as properties so refresh() can dim them when the active renderer does
   // not consume vector-specific settings. The controls themselves get disabled
   // too; dimming the label keeps the whole row reading as inactive.
-  private let vectorTextLabel = NSTextField(labelWithString: "Vector text AA:")
-  private let vectorOverlapLabel = NSTextField(labelWithString: "Overlap:")
-  private let vectorTextWeightLabel = NSTextField(labelWithString: "Text weight:")
-  private let vectorSmoothScrollLabel = NSTextField(labelWithString: "Smooth scroll:")
+  private let vectorTextLabel = NSTextField(labelWithString: L10n.tr("Vector text AA:"))
+  private let vectorOverlapLabel = NSTextField(labelWithString: L10n.tr("Overlap:"))
+  private let vectorTextWeightLabel = NSTextField(labelWithString: L10n.tr("Text weight:"))
+  private let vectorSmoothScrollLabel = NSTextField(labelWithString: L10n.tr("Smooth scroll:"))
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
-    checkboxWithTitle: "Option as Meta", target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Option as Meta"), target: nil, action: nil)
   private let needsActionNotificationsCheckbox = NSButton(
-    checkboxWithTitle: "Notify when a tab needs action", target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Notify when a tab needs action"), target: nil, action: nil)
   private let completionNotificationsCheckbox = NSButton(
-    checkboxWithTitle: "Notify when a task completes", target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Notify when a task completes"), target: nil, action: nil)
   private let passiveNotificationsCheckbox = NSButton(
-    checkboxWithTitle: "Notify for passive tab attention", target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Notify for passive tab attention"), target: nil, action: nil)
   private let notificationSoundCheckbox = NSButton(
-    checkboxWithTitle: "Play notification sound", target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Play notification sound"), target: nil, action: nil)
   private let testNotificationButton = NSButton(
-    title: "Test Native Notification", target: nil, action: nil)
+    title: L10n.tr("Test Native Notification"), target: nil, action: nil)
   private let blinkCheckbox = NSButton(
-    checkboxWithTitle: "Blink cursor", target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Blink cursor"), target: nil, action: nil)
   private let profileRecorderCheckbox = NSButton(
-    checkboxWithTitle: "Enable sampling profiler (applies on next launch)", target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Enable sampling profiler (applies on next launch)"), target: nil, action: nil)
   private let profileRecorderHelpLabel = NSTextField(wrappingLabelWithString: "")
 
   /// Theme index (into `themeController.orderedThemes`) behind each popup row,
@@ -103,7 +103,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       styleMask: [.titled, .closable],
       backing: .buffered,
       defer: false)
-    window.title = "Laban Settings"
+    window.title = L10n.tr("Laban Settings")
     // Reused across openings; without this AppKit frees it on close and the
     // next ⌘, would message a dead window.
     window.isReleasedWhenClosed = false
@@ -158,7 +158,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     fontLabel.lineBreakMode = .byTruncatingTail
     let changeFontButton = NSButton(
-      title: "Change…", target: self, action: #selector(changeFontClicked(_:)))
+      title: L10n.tr("Change…"), target: self, action: #selector(changeFontClicked(_:)))
     changeFontButton.bezelStyle = .rounded
     let fontRow = NSStackView(views: [fontLabel, changeFontButton])
     fontRow.orientation = .horizontal
@@ -175,7 +175,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       + "CJK font."
 
     let changeCJKFontButton = NSButton(
-      title: "Choose…", target: self, action: #selector(changeCJKFontClicked(_:)))
+      title: L10n.tr("Choose…"), target: self, action: #selector(changeCJKFontClicked(_:)))
     changeCJKFontButton.bezelStyle = .rounded
     changeCJKFontButton.toolTip =
       "Pick any installed font with Hanzi coverage. Size follows the primary "
@@ -335,27 +335,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       "Sends one native macOS notification through the same path as tab attention."
 
     let appearanceGrid = makeSettingsGrid([
-      [makeLabel("Theme:"), themePopUp],
+      [makeLabel(L10n.tr("Theme:")), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
-      [makeLabel("Font:"), fontRow],
-      [makeLabel("CJK font:"), cjkFontRow],
+      [makeLabel(L10n.tr("Font:")), fontRow],
+      [makeLabel(L10n.tr("CJK font:")), cjkFontRow],
       [NSGridCell.emptyContentView, cjkFontStatusLabel],
-      [makeLabel("Cursor:"), cursorStylePopUp],
+      [makeLabel(L10n.tr("Cursor:")), cursorStylePopUp],
       [NSGridCell.emptyContentView, blinkCheckbox],
     ])
     let terminalGrid = makeSettingsGrid([
-      [makeLabel("Scroll:"), scrollModePopUp],
-      [makeLabel("Unicode width:"), graphemeWidthPopUp],
-      [makeLabel("Sessions:"), backendPopUp],
+      [makeLabel(L10n.tr("Scroll:")), scrollModePopUp],
+      [makeLabel(L10n.tr("Unicode width:")), graphemeWidthPopUp],
+      [makeLabel(L10n.tr("Sessions:")), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
       [NSGridCell.emptyContentView, profileRecorderCheckbox],
       [NSGridCell.emptyContentView, profileRecorderHelpLabel],
-      [makeLabel("Identity:"), identityPopUp],
+      [makeLabel(L10n.tr("Identity:")), identityPopUp],
       [NSGridCell.emptyContentView, optionAsMetaCheckbox],
     ])
     let renderingGrid = makeSettingsGrid([
-      [makeLabel("Renderer:"), rendererPopUp],
-      [makeLabel("Emoji rendering:"), emojiRenderingPopUp],
+      [makeLabel(L10n.tr("Renderer:")), rendererPopUp],
+      [makeLabel(L10n.tr("Emoji rendering:")), emojiRenderingPopUp],
       [vectorTextLabel, vectorSubpixelLayoutPopUp],
       [vectorOverlapLabel, makeVectorSubpixelCustomRow()],
       [vectorTextWeightLabel, makeVectorTextWeightRow()],
@@ -363,7 +363,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
     let notificationsGrid = makeSettingsGrid([
-      [makeLabel("Notifications:"), needsActionNotificationsCheckbox],
+      [makeLabel(L10n.tr("Notifications:")), needsActionNotificationsCheckbox],
       [NSGridCell.emptyContentView, completionNotificationsCheckbox],
       [NSGridCell.emptyContentView, passiveNotificationsCheckbox],
       [NSGridCell.emptyContentView, notificationSoundCheckbox],
@@ -372,10 +372,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     let tabs = NSTabView(frame: .zero)
     tabs.translatesAutoresizingMaskIntoConstraints = false
-    tabs.addTabViewItem(makeTabItem(label: "Appearance", grid: appearanceGrid))
-    tabs.addTabViewItem(makeTabItem(label: "Terminal", grid: terminalGrid))
-    tabs.addTabViewItem(makeTabItem(label: "Rendering", grid: renderingGrid))
-    tabs.addTabViewItem(makeTabItem(label: "Notifications", grid: notificationsGrid))
+    tabs.addTabViewItem(makeTabItem(label: L10n.tr("Appearance"), grid: appearanceGrid))
+    tabs.addTabViewItem(makeTabItem(label: L10n.tr("Terminal"), grid: terminalGrid))
+    tabs.addTabViewItem(makeTabItem(label: L10n.tr("Rendering"), grid: renderingGrid))
+    tabs.addTabViewItem(makeTabItem(label: L10n.tr("Notifications"), grid: notificationsGrid))
     content.addSubview(tabs)
     NSLayoutConstraint.activate([
       tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
@@ -451,9 +451,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     vectorTextWeightValueLabel.font = .monospacedDigitSystemFont(
       ofSize: NSFont.smallSystemFontSize, weight: .regular)
     let row = NSStackView(views: [
-      makeSmallLabel("Thin"),
+      makeSmallLabel(L10n.tr("Thin")),
       vectorTextWeightSlider,
-      makeSmallLabel("Heavy"),
+      makeSmallLabel(L10n.tr("Heavy")),
       vectorTextWeightValueLabel,
     ])
     row.orientation = .horizontal
@@ -804,27 +804,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private func rendererTitle(_ selection: RendererSelection) -> String {
     switch selection {
     case .software:
-      return "Software"
+      return L10n.tr("Software")
     case .classic:
-      return "Classic (Metal)"
+      return L10n.tr("Classic (Metal)")
     case .gpuDriven:
       return selection.isAvailableOnCurrentOS
-        ? "GPU-driven (Metal)" : "GPU-driven (requires macOS 26)"
+        ? L10n.tr("GPU-driven (Metal)") : L10n.tr("GPU-driven (requires macOS 26)")
     case .vectorGlyph:
-      return "Vector Glyph"
+      return L10n.tr("Vector Glyph")
     case .slugGlyph:
-      return "Slug Glyph"
+      return L10n.tr("Slug Glyph")
     }
   }
 
   private func backendTitle(_ backend: TerminalSessionBackend) -> String {
     switch backend {
     case .inProcess:
-      return "Local"
+      return L10n.tr("Local")
     case .labpty:
-      return "Background"
+      return L10n.tr("Background")
     case .laband:
-      return "Detached"
+      return L10n.tr("Detached")
     }
   }
 
@@ -853,47 +853,47 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   private func cursorStyleTitle(_ style: CursorSettings.Style) -> String {
     switch style {
-    case .block: return "Block"
-    case .bar: return "Bar"
-    case .underline: return "Underline"
+    case .block: return L10n.tr("Block")
+    case .bar: return L10n.tr("Bar")
+    case .underline: return L10n.tr("Underline")
     }
   }
 
   private func scrollModeTitle(_ mode: ScrollSettings.Mode) -> String {
     switch mode {
-    case .pixelSmooth: return "Pixel-smooth"
-    case .lineQuantized: return "Line-quantized"
+    case .pixelSmooth: return L10n.tr("Pixel-smooth")
+    case .lineQuantized: return L10n.tr("Line-quantized")
     }
   }
 
   private func graphemeWidthTitle(_ mode: GraphemeWidthMode) -> String {
     switch mode {
-    case .auto: return "Auto (recommended)"
-    case .preferGrapheme: return "Prefer grapheme width"
+    case .auto: return L10n.tr("Auto (recommended)")
+    case .preferGrapheme: return L10n.tr("Prefer grapheme width")
     }
   }
 
   private func emojiRenderingTitle(_ mode: EmojiRenderingMode) -> String {
     switch mode {
-    case .monochrome: return "Monochrome"
-    case .color: return "Color"
+    case .monochrome: return L10n.tr("Monochrome")
+    case .color: return L10n.tr("Color")
     }
   }
 
   private func vectorSubpixelLayoutTitle(_ preset: VectorSubpixelLayoutPreset) -> String {
     switch preset {
-    case .grayscale: return "Grayscale"
-    case .calibratedRGB: return "Calibrated"
-    case .customOverlap: return "Custom overlap"
-    case .rgbStripe: return "RGB subpixel"
-    case .bgrStripe: return "BGR subpixel"
+    case .grayscale: return L10n.tr("Grayscale")
+    case .calibratedRGB: return L10n.tr("Calibrated")
+    case .customOverlap: return L10n.tr("Custom overlap")
+    case .rgbStripe: return L10n.tr("RGB subpixel")
+    case .bgrStripe: return L10n.tr("BGR subpixel")
     }
   }
 
   private func vectorSmoothScrollTitle(_ mode: VectorSmoothScrollMode) -> String {
     switch mode {
-    case .fluid: return "Fluid"
-    case .perPhase: return "Crisp"
+    case .fluid: return L10n.tr("Fluid")
+    case .perPhase: return L10n.tr("Crisp")
     }
   }
 
@@ -903,7 +903,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     for (index, option) in cjkFontOptions.enumerated() {
       let installed = TerminalCJKFontPolicy.isAvailable(option, baseFont: atlas.font)
       let title =
-        installed ? option.displayName : "\(option.displayName) (not installed)"
+        installed
+        ? option.displayName
+        : "\(option.displayName) \(L10n.tr("(not installed)"))"
       cjkFontPopUp.item(at: index)?.title = title
       cjkFontPopUp.item(at: index)?.isEnabled = installed
       cjkFontPopUp.item(at: index)?.toolTip =

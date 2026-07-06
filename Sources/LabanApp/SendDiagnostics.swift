@@ -178,9 +178,9 @@ enum SendDiagnostics {
       let msg = result.error ?? "unknown error"
       AppLog.app.error("diagnostics bundle failed: \(msg)")
       let alert = NSAlert()
-      alert.messageText = "Send Diagnostics failed"
+      alert.messageText = L10n.tr("Send Diagnostics failed")
       alert.informativeText = msg
-      alert.addButton(withTitle: "OK")
+      alert.addButton(withTitle: L10n.tr("OK"))
       alert.runModal()
     }
   }
