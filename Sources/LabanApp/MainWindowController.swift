@@ -566,7 +566,9 @@ final class MainWindowController: NSWindowController {
         appModel: model, mirror: mirror,
         isEnabled: isPersistenceEnabled)
       controller.agentObserverHost = observerHost
+      let priorTabCreatedForObserver = model.onTabCreated
       model.onTabCreated = { [weak observerHost] tabId, session in
+        priorTabCreatedForObserver?(tabId, session)
         observerHost?.attach(session: session, tabId: tabId)
       }
       model.onTabClosed = { [weak observerHost] tabId in
