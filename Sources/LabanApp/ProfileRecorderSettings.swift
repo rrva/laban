@@ -33,8 +33,10 @@ enum ProfileRecorderSettings {
   /// the owning user (mode 0700) because on macOS connecting to a UNIX socket
   /// is not gated by the socket file's own mode — only the directory is.
   static var defaultProfilingDirectory: URL {
-    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-      ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+    let base =
+      FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+      ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(
+        "Library/Application Support")
     return base.appendingPathComponent("Laban/profiling", isDirectory: true)
   }
 
@@ -42,12 +44,14 @@ enum ProfileRecorderSettings {
   /// directory (also 0700 on macOS) when the Application Support path would
   /// exceed the AF_UNIX `sun_path` limit (~104 bytes on macOS).
   static var defaultURLPattern: String {
-    let preferred = defaultProfilingDirectory.appendingPathComponent("laban-samples-{PID}.sock").path
+    let preferred = defaultProfilingDirectory.appendingPathComponent("laban-samples-{PID}.sock")
+      .path
     // Worst-case concrete length uses a 7-digit PID in place of the 5-char token.
     if preferred.replacingOccurrences(of: "{PID}", with: "1234567").utf8.count <= 100 {
       return "unix://\(preferred)"
     }
-    let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent("laban-samples-{PID}.sock")
+    let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent(
+      "laban-samples-{PID}.sock")
     return "unix://\(tmp)"
   }
 
@@ -133,7 +137,8 @@ enum ProfileRecorderSettings {
       candidates.append(path)
     }
 
-    if let pattern = resolve(environment: environment, arguments: arguments, defaults: defaults).pattern,
+    if let pattern = resolve(environment: environment, arguments: arguments, defaults: defaults)
+      .pattern,
       let resolved = concreteSocketPath(from: pattern, pid: pid)
     {
       append(resolved)

@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import LabanApp
 
 final class ProfileRecorderSettingsTests: XCTestCase {
@@ -10,7 +11,8 @@ final class ProfileRecorderSettingsTests: XCTestCase {
   }
 
   func testDisabledByDefault() {
-    let cfg = ProfileRecorderSettings.resolve(environment: [:], arguments: ["LabanApp"], defaults: makeDefaults())
+    let cfg = ProfileRecorderSettings.resolve(
+      environment: [:], arguments: ["LabanApp"], defaults: makeDefaults())
     XCTAssertNil(cfg.pattern)
     XCTAssertEqual(cfg.source, .disabled)
   }
@@ -25,7 +27,8 @@ final class ProfileRecorderSettingsTests: XCTestCase {
   }
 
   func testBareSwitchUsesDefaultPattern() {
-    let cfg = ProfileRecorderSettings.resolve(environment: [:], arguments: ["LabanApp", "--profile-recorder"], defaults: makeDefaults())
+    let cfg = ProfileRecorderSettings.resolve(
+      environment: [:], arguments: ["LabanApp", "--profile-recorder"], defaults: makeDefaults())
     XCTAssertEqual(cfg.pattern, ProfileRecorderSettings.defaultURLPattern)
     XCTAssertEqual(cfg.source, .commandLine)
   }
@@ -43,7 +46,8 @@ final class ProfileRecorderSettingsTests: XCTestCase {
   func testUserDefaultToggleEnablesDefaultPattern() {
     let d = makeDefaults()
     ProfileRecorderSettings.set(true, defaults: d)
-    let cfg = ProfileRecorderSettings.resolve(environment: [:], arguments: ["LabanApp"], defaults: d)
+    let cfg = ProfileRecorderSettings.resolve(
+      environment: [:], arguments: ["LabanApp"], defaults: d)
     XCTAssertEqual(cfg.pattern, ProfileRecorderSettings.defaultURLPattern)
     XCTAssertEqual(cfg.source, .userDefault)
   }

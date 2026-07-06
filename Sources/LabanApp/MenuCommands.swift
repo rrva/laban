@@ -152,7 +152,8 @@ enum MenuCommands {
         keyEquivalent: "y"))
     editMenu.addItem(NSMenuItem.separator())
     editMenu.addItem(
-      NSMenuItem(title: L10n.tr("Find…"), action: #selector(TerminalBitmapView.find(_:)), keyEquivalent: "f")
+      NSMenuItem(
+        title: L10n.tr("Find…"), action: #selector(TerminalBitmapView.find(_:)), keyEquivalent: "f")
     )
 
     // View menu — Enter Full Screen. AppKit renames this item to "Exit Full

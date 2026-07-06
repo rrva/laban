@@ -11,7 +11,8 @@ enum ProfileCaptureError: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .profilerNotRunning:
-      return "The sampling profiler is not running. Enable it in Settings and relaunch, or use --profile-recorder."
+      return
+        "The sampling profiler is not running. Enable it in Settings and relaunch, or use --profile-recorder."
     case .captureFailed(let detail):
       return "Profile capture failed: \(detail)"
     case .viewerServerFailed(let detail):
@@ -78,9 +79,11 @@ enum ProfileCapture {
     demangle.waitUntilExit()
 
     guard curl.terminationStatus == 0, demangle.terminationStatus == 0 else {
-      let detail = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+      let detail = String(
+        data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
-      throw ProfileCaptureError.captureFailed(detail?.isEmpty == false ? detail! : "curl or demangle failed")
+      throw ProfileCaptureError.captureFailed(
+        detail?.isEmpty == false ? detail! : "curl or demangle failed")
     }
     return data
   }
@@ -111,7 +114,8 @@ enum ProfileCapture {
   }
 
   private static func encodeURIComponent(_ value: String) -> String {
-    let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    let allowed = CharacterSet(
+      charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
     return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
   }
 
@@ -230,7 +234,9 @@ enum ProfileCapture {
         let parts = trimmed.split(separator: ":", maxSplits: 1)
         if parts.count == 2 {
           let originValue = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-          if originValue == "https://www.speedscope.app" || originValue == "https://profiler.firefox.com" {
+          if originValue == "https://www.speedscope.app"
+            || originValue == "https://profiler.firefox.com"
+          {
             allowedOrigin = originValue
           }
         }
@@ -246,7 +252,7 @@ enum ProfileCapture {
       Connection: close\r
       Content-Length: \(body.count)\r
       \r
-      
+
       """
     var response = Data(header.utf8)
     response.append(body)

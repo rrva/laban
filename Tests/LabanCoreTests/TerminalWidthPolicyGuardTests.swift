@@ -15,7 +15,7 @@ final class TerminalWidthPolicyGuardTests: XCTestCase {
   func testTerminalDisplayWidthUsageIsIsolatedToDocumentedFallbackSites() throws {
     let sourcesRoot = repoRoot.appendingPathComponent("Sources")
     let allowedSites: [String: [String]] = [
-      "LabanCore/FrameProducer.swift": ["TerminalDisplayWidth.cells(of:"],
+      "LabanCore/FrameProducer.swift": ["TerminalDisplayWidth.cells("],
       "LabanCore/TerminalFind.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanCore/TerminalSelection.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanApp/TerminalSelectionInput.swift": ["TerminalDisplayWidth.isWide("],

@@ -581,7 +581,8 @@ public struct FrameProducer {
     let ch = CGFloat(cellHeight)
     let cx = originX + CGFloat(col) * cw
     let cy = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
-    let displayCellCount = TerminalDisplayWidth.cells(of: text, graphemeClusterMode: graphemeClusterMode)
+    let displayCellCount = TerminalDisplayWidth.cells(
+      of: text, graphemeClusterMode: graphemeClusterMode)
     let runWidth = CGFloat(displayCellCount) * cw
     cmds.append(
       .rect(

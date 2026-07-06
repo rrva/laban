@@ -79,7 +79,8 @@ final class AttentionNotificationPermissionExplainer:
     alert.messageText = L10n.tr("Notifications are off for Laban")
     alert.informativeText =
       L10n.tr(
-        "Enable Laban in System Settings > Notifications, and choose Banners or Alerts, to receive tab attention notifications.")
+        "Enable Laban in System Settings > Notifications, and choose Banners or Alerts, to receive tab attention notifications."
+      )
     alert.addButton(withTitle: L10n.tr("Open Settings"))
     alert.addButton(withTitle: L10n.tr("OK"))
     let response = alert.runModal()

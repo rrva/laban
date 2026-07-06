@@ -297,7 +297,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
         case .success(let profileURL):
           self.offerProfileViewer(for: profileURL, title: "Profile exported")
         case .failure(let error):
-          self.showProfileAlert(title: "Could not export CPU profile", message: error.localizedDescription)
+          self.showProfileAlert(
+            title: "Could not export CPU profile", message: error.localizedDescription)
         }
       }
     }
@@ -359,7 +360,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   private func offerProfileViewer(for profileURL: URL, title: String = "Profile captured") {
     let alert = NSAlert()
     alert.messageText = title
-    alert.informativeText = "\(profileURL.lastPathComponent)\n\n" + L10n.tr("Saved under ~/Library/Logs/Laban/profiles/. Where should it open?")
+    alert.informativeText =
+      "\(profileURL.lastPathComponent)\n\n"
+      + L10n.tr("Saved under ~/Library/Logs/Laban/profiles/. Where should it open?")
     alert.addButton(withTitle: "Speedscope")
     alert.addButton(withTitle: "Firefox Profiler")
     alert.addButton(withTitle: L10n.tr("Reveal in Finder"))

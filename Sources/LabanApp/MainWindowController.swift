@@ -604,7 +604,8 @@ final class MainWindowController: NSWindowController {
       ? L10n.tr("A background terminal session has no tab")
       : String(format: L10n.tr("%lld background terminal sessions have no tabs"), unclaimed.count)
     alert.informativeText = L10n.tr(
-      "Laban found live shell session(s) from a previous run that aren't open in this window. Adopt them to reopen them as tabs, or ignore to leave them running in the background.")
+      "Laban found live shell session(s) from a previous run that aren't open in this window. Adopt them to reopen them as tabs, or ignore to leave them running in the background."
+    )
     alert.addButton(withTitle: L10n.tr("Adopt"))  // .alertFirstButtonReturn
     alert.addButton(withTitle: L10n.tr("Ignore"))  // .alertSecondButtonReturn
     guard alert.runModal() == .alertFirstButtonReturn else {

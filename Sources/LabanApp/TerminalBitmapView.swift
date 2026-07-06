@@ -5607,7 +5607,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let alert = NSAlert()
       alert.alertStyle = .warning
       alert.messageText = L10n.tr("Large paste")
-      alert.informativeText = String(format: L10n.tr("About to paste %lld bytes. Continue?"), bytes.count)
+      alert.informativeText = String(
+        format: L10n.tr("About to paste %lld bytes. Continue?"), bytes.count)
       alert.addButton(withTitle: L10n.tr("Paste"))
       alert.addButton(withTitle: L10n.tr("Cancel"))
       if alert.runModal() != .alertFirstButtonReturn {
@@ -5636,7 +5637,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         alert.alertStyle = .warning
         alert.messageText = L10n.tr("Paste contains control characters or newlines")
         alert.informativeText = L10n.tr(
-          "The active program isn't using bracketed paste. Pasting may run each line as a command. Continue?")
+          "The active program isn't using bracketed paste. Pasting may run each line as a command. Continue?"
+        )
         alert.addButton(withTitle: L10n.tr("Paste"))
         alert.addButton(withTitle: L10n.tr("Cancel"))
         if alert.runModal() != .alertFirstButtonReturn {

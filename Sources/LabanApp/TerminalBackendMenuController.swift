@@ -120,7 +120,8 @@ final class TerminalBackendMenuController: NSObject {
     alert.messageText = String(format: L10n.tr("Restart Laban to use %@ sessions?"), selectedName)
     if source.isOverride {
       alert.informativeText = L10n.tr(
-        "This launch is using a command-line or environment override. Remove that override for the saved menu choice to apply on restart.")
+        "This launch is using a command-line or environment override. Remove that override for the saved menu choice to apply on restart."
+      )
     } else {
       alert.informativeText = L10n.tr(
         "Existing tabs stay on the current session backend until Laban restarts.")

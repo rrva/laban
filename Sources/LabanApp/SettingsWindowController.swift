@@ -35,7 +35,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorSubpixelGField = NSTextField(frame: .zero)
   private let vectorSubpixelBField = NSTextField(frame: .zero)
   private let vectorSubpixelWidthField = NSTextField(frame: .zero)
-  private let vectorSubpixelApplyButton = NSButton(title: L10n.tr("Apply"), target: nil, action: nil)
+  private let vectorSubpixelApplyButton = NSButton(
+    title: L10n.tr("Apply"), target: nil, action: nil)
   private let vectorTextWeightSlider = NSSlider(
     value: VectorTextWeightSettings.defaultWeight, minValue: 0,
     maxValue: VectorTextWeightSettings.maxWeight,
@@ -65,7 +66,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let blinkCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Blink cursor"), target: nil, action: nil)
   private let profileRecorderCheckbox = NSButton(
-    checkboxWithTitle: L10n.tr("Enable sampling profiler (applies on next launch)"), target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Enable sampling profiler (applies on next launch)"), target: nil,
+    action: nil)
   private let profileRecorderHelpLabel = NSTextField(wrappingLabelWithString: "")
 
   /// Theme index (into `themeController.orderedThemes`) behind each popup row,

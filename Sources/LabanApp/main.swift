@@ -1,8 +1,8 @@
 import AppKit
 
 #if canImport(ProfileRecorderServer)
-import ProfileRecorderServer
-import Logging
+  import ProfileRecorderServer
+  import Logging
 #endif
 
 func usage() -> String {
@@ -50,54 +50,54 @@ if smokeMode {
 }
 
 #if canImport(ProfileRecorderServer)
-let profileGate = ProfileRecorderSettings.resolve()
-if let pattern = profileGate.pattern {
-  ProfileRecorderSettings.prepareDefaultDirectoryIfNeeded(for: pattern)
-  // Upstream checks PROFILE_RECORDER_SERVER_URL before the pattern key; clear
-  // any inherited direct URL so the resolved pattern is what the server binds.
-  unsetenv("PROFILE_RECORDER_SERVER_URL")
-  setenv("PROFILE_RECORDER_SERVER_URL_PATTERN", pattern, 1)
-  let profilerLogger = Logger(label: "laban.profile-recorder")
-  profilerLogger.info(
-    "sampling profiler enabled",
-    metadata: ["source": "\(profileGate.source)", "urlPattern": "\(pattern)"])
-  Task.detached {
-    do {
-      let configuration = try await ProfileRecorderServerConfiguration.parseFromEnvironment()
-      try await ProfileRecorderServer(configuration: configuration)
-        .withProfileRecordingServer(logger: profilerLogger) { info in
-          switch info.startResult {
-          case .successful(let address):
-            let socket = address.pathname ?? "\(address)"
-            profilerLogger.info(
-              "sampling profiler listening",
-              metadata: [
-                "socketPath": "\(socket)",
-                "capture": """
+  let profileGate = ProfileRecorderSettings.resolve()
+  if let pattern = profileGate.pattern {
+    ProfileRecorderSettings.prepareDefaultDirectoryIfNeeded(for: pattern)
+    // Upstream checks PROFILE_RECORDER_SERVER_URL before the pattern key; clear
+    // any inherited direct URL so the resolved pattern is what the server binds.
+    unsetenv("PROFILE_RECORDER_SERVER_URL")
+    setenv("PROFILE_RECORDER_SERVER_URL_PATTERN", pattern, 1)
+    let profilerLogger = Logger(label: "laban.profile-recorder")
+    profilerLogger.info(
+      "sampling profiler enabled",
+      metadata: ["source": "\(profileGate.source)", "urlPattern": "\(pattern)"])
+    Task.detached {
+      do {
+        let configuration = try await ProfileRecorderServerConfiguration.parseFromEnvironment()
+        try await ProfileRecorderServer(configuration: configuration)
+          .withProfileRecordingServer(logger: profilerLogger) { info in
+            switch info.startResult {
+            case .successful(let address):
+              let socket = address.pathname ?? "\(address)"
+              profilerLogger.info(
+                "sampling profiler listening",
+                metadata: [
+                  "socketPath": "\(socket)",
+                  "capture": """
                   curl --unix-socket \(socket) -sd \
                   '{"numberOfSamples":1000,"timeInterval":"10 ms"}' \
                   http://localhost/sample | swift demangle --compact > ~/laban.perf
                   """,
-              ])
-          case .couldNotStart(let error):
-            profilerLogger.info(
-              "sampling profiler could not start, continuing regardless",
-              metadata: ["error": "\(error)"])
-            return
-          case .notAttemptedToStartProfileRecordingServer:
-            return
+                ])
+            case .couldNotStart(let error):
+              profilerLogger.info(
+                "sampling profiler could not start, continuing regardless",
+                metadata: ["error": "\(error)"])
+              return
+            case .notAttemptedToStartProfileRecordingServer:
+              return
+            }
+            while !Task.isCancelled {
+              try? await Task.sleep(nanoseconds: 100_000_000_000)
+            }
           }
-          while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 100_000_000_000)
-          }
-        }
-    } catch {
-      profilerLogger.info(
-        "profile recorder failed, continuing regardless",
-        metadata: ["error": "\(error)"])
+      } catch {
+        profilerLogger.info(
+          "profile recorder failed, continuing regardless",
+          metadata: ["error": "\(error)"])
+      }
     }
   }
-}
 #endif
 
 let app = NSApplication.shared
