@@ -7,11 +7,21 @@ extension HeadlessDebugRuntime {
         appendError(kind: "action.invalid", message: "invalid action request")
         return jsonError("invalid action request")
       }
-      return applyActionUnlocked(action)
+      return applyActionUnlocked(action, scopedSessionID: nil)
     }
   }
 
-  func applyActionUnlocked(_ action: DebugAction) -> DebugResponse {
+  func applyAction(_ data: Data, scopedSessionID: String?) -> DebugResponse {
+    withRuntimeLock {
+      guard let action = try? JSONDecoder().decode(DebugAction.self, from: data) else {
+        appendError(kind: "action.invalid", message: "invalid action request")
+        return jsonError("invalid action request")
+      }
+      return applyActionUnlocked(action, scopedSessionID: scopedSessionID)
+    }
+  }
+
+  func applyActionUnlocked(_ action: DebugAction, scopedSessionID: String?) -> DebugResponse {
     switch action {
     case .newTab:
       return DebugTabActions(runtime: self).newTab()
@@ -67,6 +77,8 @@ extension HeadlessDebugRuntime {
       return DebugFindActions(runtime: self).stop(request)
     case .scrollViewport(let request):
       return DebugViewportActions(runtime: self).scrollViewport(request)
+    case .propose(let request):
+      return DebugCommandProposalActions(runtime: self).propose(request, scopedSessionID: scopedSessionID)
     case .mouseWheel(let request):
       return DebugMouseActions(runtime: self).mouseWheel(request)
     case .mouseDrag(let request):

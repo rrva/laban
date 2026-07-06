@@ -273,7 +273,7 @@ public final class HeadlessDebugRuntime {
       self.agentObserverHost = observers
 
       self.model.transcriptDelegate = transcripts
-      self.model.restoredSessionFactory = { sz, _ in
+      self.model.restoredSessionFactory = { sz, _, _ in
         try Self.makeSession(size: sz, mode: initialSessionMode, shellLaunch: shellLaunch)
       }
       let restoreViaLabandPicker = terminalBackend == .laband

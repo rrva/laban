@@ -25,6 +25,7 @@
     {"$ref": "#/$defs/dropFiles"},
     {"$ref": "#/$defs/setClipboardText"},
     {"$ref": "#/$defs/scrollViewport"},
+    {"$ref": "#/$defs/propose"},
     {"$ref": "#/$defs/setSelection"},
     {"$ref": "#/$defs/setPreedit"},
     {"$ref": "#/$defs/findStart"},
@@ -282,6 +283,18 @@
         "action": {"const": "scrollViewport"},
         "sessionId": {"type": "string"},
         "deltaRows": {"type": "integer"}
+      },
+      "additionalProperties": false
+    },
+    "propose": {
+      "type": "object",
+      "required": ["action", "command"],
+      "properties": {
+        "action": {"const": "propose"},
+        "command": {"type": "string", "minLength": 1},
+        "purpose": {"type": "string"},
+        "targetSessionID": {"type": "string"},
+        "targetSessionId": {"type": "string"}
       },
       "additionalProperties": false
     },

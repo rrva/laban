@@ -2,32 +2,11 @@ import Foundation
 import LabanCore
 
 extension HeadlessDebugRuntime {
-  /// `GET /debug/shell-integration/state` — return the OSC 133 phase and
-  /// last exit code for the active session, or for the session named by a
-  /// `sessionID` / `sessionId` query parameter. Reads the session's live
-  /// state directly, so it is independent of event-delivery timing.
   public func shellIntegrationState(query: [String: String]) -> DebugResponse {
     withRuntimeLock {
-      let requested = query["sessionID"] ?? query["sessionId"]
-      let sessionId: Session.ID?
-      if let requested {
-        guard model.session(forSessionID: requested) != nil else {
-          return jsonError("session not found: \(requested)", status: 404)
-        }
-        sessionId = requested
-      } else {
-        sessionId = model.activeTab?.sessionId
-      }
-      guard let sessionId, let session = model.session(forSessionID: sessionId) else {
-        return jsonError("session not found", status: 404)
-      }
-      let state = session.shellIntegrationState()
-      return jsonEncode(
-        ShellIntegrationStateResponse(
-          sessionId: sessionId,
-          phase: state.phase.rawValue,
-          lastExitCode: state.lastExitCode
-        ))
+      let response = ControlStateProjections.shellIntegrationState(
+        query: query, ctx: controlProjectionContext())
+      return DebugResponse(status: response.status, body: response.body)
     }
   }
 

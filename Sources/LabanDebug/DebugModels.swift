@@ -45,33 +45,46 @@ public struct DebugServerAddress: Equatable {
 
 /// The readiness JSON `laban-agent --debug-server` prints. Relocated to
 /// `LabanCore.ControlReadiness` so `LabanControl` can return it from
-/// `start(host:port:)`; this alias keeps existing `LabanDebug` references
+/// `LabanCore.ControlReadiness` so `LabanControl` can return it from
+/// `start(socketPath:)`; this alias keeps existing `LabanDebug` references
 /// (and the byte-identical field names/encoder) intact.
 public typealias DebugReadiness = ControlReadiness
 
 // MARK: - JSON helpers
 
 func jsonEncode<T: Encodable>(_ value: T, status: Int = 200) -> DebugResponse {
-  let enc = JSONEncoder()
-  enc.dateEncodingStrategy = .iso8601
-  enc.outputFormatting = .sortedKeys
-  guard let data = try? enc.encode(value) else {
-    return DebugResponse(
-      status: 500, body: #"{"error":"encoding failed"}"#.data(using: .utf8)!)
-  }
-  return DebugResponse(status: status, body: data)
+  let encoded = controlJSONEncode(value, status: status)
+  return DebugResponse(status: encoded.status, body: encoded.body)
 }
 
 func jsonError(_ message: String, status: Int = 400) -> DebugResponse {
-  let escaped =
-    message
-    .replacingOccurrences(of: "\\", with: "\\\\")
-    .replacingOccurrences(of: "\"", with: "\\\"")
-  let body = "{\"error\":\"\(escaped)\"}"
-  return DebugResponse(status: status, body: body.data(using: .utf8)!)
+  let encoded = controlJSONError(message, status: status)
+  return DebugResponse(status: encoded.status, body: encoded.body)
 }
 
-// MARK: - Response models
+// MARK: - Response models (relocated observe DTOs typealias LabanCore)
+
+typealias RectResponse = LabanCore.RectResponse
+typealias WindowResponse = LabanCore.WindowResponse
+typealias TabResponse = LabanCore.TabResponse
+typealias CursorSettingsResponse = LabanCore.CursorSettingsResponse
+typealias EmojiRenderingSettingsResponse = LabanCore.EmojiRenderingSettingsResponse
+typealias AttentionNotificationDecisionResponse = LabanCore.AttentionNotificationDecisionResponse
+typealias StateResponse = LabanCore.StateResponse
+typealias AccessibilityDisplayFlagsResponse = LabanCore.AccessibilityDisplayFlagsResponse
+typealias AccessibilityResponse = LabanCore.AccessibilityResponse
+typealias TerminalModesResponse = LabanCore.TerminalModesResponse
+typealias ActionResult = LabanCore.ActionResult
+typealias FindMatchResponse = LabanCore.FindMatchResponse
+typealias FindStateResponse = LabanCore.FindStateResponse
+typealias ShellIntegrationStateResponse = LabanCore.ShellIntegrationStateResponse
+typealias SessionResponse = LabanCore.SessionResponse
+typealias SessionsResponse = LabanCore.SessionsResponse
+typealias SessionGridCellResponse = LabanCore.SessionGridCellResponse
+typealias SessionGridResponse = LabanCore.SessionGridResponse
+typealias CellCoordResponse = LabanCore.CellCoordResponse
+typealias SelectionResponse = LabanCore.SelectionResponse
+typealias ScrollIndicatorStateResponse = LabanCore.ScrollIndicatorStateResponse
 
 struct HealthResponse: Encodable {
   var ok: Bool
@@ -80,166 +93,14 @@ struct HealthResponse: Encodable {
   var focused: Bool
 }
 
-struct RectResponse: Encodable {
-  var x: Int
-  var y: Int
-  var width: Int
-  var height: Int
-}
-
 struct SurfaceResponse: Encodable {
   var width: Int
   var height: Int
   var scale: Double
 }
 
-struct WindowResponse: Encodable {
-  var width: Int
-  var height: Int
-  var focused: Bool
-}
-
-struct TabResponse: Encodable {
-  var id: String
-  var index: Int
-  var title: String
-  var displayTitle: String
-  var titleSource: String
-  var terminalTitle: String?
-  var userTitle: String?
-  var titleFrozen: Bool
-  var activityState: String
-  var lastActivityAt: Date?
-  var lastOutputAt: Date?
-  var unseenOutput: Bool
-  var bellAttention: Bool
-  /// Derived attention level (`none`/`passive`/`done`/`needsAction`) — the
-  /// tier that drives the sidebar marker and row tint. `none` on the focused
-  /// tab and on idle background tabs.
-  var attention: String
-  var exitStatus: Int?
-  var shellPhase: String
-  var lastCommandExitCode: Int?
-  var workspace: TabWorkspaceMetadata
-  var process: TabProcessMetadata
-  var agent: TabAgentMetadata
-  /// Live OSC 9;4 progress, or nil when none is active.
-  var progress: TabProgress?
-  var active: Bool
-  var status: String
-  var sessionId: String
-}
-
-/// User cursor preferences plus the active session's program-override flags
-/// (DECSCUSR / DEC mode 12) from its latest snapshot. `styleOverridden` /
-/// `blinkOverridden` are nil when there is no active in-process session to
-/// snapshot (e.g. remote transport).
-struct CursorSettingsResponse: Encodable {
-  var style: String
-  var blinkEnabled: Bool
-  var styleOverridden: Bool?
-  var blinkOverridden: Bool?
-}
-
-struct EmojiRenderingSettingsResponse: Encodable {
-  var mode: String
-  var effectiveMode: String
-}
-
-struct AttentionNotificationDecisionResponse: Encodable {
-  var id: String
-  var tabId: String
-  var source: String
-  var category: String
-  var action: String
-  var reason: String?
-  var title: String
-  var body: String
-  var dedupeKey: String
-  var createdAt: Date
-  var decidedAt: Date
-}
-
-struct StateResponse: Encodable {
-  var mode: String
-  var frame: Int
-  var window: WindowResponse
-  var tabs: [TabResponse]
-  var activeTabId: String?
-  var activeSessionId: String?
-  var findStateBySession: [String: FindStateResponse]
-  var cursorSettings: CursorSettingsResponse
-  var emojiRendering: EmojiRenderingSettingsResponse
-  var attentionNotifications: [AttentionNotificationDecisionResponse]
-}
-
-struct AccessibilityDisplayFlagsResponse: Encodable {
-  var increaseContrast: Bool
-  var differentiateWithoutColor: Bool
-  var reduceTransparency: Bool
-}
-
-struct AccessibilityResponse: Encodable {
-  var isElement: Bool
-  var role: String
-  var label: String
-  var value: String
-  var focusRingType: String
-  var display: AccessibilityDisplayFlagsResponse
-}
-
-/// Effective DEC private mode state for the active session, read from a fresh
-/// snapshot. Lets autonomous verification observe the mode-2027 handshake
-/// (`ESC [ ? 2027 h/l`) and the sibling per-snapshot mode booleans without
-/// driving a real program.
-struct TerminalModesResponse: Encodable {
-  var graphemeCluster2027: Bool
-  var synchronizedOutput: Bool
-  var focusReporting: Bool
-  var mouseTracking: Bool
-
-  enum CodingKeys: String, CodingKey {
-    case graphemeCluster2027 = "grapheme_cluster_2027"
-    case synchronizedOutput = "synchronized_output"
-    case focusReporting = "focus_reporting"
-    case mouseTracking = "mouse_tracking"
-  }
-}
-
-struct ActionResult: Encodable {
-  var ok: Bool
-  var frame: Int
-  var activeTabId: String?
-  var activeSessionId: String?
-  var error: String?
-}
-
-struct FindMatchResponse: Encodable {
-  var row: Int
-  var startColumn: Int
-  var endColumn: Int
-}
-
-struct FindStateResponse: Encodable {
-  var isActive: Bool
-  var needle: String
-  var total: Int
-  var selectedIndex: Int?
-  var matches: [FindMatchResponse]
-  var viewportScrollOffsetAtStart: Int?
-}
-
 struct FindStopResponse: Encodable {
   var stopped: Bool
-}
-
-/// OSC 133 shell-integration state for one session. `phase` is one of
-/// `idle` / `atPrompt` / `running` / `finished`; `lastExitCode` is the
-/// status of the last finished command when the shell reported one.
-struct ShellIntegrationStateResponse: Encodable {
-  var sessionId: String
-  var phase: String
-  var lastExitCode: Int?
 }
 
 struct MouseActionResult: Encodable {
@@ -258,70 +119,6 @@ struct ScreenshotResult: Encodable {
   var height: Int
   var frame: Int
   var target: String
-}
-
-struct SessionResponse: Encodable {
-  var id: String
-  var tabId: String
-  var pid: Int?
-  var foregroundPid: Int?
-  var daemonProcessPid: Int?
-  var logicalSessionId: String?
-  var incarnationId: String?
-  var attachedClientCount: Int?
-  var leaseHolder: String?
-  var leaseId: String?
-  var leaseEpoch: UInt64?
-  var leaseExpiresAtMonoNs: UInt64?
-  var transportMode: String
-  var status: String
-  var exitStatus: Int?
-  var rows: Int
-  var cols: Int
-  var cellWidth: Int
-  var cellHeight: Int
-  var scrollbackLines: Int
-  var viewportOffset: Int
-  var title: String
-  var displayTitle: String
-  var titleSource: String
-  var terminalTitle: String?
-  var userTitle: String?
-  var titleFrozen: Bool
-  var activityState: String
-  var lastActivityAt: Date?
-  var lastOutputAt: Date?
-  var unseenOutput: Bool
-  var bellAttention: Bool
-  var workspace: TabWorkspaceMetadata
-  var process: TabProcessMetadata
-  var agent: TabAgentMetadata
-  var mouseTracking: Bool
-  var focusReporting: Bool
-  var dirty: Bool
-  var grid: SessionGridResponse?
-}
-
-struct SessionsResponse: Encodable {
-  var sessions: [SessionResponse]
-}
-
-struct SessionGridCellResponse: Encodable {
-  var row: Int
-  var col: Int
-  var text: String
-  var foreground: [Int]
-  var background: [Int]
-  var attributes: [String]
-  var wide: String
-  var hyperlink: String?
-}
-
-struct SessionGridResponse: Encodable {
-  var rows: Int
-  var cols: Int
-  var cells: [SessionGridCellResponse]
-  var truncated: Bool
 }
 
 struct CellSizeResponse: Encodable {
@@ -589,21 +386,7 @@ struct RenderTraceResponse: Encodable {
   var truncated: Bool
 }
 
-// MARK: - Selection and clipboard response types
-
-struct CellCoordResponse: Encodable {
-  var row: Int
-  var col: Int
-}
-
-struct SelectionResponse: Encodable {
-  var active: Bool
-  var sessionId: String?
-  var anchor: CellCoordResponse?
-  var focus: CellCoordResponse?
-  var rects: [RectResponse]
-  var text: String
-}
+// MARK: - Clipboard response types
 
 struct ClipboardResponse: Encodable {
   var lastCopyText: String?

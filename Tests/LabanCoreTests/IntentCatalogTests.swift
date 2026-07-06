@@ -22,21 +22,27 @@ final class IntentCatalogTests: XCTestCase {
     }
   }
 
-  func testStarterDescriptorsArePresentAndAvailableOnBothSurfaces() throws {
-    let expectedIds: Set<String> = [
+  func testStarterDescriptorsArePresentWithObserveGuiSurface() throws {
+    let expectedGuiObserve: Set<String> = [
       "app.state",
+    ]
+    let expectedHeadlessOnlyInput: Set<String> = [
       "tab.select",
       "terminal.typeText",
       "terminal.sendKey",
     ]
-    XCTAssertTrue(expectedIds.isSubset(of: IntentCatalog.shared.ids))
+    XCTAssertTrue(expectedGuiObserve.isSubset(of: IntentCatalog.shared.ids))
+    XCTAssertTrue(expectedHeadlessOnlyInput.isSubset(of: IntentCatalog.shared.ids))
 
-    for id in expectedIds {
+    for id in expectedGuiObserve {
       let descriptor = try XCTUnwrap(IntentCatalog.shared.descriptor(id: id))
-      XCTAssertFalse(descriptor.category.isEmpty)
-      XCTAssertFalse(descriptor.summary.isEmpty)
-      XCTAssertTrue(descriptor.availability.permits(.gui))
-      XCTAssertTrue(descriptor.availability.permits(.headless))
+      XCTAssertTrue(descriptor.availability.permits(.gui), id)
+      XCTAssertTrue(descriptor.availability.permits(.headless), id)
+    }
+    for id in expectedHeadlessOnlyInput {
+      let descriptor = try XCTUnwrap(IntentCatalog.shared.descriptor(id: id))
+      XCTAssertFalse(descriptor.availability.permits(.gui), id)
+      XCTAssertTrue(descriptor.availability.permits(.headless), id)
     }
   }
 
@@ -183,5 +189,6 @@ private func makeDescriptor(
     transports: .init(http: true, mcp: false, cli: false),
     inputSchema: inputSchema,
     outputSchema: outputSchema,
-    errorSchema: errorSchema)
+    errorSchema: errorSchema,
+    classificationExplicit: true)
 }

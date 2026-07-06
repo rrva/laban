@@ -14,13 +14,21 @@ public enum LabanControlServerError: Error, Equatable, Sendable {
   case bindFailed
   case listenFailed
   case alreadyStarted
-  case nonLoopbackHost
+  case socketPathTooLong
+}
+
+public struct GUIControlStartResult: Sendable, Equatable {
+  public let socketPath: String
+  public let appObserveToken: String
+
+  public init(socketPath: String, appObserveToken: String) {
+    self.socketPath = socketPath
+    self.appObserveToken = appObserveToken
+  }
 }
 
 public final class LabanControlServer {
   private struct ParsedHeaders {
-    var host: String?
-    var origin: String?
     var authorization: String?
     var authorizationCount = 0
     var contentLengthHeader: String?
@@ -43,94 +51,123 @@ public final class LabanControlServer {
   private let surface: Surface
   private let catalog: IntentCatalog
   private let readinessRunID: String?
+  private weak var securityObserver: (any ControlSecurityObserver)?
   private let connectionQueue = DispatchQueue(
     label: "com.laban.control.conn", attributes: .concurrent)
   private var fd: Int32 = -1
-  private var token = ""
+  private var socketPath: String?
+  private var tokens: [String: ControlTokenTier] = [:]
+  private var attachBootstraps: [String: SessionAttachBootstrap] = [:]
+  private let attachLock = NSLock()
   private var thread: Thread?
+
+  private struct SessionAttachBootstrap: Equatable {
+    let sessionID: String
+    var consumed: Bool
+    var redeemerPID: pid_t?
+  }
+
+  public static let sessionAttachPath = "/control/session/attach"
 
   public init(
     router: IntentRouter,
     surface: Surface,
     catalog: IntentCatalog = .all,
-    readinessRunID: String? = nil
+    readinessRunID: String? = nil,
+    securityObserver: (any ControlSecurityObserver)? = nil
   ) {
     self.router = router
     self.surface = surface
     self.catalog = catalog
     self.readinessRunID = readinessRunID
+    self.securityObserver = securityObserver
   }
 
-  public func start() throws -> (url: String, token: String) {
-    let readiness = try start(host: "127.0.0.1", port: 0)
-    return (readiness.debugServer, readiness.debugToken)
+  public static func defaultControlSocketPath() -> String {
+    ControlAdvertisement.directory()
+      .appendingPathComponent("control.sock")
+      .path
   }
 
-  public func start(host: String, port: UInt16) throws -> ControlReadiness {
-    guard fd < 0 else { throw LabanControlServerError.alreadyStarted }
-    guard Self.isLoopbackBindHost(host) else { throw LabanControlServerError.nonLoopbackHost }
+  public func setSecurityObserver(_ observer: (any ControlSecurityObserver)?) {
+    securityObserver = observer
+  }
 
-    let listener = socket(AF_INET, SOCK_STREAM, 0)
-    guard listener >= 0 else { throw LabanControlServerError.socketFailed }
+  public func start() throws -> GUIControlStartResult {
+    let path = Self.defaultControlSocketPath()
+    try bindListener(at: path)
+    let appObserveToken = Self.makeToken()
+    registerToken(appObserveToken, tier: .appObserve)
+    return GUIControlStartResult(socketPath: path, appObserveToken: appObserveToken)
+  }
 
-    var one: Int32 = 1
-    setsockopt(
-      listener, SOL_SOCKET, SO_REUSEADDR, &one,
-      socklen_t(MemoryLayout<Int32>.size))
-
-    var addr = sockaddr_in()
-    addr.sin_family = sa_family_t(AF_INET)
-    addr.sin_port = CFSwapInt16HostToBig(port)
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
-
-    let bindResult = withUnsafeBytes(of: &addr) { ptr in
-      Darwin.bind(
-        listener,
-        ptr.baseAddress!.assumingMemoryBound(to: sockaddr.self),
-        socklen_t(MemoryLayout<sockaddr_in>.size))
-    }
-    guard bindResult == 0 else {
-      Darwin.close(listener)
-      throw LabanControlServerError.bindFailed
-    }
-
-    guard listen(listener, 16) == 0 else {
-      Darwin.close(listener)
-      throw LabanControlServerError.listenFailed
-    }
-
-    var bound = sockaddr_in()
-    var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-    _ = withUnsafeMutableBytes(of: &bound) { ptr in
-      getsockname(
-        listener,
-        ptr.baseAddress!.assumingMemoryBound(to: sockaddr.self),
-        &boundLen)
-    }
-    let actualPort = CFSwapInt16BigToHost(bound.sin_port)
-
-    let mintedToken = Self.makeToken()
-    token = mintedToken
-    fd = listener
-
-    let acceptThread = Thread { self.acceptLoop() }
-    acceptThread.name = "laban-control-accept"
-    acceptThread.start()
-    thread = acceptThread
-
+  public func start(socketPath: String) throws -> ControlReadiness {
+    try bindListener(at: socketPath)
+    let fixtureToken = Self.makeToken()
+    registerToken(fixtureToken, tier: .fixture)
     let process = ProcessInfo.processInfo
     return ControlReadiness(
-      debugServer: "http://127.0.0.1:\(actualPort)",
-      debugToken: mintedToken,
+      debugServer: socketPath,
+      debugToken: fixtureToken,
       pid: process.processIdentifier,
       runId: readinessRunID ?? process.environment["LABAN_RUN_ID"]
         ?? "gui-\(process.processIdentifier)")
+  }
+
+  /// Mints a single-use C14 attach bootstrap bound to `sessionID`.
+  public func mintSessionAttachBootstrap(sessionID: String) -> String {
+    let bootstrap = Self.makeToken()
+    attachLock.lock()
+    attachBootstraps[bootstrap] = SessionAttachBootstrap(sessionID: sessionID, consumed: false)
+    attachLock.unlock()
+    return bootstrap
+  }
+
+  /// Registers the shell PID allowed to redeem a session's attach bootstrap (C14).
+  public func registerAttachRedeemerPID(sessionID: String, pid: pid_t) {
+    attachLock.lock()
+    defer { attachLock.unlock() }
+    for (bootstrap, var entry) in attachBootstraps where entry.sessionID == sessionID {
+      entry.redeemerPID = pid
+      attachBootstraps[bootstrap] = entry
+    }
+  }
+
+  /// Redeems a bootstrap once, registering a session-observe bearer token.
+  public func redeemSessionAttachBootstrap(_ bootstrap: String, peerPID: pid_t) -> (token: String, sessionID: String)? {
+    attachLock.lock()
+    defer { attachLock.unlock() }
+    guard var entry = attachBootstraps[bootstrap], !entry.consumed else {
+      return nil
+    }
+    if let redeemerPID = entry.redeemerPID, redeemerPID != peerPID {
+      return nil
+    }
+    entry.consumed = true
+    attachBootstraps[bootstrap] = entry
+    let token = mintSessionObserveToken(sessionID: entry.sessionID)
+    return (token, entry.sessionID)
+  }
+
+  /// Mints a session-observe token bound to `sessionID`.
+  public func mintSessionObserveToken(sessionID: String) -> String {
+    let token = Self.makeToken()
+    registerToken(token, tier: .sessionObserve(sessionID: sessionID))
+    return token
   }
 
   public func stop() {
     let listener = fd
     fd = -1
     if listener >= 0 { Darwin.close(listener) }
+    if let socketPath {
+      unlink(socketPath)
+      self.socketPath = nil
+    }
+    tokens = [:]
+    attachLock.lock()
+    attachBootstraps = [:]
+    attachLock.unlock()
     thread = nil
   }
 
@@ -144,7 +181,7 @@ public final class LabanControlServer {
     authorization: String?,
     token: String
   ) -> GuardOutcome {
-    // Any Origin header means a browser is calling this local API.
+    // Retained for backward-compatible unit tests; UDS transport does not use Host/Origin.
     if origin != nil { return .forbidden }
     guard isLoopbackHost(host) else { return .forbidden }
     guard
@@ -156,6 +193,53 @@ public final class LabanControlServer {
       return .unauthorized
     }
     return .ok
+  }
+
+  public static func evaluatePeerCredential(clientFD: Int32) -> GuardOutcome {
+    var uid = uid_t(0)
+    var gid = gid_t(0)
+    guard getpeereid(clientFD, &uid, &gid) == 0 else {
+      return .forbidden
+    }
+    guard uid == getuid() else {
+      return .forbidden
+    }
+    return .ok
+  }
+
+  private static let localPeerPID: Int32 = 3
+
+  public static func peerPID(clientFD: Int32) -> pid_t? {
+    var pid: pid_t = 0
+    var len = socklen_t(MemoryLayout<pid_t>.size)
+    guard getsockopt(clientFD, SOL_LOCAL, localPeerPID, &pid, &len) == 0 else {
+      return nil
+    }
+    return pid
+  }
+
+  public static func evaluateAuthorization(
+    peerOutcome: GuardOutcome,
+    authorization: String?,
+    tokens: [String: ControlTokenTier]
+  ) -> (GuardOutcome, ControlTokenTier?) {
+    guard peerOutcome == .ok else {
+      return (.forbidden, nil)
+    }
+    guard
+      let authorization,
+      authorization.count > 7,
+      authorization.lowercased().hasPrefix("bearer ")
+    else {
+      return (.unauthorized, nil)
+    }
+    let presented = String(authorization.dropFirst(7))
+    for (token, tier) in tokens {
+      if constantTimeEquals(presented, token) {
+        return (.ok, tier)
+      }
+    }
+    return (.unauthorized, nil)
   }
 
   public static func isLoopbackHost(_ host: String?) -> Bool {
@@ -189,18 +273,69 @@ public final class LabanControlServer {
       .joined()
   }
 
-  private static func isLoopbackBindHost(_ host: String) -> Bool {
-    host == "127.0.0.1" || host == "localhost"
+  private func registerToken(_ token: String, tier: ControlTokenTier) {
+    tokens[token] = tier
+  }
+
+  private func bindListener(at path: String) throws {
+    guard fd < 0 else { throw LabanControlServerError.alreadyStarted }
+
+    let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+
+    unlink(path)
+
+    let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard listener >= 0 else { throw LabanControlServerError.socketFailed }
+
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(path.utf8CString)
+    guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+      Darwin.close(listener)
+      throw LabanControlServerError.socketPathTooLong
+    }
+    withUnsafeMutableBytes(of: &addr.sun_path) { dest in
+      for (index, byte) in pathBytes.enumerated() where index < dest.count {
+        dest[index] = UInt8(bitPattern: byte)
+      }
+    }
+
+    let bindResult = withUnsafePointer(to: &addr) { ptr in
+      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+        Darwin.bind(listener, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+      }
+    }
+    guard bindResult == 0 else {
+      Darwin.close(listener)
+      throw LabanControlServerError.bindFailed
+    }
+
+    guard listen(listener, 16) == 0 else {
+      Darwin.close(listener)
+      throw LabanControlServerError.listenFailed
+    }
+
+    fd = listener
+    socketPath = path
+
+    let acceptThread = Thread { self.acceptLoop() }
+    acceptThread.name = "laban-control-accept"
+    acceptThread.start()
+    thread = acceptThread
   }
 
   private func acceptLoop() {
     while true {
       let listener = fd
       guard listener >= 0 else { break }
-      var clientAddr = sockaddr_in()
-      var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-      let clientFD = withUnsafeMutableBytes(of: &clientAddr) { ptr in
-        accept(listener, ptr.baseAddress!.assumingMemoryBound(to: sockaddr.self), &clientLen)
+      var clientAddr = sockaddr_un()
+      var clientLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+      let clientFD = withUnsafeMutablePointer(to: &clientAddr) { ptr in
+        accept(listener, ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { $0 }, &clientLen)
       }
       if clientFD >= 0 {
         connectionQueue.async { [self] in handleConnection(clientFD) }
@@ -292,20 +427,36 @@ public final class LabanControlServer {
       body.append(contentsOf: bodyBuffer[0..<n])
     }
 
-    let guardOutcome = Self.evaluateGuard(
-      host: headers.host,
-      origin: headers.origin,
+    let peerOutcome = Self.evaluatePeerCredential(clientFD: clientFD)
+    if method == "POST", parsedTarget.path == Self.sessionAttachPath {
+      let peerPID = Self.peerPID(clientFD: clientFD)
+      send(clientFD, handleSessionAttach(body: body, peerOutcome: peerOutcome, peerPID: peerPID))
+      return
+    }
+
+    let (authOutcome, tokenTier) = Self.evaluateAuthorization(
+      peerOutcome: peerOutcome,
       authorization: headers.authorization,
-      token: token)
-    switch guardOutcome {
+      tokens: tokens)
+    switch authOutcome {
     case .forbidden:
+      reportDeny(
+        reason: peerOutcome == .forbidden ? .peerCredential : .forbiddenCapability,
+        targetSession: sessionID(from: tokenTier),
+        tokenTier: tokenTier)
       send(clientFD, .error(403, "forbidden"))
       return
     case .unauthorized:
+      reportDeny(reason: .unauthorized, targetSession: sessionID(from: tokenTier))
       send(clientFD, Self.unauthorizedResponse())
       return
     case .ok:
       break
+    }
+
+    guard let tokenTier else {
+      send(clientFD, Self.unauthorizedResponse())
+      return
     }
 
     send(
@@ -314,14 +465,45 @@ public final class LabanControlServer {
         method: method,
         path: parsedTarget.path,
         query: parsedTarget.query,
-        body: body))
+        body: body,
+        tokenTier: tokenTier))
+  }
+
+  private func handleSessionAttach(body: Data, peerOutcome: GuardOutcome, peerPID: pid_t?) -> ControlResponse {
+    guard peerOutcome == .ok else {
+      return .error(403, "forbidden")
+    }
+    guard let peerPID else {
+      return .error(403, "forbidden")
+    }
+    guard
+      let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+      let bootstrap = json["bootstrap"] as? String,
+      !bootstrap.isEmpty
+    else {
+      return .error(400, "bad request")
+    }
+    guard let redeemed = redeemSessionAttachBootstrap(bootstrap, peerPID: peerPID) else {
+      return .error(401, "invalid or spent bootstrap")
+    }
+    let payload: [String: Any] = [
+      "ok": true,
+      "token": redeemed.token,
+      "sessionID": redeemed.sessionID,
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    else {
+      return .error(500, "internal error")
+    }
+    return ControlResponse(status: 200, contentType: "application/json", body: data)
   }
 
   private func route(
     method: String,
     path: String,
     query: [String: String],
-    body: Data
+    body: Data,
+    tokenTier: ControlTokenTier
   ) -> ControlResponse {
     var matchedRoute: ControlRoute?
     var pathParameters: [String: String] = [:]
@@ -356,13 +538,128 @@ public final class LabanControlServer {
       return Self.missingDescriptorResponse(for: route)
     }
     guard descriptor.availability.permits(surface) else {
+      reportDeny(
+        intentID: intentID,
+        capability: descriptor.requiredCapability,
+        reason: .surfaceUnavailable,
+        targetSession: resolveTargetSession(request: request, body: body),
+        tokenTier: tokenTier)
       return .error(404, "unavailable on \(surface)")
     }
 
-    return route.dispatch(self, request)
+    let targetSession = resolveTargetSession(request: request, body: body)
+    let granted = LabanControlPolicy.grants(for: tokenTier)
+    let scope = LabanControlPolicy.tokenScope(for: tokenTier)
+    guard granted.contains(descriptor.requiredCapability) else {
+      reportDeny(
+        intentID: intentID,
+        capability: descriptor.requiredCapability,
+        reason: .forbiddenCapability,
+        targetSession: targetSession,
+        tokenTier: tokenTier)
+      return .error(403, "forbidden")
+    }
+    guard
+      LabanControlPolicy.authorize(
+        intentID: intentID,
+        catalog: catalog,
+        granted: granted,
+        targetSession: targetSession,
+        tokenScope: scope)
+    else {
+      reportDeny(
+        intentID: intentID,
+        capability: descriptor.requiredCapability,
+        reason: .forbiddenScope,
+        targetSession: targetSession,
+        tokenTier: tokenTier)
+      return .error(403, "forbidden")
+    }
+
+    reportAuthorize(
+      intentID: intentID,
+      capability: descriptor.requiredCapability,
+      targetSession: targetSession,
+      tokenTier: tokenTier)
+    return route.dispatch(self, request, tokenTier)
   }
 
-  func dispatchDebugAction(_ request: ControlHTTPRequest) -> ControlResponse {
+  private func sessionID(from tokenTier: ControlTokenTier?) -> String? {
+    guard let tokenTier else { return nil }
+    if case .sessionObserve(let sessionID) = tokenTier {
+      return sessionID
+    }
+    return nil
+  }
+
+  private func reportDeny(
+    intentID: String? = nil,
+    capability: Capability? = nil,
+    reason: ControlSecurityDenyReason,
+    targetSession: String? = nil,
+    tokenTier: ControlTokenTier? = nil
+  ) {
+    let context = ControlSecurityContext(
+      intentID: intentID,
+      capability: capability,
+      surface: surface,
+      sessionID: targetSession ?? sessionID(from: tokenTier))
+    securityObserver?.didDeny(context, reason: reason)
+  }
+
+  private func reportAuthorize(
+    intentID: String,
+    capability: Capability,
+    targetSession: String?,
+    tokenTier: ControlTokenTier
+  ) {
+    let context = ControlSecurityContext(
+      intentID: intentID,
+      capability: capability,
+      surface: surface,
+      sessionID: targetSession ?? sessionID(from: tokenTier))
+    if LabanControlPolicy.isPrivileged(capability) {
+      securityObserver?.didPrivilegedActivity(context)
+    } else {
+      securityObserver?.didAuthorize(context)
+    }
+  }
+
+  func legacyQueryInput(
+    intentID: String,
+    params: [String: String],
+    tokenTier: ControlTokenTier
+  ) -> LegacyDebugQueryInput {
+    let scopedSessionID: String?
+    if case .sessionObserve(let sessionID) = tokenTier {
+      scopedSessionID = sessionID
+    } else {
+      scopedSessionID = nil
+    }
+    return LegacyDebugQueryInput(
+      intentID: intentID, params: params, scopedSessionID: scopedSessionID)
+  }
+
+  private func resolveTargetSession(request: ControlHTTPRequest, body: Data) -> String? {
+    if let id = request.pathParameters["id"], !id.isEmpty {
+      return id
+    }
+    for key in ["sessionID", "sessionId", "targetSessionID", "targetSessionId"] {
+      if let value = request.query[key], !value.isEmpty {
+        return value
+      }
+    }
+    if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+      for key in ["sessionID", "sessionId", "targetSessionID", "targetSessionId"] {
+        if let value = json[key] as? String, !value.isEmpty {
+          return value
+        }
+      }
+    }
+    return nil
+  }
+
+  func dispatchDebugAction(_ request: ControlHTTPRequest, tokenTier: ControlTokenTier) -> ControlResponse {
     guard let envelope = try? JSONDecoder().decode(DebugActionEnvelope.self, from: request.body)
     else {
       return .error(400, "bad request")
@@ -373,65 +670,43 @@ public final class LabanControlServer {
         .unsupportedDebugAction(UnsupportedDebugActionInput(action: envelope.action)))
     }
 
+    let scopedSessionID = sessionID(from: tokenTier)
     switch surface {
     case .gui:
-      return dispatchGUIAction(intentID: intentID, request: request)
+      return dispatchGUIAction(
+        intentID: intentID, request: request, scopedSessionID: scopedSessionID)
     case .headless:
-      // The headless wire is owned by HeadlessDebugRuntime.applyAction, which
-      // produces ActionResult (and MouseActionResult for mouse). Hand it the raw
-      // body so every action family stays byte-stable through the router.
       return router.route(
         .legacyDebugAction(
           LegacyDebugActionInput(
-            intentID: intentID, action: envelope.action, body: request.body)))
+            intentID: intentID,
+            action: envelope.action,
+            body: request.body,
+            scopedSessionID: scopedSessionID)))
     }
   }
 
-  private func dispatchGUIAction(intentID: String, request: ControlHTTPRequest) -> ControlResponse {
+  private func dispatchGUIAction(
+    intentID: String,
+    request: ControlHTTPRequest,
+    scopedSessionID: String?
+  ) -> ControlResponse {
     switch intentID {
-    case "tab.select":
-      return dispatchSelectTab(request)
-    case "terminal.typeText":
-      return dispatchTypeText(request)
-    case "terminal.sendKey":
-      return dispatchSendKey(request)
+    case "terminal.scrollViewport", "command.propose":
+      guard let envelope = try? JSONDecoder().decode(DebugActionEnvelope.self, from: request.body)
+      else {
+        return .error(400, "bad request")
+      }
+      return router.route(
+        .legacyDebugAction(
+          LegacyDebugActionInput(
+            intentID: intentID,
+            action: envelope.action,
+            body: request.body,
+            scopedSessionID: scopedSessionID)))
     default:
-      return .error(501, "not yet ported")
+      return .error(404, "unavailable on gui")
     }
-  }
-
-  private func dispatchSelectTab(_ request: ControlHTTPRequest) -> ControlResponse {
-    guard let action = try? JSONDecoder().decode(SelectTabActionRequest.self, from: request.body)
-    else {
-      return .error(400, "bad request")
-    }
-    _ = action.action
-    guard let index = action.index else {
-      return .error(400, "missing index")
-    }
-    return router.route(.tabSelect(TabSelectInput(index: index)))
-  }
-
-  private func dispatchTypeText(_ request: ControlHTTPRequest) -> ControlResponse {
-    guard let action = try? JSONDecoder().decode(TextActionRequest.self, from: request.body)
-    else {
-      return .error(400, "bad request")
-    }
-    guard let text = action.text else {
-      return .error(400, "missing text")
-    }
-    return router.route(.terminalTypeText(TypeTextInput(text: text)))
-  }
-
-  private func dispatchSendKey(_ request: ControlHTTPRequest) -> ControlResponse {
-    guard let action = try? JSONDecoder().decode(DebugKeyActionRequest.self, from: request.body)
-    else {
-      return .error(400, "bad request")
-    }
-    guard let key = action.key else {
-      return .error(400, "missing key")
-    }
-    return router.route(.terminalSendKey(SendKeyInput(key: key, modifiers: action.modifiers ?? [])))
   }
 
   private static func missingDescriptorResponse(for route: ControlRoute) -> ControlResponse {
@@ -482,10 +757,6 @@ public final class LabanControlServer {
       let name = line[..<colon].lowercased()
       let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
       switch name {
-      case "host":
-        parsed.host = value
-      case "origin":
-        parsed.origin = value
       case "authorization":
         parsed.authorizationCount += 1
         if parsed.authorization == nil { parsed.authorization = value }

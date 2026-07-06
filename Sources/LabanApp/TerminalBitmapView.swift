@@ -556,6 +556,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// On-surface recording pills for PTY capture and CPU profile sampling.
   private var captureIndicatorView: TerminalCaptureIndicatorView?
   private var profileCaptureIndicatorView: TerminalCaptureIndicatorView?
+  /// Phase 2 agent-attached pill (TTL while privileged control activity is recent).
+  private var agentAttachedIndicatorView: ControlAgentAttachedIndicatorView?
   private(set) var isProfileCaptureActive = false
   private struct ClosedTabUndoPayload {
     var argv: [String]?
@@ -7883,9 +7885,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Pin recording pills to the top-right corner of the terminal content area.
   private func layoutCaptureIndicators() {
     let size = TerminalCaptureIndicatorView.preferredSize
+    let agentSize = ControlAgentAttachedIndicatorView.preferredSize
     let content = terminalContentRect()
     let margin: CGFloat = 8
     var y = content.maxY - size.height - margin
+
+    if let agent = agentAttachedIndicatorView, !agent.isHidden {
+      let x = content.maxX - agentSize.width - margin
+      agent.frame = NSRect(x: x, y: y, width: agentSize.width, height: agentSize.height)
+      y -= agentSize.height + 4
+    }
 
     if let profile = profileCaptureIndicatorView, !profile.isHidden {
       let x = content.maxX - size.width - margin
@@ -7913,6 +7922,30 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let logs = (library ?? FileManager.default.temporaryDirectory)
       .appendingPathComponent("Logs/Laban/captures", isDirectory: true)
     return logs
+  }
+}
+
+extension TerminalBitmapView: ControlAgentAttachedIndicatorHost {
+  func setAgentAttachedIndicatorActive(_ active: Bool) {
+    if active {
+      let indicator: ControlAgentAttachedIndicatorView
+      if let existing = agentAttachedIndicatorView {
+        indicator = existing
+      } else {
+        indicator = ControlAgentAttachedIndicatorView()
+        agentAttachedIndicatorView = indicator
+        addSubview(indicator)
+      }
+      indicator.isHidden = false
+    } else {
+      agentAttachedIndicatorView?.removeFromSuperview()
+      agentAttachedIndicatorView = nil
+    }
+    layoutCaptureIndicators()
+  }
+
+  var isAgentAttachedIndicatorVisible: Bool {
+    agentAttachedIndicatorView?.isHidden == false
   }
 }
 

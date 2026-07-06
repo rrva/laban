@@ -6,60 +6,47 @@ import XCTest
 @testable import LabanApp
 
 final class ControlServerPhase0Tests: XCTestCase {
-  func testLiveRouterSelectTabChangesActiveTab() throws {
+  func testLiveRouterSnapshotStateListsTabs() throws {
     let (model, router) = try makeModelAndRouter()
-    let initial = router.snapshotState()
-    XCTAssertEqual(initial.tabs.count, 2)
-
-    let target = try XCTUnwrap(initial.tabs.first { !$0.active })
-    let result = router.selectTab(index: target.index)
-
-    XCTAssertTrue(result.ok)
-    XCTAssertEqual(result.activeTabId, model.tabs[target.index].id)
-    XCTAssertEqual(router.snapshotState().activeTabId, model.tabs[target.index].id)
+    let state = router.query(LegacyDebugQueryInput(intentID: "app.state"))
+    XCTAssertEqual(state.status, 200)
+    let decoded = try JSONSerialization.jsonObject(with: state.body) as! [String: Any]
+    let tabs = try XCTUnwrap(decoded["tabs"] as? [[String: Any]])
+    XCTAssertEqual(tabs.count, model.tabs.count)
   }
 
-  func testLiveRouterRejectsOutOfRange() throws {
-    let (_, router) = try makeModelAndRouter()
-    let before = router.snapshotState().activeTabId
-
-    let result = router.selectTab(index: 99)
-
-    XCTAssertFalse(result.ok)
-    XCTAssertNotNil(result.error)
-    XCTAssertEqual(result.activeTabId, before)
-    XCTAssertEqual(router.snapshotState().activeTabId, before)
-  }
-
-  func testEndToEndOverLoopback() async throws {
+  func testEndToEndAppStateOverUDS() throws {
     let (model, router) = try makeModelAndRouter()
     let server = LabanControlServer(router: router, surface: .gui)
-    let info = try server.start()
+    let start = try server.start()
     defer { server.stop() }
 
-    let (stateStatus, stateData) = try await request(
-      url: "\(info.url)/debug/state",
-      token: info.token)
+    let (stateStatus, stateData) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/state",
+      token: start.appObserveToken)
     XCTAssertEqual(stateStatus, 200)
-    let state = try JSONDecoder().decode(ControlState.self, from: stateData)
-    XCTAssertEqual(state.tabs.count, 2)
+    let state = try JSONSerialization.jsonObject(with: stateData) as! [String: Any]
+    let tabs = try XCTUnwrap(state["tabs"] as? [[String: Any]])
+    XCTAssertEqual(tabs.count, model.tabs.count)
 
-    let (unauthorizedStatus, _) = try await request(url: "\(info.url)/debug/state")
+    let (unauthorizedStatus, _) = try request(socketPath: start.socketPath, path: "/debug/state")
     XCTAssertEqual(unauthorizedStatus, 401)
+  }
 
-    let (actionStatus, actionData) = try await request(
-      url: "\(info.url)/debug/actions",
+  func testGuiInputActuationUnavailable() throws {
+    let (_, router) = try makeModelAndRouter()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let (status, _) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/actions",
       method: "POST",
-      token: info.token,
+      token: start.appObserveToken,
       body: Data(#"{"action":"selectTab","index":0}"#.utf8))
-    XCTAssertEqual(actionStatus, 200)
-    let action = try JSONDecoder().decode(ControlActionResult.self, from: actionData)
-    XCTAssertTrue(action.ok)
-    XCTAssertEqual(action.activeTabId, model.tabs[0].id)
-
-    let (_, finalData) = try await request(url: "\(info.url)/debug/state", token: info.token)
-    let final = try JSONDecoder().decode(ControlState.self, from: finalData)
-    XCTAssertEqual(final.activeTabId, model.tabs[0].id)
+    XCTAssertEqual(status, 403)
   }
 
   func testServerStartStopStartReleasesListener() throws {
@@ -67,11 +54,12 @@ final class ControlServerPhase0Tests: XCTestCase {
     let server = LabanControlServer(router: router, surface: .gui)
 
     let first = try server.start()
-    XCTAssertTrue(first.url.hasPrefix("http://127.0.0.1:"))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: first.socketPath))
     server.stop()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: first.socketPath))
 
     let second = try server.start()
-    XCTAssertTrue(second.url.hasPrefix("http://127.0.0.1:"))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: second.socketPath))
     server.stop()
   }
 
@@ -82,22 +70,17 @@ final class ControlServerPhase0Tests: XCTestCase {
   }
 
   private func request(
-    url: String,
+    socketPath: String,
+    path: String,
     method: String = "GET",
     token: String? = nil,
     body: Data? = nil
-  ) async throws -> (Int, Data) {
-    var request = URLRequest(url: try XCTUnwrap(URL(string: url)))
-    request.httpMethod = method
-    if let token {
-      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    }
-    if let body {
-      request.httpBody = body
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    }
-    let (data, response) = try await URLSession.shared.data(for: request)
-    let http = try XCTUnwrap(response as? HTTPURLResponse)
-    return (http.statusCode, data)
+  ) throws -> (Int, Data) {
+    try ControlUDSClient.request(
+      socketPath: socketPath,
+      method: method,
+      path: path,
+      token: token,
+      body: body)
   }
 }

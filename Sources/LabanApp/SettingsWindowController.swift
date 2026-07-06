@@ -14,6 +14,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let onChangeFont: () -> Void
   private let onChangeCJKFont: () -> Void
   private let onTestNotification: () -> Void
+  private let onControlServerEnabledChanged: (Bool) -> Void
 
   private let themePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let followSystemCheckbox = NSButton(
@@ -26,6 +27,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let identityPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let restoreCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Restore tabs on launch"), target: nil, action: nil)
+  private let controlServerCheckbox = NSButton(
+    checkboxWithTitle: L10n.tr("Enable agent control server"), target: nil, action: nil)
   private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let scrollModePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let graphemeWidthPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -92,7 +95,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     backend: TerminalBackendMenuController,
     onChangeFont: @escaping () -> Void,
     onChangeCJKFont: @escaping () -> Void,
-    onTestNotification: @escaping () -> Void
+    onTestNotification: @escaping () -> Void,
+    onControlServerEnabledChanged: @escaping (Bool) -> Void = { _ in }
   ) {
     self.themeController = theme
     self.rendererController = renderer
@@ -100,6 +104,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     self.onChangeFont = onChangeFont
     self.onChangeCJKFont = onChangeCJKFont
     self.onTestNotification = onTestNotification
+    self.onControlServerEnabledChanged = onControlServerEnabledChanged
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 460, height: 10),
       styleMask: [.titled, .closable],
@@ -230,6 +235,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       + "the next launch — toggle it before quitting to control whether your "
       + "tabs return."
 
+    controlServerCheckbox.target = self
+    controlServerCheckbox.action = #selector(controlServerChanged(_:))
+    controlServerCheckbox.toolTip =
+      "When off, the agent control server never starts: no control.json, no "
+      + "session credential injection, and no remote observation surface — "
+      + "even if LABAN_CONTROL_SERVER=1 is set."
+
     cursorStylePopUp.target = self
     cursorStylePopUp.action = #selector(cursorStyleChanged(_:))
     for option in cursorStyleOptions {
@@ -350,6 +362,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel(L10n.tr("Unicode width:")), graphemeWidthPopUp],
       [makeLabel(L10n.tr("Sessions:")), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
+      [NSGridCell.emptyContentView, controlServerCheckbox],
       [NSGridCell.emptyContentView, profileRecorderCheckbox],
       [NSGridCell.emptyContentView, profileRecorderHelpLabel],
       [makeLabel(L10n.tr("Identity:")), identityPopUp],
@@ -567,6 +580,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       backendPopUp.selectItem(at: row)
     }
     restoreCheckbox.state = RestoreOnLaunchSettings.isEnabled ? .on : .off
+    controlServerCheckbox.state = ControlServerSettings.isEnabled ? .on : .off
     profileRecorderCheckbox.state = ProfileRecorderSettings.persisted() ? .on : .off
     profileRecorderHelpLabel.stringValue = ProfileRecorderSettings.settingsHelpText
     if let row = identityOptions.firstIndex(of: TerminalIdentitySettings.identity()) {
@@ -664,6 +678,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   @objc private func restoreChanged(_ sender: NSButton) {
     RestoreOnLaunchSettings.set(sender.state == .on)
+  }
+
+  @objc private func controlServerChanged(_ sender: NSButton) {
+    let enabled = sender.state == .on
+    ControlServerSettings.set(enabled)
+    onControlServerEnabledChanged(enabled)
   }
 
   @objc private func profileRecorderChanged(_ sender: NSButton) {

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/command-propose-result.schema.json",
+  "title": "Command Propose Result",
+  "type": "object",
+  "required": ["ok", "proposalID", "targetSessionID", "state", "writtenToPTY"],
+  "additionalProperties": false,
+  "properties": {
+    "ok": {"type": "boolean"},
+    "proposalID": {"type": "string"},
+    "targetSessionID": {"type": "string"},
+    "state": {"type": "string", "enum": ["pendingReview"]},
+    "writtenToPTY": {"type": "boolean", "const": false}
+  }
+}

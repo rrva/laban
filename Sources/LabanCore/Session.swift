@@ -233,8 +233,12 @@ public final class Session {
     }
   }
 
-  public init(config: inout LabanLaunchConfig, size: LabanTerminalSize) throws {
-    let id = UUID().uuidString
+  public init(
+    config: inout LabanLaunchConfig,
+    size: LabanTerminalSize,
+    sessionID: ID? = nil
+  ) throws {
+    let id = sessionID ?? UUID().uuidString
     self.id = id
     self.fixtureMode = config.fixture_mode != 0
     self.callbackState = SessionCallbackState(sessionId: id)
@@ -284,19 +288,25 @@ public final class Session {
     callbackState.currentShellIntegration()
   }
 
-  public static func fixture(size: LabanTerminalSize) throws -> Session {
+  public static func fixture(size: LabanTerminalSize, sessionID: ID? = nil) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 1
-    return try Session(config: &config, size: size)
+    return try Session(config: &config, size: size, sessionID: sessionID)
   }
 
   public static func realShell(
     size: LabanTerminalSize,
     environment: [String: String] = [:],
-    launchArgv: [String]? = nil
+    launchArgv: [String]? = nil,
+    sessionID: ID? = nil
   ) throws -> Session {
     try makeRealShell(
-      size: size, cwd: nil, environment: environment, launchArgv: launchArgv, deferSpawn: false)
+      size: size,
+      cwd: nil,
+      environment: environment,
+      launchArgv: launchArgv,
+      deferSpawn: false,
+      sessionID: sessionID)
   }
 
   /// Spawn the user's login shell with an explicit working directory.
@@ -313,10 +323,16 @@ public final class Session {
     size: LabanTerminalSize,
     cwd: String,
     environment: [String: String] = [:],
-    launchArgv: [String]? = nil
+    launchArgv: [String]? = nil,
+    sessionID: ID? = nil
   ) throws -> Session {
     try makeRealShell(
-      size: size, cwd: cwd, environment: environment, launchArgv: launchArgv, deferSpawn: false)
+      size: size,
+      cwd: cwd,
+      environment: environment,
+      launchArgv: launchArgv,
+      deferSpawn: false,
+      sessionID: sessionID)
   }
 
   /// Build a real-shell session, optionally deferred, with env overrides and
@@ -328,7 +344,8 @@ public final class Session {
     cwd: String?,
     environment: [String: String],
     launchArgv: [String]?,
-    deferSpawn: Bool
+    deferSpawn: Bool,
+    sessionID: ID? = nil
   ) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 0
@@ -356,7 +373,9 @@ public final class Session {
     }
     func build(cwdPtr: UnsafePointer<CChar>?) throws -> Session {
       config.cwd = cwdPtr
-      return try withEnv { try withArgv { try Session(config: &config, size: size) } }
+      return try withEnv {
+        try withArgv { try Session(config: &config, size: size, sessionID: sessionID) }
+      }
     }
 
     guard let cwd else { return try build(cwdPtr: nil) }
@@ -376,13 +395,19 @@ public final class Session {
   public static func makeDeferred(
     size: LabanTerminalSize,
     cwd: String,
-    environment: [String: String] = [:]
+    environment: [String: String] = [:],
+    sessionID: ID? = nil
   ) throws -> Session {
     // The deferred create path ignores config.argv (it returns before argv
     // handling and resolves the shell at spawn time), so an argv override for
     // bash must go through startSpawn(launchArgv:), not here.
     try makeRealShell(
-      size: size, cwd: cwd, environment: environment, launchArgv: nil, deferSpawn: true)
+      size: size,
+      cwd: cwd,
+      environment: environment,
+      launchArgv: nil,
+      deferSpawn: true,
+      sessionID: sessionID)
   }
 
   /// Fork+exec the deferred-spawn child. No-op when the session was

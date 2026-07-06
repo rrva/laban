@@ -62,7 +62,7 @@ final class AppModelTests: XCTestCase {
     let model = try makeModel()
     var capturedArgv: [String]?
     var capturedCwd: String?
-    model.commandSessionFactory = { size, cwd, argv in
+    model.commandSessionFactory = { size, cwd, argv, _ in
       capturedArgv = argv
       capturedCwd = cwd
       return try Session.fixture(size: size)
@@ -84,7 +84,7 @@ final class AppModelTests: XCTestCase {
 
   func testLaunchArgvClearedOnTabClose() throws {
     let model = try makeModel()
-    model.commandSessionFactory = { size, _, _ in try Session.fixture(size: size) }
+    model.commandSessionFactory = { size, _, _, _ in try Session.fixture(size: size) }
     let tab = try model.createTab(runningArgv: ["ssh", "host"])
     XCTAssertEqual(model.launchArgv(forTab: tab.id), ["ssh", "host"])
     try model.closeTab(tab.id)
@@ -621,7 +621,7 @@ final class AppModelTests: XCTestCase {
       forTab: tabId)
 
     var capturedCwd: String?
-    model.newTabSessionFactory = { size, cwd in
+    model.newTabSessionFactory = { size, cwd, _ in
       capturedCwd = cwd
       return try Session.fixture(size: size)
     }
@@ -636,7 +636,7 @@ final class AppModelTests: XCTestCase {
     // No OSC 7 and a fixture has no process cwd, so nothing is inherited: the
     // cwd-aware factory must NOT be used (preserving the prior spawn behavior).
     var capturedCwd: String?
-    model.newTabSessionFactory = { size, cwd in
+    model.newTabSessionFactory = { size, cwd, _ in
       capturedCwd = cwd
       return try Session.fixture(size: size)
     }

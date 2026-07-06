@@ -167,7 +167,7 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: cwd) }
     let argv = ["/bin/zsh", "-l"]
     var launches: [(cwd: String?, argv: [String])] = []
-    harness.model.commandSessionFactory = { size, cwd, argv in
+    harness.model.commandSessionFactory = { size, cwd, argv, _ in
       launches.append((cwd, argv))
       return try Session.fixture(size: size)
     }

@@ -55,6 +55,9 @@ enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(name: "find.step", summary: "Move to the next or previous find match."),
     DebugDiscoveryControl(name: "find.stop", summary: "Stop find and clear match highlights."),
     DebugDiscoveryControl(name: "scrollViewport", summary: "Move terminal scrollback viewport."),
+    DebugDiscoveryControl(
+      name: "propose",
+      summary: "Propose a command for user review; never writes PTY bytes."),
     DebugDiscoveryControl(name: "setTabTitle", summary: "Set a manual tab title."),
     DebugDiscoveryControl(name: "freezeTabTitle", summary: "Freeze or unfreeze title updates."),
     DebugDiscoveryControl(name: "clearTabTitle", summary: "Clear the manual tab title."),

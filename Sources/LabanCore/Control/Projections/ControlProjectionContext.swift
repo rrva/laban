@@ -1,0 +1,55 @@
+import Foundation
+import LabanTerminalCore
+
+public struct ControlProjectionContext {
+  public var model: AppModel
+  public var mode: String
+  public var frame: Int
+  public var windowWidth: Int
+  public var windowHeight: Int
+  public var cellWidth: Int
+  public var cellHeight: Int
+  public var sidebarWidth: Int
+  public var accessibilityDisplayFlags: AccessibilityDisplayFlagsResponse
+  public var selectionBySession: [Session.ID: TerminalSelection]
+  public var sessionClientInfoById: [Session.ID: LabandSessionInfo]
+  public var transportMode: String
+  /// When set, whole-app reads (`app.state`, `session.list`) are filtered to this session.
+  public var scopedSessionID: String?
+  public var clientSnapshotProvider: (@Sendable (Session.ID) -> LabandSnapshotResponse?)?
+  public var accessibilityValueProvider: (@Sendable (Tab) -> String)?
+
+  public init(
+    model: AppModel,
+    mode: String,
+    frame: Int,
+    windowWidth: Int,
+    windowHeight: Int,
+    cellWidth: Int,
+    cellHeight: Int,
+    sidebarWidth: Int,
+    accessibilityDisplayFlags: AccessibilityDisplayFlagsResponse,
+    selectionBySession: [Session.ID: TerminalSelection] = [:],
+    sessionClientInfoById: [Session.ID: LabandSessionInfo] = [:],
+    transportMode: String,
+    scopedSessionID: String? = nil,
+    clientSnapshotProvider: (@Sendable (Session.ID) -> LabandSnapshotResponse?)? = nil,
+    accessibilityValueProvider: (@Sendable (Tab) -> String)? = nil
+  ) {
+    self.model = model
+    self.mode = mode
+    self.frame = frame
+    self.windowWidth = windowWidth
+    self.windowHeight = windowHeight
+    self.cellWidth = cellWidth
+    self.cellHeight = cellHeight
+    self.sidebarWidth = sidebarWidth
+    self.accessibilityDisplayFlags = accessibilityDisplayFlags
+    self.selectionBySession = selectionBySession
+    self.sessionClientInfoById = sessionClientInfoById
+    self.transportMode = transportMode
+    self.scopedSessionID = scopedSessionID
+    self.clientSnapshotProvider = clientSnapshotProvider
+    self.accessibilityValueProvider = accessibilityValueProvider
+  }
+}

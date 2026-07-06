@@ -57,19 +57,19 @@ final class LabanDebugSmokeTests: XCTestCase {
 
     let server = LabanControlServer(
       router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeDebugSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
     XCTAssertFalse(readiness.debugToken.isEmpty)
-    let healthURL = URL(string: readiness.debugServer + "/debug/health")!
 
-    let noAuth = try httpGet(healthURL)
+    let noAuth = try httpGet(socketPath: socketPath, path: "/debug/health")
     XCTAssertEqual(noAuth.status, 401)
 
-    let badAuth = try httpGet(healthURL, token: "wrong")
+    let badAuth = try httpGet(socketPath: socketPath, path: "/debug/health", token: "wrong")
     XCTAssertEqual(badAuth.status, 401)
 
-    let ok = try httpGet(healthURL, token: readiness.debugToken)
+    let ok = try httpGet(socketPath: socketPath, path: "/debug/health", token: readiness.debugToken)
     XCTAssertEqual(ok.status, 200)
     let obj = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
     XCTAssertEqual(obj["ok"] as? Bool, true)
@@ -88,11 +88,11 @@ final class LabanDebugSmokeTests: XCTestCase {
 
     let server = LabanControlServer(
       router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeDebugSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let url = URL(string: readiness.debugServer + "/debug/accessibility")!
-    let ok = try httpGet(url, token: readiness.debugToken)
+    let ok = try httpGet(socketPath: socketPath, path: "/debug/accessibility", token: readiness.debugToken)
     XCTAssertEqual(ok.status, 200)
     let obj = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
     XCTAssertEqual(obj["isElement"] as? Bool, true)
@@ -112,12 +112,12 @@ final class LabanDebugSmokeTests: XCTestCase {
 
     let server = LabanControlServer(
       router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeDebugSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
-    let url = URL(string: readiness.debugServer + "/debug/terminal-modes")!
 
     func modes() throws -> [String: Any] {
-      let ok = try httpGet(url, token: readiness.debugToken)
+      let ok = try httpGet(socketPath: socketPath, path: "/debug/terminal-modes", token: readiness.debugToken)
       XCTAssertEqual(ok.status, 200)
       return try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
     }
@@ -150,11 +150,11 @@ final class LabanDebugSmokeTests: XCTestCase {
 
     let server = LabanControlServer(
       router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeDebugSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let baseURL = URL(string: readiness.debugServer)!
-    let waitFD = try openDebugSocket(port: UInt16(baseURL.port!))
+    let waitFD = try openDebugSocket(socketPath: socketPath)
     defer { Darwin.close(waitFD) }
 
     let body = #"{"timeoutMs":900,"condition":{"kind":"textVisible","text":"never-visible"}}"#
@@ -168,9 +168,9 @@ final class LabanDebugSmokeTests: XCTestCase {
     )
     usleep(100_000)
 
-    let healthURL = URL(string: readiness.debugServer + "/debug/health")!
     let start = Date()
-    let ok = try httpGet(healthURL, token: readiness.debugToken, timeout: 1.0)
+    let ok = try httpGet(
+      socketPath: socketPath, path: "/debug/health", token: readiness.debugToken, timeout: 1.0)
     let elapsed = Date().timeIntervalSince(start)
     XCTAssertEqual(ok.status, 200)
     XCTAssertLessThan(elapsed, 0.5)
@@ -184,21 +184,21 @@ final class LabanDebugSmokeTests: XCTestCase {
 
     let server = LabanControlServer(
       router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeDebugSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let baseURL = URL(string: readiness.debugServer)!
-    let slowFD = try openDebugSocket(port: UInt16(baseURL.port!))
+    let slowFD = try openDebugSocket(socketPath: socketPath)
     defer { Darwin.close(slowFD) }
 
-    let partial = "GET /debug/health HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+    let partial = "GET /debug/health HTTP/1.1\r\nHost: localhost\r\n"
       .data(using: .utf8)!
     try sendAll(fd: slowFD, data: partial)
     usleep(100_000)
 
-    let healthURL = URL(string: readiness.debugServer + "/debug/health")!
     let start = Date()
-    let ok = try httpGet(healthURL, token: readiness.debugToken, timeout: 1.0)
+    let ok = try httpGet(
+      socketPath: socketPath, path: "/debug/health", token: readiness.debugToken, timeout: 1.0)
     let elapsed = Date().timeIntervalSince(start)
     XCTAssertEqual(ok.status, 200)
     XCTAssertLessThan(elapsed, 0.5)
@@ -1632,63 +1632,33 @@ final class LabanDebugSmokeTests: XCTestCase {
     }.joined()
   }
 
-  private func httpGet(
-    _ url: URL, token: String? = nil, timeout: TimeInterval = 5.0
-  ) throws -> (status: Int, body: Data) {
-    var request = URLRequest(url: url)
-    request.timeoutInterval = timeout
-    if let token {
-      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    }
-
-    let sem = DispatchSemaphore(value: 0)
-    var result: (status: Int, body: Data)?
-    var requestError: Error?
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
-      requestError = error
-      let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-      result = (status, data ?? Data())
-      sem.signal()
-    }
-    task.resume()
-    if sem.wait(timeout: .now() + timeout + 0.5) == .timedOut {
-      task.cancel()
-      throw NSError(
-        domain: NSURLErrorDomain,
-        code: NSURLErrorTimedOut,
-        userInfo: [NSLocalizedDescriptionKey: "HTTP request timed out"])
-    }
-    if let requestError { throw requestError }
-    return result ?? (-1, Data())
+  private func makeDebugSocketPath() throws -> String {
+    "/tmp/laban-debug-smoke-\(UUID().uuidString.prefix(8)).sock"
   }
 
-  private func openDebugSocket(port: UInt16) throws -> Int32 {
-    let fd = socket(AF_INET, SOCK_STREAM, 0)
-    guard fd >= 0 else { throw posixError("socket") }
+  private func httpGet(
+    socketPath: String,
+    path: String,
+    token: String? = nil,
+    timeout: TimeInterval = 5.0
+  ) throws -> (status: Int, body: Data) {
+    let (status, body) = try ControlUDSClient.request(
+      socketPath: socketPath,
+      path: path,
+      token: token,
+      timeout: timeout)
+    return (status, body)
+  }
 
-    var addr = sockaddr_in()
-    addr.sin_family = sa_family_t(AF_INET)
-    addr.sin_port = CFSwapInt16HostToBig(port)
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
-
-    let result = withUnsafePointer(to: &addr) { ptr in
-      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-        connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
-      }
-    }
-    guard result == 0 else {
-      let error = posixError("connect")
-      Darwin.close(fd)
-      throw error
-    }
-    return fd
+  private func openDebugSocket(socketPath: String) throws -> Int32 {
+    try ControlUDSClient.connect(socketPath: socketPath)
   }
 
   private func sendRawHTTP(
     fd: Int32, method: String, path: String, token: String, body: Data
   ) throws {
     var request = "\(method) \(path) HTTP/1.1\r\n"
-    request += "Host: 127.0.0.1\r\n"
+    request += "Host: localhost\r\n"
     request += "Authorization: Bearer \(token)\r\n"
     request += "Content-Length: \(body.count)\r\n"
     request += "Connection: close\r\n"

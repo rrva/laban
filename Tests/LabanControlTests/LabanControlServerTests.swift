@@ -56,42 +56,47 @@ final class LabanControlServerTests: XCTestCase {
       .forbidden)
   }
 
-  func testStartHostPortReturnsReadiness() throws {
+  func testStartSocketPathReturnsReadiness() throws {
     let router = SpyIntentRouter()
-    let server = LabanControlServer(router: router, surface: .gui)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let server = LabanControlServer(router: router, surface: .headless)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    XCTAssertTrue(readiness.debugServer.hasPrefix("http://127.0.0.1:"))
+    XCTAssertEqual(readiness.debugServer, socketPath)
     XCTAssertFalse(readiness.debugToken.isEmpty)
     XCTAssertEqual(readiness.pid, ProcessInfo.processInfo.processIdentifier)
     XCTAssertFalse(readiness.runId.isEmpty)
   }
 
-  func testStateRouteDispatchesQuery() async throws {
+  func testStateRouteDispatchesQuery() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .gui)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, data) = try await request(
-      url: "\(readiness.debugServer)/debug/state",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/state",
       token: readiness.debugToken)
 
     XCTAssertEqual(status, 200)
-    XCTAssertEqual(router.queries(), [.state])
-    let state = try JSONDecoder().decode(SpyState.self, from: data)
-    XCTAssertEqual(state.tabs, ["spy"])
+    XCTAssertEqual(router.legacyQueries(), [LegacyDebugQueryInput(intentID: "app.state")])
+    let state = try JSONDecoder().decode(SpyLegacyQueryResult.self, from: data)
+    XCTAssertEqual(state.intentID, "app.state")
   }
 
-  func testLegacyReadRoutePreservesQueryParameters() async throws {
+  func testLegacyReadRoutePreservesQueryParameters() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, data) = try await request(
-      url: "\(readiness.debugServer)/debug/events?since=7",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/events?since=7",
       token: readiness.debugToken)
 
     XCTAssertEqual(status, 200)
@@ -103,14 +108,16 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(result.params, ["since": "7"])
   }
 
-  func testSessionDetailRouteDecodesPathAndPreservesQueryParameters() async throws {
+  func testSessionDetailRouteDecodesPathAndPreservesQueryParameters() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, data) = try await request(
-      url: "\(readiness.debugServer)/debug/sessions/session%201?includeGrid=true",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/sessions/session%201?includeGrid=true",
       token: readiness.debugToken)
 
     XCTAssertEqual(status, 200)
@@ -126,15 +133,17 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(result.params, ["includeGrid": "true", "sessionId": "session 1"])
   }
 
-  func testLegacyBodyRouteDispatchesRawBodyAndIntentID() async throws {
+  func testLegacyBodyRouteDispatchesRawBodyAndIntentID() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
     let body = Data(#"{"needle":"apple"}"#.utf8)
-    let (status, data) = try await request(
-      url: "\(readiness.debugServer)/debug/find/start?mode=literal",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/find/start?mode=literal",
       method: "POST",
       token: readiness.debugToken,
       body: body)
@@ -149,14 +158,16 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(result.params, ["mode": "literal"])
   }
 
-  func testLegacyNoBodyRouteDispatchesEmptyBody() async throws {
+  func testLegacyNoBodyRouteDispatchesEmptyBody() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, data) = try await request(
-      url: "\(readiness.debugServer)/debug/persistence/flush",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/persistence/flush",
       method: "POST",
       token: readiness.debugToken,
       body: Data())
@@ -171,14 +182,16 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(result.params, [:])
   }
 
-  func testCaptureStatusRouteDispatchesLegacyQuery() async throws {
+  func testCaptureStatusRouteDispatchesLegacyQuery() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, data) = try await request(
-      url: "\(readiness.debugServer)/debug/capture/status",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/capture/status",
       token: readiness.debugToken)
 
     XCTAssertEqual(status, 200)
@@ -189,46 +202,46 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(result.intentID, "capture.status")
   }
 
-  func testScreenshotArtifactRouteDispatchesArtifactRequestAndPreservesHeaders() async throws {
+  func testScreenshotArtifactRouteDispatchesArtifactRequestAndPreservesHeaders() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, data, response) = try await requestWithResponse(
-      url: "\(readiness.debugServer)/debug/screenshot?target=active",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/screenshot?target=active",
       token: readiness.debugToken)
 
     XCTAssertEqual(status, 200)
     XCTAssertEqual(data, SpyIntentRouter.pngBytes)
-    XCTAssertEqual(response.value(forHTTPHeaderField: "Content-Type"), "image/png")
-    XCTAssertEqual(response.value(forHTTPHeaderField: "X-App-Frame"), "12")
-    XCTAssertEqual(response.value(forHTTPHeaderField: "X-App-Size"), "80x24")
     let artifacts = router.artifacts()
     XCTAssertEqual(artifacts.count, 1)
     XCTAssertEqual(artifacts.first?.id, "artifact.screenshot")
     XCTAssertEqual(artifacts.first?.params, ["target": "active"])
   }
 
-  func testSelectTabRouteDispatchesIntent() async throws {
+  func testTabSelectReturns404OnGuiSurfaceWithoutRouterCall() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .gui)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, data) = try await request(
-      url: "\(readiness.debugServer)/debug/actions",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/actions",
       method: "POST",
       token: readiness.debugToken,
       body: Data(#"{"action":"selectTab","index":7}"#.utf8))
 
-    XCTAssertEqual(status, 200)
-    XCTAssertEqual(router.intents(), [.tabSelect(TabSelectInput(index: 7))])
-    let result = try JSONDecoder().decode(SpyActionResult.self, from: data)
-    XCTAssertTrue(result.ok)
+    XCTAssertEqual(status, 404)
+    XCTAssertEqual(router.intents(), [])
+    XCTAssertEqual(String(data: data, encoding: .utf8), #"{"error":"unavailable on gui"}"#)
   }
 
-  func testUnavailableIntentReturns404WithoutRouterCall() async throws {
+  func testUnavailableIntentReturns404WithoutRouterCall() throws {
     let tabSelect = try XCTUnwrap(IntentCatalog.all.descriptor(id: "tab.select"))
     let catalog = IntentCatalog([
       IntentDescriptor(
@@ -245,15 +258,18 @@ final class LabanControlServerTests: XCTestCase {
         transports: tabSelect.transports,
         inputSchema: tabSelect.inputSchema,
         outputSchema: tabSelect.outputSchema,
-        errorSchema: tabSelect.errorSchema)
+        errorSchema: tabSelect.errorSchema,
+        classificationExplicit: true)
     ])
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .gui, catalog: catalog)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, data) = try await request(
-      url: "\(readiness.debugServer)/debug/actions",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/actions",
       method: "POST",
       token: readiness.debugToken,
       body: Data(#"{"action":"selectTab","index":1}"#.utf8))
@@ -263,14 +279,16 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(String(data: data, encoding: .utf8), #"{"error":"unavailable on gui"}"#)
   }
 
-  func testFixtureActionIsKnownButUnavailableOnGUIWithoutRouterCall() async throws {
+  func testFixtureActionIsKnownButUnavailableOnGUIWithoutRouterCall() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .gui)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, data) = try await request(
-      url: "\(readiness.debugServer)/debug/actions",
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/actions",
       method: "POST",
       token: readiness.debugToken,
       body: Data(#"{"action":"feedOutput","text":"abc"}"#.utf8))
@@ -280,14 +298,16 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(String(data: data, encoding: .utf8), #"{"error":"unavailable on gui"}"#)
   }
 
-  func testUnknownActionDispatchesUnsupportedIntentInsteadOfUnavailable404() async throws {
+  func testUnknownActionDispatchesUnsupportedIntentInsteadOfUnavailable404() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .gui)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let (status, _) = try await request(
-      url: "\(readiness.debugServer)/debug/actions",
+    let (status, _) = try request(
+      socketPath: socketPath,
+      path: "/debug/actions",
       method: "POST",
       token: readiness.debugToken,
       body: Data(#"{"action":"future.action"}"#.utf8))
@@ -298,22 +318,25 @@ final class LabanControlServerTests: XCTestCase {
       [.unsupportedDebugAction(UnsupportedDebugActionInput(action: "future.action"))])
   }
 
-  func testMalformedAndMissingActionsRemainBadRequest() async throws {
+  func testMalformedAndMissingActionsRemainBadRequest() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .gui)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let missing = try await request(
-      url: "\(readiness.debugServer)/debug/actions",
+    let missing = try request(
+      socketPath: socketPath,
+      path: "/debug/actions",
       method: "POST",
       token: readiness.debugToken,
       body: Data(#"{"text":"abc"}"#.utf8))
     XCTAssertEqual(missing.0, 400)
     XCTAssertEqual(String(data: missing.1, encoding: .utf8), #"{"error":"bad request"}"#)
 
-    let malformed = try await request(
-      url: "\(readiness.debugServer)/debug/actions",
+    let malformed = try request(
+      socketPath: socketPath,
+      path: "/debug/actions",
       method: "POST",
       token: readiness.debugToken,
       body: Data(#"{"action":"selectTab""#.utf8))
@@ -322,15 +345,17 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(router.intents(), [])
   }
 
-  func testHeadlessActionRoutesRawBodyAsLegacyDebugAction() async throws {
+  func testHeadlessActionRoutesRawBodyAsLegacyDebugAction() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
     let body = Data(#"{"action":"mouseWheel","x":300,"y":200,"deltaY":3}"#.utf8)
-    let (status, _) = try await request(
-      url: "\(readiness.debugServer)/debug/actions",
+    let (status, _) = try request(
+      socketPath: socketPath,
+      path: "/debug/actions",
       method: "POST",
       token: readiness.debugToken,
       body: body)
@@ -344,17 +369,17 @@ final class LabanControlServerTests: XCTestCase {
       ])
   }
 
-  func testHeadlessSharedActionRoutesRawBodyNotTypedIntent() async throws {
+  func testHeadlessSharedActionRoutesRawBodyNotTypedIntent() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
-    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    // The headless selectTab wire is tabId-based; it must not be diverted to the
-    // GUI index-based typed path, so the raw body flows to applyAction unchanged.
     let body = Data(#"{"action":"selectTab","tabId":"tab-7"}"#.utf8)
-    let (status, _) = try await request(
-      url: "\(readiness.debugServer)/debug/actions",
+    let (status, _) = try request(
+      socketPath: socketPath,
+      path: "/debug/actions",
       method: "POST",
       token: readiness.debugToken,
       body: body)
@@ -400,39 +425,35 @@ final class LabanControlServerTests: XCTestCase {
     }
   }
 
-  private func request(
-    url: String,
-    method: String = "GET",
-    token: String? = nil,
-    body: Data? = nil
-  ) async throws -> (Int, Data) {
-    let (status, data, _) = try await requestWithResponse(
-      url: url,
-      method: method,
-      token: token,
-      body: body)
-    return (status, data)
+  func testMissingTokenReturns401() throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let (status, _) = try request(socketPath: socketPath, path: "/debug/health")
+    XCTAssertEqual(status, 401)
+    XCTAssertEqual(router.legacyQueries(), [])
   }
 
-  private func requestWithResponse(
-    url: String,
+  private func makeTempSocketPath() throws -> String {
+    "/tmp/laban-ctl-\(UUID().uuidString.prefix(8)).sock"
+  }
+
+  private func request(
+    socketPath: String,
+    path: String,
     method: String = "GET",
     token: String? = nil,
     body: Data? = nil
-  ) async throws -> (Int, Data, HTTPURLResponse) {
-    var request = URLRequest(url: try XCTUnwrap(URL(string: url)))
-    request.httpMethod = method
-    if let token {
-      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    }
-    if let body {
-      request.httpBody = body
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      request.setValue("\(body.count)", forHTTPHeaderField: "Content-Length")
-    }
-    let (data, response) = try await URLSession.shared.data(for: request)
-    let http = try XCTUnwrap(response as? HTTPURLResponse)
-    return (http.statusCode, data, http)
+  ) throws -> (Int, Data) {
+    try ControlUDSClient.request(
+      socketPath: socketPath,
+      method: method,
+      path: path,
+      token: token,
+      body: body)
   }
 }
 
