@@ -41,16 +41,28 @@ final class ControlSessionLaunchCoordinator {
   }
 
   /// Registers the session shell PID when metadata is available (C14).
-  func tryRegisterShellPID(sessionID: String, session: Session) {
+  func tryRegisterShellPID(sessionID: String, session: Session, shellPID override: pid_t? = nil) {
     guard pendingAttachSessionIDs.contains(sessionID) else { return }
-    guard let childPid = session.processMetadata()?.childPid, childPid > 0 else { return }
-    noteSessionShellStarted(sessionID: sessionID, shellPID: pid_t(childPid))
+    let resolved: pid_t?
+    if let override, override > 0 {
+      resolved = override
+    } else if let childPid = session.processMetadata()?.childPid, childPid > 0 {
+      resolved = pid_t(childPid)
+    } else {
+      resolved = nil
+    }
+    guard let resolved else { return }
+    noteSessionShellStarted(sessionID: sessionID, shellPID: resolved)
   }
 
-  func retryPendingShellRegistrations(in model: AppModel) {
+  func retryPendingShellRegistrations(
+    in model: AppModel,
+    shellPIDProvider: ((Tab.ID, Session) -> pid_t?)? = nil
+  ) {
     guard !pendingAttachSessionIDs.isEmpty else { return }
-    for (_, session) in model.allSessions() where pendingAttachSessionIDs.contains(session.id) {
-      tryRegisterShellPID(sessionID: session.id, session: session)
+    for (tab, session) in model.allSessions() where pendingAttachSessionIDs.contains(session.id) {
+      let override = shellPIDProvider?(tab.id, session)
+      tryRegisterShellPID(sessionID: session.id, session: session, shellPID: override)
     }
   }
 

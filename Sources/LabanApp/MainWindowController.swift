@@ -144,10 +144,20 @@ final class MainWindowController: NSWindowController {
     )
     liveRouter.bindModel(model)
     let controlLaunchCoordinator = launchCoordinator
+    let sessionCoordForAttach = sessionCoordinator
     let priorTabCreated = model.onTabCreated
     model.onTabCreated = { tabId, session in
       priorTabCreated?(tabId, session)
-      controlLaunchCoordinator.tryRegisterShellPID(sessionID: session.id, session: session)
+      Self.registerAttachShell(
+        tabId: tabId,
+        session: session,
+        launchCoordinator: controlLaunchCoordinator,
+        sessionCoordinator: sessionCoordForAttach)
+      Self.scheduleAttachShellRetries(
+        tabId: tabId,
+        launchCoordinator: controlLaunchCoordinator,
+        sessionCoordinator: sessionCoordForAttach,
+        model: model)
     }
     let isPersistenceEnabled = {
       persistenceSyncEnabled && RestoreOnLaunchSettings.isEnabled
@@ -711,7 +721,13 @@ final class MainWindowController: NSWindowController {
 
   func refreshLiveControlEnvironment() {
     guard let model, let termView = terminalView else { return }
-    controlSessionLaunchCoordinator.retryPendingShellRegistrations(in: model)
+    controlSessionLaunchCoordinator.retryPendingShellRegistrations(in: model) {
+      [weak self] tabId, session in
+      Self.resolveAttachShellPID(
+        tabId: tabId,
+        session: session,
+        sessionCoordinator: self?.sessionCoordinator)
+    }
     let opts = termView.accessibilityDisplayOptionsForTesting
     liveControlRouter?.updateEnvironment(
       LiveControlEnvironment(
@@ -1125,5 +1141,50 @@ final class MainWindowController: NSWindowController {
   private static func restoredCwdByTabId(from state: WorkspaceState?) -> [Tab.ID: String] {
     guard let state, let window = state.windows.first else { return [:] }
     return Dictionary(uniqueKeysWithValues: window.tabs.map { ($0.id, $0.cwd) })
+  }
+
+  private static func resolveAttachShellPID(
+    tabId: Tab.ID,
+    session: Session,
+    sessionCoordinator: AppSessionCoordinator?
+  ) -> pid_t? {
+    if let childPid = session.processMetadata()?.childPid, childPid > 0 {
+      return pid_t(childPid)
+    }
+    return sessionCoordinator?.attachShellPID(forTabId: tabId)
+  }
+
+  private static func registerAttachShell(
+    tabId: Tab.ID,
+    session: Session,
+    launchCoordinator: ControlSessionLaunchCoordinator,
+    sessionCoordinator: AppSessionCoordinator?
+  ) {
+    let shellPID = resolveAttachShellPID(
+      tabId: tabId,
+      session: session,
+      sessionCoordinator: sessionCoordinator)
+    launchCoordinator.tryRegisterShellPID(
+      sessionID: session.id,
+      session: session,
+      shellPID: shellPID)
+  }
+
+  private static func scheduleAttachShellRetries(
+    tabId: Tab.ID,
+    launchCoordinator: ControlSessionLaunchCoordinator,
+    sessionCoordinator: AppSessionCoordinator?,
+    model: AppModel
+  ) {
+    for delay in [0.05, 0.25, 1.0] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak model] in
+        guard let model, let session = model.session(forTab: tabId) else { return }
+        registerAttachShell(
+          tabId: tabId,
+          session: session,
+          launchCoordinator: launchCoordinator,
+          sessionCoordinator: sessionCoordinator)
+      }
+    }
   }
 }
