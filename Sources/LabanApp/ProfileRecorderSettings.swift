@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Where the decision to enable the in-process sampling profiler came from.
@@ -96,10 +97,63 @@ enum ProfileRecorderSettings {
     let pattern = defaultURLPattern
     return """
       Default socket: \(pattern)
-      Capture: scripts/capture-profile
+      Long recording: Debug → Start CPU Recording, then Export CPU Profile…
+      One-shot: Debug → Capture CPU Profile…, or scripts/capture-profile
       Or: curl --unix-socket <path> -sd '{"numberOfSamples":1000,"timeInterval":"10 ms"}' \
       http://localhost/sample | swift demangle --compact > ~/laban.perf
       """
+  }
+
+  /// Candidate UNIX socket paths for a running LabanApp process, newest layout first.
+  static func profilerSocketCandidates(pid: Int32 = ProcessInfo.processInfo.processIdentifier) -> [String] {
+    let tmpdir = (NSTemporaryDirectory() as NSString).standardizingPath
+    return [
+      defaultProfilingDirectory.appendingPathComponent("laban-samples-\(pid).sock").path,
+      (tmpdir as NSString).appendingPathComponent("laban-samples-\(pid).sock"),
+      "/tmp/laban-samples-\(pid).sock",
+    ]
+  }
+
+  /// Returns the profiler socket path when the in-process server is listening.
+  static func findProfilerSocket(pid: Int32 = ProcessInfo.processInfo.processIdentifier) -> String? {
+    for path in profilerSocketCandidates(pid: pid) {
+      var status = stat()
+      guard stat(path, &status) == 0 else { continue }
+      guard (status.st_mode & S_IFMT) == S_IFSOCK else { continue }
+      guard profilerSocketAcceptsConnections(at: path) else { continue }
+      return path
+    }
+    return nil
+  }
+
+  /// True when a process is accepting connections on the UNIX socket path.
+  private static func profilerSocketAcceptsConnections(at path: String) -> Bool {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = path.utf8CString
+    guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else { return false }
+    _ = withUnsafeMutablePointer(to: &addr.sun_path.0) { sunPath in
+      pathBytes.withUnsafeBytes { bytes in
+        memcpy(sunPath, bytes.baseAddress!, bytes.count)
+      }
+    }
+
+    let addrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+    return withUnsafePointer(to: &addr) { ptr in
+      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+        connect(fd, sockaddrPtr, addrLen) == 0
+      }
+    }
+  }
+
+  /// Directory for captured `.perf` files (same as `scripts/capture-profile`).
+  static var profilesDirectory: URL {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/Logs/Laban/profiles", isDirectory: true)
   }
 
   /// Returns the URL pattern requested on the command line, or nil if the

@@ -36,7 +36,7 @@ final class TerminalCaptureIndicatorTests: XCTestCase {
   }
 
   func testIndicatorViewRendersRecMarker() {
-    let view = TerminalCaptureIndicatorView(frame: .zero)
+    let view = TerminalCaptureIndicatorView()
     let label = view.subviews.compactMap { $0 as? NSTextField }.first
     XCTAssertEqual(label?.stringValue, "● REC")
     // Decorative overlay: clicks fall through to the terminal beneath.

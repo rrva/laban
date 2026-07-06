@@ -531,9 +531,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var lastPixelHeight: Int = 0
   private var lastSurfaceScale: CGFloat = 0
   private var captureRecorder: CaptureRecorder?
-  /// On-surface "● REC" pill, shown only while a capture is active. Created
-  /// lazily on first capture start, mirroring the find-chip subview pattern.
+  /// On-surface recording pills for PTY capture and CPU profile sampling.
   private var captureIndicatorView: TerminalCaptureIndicatorView?
+  private var profileCaptureIndicatorView: TerminalCaptureIndicatorView?
+  private(set) var isProfileCaptureActive = false
   private struct ClosedTabUndoPayload {
     var argv: [String]?
     var cwd: String
@@ -2337,7 +2338,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       renderJournalEnabled ? renderJournalMetadataSignature(for: activeTab) : nil
 
     let windowTitle =
-      model.windowTitle + TerminalCaptureIndicator.windowTitleSuffix(active: isCaptureActive)
+      model.windowTitle
+      + TerminalCaptureIndicator.windowTitleSuffix(
+        ptyActive: isCaptureActive, profileActive: isProfileCaptureActive)
     if windowTitle != lastAppliedWindowTitle {
       window?.title = windowTitle
       lastAppliedWindowTitle = windowTitle
@@ -4115,7 +4118,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   override func setFrameSize(_ newSize: NSSize) {
     super.setFrameSize(newSize)
     layoutFindChip()
-    layoutCaptureIndicator()
+    layoutCaptureIndicators()
     if let active = model.activeTab {
       ensureSidebarTabVisible(active.id, animated: false)
     } else {
@@ -7617,10 +7620,30 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
-  /// Single source of truth for "a capture is running" used by the Debug-menu
+  /// Single source of truth for "a PTY capture is running" used by the Debug-menu
   /// title, the window-title suffix, and the on-surface "● REC" pill. The
   /// app-side recorder is the authority: it is attached exactly while capturing.
   var isCaptureActive: Bool { captureRecorder != nil }
+
+  /// Show or hide the "● CPU" pill and window-title suffix while the in-process
+  /// sampling profiler is collecting stacks (~10 s).
+  func setProfileCaptureActive(_ active: Bool) {
+    guard isProfileCaptureActive != active else { return }
+    isProfileCaptureActive = active
+    refreshRecordingChrome()
+  }
+
+  private func refreshRecordingChrome() {
+    let windowTitle =
+      model.windowTitle
+      + TerminalCaptureIndicator.windowTitleSuffix(
+        ptyActive: isCaptureActive, profileActive: isProfileCaptureActive)
+    if windowTitle != lastAppliedWindowTitle {
+      window?.title = windowTitle
+      lastAppliedWindowTitle = windowTitle
+    }
+    updateCaptureIndicator()
+  }
 
   /// Mutate the persistent Debug-menu item's title in place (Start/Stop PTY
   /// Capture) rather than rebuilding the menu — the Show/Hide Sidebar pattern.
@@ -7636,36 +7659,59 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return true
   }
 
-  /// Show the "● REC" pill while capturing, hide it otherwise. Driven from
-  /// `advanceFrame` off the same `isCaptureActive` state as the menu title.
+  /// Show recording pills while PTY capture and/or profile sampling is active.
   private func updateCaptureIndicator() {
-    if isCaptureActive {
+    setIndicatorVisible(
+      &captureIndicatorView,
+      active: isCaptureActive,
+      text: TerminalCaptureIndicator.ptyPillText,
+      accessibilityLabel: "Recording PTY capture")
+    setIndicatorVisible(
+      &profileCaptureIndicatorView,
+      active: isProfileCaptureActive,
+      text: TerminalCaptureIndicator.profilePillText,
+      accessibilityLabel: "Capturing CPU profile")
+    layoutCaptureIndicators()
+  }
+
+  private func setIndicatorVisible(
+    _ slot: inout TerminalCaptureIndicatorView?,
+    active: Bool,
+    text: String,
+    accessibilityLabel: String
+  ) {
+    if active {
       let indicator: TerminalCaptureIndicatorView
-      if let existing = captureIndicatorView {
+      if let existing = slot {
         indicator = existing
       } else {
-        indicator = TerminalCaptureIndicatorView(frame: .zero)
-        captureIndicatorView = indicator
+        indicator = TerminalCaptureIndicatorView(text: text, accessibilityLabel: accessibilityLabel)
+        slot = indicator
         addSubview(indicator)
       }
       indicator.isHidden = false
-      layoutCaptureIndicator()
     } else {
-      captureIndicatorView?.removeFromSuperview()
-      captureIndicatorView = nil
+      slot?.removeFromSuperview()
+      slot = nil
     }
   }
 
-  /// Pin the pill to the top-right corner of the terminal content area, just
-  /// inside the inset so it clears the titlebar and right edge.
-  private func layoutCaptureIndicator() {
-    guard let indicator = captureIndicatorView else { return }
+  /// Pin recording pills to the top-right corner of the terminal content area.
+  private func layoutCaptureIndicators() {
     let size = TerminalCaptureIndicatorView.preferredSize
     let content = terminalContentRect()
     let margin: CGFloat = 8
-    let x = content.maxX - size.width - margin
-    let y = content.maxY - size.height - margin
-    indicator.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+    var y = content.maxY - size.height - margin
+
+    if let profile = profileCaptureIndicatorView, !profile.isHidden {
+      let x = content.maxX - size.width - margin
+      profile.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+      y -= size.height + 4
+    }
+    if let rec = captureIndicatorView, !rec.isHidden {
+      let x = content.maxX - size.width - margin
+      rec.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
   }
 
   /// `~/Library/Logs/Laban/captures` by default; overridable via

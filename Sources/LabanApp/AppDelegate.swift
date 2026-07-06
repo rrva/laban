@@ -251,7 +251,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     if item.action == #selector(toggleSecureKeyboardEntry(_:)) {
       item.state = secureKeyboardEntryEnabled ? .on : .off
     }
+    if item.action == #selector(captureProfile(_:)) {
+      let capturing = windowController?.terminalView?.isProfileCaptureActive == true
+      return ProfileRecorderSettings.findProfilerSocket() != nil && !capturing
+        && !ProfileSessionRecorder.shared.isRecording
+    }
+    if item.action == #selector(toggleProfileSessionRecording(_:)) {
+      let recording = ProfileSessionRecorder.shared.isRecording
+      item.title = ProfileSessionRecorder.menuTitle(recording: recording)
+      item.state = recording ? .on : .off
+      let captureActive = windowController?.terminalView?.isProfileCaptureActive == true
+      return recording || (ProfileRecorderSettings.findProfilerSocket() != nil && !captureActive)
+    }
+    if item.action == #selector(exportProfileSession(_:)) {
+      return ProfileSessionRecorder.shared.hasExportableData
+    }
     return true
+  }
+
+  /// Debug-menu toggle: accumulate CPU samples in the background with no pill.
+  @objc func toggleProfileSessionRecording(_ sender: Any?) {
+    if ProfileSessionRecorder.shared.isRecording {
+      ProfileSessionRecorder.shared.stop()
+      return
+    }
+    do {
+      try ProfileSessionRecorder.shared.start()
+    } catch {
+      showProfileAlert(title: "Could not start CPU recording", message: error.localizedDescription)
+    }
+  }
+
+  /// Debug-menu entry: export the accumulated session profile and offer viewers.
+  @objc func exportProfileSession(_ sender: Any?) {
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      let result: Result<URL, Error>
+      do {
+        result = .success(try ProfileSessionRecorder.shared.exportSnapshot())
+      } catch {
+        result = .failure(error)
+      }
+      DispatchQueue.main.async {
+        guard let self else { return }
+        switch result {
+        case .success(let profileURL):
+          self.offerProfileViewer(for: profileURL, title: "Profile exported")
+        case .failure(let error):
+          self.showProfileAlert(title: "Could not export CPU profile", message: error.localizedDescription)
+        }
+      }
+    }
   }
 
   /// App-menu entry: open the native Settings (⌘,) window.
@@ -268,6 +317,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     else { return }
     try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
     NSWorkspace.shared.open(logs)
+  }
+
+  /// Debug-menu entry: sample the in-process profiler and open the result in a
+  /// web flame-graph viewer.
+  @objc func captureProfile(_ sender: Any?) {
+    guard ProfileRecorderSettings.findProfilerSocket() != nil else {
+      showProfileAlert(
+        title: "Profiler not running",
+        message: ProfileCaptureError.profilerNotRunning.localizedDescription)
+      return
+    }
+    guard windowController?.terminalView?.isProfileCaptureActive != true else { return }
+
+    windowController?.terminalView?.setProfileCaptureActive(true)
+    AppLog.app.info("profile capture started")
+
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      let result: Result<URL, Error>
+      do {
+        result = .success(try ProfileCapture.capture())
+      } catch {
+        result = .failure(error)
+      }
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.windowController?.terminalView?.setProfileCaptureActive(false)
+        switch result {
+        case .success(let profileURL):
+          AppLog.app.info("profile capture finished: \(profileURL.path)")
+          self.offerProfileViewer(for: profileURL)
+        case .failure(let error):
+          self.showProfileAlert(
+            title: "Profile capture failed",
+            message: error.localizedDescription)
+        }
+      }
+    }
+  }
+
+  private func offerProfileViewer(for profileURL: URL, title: String = "Profile captured") {
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = """
+      \(profileURL.lastPathComponent)
+
+      Saved under ~/Library/Logs/Laban/profiles/. Where should it open?
+      """
+    alert.addButton(withTitle: "Speedscope")
+    alert.addButton(withTitle: "Firefox Profiler")
+    alert.addButton(withTitle: "Reveal in Finder")
+    alert.addButton(withTitle: "Done")
+    switch alert.runModal() {
+    case .alertFirstButtonReturn:
+      openCapturedProfile(profileURL, viewer: .speedscope)
+    case .alertSecondButtonReturn:
+      openCapturedProfile(profileURL, viewer: .firefoxProfiler)
+    case .alertThirdButtonReturn:
+      NSWorkspace.shared.activateFileViewerSelecting([profileURL])
+    default:
+      break
+    }
+  }
+
+  private enum ProfileViewerChoice {
+    case speedscope
+    case firefoxProfiler
+  }
+
+  private func openCapturedProfile(_ profileURL: URL, viewer: ProfileViewerChoice) {
+    do {
+      switch viewer {
+      case .speedscope:
+        try ProfileCapture.openInSpeedscope(fileURL: profileURL)
+      case .firefoxProfiler:
+        try ProfileCapture.openInFirefoxProfiler(fileURL: profileURL)
+      }
+      AppLog.app.info("opened profile in \(viewer): \(profileURL.path)")
+    } catch {
+      showProfileAlert(
+        title: "Could not open profile viewer",
+        message: error.localizedDescription)
+    }
+  }
+
+  private func showProfileAlert(title: String, message: String) {
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = message
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
   }
 
   private func showStartupFailure(_ error: Error) {
@@ -313,6 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    ProfileSessionRecorder.shared.stop()
     // Take one final synchronous detector sample before workspace
     // persistence writes. This closes the race where a short-lived
     // agent launcher creates a native session log but exits before the

@@ -264,6 +264,27 @@ enum MenuCommands {
         keyEquivalent: ""
       ))
 
+    debugMenu.addItem(
+      NSMenuItem(
+        title: "Capture CPU Profile…",
+        action: #selector(AppDelegate.captureProfile(_:)),
+        keyEquivalent: ""
+      ))
+
+    let profileSessionItem = NSMenuItem(
+      title: "Start CPU Recording",
+      action: #selector(AppDelegate.toggleProfileSessionRecording(_:)),
+      keyEquivalent: ""
+    )
+    debugMenu.addItem(profileSessionItem)
+
+    debugMenu.addItem(
+      NSMenuItem(
+        title: "Export CPU Profile…",
+        action: #selector(AppDelegate.exportProfileSession(_:)),
+        keyEquivalent: ""
+      ))
+
     debugMenu.addItem(NSMenuItem.separator())
     debugMenu.addItem(
       NSMenuItem(

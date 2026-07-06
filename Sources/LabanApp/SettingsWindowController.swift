@@ -241,8 +241,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     profileRecorderCheckbox.action = #selector(profileRecorderChanged(_:))
     profileRecorderCheckbox.toolTip =
       "Starts an in-process sampling profiler on the next launch. Copy the socket "
-      + "path below and run scripts/capture-profile, or pipe curl /sample through "
-      + "swift demangle --compact."
+      + "path below, use Debug → Capture CPU Profile…, or run scripts/capture-profile."
 
     profileRecorderHelpLabel.isEditable = false
     profileRecorderHelpLabel.isSelectable = true
