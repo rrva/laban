@@ -104,8 +104,48 @@ enum ProfileRecorderSettings {
       """
   }
 
-  /// Candidate UNIX socket paths for a running LabanApp process, newest layout first.
-  static func profilerSocketCandidates(pid: Int32 = ProcessInfo.processInfo.processIdentifier) -> [String] {
+  /// Expands a profiler URL pattern to a concrete UNIX socket path for `pid`.
+  static func concreteSocketPath(from pattern: String, pid: Int32) -> String? {
+    let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    let rawPath: String
+    if trimmed.hasPrefix("unix://") {
+      rawPath = String(trimmed.dropFirst("unix://".count))
+    } else {
+      rawPath = trimmed
+    }
+    guard !rawPath.isEmpty else { return nil }
+    return rawPath.replacingOccurrences(of: "{PID}", with: String(pid))
+  }
+
+  /// Candidate UNIX socket paths for a running LabanApp process. The resolved
+  /// launch pattern is checked first; default layout paths remain as fallbacks.
+  static func profilerSocketCandidates(
+    pid: Int32 = ProcessInfo.processInfo.processIdentifier,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    arguments: [String] = CommandLine.arguments,
+    defaults: UserDefaults = .standard
+  ) -> [String] {
+    var seen = Set<String>()
+    var candidates: [String] = []
+    func append(_ path: String) {
+      guard seen.insert(path).inserted else { return }
+      candidates.append(path)
+    }
+
+    if let pattern = resolve(environment: environment, arguments: arguments, defaults: defaults).pattern,
+      let resolved = concreteSocketPath(from: pattern, pid: pid)
+    {
+      append(resolved)
+    }
+
+    for path in defaultProfilerSocketCandidates(pid: pid) {
+      append(path)
+    }
+    return candidates
+  }
+
+  private static func defaultProfilerSocketCandidates(pid: Int32) -> [String] {
     let tmpdir = (NSTemporaryDirectory() as NSString).standardizingPath
     return [
       defaultProfilingDirectory.appendingPathComponent("laban-samples-\(pid).sock").path,
@@ -115,8 +155,15 @@ enum ProfileRecorderSettings {
   }
 
   /// Returns the profiler socket path when the in-process server is listening.
-  static func findProfilerSocket(pid: Int32 = ProcessInfo.processInfo.processIdentifier) -> String? {
-    for path in profilerSocketCandidates(pid: pid) {
+  static func findProfilerSocket(
+    pid: Int32 = ProcessInfo.processInfo.processIdentifier,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    arguments: [String] = CommandLine.arguments,
+    defaults: UserDefaults = .standard
+  ) -> String? {
+    for path in profilerSocketCandidates(
+      pid: pid, environment: environment, arguments: arguments, defaults: defaults)
+    {
       var status = stat()
       guard stat(path, &status) == 0 else { continue }
       guard (status.st_mode & S_IFMT) == S_IFSOCK else { continue }

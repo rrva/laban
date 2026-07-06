@@ -68,4 +68,35 @@ final class ProfileRecorderSettingsTests: XCTestCase {
     XCTAssertEqual(cfg.pattern, "unix:///tmp/direct.sock")
     XCTAssertEqual(cfg.source, .environmentDirectURL)
   }
+
+  func testConcreteSocketPathSubstitutesPID() {
+    XCTAssertEqual(
+      ProfileRecorderSettings.concreteSocketPath(
+        from: "unix:///tmp/laban-samples-{PID}.sock", pid: 42),
+      "/tmp/laban-samples-42.sock")
+  }
+
+  func testConcreteSocketPathLeavesDirectURLUntouched() {
+    XCTAssertEqual(
+      ProfileRecorderSettings.concreteSocketPath(from: "unix:///tmp/direct.sock", pid: 1),
+      "/tmp/direct.sock")
+  }
+
+  func testProfilerSocketCandidatesPrefersResolvedPattern() {
+    let candidates = ProfileRecorderSettings.profilerSocketCandidates(
+      pid: 99,
+      environment: [:],
+      arguments: ["LabanApp", "--profile-recorder=unix:///tmp/cli.sock"],
+      defaults: makeDefaults())
+    XCTAssertEqual(candidates.first, "/tmp/cli.sock")
+  }
+
+  func testProfilerSocketCandidatesIncludesDirectEnvURL() {
+    let candidates = ProfileRecorderSettings.profilerSocketCandidates(
+      pid: 12,
+      environment: ["PROFILE_RECORDER_SERVER_URL": "unix:///tmp/env-direct.sock"],
+      arguments: ["LabanApp"],
+      defaults: makeDefaults())
+    XCTAssertEqual(candidates.first, "/tmp/env-direct.sock")
+  }
 }
