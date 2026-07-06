@@ -32,6 +32,12 @@ let package = Package(
     .executable(name: "labpty-dump", targets: ["LabptyDump"]),
     .executable(name: "bench-labpty-hot-path", targets: ["BenchLabptyHotPath"]),
   ],
+  dependencies: [
+    .package(
+      url: "https://github.com/apple/swift-profile-recorder.git",
+      .upToNextMinor(from: "0.3.18")
+    ),
+  ],
   targets: [
     .target(
       name: "LabanTerminalCore",
@@ -73,7 +79,10 @@ let package = Package(
     ),
     .executableTarget(
       name: "LabanApp",
-      dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore", "LabanControl"],
+      dependencies: [
+        "LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore", "LabanControl",
+        .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
+      ],
       resources: [.copy("Resources/AppIcon.icns")],
       swiftSettings: _releaseExclusivity
     ),

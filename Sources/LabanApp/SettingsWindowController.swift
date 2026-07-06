@@ -64,6 +64,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     title: "Test Native Notification", target: nil, action: nil)
   private let blinkCheckbox = NSButton(
     checkboxWithTitle: "Blink cursor", target: nil, action: nil)
+  private let profileRecorderCheckbox = NSButton(
+    checkboxWithTitle: "Enable sampling profiler (applies on next launch)", target: nil, action: nil)
 
   /// Theme index (into `themeController.orderedThemes`) behind each popup row,
   /// or -1 for the dark/light separator. Maps a popup selection back to a theme.
@@ -234,6 +236,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     blinkCheckbox.target = self
     blinkCheckbox.action = #selector(blinkChanged(_:))
 
+    profileRecorderCheckbox.target = self
+    profileRecorderCheckbox.action = #selector(profileRecorderChanged(_:))
+    profileRecorderCheckbox.toolTip =
+      "Starts an in-process sampling profiler on the next launch. When enabled, "
+      + "capture profiles with curl against the UNIX socket under /tmp."
+
     scrollModePopUp.target = self
     scrollModePopUp.action = #selector(scrollModeChanged(_:))
     for option in scrollModeOptions {
@@ -331,6 +339,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel("Unicode width:"), graphemeWidthPopUp],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
+      [NSGridCell.emptyContentView, profileRecorderCheckbox],
       [makeLabel("Identity:"), identityPopUp],
       [NSGridCell.emptyContentView, optionAsMetaCheckbox],
     ])
@@ -546,6 +555,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       backendPopUp.selectItem(at: row)
     }
     restoreCheckbox.state = RestoreOnLaunchSettings.isEnabled ? .on : .off
+    profileRecorderCheckbox.state = ProfileRecorderSettings.persisted() ? .on : .off
     if let row = identityOptions.firstIndex(of: TerminalIdentitySettings.identity()) {
       identityPopUp.selectItem(at: row)
     }
@@ -641,6 +651,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   @objc private func restoreChanged(_ sender: NSButton) {
     RestoreOnLaunchSettings.set(sender.state == .on)
+  }
+
+  @objc private func profileRecorderChanged(_ sender: NSButton) {
+    ProfileRecorderSettings.set(sender.state == .on)
   }
 
   @objc private func identityChanged(_ sender: NSPopUpButton) {
