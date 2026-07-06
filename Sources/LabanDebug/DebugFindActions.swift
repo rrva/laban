@@ -60,8 +60,7 @@ struct DebugFindActions {
   }
 
   private func state(sessionId: Session.ID) -> DebugResponse {
-    jsonEncode(
-      HeadlessDebugRuntime.findStateResponse(runtime.model.findState(forSession: sessionId)))
+    jsonEncode(ControlStateProjections.findStateResponse(runtime.model.findState(forSession: sessionId)))
   }
 
   private func targetSessionId(_ requested: String?) -> Session.ID? {

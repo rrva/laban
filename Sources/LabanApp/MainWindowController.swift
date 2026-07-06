@@ -38,6 +38,9 @@ final class MainWindowController: NSWindowController {
   private lazy var vectorTextRasterizer: VectorTextRasterizer? = VectorTextRasterizer()
   /// Env-gated Phase 0 loopback control server for live GUI state/actions.
   private(set) var controlServer: LabanControlServer?
+  private(set) var controlSecurityCoordinator: ControlSecurityCoordinator?
+  private(set) var controlSessionLaunchCoordinator = ControlSessionLaunchCoordinator()
+  private var liveControlRouter: LiveIntentRouter?
 
   func accessibilityDebugState() -> [String: Any]? {
     terminalView?.debugAccessibilityState()
@@ -104,22 +107,50 @@ final class MainWindowController: NSWindowController {
       shellLaunch: shellLaunch,
       cwdByTabId: restoredCwdByTabId)
 
+    let launchCoordinator = ControlSessionLaunchCoordinator()
+    let liveRouter = LiveIntentRouter(
+      model: nil,
+      proposalPresenter: CommandProposalReviewPresenter.shared)
+    var bootstrappedControl: (server: LabanControlServer, security: ControlSecurityCoordinator)?
+    if Self.shouldMountControlServer() {
+      bootstrappedControl = try Self.bootstrapControlServer(
+        router: liveRouter,
+        launchCoordinator: launchCoordinator)
+    }
+
     let model = try AppModel(
       initialSize: size,
-      sessionFactory: {
+      sessionLaunchContextProvider: { tabId, isAgentAttached in
+        launchCoordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+      },
+      sessionFactory: { size, context in
         switch terminalBackend {
         case .inProcess:
+          let launch = spawnLaunch()
+          let env = Self.mergeLaunchEnvironment(launch.environmentOverrides, context: context)
           return try Session.realShell(
-            size: $0,
-            environment: spawnLaunch().environmentOverrides,
-            launchArgv: shellLaunch.argv)
+            size: size,
+            environment: env,
+            launchArgv: shellLaunch.argv,
+            sessionID: context.sessionID)
         case .laband:
-          return try Session.fixture(size: $0)
+          return try Session.fixture(size: size, sessionID: context.sessionID)
         case .labpty:
-          return try Session.parserOnly(size: $0)
+          return try Session.parserOnly(size: size, sessionID: context.sessionID)
         }
       }
     )
+    liveRouter.bindModel(model)
+    let controlLaunchCoordinator = launchCoordinator
+    let priorTabCreated = model.onTabCreated
+    model.onTabCreated = { tabId, session in
+      priorTabCreated?(tabId, session)
+      if let childPid = session.processMetadata()?.childPid {
+        controlLaunchCoordinator.noteSessionShellStarted(
+          sessionID: session.id,
+          shellPID: pid_t(childPid))
+      }
+    }
     let isPersistenceEnabled = {
       persistenceSyncEnabled && RestoreOnLaunchSettings.isEnabled
     }
@@ -150,8 +181,15 @@ final class MainWindowController: NSWindowController {
       if terminalBackend == .laband || terminalBackend == .labpty {
         return try Session.fixture(size: spec.size)
       }
+      let context = launchCoordinator.prepareLaunch(tabID: spec.tabId, isAgentAttached: false)
+      let env = Self.mergeLaunchEnvironment(
+        spawnLaunch().environmentOverrides,
+        context: context)
       let session = try Session.makeDeferred(
-        size: spec.size, cwd: spec.cwd, environment: spawnLaunch().environmentOverrides)
+        size: spec.size,
+        cwd: spec.cwd,
+        environment: env,
+        sessionID: context.sessionID)
       // Agent tabs that were running at quit launch the shell with the
       // resume command as its own argument (`$SHELL -l -i -c '<resume>;
       // exec $SHELL -l -i'`) instead of typing it into a live prompt. The
@@ -186,15 +224,20 @@ final class MainWindowController: NSWindowController {
     }
     // Simple fallback for restored tabs that don't have a deferred
     // factory (used by headless tests that swap the factory out).
-    model.restoredSessionFactory = { size, cwd in
+    model.restoredSessionFactory = { size, cwd, context in
       switch terminalBackend {
       case .laband, .labpty:
-        return try Session.parserOnly(size: size)
+        return try Session.parserOnly(size: size, sessionID: context.sessionID)
       case .inProcess:
+        let env = Self.mergeLaunchEnvironment(
+          spawnLaunch().environmentOverrides,
+          context: context)
         return try Session.realShell(
-          size: size, cwd: cwd,
-          environment: spawnLaunch().environmentOverrides,
-          launchArgv: shellLaunch.argv)
+          size: size,
+          cwd: cwd,
+          environment: env,
+          launchArgv: shellLaunch.argv,
+          sessionID: context.sessionID)
       }
     }
 
@@ -202,15 +245,20 @@ final class MainWindowController: NSWindowController {
     // OSC 7 / metadata cwd, or its live process cwd — so a new tab lands where
     // you are instead of at the launcher's directory. Same spawn shape as the
     // restore factory; the cwd is meaningful only for the in-process backend.
-    model.newTabSessionFactory = { size, cwd in
+    model.newTabSessionFactory = { size, cwd, context in
       switch terminalBackend {
       case .laband, .labpty:
-        return try Session.parserOnly(size: size)
+        return try Session.parserOnly(size: size, sessionID: context.sessionID)
       case .inProcess:
+        let env = Self.mergeLaunchEnvironment(
+          spawnLaunch().environmentOverrides,
+          context: context)
         return try Session.realShell(
-          size: size, cwd: cwd,
-          environment: spawnLaunch().environmentOverrides,
-          launchArgv: shellLaunch.argv)
+          size: size,
+          cwd: cwd,
+          environment: env,
+          launchArgv: shellLaunch.argv,
+          sessionID: context.sessionID)
       }
     }
 
@@ -218,21 +266,27 @@ final class MainWindowController: NSWindowController {
     // instead of the login shell. In-process spawns it directly; the daemon
     // backends use a parser-only local session and launch argv daemon-side —
     // the coordinator reads it via `argvProvider`, wired just below.
-    model.commandSessionFactory = { size, cwd, argv in
+    model.commandSessionFactory = { size, cwd, argv, context in
       switch terminalBackend {
       case .laband, .labpty:
-        return try Session.parserOnly(size: size)
+        return try Session.parserOnly(size: size, sessionID: context.sessionID)
       case .inProcess:
+        let env = Self.mergeLaunchEnvironment(
+          spawnLaunch().environmentOverrides,
+          context: context)
         if let cwd {
           return try Session.realShell(
-            size: size, cwd: cwd,
-            environment: spawnLaunch().environmentOverrides,
-            launchArgv: argv)
+            size: size,
+            cwd: cwd,
+            environment: env,
+            launchArgv: argv,
+            sessionID: context.sessionID)
         }
         return try Session.realShell(
           size: size,
-          environment: spawnLaunch().environmentOverrides,
-          launchArgv: argv)
+          environment: env,
+          launchArgv: argv,
+          sessionID: context.sessionID)
       }
     }
     sessionCoordinator?.argvProvider = { [weak model] tabId in
@@ -399,10 +453,18 @@ final class MainWindowController: NSWindowController {
     window.addTitlebarAccessoryViewController(accessory)
 
     let controller = MainWindowController(window: window)
+    controller.controlSessionLaunchCoordinator = launchCoordinator
+    controller.liveControlRouter = liveRouter
+    if let bootstrappedControl {
+      controller.controlServer = bootstrappedControl.server
+      controller.controlSecurityCoordinator = ControlSecurityCoordinator(indicatorHost: termView)
+      bootstrappedControl.server.setSecurityObserver(controller.controlSecurityCoordinator)
+    }
     controller.model = model
     controller.terminalView = termView
     controller.scrollIndicator = scrollIndicator
     controller.syncPillTextSourceToRenderer()
+    controller.refreshLiveControlEnvironment()
     controller.terminalBackend = terminalBackend
     controller.terminalSessionClient =
       sessionCoordinator?.terminalClient
@@ -537,32 +599,145 @@ final class MainWindowController: NSWindowController {
       controller.scrollDebugServer = server
     }
 
-    // The GUI control server is a DEBUG-only opt-in. Phase 1's surface has no
-    // capability enforcement and a single same-user-readable token in control.json,
-    // so it must never be reachable from a shipped (release) build. The hardened
-    // Phase 2 floor is required before this can ship enabled. Release builds compile
-    // this out entirely; the headless `laban-agent` harness is unaffected.
-    #if DEBUG
-      if ProcessInfo.processInfo.environment["LABAN_CONTROL_SERVER"] == "1" {
-        do {
-          let router = LiveIntentRouter(model: model)
-          let server = LabanControlServer(router: router, surface: .gui)
-          let info = try server.start()
-          try ControlAdvertisement.write(
-            url: info.url,
-            token: info.token,
-            pid: ProcessInfo.processInfo.processIdentifier,
-            runId: ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
-              ?? "gui-\(ProcessInfo.processInfo.processIdentifier)")
-          controller.controlServer = server
-          AppLog.app.info("control server: \(info.url)")
-        } catch {
-          AppLog.app.error("control server failed: \(String(describing: error))")
-        }
-      }
-    #endif
+    // Observe-on-by-default (2F): starts unless the Settings master toggle or
+    // `LABAN_CONTROL_SERVER=0` force-disables it. Bound early so the first
+    // session inherits `LABAN_CONTROL_URL` when the listener is up.
+    if bootstrappedControl == nil, Self.shouldMountControlServer() {
+      controller.startControlServer(model: model, router: liveRouter)
+    }
 
     return controller
+  }
+
+  private static func mergeLaunchEnvironment(
+    _ base: [String: String],
+    context: SessionLaunchContext
+  ) -> [String: String] {
+    var env = base
+    for (key, value) in context.environmentOverrides {
+      env[key] = value
+    }
+    return env
+  }
+
+  static func bootstrapControlServer(
+    router: IntentRouter,
+    launchCoordinator: ControlSessionLaunchCoordinator
+  ) throws -> (server: LabanControlServer, security: ControlSecurityCoordinator) {
+    let security = ControlSecurityCoordinator(indicatorHost: nil)
+    let server = LabanControlServer(
+      router: router,
+      surface: .gui,
+      securityObserver: security)
+    let info = try server.start()
+    try ControlAdvertisement.write(
+      url: info.socketPath,
+      token: info.appObserveToken,
+      pid: ProcessInfo.processInfo.processIdentifier,
+      runId: ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
+        ?? "gui-\(ProcessInfo.processInfo.processIdentifier)")
+    launchCoordinator.noteControlServerStarted(server, socketPath: info.socketPath)
+    AppLog.app.info("control server: \(info.socketPath)")
+    return (server, security)
+  }
+
+  /// True when the GUI control server should bind on this launch.
+  static func shouldMountControlServer() -> Bool {
+    guard ControlServerSettings.isEnabled else { return false }
+    if ProcessInfo.processInfo.environment[ControlEnvironmentKeys.controlServerForceDisable] == "0" {
+      return false
+    }
+    return true
+  }
+
+  func startControlServer(model: AppModel?, router: LiveIntentRouter? = nil) {
+    guard controlServer == nil else { return }
+    guard Self.shouldMountControlServer() else { return }
+    do {
+      let security = ControlSecurityCoordinator(indicatorHost: terminalView)
+      controlSecurityCoordinator = security
+      let liveRouter = router ?? liveControlRouter
+        ?? LiveIntentRouter(
+          model: model,
+          proposalPresenter: CommandProposalReviewPresenter.shared)
+      if let model {
+        liveRouter.bindModel(model)
+      }
+      self.liveControlRouter = liveRouter
+      let server = LabanControlServer(
+        router: liveRouter,
+        surface: .gui,
+        securityObserver: security)
+      let info = try server.start()
+      try ControlAdvertisement.write(
+        url: info.socketPath,
+        token: info.appObserveToken,
+        pid: ProcessInfo.processInfo.processIdentifier,
+        runId: ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
+          ?? "gui-\(ProcessInfo.processInfo.processIdentifier)")
+      controlServer = server
+      controlSessionLaunchCoordinator.noteControlServerStarted(server, socketPath: info.socketPath)
+      AppLog.app.info("control server: \(info.socketPath)")
+    } catch {
+      controlSecurityCoordinator = nil
+      AppLog.app.error("control server failed: \(String(describing: error))")
+    }
+  }
+
+  func stopControlServer() {
+    controlServer?.stop()
+    controlServer = nil
+    controlSecurityCoordinator = nil
+    controlSessionLaunchCoordinator.noteControlServerStopped()
+    ControlAdvertisement.remove()
+    terminalView?.setAgentAttachedIndicatorActive(false)
+  }
+
+  /// Runtime disable: persist the master toggle off, tear down the listener,
+  /// and remove the on-disk advertisement file.
+  func disableControlServer() {
+    ControlServerSettings.set(false)
+    stopControlServer()
+  }
+
+  func refreshLiveControlEnvironment() {
+    guard let model, let termView = terminalView else { return }
+    let opts = termView.accessibilityDisplayOptionsForTesting
+    liveControlRouter?.updateEnvironment(
+      LiveControlEnvironment(
+        cellWidth: termView.cellWidth,
+        cellHeight: termView.cellHeight,
+        sidebarWidth: Int(SidebarLayout.defaultWidth),
+        frame: 0,
+        windowWidth: max(1, Int(termView.bounds.width)),
+        windowHeight: max(1, Int(termView.bounds.height)),
+        transportMode: "inProcess",
+        accessibilityDisplayFlags: AccessibilityDisplayFlagsResponse(
+          increaseContrast: opts.increaseContrast,
+          differentiateWithoutColor: opts.differentiateWithoutColor,
+          reduceTransparency: opts.reduceTransparency),
+        selectionProvider: { _ in nil },
+        accessibilityValueProvider: { tab in
+          guard let session = model.session(forTab: tab.id), let snap = session.snapshot() else {
+            return ""
+          }
+          defer { laban_snapshot_destroy(snap) }
+          return TerminalSnapshotText.visibleText(
+            from: UnsafePointer(snap),
+            mode: .trimmedNonEmptyRows)
+        },
+        sessionClientInfoById: [:]))
+  }
+
+  func applyControlServerEnabled(_ enabled: Bool) {
+    ControlServerSettings.set(enabled)
+    if enabled {
+      if Self.shouldMountControlServer() {
+        startControlServer(model: model, router: liveControlRouter)
+      }
+    } else {
+      stopControlServer()
+    }
   }
 
   var currentRendererSelection: RendererSelection {

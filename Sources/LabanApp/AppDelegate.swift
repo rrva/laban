@@ -26,7 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     backend: terminalBackendMenuController,
     onChangeFont: { [weak self] in self?.showFontPicker(nil) },
     onChangeCJKFont: { [weak self] in self?.showCJKFontPicker(nil) },
-    onTestNotification: { [weak self] in self?.postSettingsTestNotification() }
+    onTestNotification: { [weak self] in self?.postSettingsTestNotification() },
+    onControlServerEnabledChanged: { [weak self] enabled in
+      self?.windowController?.applyControlServerEnabled(enabled)
+    }
   )
   private var updateCheckInFlight = false
   private static let secureKeyboardEntryDefaultsKey = "LabanSecureKeyboardEntry"
@@ -269,6 +272,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     if item.action == #selector(exportProfileSession(_:)) {
       return ProfileSessionRecorder.shared.hasExportableData
     }
+    if item.action == #selector(disableAgentControlServer(_:)) {
+      return windowController?.controlServer != nil
+    }
     return true
   }
 
@@ -486,6 +492,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
 
   @objc func sendDiagnostics(_ sender: Any?) {
     SendDiagnostics.run()
+  }
+
+  @objc func disableAgentControlServer(_ sender: Any?) {
+    windowController?.disableControlServer()
+    EventLog.shared.log("control.server.disabled")
   }
 
   @objc func dumpTabJournal(_ sender: Any?) {

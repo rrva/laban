@@ -29,6 +29,7 @@ enum DebugAction: Decodable {
   case paste
   case dropFiles(DropFilesActionRequest)
   case scrollViewport(ScrollViewportActionRequest)
+  case propose(CommandProposeRequest)
   case mouseWheel(MouseWheelActionRequest)
   case mouseDrag(MouseDragActionRequest)
   case click(ClickActionRequest)
@@ -94,6 +95,8 @@ enum DebugAction: Decodable {
       self = .dropFiles(try DropFilesActionRequest(from: decoder))
     case "scrollViewport":
       self = .scrollViewport(try ScrollViewportActionRequest(from: decoder))
+    case "propose":
+      self = .propose(try CommandProposeRequest(from: decoder))
     case "mouseWheel":
       self = .mouseWheel(try MouseWheelActionRequest(from: decoder))
     case "mouseDrag":
@@ -163,6 +166,8 @@ extension DebugAction {
       return legacyIntent(action: "dropFiles")
     case .scrollViewport:
       return legacyIntent(action: "scrollViewport")
+    case .propose:
+      return legacyIntent(action: "propose")
     case .mouseWheel:
       return legacyIntent(action: "mouseWheel")
     case .mouseDrag:

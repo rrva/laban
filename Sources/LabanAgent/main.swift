@@ -111,11 +111,11 @@ func usage() -> String {
 
   Discoverability:
     The debug server prints one readiness JSON line:
-      {"debugServer":"http://127.0.0.1:<port>","debugToken":"...","pid":12345,"runId":"..."}
+      {"debugServer":"/path/to/control.sock","debugToken":"...","pid":12345,"runId":"..."}
 
-    Export that URL as DEBUG_URL and the token as DEBUG_TOKEN, then ask the live server what it supports:
-      curl -H "Authorization: Bearer $DEBUG_TOKEN" "$DEBUG_URL/debug" | jq
-      curl -H "Authorization: Bearer $DEBUG_TOKEN" "$DEBUG_URL/debug/capabilities" | jq
+    Export the socket path as DEBUG_URL and the token as DEBUG_TOKEN, then ask the live server what it supports:
+      curl --unix-socket "$DEBUG_URL" -H "Authorization: Bearer $DEBUG_TOKEN" http://localhost/debug | jq
+      curl --unix-socket "$DEBUG_URL" -H "Authorization: Bearer $DEBUG_TOKEN" http://localhost/debug/capabilities | jq
 
     Useful starting points:
       GET  /debug/health
@@ -248,6 +248,14 @@ if let debugAddr = args.debugServerAddress {
   } catch {
     fail("invalid --debug-server address '\(debugAddr)': \(error)")
   }
+  _ = serverAddress
+
+  let socketPath: String
+  if let tempURL {
+    socketPath = tempURL.appendingPathComponent("control.sock").path
+  } else {
+    socketPath = artifactsURL.appendingPathComponent("control.sock").path
+  }
 
   let runtime: HeadlessDebugRuntime
   do {
@@ -278,7 +286,7 @@ if let debugAddr = args.debugServerAddress {
     readinessRunID: runtime.runId)
   let readiness: ControlReadiness
   do {
-    readiness = try server.start(host: serverAddress.host, port: serverAddress.port)
+    readiness = try server.start(socketPath: socketPath)
   } catch {
     fail("failed to start debug server: \(error)")
   }

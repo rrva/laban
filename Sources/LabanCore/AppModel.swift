@@ -31,7 +31,9 @@ public final class AppModel {
   private var pendingFindRescanSessions: Set<Session.ID> = []
   private let metadataSync = TabMetadataSynchronizer()
   private var currentSize: LabanTerminalSize
-  private let sessionFactory: (LabanTerminalSize) throws -> Session
+  private let sessionFactory: (LabanTerminalSize, SessionLaunchContext) throws -> Session
+  /// Supplies preallocated session identity and control env before each spawn (C11).
+  public var sessionLaunchContextProvider: ((Tab.ID?, Bool) -> SessionLaunchContext)?
 
   /// Current grid size in cells (cols, rows). Read under the model
   /// lock so callers see a stable size even mid-resize.
@@ -178,7 +180,7 @@ public final class AppModel {
   /// otherwise ignored — useful for headless tests where every session
   /// is a fixture. Production wires this to a wrapper around
   /// `Session.realShell(size:, cwd:)`.
-  public var restoredSessionFactory: ((LabanTerminalSize, String) throws -> Session)?
+  public var restoredSessionFactory: ((LabanTerminalSize, String, SessionLaunchContext) throws -> Session)?
 
   /// Factory for a brand-new (⌘T) tab spawned in an explicit cwd — the active
   /// tab's working directory — so a new tab opens where you currently are
@@ -188,7 +190,7 @@ public final class AppModel {
   /// longer exists, `createTab` falls back to the default `sessionFactory`
   /// (the prior behavior). Production wires this to `Session.realShell(size:,
   /// cwd:)`; headless tests leave it nil unless exercising inheritance.
-  public var newTabSessionFactory: ((LabanTerminalSize, String) throws -> Session)?
+  public var newTabSessionFactory: ((LabanTerminalSize, String, SessionLaunchContext) throws -> Session)?
 
   /// Factory for a tab that runs a caller-supplied argv (argv[0] is the
   /// executable) instead of the login shell — the "run argv in a new tab"
@@ -198,7 +200,7 @@ public final class AppModel {
   /// for the daemon backends the returned session is parser-only and the
   /// daemon launches `argv`, which it reads back via `launchArgv(forTab:)`.
   /// When nil, `createTab(runningArgv:)` falls back to the default factory.
-  public var commandSessionFactory: ((LabanTerminalSize, String?, [String]) throws -> Session)?
+  public var commandSessionFactory: ((LabanTerminalSize, String?, [String], SessionLaunchContext) throws -> Session)?
 
   /// Richer restore-time factory. When set, takes precedence over
   /// `restoredSessionFactory`. The spec carries enough state for the
@@ -280,13 +282,16 @@ public final class AppModel {
 
   public init(
     initialSize: LabanTerminalSize = defaultSize(),
-    sessionFactory: @escaping (LabanTerminalSize) throws -> Session = { size in
-      try Session.fixture(size: size)
+    sessionLaunchContextProvider: ((Tab.ID?, Bool) -> SessionLaunchContext)? = nil,
+    sessionFactory: @escaping (LabanTerminalSize, SessionLaunchContext) throws -> Session = { size, context in
+      try Session.fixture(size: size, sessionID: context.sessionID)
     }
   ) throws {
     self.currentSize = initialSize
+    self.sessionLaunchContextProvider = sessionLaunchContextProvider
     self.sessionFactory = sessionFactory
-    let session = try sessionFactory(initialSize)
+    let initialContext = sessionLaunchContextProvider?(nil, false) ?? .fresh()
+    let session = try sessionFactory(initialSize, initialContext)
     AppModel.maybeAutoCapture(session)
     ThemePaletteInjector.injectCurrentTheme(into: session)
     let tab = Tab(
@@ -315,6 +320,16 @@ public final class AppModel {
         }
       }
     }
+  }
+
+  /// Backward-compatible factory that ignores launch context (tests and tools).
+  public convenience init(
+    initialSize: LabanTerminalSize = defaultSize(),
+    sessionFactory: @escaping (LabanTerminalSize) throws -> Session
+  ) throws {
+    try self.init(
+      initialSize: initialSize,
+      sessionFactory: { size, _ in try sessionFactory(size) })
   }
 
   deinit {
@@ -605,22 +620,56 @@ public final class AppModel {
   public func createTab() throws -> Tab {
     let (tab, session) = try withModelLock {
       () -> (Tab, Session) in
+      let tabId = UUID().uuidString
+      let launchContext = self.launchContext(tabId: tabId, isAgentAttached: false)
       // A new tab opens in the active tab's working directory when one is known
       // and a cwd-aware factory is wired; otherwise spawn at the default
       // location, exactly as before. `selectTabUnlocked` below moves activeness
       // to the new tab, so resolve the inherited cwd here, first.
       let session: Session
       if let inherited = resolveInheritedCwdUnlocked(), let factory = newTabSessionFactory {
-        session = try factory(currentSize, resolveRestoredCwd(inherited).cwd)
+        session = try factory(currentSize, resolveRestoredCwd(inherited).cwd, launchContext)
       } else {
-        session = try sessionFactory(currentSize)
+        session = try sessionFactory(currentSize, launchContext)
       }
       session.captureSink = captureSink
       AppModel.maybeAutoCapture(session)
       ThemePaletteInjector.injectCurrentTheme(into: session)
       let position = _tabs.count + 1
       let tab = Tab(
-        id: UUID().uuidString,
+        id: tabId,
+        position: position,
+        title: "Tab \(position)",
+        isActive: false,
+        sessionId: session.id
+      )
+      sessionRegistry.add(session)
+      _tabs.append(tab)
+      attachSessionCallbacks(session: session, tabId: tab.id)
+      recordSessionCreated(sessionId: session.id, tabId: tab.id)
+      recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
+      selectTabUnlocked(tab.id)
+      return (_tabs.last!, session)
+    }
+    transcriptDelegate?.attachTranscriptWriter(to: session, tabId: tab.id)
+    onTabCreated?(tab.id, session)
+    notifyWorkspaceMutation()
+    return tab
+  }
+
+  @discardableResult
+  public func createAgentAttachedTab() throws -> Tab {
+    let (tab, session) = try withModelLock {
+      () -> (Tab, Session) in
+      let tabId = UUID().uuidString
+      let launchContext = self.launchContext(tabId: tabId, isAgentAttached: true)
+      let session = try sessionFactory(currentSize, launchContext)
+      session.captureSink = captureSink
+      AppModel.maybeAutoCapture(session)
+      ThemePaletteInjector.injectCurrentTheme(into: session)
+      let position = _tabs.count + 1
+      let tab = Tab(
+        id: tabId,
         position: position,
         title: "Tab \(position)",
         isActive: false,
@@ -650,20 +699,22 @@ public final class AppModel {
   @discardableResult
   public func createTab(runningArgv argv: [String], cwd: String? = nil) throws -> Tab {
     let (tab, session) = try withModelLock { () -> (Tab, Session) in
+      let tabId = UUID().uuidString
+      let launchContext = self.launchContext(tabId: tabId, isAgentAttached: false)
       let session: Session
       if !argv.isEmpty, let factory = commandSessionFactory {
-        session = try factory(currentSize, cwd, argv)
+        session = try factory(currentSize, cwd, argv, launchContext)
       } else if let cwd, let factory = newTabSessionFactory {
-        session = try factory(currentSize, cwd)
+        session = try factory(currentSize, cwd, launchContext)
       } else {
-        session = try sessionFactory(currentSize)
+        session = try sessionFactory(currentSize, launchContext)
       }
       session.captureSink = captureSink
       AppModel.maybeAutoCapture(session)
       ThemePaletteInjector.injectCurrentTheme(into: session)
       let position = _tabs.count + 1
       let tab = Tab(
-        id: UUID().uuidString,
+        id: tabId,
         position: position,
         title: "Tab \(position)",
         isActive: false,
@@ -779,6 +830,7 @@ public final class AppModel {
     let resolved = resolveRestoredCwd(persistedTab.cwd)
     let (tab, session) = try withModelLock {
       () -> (Tab, Session) in
+      let launchContext = self.launchContext(tabId: id, isAgentAttached: false)
       let session: Session
       if let deferredFactory = restoredDeferredSessionFactory {
         let spec = RestoredSessionSpec(
@@ -793,9 +845,9 @@ public final class AppModel {
         )
         session = try deferredFactory(spec)
       } else if let factory = restoredSessionFactory {
-        session = try factory(currentSize, resolved.cwd)
+        session = try factory(currentSize, resolved.cwd, launchContext)
       } else {
-        session = try sessionFactory(currentSize)
+        session = try sessionFactory(currentSize, launchContext)
       }
       session.captureSink = captureSink
       AppModel.maybeAutoCapture(session)
@@ -1793,6 +1845,11 @@ public final class AppModel {
 
   private static func clampedTerminalMetric(_ value: Int, minimum: Int = 0) -> Int32 {
     Int32(max(minimum, min(value, Int(Int32.max))))
+  }
+
+  private func launchContext(tabId: Tab.ID? = nil, isAgentAttached: Bool = false) -> SessionLaunchContext {
+    sessionLaunchContextProvider?(tabId, isAgentAttached)
+      ?? .fresh(tabID: tabId, isAgentAttached: isAgentAttached)
   }
 
   private func attachSessionCallbacks(session: Session, tabId: Tab.ID) {

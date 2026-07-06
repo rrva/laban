@@ -1,4 +1,5 @@
 import CoreGraphics
+import LabanCore
 import LabanRenderer
 
 struct DebugFrameCommandSerializer {
@@ -124,18 +125,10 @@ struct DebugFrameCommandSerializer {
   }
 
   static func rgbaArray(_ color: UInt32) -> [Int] {
-    [
-      Int((color >> 24) & 0xFF),
-      Int((color >> 16) & 0xFF),
-      Int((color >> 8) & 0xFF),
-      Int(color & 0xFF),
-    ]
+    ControlGridProjection.rgbaArray(color)
   }
 
   static func rectResponse(_ rect: CGRect) -> RectResponse {
-    RectResponse(
-      x: Int(rect.origin.x), y: Int(rect.origin.y),
-      width: Int(rect.size.width), height: Int(rect.size.height)
-    )
+    ControlGridProjection.rectResponse(rect)
   }
 }

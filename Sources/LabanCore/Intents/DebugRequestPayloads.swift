@@ -60,6 +60,7 @@ public enum DebugActionIntentID {
     "paste",
     "dropFiles",
     "scrollViewport",
+    "propose",
     "mouseWheel",
     "mouseDrag",
     "click",
@@ -94,6 +95,7 @@ public enum DebugActionIntentID {
     case "paste": return "clipboard.paste"
     case "dropFiles": return "terminal.dropFiles"
     case "scrollViewport": return "terminal.scrollViewport"
+    case "propose": return "command.propose"
     case "mouseWheel": return "terminal.mouseWheel"
     case "mouseDrag": return "terminal.mouseDrag"
     case "click": return "terminal.click"
@@ -108,11 +110,19 @@ public struct LegacyDebugActionInput: Codable, Sendable, Equatable, JSONSchemaPr
   public var intentID: String
   public var action: String
   public var body: Data
+  /// When set, session-scoped actions default their target to this session (C12).
+  public var scopedSessionID: String?
 
-  public init(intentID: String, action: String, body: Data = Data()) {
+  public init(
+    intentID: String,
+    action: String,
+    body: Data = Data(),
+    scopedSessionID: String? = nil
+  ) {
     self.intentID = intentID
     self.action = action
     self.body = body
+    self.scopedSessionID = scopedSessionID
   }
 
   public static var jsonSchema: SchemaNode {
@@ -128,10 +138,13 @@ public struct LegacyDebugActionInput: Codable, Sendable, Equatable, JSONSchemaPr
 public struct LegacyDebugQueryInput: Codable, Sendable, Equatable, JSONSchemaProviding {
   public var intentID: String
   public var params: [String: String]
+  /// When set, whole-app reads are filtered to this session (session-observe token scope).
+  public var scopedSessionID: String?
 
-  public init(intentID: String, params: [String: String] = [:]) {
+  public init(intentID: String, params: [String: String] = [:], scopedSessionID: String? = nil) {
     self.intentID = intentID
     self.params = params
+    self.scopedSessionID = scopedSessionID
   }
 
   public static var jsonSchema: SchemaNode {
@@ -147,11 +160,19 @@ public struct LegacyDebugControlInput: Codable, Sendable, Equatable, JSONSchemaP
   public var intentID: String
   public var body: Data
   public var params: [String: String]
+  /// When set, session-scoped controls default their target to this session (C12).
+  public var scopedSessionID: String?
 
-  public init(intentID: String, body: Data = Data(), params: [String: String] = [:]) {
+  public init(
+    intentID: String,
+    body: Data = Data(),
+    params: [String: String] = [:],
+    scopedSessionID: String? = nil
+  ) {
     self.intentID = intentID
     self.body = body
     self.params = params
+    self.scopedSessionID = scopedSessionID
   }
 
   public static var jsonSchema: SchemaNode {
@@ -173,6 +194,47 @@ public struct UnsupportedDebugActionInput: Codable, Sendable, Equatable, JSONSch
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object(["action": DebugPayloadSchema.string], required: ["action"])
+  }
+}
+
+public struct CommandProposeRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var action: String?
+  public var targetSessionID: String?
+  public var targetSessionId: String?
+  public var command: String?
+  public var purpose: String?
+
+  public init(
+    action: String? = "propose",
+    targetSessionID: String? = nil,
+    targetSessionId: String? = nil,
+    command: String? = nil,
+    purpose: String? = nil
+  ) {
+    self.action = action
+    self.targetSessionID = targetSessionID
+    self.targetSessionId = targetSessionId
+    self.command = command
+    self.purpose = purpose
+  }
+
+  public func resolvedTargetSessionID(fallback: String?) -> String? {
+    if let targetSessionID, !targetSessionID.isEmpty { return targetSessionID }
+    if let targetSessionId, !targetSessionId.isEmpty { return targetSessionId }
+    return fallback
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": DebugPayloadSchema.string,
+        "command": DebugPayloadSchema.string,
+        "purpose": DebugPayloadSchema.string,
+        "targetSessionID": DebugPayloadSchema.string,
+        "targetSessionId": DebugPayloadSchema.string,
+      ],
+      required: ["action", "command"],
+      additionalProperties: false)
   }
 }
 

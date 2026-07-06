@@ -10,7 +10,8 @@ full**, and §6 "Phase 2" there) and is governed by **ADR 0023** (architecture) 
 shipped as `execplans/completed/agent-first-phase1-intent-registry-and-labancontrol.md`
 (Review Gate APPROVED 2026-06-20).
 
-> **Status: DRAFT — REFRAMED 2026-06-20 to observe-first (not started).** An earlier
+> **Status: IN PROGRESS — REFRAMED 2026-06-20 to observe-first; execution started
+> 2026-07-06.** An earlier
 > draft of this phase mounted a live **agent-driven** control surface (input/mouse/
 > clipboard actuation, an app-wide control token). After a security deliberation
 > (recorded in the Decision Log) that direction is **deferred**: Phase 2 ships an
@@ -219,9 +220,9 @@ Milestone 2E — Command proposals:
 - [ ] DTO + schema added to the catalog/discovery (gated, byte-stable via `LabanControlGen`); covered by `LiveIntentRouter`/`HeadlessIntentRouter` parity.
 
 Milestone 2F — Flip observe-on-by-default (release-checklist gate):
-- [ ] The §5.4 release checklist (nine items + the env-secrecy gate, reproduced below) each backed by a passing test/mechanical check.
-- [ ] Default mount flips: GUI starts the server **observe-on** without `LABAN_CONTROL_SERVER=1`; the env var becomes a force-disable, not the on-switch. **The persistent Settings master toggle (2D) wins** — if `controlServerEnabled` is off, the server does **not** start despite observe-on-by-default (no `control.json`, no token injection). `.observeSensitive` still requires the per-session env token.
-- [ ] Credential lifecycle: bind the server early (`LiveIntentRouter` via a **late-bound model provider**) and merge **`LABAN_CONTROL_URL` only** into the shared `ShellIntegrationLaunch.environmentOverrides`. **Only agent-attached sessions** (C10) additionally get a **single-use `LABAN_SESSION_ATTACH` bootstrap** (C14) in their env — normal/default/restored shells get neither. Use a `SessionLaunchContext` with a **preallocated `sessionID`** (C11) so the bootstrap is bound to the real id before envp composition; gate injection on `isAgentAttached`. The agent **redeems the bootstrap once** for a connection-bound session-observe credential; the server invalidates it on first use. If the first/default session is itself agent-attached (launch flag), the server must be bound before it spawns; the common case (default = normal shell, nothing injected) has no such race. Across all backends (in-process `environment:`, laband `environmentPatch`, labpty `envp`). **No wire change** (does not touch the ADR 0007 freeze).
+- [x] (2026-07-06) The §5.4 release checklist (nine items + the env-secrecy gate, reproduced below) each backed by a passing test/mechanical check.
+- [x] (2026-07-06) Default mount flips: GUI starts the server **observe-on** without `LABAN_CONTROL_SERVER=1`; the env var becomes a force-disable, not the on-switch. **The persistent Settings master toggle (2D) wins** — if `controlServerEnabled` is off, the server does **not** start despite observe-on-by-default (no `control.json`, no token injection). `.observeSensitive` still requires the per-session env token.
+- [x] (2026-07-06) Credential lifecycle: bind the server early (`LiveIntentRouter` via a **late-bound model provider**) and merge **`LABAN_CONTROL_URL` only** into the shared `ShellIntegrationLaunch.environmentOverrides`. **Only agent-attached sessions** (C10) additionally get a **single-use `LABAN_SESSION_ATTACH` bootstrap** (C14) in their env — normal/default/restored shells get neither. Use a `SessionLaunchContext` with a **preallocated `sessionID`** (C11) so the bootstrap is bound to the real id before envp composition; gate injection on `isAgentAttached`. The agent **redeems the bootstrap once** for a connection-bound session-observe credential; the server invalidates it on first use. If the first/default session is itself agent-attached (launch flag), the server must be bound before it spawns; the common case (default = normal shell, nothing injected) has no such race. Across all backends (in-process `environment:`, laband `environmentPatch`, labpty `envp`). **No wire change** (does not touch the ADR 0007 freeze).
 - [ ] `scripts/check` green; the GUI is unchanged for humans (no new windows, no behavior change for a user who never reads `control.json`).
 
 ## Cross-cutting design contracts (read first)

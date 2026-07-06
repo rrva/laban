@@ -11,7 +11,7 @@ public final class HeadlessIntentRouter: IntentRouter {
   public func route(_ intent: Intent) -> ControlResponse {
     switch intent {
     case .legacyDebugAction(let input):
-      return json(runtime.applyAction(input.body))
+      return json(runtime.applyAction(input.body, scopedSessionID: input.scopedSessionID))
     case .unsupportedDebugAction(let input):
       return json(runtime.unsupportedAction(input.action))
     case .tabSelect, .terminalTypeText, .terminalSendKey:

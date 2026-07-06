@@ -289,6 +289,12 @@ enum MenuCommands {
     debugMenu.addItem(NSMenuItem.separator())
     debugMenu.addItem(
       NSMenuItem(
+        title: L10n.tr("Disable Agent Control Server"),
+        action: #selector(AppDelegate.disableAgentControlServer(_:)),
+        keyEquivalent: ""
+      ))
+    debugMenu.addItem(
+      NSMenuItem(
         title: L10n.tr("Send Diagnostics…"),
         action: #selector(AppDelegate.sendDiagnostics(_:)),
         keyEquivalent: ""
