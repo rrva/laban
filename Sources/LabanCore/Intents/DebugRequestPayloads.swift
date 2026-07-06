@@ -140,11 +140,19 @@ public struct LegacyDebugQueryInput: Codable, Sendable, Equatable, JSONSchemaPro
   public var params: [String: String]
   /// When set, whole-app reads are filtered to this session (session-observe token scope).
   public var scopedSessionID: String?
+  /// Redacts sensitive fields for app-observe callers.
+  public var readRedaction: ControlReadRedaction
 
-  public init(intentID: String, params: [String: String] = [:], scopedSessionID: String? = nil) {
+  public init(
+    intentID: String,
+    params: [String: String] = [:],
+    scopedSessionID: String? = nil,
+    readRedaction: ControlReadRedaction = .none
+  ) {
     self.intentID = intentID
     self.params = params
     self.scopedSessionID = scopedSessionID
+    self.readRedaction = readRedaction
   }
 
   public static var jsonSchema: SchemaNode {

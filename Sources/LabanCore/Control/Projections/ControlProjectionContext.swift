@@ -16,6 +16,8 @@ public struct ControlProjectionContext {
   public var transportMode: String
   /// When set, whole-app reads (`app.state`, `session.list`) are filtered to this session.
   public var scopedSessionID: String?
+  /// Redacts sensitive fields for app-observe callers.
+  public var readRedaction: ControlReadRedaction
   public var clientSnapshotProvider: (@Sendable (Session.ID) -> LabandSnapshotResponse?)?
   public var accessibilityValueProvider: (@Sendable (Tab) -> String)?
 
@@ -33,6 +35,7 @@ public struct ControlProjectionContext {
     sessionClientInfoById: [Session.ID: LabandSessionInfo] = [:],
     transportMode: String,
     scopedSessionID: String? = nil,
+    readRedaction: ControlReadRedaction = .none,
     clientSnapshotProvider: (@Sendable (Session.ID) -> LabandSnapshotResponse?)? = nil,
     accessibilityValueProvider: (@Sendable (Tab) -> String)? = nil
   ) {
@@ -49,6 +52,7 @@ public struct ControlProjectionContext {
     self.sessionClientInfoById = sessionClientInfoById
     self.transportMode = transportMode
     self.scopedSessionID = scopedSessionID
+    self.readRedaction = readRedaction
     self.clientSnapshotProvider = clientSnapshotProvider
     self.accessibilityValueProvider = accessibilityValueProvider
   }

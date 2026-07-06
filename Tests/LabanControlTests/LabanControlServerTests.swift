@@ -437,6 +437,60 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(router.legacyQueries(), [])
   }
 
+  func testAttachRedeemRequiresRegisteredShellPID() throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let bootstrap = server.mintSessionAttachBootstrap(sessionID: "sess-1")
+    let (unregisteredStatus, _) = try request(
+      socketPath: socketPath,
+      path: LabanControlServer.sessionAttachPath,
+      method: "POST",
+      body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
+    XCTAssertEqual(unregisteredStatus, 401)
+
+    server.registerAttachShellPID(
+      sessionID: "sess-1",
+      shellPID: ProcessInfo.processInfo.processIdentifier)
+    let (registeredStatus, body) = try request(
+      socketPath: socketPath,
+      path: LabanControlServer.sessionAttachPath,
+      method: "POST",
+      body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
+    XCTAssertEqual(registeredStatus, 200)
+    let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+    XCTAssertEqual(json["sessionID"] as? String, "sess-1")
+    XCTAssertFalse((json["token"] as? String ?? "").isEmpty)
+  }
+
+  func testAttachRedeemAllowsShellOrDirectChild() {
+    let selfPID = ProcessInfo.processInfo.processIdentifier
+    XCTAssertTrue(
+      LabanControlServer.isAllowedAttachRedeemer(peerPID: selfPID, shellPID: selfPID))
+    XCTAssertTrue(
+      LabanControlServer.isAllowedAttachRedeemer(
+        peerPID: selfPID, shellPID: getppid()))
+  }
+
+  func testAppObserveQuerySetsReadRedaction() throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let (status, _) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/state",
+      token: start.appObserveToken)
+    XCTAssertEqual(status, 200)
+    let queries = router.legacyQueries()
+    XCTAssertEqual(queries.count, 1)
+    XCTAssertEqual(queries[0].readRedaction, .appObserveSummary)
+  }
+
   private func makeTempSocketPath() throws -> String {
     "/tmp/laban-ctl-\(UUID().uuidString.prefix(8)).sock"
   }

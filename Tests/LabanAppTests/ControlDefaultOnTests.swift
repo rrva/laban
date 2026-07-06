@@ -86,6 +86,9 @@ final class ControlDefaultOnTests: XCTestCase {
   }
 
   func testAgentAttachedLaunchContextCarriesSingleUseBootstrap() throws {
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
     let coordinator = ControlSessionLaunchCoordinator()
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
     let start = try server.start()
@@ -96,6 +99,10 @@ final class ControlDefaultOnTests: XCTestCase {
     let bootstrap = try XCTUnwrap(context.sessionObserveBootstrap)
     XCTAssertEqual(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach], bootstrap)
     XCTAssertTrue(context.isAgentAttached)
+
+    server.registerAttachShellPID(
+      sessionID: context.sessionID,
+      shellPID: ProcessInfo.processInfo.processIdentifier)
 
     let (firstStatus, firstBody) = try request(
       socketPath: start.socketPath,
@@ -121,6 +128,38 @@ final class ControlDefaultOnTests: XCTestCase {
     XCTAssertEqual(ownStatus, 200)
   }
 
+  func testAgentAttachedLaunchOmitsBootstrapWithoutEnvOptIn() throws {
+    unsetenv(ControlEnvironmentKeys.attachEnvOptIn)
+
+    let coordinator = ControlSessionLaunchCoordinator()
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
+
+    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    XCTAssertNil(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach])
+    XCTAssertNil(context.sessionObserveBootstrap)
+    XCTAssertTrue(context.isAgentAttached)
+  }
+
+  func testAttachRedeemRequiresShellPIDRegistration() throws {
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let bootstrap = server.mintSessionAttachBootstrap(sessionID: "sess-unregistered")
+    let (status, _) = try request(
+      socketPath: start.socketPath,
+      path: LabanControlServer.sessionAttachPath,
+      method: "POST",
+      body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
+    XCTAssertEqual(status, 401)
+  }
+
   func testPreallocatedSessionIDMatchesRedeemedScope() throws {
     let coordinator = ControlSessionLaunchCoordinator()
     let model = try AppModel(
@@ -137,10 +176,11 @@ final class ControlDefaultOnTests: XCTestCase {
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
     let tab = try model.createAgentAttachedTab()
-    let context = coordinator.prepareLaunch(tabID: tab.id, isAgentAttached: true)
-    // createAgentAttachedTab already consumed a context via provider; mint fresh for attach test
     let bootstrap = server.mintSessionAttachBootstrap(sessionID: tab.sessionId)
-    let (_, body) = try request(
+    server.registerAttachShellPID(
+      sessionID: tab.sessionId,
+      shellPID: ProcessInfo.processInfo.processIdentifier)
+    let (_, body) = try udsRequest(
       socketPath: start.socketPath,
       path: LabanControlServer.sessionAttachPath,
       method: "POST",
@@ -150,12 +190,11 @@ final class ControlDefaultOnTests: XCTestCase {
 
     let sessionToken = try XCTUnwrap(json["token"] as? String)
     let otherTab = try model.createTab()
-    let (crossStatus, _) = try request(
+    let (crossStatus, _) = try udsRequest(
       socketPath: start.socketPath,
       path: "/debug/sessions/\(otherTab.sessionId)",
       token: sessionToken)
     XCTAssertEqual(crossStatus, 403)
-    _ = context
   }
 
   func testControlJSONCreated0600FromFirstByte() throws {
@@ -205,6 +244,9 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { server.stop() }
 
     let sessionBootstrap = server.mintSessionAttachBootstrap(sessionID: "s1")
+    server.registerAttachShellPID(
+      sessionID: "s1",
+      shellPID: ProcessInfo.processInfo.processIdentifier)
     let (_, attachBody) = try request(
       socketPath: start.socketPath,
       path: LabanControlServer.sessionAttachPath,
@@ -245,14 +287,27 @@ final class ControlDefaultOnTests: XCTestCase {
     token: String? = nil,
     body: Data? = nil
   ) throws -> (Int, Data) {
-    try DispatchQueue.global(qos: .userInitiated).sync {
-      try ControlUDSClient.request(
-        socketPath: socketPath,
-        method: method,
-        path: path,
-        token: token,
-        body: body)
-    }
+    try ControlUDSTestSupport.requestFromBackgroundThread(
+      socketPath: socketPath,
+      path: path,
+      method: method,
+      token: token,
+      body: body)
+  }
+
+  private func udsRequest(
+    socketPath: String,
+    path: String,
+    method: String = "GET",
+    token: String? = nil,
+    body: Data? = nil
+  ) throws -> (Int, Data) {
+    try ControlUDSTestSupport.requestFromBackgroundThread(
+      socketPath: socketPath,
+      path: path,
+      method: method,
+      token: token,
+      body: body)
   }
 }
 

@@ -53,6 +53,58 @@ final class LiveControlObserveTests: XCTestCase {
     XCTAssertEqual(status, 403)
   }
 
+  func testAppObserveStateRedactsCrossTabFindNeedles() throws {
+    let (model, router, ownSessionID, otherSessionID) = try makeModelRouterAndSessions()
+    _ = model.startFind(sessionID: otherSessionID, needle: "secret-needle")
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let (status, data) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/state",
+      token: start.appObserveToken)
+    XCTAssertEqual(status, 200)
+
+    let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let findStates = try XCTUnwrap(json["findStateBySession"] as? [String: Any])
+    XCTAssertTrue(findStates.isEmpty)
+    let tabs = try XCTUnwrap(json["tabs"] as? [[String: Any]])
+    XCTAssertFalse(tabs.isEmpty)
+    for tab in tabs {
+      XCTAssertNil(tab["progress"])
+      let agent = try XCTUnwrap(tab["agent"] as? [String: Any])
+      XCTAssertNil(agent["agentName"])
+      XCTAssertNil(agent["taskLabel"])
+      XCTAssertNil(agent["sessionName"])
+    }
+    let raw = String(data: data, encoding: .utf8) ?? ""
+    XCTAssertFalse(raw.contains("secret-needle"))
+    _ = ownSessionID
+  }
+
+  func testSessionObserveTerminalModesUsesScopedTabNotActiveTab() throws {
+    let model = try AppModel()
+    _ = try model.createTab()
+    _ = try model.createTab()
+    let ownSessionID = model.tabs[0].sessionId
+    let otherSessionID = model.tabs[1].sessionId
+    model.selectTab(model.tabs[1].id)
+    let router = LiveIntentRouter(model: model)
+
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let sessionToken = server.mintSessionObserveToken(sessionID: ownSessionID)
+    let (status, _) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/terminal-modes",
+      token: sessionToken)
+    XCTAssertEqual(status, 200)
+    _ = otherSessionID
+  }
+
   func testAppObserveTokenAllowsTerminalModes200() throws {
     let (model, router, _, _) = try makeModelRouterAndSessions()
     _ = model
@@ -118,13 +170,11 @@ final class LiveControlObserveTests: XCTestCase {
     token: String? = nil,
     body: Data? = nil
   ) throws -> (Int, Data) {
-    try DispatchQueue.global(qos: .userInitiated).sync {
-      try ControlUDSClient.request(
-        socketPath: socketPath,
-        method: method,
-        path: path,
-        token: token,
-        body: body)
-    }
+    try ControlUDSTestSupport.requestFromBackgroundThread(
+      socketPath: socketPath,
+      path: path,
+      method: method,
+      token: token,
+      body: body)
   }
 }

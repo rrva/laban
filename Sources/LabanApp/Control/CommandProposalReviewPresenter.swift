@@ -51,10 +51,7 @@ final class CommandProposalReviewPresenter: CommandProposalReviewPresenting {
     accessory.addSubview(scroll)
     alert.accessoryView = accessory
 
-    guard let window = NSApp.keyWindow ?? NSApp.mainWindow else {
-      return
-    }
-    alert.beginSheetModal(for: window) { [weak self] response in
+    let finish: (NSApplication.ModalResponse) -> Void = { response in
       switch response {
       case .alertFirstButtonReturn:
         NSPasteboard.general.clearContents()
@@ -63,7 +60,14 @@ final class CommandProposalReviewPresenter: CommandProposalReviewPresenting {
       default:
         CommandProposalStore.shared.updateState(id: proposal.id, state: .dismissed)
       }
-      _ = self
+    }
+
+    if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+      alert.beginSheetModal(for: window) { response in
+        finish(response)
+      }
+    } else {
+      finish(alert.runModal())
     }
   }
 }

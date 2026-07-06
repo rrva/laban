@@ -25,7 +25,10 @@ final class ControlSessionLaunchCoordinator {
       env[ControlEnvironmentKeys.controlURL] = controlSocketPath
     }
     var bootstrap: String?
-    if isAgentAttached, let controlServer {
+    if isAgentAttached,
+      ControlSessionAttachPolicy.injectBootstrapIntoEnvironment,
+      let controlServer
+    {
       bootstrap = controlServer.mintSessionAttachBootstrap(sessionID: sessionID)
       env[ControlEnvironmentKeys.sessionAttach] = bootstrap
     }
@@ -38,7 +41,7 @@ final class ControlSessionLaunchCoordinator {
   }
 
   func noteSessionShellStarted(sessionID: String, shellPID: pid_t) {
-    controlServer?.registerAttachRedeemerPID(sessionID: sessionID, pid: shellPID)
+    controlServer?.registerAttachShellPID(sessionID: sessionID, shellPID: shellPID)
   }
 
   func mergeControlDiscovery(into base: [String: String]) -> [String: String] {

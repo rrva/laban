@@ -79,15 +79,16 @@ final class LiveIntentRouter: IntentRouter {
   }
 
   func bindModel(_ model: AppModel) {
-    self.model = model
+    performOnMain { self.model = model }
   }
 
   func updateEnvironment(_ environment: LiveControlEnvironment) {
-    self.environment = environment
+    performOnMain { self.environment = environment }
   }
 
   func route(_ intent: Intent) -> ControlResponse {
-    switch intent {
+    performOnMain {
+      switch intent {
       case .legacyDebugAction(let input):
         switch input.intentID {
         case "terminal.scrollViewport":
@@ -103,7 +104,8 @@ final class LiveIntentRouter: IntentRouter {
         guard let model = model else {
           return .error(500, "model released")
         }
-        let ctx = projectionContext(model: model, scopedSessionID: nil)
+        let ctx = projectionContext(
+          model: model, scopedSessionID: nil, readRedaction: .none)
         let active = ctx.model.activeTab
         return json(
           ActionResult(
@@ -112,22 +114,30 @@ final class LiveIntentRouter: IntentRouter {
             activeTabId: active?.id,
             activeSessionId: active?.sessionId,
             error: "debug action \(input.action) is not implemented yet"))
+      }
     }
   }
 
   func query(_ query: Query) -> ControlResponse {
-    guard let model = model else {
+    performOnMain {
+      guard let model = model else {
         return .error(500, "model released")
       }
-      let ctx = projectionContext(model: model, scopedSessionID: nil)
+      let ctx = projectionContext(
+        model: model, scopedSessionID: nil, readRedaction: .none)
       return json(ControlStateProjections.stateResponse(ctx))
+    }
   }
 
   func query(_ query: LegacyDebugQueryInput) -> ControlResponse {
-    guard let model = model else {
+    performOnMain {
+      guard let model = model else {
         return .error(500, "model released")
       }
-      let ctx = projectionContext(model: model, scopedSessionID: query.scopedSessionID)
+      let ctx = projectionContext(
+        model: model,
+        scopedSessionID: query.scopedSessionID,
+        readRedaction: query.readRedaction)
       switch query.intentID {
       case "app.state":
         return json(ControlStateProjections.stateResponse(ctx))
@@ -153,22 +163,32 @@ final class LiveIntentRouter: IntentRouter {
         return json(ControlStateProjections.selectionResponse(ctx))
       default:
         return .error(404, "unavailable on gui")
+      }
     }
   }
 
   func control(_ input: LegacyDebugControlInput) -> ControlResponse {
-    switch input.intentID {
+    performOnMain {
+      switch input.intentID {
       case "terminal.scrollViewport":
         return scrollViewportAction(body: input.body, scopedSessionID: input.scopedSessionID)
       case "command.propose":
         return commandProposeAction(body: input.body, scopedSessionID: input.scopedSessionID)
       default:
         return .error(404, "unavailable on gui")
+      }
     }
   }
 
   func artifact(_ request: ArtifactRequest) -> ControlResponse? {
     nil
+  }
+
+  private func performOnMain<T>(_ work: () -> T) -> T {
+    if Thread.isMainThread {
+      return work()
+    }
+    return DispatchQueue.main.sync(execute: work)
   }
 
   private func scrollViewportAction(body: Data, scopedSessionID: String?) -> ControlResponse {
@@ -189,7 +209,8 @@ final class LiveIntentRouter: IntentRouter {
     }
     let deltaRows = request.deltaRows ?? 0
     session.scrollViewport(deltaRows: deltaRows)
-    let ctx = projectionContext(model: model, scopedSessionID: scopedSessionID)
+    let ctx = projectionContext(
+      model: model, scopedSessionID: scopedSessionID, readRedaction: .none)
     return json(ControlStateProjections.actionResult(ok: true, ctx: ctx))
   }
 
@@ -222,7 +243,11 @@ final class LiveIntentRouter: IntentRouter {
     try? JSONDecoder().decode(CommandProposeResponse.self, from: body)
   }
 
-  private func projectionContext(model: AppModel, scopedSessionID: String?) -> ControlProjectionContext {
+  private func projectionContext(
+    model: AppModel,
+    scopedSessionID: String?,
+    readRedaction: ControlReadRedaction
+  ) -> ControlProjectionContext {
     var selectionBySession: [Session.ID: TerminalSelection] = [:]
     for tab in model.tabs {
       if let session = model.session(forTab: tab.id),
@@ -245,6 +270,7 @@ final class LiveIntentRouter: IntentRouter {
       sessionClientInfoById: environment.sessionClientInfoById,
       transportMode: environment.transportMode,
       scopedSessionID: scopedSessionID,
+      readRedaction: readRedaction,
       clientSnapshotProvider: nil,
       accessibilityValueProvider: { [environment] tab in environment.accessibilityValueProvider(tab) })
   }
