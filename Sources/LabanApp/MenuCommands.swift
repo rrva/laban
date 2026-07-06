@@ -85,6 +85,12 @@ enum MenuCommands {
       ))
     fileMenu.addItem(
       NSMenuItem(
+        title: L10n.tr("New Agent-Attached Session"),
+        action: #selector(TerminalBitmapView.newAgentAttachedTab(_:)),
+        keyEquivalent: ""
+      ))
+    fileMenu.addItem(
+      NSMenuItem(
         title: L10n.tr("Close Tab"),
         action: #selector(TerminalBitmapView.closeTab(_:)),
         keyEquivalent: "w"

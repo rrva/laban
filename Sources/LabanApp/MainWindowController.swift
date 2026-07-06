@@ -1208,7 +1208,7 @@ final class MainWindowController: NSWindowController {
     sessionCoordinator: AppSessionCoordinator?,
     model: AppModel
   ) {
-    for delay in [0.05, 0.25, 1.0] {
+    for delay in [0.05, 0.25, 1.0, 2.0, 5.0] {
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak model] in
         guard let model, let session = model.session(forTab: tabId) else { return }
         registerAttachShell(

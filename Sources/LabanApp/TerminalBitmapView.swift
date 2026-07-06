@@ -4123,6 +4123,32 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return tab
   }
 
+  @discardableResult
+  private func createAgentAttachedTabPreservingSelection() throws -> Tab {
+    syncSelectionStateToActiveTab()
+    persistSelectionStateForCurrentTab()
+    surfaceController.invalidateSessionSyncCache()
+    let previousActiveTabId = model.activeTab?.id
+    let tab = try model.createAgentAttachedTab()
+    do {
+      try sessionCoordinator?.ensureSession(
+        for: tab,
+        session: model.session(forTab: tab.id),
+        size: model.terminalSize)
+    } catch {
+      remoteSnapshotRenderTracker.clear(tabId: tab.id)
+      remoteMouseEncodingByTab.removeValue(forKey: tab.id)
+      try? model.closeTab(tab.id)
+      if let previousActiveTabId {
+        model.selectTab(previousActiveTabId)
+      }
+      throw error
+    }
+    restoreSelectionState(for: tab.id)
+    ensureSidebarTabVisible(tab.id, animated: true)
+    return tab
+  }
+
   private func closeTabAndRemoteSession(_ tabId: Tab.ID) throws {
     if let tab = model.tabs.first(where: { $0.id == tabId }) {
       sessionCoordinator?.terminate(tab: tab)
@@ -7475,6 +7501,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   @objc func newTab(_ sender: Any?) {
     _ = try? createTabPreservingSelection()
+    invalidateRenderAndWake()
+  }
+
+  @objc func newAgentAttachedTab(_ sender: Any?) {
+    _ = try? createAgentAttachedTabPreservingSelection()
     invalidateRenderAndWake()
   }
 
