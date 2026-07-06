@@ -56,6 +56,14 @@ final class AppSessionCoordinator {
   /// `AppModel.launchArgv(forTab:)` by `MainWindowController`.
   var argvProvider: ((Tab.ID) -> [String]?)?
 
+  /// Per-tab control env from `SessionLaunchContext`, merged into daemon
+  /// spawn requests so labpty/laband inherit `LABAN_CONTROL_URL` (2F/C14).
+  var launchEnvironmentProvider: ((Tab.ID) -> [String: String])?
+
+  /// Called after tab metadata refresh so attach PID registration can retry
+  /// when daemon `childPid` becomes available.
+  var onTabMetadataRefreshed: ((AppModel) -> Void)?
+
   private static let labptyWakeFallbackPollMilliseconds = 1_000
   private static let labptyActivePollMilliseconds = 8
   private static let labptyActiveQuietNanoseconds: UInt64 = 50_000_000
@@ -376,6 +384,7 @@ final class AppSessionCoordinator {
     lastTabMetadataRefreshAt = now
     if let labptyClient {
       refreshLabptyTabMetadata(tabs: tabs, model: model, client: labptyClient, now: now)
+      onTabMetadataRefreshed?(model)
       return
     }
     guard let labandClient else { return }
@@ -394,6 +403,7 @@ final class AppSessionCoordinator {
       let signals = surfaceSignals(from: info)
       _ = model.applySurfaceSignals(signals, forTab: tab.id, now: now)
     }
+    onTabMetadataRefreshed?(model)
   }
 
   func detach() {
@@ -1043,7 +1053,7 @@ final class AppSessionCoordinator {
       rows: UInt32(max(1, Int(size.rows))),
       cols: UInt32(max(1, Int(size.cols))),
       argv: (argvProvider?(tab.id) ?? shellLaunch.argv) ?? [],
-      envp: spawnShellLaunch.environmentOverrides.map { "\($0.key)=\($0.value)" }.sorted(),
+      envp: mergedSpawnEnvironment(for: tab).map { "\($0.key)=\($0.value)" }.sorted(),
       cwd: cwdByLogicalSessionId(tab.id),
       logicalSessionId: tab.id)
   }
@@ -1057,11 +1067,21 @@ final class AppSessionCoordinator {
       executable: argv?.first,
       argv: argv,
       cwd: cwdByLogicalSessionId(tab.id),
-      environmentPatch: spawnShellLaunch.environmentOverrides,
+      environmentPatch: mergedSpawnEnvironment(for: tab),
       rows: Int(size.rows),
       cols: Int(size.cols),
       logicalSessionId: tab.id
     )
+  }
+
+  private func mergedSpawnEnvironment(for tab: Tab) -> [String: String] {
+    var env = spawnShellLaunch.environmentOverrides
+    if let overrides = launchEnvironmentProvider?(tab.id) {
+      for (key, value) in overrides {
+        env[key] = value
+      }
+    }
+    return env
   }
 
   private func cwdByLogicalSessionId(_ logicalSessionId: String) -> String {

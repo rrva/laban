@@ -41,4 +41,6 @@ public enum ControlEnvironmentKeys {
   public static let controlServerForceDisable = "LABAN_CONTROL_SERVER"
   /// When set to `"1"`, agent-attached sessions receive `LABAN_SESSION_ATTACH` (C10 opt-in).
   public static let attachEnvOptIn = "LABAN_CONTROL_ATTACH_ENV"
+  /// When set to `"1"` (or `--agent-attached-session`), the first tab is agent-attached (C13).
+  public static let agentAttachedSessionAtLaunch = "LABAN_AGENT_ATTACHED_SESSION"
 }

@@ -330,6 +330,40 @@ final class ControlDefaultOnTests: XCTestCase {
       body: body)
   }
 
+  func testLaunchEnvironmentOverridesRecordedPerTab() throws {
+    let coordinator = ControlSessionLaunchCoordinator()
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
+
+    let model = try AppModel(
+      sessionLaunchContextProvider: { tabId, isAgentAttached in
+        coordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+      },
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
+    let tab = try model.createTab()
+    XCTAssertEqual(
+      model.launchEnvironmentOverrides(forTab: tab.id)[ControlEnvironmentKeys.controlURL],
+      start.socketPath)
+  }
+
+  func testShouldLaunchAgentAttachedSessionFromEnvAndCLI() {
+    unsetenv(ControlEnvironmentKeys.agentAttachedSessionAtLaunch)
+    defer { unsetenv(ControlEnvironmentKeys.agentAttachedSessionAtLaunch) }
+    XCTAssertFalse(MainWindowController.shouldLaunchAgentAttachedSession())
+
+    setenv(ControlEnvironmentKeys.agentAttachedSessionAtLaunch, "1", 1)
+    XCTAssertTrue(MainWindowController.shouldLaunchAgentAttachedSession())
+
+    unsetenv(ControlEnvironmentKeys.agentAttachedSessionAtLaunch)
+    XCTAssertTrue(
+      MainWindowController.shouldLaunchAgentAttachedSession(
+        arguments: ["LabanApp", "--agent-attached-session"]))
+  }
+
   private func udsRequest(
     socketPath: String,
     path: String,

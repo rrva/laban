@@ -235,6 +235,10 @@ public final class AppModel {
   /// login shell. Cleared on tab close.
   private var launchArgvByTab: [Tab.ID: [String]] = [:]
 
+  /// Control-plane env overrides from `SessionLaunchContext`, keyed by tab id.
+  /// Daemon backends merge these into labpty `envp` / laband `environmentPatch`.
+  private var launchEnvironmentByTab: [Tab.ID: [String: String]] = [:]
+
   /// Most recent agent observation per tab, fed by the LabanApp-side
   /// `AgentSessionDetector`. Persisted into `TabState.agent` by
   /// `snapshotForPersistence(windowId:)`. Cleared on tab close.
@@ -305,6 +309,7 @@ public final class AppModel {
     sessionRegistry.onSessionDirty = onSessionDirty
     sessionRegistry.add(session)
     _tabs.append(tab)
+    noteLaunchEnvironmentUnlocked(forTab: tab.id, context: initialContext)
     attachSessionCallbacks(session: session, tabId: tab.id)
     themeChangeObserver = NotificationCenter.default.addObserver(
       forName: Theme.didChangeNotification, object: nil, queue: .main
@@ -645,6 +650,7 @@ public final class AppModel {
       )
       sessionRegistry.add(session)
       _tabs.append(tab)
+      noteLaunchEnvironmentUnlocked(forTab: tab.id, context: launchContext)
       attachSessionCallbacks(session: session, tabId: tab.id)
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
       recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
@@ -677,6 +683,7 @@ public final class AppModel {
       )
       sessionRegistry.add(session)
       _tabs.append(tab)
+      noteLaunchEnvironmentUnlocked(forTab: tab.id, context: launchContext)
       attachSessionCallbacks(session: session, tabId: tab.id)
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
       recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
@@ -723,6 +730,7 @@ public final class AppModel {
       if !argv.isEmpty { launchArgvByTab[tab.id] = argv }
       sessionRegistry.add(session)
       _tabs.append(tab)
+      noteLaunchEnvironmentUnlocked(forTab: tab.id, context: launchContext)
       attachSessionCallbacks(session: session, tabId: tab.id)
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
       recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
@@ -733,6 +741,11 @@ public final class AppModel {
     onTabCreated?(tab.id, session)
     notifyWorkspaceMutation()
     return tab
+  }
+
+  /// Control-plane env overrides recorded when the tab was created (C11/C14).
+  public func launchEnvironmentOverrides(forTab tabId: Tab.ID) -> [String: String] {
+    withModelLock { launchEnvironmentByTab[tabId] ?? [:] }
   }
 
   /// The explicit launch argv recorded for a tab created via
@@ -862,6 +875,7 @@ public final class AppModel {
       )
       sessionRegistry.add(session)
       _tabs.append(tab)
+      noteLaunchEnvironmentUnlocked(forTab: tab.id, context: launchContext)
       launchCommandByTab[id] = persistedTab.launchCommand
       if let agent = persistedTab.agent {
         agentByTab[id] = agent
@@ -1157,6 +1171,7 @@ public final class AppModel {
           findStateBySession.removeValue(forKey: tab.sessionId)
           findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
           launchCommandByTab.removeValue(forKey: tab.id)
+          launchEnvironmentByTab.removeValue(forKey: tab.id)
           agentByTab.removeValue(forKey: tab.id)
           cwdFallbackAppliedByTab.removeValue(forKey: tab.id)
           metadataSync.forget(tab: tab)
@@ -1173,6 +1188,7 @@ public final class AppModel {
         findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
         launchCommandByTab.removeValue(forKey: tab.id)
         launchArgvByTab.removeValue(forKey: tab.id)
+        launchEnvironmentByTab.removeValue(forKey: tab.id)
         agentByTab.removeValue(forKey: tab.id)
         cwdFallbackAppliedByTab.removeValue(forKey: tab.id)
         metadataSync.forget(tab: tab)
@@ -1850,6 +1866,14 @@ public final class AppModel {
   private func launchContext(tabId: Tab.ID? = nil, isAgentAttached: Bool = false) -> SessionLaunchContext {
     sessionLaunchContextProvider?(tabId, isAgentAttached)
       ?? .fresh(tabID: tabId, isAgentAttached: isAgentAttached)
+  }
+
+  private func noteLaunchEnvironmentUnlocked(forTab tabId: Tab.ID, context: SessionLaunchContext) {
+    if context.environmentOverrides.isEmpty {
+      launchEnvironmentByTab.removeValue(forKey: tabId)
+    } else {
+      launchEnvironmentByTab[tabId] = context.environmentOverrides
+    }
   }
 
   private func attachSessionCallbacks(session: Session, tabId: Tab.ID) {

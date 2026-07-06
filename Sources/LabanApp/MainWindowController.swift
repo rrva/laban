@@ -309,6 +309,18 @@ final class MainWindowController: NSWindowController {
     sessionCoordinator?.argvProvider = { [weak model] tabId in
       model?.launchArgv(forTab: tabId)
     }
+    sessionCoordinator?.launchEnvironmentProvider = { [weak model] tabId in
+      model?.launchEnvironmentOverrides(forTab: tabId) ?? [:]
+    }
+    sessionCoordinator?.onTabMetadataRefreshed = { [weak launchCoordinator, weak sessionCoordinator] model in
+      guard let launchCoordinator else { return }
+      launchCoordinator.retryPendingShellRegistrations(in: model) { tabId, session in
+        Self.resolveAttachShellPID(
+          tabId: tabId,
+          session: session,
+          sessionCoordinator: sessionCoordinator)
+      }
+    }
 
     // The default tab created by AppModel.init() needs its writer
     // attached too — its session was constructed before the delegate
@@ -332,6 +344,15 @@ final class MainWindowController: NSWindowController {
     // path the "+" titlebar button uses.
     if model.tabs.isEmpty {
       _ = try? model.createTab()
+    }
+    if Self.shouldLaunchAgentAttachedSession(),
+      restoredState == nil || restoredState?.windows.isEmpty == true,
+      model.tabs.count == 1,
+      let defaultTab = model.tabs.first
+    {
+      let defaultTabId = defaultTab.id
+      _ = try? model.createAgentAttachedTab()
+      try? model.closeTab(defaultTabId)
     }
     sessionCoordinator?.onSessionDirty = { [weak model] sessionId in
       model?.onSessionDirty?(sessionId)
@@ -667,6 +688,17 @@ final class MainWindowController: NSWindowController {
       return false
     }
     return true
+  }
+
+  /// C13: explicit production entry for an agent-attached first tab.
+  static func shouldLaunchAgentAttachedSession(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    arguments: [String] = CommandLine.arguments
+  ) -> Bool {
+    if environment[ControlEnvironmentKeys.agentAttachedSessionAtLaunch] == "1" {
+      return true
+    }
+    return arguments.contains("--agent-attached-session")
   }
 
   func startControlServer(model: AppModel?, router: LiveIntentRouter? = nil) {
