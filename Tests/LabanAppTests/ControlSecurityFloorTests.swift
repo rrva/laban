@@ -177,14 +177,12 @@ final class ControlSecurityFloorTests: XCTestCase {
     token: String? = nil,
     body: Data? = nil
   ) throws -> (Int, Data) {
-    try DispatchQueue.global(qos: .userInitiated).sync {
-      try ControlUDSClient.request(
-        socketPath: socketPath,
-        method: method,
-        path: path,
-        token: token,
-        body: body)
-    }
+    try ControlUDSTestSupport.requestFromBackgroundThread(
+      socketPath: socketPath,
+      path: path,
+      method: method,
+      token: token,
+      body: body)
   }
 
   private func awaitLogFlush() throws {

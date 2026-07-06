@@ -39,4 +39,6 @@ public enum ControlEnvironmentKeys {
   public static let sessionAttach = "LABAN_SESSION_ATTACH"
   /// When set to `"0"`, the GUI control server does not start (force-disable).
   public static let controlServerForceDisable = "LABAN_CONTROL_SERVER"
+  /// When set to `"1"`, agent-attached sessions receive `LABAN_SESSION_ATTACH` (C10 opt-in).
+  public static let attachEnvOptIn = "LABAN_CONTROL_ATTACH_ENV"
 }

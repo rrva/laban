@@ -5,6 +5,9 @@ import LabanTerminalCore
 
 public enum ControlStateProjections {
   public static func stateResponse(_ ctx: ControlProjectionContext) -> StateResponse {
+    if ctx.readRedaction == .appObserveSummary {
+      return appObserveStateResponse(ctx)
+    }
     let tabs = filteredTabs(ctx).enumerated().map { index, tab in
       tabResponse(for: tab, index: index, ctx: ctx)
     }
@@ -45,8 +48,8 @@ public enum ControlStateProjections {
     var synchronizedOutput = false
     var focusReporting = false
     var mouseTracking = false
-    if let activeTab = ctx.model.activeTab,
-      let session = ctx.model.session(forTab: activeTab.id),
+    if let tab = tabForScopedRead(ctx),
+      let session = ctx.model.session(forTab: tab.id),
       let snapshot = session.snapshot()
     {
       defer { laban_snapshot_destroy(snapshot) }
@@ -282,9 +285,45 @@ public enum ControlStateProjections {
     return resolvedDefaultSessionID(ctx: ctx)
   }
 
-  private static func tabResponse(for tab: Tab, index: Int, ctx: ControlProjectionContext) -> TabResponse {
+  private static func appObserveStateResponse(_ ctx: ControlProjectionContext) -> StateResponse {
+    let tabs = ctx.model.tabs.enumerated().map { index, tab in
+      tabResponse(for: tab, index: index, ctx: ctx, redactSensitiveMetadata: true)
+    }
+    let activeTab = ctx.model.activeTab
+    return StateResponse(
+      mode: ctx.mode,
+      frame: ctx.frame,
+      window: WindowResponse(width: ctx.windowWidth, height: ctx.windowHeight, focused: true),
+      tabs: tabs,
+      activeTabId: activeTab?.id,
+      activeSessionId: activeTab?.sessionId,
+      findStateBySession: [:],
+      cursorSettings: cursorSettingsResponse(activeTab: activeTab, ctx: ctx),
+      emojiRendering: emojiRenderingSettingsResponse(),
+      attentionNotifications: [])
+  }
+
+  private static func tabForScopedRead(_ ctx: ControlProjectionContext) -> Tab? {
+    if let scoped = ctx.scopedSessionID {
+      return ctx.model.tabs.first { $0.sessionId == scoped }
+    }
+    return ctx.model.activeTab
+  }
+
+  private static func tabForAccessibility(_ ctx: ControlProjectionContext) -> Tab? {
+    tabForScopedRead(ctx)
+  }
+
+  private static func tabResponse(
+    for tab: Tab,
+    index: Int,
+    ctx: ControlProjectionContext,
+    redactSensitiveMetadata: Bool = false
+  ) -> TabResponse {
     let metadata = tab.titleMetadata
     let status = ctx.model.session(forTab: tab.id) != nil ? tab.status.debugString : "failed"
+    let agent = redactSensitiveMetadata ? TabAgentMetadata() : metadata.agent
+    let progress = redactSensitiveMetadata ? nil : metadata.progress
     return TabResponse(
       id: tab.id,
       index: index,
@@ -305,12 +344,16 @@ public enum ControlStateProjections {
       lastCommandExitCode: metadata.lastCommandExitCode,
       workspace: metadata.workspace,
       process: metadata.process,
-      agent: metadata.agent,
-      progress: metadata.progress,
+      agent: agent,
+      progress: progress,
       active: tab.isActive,
       status: status,
       sessionId: tab.sessionId
     )
+  }
+
+  private static func tabResponse(for tab: Tab, index: Int, ctx: ControlProjectionContext) -> TabResponse {
+    tabResponse(for: tab, index: index, ctx: ctx, redactSensitiveMetadata: ctx.readRedaction == .appObserveSummary)
   }
 
   private static func cursorSettingsResponse(
@@ -371,13 +414,6 @@ public enum ControlStateProjections {
     return TerminalSnapshotText.visibleText(
       from: UnsafePointer(snapshot),
       mode: .trimmedNonEmptyRows)
-  }
-
-  private static func tabForAccessibility(_ ctx: ControlProjectionContext) -> Tab? {
-    if let scoped = ctx.scopedSessionID {
-      return ctx.model.tabs.first { $0.sessionId == scoped }
-    }
-    return ctx.model.activeTab
   }
 
   private static func sessionResponse(

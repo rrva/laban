@@ -13,7 +13,13 @@ final class LabanControlPolicyTests: XCTestCase {
     let allowed = try request(
       socketPath: start.socketPath, path: "/debug/health", token: start.appObserveToken)
     XCTAssertEqual(allowed.0, 200)
-    XCTAssertEqual(router.legacyQueries(), [LegacyDebugQueryInput(intentID: "debug.health")])
+    XCTAssertEqual(
+      router.legacyQueries(),
+      [
+        LegacyDebugQueryInput(
+          intentID: "debug.health",
+          readRedaction: .appObserveSummary)
+      ])
 
     router.reset()
     let denied = try request(

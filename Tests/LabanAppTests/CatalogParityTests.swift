@@ -286,10 +286,10 @@ final class CatalogParityTests: XCTestCase {
     token: String,
     body: Data? = nil
   ) throws -> (status: Int, body: Data) {
-    try ControlUDSClient.request(
+    try ControlUDSTestSupport.requestFromBackgroundThread(
       socketPath: socketPath,
-      method: method,
       path: path,
+      method: method,
       token: token,
       body: body)
   }

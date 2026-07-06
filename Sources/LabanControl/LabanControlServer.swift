@@ -57,6 +57,7 @@ public final class LabanControlServer {
   private var fd: Int32 = -1
   private var socketPath: String?
   private var tokens: [String: ControlTokenTier] = [:]
+  private let tokenLock = NSLock()
   private var attachBootstraps: [String: SessionAttachBootstrap] = [:]
   private let attachLock = NSLock()
   private var thread: Thread?
@@ -64,7 +65,8 @@ public final class LabanControlServer {
   private struct SessionAttachBootstrap: Equatable {
     let sessionID: String
     var consumed: Bool
-    var redeemerPID: pid_t?
+    /// Shell leader PID; redeem allowed for shell or its direct child (C14).
+    var shellPID: pid_t?
   }
 
   public static let sessionAttachPath = "/control/session/attach"
@@ -118,17 +120,18 @@ public final class LabanControlServer {
   public func mintSessionAttachBootstrap(sessionID: String) -> String {
     let bootstrap = Self.makeToken()
     attachLock.lock()
-    attachBootstraps[bootstrap] = SessionAttachBootstrap(sessionID: sessionID, consumed: false)
+    attachBootstraps[bootstrap] = SessionAttachBootstrap(
+      sessionID: sessionID, consumed: false, shellPID: nil)
     attachLock.unlock()
     return bootstrap
   }
 
-  /// Registers the shell PID allowed to redeem a session's attach bootstrap (C14).
-  public func registerAttachRedeemerPID(sessionID: String, pid: pid_t) {
+  /// Registers the session shell PID before attach redemption (C14).
+  public func registerAttachShellPID(sessionID: String, shellPID: pid_t) {
     attachLock.lock()
     defer { attachLock.unlock() }
     for (bootstrap, var entry) in attachBootstraps where entry.sessionID == sessionID {
-      entry.redeemerPID = pid
+      entry.shellPID = shellPID
       attachBootstraps[bootstrap] = entry
     }
   }
@@ -136,17 +139,22 @@ public final class LabanControlServer {
   /// Redeems a bootstrap once, registering a session-observe bearer token.
   public func redeemSessionAttachBootstrap(_ bootstrap: String, peerPID: pid_t) -> (token: String, sessionID: String)? {
     attachLock.lock()
-    defer { attachLock.unlock() }
     guard var entry = attachBootstraps[bootstrap], !entry.consumed else {
+      attachLock.unlock()
       return nil
     }
-    if let redeemerPID = entry.redeemerPID, redeemerPID != peerPID {
+    guard let shellPID = entry.shellPID,
+      Self.isAllowedAttachRedeemer(peerPID: peerPID, shellPID: shellPID)
+    else {
+      attachLock.unlock()
       return nil
     }
     entry.consumed = true
     attachBootstraps[bootstrap] = entry
-    let token = mintSessionObserveToken(sessionID: entry.sessionID)
-    return (token, entry.sessionID)
+    let sessionID = entry.sessionID
+    attachLock.unlock()
+    let token = mintSessionObserveToken(sessionID: sessionID)
+    return (token, sessionID)
   }
 
   /// Mints a session-observe token bound to `sessionID`.
@@ -164,7 +172,9 @@ public final class LabanControlServer {
       unlink(socketPath)
       self.socketPath = nil
     }
+    tokenLock.lock()
     tokens = [:]
+    tokenLock.unlock()
     attachLock.lock()
     attachBootstraps = [:]
     attachLock.unlock()
@@ -218,6 +228,51 @@ public final class LabanControlServer {
     return pid
   }
 
+  public static func isAllowedAttachRedeemer(peerPID: pid_t, shellPID: pid_t) -> Bool {
+    if peerPID == shellPID { return true }
+    guard let parentPID = parentPID(of: peerPID) else { return false }
+    return parentPID == shellPID
+  }
+
+  private static func parentPID(of pid: pid_t) -> pid_t? {
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0,
+      size >= MemoryLayout<kinfo_proc>.stride
+    else {
+      return nil
+    }
+    let ppid = info.kp_eproc.e_ppid
+    return ppid > 0 ? ppid : nil
+  }
+
+  private func evaluateAuthorization(
+    peerOutcome: GuardOutcome,
+    authorization: String?
+  ) -> (GuardOutcome, ControlTokenTier?) {
+    guard peerOutcome == .ok else {
+      return (.forbidden, nil)
+    }
+    guard
+      let authorization,
+      authorization.count > 7,
+      authorization.lowercased().hasPrefix("bearer ")
+    else {
+      return (.unauthorized, nil)
+    }
+    let presented = String(authorization.dropFirst(7))
+    tokenLock.lock()
+    defer { tokenLock.unlock() }
+    for (token, tier) in tokens {
+      if Self.constantTimeEquals(presented, token) {
+        return (.ok, tier)
+      }
+    }
+    return (.unauthorized, nil)
+  }
+
+  /// Retained for backward-compatible unit tests.
   public static func evaluateAuthorization(
     peerOutcome: GuardOutcome,
     authorization: String?,
@@ -274,7 +329,9 @@ public final class LabanControlServer {
   }
 
   private func registerToken(_ token: String, tier: ControlTokenTier) {
+    tokenLock.lock()
     tokens[token] = tier
+    tokenLock.unlock()
   }
 
   private func bindListener(at path: String) throws {
@@ -434,10 +491,9 @@ public final class LabanControlServer {
       return
     }
 
-    let (authOutcome, tokenTier) = Self.evaluateAuthorization(
+    let (authOutcome, tokenTier) = evaluateAuthorization(
       peerOutcome: peerOutcome,
-      authorization: headers.authorization,
-      tokens: tokens)
+      authorization: headers.authorization)
     switch authOutcome {
     case .forbidden:
       reportDeny(
@@ -636,8 +692,16 @@ public final class LabanControlServer {
     } else {
       scopedSessionID = nil
     }
+    let readRedaction: ControlReadRedaction =
+      switch tokenTier {
+      case .appObserve: .appObserveSummary
+      case .sessionObserve, .fixture: .none
+      }
     return LegacyDebugQueryInput(
-      intentID: intentID, params: params, scopedSessionID: scopedSessionID)
+      intentID: intentID,
+      params: params,
+      scopedSessionID: scopedSessionID,
+      readRedaction: readRedaction)
   }
 
   private func resolveTargetSession(request: ControlHTTPRequest, body: Data) -> String? {

@@ -191,10 +191,10 @@ final class CommandProposalsTests: XCTestCase {
     token: String,
     body: Data
   ) throws -> (status: Int, body: Data) {
-    try ControlUDSClient.request(
+    try ControlUDSTestSupport.requestFromBackgroundThread(
       socketPath: socketPath,
-      method: "POST",
       path: "/debug/actions",
+      method: "POST",
       token: token,
       body: body)
   }
