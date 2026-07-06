@@ -1,6 +1,7 @@
 import Foundation
 import LabanControl
 import LabanCore
+import LabanTerminalCore
 import XCTest
 
 @testable import LabanApp
@@ -153,6 +154,27 @@ final class ControlDefaultOnTests: XCTestCase {
       method: "POST",
       body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
     XCTAssertEqual(status, 401)
+  }
+
+  func testTryRegisterShellPIDAcceptsExplicitOverride() throws {
+    let coordinator = ControlSessionLaunchCoordinator()
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
+
+    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size, sessionID: context.sessionID)
+    XCTAssertTrue(coordinator.hasPendingAttachRegistration(sessionID: context.sessionID))
+
+    coordinator.tryRegisterShellPID(
+      sessionID: context.sessionID,
+      session: session,
+      shellPID: ProcessInfo.processInfo.processIdentifier)
+    XCTAssertFalse(coordinator.hasPendingAttachRegistration(sessionID: context.sessionID))
   }
 
   func testPersistenceObserverTabCreatedHookChainsControlShellRegistration() {

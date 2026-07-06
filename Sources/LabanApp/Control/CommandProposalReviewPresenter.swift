@@ -56,7 +56,7 @@ final class CommandProposalReviewPresenter: CommandProposalReviewPresenting {
       case .alertFirstButtonReturn:
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(commandRendered.copyText, forType: .string)
-        CommandProposalStore.shared.updateState(id: proposal.id, state: .ran)
+        CommandProposalStore.shared.updateState(id: proposal.id, state: .dismissed)
       default:
         CommandProposalStore.shared.updateState(id: proposal.id, state: .dismissed)
       }

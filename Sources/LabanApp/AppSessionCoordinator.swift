@@ -158,6 +158,17 @@ final class AppSessionCoordinator {
     infoByTabId[tab.id] ?? infoByLocalSessionId[tab.sessionId]
   }
 
+  /// Shell leader PID for C14 attach registration on daemon-backed sessions.
+  func attachShellPID(forTabId tabId: Tab.ID) -> pid_t? {
+    if let info = infoByTabId[tabId], let childPid = info.childPid, childPid > 0 {
+      return pid_t(childPid)
+    }
+    if let descriptor = labptyDescriptorByTabId[tabId], descriptor.childPid > 0 {
+      return descriptor.childPid
+    }
+    return nil
+  }
+
   func snapshot(for tab: Tab, size: LabanTerminalSize) throws -> LabandSnapshotResponse {
     try snapshotFrame(for: tab, size: size).snapshot
   }

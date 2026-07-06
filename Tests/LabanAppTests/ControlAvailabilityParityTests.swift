@@ -21,6 +21,7 @@ final class ControlAvailabilityParityTests: XCTestCase {
     "session.detail",
     "selection.read",
     "terminal.scrollViewport",
+    "command.propose",
     DebugActionIntentID.unsupported,
   ]
 
@@ -47,8 +48,20 @@ final class ControlAvailabilityParityTests: XCTestCase {
           body: scrollBody)))
     XCTAssertLessThan(scroll.status, 400)
 
+    let proposeBody = Data(
+      #"{"action":"propose","command":"echo hi","targetSessionID":"\#(model.tabs[0].sessionId)"}"#
+        .utf8)
+    let propose = router.route(
+      .legacyDebugAction(
+        LegacyDebugActionInput(
+          intentID: "command.propose",
+          action: "propose",
+          body: proposeBody,
+          scopedSessionID: model.tabs[0].sessionId)))
+    XCTAssertLessThan(propose.status, 400)
+
     XCTAssertGreaterThanOrEqual(
-      router.route(.unsupportedDebugAction(UnsupportedDebugActionInput(action: "nope"))).status,
+      router.route(.tabSelect(TabSelectInput(tabId: "missing-tab"))).status,
       400)
   }
 }
