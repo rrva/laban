@@ -5575,8 +5575,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let alert = NSAlert()
       alert.alertStyle = .warning
       alert.messageText = L10n.tr("Paste too large")
-      alert.informativeText =
-        "Refusing to paste \(bytes) bytes (limit is \(TerminalClipboard.hardLimitBytes))."
+      alert.informativeText = String(
+        format: L10n.tr("Refusing to paste %lld bytes (limit is %lld)."),
+        bytes,
+        TerminalClipboard.hardLimitBytes
+      )
       alert.addButton(withTitle: L10n.tr("OK"))
       alert.runModal()
       EventLog.shared.log("paste.refused.size", ["bytes": bytes])
@@ -7434,16 +7437,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func revealCastInFinder(url: URL, seconds: Int) {
     let alert = NSAlert()
-    alert.messageText = "Exported last \(seconds) s to a cast file"
-    alert.informativeText = """
-      \(url.lastPathComponent)
-
-      Heads up: terminal output can contain secrets (tokens, keys, .env contents). \
-      Review the file before sharing it publicly.
-      """
-    alert.addButton(withTitle: "Open in Browser")
+    alert.messageText = String(
+      format: L10n.tr("Exported last %lld s to a cast file"),
+      seconds
+    )
+    alert.informativeText =
+      "\(url.lastPathComponent)\n\n"
+      + L10n.tr(
+        "Heads up: terminal output can contain secrets (tokens, keys, .env contents). Review the file before sharing it publicly."
+      )
+    alert.addButton(withTitle: L10n.tr("Open in Browser"))
     alert.addButton(withTitle: L10n.tr("Reveal in Finder"))
-    alert.addButton(withTitle: "Copy Path")
+    alert.addButton(withTitle: L10n.tr("Copy Path"))
     alert.addButton(withTitle: L10n.tr("Done"))
     switch alert.runModal() {
     case .alertFirstButtonReturn:
@@ -7562,7 +7567,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func showRenderJournalDisabledAlert(advice: String) {
     let alert = NSAlert()
-    alert.messageText = "Render Journal Is Disabled"
+    alert.messageText = L10n.tr("Render Journal Is Disabled")
     alert.informativeText = advice
     alert.addButton(withTitle: L10n.tr("OK"))
     alert.runModal()

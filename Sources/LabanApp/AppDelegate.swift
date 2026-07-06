@@ -359,11 +359,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   private func offerProfileViewer(for profileURL: URL, title: String = "Profile captured") {
     let alert = NSAlert()
     alert.messageText = title
-    alert.informativeText = """
-      \(profileURL.lastPathComponent)
-
-      Saved under ~/Library/Logs/Laban/profiles/. Where should it open?
-      """
+    alert.informativeText = "\(profileURL.lastPathComponent)\n\n" + L10n.tr("Saved under ~/Library/Logs/Laban/profiles/. Where should it open?")
     alert.addButton(withTitle: "Speedscope")
     alert.addButton(withTitle: "Firefox Profiler")
     alert.addButton(withTitle: L10n.tr("Reveal in Finder"))
@@ -562,11 +558,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     guard TerminalCJKFontPolicy.isUsableForCJKFallback(baseFont) else {
       NSSound.beep()
       let alert = NSAlert()
-      alert.messageText = "Font cannot render CJK text"
-      alert.informativeText =
-        "\(selected.displayName ?? selected.fontName) does not provide a usable "
-        + "Han glyph at the terminal size. Pick a font that includes simplified "
-        + "Chinese, traditional Chinese, Japanese, or Korean characters."
+      alert.messageText = L10n.tr("Font cannot render CJK text")
+      alert.informativeText = String(
+        format: L10n.tr(
+          "%@ does not provide a usable Han glyph at the terminal size. Pick a font that includes simplified Chinese, traditional Chinese, Japanese, or Korean characters."
+        ),
+        selected.displayName ?? selected.fontName
+      )
       alert.runModal()
       return
     }
@@ -640,8 +638,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     guard familyChanged else { return }
     let sizeText = String(format: "%.0f pt", new.pointSize)
     let alert = NSAlert()
-    alert.messageText = "Font set to \(new.displayName ?? new.fontName), \(sizeText)"
-    alert.informativeText = "Restart Laban to apply."
+    alert.messageText = String(
+      format: L10n.tr("Font set to %@, %@"),
+      new.displayName ?? new.fontName,
+      sizeText
+    )
+    alert.informativeText = L10n.tr("Restart Laban to apply.")
     alert.addButton(withTitle: L10n.tr("Restart Now"))  // .firstButtonReturn
     alert.addButton(withTitle: L10n.tr("Later"))  // .secondButtonReturn
     if alert.runModal() == .alertFirstButtonReturn {
@@ -751,7 +753,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
       AppLog.app.error("update check failed: \(error.localizedDescription)")
       EventLog.shared.log("update.check.failed", ["error": error.localizedDescription])
       showUpdateAlert(
-        title: "Update check failed",
+        title: L10n.tr("Update check failed"),
         message: error.localizedDescription
       )
     }
@@ -759,14 +761,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
 
   func showAvailableUpdate(_ manifest: UpdateManifest) {
     let alert = NSAlert()
-    alert.messageText = "Laban \(manifest.latest) is available"
-    var message = "You are running \(BuildInfo.version)."
+    alert.messageText = String(format: L10n.tr("Laban %@ is available"), manifest.latest)
+    var message = String(format: L10n.tr("You are running %@."), BuildInfo.version)
     if let notes = manifest.notes, !notes.isEmpty {
       message += "\n\n\(notes)"
     }
     alert.informativeText = message
-    alert.addButton(withTitle: "Open Download")
-    alert.addButton(withTitle: "Not Now")
+    alert.addButton(withTitle: L10n.tr("Open Download"))
+    alert.addButton(withTitle: L10n.tr("Not Now"))
     if alert.runModal() == .alertFirstButtonReturn {
       NSWorkspace.shared.open(manifest.downloadURL)
       EventLog.shared.log(

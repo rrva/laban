@@ -762,4 +762,90 @@ SUPPLEMENT_DE_PT_IT: dict[str, dict[str, str]] = {
         "pt-BR": "(não instalado)",
         "it": "(non installato)",
     },
+    "Font set to %@, %@": {
+        "de": "Schriftart auf %@, %@ eingestellt",
+        "pt-BR": "Fonte definida para %@, %@",
+        "it": "Font impostato su %@, %@",
+    },
+    "Restart Laban to apply.": {
+        "de": "Starte Laban neu, um die Änderungen anzuwenden.",
+        "pt-BR": "Reinicie o Laban para aplicar.",
+        "it": "Riavvia Laban per applicare.",
+    },
+    "Font cannot render CJK text": {
+        "de": "Schriftart kann CJK-Text nicht rendern",
+        "pt-BR": "A fonte não pode renderizar texto CJK",
+        "it": "Il font non può visualizzare testo CJK",
+    },
+    "%@ does not provide a usable Han glyph at the terminal size. Pick a font that includes simplified Chinese, traditional Chinese, Japanese, or Korean characters.": {
+        "de": "%@ bietet keine nutzbare Han-Glyphe in der Terminalgröße. Wähle eine Schriftart, die vereinfachtes Chinesisch, traditionelles Chinesisch, Japanisch oder Koreanisch enthält.",
+        "pt-BR": "%@ não fornece um glifo Han utilizável no tamanho do terminal. Escolha uma fonte que inclua caracteres em chinês simplificado, chinês tradicional, japonês ou coreano.",
+        "it": "%@ non fornisce un glifo Han utilizzabile alla dimensione del terminale. Scegli un font che includa caratteri cinesi semplificati, cinesi tradizionali, giapponesi o coreani.",
+    },
+    "Update check failed": {
+        "de": "Update-Prüfung fehlgeschlagen",
+        "pt-BR": "Falha na verificação de atualização",
+        "it": "Verifica aggiornamenti fallita",
+    },
+    "Laban %@ is available": {
+        "de": "Laban %@ ist verfügbar",
+        "pt-BR": "Laban %@ está disponível",
+        "it": "Laban %@ è disponibile",
+    },
+    "You are running %@.": {
+        "de": "Sie verwenden Version %@.",
+        "pt-BR": "Você está executando a versão %@.",
+        "it": "Stai eseguendo la versione %@.",
+    },
+    "Open Download": {
+        "de": "Download öffnen",
+        "pt-BR": "Abrir download",
+        "it": "Apri download",
+    },
+    "Not Now": {
+        "de": "Später",
+        "pt-BR": "Agora não",
+        "it": "Non ora",
+    },
+    "Exported last %lld s to a cast file": {
+        "de": "Die letzten %lld s in eine Cast-Datei exportiert",
+        "pt-BR": "Últimos %lld s exportados para um arquivo cast",
+        "it": "Ultimi %lld s esportati in un file cast",
+    },
+    "Heads up: terminal output can contain secrets (tokens, keys, .env contents). Review the file before sharing it publicly.": {
+        "de": "Achtung: Die Terminalausgabe kann Geheimnisse (Token, Schlüssel, .env-Inhalte) enthalten. Überprüfe die Datei, bevor du sie öffentlich teilst.",
+        "pt-BR": "Atenção: a saída do terminal pode conter segredos (tokens, chaves, conteúdos de .env). Revise o arquivo antes de compartilhá-lo publicamente.",
+        "it": "Attenzione: l'output del terminale può contenere segreti (token, chiavi, contenuti .env). Rivedi il file prima di condividerlo pubblicamente.",
+    },
+    "Open in Browser": {
+        "de": "Im Browser öffnen",
+        "pt-BR": "Abrir no Navegador",
+        "it": "Apri nel browser",
+    },
+    "Copy Path": {
+        "de": "Pfad kopieren",
+        "pt-BR": "Copiar Caminho",
+        "it": "Copia percorso",
+    },
+    "Render Journal Is Disabled": {
+        "de": "Render-Journal ist deaktiviert",
+        "pt-BR": "O Diário de Renderização está Desativado",
+        "it": "Il registro di rendering è disattivato",
+    },
+    "This launch is using a command-line or environment override. Remove that override for the saved menu choice to apply on restart.": {
+        "de": "Dieser Start verwendet ein Befehlszeilen- oder Umgebungs-Override. Entferne dieses Override, damit die gespeicherte Menüauswahl beim Neustart angewendet wird.",
+        "pt-BR": "Esta inicialização está usando uma substituição de linha de comando ou ambiente. Remova essa substituição para que a opção salva no menu se aplique ao reiniciar.",
+        "it": "Questo avvio utilizza un'opzione da riga di comando o di ambiente. Rimuovi tale opzione per applicare al riavvio la scelta salvata nel menu.",
+    },
+    "Refusing to paste %lld bytes (limit is %lld).": {
+        "de": "Einfügen von %lld Bytes abgelehnt (Limit ist %lld).",
+        "pt-BR": "Recusando colar %lld bytes (o limite é %lld).",
+        "it": "Incolla rifiutato per %lld byte (il limite è %lld).",
+    },
+    "Saved under ~/Library/Logs/Laban/profiles/. Where should it open?": {
+        "de": "Gespeichert unter ~/Library/Logs/Laban/profiles/. Wo soll es geöffnet werden?",
+        "pt-BR": "Salvo em ~/Library/Logs/Laban/profiles/. Onde deve ser aberto?",
+        "it": "Salvato in ~/Library/Logs/Laban/profiles/. Dove aprirlo?",
+    },
 }
+
