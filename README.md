@@ -168,3 +168,4 @@ in full in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md):
   statically linked.
 - JetBrains Mono — SIL Open Font License 1.1; see
   [`Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt`](Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt).
+
