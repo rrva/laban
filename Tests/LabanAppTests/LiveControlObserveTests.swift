@@ -73,6 +73,8 @@ final class LiveControlObserveTests: XCTestCase {
     XCTAssertFalse(tabs.isEmpty)
     for tab in tabs {
       XCTAssertNil(tab["progress"])
+      XCTAssertNil(tab["terminalTitle"])
+      XCTAssertNil(tab["userTitle"])
       let agent = try XCTUnwrap(tab["agent"] as? [String: Any])
       XCTAssertNil(agent["agentName"])
       XCTAssertNil(agent["taskLabel"])
@@ -81,6 +83,28 @@ final class LiveControlObserveTests: XCTestCase {
     let raw = String(data: data, encoding: .utf8) ?? ""
     XCTAssertFalse(raw.contains("secret-needle"))
     _ = ownSessionID
+  }
+
+  func testSessionObserveSelectionUsesEnvironmentProvider() throws {
+    let model = try AppModel()
+    _ = try model.createTab()
+    let sessionID = try XCTUnwrap(model.tabs.first?.sessionId)
+    let selection = TerminalSelection(
+      sessionId: sessionID,
+      anchor: TerminalCellCoordinate(row: 0, col: 0),
+      focus: TerminalCellCoordinate(row: 0, col: 3))
+    var environment = LiveControlEnvironment.default(model: model)
+    environment.selectionProvider = { _ in selection }
+    let router = LiveIntentRouter(model: model, environment: environment)
+
+    let response = router.query(
+      LegacyDebugQueryInput(
+        intentID: "selection.read",
+        scopedSessionID: sessionID))
+    XCTAssertEqual(response.status, 200)
+    let json = try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
+    XCTAssertEqual(json["active"] as? Bool, true)
+    XCTAssertEqual(json["sessionId"] as? String, sessionID)
   }
 
   func testSessionObserveTerminalModesUsesScopedTabNotActiveTab() throws {

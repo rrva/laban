@@ -86,9 +86,6 @@ final class ControlDefaultOnTests: XCTestCase {
   }
 
   func testAgentAttachedLaunchContextCarriesSingleUseBootstrap() throws {
-    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
-    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
-
     let coordinator = ControlSessionLaunchCoordinator()
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
     let start = try server.start()
@@ -128,8 +125,9 @@ final class ControlDefaultOnTests: XCTestCase {
     XCTAssertEqual(ownStatus, 200)
   }
 
-  func testAgentAttachedLaunchOmitsBootstrapWithoutEnvOptIn() throws {
+  func testAgentAttachedLaunchInjectsBootstrapWithoutGlobalEnvOptIn() throws {
     unsetenv(ControlEnvironmentKeys.attachEnvOptIn)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
 
     let coordinator = ControlSessionLaunchCoordinator()
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
@@ -138,15 +136,12 @@ final class ControlDefaultOnTests: XCTestCase {
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
     let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
-    XCTAssertNil(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach])
-    XCTAssertNil(context.sessionObserveBootstrap)
+    XCTAssertNotNil(context.sessionObserveBootstrap)
+    XCTAssertNotNil(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach])
     XCTAssertTrue(context.isAgentAttached)
   }
 
   func testAttachRedeemRequiresShellPIDRegistration() throws {
-    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
-    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
-
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
     let start = try server.start()
     defer { server.stop() }
@@ -175,12 +170,17 @@ final class ControlDefaultOnTests: XCTestCase {
 
   func testPreallocatedSessionIDMatchesRedeemedScope() throws {
     let coordinator = ControlSessionLaunchCoordinator()
+    var attachBootstrap: String?
     let model = try AppModel(
       sessionLaunchContextProvider: { tabId, isAgentAttached in
-        coordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+        let context = coordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+        attachBootstrap = context.sessionObserveBootstrap
+        return context
       },
       sessionFactory: { size, context in
-        try Session.fixture(size: size, sessionID: context.sessionID)
+        let session = try Session.fixture(size: size, sessionID: context.sessionID)
+        coordinator.tryRegisterShellPID(sessionID: context.sessionID, session: session)
+        return session
       })
     let router = LiveIntentRouter(model: model)
     let server = LabanControlServer(router: router, surface: .gui)
@@ -189,7 +189,7 @@ final class ControlDefaultOnTests: XCTestCase {
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
     let tab = try model.createAgentAttachedTab()
-    let bootstrap = server.mintSessionAttachBootstrap(sessionID: tab.sessionId)
+    let bootstrap = try XCTUnwrap(attachBootstrap)
     server.registerAttachShellPID(
       sessionID: tab.sessionId,
       shellPID: ProcessInfo.processInfo.processIdentifier)

@@ -128,11 +128,13 @@ final class MainWindowController: NSWindowController {
         case .inProcess:
           let launch = spawnLaunch()
           let env = Self.mergeLaunchEnvironment(launch.environmentOverrides, context: context)
-          return try Session.realShell(
+          let session = try Session.realShell(
             size: size,
             environment: env,
             launchArgv: shellLaunch.argv,
             sessionID: context.sessionID)
+          launchCoordinator.tryRegisterShellPID(sessionID: context.sessionID, session: session)
+          return session
         case .laband:
           return try Session.fixture(size: size, sessionID: context.sessionID)
         case .labpty:
@@ -145,11 +147,7 @@ final class MainWindowController: NSWindowController {
     let priorTabCreated = model.onTabCreated
     model.onTabCreated = { tabId, session in
       priorTabCreated?(tabId, session)
-      if let childPid = session.processMetadata()?.childPid {
-        controlLaunchCoordinator.noteSessionShellStarted(
-          sessionID: session.id,
-          shellPID: pid_t(childPid))
-      }
+      controlLaunchCoordinator.tryRegisterShellPID(sessionID: session.id, session: session)
     }
     let isPersistenceEnabled = {
       persistenceSyncEnabled && RestoreOnLaunchSettings.isEnabled
@@ -220,6 +218,7 @@ final class MainWindowController: NSWindowController {
         let warning = "\r\n[restore failed: shell did not start in \(spec.cwd)]\r\n"
         _ = session.feedOutput(Array(warning.utf8))
       }
+      launchCoordinator.tryRegisterShellPID(sessionID: context.sessionID, session: session)
       return session
     }
     // Simple fallback for restored tabs that don't have a deferred
@@ -232,12 +231,14 @@ final class MainWindowController: NSWindowController {
         let env = Self.mergeLaunchEnvironment(
           spawnLaunch().environmentOverrides,
           context: context)
-        return try Session.realShell(
+        let session = try Session.realShell(
           size: size,
           cwd: cwd,
           environment: env,
           launchArgv: shellLaunch.argv,
           sessionID: context.sessionID)
+        launchCoordinator.tryRegisterShellPID(sessionID: context.sessionID, session: session)
+        return session
       }
     }
 
@@ -253,12 +254,14 @@ final class MainWindowController: NSWindowController {
         let env = Self.mergeLaunchEnvironment(
           spawnLaunch().environmentOverrides,
           context: context)
-        return try Session.realShell(
+        let session = try Session.realShell(
           size: size,
           cwd: cwd,
           environment: env,
           launchArgv: shellLaunch.argv,
           sessionID: context.sessionID)
+        launchCoordinator.tryRegisterShellPID(sessionID: context.sessionID, session: session)
+        return session
       }
     }
 
@@ -274,19 +277,23 @@ final class MainWindowController: NSWindowController {
         let env = Self.mergeLaunchEnvironment(
           spawnLaunch().environmentOverrides,
           context: context)
+        let session: Session
         if let cwd {
-          return try Session.realShell(
+          session = try Session.realShell(
             size: size,
             cwd: cwd,
             environment: env,
             launchArgv: argv,
             sessionID: context.sessionID)
+        } else {
+          session = try Session.realShell(
+            size: size,
+            environment: env,
+            launchArgv: argv,
+            sessionID: context.sessionID)
         }
-        return try Session.realShell(
-          size: size,
-          environment: env,
-          launchArgv: argv,
-          sessionID: context.sessionID)
+        launchCoordinator.tryRegisterShellPID(sessionID: context.sessionID, session: session)
+        return session
       }
     }
     sessionCoordinator?.argvProvider = { [weak model] tabId in
@@ -704,6 +711,7 @@ final class MainWindowController: NSWindowController {
 
   func refreshLiveControlEnvironment() {
     guard let model, let termView = terminalView else { return }
+    controlSessionLaunchCoordinator.retryPendingShellRegistrations(in: model)
     let opts = termView.accessibilityDisplayOptionsForTesting
     liveControlRouter?.updateEnvironment(
       LiveControlEnvironment(
@@ -718,7 +726,9 @@ final class MainWindowController: NSWindowController {
           increaseContrast: opts.increaseContrast,
           differentiateWithoutColor: opts.differentiateWithoutColor,
           reduceTransparency: opts.reduceTransparency),
-        selectionProvider: { _ in nil },
+        selectionProvider: { sessionID in
+          termView.terminalSelection(forSessionID: sessionID, model: model)
+        },
         accessibilityValueProvider: { tab in
           guard let session = model.session(forTab: tab.id), let snap = session.snapshot() else {
             return ""

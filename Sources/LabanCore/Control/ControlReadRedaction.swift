@@ -9,7 +9,8 @@ public enum ControlReadRedaction: String, Sendable, Equatable, Codable {
 }
 
 public enum ControlSessionAttachPolicy {
-  /// C10 env-secrecy fallback: bootstrap injection is opt-in until the macOS/SIP matrix gate passes.
+  /// Optional global gate for attach bootstrap injection outside explicit
+  /// `isAgentAttached` launches (C10 env-secrecy fallback for future paths).
   public static var injectBootstrapIntoEnvironment: Bool {
     ProcessInfo.processInfo.environment[ControlEnvironmentKeys.attachEnvOptIn] == "1"
   }
