@@ -70,6 +70,10 @@ enum ProfileCapture {
 
     try demangle.run()
     try curl.run()
+
+    // Read the output from the pipe before waiting, to prevent buffer-saturation deadlocks
+    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+
     curl.waitUntilExit()
     demangle.waitUntilExit()
 
@@ -78,7 +82,7 @@ enum ProfileCapture {
         .trimmingCharacters(in: .whitespacesAndNewlines)
       throw ProfileCaptureError.captureFailed(detail?.isEmpty == false ? detail! : "curl or demangle failed")
     }
-    return outPipe.fileHandleForReading.readDataToEndOfFile()
+    return data
   }
 
   static func newExportURL(prefix: String = "") throws -> URL {
@@ -207,7 +211,7 @@ enum ProfileCapture {
     viewerLock.unlock()
   }
 
-  private static func respondWithProfile(clientFD: Int32, fileName: String, fileData: Data) {
+  static func respondWithProfile(clientFD: Int32, fileName: String, fileData: Data) {
     var raw = Data()
     var buf = [UInt8](repeating: 0, count: 4096)
     while raw.count < 16 * 1024 {
@@ -217,10 +221,26 @@ enum ProfileCapture {
       if raw.range(of: Data("\r\n\r\n".utf8)) != nil { break }
     }
 
+    let requestStr = String(data: raw, encoding: .utf8) ?? ""
+    var allowedOrigin = "https://www.speedscope.app"
+    let lines = requestStr.split(separator: "\r\n")
+    for line in lines {
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      if trimmed.lowercased().hasPrefix("origin:") {
+        let parts = trimmed.split(separator: ":", maxSplits: 1)
+        if parts.count == 2 {
+          let originValue = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+          if originValue == "https://www.speedscope.app" || originValue == "https://profiler.firefox.com" {
+            allowedOrigin = originValue
+          }
+        }
+      }
+    }
+
     let body = fileData
     let header = """
       HTTP/1.1 200 OK\r
-      Access-Control-Allow-Origin: *\r
+      Access-Control-Allow-Origin: \(allowedOrigin)\r
       Content-Type: application/octet-stream\r
       Content-Disposition: inline; filename="\(fileName)"\r
       Connection: close\r
