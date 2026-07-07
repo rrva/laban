@@ -5,8 +5,13 @@ import LabanTerminalCore
 
 public enum ControlStateProjections {
   public static func stateResponse(_ ctx: ControlProjectionContext) -> StateResponse {
-    if ctx.readRedaction == .appObserveSummary {
+    switch ctx.readRedaction {
+    case .appObserveSummary:
       return appObserveStateResponse(ctx)
+    case .sessionObserveSummary:
+      return sessionObserveStateResponse(ctx)
+    case .none:
+      break
     }
     let tabs = filteredTabs(ctx).enumerated().map { index, tab in
       tabResponse(for: tab, index: index, ctx: ctx)
@@ -306,7 +311,7 @@ public enum ControlStateProjections {
 
   private static func appObserveStateResponse(_ ctx: ControlProjectionContext) -> StateResponse {
     let tabs = ctx.model.tabs.enumerated().map { index, tab in
-      tabResponse(for: tab, index: index, ctx: ctx, redactSensitiveMetadata: true)
+      tabResponse(for: tab, index: index, ctx: ctx, redaction: .appObserveSummary)
     }
     let activeTab = ctx.model.activeTab
     return StateResponse(
@@ -318,6 +323,28 @@ public enum ControlStateProjections {
       activeSessionId: activeTab?.sessionId,
       findStateBySession: [:],
       cursorSettings: cursorSettingsResponse(activeTab: activeTab, ctx: ctx),
+      emojiRendering: emojiRenderingSettingsResponse(),
+      attentionNotifications: [])
+  }
+
+  private static func sessionObserveStateResponse(_ ctx: ControlProjectionContext) -> StateResponse {
+    let tabs = filteredTabs(ctx).enumerated().map { index, tab in
+      tabResponse(for: tab, index: index, ctx: ctx, redaction: .sessionObserveSummary)
+    }
+    let activeTab = ctx.model.activeTab
+    let scopedActiveTab: Tab? = {
+      guard let scoped = ctx.scopedSessionID else { return activeTab }
+      return ctx.model.tabs.first { $0.sessionId == scoped }
+    }()
+    return StateResponse(
+      mode: ctx.mode,
+      frame: ctx.frame,
+      window: WindowResponse(width: ctx.windowWidth, height: ctx.windowHeight, focused: true),
+      tabs: tabs,
+      activeTabId: scopedActiveTab?.id ?? activeTab?.id,
+      activeSessionId: scopedActiveTab?.sessionId ?? activeTab?.sessionId,
+      findStateBySession: [:],
+      cursorSettings: cursorSettingsResponse(activeTab: scopedActiveTab ?? activeTab, ctx: ctx),
       emojiRendering: emojiRenderingSettingsResponse(),
       attentionNotifications: [])
   }
@@ -337,21 +364,23 @@ public enum ControlStateProjections {
     for tab: Tab,
     index: Int,
     ctx: ControlProjectionContext,
-    redactSensitiveMetadata: Bool = false
+    redaction: ControlReadRedaction = .none
   ) -> TabResponse {
     let metadata = tab.titleMetadata
     let status = ctx.model.session(forTab: tab.id) != nil ? tab.status.debugString : "failed"
+    let redactSensitiveMetadata = redaction != .none
+    let redactTitles = redaction == .sessionObserveSummary
     let agent = redactSensitiveMetadata ? TabAgentMetadata() : metadata.agent
     let progress = redactSensitiveMetadata ? nil : metadata.progress
     return TabResponse(
       id: tab.id,
       index: index,
-      title: metadata.displayTitle,
-      displayTitle: metadata.displayTitle,
-      titleSource: metadata.titleSource.rawValue,
+      title: redactTitles ? "" : metadata.displayTitle,
+      displayTitle: redactTitles ? "" : metadata.displayTitle,
+      titleSource: redactTitles ? "" : metadata.titleSource.rawValue,
       terminalTitle: redactSensitiveMetadata ? nil : metadata.terminalTitle,
       userTitle: redactSensitiveMetadata ? nil : metadata.userTitle,
-      titleFrozen: metadata.titleFrozen,
+      titleFrozen: redactTitles ? false : metadata.titleFrozen,
       activityState: metadata.activityState.rawValue,
       lastActivityAt: tab.lastActivityAt,
       lastOutputAt: tab.lastOutputAt,
@@ -361,8 +390,8 @@ public enum ControlStateProjections {
       exitStatus: metadata.exitStatus,
       shellPhase: metadata.shellPhase.rawValue,
       lastCommandExitCode: metadata.lastCommandExitCode,
-      workspace: metadata.workspace,
-      process: metadata.process,
+      workspace: redactTitles ? TabWorkspaceMetadata() : metadata.workspace,
+      process: redactTitles ? TabProcessMetadata() : metadata.process,
       agent: agent,
       progress: progress,
       active: tab.isActive,
@@ -374,9 +403,7 @@ public enum ControlStateProjections {
   private static func tabResponse(for tab: Tab, index: Int, ctx: ControlProjectionContext)
     -> TabResponse
   {
-    tabResponse(
-      for: tab, index: index, ctx: ctx,
-      redactSensitiveMetadata: ctx.readRedaction == .appObserveSummary)
+    tabResponse(for: tab, index: index, ctx: ctx, redaction: ctx.readRedaction)
   }
 
   private static func cursorSettingsResponse(

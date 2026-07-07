@@ -49,6 +49,7 @@ public final class LabanControlServer {
   }
 
   private static let requestReadTimeout: TimeInterval = 5
+  private static let attachedConnectionReadTimeout: TimeInterval = 300
   private static let maxHeaderBytes = 64 * 1024
   private static let maxBodyBytes = 4 * 1024 * 1024
 
@@ -153,24 +154,35 @@ public final class LabanControlServer {
     }
   }
 
+  public enum SessionAttachRedeemResult {
+    case success(sessionID: String)
+    case pending
+    case invalid
+  }
+
   /// Redeems a bootstrap once, binding session-observe auth to the redeeming connection (C14).
-  public func redeemSessionAttachBootstrap(_ bootstrap: String, peerPID: pid_t) -> String? {
+  public func redeemSessionAttachBootstrap(
+    _ bootstrap: String,
+    peerPID: pid_t
+  ) -> SessionAttachRedeemResult {
     attachLock.lock()
     guard var entry = attachBootstraps[bootstrap], !entry.consumed else {
       attachLock.unlock()
-      return nil
+      return .invalid
     }
-    guard let shellPID = entry.shellPID,
-      Self.isAllowedAttachRedeemer(peerPID: peerPID, shellPID: shellPID)
-    else {
+    guard let shellPID = entry.shellPID else {
       attachLock.unlock()
-      return nil
+      return .pending
+    }
+    guard Self.isAllowedAttachRedeemer(peerPID: peerPID, shellPID: shellPID) else {
+      attachLock.unlock()
+      return .invalid
     }
     entry.consumed = true
     attachBootstraps[bootstrap] = entry
     let sessionID = entry.sessionID
     attachLock.unlock()
-    return sessionID
+    return .success(sessionID: sessionID)
   }
 
   #if DEBUG
@@ -490,6 +502,7 @@ public final class LabanControlServer {
           peerPID: peerPID)
         if let boundTier {
           connectionTier = boundTier
+          setReceiveTimeout(clientFD, timeout: LabanControlServer.attachedConnectionReadTimeout)
         }
         send(clientFD, response, persistSession: connectionTier != nil)
         if connectionTier == nil { break requestLoop }
@@ -542,11 +555,14 @@ public final class LabanControlServer {
     return evaluateAuthorization(peerOutcome: .ok, authorization: authorization)
   }
 
-  private func readHTTPRequest(_ clientFD: Int32) -> ParseResult {
+  private func readHTTPRequest(
+    _ clientFD: Int32,
+    timeout: TimeInterval = LabanControlServer.requestReadTimeout
+  ) -> ParseResult {
     var raw = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
     var headerEnd = -1
-    let headerDeadline = Date().addingTimeInterval(Self.requestReadTimeout)
+    let headerDeadline = Date().addingTimeInterval(timeout)
     while raw.count < Self.maxHeaderBytes {
       if Date() > headerDeadline { return .badRequest }
       let n = recv(clientFD, &buffer, buffer.count, 0)
@@ -588,7 +604,7 @@ public final class LabanControlServer {
     }
 
     var body = Data(raw[headerEnd...].prefix(contentLength))
-    let bodyDeadline = Date().addingTimeInterval(Self.requestReadTimeout)
+    let bodyDeadline = Date().addingTimeInterval(timeout)
     while body.count < contentLength {
       if Date() > bodyDeadline { return .badRequest }
       let need = min(contentLength - body.count, 4096)
@@ -622,22 +638,26 @@ public final class LabanControlServer {
     else {
       return (.error(400, "bad request"), nil)
     }
-    guard let sessionID = redeemSessionAttachBootstrap(bootstrap, peerPID: peerPID) else {
+    switch redeemSessionAttachBootstrap(bootstrap, peerPID: peerPID) {
+    case .success(let sessionID):
+      reportAttachAuthorize(sessionID: sessionID)
+      let payload: [String: Any] = [
+        "ok": true,
+        "sessionID": sessionID,
+      ]
+      guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+      else {
+        return (.error(500, "internal error"), nil)
+      }
+      return (
+        ControlResponse(status: 200, contentType: "application/json", body: data),
+        .sessionObserve(sessionID: sessionID)
+      )
+    case .pending:
+      return (.error(425, "too early"), nil)
+    case .invalid:
       return (.error(401, "invalid or spent bootstrap"), nil)
     }
-    reportAttachAuthorize(sessionID: sessionID)
-    let payload: [String: Any] = [
-      "ok": true,
-      "sessionID": sessionID,
-    ]
-    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-    else {
-      return (.error(500, "internal error"), nil)
-    }
-    return (
-      ControlResponse(status: 200, contentType: "application/json", body: data),
-      .sessionObserve(sessionID: sessionID)
-    )
   }
 
   private func route(
@@ -794,7 +814,8 @@ public final class LabanControlServer {
     let readRedaction: ControlReadRedaction =
       switch tokenTier {
       case .appObserve: .appObserveSummary
-      case .sessionObserve, .fixture: .none
+      case .sessionObserve: .sessionObserveSummary
+      case .fixture: .none
       }
     return LegacyDebugQueryInput(
       intentID: intentID,
@@ -978,10 +999,13 @@ public final class LabanControlServer {
     }
   }
 
-  private func setReceiveTimeout(_ clientFD: Int32) {
-    var timeout = timeval(tv_sec: Int(Self.requestReadTimeout), tv_usec: 0)
+  private func setReceiveTimeout(
+    _ clientFD: Int32,
+    timeout: TimeInterval = LabanControlServer.requestReadTimeout
+  ) {
+    var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
     setsockopt(
-      clientFD, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+      clientFD, SOL_SOCKET, SO_RCVTIMEO, &tv,
       socklen_t(MemoryLayout<timeval>.size))
   }
 
@@ -994,6 +1018,8 @@ public final class LabanControlServer {
     case 404: return "Not Found"
     case 405: return "Method Not Allowed"
     case 413: return "Payload Too Large"
+    case 425: return "Too Early"
+    case 429: return "Too Many Requests"
     case 500: return "Internal Server Error"
     case 501: return "Not Implemented"
     default: return "Unknown"

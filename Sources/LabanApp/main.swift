@@ -1,4 +1,5 @@
 import AppKit
+import LabanCore
 
 #if canImport(ProfileRecorderServer)
   import ProfileRecorderServer
@@ -25,7 +26,8 @@ func usage() -> String {
                                control surface (default port 8787) and write a
                                viewport trace under
                                ~/Library/Logs/Laban/scroll-trace/. Debug-only.
-    --agent-attached-session   Open the first tab as agent-attached (C13/C14).
+    --agent-attached-session   Open the first tab as agent-attached (C13/C14)
+                               and opt it into LABAN_CONTROL_ATTACH_ENV=1.
     --profile-recorder[=<url>]  Enable the in-process sampling profiler. With no
                                value, listens under ~/Library/Application Support/
                                Laban/profiling/. Overrides the Settings toggle and
@@ -38,6 +40,12 @@ func usage() -> String {
 if CommandLine.arguments.contains("--help") || CommandLine.arguments.contains("-h") {
   print(usage())
   exit(0)
+}
+
+// --agent-attached-session is the dev/E2E CLI entry point for C14 attach;
+// it opts the first tab into both agent-attached mode and env bootstrap delivery.
+if CommandLine.arguments.contains("--agent-attached-session") {
+  setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
 }
 
 let smokeMode =

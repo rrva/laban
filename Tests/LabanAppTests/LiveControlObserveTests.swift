@@ -163,6 +163,43 @@ final class LiveControlObserveTests: XCTestCase {
     _ = otherSessionID
   }
 
+  func testSessionObserveStateRedactsTitlesAndMetadata() throws {
+    let (model, router, ownSessionID, _) = try makeModelRouterAndSessions()
+    let tab = model.tabs.first { $0.sessionId == ownSessionID }!
+    try model.renameTab(tab.id, title: "secret-own-title")
+    try model.updateTitleMetadata(
+      forTab: tab.id,
+      workspace: TabWorkspaceMetadata(cwd: "/secret/path"),
+      process: TabProcessMetadata(foregroundProcess: "secret-process"))
+
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let sessionToken = server.mintSessionObserveToken(sessionID: ownSessionID)
+    let (status, data) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/state",
+      token: sessionToken)
+    XCTAssertEqual(status, 200)
+
+    let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let tabs = try XCTUnwrap(json["tabs"] as? [[String: Any]])
+    XCTAssertEqual(tabs.count, 1)
+    let ownTab = tabs[0]
+    XCTAssertEqual(ownTab["sessionId"] as? String, ownSessionID)
+    XCTAssertEqual(ownTab["title"] as? String, "")
+    XCTAssertEqual(ownTab["displayTitle"] as? String, "")
+    XCTAssertNil(ownTab["terminalTitle"])
+    XCTAssertNil(ownTab["userTitle"])
+    let workspace = try XCTUnwrap(ownTab["workspace"] as? [String: Any])
+    XCTAssertNil(workspace["cwd"])
+    let process = try XCTUnwrap(ownTab["process"] as? [String: Any])
+    XCTAssertNil(process["foregroundProcess"])
+    let agent = try XCTUnwrap(ownTab["agent"] as? [String: Any])
+    XCTAssertNil(agent["agentName"])
+  }
+
   func testAppObserveTokenAllowsTerminalModes200() throws {
     let (model, router, _, _) = try makeModelRouterAndSessions()
     _ = model
@@ -202,6 +239,38 @@ final class LiveControlObserveTests: XCTestCase {
       token: start.appObserveToken,
       body: Data(#"{"action":"selectTab","index":0}"#.utf8))
     XCTAssertEqual(selectTab.0, 404)
+  }
+
+  func testGUIDiscoveryAndHealthEndpointsReturn200() throws {
+    let (model, router, _, _) = try makeModelRouterAndSessions()
+    _ = model
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let (discoveryStatus, discoveryData) = try request(
+      socketPath: start.socketPath,
+      path: "/debug",
+      token: start.appObserveToken)
+    XCTAssertEqual(discoveryStatus, 200)
+    let discoveryJSON = try JSONSerialization.jsonObject(with: discoveryData) as? [String: Any]
+    XCTAssertEqual(discoveryJSON?["mode"] as? String, "gui")
+    XCTAssertEqual(discoveryJSON?["name"] as? String, "laban-debug")
+
+    let (capabilitiesStatus, _) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/capabilities",
+      token: start.appObserveToken)
+    XCTAssertEqual(capabilitiesStatus, 200)
+
+    let (healthStatus, healthData) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/health",
+      token: start.appObserveToken)
+    XCTAssertEqual(healthStatus, 200)
+    let healthJSON = try JSONSerialization.jsonObject(with: healthData) as? [String: Any]
+    XCTAssertEqual(healthJSON?["mode"] as? String, "gui")
+    XCTAssertEqual(healthJSON?["ok"] as? Bool, true)
   }
 
   private func makeModelRouterAndSessions() throws -> (

@@ -50,7 +50,8 @@ final class LabanControlPolicyTests: XCTestCase {
         LegacyDebugQueryInput(
           intentID: "session.detail",
           params: ["sessionId": ownSession],
-          scopedSessionID: ownSession)
+          scopedSessionID: ownSession,
+          readRedaction: .sessionObserveSummary)
       ])
 
     router.reset()

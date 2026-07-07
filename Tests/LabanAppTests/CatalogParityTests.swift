@@ -21,6 +21,9 @@ final class CatalogParityTests: XCTestCase {
     "selection.read",
     "terminal.scrollViewport",
     "command.propose",
+    "debug.discovery",
+    "debug.capabilities",
+    "debug.health",
     "debug.action.unsupported",
   ]
 
