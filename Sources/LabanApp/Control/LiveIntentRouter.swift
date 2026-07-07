@@ -272,7 +272,8 @@ final class LiveIntentRouter: IntentRouter {
       scopedSessionID: scopedSessionID,
       readRedaction: readRedaction,
       clientSnapshotProvider: nil,
-      accessibilityValueProvider: { [environment] tab in environment.accessibilityValueProvider(tab) })
+      accessibilityValueProvider: { [environment] tab in environment.accessibilityValueProvider(tab)
+      })
   }
 
   private func json<T: Encodable>(_ value: T, status: Int = 200) -> ControlResponse {

@@ -180,7 +180,8 @@ public final class AppModel {
   /// otherwise ignored — useful for headless tests where every session
   /// is a fixture. Production wires this to a wrapper around
   /// `Session.realShell(size:, cwd:)`.
-  public var restoredSessionFactory: ((LabanTerminalSize, String, SessionLaunchContext) throws -> Session)?
+  public var restoredSessionFactory:
+    ((LabanTerminalSize, String, SessionLaunchContext) throws -> Session)?
 
   /// Factory for a brand-new (⌘T) tab spawned in an explicit cwd — the active
   /// tab's working directory — so a new tab opens where you currently are
@@ -190,7 +191,8 @@ public final class AppModel {
   /// longer exists, `createTab` falls back to the default `sessionFactory`
   /// (the prior behavior). Production wires this to `Session.realShell(size:,
   /// cwd:)`; headless tests leave it nil unless exercising inheritance.
-  public var newTabSessionFactory: ((LabanTerminalSize, String, SessionLaunchContext) throws -> Session)?
+  public var newTabSessionFactory:
+    ((LabanTerminalSize, String, SessionLaunchContext) throws -> Session)?
 
   /// Factory for a tab that runs a caller-supplied argv (argv[0] is the
   /// executable) instead of the login shell — the "run argv in a new tab"
@@ -200,7 +202,8 @@ public final class AppModel {
   /// for the daemon backends the returned session is parser-only and the
   /// daemon launches `argv`, which it reads back via `launchArgv(forTab:)`.
   /// When nil, `createTab(runningArgv:)` falls back to the default factory.
-  public var commandSessionFactory: ((LabanTerminalSize, String?, [String], SessionLaunchContext) throws -> Session)?
+  public var commandSessionFactory:
+    ((LabanTerminalSize, String?, [String], SessionLaunchContext) throws -> Session)?
 
   /// Richer restore-time factory. When set, takes precedence over
   /// `restoredSessionFactory`. The spec carries enough state for the
@@ -287,7 +290,8 @@ public final class AppModel {
   public init(
     initialSize: LabanTerminalSize = defaultSize(),
     sessionLaunchContextProvider: ((Tab.ID?, Bool) -> SessionLaunchContext)? = nil,
-    sessionFactory: @escaping (LabanTerminalSize, SessionLaunchContext) throws -> Session = { size, context in
+    sessionFactory: @escaping (LabanTerminalSize, SessionLaunchContext) throws -> Session = {
+      size, context in
       try Session.fixture(size: size, sessionID: context.sessionID)
     }
   ) throws {
@@ -1863,7 +1867,9 @@ public final class AppModel {
     Int32(max(minimum, min(value, Int(Int32.max))))
   }
 
-  private func launchContext(tabId: Tab.ID? = nil, isAgentAttached: Bool = false) -> SessionLaunchContext {
+  private func launchContext(tabId: Tab.ID? = nil, isAgentAttached: Bool = false)
+    -> SessionLaunchContext
+  {
     sessionLaunchContextProvider?(tabId, isAgentAttached)
       ?? .fresh(tabID: tabId, isAgentAttached: isAgentAttached)
   }

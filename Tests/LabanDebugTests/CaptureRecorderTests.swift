@@ -168,10 +168,10 @@ final class CaptureRecorderTests: XCTestCase {
         attributes: [],
         source: .terminal),
     ]
-    let captured = FrameCommandCaptureCodec.serialized(original)
-    let json = try FrameCommandCaptureCodec.encoder.encode(captured)
-    let decoded = try JSONDecoder().decode([CapturedFrameCommand].self, from: json)
-    let restored = FrameCommandCaptureCodec.commands(from: decoded)
+    let captured = LabanCore.FrameCommandCaptureCodec.serialized(original)
+    let json = try LabanCore.FrameCommandCaptureCodec.encoder.encode(captured)
+    let decoded = try JSONDecoder().decode([LabanCore.CapturedFrameCommand].self, from: json)
+    let restored: [FrameCommand] = LabanCore.FrameCommandCaptureCodec.commands(from: decoded)
     XCTAssertEqual(restored.count, 2)
     if case .glyphRun(_, let text, _, _, let attrs, _, _, _, _, _) = restored[0] {
       XCTAssertEqual(text, "X")

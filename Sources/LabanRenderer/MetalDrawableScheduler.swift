@@ -52,7 +52,7 @@ final class MetalDrawableScheduler {
     // tick and locks the cadence at half rate (the demand-over-capacity
     // queueing cliff: ~120 frames/s demanded vs ~117 sustainable).
     let timeout: DispatchTime =
-      (needsFullFrame && !dropIfBusy) ? .now() + .milliseconds(16) : .now()
+      (needsFullFrame || !dropIfBusy) ? .now() + .milliseconds(16) : .now()
     guard frameInFlight.wait(timeout: timeout) == .success else {
       return nil
     }

@@ -455,7 +455,7 @@ final class LabanControlServerTests: XCTestCase {
 
     server.registerAttachShellPID(
       sessionID: "sess-1",
-      shellPID: ProcessInfo.processInfo.processIdentifier)
+      shellPID: getppid())
     let (registeredStatus, body) = try request(
       socketPath: socketPath,
       path: LabanControlServer.sessionAttachPath,
@@ -477,7 +477,7 @@ final class LabanControlServerTests: XCTestCase {
     let bootstrap = server.mintSessionAttachBootstrap(sessionID: "sess-bound")
     server.registerAttachShellPID(
       sessionID: "sess-bound",
-      shellPID: ProcessInfo.processInfo.processIdentifier)
+      shellPID: getppid())
 
     let (fd, sessionID) = try ControlUDSClient.redeemAttachBootstrap(
       socketPath: socketPath,
@@ -497,9 +497,9 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(unauthStatus, 401)
   }
 
-  func testAttachRedeemAllowsShellOrDirectChild() {
+  func testAttachRedeemAllowsOnlyDirectShellChild() {
     let selfPID = ProcessInfo.processInfo.processIdentifier
-    XCTAssertTrue(
+    XCTAssertFalse(
       LabanControlServer.isAllowedAttachRedeemer(peerPID: selfPID, shellPID: selfPID))
     XCTAssertTrue(
       LabanControlServer.isAllowedAttachRedeemer(

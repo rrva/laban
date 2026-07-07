@@ -261,7 +261,8 @@ final class ControlSecurityFloorTests: XCTestCase {
     ]
     let skipNames: Set<String> = ["control.json"]
     for root in roots {
-      guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
+      guard
+        let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
       else { continue }
       for case let url as URL in enumerator {
         if skipNames.contains(url.lastPathComponent) { continue }

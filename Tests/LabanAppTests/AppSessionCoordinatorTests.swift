@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LabanControl
 import LabanCore
 import LabanRenderer
 import LabanTerminalCore
@@ -9,6 +10,136 @@ import os
 @testable import LabanApp
 
 final class AppSessionCoordinatorTests: XCTestCase {
+  func testDaemonAgentAttachedSessionRedeemsC14FromOptInChildEnv() throws {
+    let labandURL = URL(fileURLWithPath: ".build/debug/laband")
+    guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
+      throw XCTSkip("laband binary is not built")
+    }
+    let agentURL = URL(fileURLWithPath: ".build/debug/laban-agent")
+    guard FileManager.default.isExecutableFile(atPath: agentURL.path) else {
+      throw XCTSkip("laban-agent binary is not built")
+    }
+
+    let priorAttachOptIn = getenv(ControlEnvironmentKeys.attachEnvOptIn)
+      .map { String(cString: $0) }
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer {
+      if let priorAttachOptIn {
+        setenv(ControlEnvironmentKeys.attachEnvOptIn, priorAttachOptIn, 1)
+      } else {
+        unsetenv(ControlEnvironmentKeys.attachEnvOptIn)
+      }
+    }
+
+    let root = URL(
+      fileURLWithPath: ".tmp/lbn-app-c14-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    let socketPath = root.appendingPathComponent("s.sock").path
+    let journalURL = root.appendingPathComponent("journal", isDirectory: true)
+    let readyPath = root.appendingPathComponent("attach-ready").path
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let process = Process()
+    process.executableURL = labandURL
+    process.arguments = ["--socket", socketPath, "--journal", journalURL.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let launchCoordinator = ControlSessionLaunchCoordinator()
+    let model = try AppModel(
+      initialSize: size,
+      sessionLaunchContextProvider: { tabId, isAgentAttached in
+        launchCoordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+      },
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
+    let controlServer = LabanControlServer(router: C14DaemonAttachRouter(), surface: .gui)
+    let controlStart = try controlServer.start()
+    defer { controlServer.stop() }
+    launchCoordinator.noteControlServerStarted(controlServer, socketPath: controlStart.socketPath)
+
+    let otherTab = try model.createTab()
+    let agentTab = try model.createAgentAttachedTab()
+    XCTAssertNil(
+      model.launchEnvironmentOverrides(forTab: otherTab.id)[ControlEnvironmentKeys.sessionAttach])
+    XCTAssertNotNil(
+      model.launchEnvironmentOverrides(forTab: agentTab.id)[ControlEnvironmentKeys.sessionAttach])
+
+    let command = """
+      printf 'env-url=%s\\n' "$LABAN_CONTROL_URL"
+      printf 'env-attach-present=%s\\n' "${LABAN_SESSION_ATTACH:+yes}"
+      while [ ! -f \(Self.shellQuote(readyPath)) ]; do sleep 0.05; done
+      \(Self.shellQuote(agentURL.path)) \
+        --control-attach-smoke=/debug/state \
+        --control-attach-smoke=/debug/sessions/\(otherTab.sessionId)
+      sleep 1
+      """
+
+    let coordinatorClient = try waitForClient(socketPath: socketPath)
+    let coordinator = AppSessionCoordinator(
+      client: coordinatorClient,
+      shellLaunch: .passthrough,
+      cwdByTabId: [:])
+    defer { coordinator.detach() }
+    coordinator.launchEnvironmentProvider = { tabID in
+      model.launchEnvironmentOverrides(forTab: tabID)
+    }
+    coordinator.argvProvider = { tabID in
+      if tabID == agentTab.id {
+        return ["/bin/sh", "-lc", command]
+      }
+      return ["/bin/sh", "-lc", "sleep 10"]
+    }
+
+    _ = try coordinator.ensureSession(
+      for: otherTab,
+      session: model.session(forTab: otherTab.id),
+      size: size)
+    let agentInfo = try coordinator.ensureSession(
+      for: agentTab,
+      session: model.session(forTab: agentTab.id),
+      size: size)
+    let agentSession = try XCTUnwrap(model.session(forTab: agentTab.id))
+    let childPid = try XCTUnwrap(agentInfo.childPid)
+    launchCoordinator.tryRegisterShellPID(
+      sessionID: agentTab.sessionId,
+      session: agentSession,
+      shellPID: pid_t(childPid))
+    FileManager.default.createFile(atPath: readyPath, contents: Data())
+
+    let snapshot = try waitForSnapshotText(
+      coordinator: coordinator,
+      tab: agentTab,
+      size: size,
+      text: #""path":"\/debug\/sessions\/\#(otherTab.sessionId)""#)
+    let visible = snapshot.visibleText
+    XCTAssertTrue(visible.contains("env-url=\(controlStart.socketPath)"))
+    XCTAssertTrue(visible.contains("env-attach-present=yes"))
+    XCTAssertTrue(visible.contains(#""path":"\/debug\/state""#))
+    XCTAssertTrue(visible.contains(#""status":200"#))
+    XCTAssertTrue(visible.contains(#""path":"\/debug\/sessions\/\#(otherTab.sessionId)""#))
+    XCTAssertTrue(visible.contains(#""status":403"#))
+
+    let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    _ = try? cleanupClient.terminate(sessionId: otherTab.id)
+    _ = try? cleanupClient.terminate(sessionId: agentTab.id)
+    _ = try? cleanupClient.shutdownWhenIdle()
+    cleanupClient.close()
+    process.waitUntilExit()
+  }
+
   func testMissingAttachedLabptySessionsPostRecoveryJournalNotice() throws {
     var size = LabanTerminalSize()
     size.rows = 24
@@ -851,6 +982,10 @@ final class AppSessionCoordinatorTests: XCTestCase {
     throw XCTSkip("timed out waiting for laband: \(String(describing: lastError))")
   }
 
+  private static func shellQuote(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+  }
+
   private func waitForSnapshotText(
     coordinator: AppSessionCoordinator,
     tab: Tab,
@@ -888,5 +1023,27 @@ final class AppSessionCoordinatorTests: XCTestCase {
     }
     XCTFail("timed out waiting for \(text); last=\(last?.visibleText ?? "")")
     return try XCTUnwrap(last)
+  }
+}
+
+private final class C14DaemonAttachRouter: IntentRouter {
+  func route(_ intent: Intent) -> ControlResponse {
+    .json(["ok": true])
+  }
+
+  func query(_ query: Query) -> ControlResponse {
+    .json(["ok": true])
+  }
+
+  func query(_ query: LegacyDebugQueryInput) -> ControlResponse {
+    .json(["intentID": query.intentID, "scopedSessionID": query.scopedSessionID ?? ""])
+  }
+
+  func control(_ input: LegacyDebugControlInput) -> ControlResponse {
+    .json(["intentID": input.intentID, "scopedSessionID": input.scopedSessionID ?? ""])
+  }
+
+  func artifact(_ request: ArtifactRequest) -> ControlResponse? {
+    nil
   }
 }

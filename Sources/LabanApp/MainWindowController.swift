@@ -312,7 +312,8 @@ final class MainWindowController: NSWindowController {
     sessionCoordinator?.launchEnvironmentProvider = { [weak model] tabId in
       model?.launchEnvironmentOverrides(forTab: tabId) ?? [:]
     }
-    sessionCoordinator?.onTabMetadataRefreshed = { [weak launchCoordinator, weak sessionCoordinator] model in
+    sessionCoordinator?.onTabMetadataRefreshed = {
+      [weak launchCoordinator, weak sessionCoordinator] model in
       guard let launchCoordinator else { return }
       launchCoordinator.retryPendingShellRegistrations(in: model) { tabId, session in
         Self.resolveAttachShellPID(
@@ -684,7 +685,8 @@ final class MainWindowController: NSWindowController {
   /// True when the GUI control server should bind on this launch.
   static func shouldMountControlServer() -> Bool {
     guard ControlServerSettings.isEnabled else { return false }
-    if ProcessInfo.processInfo.environment[ControlEnvironmentKeys.controlServerForceDisable] == "0" {
+    if ProcessInfo.processInfo.environment[ControlEnvironmentKeys.controlServerForceDisable] == "0"
+    {
       return false
     }
     return true
@@ -707,7 +709,8 @@ final class MainWindowController: NSWindowController {
     do {
       let security = ControlSecurityCoordinator(indicatorHost: terminalView)
       controlSecurityCoordinator = security
-      let liveRouter = router ?? liveControlRouter
+      let liveRouter =
+        router ?? liveControlRouter
         ?? LiveIntentRouter(
           model: model,
           proposalPresenter: CommandProposalReviewPresenter.shared)

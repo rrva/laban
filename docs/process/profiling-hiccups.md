@@ -164,7 +164,10 @@ Laban has two complementary profilers. Pick by what you are measuring.
   capture with `scripts/capture-profile`) for CPU and host-side work: main-thread
   hotspots, cell/glyph build, PTY drain, and off-CPU waits (locks, sleeps,
   blocking syscalls — it records waiting threads too). It needs no ptrace
-  privileges and works headless.
+  privileges and works headless. `Package.swift` allows only the documented
+  `https://github.com/apple/swift-profile-recorder.git` dependency, pinned by
+  `Package.resolved` at version `0.3.18` / revision
+  `e110ba85da7d43a47b0e964726e84fddcf720192`.
 - Use a Metal System Trace (see the scroll-jank sections above) for GPU work:
   render/compute passes, shader cost, GPU counters, and present timing. The
   in-process sampler cannot see GPU execution; it only sees the CPU side that

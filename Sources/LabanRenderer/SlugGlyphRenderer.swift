@@ -958,7 +958,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     dropNextFrameWhenBusy = false
     let needsFullFrame = !dropIfBusy || damage == .full
     let timeout: DispatchTime =
-      (needsFullFrame && !dropIfBusy) ? .now() + .milliseconds(16) : .now()
+      (needsFullFrame || !dropIfBusy) ? .now() + .milliseconds(16) : .now()
     guard frameInFlight.wait(timeout: timeout) == .success else {
       lastRenderFailureReason = .previousFrameInFlight
       return false

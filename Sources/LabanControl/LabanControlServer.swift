@@ -66,7 +66,7 @@ public final class LabanControlServer {
   private struct SessionAttachBootstrap: Equatable {
     let sessionID: String
     var consumed: Bool
-    /// Shell leader PID; redeem allowed for shell or its direct child (C14).
+    /// Shell leader PID; redeem allowed for a direct child of the shell (C14).
     var shellPID: pid_t?
   }
 
@@ -232,7 +232,6 @@ public final class LabanControlServer {
   }
 
   public static func isAllowedAttachRedeemer(peerPID: pid_t, shellPID: pid_t) -> Bool {
-    if peerPID == shellPID { return true }
     guard let parentPID = parentPID(of: peerPID) else { return false }
     return parentPID == shellPID
   }
@@ -340,7 +339,6 @@ public final class LabanControlServer {
   private func bindListener(at path: String) throws {
     guard fd < 0 else { throw LabanControlServerError.alreadyStarted }
 
-    let controlDir = URL(fileURLWithPath: path).deletingLastPathComponent()
     try ControlDirectorySecurity.prepareSocketPath(path)
 
     let listener = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -552,7 +550,9 @@ public final class LabanControlServer {
       body: body)
   }
 
-  private func handleSessionAttach(body: Data, peerPID: pid_t?) -> (ControlResponse, ControlTokenTier?) {
+  private func handleSessionAttach(body: Data, peerPID: pid_t?) -> (
+    ControlResponse, ControlTokenTier?
+  ) {
     guard let peerPID else {
       return (.error(403, "forbidden"), nil)
     }
@@ -576,7 +576,8 @@ public final class LabanControlServer {
     }
     return (
       ControlResponse(status: 200, contentType: "application/json", body: data),
-      .sessionObserve(sessionID: sessionID))
+      .sessionObserve(sessionID: sessionID)
+    )
   }
 
   private func route(
@@ -771,7 +772,9 @@ public final class LabanControlServer {
     return nil
   }
 
-  func dispatchDebugAction(_ request: ControlHTTPRequest, tokenTier: ControlTokenTier) -> ControlResponse {
+  func dispatchDebugAction(_ request: ControlHTTPRequest, tokenTier: ControlTokenTier)
+    -> ControlResponse
+  {
     guard let envelope = try? JSONDecoder().decode(DebugActionEnvelope.self, from: request.body)
     else {
       return .error(400, "bad request")

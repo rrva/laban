@@ -46,7 +46,8 @@ public enum ControlStateProjections {
     }
   }
 
-  public static func accessibilityResponse(_ ctx: ControlProjectionContext) -> AccessibilityResponse {
+  public static func accessibilityResponse(_ ctx: ControlProjectionContext) -> AccessibilityResponse
+  {
     AccessibilityResponse(
       isElement: true,
       role: "AXTextArea",
@@ -56,7 +57,8 @@ public enum ControlStateProjections {
       display: ctx.accessibilityDisplayFlags)
   }
 
-  public static func terminalModesResponse(_ ctx: ControlProjectionContext) -> TerminalModesResponse {
+  public static func terminalModesResponse(_ ctx: ControlProjectionContext) -> TerminalModesResponse
+  {
     var graphemeCluster2027 = false
     var synchronizedOutput = false
     var focusReporting = false
@@ -113,7 +115,9 @@ public enum ControlStateProjections {
     )
   }
 
-  public static func findStateResponses(_ ctx: ControlProjectionContext) -> [String: FindStateResponse] {
+  public static func findStateResponses(_ ctx: ControlProjectionContext) -> [String:
+    FindStateResponse]
+  {
     let states: [String: TerminalFindState]
     if let scoped = ctx.scopedSessionID {
       states = ctx.model.allFindStates.filter { $0.key == scoped }
@@ -288,7 +292,9 @@ public enum ControlStateProjections {
     return ctx.model.activeTab?.sessionId
   }
 
-  private static func targetSessionId(_ requested: String?, ctx: ControlProjectionContext) -> Session.ID? {
+  private static func targetSessionId(_ requested: String?, ctx: ControlProjectionContext)
+    -> Session.ID?
+  {
     if let requested, ctx.model.session(forSessionID: requested) != nil {
       return requested
     }
@@ -365,8 +371,12 @@ public enum ControlStateProjections {
     )
   }
 
-  private static func tabResponse(for tab: Tab, index: Int, ctx: ControlProjectionContext) -> TabResponse {
-    tabResponse(for: tab, index: index, ctx: ctx, redactSensitiveMetadata: ctx.readRedaction == .appObserveSummary)
+  private static func tabResponse(for tab: Tab, index: Int, ctx: ControlProjectionContext)
+    -> TabResponse
+  {
+    tabResponse(
+      for: tab, index: index, ctx: ctx,
+      redactSensitiveMetadata: ctx.readRedaction == .appObserveSummary)
   }
 
   private static func cursorSettingsResponse(

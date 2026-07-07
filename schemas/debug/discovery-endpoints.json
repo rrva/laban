@@ -84,7 +84,7 @@
     ],
     "requestSchema" : "schemas\/debug\/action.schema.json",
     "responseSchema" : "schemas\/debug\/action-result.schema.json",
-    "summary" : "Drive tabs, input, mouse, clipboard, selection, and frames."
+    "summary" : "Headless-only actuation for tabs, input, mouse, and clipboard (disabled on live GUI)."
   },
   {
     "category" : "state",

@@ -46,7 +46,7 @@ final class ControlServerPhase0Tests: XCTestCase {
       method: "POST",
       token: start.appObserveToken,
       body: Data(#"{"action":"selectTab","index":0}"#.utf8))
-    XCTAssertEqual(status, 403)
+    XCTAssertEqual(status, 404)
   }
 
   func testServerStartStopStartReleasesListener() throws {
@@ -76,11 +76,47 @@ final class ControlServerPhase0Tests: XCTestCase {
     token: String? = nil,
     body: Data? = nil
   ) throws -> (Int, Data) {
-    try ControlUDSClient.request(
-      socketPath: socketPath,
-      method: method,
-      path: path,
-      token: token,
-      body: body)
+    guard Thread.isMainThread else {
+      return try ControlUDSClient.request(
+        socketPath: socketPath,
+        method: method,
+        path: path,
+        token: token,
+        body: body)
+    }
+
+    let semaphore = DispatchSemaphore(value: 0)
+    let lock = NSLock()
+    var result: Result<(Int, Data), Error>?
+    DispatchQueue.global(qos: .userInitiated).async {
+      let requestResult: Result<(Int, Data), Error> = Result {
+        let response = try ControlUDSClient.request(
+          socketPath: socketPath,
+          method: method,
+          path: path,
+          token: token,
+          body: body)
+        return (response.status, response.body)
+      }
+      lock.lock()
+      result = requestResult
+      lock.unlock()
+      semaphore.signal()
+    }
+
+    let deadline = Date().addingTimeInterval(10)
+    while semaphore.wait(timeout: .now()) == .timedOut {
+      if Date() > deadline { throw RequestError.timedOut }
+      RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+    }
+
+    lock.lock()
+    let finished = result
+    lock.unlock()
+    return try XCTUnwrap(finished).get()
+  }
+
+  private enum RequestError: Error {
+    case timedOut
   }
 }

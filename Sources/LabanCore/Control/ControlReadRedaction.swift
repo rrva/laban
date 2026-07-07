@@ -9,8 +9,8 @@ public enum ControlReadRedaction: String, Sendable, Equatable, Codable {
 }
 
 public enum ControlSessionAttachPolicy {
-  /// Optional global gate for attach bootstrap injection outside explicit
-  /// `isAgentAttached` launches (C10 env-secrecy fallback for future paths).
+  /// Explicit opt-in for inheritable C14 attach bootstrap delivery. Release
+  /// default-on sessions do not place session-observe authority in env.
   public static var injectBootstrapIntoEnvironment: Bool {
     ProcessInfo.processInfo.environment[ControlEnvironmentKeys.attachEnvOptIn] == "1"
   }

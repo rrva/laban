@@ -1178,6 +1178,48 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .terminal)
   }
 
+  func testTitleConsumedWithoutFreshProcessMetadataBindsNextForegroundOwner() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    var alivePids: Set<Int> = [1002]
+    model.setTitleOwnerLivenessProbeForTesting { pid in
+      guard let pid else { return false }
+      return alivePids.contains(pid)
+    }
+
+    _ = model.applyProcessMetadata(
+      processMetadata(pid: 1001, process: "sh", command: "/bin/sh", cwd: NSHomeDirectory()),
+      forTab: tabId
+    )
+    XCTAssertTrue(
+      model.applySurfaceSignals(
+        TabSurfaceSignals(titleDirty: true, titleRaw: "* Claude Code"),
+        forTab: tabId
+      ))
+    XCTAssertEqual(model.tabs[0].titleMetadata.terminalTitle, "* Claude Code")
+
+    _ = model.applyProcessMetadata(
+      processMetadata(
+        pid: 1002,
+        process: "sleep",
+        command: "/bin/sleep",
+        cwd: NSHomeDirectory()
+      ),
+      forTab: tabId
+    )
+    XCTAssertEqual(model.tabs[0].titleMetadata.terminalTitle, "* Claude Code")
+
+    alivePids.remove(1002)
+    _ = model.applyProcessMetadata(
+      processMetadata(pid: 1001, process: "sh", command: "/bin/sh", cwd: NSHomeDirectory()),
+      forTab: tabId
+    )
+
+    XCTAssertNil(model.tabs[0].titleMetadata.terminalTitle)
+    XCTAssertEqual(model.tabs[0].title, "~")
+    XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .cwd)
+  }
+
   func testShellProcessIdentityChangeFallsBackToHomeCwd() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
