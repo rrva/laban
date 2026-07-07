@@ -10,7 +10,7 @@ import os
 @testable import LabanApp
 
 final class AppSessionCoordinatorTests: XCTestCase {
-  func testDaemonAgentAttachedSessionRedeemsC14FromOptInChildEnv() throws {
+  func testDaemonAgentAttachedSessionRedeemsC14FromChildEnv() throws {
     let labandURL = URL(fileURLWithPath: ".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
       throw XCTSkip("laband binary is not built")
@@ -18,17 +18,6 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let agentURL = URL(fileURLWithPath: ".build/debug/laban-agent")
     guard FileManager.default.isExecutableFile(atPath: agentURL.path) else {
       throw XCTSkip("laban-agent binary is not built")
-    }
-
-    let priorAttachOptIn = getenv(ControlEnvironmentKeys.attachEnvOptIn)
-      .map { String(cString: $0) }
-    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
-    defer {
-      if let priorAttachOptIn {
-        setenv(ControlEnvironmentKeys.attachEnvOptIn, priorAttachOptIn, 1)
-      } else {
-        unsetenv(ControlEnvironmentKeys.attachEnvOptIn)
-      }
     }
 
     let root = URL(

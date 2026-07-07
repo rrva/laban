@@ -9,9 +9,11 @@ public enum ControlReadRedaction: String, Sendable, Equatable, Codable {
 }
 
 public enum ControlSessionAttachPolicy {
-  /// Explicit opt-in for inheritable C14 attach bootstrap delivery. Release
-  /// default-on sessions do not place session-observe authority in env.
+  /// Agent-attached sessions receive a single-use C14 attach bootstrap in their
+  /// launch environment. The redeemer verifies the peer is the `laban-agent`
+  /// executable and a direct child of the registered shell PID, so inheriting
+  /// the env is not sufficient to redeem.
   public static var injectBootstrapIntoEnvironment: Bool {
-    ProcessInfo.processInfo.environment[ControlEnvironmentKeys.attachEnvOptIn] == "1"
+    true
   }
 }

@@ -4,10 +4,11 @@ import LabanCore
 
 /// Builds `SessionLaunchContext` values with control-plane discovery env.
 ///
-/// `LABAN_SESSION_ATTACH` bootstrap delivery is intentionally off by default:
-/// an inheritable shell environment cannot be the release security boundary for
-/// session-observe. Set `LABAN_CONTROL_ATTACH_ENV=1` only for explicit
-/// development / E2E paths that accept that env exposure.
+/// Agent-attached sessions receive a single-use `LABAN_SESSION_ATTACH` bootstrap
+/// that `laban-agent --control-attach` redeems for a connection-bound
+/// session-observe credential. Redemption requires the peer to be the
+/// `laban-agent` executable and a direct child of the registered shell PID, so
+/// the inheritable env alone is not a credential.
 final class ControlSessionLaunchCoordinator {
   weak var controlServer: LabanControlServer?
   private(set) var controlSocketPath: String?
