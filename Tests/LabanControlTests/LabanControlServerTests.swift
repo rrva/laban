@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LabanControl
 import LabanCore
@@ -463,7 +464,37 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(registeredStatus, 200)
     let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
     XCTAssertEqual(json["sessionID"] as? String, "sess-1")
-    XCTAssertFalse((json["token"] as? String ?? "").isEmpty)
+    XCTAssertNil(json["token"] as? String)
+  }
+
+  func testAttachRedeemBindsSessionToConnectionNotReplayableBearer() throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let bootstrap = server.mintSessionAttachBootstrap(sessionID: "sess-bound")
+    server.registerAttachShellPID(
+      sessionID: "sess-bound",
+      shellPID: ProcessInfo.processInfo.processIdentifier)
+
+    let (fd, sessionID) = try ControlUDSClient.redeemAttachBootstrap(
+      socketPath: socketPath,
+      bootstrap: bootstrap)
+    defer { Darwin.close(fd) }
+    XCTAssertEqual(sessionID, "sess-bound")
+
+    let (boundStatus, _) = try ControlUDSClient.request(
+      fd: fd,
+      path: "/debug/state",
+      keepConnectionOpen: true)
+    XCTAssertEqual(boundStatus, 200)
+    XCTAssertEqual(router.legacyQueries().last?.scopedSessionID, "sess-bound")
+
+    Darwin.close(fd)
+    let (unauthStatus, _) = try request(socketPath: socketPath, path: "/debug/state")
+    XCTAssertEqual(unauthStatus, 401)
   }
 
   func testAttachRedeemAllowsShellOrDirectChild() {

@@ -22,15 +22,25 @@ struct DebugCommandProposalActions {
       return jsonError("no session for propose")
     }
 
-    let response = CommandProposalService.propose(
-      command: command,
-      purpose: request.purpose,
-      targetSessionID: targetSessionID)
-    runtime.appendEvent(
-      EventEntry(
-        kind: "command.proposed",
-        sessionId: targetSessionID,
-        action: response.proposalID))
-    return jsonEncode(response)
+    do {
+      let response = try CommandProposalService.propose(
+        command: command,
+        purpose: request.purpose,
+        targetSessionID: targetSessionID)
+      runtime.appendEvent(
+        EventEntry(
+          kind: "command.proposed",
+          sessionId: targetSessionID,
+          action: response.proposalID))
+      return jsonEncode(response)
+    } catch CommandProposalStore.SubmitError.commandTooLarge {
+      return jsonError("command too large")
+    } catch CommandProposalStore.SubmitError.purposeTooLarge {
+      return jsonError("purpose too large")
+    } catch CommandProposalStore.SubmitError.storeFull {
+      return jsonError("too many proposals")
+    } catch {
+      return jsonError("propose failed")
+    }
   }
 }

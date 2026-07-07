@@ -119,6 +119,9 @@ public struct CommandProposalSafeText: Sendable, Equatable {
     if isBidiOverride(scalar) {
       return bidiLabel(scalar)
     }
+    if shouldEscapeInvisible(scalar) {
+      return invisibleLabel(scalar)
+    }
     switch scalar.value {
     case 0x09:
       return "\\t"
@@ -135,6 +138,28 @@ public struct CommandProposalSafeText: Sendable, Equatable {
     default:
       return String(scalar)
     }
+  }
+
+  private static func shouldEscapeInvisible(_ scalar: Unicode.Scalar) -> Bool {
+    if scalar.properties.isDefaultIgnorableCodePoint { return true }
+    switch scalar.properties.generalCategory {
+    case .format, .surrogate, .privateUse:
+      return true
+    default:
+      break
+    }
+    switch scalar.value {
+    case 0x00AD, 0x200B, 0x200C, 0x200D, 0xFEFF:
+      return true
+    case 0xFE00...0xFE0F, 0xE0100...0xE01EF:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func invisibleLabel(_ scalar: Unicode.Scalar) -> String {
+    "[INVIS:U+\(String(scalar.value, radix: 16, uppercase: true))]"
   }
 
   private static func isBidiOverride(_ scalar: Unicode.Scalar) -> Bool {
@@ -166,6 +191,15 @@ public struct CommandProposalSafeText: Sendable, Equatable {
 
 public final class CommandProposalStore: @unchecked Sendable {
   public static let shared = CommandProposalStore()
+  public static let maxStoredProposals = 64
+  public static let maxCommandBytes = 4096
+  public static let maxPurposeBytes = 1024
+
+  public enum SubmitError: Error, Equatable {
+    case commandTooLarge
+    case purposeTooLarge
+    case storeFull
+  }
 
   private let lock = NSLock()
   private var proposals: [String: CommandProposal] = [:]
@@ -177,14 +211,23 @@ public final class CommandProposalStore: @unchecked Sendable {
     command: String,
     purpose: String?,
     targetSessionID: String
-  ) -> CommandProposal {
+  ) throws -> CommandProposal {
+    guard command.utf8.count <= Self.maxCommandBytes else {
+      throw SubmitError.commandTooLarge
+    }
+    if let purpose, purpose.utf8.count > Self.maxPurposeBytes {
+      throw SubmitError.purposeTooLarge
+    }
+    lock.lock()
+    defer { lock.unlock() }
+    guard proposals.count < Self.maxStoredProposals else {
+      throw SubmitError.storeFull
+    }
     let proposal = CommandProposal(
       targetSessionID: targetSessionID,
       command: command,
       purpose: purpose)
-    lock.lock()
     proposals[proposal.id] = proposal
-    lock.unlock()
     return proposal
   }
 
@@ -212,12 +255,18 @@ public final class CommandProposalStore: @unchecked Sendable {
 }
 
 public enum CommandProposalService {
+  public enum ProposeError: Error, Equatable {
+    case commandTooLarge
+    case purposeTooLarge
+    case storeFull
+  }
+
   public static func propose(
     command: String,
     purpose: String?,
     targetSessionID: String
-  ) -> CommandProposeResponse {
-    let proposal = CommandProposalStore.shared.submit(
+  ) throws -> CommandProposeResponse {
+    let proposal = try CommandProposalStore.shared.submit(
       command: command,
       purpose: purpose,
       targetSessionID: targetSessionID)

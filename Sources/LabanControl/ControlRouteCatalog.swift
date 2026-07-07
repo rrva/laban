@@ -102,7 +102,7 @@ public enum ControlRouteCatalog {
         method: "POST",
         path: "/debug/actions",
         category: "control",
-        summary: "Drive tabs, input, mouse, clipboard, selection, and frames.",
+        summary: "Headless-only actuation for tabs, input, mouse, and clipboard (disabled on live GUI).",
         legacyRequestSchemaPath: "schemas/debug/action.schema.json",
         legacyResponseSchemaPath: "schemas/debug/action-result.schema.json"),
       intentMapping: .requestBodyField("action")),

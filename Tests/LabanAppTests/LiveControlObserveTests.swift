@@ -129,6 +129,40 @@ final class LiveControlObserveTests: XCTestCase {
     _ = otherSessionID
   }
 
+  func testSessionObserveStateOmitsOtherTabNotifications() throws {
+    let (model, router, ownSessionID, otherSessionID) = try makeModelRouterAndSessions()
+    let otherTabId = try XCTUnwrap(model.tabs.first { $0.sessionId == otherSessionID }?.id)
+    model.recordAttentionNotificationDecision(
+      AttentionNotificationDecision(
+        event: AttentionNotificationEvent(
+          tabId: otherTabId,
+          source: .tabAttention,
+          category: .needsAction,
+          title: "other-tab-secret",
+          body: "cross-session leak",
+          dedupeKey: "other-tab-secret"),
+        action: .posted))
+
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let sessionToken = server.mintSessionObserveToken(sessionID: ownSessionID)
+    let (status, data) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/state",
+      token: sessionToken)
+    XCTAssertEqual(status, 200)
+
+    let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let notifications = try XCTUnwrap(json["attentionNotifications"] as? [[String: Any]])
+    XCTAssertTrue(notifications.isEmpty)
+    let raw = String(data: data, encoding: .utf8) ?? ""
+    XCTAssertFalse(raw.contains("other-tab-secret"))
+    XCTAssertFalse(raw.contains("cross-session leak"))
+    _ = otherSessionID
+  }
+
   func testAppObserveTokenAllowsTerminalModes200() throws {
     let (model, router, _, _) = try makeModelRouterAndSessions()
     _ = model
