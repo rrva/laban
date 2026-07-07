@@ -12,6 +12,7 @@ import XCTest
 final class ControlAvailabilityParityTests: XCTestCase {
   private static let liveImplementedIntentIDs: Set<String> = [
     "app.state",
+    "app.stateSummary",
     "app.accessibility",
     "terminal.modes",
     "find.state",
