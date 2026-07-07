@@ -253,13 +253,24 @@ func runLiveControlAttach(_ args: AgentArgs) -> Never {
     fail("\(ControlEnvironmentKeys.sessionAttach) is required for --control-attach")
   }
 
-  let attachment: (fd: Int32, sessionID: String)
-  do {
-    attachment = try ControlUDSClient.redeemAttachBootstrap(
-      socketPath: socketPath,
-      bootstrap: bootstrap)
-  } catch {
-    fail("control attach failed: \(error)")
+  var attachment: (fd: Int32, sessionID: String)?
+  let attempts = 5
+  for attempt in 0..<attempts {
+    do {
+      attachment = try ControlUDSClient.redeemAttachBootstrap(
+        socketPath: socketPath,
+        bootstrap: bootstrap)
+      break
+    } catch {
+      if attempt == attempts - 1 {
+        fail("control attach failed after \(attempts) attempts: \(error)")
+      }
+      let delay = min(0.1 * pow(2.0, Double(attempt)), 1.0)
+      Thread.sleep(forTimeInterval: delay)
+    }
+  }
+  guard let attachment else {
+    fail("control attach failed: no attachment produced")
   }
   defer { Darwin.close(attachment.fd) }
 
