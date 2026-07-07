@@ -244,9 +244,25 @@ public final class LabanControlServer {
     return pid
   }
 
+  #if DEBUG
+    /// Test hook to bypass the laban-agent executable verification during
+    /// integration tests that redeem from the test process itself.
+    public static var skipExecutableVerificationForTests = false
+  #endif
+
   public static func isAllowedAttachRedeemer(peerPID: pid_t, shellPID: pid_t) -> Bool {
-    guard let parentPID = parentPID(of: peerPID) else { return false }
-    return parentPID == shellPID
+    guard let parentPID = parentPID(of: peerPID), parentPID == shellPID else {
+      return false
+    }
+    #if DEBUG
+      if skipExecutableVerificationForTests { return true }
+    #endif
+    guard let executablePath = ControlProcessInfo.executablePath(for: peerPID),
+      ControlProcessInfo.isLabanAgentExecutable(executablePath)
+    else {
+      return false
+    }
+    return true
   }
 
   private static func parentPID(of pid: pid_t) -> pid_t? {
