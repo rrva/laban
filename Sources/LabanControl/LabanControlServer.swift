@@ -173,12 +173,14 @@ public final class LabanControlServer {
     return sessionID
   }
 
+  #if DEBUG
   /// Mints a session-observe bearer for tests and fixture runtimes only — not C14 production attach.
   public func mintSessionObserveToken(sessionID: String) -> String {
     let token = Self.makeToken()
     registerToken(token, tier: .sessionObserve(sessionID: sessionID))
     return token
   }
+  #endif
 
   public func stop() {
     let listener = fd
@@ -623,6 +625,7 @@ public final class LabanControlServer {
     guard let sessionID = redeemSessionAttachBootstrap(bootstrap, peerPID: peerPID) else {
       return (.error(401, "invalid or spent bootstrap"), nil)
     }
+    reportAttachAuthorize(sessionID: sessionID)
     let payload: [String: Any] = [
       "ok": true,
       "sessionID": sessionID,
@@ -766,6 +769,15 @@ public final class LabanControlServer {
     } else {
       securityObserver?.didAuthorize(context)
     }
+  }
+
+  private func reportAttachAuthorize(sessionID: String) {
+    let context = ControlSecurityContext(
+      intentID: "control.session.attach",
+      capability: .observeSensitive,
+      surface: surface,
+      sessionID: sessionID)
+    securityObserver?.didAttachAuthorize(context)
   }
 
   func legacyQueryInput(

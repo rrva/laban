@@ -53,6 +53,51 @@ final class ControlSecurityFloorTests: XCTestCase {
     XCTAssertNil(entry["token"])
   }
 
+  func testAttachRedemptionLightsIndicatorAndWritesAudit() throws {
+    LabanControlServer.skipExecutableVerificationForTests = true
+    defer { LabanControlServer.skipExecutableVerificationForTests = false }
+
+    let indicator = IndicatorSpy()
+    let coordinator = ControlSecurityCoordinator(indicatorHost: indicator)
+    let (model, router, sessionID, _) = try makeModelRouterAndSessions()
+    _ = model
+    let server = LabanControlServer(
+      router: router, surface: .gui, securityObserver: coordinator)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let bootstrap = server.mintSessionAttachBootstrap(sessionID: sessionID)
+    server.registerAttachShellPID(sessionID: sessionID, shellPID: getppid())
+
+    let (status, _) = try request(
+      socketPath: socketPath,
+      path: LabanControlServer.sessionAttachPath,
+      method: "POST",
+      body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
+    XCTAssertEqual(status, 200)
+
+    let indicatorLit = expectation(description: "indicator")
+    DispatchQueue.main.async {
+      if indicator.active { indicatorLit.fulfill() }
+    }
+    wait(for: [indicatorLit], timeout: 2)
+
+    let audit = expectation(description: "audit")
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.25) {
+      if Self.latestEventLogEntry(matching: "control.attach") != nil {
+        audit.fulfill()
+      }
+    }
+    wait(for: [audit], timeout: 2)
+
+    let entry = try XCTUnwrap(Self.latestEventLogEntry(matching: "control.attach"))
+    XCTAssertEqual(entry["intent"] as? String, "control.session.attach")
+    XCTAssertEqual(entry["capability"] as? String, Capability.observeSensitive.rawValue)
+    XCTAssertEqual(entry["surface"] as? String, "gui")
+    XCTAssertEqual(entry["session"] as? String, sessionID)
+  }
+
   func testSessionObserveAppStateLightsIndicatorAndAudit() throws {
     let indicator = IndicatorSpy()
     let coordinator = ControlSecurityCoordinator(indicatorHost: indicator)
