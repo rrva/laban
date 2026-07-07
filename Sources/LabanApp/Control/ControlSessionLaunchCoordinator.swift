@@ -25,16 +25,21 @@ final class ControlSessionLaunchCoordinator {
     pendingAttachSessionIDs.removeAll()
   }
 
-  func prepareLaunch(tabID: Tab.ID?, isAgentAttached: Bool) -> SessionLaunchContext {
+  func prepareLaunch(
+    tabID: Tab.ID?, isAgentAttached: Bool, defaults: UserDefaults = .standard
+  ) -> SessionLaunchContext {
     let sessionID = UUID().uuidString
     var env: [String: String] = [:]
     if let controlSocketPath {
       env[ControlEnvironmentKeys.controlURL] = controlSocketPath
     }
     var bootstrap: String?
+    let attachEnvOptIn =
+      ProcessInfo.processInfo.environment[ControlEnvironmentKeys.attachEnvOptIn] == "1"
+      || AgentAttachedSessionSettings.isEnabled(defaults: defaults)
     if isAgentAttached,
       ControlSessionAttachPolicy.injectBootstrapIntoEnvironment,
-      ProcessInfo.processInfo.environment[ControlEnvironmentKeys.attachEnvOptIn] == "1",
+      attachEnvOptIn,
       let controlServer
     {
       bootstrap = controlServer.mintSessionAttachBootstrap(sessionID: sessionID)
