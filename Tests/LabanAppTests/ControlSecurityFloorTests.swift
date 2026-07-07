@@ -82,6 +82,29 @@ final class ControlSecurityFloorTests: XCTestCase {
     XCTAssertEqual(entry["capability"] as? String, Capability.observeSensitive.rawValue)
   }
 
+  func testSessionObserveTokenDeniesScrollIndicatorForOtherSession() throws {
+    let (model, router, ownSessionID, otherSessionID) = try makeModelRouterAndSessions()
+    _ = model
+    let server = LabanControlServer(router: router, surface: .gui)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let sessionToken = server.mintSessionObserveToken(sessionID: ownSessionID)
+
+    let own = try request(
+      socketPath: socketPath,
+      path: "/debug/scroll-indicator/state?sessionID=\(ownSessionID)",
+      token: sessionToken)
+    XCTAssertEqual(own.0, 200)
+
+    let other = try request(
+      socketPath: socketPath,
+      path: "/debug/scroll-indicator/state?sessionID=\(otherSessionID)",
+      token: sessionToken)
+    XCTAssertEqual(other.0, 403)
+  }
+
   func testDisableSwitchStopsServerAndRemovesControlJSON() throws {
     let controlDir = try makeTempControlDirectory()
     defer {
