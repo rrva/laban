@@ -28,10 +28,12 @@ public enum ControlStateProjections {
       frame: ctx.frame,
       window: WindowResponse(width: ctx.windowWidth, height: ctx.windowHeight, focused: true),
       tabs: tabs,
-      activeTabId: scopedActiveTab?.id ?? activeTab?.id,
-      activeSessionId: scopedActiveTab?.sessionId ?? activeTab?.sessionId,
+      activeTabId: scopedActiveTab?.id ?? (ctx.scopedSessionID == nil ? activeTab?.id : nil),
+      activeSessionId: scopedActiveTab?.sessionId
+        ?? (ctx.scopedSessionID == nil ? activeTab?.sessionId : nil),
       findStateBySession: findStates,
-      cursorSettings: cursorSettingsResponse(activeTab: scopedActiveTab ?? activeTab, ctx: ctx),
+      cursorSettings: cursorSettingsResponse(
+        activeTab: scopedActiveTab ?? (ctx.scopedSessionID == nil ? activeTab : nil), ctx: ctx),
       emojiRendering: emojiRenderingSettingsResponse(),
       attentionNotifications: filteredAttentionNotifications(ctx).map(
         attentionNotificationDecisionResponse)
@@ -270,8 +272,17 @@ public enum ControlStateProjections {
     )
   }
 
-  public static func actionResult(ok: Bool, ctx: ControlProjectionContext) -> ActionResult {
-    let active = ctx.model.activeTab
+  public static func actionResult(
+    ok: Bool,
+    ctx: ControlProjectionContext,
+    targetSessionID: Session.ID? = nil
+  ) -> ActionResult {
+    let active: Tab? = {
+      if let targetSessionID {
+        return ctx.model.tabs.first { $0.sessionId == targetSessionID }
+      }
+      return tabForScopedRead(ctx)
+    }()
     return ActionResult(
       ok: ok,
       frame: ctx.frame,
@@ -341,10 +352,12 @@ public enum ControlStateProjections {
       frame: ctx.frame,
       window: WindowResponse(width: ctx.windowWidth, height: ctx.windowHeight, focused: true),
       tabs: tabs,
-      activeTabId: scopedActiveTab?.id ?? activeTab?.id,
-      activeSessionId: scopedActiveTab?.sessionId ?? activeTab?.sessionId,
+      activeTabId: scopedActiveTab?.id ?? (ctx.scopedSessionID == nil ? activeTab?.id : nil),
+      activeSessionId: scopedActiveTab?.sessionId
+        ?? (ctx.scopedSessionID == nil ? activeTab?.sessionId : nil),
       findStateBySession: [:],
-      cursorSettings: cursorSettingsResponse(activeTab: scopedActiveTab ?? activeTab, ctx: ctx),
+      cursorSettings: cursorSettingsResponse(
+        activeTab: scopedActiveTab ?? (ctx.scopedSessionID == nil ? activeTab : nil), ctx: ctx),
       emojiRendering: emojiRenderingSettingsResponse(),
       attentionNotifications: [])
   }

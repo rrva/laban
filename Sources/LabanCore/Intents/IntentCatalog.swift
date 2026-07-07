@@ -947,7 +947,7 @@ public struct IntentCatalog: Sendable {
       summary: "Route an unknown legacy debug action to the legacy unsupported response.",
       requiredCapability: .observe,
       dataSensitivity: .none,
-      availability: guiObserve,
+      availability: headlessOnly,
       inputSchema: UnsupportedDebugActionInput.jsonSchema),
   ]
 

@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
+import LabanControl
 import LabanCore
-import LabanDebug
 import LabanTerminalCore
 
 /// Live GUI hooks for building shared control projections from AppModel.
@@ -103,19 +103,7 @@ final class LiveIntentRouter: IntentRouter {
       case .tabSelect, .terminalTypeText, .terminalSendKey:
         return .error(404, "unavailable on gui")
       case .unsupportedDebugAction(let input):
-        guard let model = model else {
-          return .error(500, "model released")
-        }
-        let ctx = projectionContext(
-          model: model, scopedSessionID: nil, readRedaction: .none)
-        let active = ctx.model.activeTab
-        return json(
-          ActionResult(
-            ok: false,
-            frame: ctx.frame,
-            activeTabId: active?.id,
-            activeSessionId: active?.sessionId,
-            error: "debug action \(input.action) is not implemented yet"))
+        return .error(404, "debug action \(input.action) is unavailable on gui")
       }
     }
   }
@@ -142,7 +130,7 @@ final class LiveIntentRouter: IntentRouter {
         readRedaction: query.readRedaction)
       switch query.intentID {
       case "debug.discovery", "debug.capabilities":
-        return json(guiDiscoveryResponse())
+        return json(guiDiscoveryResponse(readRedaction: query.readRedaction))
       case "debug.health":
         return json(guiHealthResponse())
       case "app.state", "app.stateSummary":
@@ -207,6 +195,11 @@ final class LiveIntentRouter: IntentRouter {
     }
     let targetSessionID =
       request.sessionId ?? scopedSessionID ?? model.activeTab?.sessionId
+    if let scopedSessionID, let requestedSessionID = request.sessionId,
+      requestedSessionID != scopedSessionID
+    {
+      return .error(403, "forbidden")
+    }
     guard let sessionID = targetSessionID,
       let tab = model.tabs.first(where: { $0.sessionId == sessionID }),
       let session = model.session(forTab: tab.id)
@@ -217,7 +210,7 @@ final class LiveIntentRouter: IntentRouter {
     session.scrollViewport(deltaRows: deltaRows)
     let ctx = projectionContext(
       model: model, scopedSessionID: scopedSessionID, readRedaction: .none)
-    return json(ControlStateProjections.actionResult(ok: true, ctx: ctx))
+    return json(ControlStateProjections.actionResult(ok: true, ctx: ctx, targetSessionID: sessionID))
   }
 
   private func commandProposeAction(body: Data, scopedSessionID: String?) -> ControlResponse {
@@ -282,7 +275,7 @@ final class LiveIntentRouter: IntentRouter {
       })
   }
 
-  private func guiDiscoveryResponse() -> DebugDiscoveryResponse {
+  private func guiDiscoveryResponse(readRedaction: ControlReadRedaction) -> DebugDiscoveryResponse {
     let artifactRoot = FileManager.default.urls(
       for: .documentDirectory, in: .userDomainMask
     ).first?.path ?? ""
@@ -295,11 +288,130 @@ final class LiveIntentRouter: IntentRouter {
       artifactRoot: artifactRoot,
       fixtureRoot: "",
       entrypoints: ["/debug", "/debug/capabilities"],
-      endpoints: DebugDiscoveryEndpoint.catalog,
-      actions: DebugDiscoveryCatalog.actions,
-      waitConditions: DebugDiscoveryCatalog.waitConditions,
-      fixtureActions: DebugDiscoveryCatalog.fixtureActions,
-      examples: DebugDiscoveryCatalog.examples)
+      endpoints: guiDiscoveryEndpoints(readRedaction: readRedaction),
+      actions: guiDiscoveryActions(readRedaction: readRedaction),
+      waitConditions: [],
+      fixtureActions: [],
+      examples: guiDiscoveryExamples(readRedaction: readRedaction))
+  }
+
+  private func guiDiscoveryEndpoints(readRedaction: ControlReadRedaction) -> [DebugDiscoveryEndpoint]
+  {
+    ControlRouteCatalog.endpoints.compactMap { endpoint in
+      guard endpointPermittedInGUIDiscovery(endpoint, readRedaction: readRedaction) else {
+        return nil
+      }
+      let binding = endpoint.binding
+      let isActionEndpoint = binding.path == "/debug/actions"
+      let summary = isActionEndpoint ? "GUI-safe actions available to the authenticated token." : binding.summary
+      let requestSchema = isActionEndpoint ? nil : binding.legacyRequestSchemaPath
+      return DebugDiscoveryEndpoint(
+        method: binding.method,
+        path: binding.path,
+        category: binding.category,
+        summary: summary,
+        queryParameters: binding.queryParameters,
+        requestSchema: requestSchema,
+        responseSchema: binding.legacyResponseSchemaPath)
+    }
+  }
+
+  private func endpointPermittedInGUIDiscovery(
+    _ endpoint: ControlEndpointDescriptor,
+    readRedaction: ControlReadRedaction
+  ) -> Bool {
+    switch endpoint.intentMapping {
+    case .fixed(let id):
+      let effectiveID = effectiveDiscoveryIntentID(
+        id,
+        path: endpoint.binding.path,
+        readRedaction: readRedaction)
+      return descriptorPermittedInGUIDiscovery(effectiveID, readRedaction: readRedaction)
+    case .requestBodyField(_):
+      return !guiActionDescriptors(readRedaction: readRedaction).isEmpty
+    case .none, .queryParameter(_):
+      return false
+    }
+  }
+
+  private func effectiveDiscoveryIntentID(
+    _ id: String,
+    path: String,
+    readRedaction: ControlReadRedaction
+  ) -> String {
+    guard path == "/debug/state" else { return id }
+    switch readRedaction {
+    case .appObserveSummary:
+      return "app.stateSummary"
+    case .sessionObserveSummary, .none:
+      return id
+    }
+  }
+
+  private func guiDiscoveryActions(readRedaction: ControlReadRedaction) -> [DebugDiscoveryControl] {
+    guiActionDescriptors(readRedaction: readRedaction).compactMap { descriptor in
+      guard let actionName = Self.guiDebugActionNames[descriptor.id] else { return nil }
+      return DebugDiscoveryControl(name: actionName, summary: descriptor.summary)
+    }
+  }
+
+  private func guiActionDescriptors(readRedaction: ControlReadRedaction) -> [IntentDescriptor] {
+    IntentCatalog.shared.descriptors.filter {
+      $0.kind == .action
+        && $0.availability.permits(.gui)
+        && discoveryAllows($0.requiredCapability, readRedaction: readRedaction)
+        && Self.guiDebugActionNames[$0.id] != nil
+    }
+  }
+
+  private func descriptorPermittedInGUIDiscovery(
+    _ id: String,
+    readRedaction: ControlReadRedaction
+  ) -> Bool {
+    guard let descriptor = IntentCatalog.shared.descriptor(id: id) else { return false }
+    return descriptor.availability.permits(.gui)
+      && discoveryAllows(descriptor.requiredCapability, readRedaction: readRedaction)
+  }
+
+  private func discoveryAllows(
+    _ capability: Capability,
+    readRedaction: ControlReadRedaction
+  ) -> Bool {
+    switch readRedaction {
+    case .appObserveSummary:
+      return capability == .observe
+    case .sessionObserveSummary:
+      return capability == .observe
+        || capability == .observeSensitive
+        || capability == .navigate
+        || capability == .propose
+    case .none:
+      return true
+    }
+  }
+
+  private func guiDiscoveryExamples(readRedaction: ControlReadRedaction) -> [DebugDiscoveryExample] {
+    var examples = [
+      DebugDiscoveryExample(
+        title: "List capabilities",
+        command: #"curl --unix-socket "$LABAN_CONTROL_URL" -H "Authorization: Bearer $LABAN_TOKEN" http://laban/debug | jq"#)
+    ]
+    let actionNames = Set(guiDiscoveryActions(readRedaction: readRedaction).map(\.name))
+    if actionNames.contains("scrollViewport") {
+      examples.append(
+        DebugDiscoveryExample(
+          title: "Scroll own session",
+          command:
+            #"curl --unix-socket "$LABAN_CONTROL_URL" -H "Authorization: Bearer $LABAN_TOKEN" -X POST http://laban/debug/actions -d '{"action":"scrollViewport","deltaRows":1}'"#))
+    }
+    if actionNames.contains("propose") {
+      examples.append(
+        DebugDiscoveryExample(
+          title: "Propose a command",
+          command:
+            #"curl --unix-socket "$LABAN_CONTROL_URL" -H "Authorization: Bearer $LABAN_TOKEN" -X POST http://laban/debug/actions -d '{"action":"propose","command":"echo hello","purpose":"user review"}'"#))
+    }
+    return examples
   }
 
   private func guiHealthResponse() -> HealthResponse {
@@ -320,4 +432,9 @@ final class LiveIntentRouter: IntentRouter {
       contentType: "application/json",
       body: response.body)
   }
+
+  private static let guiDebugActionNames: [String: String] = [
+    "terminal.scrollViewport": "scrollViewport",
+    "command.propose": "propose",
+  ]
 }

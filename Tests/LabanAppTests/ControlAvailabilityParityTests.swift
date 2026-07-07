@@ -26,7 +26,6 @@ final class ControlAvailabilityParityTests: XCTestCase {
     "debug.discovery",
     "debug.capabilities",
     "debug.health",
-    DebugActionIntentID.unsupported,
   ]
 
   func testLiveRouterImplementsEveryGUIAvailableOp() throws {

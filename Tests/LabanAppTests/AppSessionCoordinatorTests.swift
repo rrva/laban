@@ -57,10 +57,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
       sessionFactory: { size, context in
         try Session.fixture(size: size, sessionID: context.sessionID)
       })
-    LabanControlServer.skipExecutableVerificationForTests = true
-    defer { LabanControlServer.skipExecutableVerificationForTests = false }
-
-    let controlServer = LabanControlServer(router: C14DaemonAttachRouter(), surface: .gui)
+    let controlServer = LabanControlServer(
+      router: C14DaemonAttachRouter(),
+      surface: .gui,
+      expectedAgentExecutablePath: agentURL.path,
+      allowDevAgentExecutablePath: true)
     let controlStart = try controlServer.start()
     defer { controlServer.stop() }
     launchCoordinator.noteControlServerStarted(controlServer, socketPath: controlStart.socketPath)

@@ -519,7 +519,11 @@ final class LabanControlServerTests: XCTestCase {
   }
 
   func testLabanAgentExecutablePathIsRecognized() {
-    XCTAssertTrue(ControlProcessInfo.isLabanAgentExecutable("/Applications/Laban.app/Contents/MacOS/laban-agent"))
+    let bundledPath = "/Applications/Laban.app/Contents/MacOS/laban-agent"
+    XCTAssertTrue(
+      ControlProcessInfo.isLabanAgentExecutable(
+        bundledPath,
+        expectedExecutablePath: bundledPath))
     XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/usr/bin/zsh"))
   }
 
@@ -821,13 +825,45 @@ final class ControlProcessInfoTests: XCTestCase {
   }
 
   func testRejectsWrongBaseName() {
-    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/Applications/Laban.app/Contents/MacOS/laban-agent-evil"))
-    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/Applications/Laban.app/Contents/MacOS/laband"))
+    let expected = "/Applications/Laban.app/Contents/MacOS/laban-agent"
+    XCTAssertFalse(
+      ControlProcessInfo.isLabanAgentExecutable(
+        "/Applications/Laban.app/Contents/MacOS/laban-agent-evil",
+        expectedExecutablePath: expected))
+    XCTAssertFalse(
+      ControlProcessInfo.isLabanAgentExecutable(
+        "/Applications/Laban.app/Contents/MacOS/laband",
+        expectedExecutablePath: expected))
+  }
+
+  func testRejectsSpoofedAppBundlePathsWhenExpectedPathDiffers() {
+    let expected = "/Applications/Laban.app/Contents/MacOS/laban-agent"
+    XCTAssertFalse(
+      ControlProcessInfo.isLabanAgentExecutable(
+        "/tmp/Evil.app/Contents/MacOS/laban-agent",
+        expectedExecutablePath: expected))
+    XCTAssertFalse(
+      ControlProcessInfo.isLabanAgentExecutable(
+        "/Users/rrj/Downloads/Laban.app/Contents/MacOS/laban-agent",
+        expectedExecutablePath: expected))
   }
 
   func testAcceptsDevBuildPathOnlyWhenAllowed() {
     let devPath = "/Users/rrj/.cursor/worktrees/laban/c2yt/.build/arm64-apple-macosx/debug/laban-agent"
-    XCTAssertTrue(ControlProcessInfo.isLabanAgentExecutable(devPath, allowDevBuildPath: true))
-    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable(devPath, allowDevBuildPath: false))
+    XCTAssertTrue(
+      ControlProcessInfo.isLabanAgentExecutable(
+        devPath,
+        expectedExecutablePath: devPath,
+        allowDevBuildPath: true))
+    XCTAssertFalse(
+      ControlProcessInfo.isLabanAgentExecutable(
+        devPath,
+        expectedExecutablePath: devPath,
+        allowDevBuildPath: false))
+    XCTAssertFalse(
+      ControlProcessInfo.isLabanAgentExecutable(
+        "/tmp/fake-laban/.build/debug/laban-agent",
+        expectedExecutablePath: devPath,
+        allowDevBuildPath: true))
   }
 }

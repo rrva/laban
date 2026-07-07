@@ -80,7 +80,7 @@ let package = Package(
     .executableTarget(
       name: "LabanApp",
       dependencies: [
-        "LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore", "LabanControl",
+        "LabanCore", "LabanRenderer", "LabanTerminalCore", "LabanControl",
         .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
         .product(name: "_ProfileRecorderSampleConversion", package: "swift-profile-recorder"),
       ],
