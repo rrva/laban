@@ -220,6 +220,7 @@ public final class CommandProposalStore: @unchecked Sendable {
     }
     lock.lock()
     defer { lock.unlock() }
+    proposals = proposals.filter { _, proposal in proposal.state == .pendingReview }
     guard proposals.count < Self.maxStoredProposals else {
       throw SubmitError.storeFull
     }
