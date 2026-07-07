@@ -522,6 +522,35 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(queries[0].readRedaction, .appObserveSummary)
   }
 
+  func testUnauthorizedRequestProducesExactlyOneResponse() throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let fd = try ControlUDSClient.connect(socketPath: socketPath)
+    defer { Darwin.close(fd) }
+
+    let request = "GET /debug/health HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    try sendRaw(fd, Data(request.utf8))
+
+    var raw = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    let deadline = Date().addingTimeInterval(2)
+    while Date() < deadline {
+      let n = recv(fd, &buffer, buffer.count, 0)
+      if n < 0 && errno == EINTR { continue }
+      if n <= 0 { break }
+      raw.append(contentsOf: buffer[0..<n])
+    }
+
+    XCTAssertTrue(raw.prefix(9).elementsEqual(Data("HTTP/1.1 ".utf8)))
+    XCTAssertNotNil(raw.range(of: Data("401".utf8)))
+    let text = String(data: raw, encoding: .utf8) ?? ""
+    XCTAssertEqual(text.components(separatedBy: "HTTP/1.1 ").count - 1, 1)
+  }
+
   private func makeTempSocketPath() throws -> String {
     "/tmp/laban-ctl-\(UUID().uuidString.prefix(8)).sock"
   }
@@ -539,6 +568,19 @@ final class LabanControlServerTests: XCTestCase {
       path: path,
       token: token,
       body: body)
+  }
+
+  private func sendRaw(_ fd: Int32, _ data: Data) throws {
+    try data.withUnsafeBytes { rawBuffer in
+      guard let base = rawBuffer.baseAddress else { return }
+      var sent = 0
+      while sent < rawBuffer.count {
+        let n = Darwin.send(fd, base.advanced(by: sent), rawBuffer.count - sent, 0)
+        if n < 0 && errno == EINTR { continue }
+        guard n > 0 else { throw POSIXError(.EIO) }
+        sent += n
+      }
+    }
   }
 }
 
