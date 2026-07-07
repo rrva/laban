@@ -128,6 +128,29 @@ final class ControlSecurityFloorTests: XCTestCase {
     XCTAssertFalse(MainWindowController.shouldMountControlServer())
   }
 
+  func testDismissedProposalsDoNotBrickStore() throws {
+    CommandProposalStore.shared.resetForTesting()
+    defer { CommandProposalStore.shared.resetForTesting() }
+
+    var ids: [String] = []
+    for i in 0..<64 {
+      let proposal = try CommandProposalStore.shared.submit(
+        command: "cmd \(i)",
+        purpose: nil,
+        targetSessionID: "session-a")
+      ids.append(proposal.id)
+    }
+    for id in ids {
+      CommandProposalStore.shared.updateState(id: id, state: .dismissed)
+    }
+
+    let next = try CommandProposalStore.shared.submit(
+      command: "next",
+      purpose: nil,
+      targetSessionID: "session-a")
+    XCTAssertEqual(next.command, "next")
+  }
+
   func testMintedTokensNeverAppearInLogs() throws {
     let controlDir = try makeTempControlDirectory()
     defer { try? FileManager.default.removeItem(at: controlDir) }
