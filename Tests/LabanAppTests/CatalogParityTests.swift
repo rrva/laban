@@ -10,6 +10,7 @@ final class CatalogParityTests: XCTestCase {
   /// Intent ids `LiveIntentRouter` answers on the GUI surface (non-404 paths).
   private static let liveImplementedIntentIDs: Set<String> = [
     "app.state",
+    "app.stateSummary",
     "app.accessibility",
     "terminal.modes",
     "find.state",
