@@ -600,7 +600,7 @@ final class LabanControlServerTests: XCTestCase {
       "for fd in \(listenerFD) \(fd); do if [ -e /dev/fd/${fd} ]; then exit 1; fi; done; exit 0"
     var pid = pid_t(0)
     let args: [UnsafeMutablePointer<CChar>?] = [
-      strdup("/bin/sh"), strdup("-c"), strdup(script), nil
+      strdup("/bin/sh"), strdup("-c"), strdup(script), nil,
     ]
     defer { for arg in args { free(arg) } }
     let result = posix_spawn(&pid, "/bin/sh", nil, nil, args, environ)
@@ -608,7 +608,9 @@ final class LabanControlServerTests: XCTestCase {
 
     var status: Int32 = 0
     waitpid(pid, &status, 0)
-    XCTAssertEqual(status, 0, "child inherited control listener fd \(listenerFD) or client fd \(fd)")
+    XCTAssertEqual(
+      status, 0,
+      "child inherited control listener fd \(listenerFD) or client fd \(fd)")
   }
 
   func testUnauthorizedRequestProducesExactlyOneResponse() throws {
