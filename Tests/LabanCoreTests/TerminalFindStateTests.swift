@@ -161,6 +161,7 @@ final class TerminalFindStateTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = rows
     size.cols = cols
-    return try AppModel(initialSize: size, sessionFactory: { sz, _ in try Session.fixture(size: sz) })
+    return try AppModel(
+      initialSize: size, sessionFactory: { sz, _ in try Session.fixture(size: sz) })
   }
 }

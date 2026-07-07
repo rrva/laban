@@ -92,7 +92,8 @@ final class LabanDebugSmokeTests: XCTestCase {
     let readiness = try server.start(socketPath: socketPath)
     defer { server.stop() }
 
-    let ok = try httpGet(socketPath: socketPath, path: "/debug/accessibility", token: readiness.debugToken)
+    let ok = try httpGet(
+      socketPath: socketPath, path: "/debug/accessibility", token: readiness.debugToken)
     XCTAssertEqual(ok.status, 200)
     let obj = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
     XCTAssertEqual(obj["isElement"] as? Bool, true)
@@ -117,7 +118,8 @@ final class LabanDebugSmokeTests: XCTestCase {
     defer { server.stop() }
 
     func modes() throws -> [String: Any] {
-      let ok = try httpGet(socketPath: socketPath, path: "/debug/terminal-modes", token: readiness.debugToken)
+      let ok = try httpGet(
+        socketPath: socketPath, path: "/debug/terminal-modes", token: readiness.debugToken)
       XCTAssertEqual(ok.status, 200)
       return try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
     }

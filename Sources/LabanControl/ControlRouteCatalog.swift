@@ -102,7 +102,8 @@ public enum ControlRouteCatalog {
         method: "POST",
         path: "/debug/actions",
         category: "control",
-        summary: "Headless-only actuation for tabs, input, mouse, and clipboard (disabled on live GUI).",
+        summary:
+          "Headless-only actuation for tabs, input, mouse, and clipboard (disabled on live GUI).",
         legacyRequestSchemaPath: "schemas/debug/action.schema.json",
         legacyResponseSchemaPath: "schemas/debug/action-result.schema.json"),
       intentMapping: .requestBodyField("action")),
@@ -397,7 +398,8 @@ public enum ControlRouteCatalog {
           var params = request.query
           params["sessionId"] = request.pathParameters["id"] ?? ""
           return server.router.query(
-            server.legacyQueryInput(intentID: "session.detail", params: params, tokenTier: tokenTier))
+            server.legacyQueryInput(
+              intentID: "session.detail", params: params, tokenTier: tokenTier))
         }),
       ControlRoute(
         endpoint: endpoint(for: "GET", "/debug/screenshot"),
@@ -466,7 +468,8 @@ public enum ControlRouteCatalog {
             return .error(500, "missing intent mapping")
           }
           return server.router.query(
-            server.legacyQueryInput(intentID: intentID, params: request.query, tokenTier: tokenTier))
+            server.legacyQueryInput(intentID: intentID, params: request.query, tokenTier: tokenTier)
+          )
         })
     }
   }

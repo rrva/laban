@@ -3,7 +3,6 @@ import CoreGraphics
 import CoreText
 import CoreVideo
 import LabanCore
-import LabanDebug
 import LabanRenderer
 import LabanTerminalCore
 import Metal
@@ -7938,7 +7937,8 @@ extension TerminalBitmapView: ControlAgentAttachedIndicatorHost {
   }
 
   /// Terminal selection for the live control plane (`selection.read`).
-  func terminalSelection(forSessionID sessionID: Session.ID, model: AppModel) -> TerminalSelection? {
+  func terminalSelection(forSessionID sessionID: Session.ID, model: AppModel) -> TerminalSelection?
+  {
     syncSelectionStateToActiveTab()
     guard let tab = model.tabs.first(where: { $0.sessionId == sessionID }),
       let session = model.session(forTab: tab.id)

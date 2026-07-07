@@ -2,8 +2,12 @@ import Foundation
 import LabanControl
 import LabanCore
 
-/// Builds `SessionLaunchContext` values with control-plane discovery env and,
-/// for agent-attached sessions only, a single-use attach bootstrap (C10/C14).
+/// Builds `SessionLaunchContext` values with control-plane discovery env.
+///
+/// `LABAN_SESSION_ATTACH` bootstrap delivery is intentionally off by default:
+/// an inheritable shell environment cannot be the release security boundary for
+/// session-observe. Set `LABAN_CONTROL_ATTACH_ENV=1` only for explicit
+/// development / E2E paths that accept that env exposure.
 final class ControlSessionLaunchCoordinator {
   weak var controlServer: LabanControlServer?
   private(set) var controlSocketPath: String?
@@ -27,7 +31,9 @@ final class ControlSessionLaunchCoordinator {
       env[ControlEnvironmentKeys.controlURL] = controlSocketPath
     }
     var bootstrap: String?
-    if isAgentAttached, let controlServer {
+    if isAgentAttached, ControlSessionAttachPolicy.injectBootstrapIntoEnvironment,
+      let controlServer
+    {
       bootstrap = controlServer.mintSessionAttachBootstrap(sessionID: sessionID)
       env[ControlEnvironmentKeys.sessionAttach] = bootstrap
       pendingAttachSessionIDs.insert(sessionID)
@@ -79,8 +85,8 @@ final class ControlSessionLaunchCoordinator {
   }
 
   #if DEBUG
-  func hasPendingAttachRegistration(sessionID: String) -> Bool {
-    pendingAttachSessionIDs.contains(sessionID)
-  }
+    func hasPendingAttachRegistration(sessionID: String) -> Bool {
+      pendingAttachSessionIDs.contains(sessionID)
+    }
   #endif
 }

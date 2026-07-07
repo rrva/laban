@@ -81,7 +81,6 @@ let package = Package(
       name: "LabanApp",
       dependencies: [
         "LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore", "LabanControl",
-        .product(name: "ProfileRecorder", package: "swift-profile-recorder"),
         .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
         .product(name: "_ProfileRecorderSampleConversion", package: "swift-profile-recorder"),
       ],
@@ -164,7 +163,7 @@ let package = Package(
     ),
     .testTarget(
       name: "LabanAppTests",
-      dependencies: ["LabanApp", "LabanControl", "LabanDebug", "Laband", "Labpty"],
+      dependencies: ["LabanApp", "LabanControl", "LabanDebug", "LabanAgent", "Laband", "Labpty"],
       exclude: ["Fixtures"]
     ),
   ]

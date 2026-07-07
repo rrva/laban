@@ -165,15 +165,27 @@ final class TabMetadataSynchronizer {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
     let (dirty, raw) = session.consumeTitle()
     guard dirty else { return false }
-    return syncTitle(raw: raw, forTab: tabId, at: idx, tabs: &tabs)
+    return syncTitle(raw: raw, forTab: tabId, at: idx, ownerIsFresh: false, tabs: &tabs)
   }
 
   @discardableResult
-  private func syncTitle(raw: String?, forTab tabId: Tab.ID, at idx: Int, tabs: inout [Tab])
+  private func syncTitle(
+    raw: String?,
+    forTab tabId: Tab.ID,
+    at idx: Int,
+    ownerIsFresh: Bool,
+    tabs: inout [Tab]
+  )
     -> Bool
   {
     let before = tabs[idx].titleMetadata
-    setTerminalTitle(TerminalTitle.sanitize(raw), forTab: tabId, at: idx, tabs: &tabs)
+    setTerminalTitle(
+      TerminalTitle.sanitize(raw),
+      forTab: tabId,
+      at: idx,
+      ownerIsFresh: ownerIsFresh,
+      tabs: &tabs
+    )
     Self.resolveTitle(in: &tabs, at: idx)
     return tabs[idx].titleMetadata != before
   }
@@ -418,7 +430,13 @@ final class TabMetadataSynchronizer {
     }
 
     if signals.titleDirty,
-      syncTitle(raw: signals.titleRaw, forTab: tabId, at: idx, tabs: &tabs)
+      syncTitle(
+        raw: signals.titleRaw,
+        forTab: tabId,
+        at: idx,
+        ownerIsFresh: signals.processMetadata != nil,
+        tabs: &tabs
+      )
     {
       result.modelChanged = true
       result.titleChangedTab = tabs[idx]
@@ -468,9 +486,15 @@ final class TabMetadataSynchronizer {
     return true
   }
 
-  func setTerminalTitle(_ title: String?, forTab tabId: Tab.ID, at idx: Int, tabs: inout [Tab]) {
+  func setTerminalTitle(
+    _ title: String?,
+    forTab tabId: Tab.ID,
+    at idx: Int,
+    ownerIsFresh: Bool = true,
+    tabs: inout [Tab]
+  ) {
     tabs[idx].titleMetadata.terminalTitle = title
-    if title != nil, let owner = processIdentityByTab[tabId] {
+    if title != nil, ownerIsFresh, let owner = processIdentityByTab[tabId] {
       terminalTitleOwnerByTab[tabId] = owner
     } else {
       terminalTitleOwnerByTab.removeValue(forKey: tabId)

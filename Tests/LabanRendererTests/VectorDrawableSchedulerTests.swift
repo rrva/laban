@@ -112,6 +112,26 @@ final class VectorDrawableSchedulerTests: XCTestCase {
       "drop flag leaked into the next output-driven frame")
   }
 
+  /// Full-damage frames are correctness frames, even if a caller also carried a
+  /// drop hint from scroll state. The scheduler must wait briefly for the
+  /// in-flight slot instead of treating `dropIfBusy` as an unconditional
+  /// zero-timeout.
+  func testFullFrameDropHintWaitsForInFlightFrame() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("no Metal device") }
+    let layer = CAMetalLayer()
+    layer.device = device
+    let scheduler = MetalDrawableScheduler(layer: layer)
+    let held = try XCTUnwrap(scheduler.beginFrame(needsFullFrame: false))
+
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(5)) {
+      held.finish()
+    }
+
+    let fullFrame = scheduler.beginFrame(needsFullFrame: true, dropIfBusy: true)
+    XCTAssertNotNil(fullFrame, "full-damage frame should wait for the previous frame slot")
+    fullFrame?.finish()
+  }
+
   /// The miss-recovery wake (the escape from the half-rate basin) is wired
   /// through to the scheduler. Installing it must not crash and the renderer
   /// keeps rendering with it set or cleared.

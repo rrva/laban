@@ -33,7 +33,8 @@ final class CommandProposalReviewPresenter: CommandProposalReviewPresenting {
     let textView = NSTextView(frame: scroll.contentView.bounds)
     textView.isEditable = false
     textView.isSelectable = true
-    textView.font = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    textView.font = NSFont.monospacedSystemFont(
+      ofSize: NSFont.smallSystemFontSize, weight: .regular)
     textView.textColor = .labelColor
     textView.backgroundColor = .textBackgroundColor
     textView.textContainerInset = NSSize(width: 8, height: 8)
@@ -73,15 +74,16 @@ final class CommandProposalReviewPresenter: CommandProposalReviewPresenting {
 }
 
 #if DEBUG
-/// Test hook exposing rendered strings without presenting AppKit sheets.
-enum CommandProposalReviewRendering {
-  static func renderedCopyText(for proposal: CommandProposal) -> (
-    command: CommandProposalSafeText,
-    purpose: CommandProposalSafeText?
-  ) {
-    (
-      CommandProposalSafeText.render(proposal.command),
-      proposal.purpose.map { CommandProposalSafeText.render($0) })
+  /// Test hook exposing rendered strings without presenting AppKit sheets.
+  enum CommandProposalReviewRendering {
+    static func renderedCopyText(for proposal: CommandProposal) -> (
+      command: CommandProposalSafeText,
+      purpose: CommandProposalSafeText?
+    ) {
+      (
+        CommandProposalSafeText.render(proposal.command),
+        proposal.purpose.map { CommandProposalSafeText.render($0) }
+      )
+    }
   }
-}
 #endif

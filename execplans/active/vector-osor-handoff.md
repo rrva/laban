@@ -4,6 +4,16 @@ Session-transition note. **Source of truth is the ExecPlan:**
 `execplans/active/vector-osor-subpixel-scroll.md` (maintained per `PLANS.md`).
 This doc just captures where we are and what the hardware switch unblocks.
 
+## Progress
+
+- [x] M0 winding stability completed.
+- [x] M1 gamma + text-weight setting completed; the user accepted default text weight `1.0`.
+- [x] M2 display robustness completed except automatic scaled-mode detection, which is deferred until on-device display validation.
+- [x] M3 subpixel calibration completed except 2D/non-stripe calibration, which is deferred until external non-stripe display validation.
+- [ ] M4 sub-pixel-offset glyph caching is next.
+- [ ] M5 atlas eviction + per-frame sample budget is pending.
+- [ ] M6 smooth sub-pixel scroll plumbing + end-to-end validation is pending.
+
 ## Where we are
 
 - Branch: `codex/vector-glyph-renderer`. Pushed to `origin`.
@@ -77,7 +87,7 @@ Prereq for smooth scrolling. Plan (detail in ExecPlan):
   the accumulate path vs the supersampled oracle must agree (gross-pixel ~0) at
   each phase. Plus a test that two phases produce distinct masks/entries.
 
-## How to run / verify
+## Validation and Acceptance
 From repo root `/Users/rrj/wrk/laban`:
 - Autonomous gates added this effort:
   `swift test --filter VectorGlyph` (winding, size/phase sweep, gamma, parity),

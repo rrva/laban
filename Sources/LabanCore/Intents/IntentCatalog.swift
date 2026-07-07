@@ -1018,7 +1018,8 @@ public struct IntentCatalog: Sendable {
       requiredCapability: .observeSensitive, dataSensitivity: .nonSensitiveState,
       availability: guiObserve),
     descriptor(
-      id: "session.detail", kind: .query, category: "state", summary: "Return one terminal session.",
+      id: "session.detail", kind: .query, category: "state",
+      summary: "Return one terminal session.",
       requiredCapability: .observeSensitive, dataSensitivity: .visibleText,
       availability: guiObserve),
     descriptor(

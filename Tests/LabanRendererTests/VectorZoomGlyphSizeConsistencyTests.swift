@@ -50,6 +50,7 @@ final class VectorZoomGlyphSizeConsistencyTests: XCTestCase {
   /// appear among drawn glyphs.
   func testGlyphSizesStaySingleAcrossZoomCommits() throws {
     let renderer = try makeRenderer(pt: 14)
+    renderer.waitForFrameCompletion = true
     // Warm the start size.
     _ = renderer.render(mixedStyleCommands(), damage: .full)
 

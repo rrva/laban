@@ -78,7 +78,8 @@ extension HeadlessDebugRuntime {
     case .scrollViewport(let request):
       return DebugViewportActions(runtime: self).scrollViewport(request)
     case .propose(let request):
-      return DebugCommandProposalActions(runtime: self).propose(request, scopedSessionID: scopedSessionID)
+      return DebugCommandProposalActions(runtime: self).propose(
+        request, scopedSessionID: scopedSessionID)
     case .mouseWheel(let request):
       return DebugMouseActions(runtime: self).mouseWheel(request)
     case .mouseDrag(let request):

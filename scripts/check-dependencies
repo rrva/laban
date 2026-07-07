@@ -2,13 +2,24 @@
 import re
 import subprocess
 import sys
+import json
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "Package.swift"
+PACKAGE_RESOLVED = ROOT / "Package.resolved"
 FETCH = ROOT / "scripts/fetch-libghostty-vt"
 ADR = ROOT / "docs/adr/0001-libghostty-vt-owns-vt-parsing.md"
+PROFILE_DOC = ROOT / "docs/process/profiling-hiccups.md"
+ALLOWED_SWIFTPM_DEPENDENCIES = {
+    "swift-profile-recorder": {
+        "url": "https://github.com/apple/swift-profile-recorder.git",
+        "version": "0.3.18",
+        "revision": "e110ba85da7d43a47b0e964726e84fddcf720192",
+        "doc": PROFILE_DOC,
+    }
+}
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -27,14 +38,54 @@ def shell_script_value(text: str, name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def package_dependencies(package: str) -> list[tuple[str, str]]:
+    matches = re.findall(
+        r'\.package\(\s*url:\s*"([^"]+)"\s*,\s*\.upToNextMinor\(from:\s*"([^"]+)"\)\s*\)',
+        package,
+        re.S,
+    )
+    return matches
+
+
+def resolved_pins() -> dict[str, dict]:
+    if not PACKAGE_RESOLVED.is_file():
+        return {}
+    data = json.loads(PACKAGE_RESOLVED.read_text(encoding="utf-8"))
+    return {pin.get("identity", ""): pin for pin in data.get("pins", [])}
+
+
 def main() -> int:
     errors: list[str] = []
     package = PACKAGE.read_text(encoding="utf-8")
     fetch = FETCH.read_text(encoding="utf-8")
     adr = ADR.read_text(encoding="utf-8")
 
-    if ".package(" in package:
-        fail(errors, "Package.swift declares a SwiftPM package dependency; document and pin it first")
+    dependencies = package_dependencies(package)
+    if ".package(" in package and not dependencies:
+        fail(errors, "Package.swift contains an unsupported SwiftPM dependency declaration")
+
+    pins = resolved_pins()
+    for dep_url, dep_version in dependencies:
+        identity = dep_url.removesuffix(".git").rstrip("/").split("/")[-1]
+        allowed = ALLOWED_SWIFTPM_DEPENDENCIES.get(identity)
+        if not allowed:
+            fail(errors, f"Package.swift declares unapproved SwiftPM dependency: {dep_url}")
+            continue
+        if dep_url != allowed["url"] or dep_version != allowed["version"]:
+            fail(errors, f"{identity} must stay pinned in Package.swift to {allowed['url']} {allowed['version']}")
+        pin = pins.get(identity)
+        state = pin.get("state", {}) if pin else {}
+        if not pin:
+            fail(errors, f"Package.resolved is missing pin for {identity}")
+        elif (
+            pin.get("location") != allowed["url"]
+            or state.get("version") != allowed["version"]
+            or state.get("revision") != allowed["revision"]
+        ):
+            fail(errors, f"Package.resolved must pin {identity} to {allowed['version']} {allowed['revision']}")
+        doc = Path(allowed["doc"]).read_text(encoding="utf-8")
+        if allowed["url"] not in doc or allowed["version"] not in doc or allowed["revision"] not in doc:
+            fail(errors, f"{allowed['doc'].relative_to(ROOT)} must document the {identity} URL, version, and revision")
 
     commit = shell_script_value(fetch, "GHOSTTY_COMMIT")
     url = shell_script_value(fetch, "GHOSTTY_URL")

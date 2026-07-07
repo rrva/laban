@@ -128,11 +128,34 @@ collect_failure_artifacts() {
   set -e
 }
 
+curl_debug_noauth() {
+  socket_or_url="$1"
+  path="$2"
+  shift 2
+  case "$socket_or_url" in
+    http://*|https://*)
+      curl -sf "$@" "${socket_or_url%/}$path"
+      ;;
+    *)
+      curl -sf --unix-socket "$socket_or_url" "$@" "http://localhost$path"
+      ;;
+  esac
+}
+
+curl_debug() {
+  socket_or_url="$1"
+  token="$2"
+  path="$3"
+  shift 3
+  curl_debug_noauth "$socket_or_url" "$path" \
+    -H "Authorization: Bearer $token" "$@"
+}
+
 save_failure_get() {
   path="$1"
   output="$2"
   tmp="$output.tmp"
-  if curl -sf -H "Authorization: Bearer $SERVER_TOKEN" "$SERVER_URL$path" >"$tmp"; then
+  if curl_debug "$SERVER_URL" "$SERVER_TOKEN" "$path" >"$tmp"; then
     mv "$tmp" "$output"
   else
     rm -f "$tmp"
@@ -144,8 +167,8 @@ save_failure_post() {
   body="$2"
   output="$3"
   tmp="$output.tmp"
-  if curl -sf -X POST -H "Authorization: Bearer $SERVER_TOKEN" \
-    -H 'Content-Type: application/json' -d "$body" "$SERVER_URL$path" >"$tmp"; then
+  if curl_debug "$SERVER_URL" "$SERVER_TOKEN" "$path" \
+    -X POST -H 'Content-Type: application/json' -d "$body" >"$tmp"; then
     mv "$tmp" "$output"
   else
     rm -f "$tmp"
@@ -156,7 +179,7 @@ save_failure_png() {
   path="$1"
   output="$2"
   tmp="$output.tmp"
-  if curl -sf -H "Authorization: Bearer $SERVER_TOKEN" "$SERVER_URL$path" >"$tmp"; then
+  if curl_debug "$SERVER_URL" "$SERVER_TOKEN" "$path" >"$tmp"; then
     mv "$tmp" "$output"
   else
     rm -f "$tmp"
@@ -214,15 +237,16 @@ fi
 
 # Helper: curl endpoint, assert HTTP 200 and ok:true where applicable
 get_json() {
-  curl -sf -H "Authorization: Bearer $SERVER_TOKEN" "$SERVER_URL$1"
+  curl_debug "$SERVER_URL" "$SERVER_TOKEN" "$1"
 }
 
 post_json() {
-  curl -sf -X POST -H "Authorization: Bearer $SERVER_TOKEN" -H 'Content-Type: application/json' -d "$2" "$SERVER_URL$1"
+  curl_debug "$SERVER_URL" "$SERVER_TOKEN" "$1" \
+    -X POST -H 'Content-Type: application/json' -d "$2"
 }
 
 # 5. /debug/health
-if curl -sf "$SERVER_URL/debug/health" >/dev/null 2>&1; then
+if curl_debug_noauth "$SERVER_URL" /debug/health >/dev/null 2>&1; then
   fail "debug server accepted unauthenticated health request"
 fi
 HEALTH=$(get_json /debug/health)
@@ -285,7 +309,7 @@ WAIT_RESULT=$(post_json /debug/wait "$WAIT_BODY")
   || fail "wait for textVisible failed: $WAIT_RESULT"
 
 # 8. GET /debug/screenshot — non-empty PNG
-SCREENSHOT_SIZE=$(curl -sf -H "Authorization: Bearer $SERVER_TOKEN" "$SERVER_URL/debug/screenshot" | wc -c | tr -d ' ')
+SCREENSHOT_SIZE=$(curl_debug "$SERVER_URL" "$SERVER_TOKEN" /debug/screenshot | wc -c | tr -d ' ')
 [ "$SCREENSHOT_SIZE" -gt 100 ] || fail "screenshot is empty (got $SCREENSHOT_SIZE bytes)"
 
 # 9. POST /debug/screenshot — artifact PNG written
@@ -461,7 +485,7 @@ LONG_LINE_RESULT=$(post_json /debug/actions "$LONG_LINE_PAYLOAD")
 LONG_LINE_RENDER="$RUN_ARTIFACTS/long-line-render.json"
 LONG_LINE_SCREENSHOT="$RUN_ARTIFACTS/long-line.png"
 get_json /debug/render >"$LONG_LINE_RENDER"
-curl -sf -H "Authorization: Bearer $SERVER_TOKEN" "$SERVER_URL/debug/screenshot" >"$LONG_LINE_SCREENSHOT"
+curl_debug "$SERVER_URL" "$SERVER_TOKEN" /debug/screenshot >"$LONG_LINE_SCREENSHOT"
 if ! python3 - "$LONG_LINE_RENDER" "$LONG_LINE_SCREENSHOT" <<'PY'
 import json
 import struct
@@ -860,7 +884,7 @@ for _i in $(seq 1 100); do
 done
 [ -n "$BARE_URL" ] || fail "bare --debug-server: did not receive readiness JSON"
 [ -n "$BARE_TOKEN" ] || fail "bare --debug-server: readiness JSON missing debugToken"
-BARE_HEALTH=$(curl -sf -H "Authorization: Bearer $BARE_TOKEN" "$BARE_URL/debug/health")
+BARE_HEALTH=$(curl_debug "$BARE_URL" "$BARE_TOKEN" /debug/health)
 [ "$(printf '%s' "$BARE_HEALTH" | jq -r '.ok')" = "true" ] \
   || fail "bare --debug-server health: $BARE_HEALTH"
 kill "$BARE_PID" 2>/dev/null || true

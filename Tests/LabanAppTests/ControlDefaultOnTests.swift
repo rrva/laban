@@ -82,13 +82,17 @@ final class ControlDefaultOnTests: XCTestCase {
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
     let context = coordinator.prepareLaunch(tabID: "tab-1", isAgentAttached: false)
-    XCTAssertEqual(context.environmentOverrides[ControlEnvironmentKeys.controlURL], start.socketPath)
+    XCTAssertEqual(
+      context.environmentOverrides[ControlEnvironmentKeys.controlURL], start.socketPath)
     XCTAssertNil(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach])
     XCTAssertNil(context.sessionObserveBootstrap)
     XCTAssertFalse(context.isAgentAttached)
   }
 
   func testAgentAttachedLaunchContextCarriesSingleUseBootstrap() throws {
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
     let coordinator = ControlSessionLaunchCoordinator()
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
     let start = try server.start()
@@ -102,7 +106,7 @@ final class ControlDefaultOnTests: XCTestCase {
 
     server.registerAttachShellPID(
       sessionID: context.sessionID,
-      shellPID: ProcessInfo.processInfo.processIdentifier)
+      shellPID: getppid())
 
     let (fd, redeemedSessionID) = try ControlUDSClient.redeemAttachBootstrap(
       socketPath: start.socketPath,
@@ -124,8 +128,24 @@ final class ControlDefaultOnTests: XCTestCase {
     XCTAssertEqual(ownStatus, 200)
   }
 
-  func testAgentAttachedLaunchInjectsBootstrapWithoutGlobalEnvOptIn() throws {
+  func testAgentAttachedLaunchDoesNotInjectBootstrapWithoutEnvOptIn() throws {
     unsetenv(ControlEnvironmentKeys.attachEnvOptIn)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
+    let coordinator = ControlSessionLaunchCoordinator()
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
+
+    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    XCTAssertNil(context.sessionObserveBootstrap)
+    XCTAssertNil(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach])
+    XCTAssertTrue(context.isAgentAttached)
+  }
+
+  func testAgentAttachedLaunchInjectsBootstrapWithExplicitEnvOptIn() throws {
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
     defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
 
     let coordinator = ControlSessionLaunchCoordinator()
@@ -155,6 +175,9 @@ final class ControlDefaultOnTests: XCTestCase {
   }
 
   func testTryRegisterShellPIDAcceptsExplicitOverride() throws {
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
     let coordinator = ControlSessionLaunchCoordinator()
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
     let start = try server.start()
@@ -189,6 +212,9 @@ final class ControlDefaultOnTests: XCTestCase {
   }
 
   func testPreallocatedSessionIDMatchesRedeemedScope() throws {
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
     let coordinator = ControlSessionLaunchCoordinator()
     var attachBootstrap: String?
     let model = try AppModel(
@@ -212,7 +238,7 @@ final class ControlDefaultOnTests: XCTestCase {
     let bootstrap = try XCTUnwrap(attachBootstrap)
     server.registerAttachShellPID(
       sessionID: tab.sessionId,
-      shellPID: ProcessInfo.processInfo.processIdentifier)
+      shellPID: getppid())
     let (fd, redeemedSessionID) = try ControlUDSClient.redeemAttachBootstrap(
       socketPath: start.socketPath,
       bootstrap: bootstrap)

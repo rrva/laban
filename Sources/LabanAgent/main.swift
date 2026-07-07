@@ -23,6 +23,8 @@ struct AgentArgs {
   var emojiRenderingMode: EmojiRenderingMode? = nil
   var replayCapture: String? = nil
   var replayMode: CaptureReplayMode = .both
+  var controlAttach = false
+  var controlAttachSmokePaths: [String] = []
   /// Optional persistence directory. When set, the headless runtime
   /// wires the same PersistenceCoordinator / TranscriptHost /
   /// AgentObserverHost chain that `MainWindowController` uses in the
@@ -41,6 +43,7 @@ func parseArgs() -> AgentArgs {
     case "--headless": a.headless = true
     case "--deterministic": a.deterministic = true
     case "--debug-server": a.debugServerAddress = "127.0.0.1:0"
+    case "--control-attach": a.controlAttach = true
     case PersistenceRestoreLaunchFlag.argument: a.noPersistenceRestore = true
     case PersistenceRestoreLaunchFlag.noPersistenceArgument: a.noPersistence = true
     default:
@@ -75,6 +78,9 @@ func parseArgs() -> AgentArgs {
         a.replayMode = CaptureReplayMode(rawValue: raw) ?? .both
       } else if arg.hasPrefix("--persistence-dir=") {
         a.persistenceDir = String(arg.dropFirst("--persistence-dir=".count))
+      } else if arg.hasPrefix("--control-attach-smoke=") {
+        a.controlAttach = true
+        a.controlAttachSmokePaths.append(String(arg.dropFirst("--control-attach-smoke=".count)))
       }
     }
   }
@@ -87,6 +93,7 @@ func usage() -> String {
     laban-agent --headless --fixture=PATH --artifacts=PATH [--deterministic]
     laban-agent --headless --debug-server[=127.0.0.1:0] [options]
     laban-agent --replay-capture=PATH [--replay-mode=both|terminal|renderer]
+    laban-agent --control-attach [--control-attach-smoke=PATH ...]
 
   Debug server options:
     --fixture=PATH                  Load a deterministic fixture session.
@@ -127,6 +134,13 @@ func usage() -> String {
       POST /debug/wait
       POST /debug/snapshot
       POST /debug/fixture
+
+  Live GUI attach:
+    --control-attach                Redeem LABAN_SESSION_ATTACH against LABAN_CONTROL_URL,
+                                    then keep the connection open and proxy JSONL stdin
+                                    requests of {"method":"GET","path":"/debug/state"}.
+    --control-attach-smoke=PATH     After attach, request PATH on the same bound
+                                    connection, print the status/body JSON, then exit.
   """
 }
 
@@ -181,6 +195,106 @@ func defaultDebugArtifactsPath() -> String {
   return ".artifacts/runs/debug-server-\(pid)-\(suffix)"
 }
 
+struct LiveControlAttachReady: Encodable {
+  var mode = "control-attach"
+  var ok = true
+  var sessionID: String
+}
+
+struct LiveControlAttachRequest: Decodable {
+  var method: String?
+  var path: String
+  var body: String?
+}
+
+struct LiveControlAttachResponse: Encodable {
+  var path: String
+  var status: Int
+  var body: String
+}
+
+struct LiveControlAttachSmokeResponse: Encodable {
+  var path: String
+  var status: Int
+}
+
+func printJSON<T: Encodable>(_ value: T) {
+  let enc = JSONEncoder()
+  enc.outputFormatting = [.sortedKeys]
+  guard let data = try? enc.encode(value), let text = String(data: data, encoding: .utf8) else {
+    fail("failed to encode JSON output")
+  }
+  print(text)
+  fflush(stdout)
+}
+
+func requestLiveControl(fd: Int32, request: LiveControlAttachRequest) throws
+  -> LiveControlAttachResponse
+{
+  let body = request.body.flatMap { Data($0.utf8) }
+  let (status, responseBody) = try ControlUDSClient.request(
+    fd: fd,
+    method: request.method ?? "GET",
+    path: request.path,
+    body: body,
+    keepConnectionOpen: true)
+  return LiveControlAttachResponse(
+    path: request.path,
+    status: status,
+    body: String(data: responseBody, encoding: .utf8) ?? "")
+}
+
+func runLiveControlAttach(_ args: AgentArgs) -> Never {
+  let env = ProcessInfo.processInfo.environment
+  guard let socketPath = env[ControlEnvironmentKeys.controlURL], !socketPath.isEmpty else {
+    fail("\(ControlEnvironmentKeys.controlURL) is required for --control-attach")
+  }
+  guard let bootstrap = env[ControlEnvironmentKeys.sessionAttach], !bootstrap.isEmpty else {
+    fail("\(ControlEnvironmentKeys.sessionAttach) is required for --control-attach")
+  }
+
+  let attachment: (fd: Int32, sessionID: String)
+  do {
+    attachment = try ControlUDSClient.redeemAttachBootstrap(
+      socketPath: socketPath,
+      bootstrap: bootstrap)
+  } catch {
+    fail("control attach failed: \(error)")
+  }
+  defer { Darwin.close(attachment.fd) }
+
+  printJSON(LiveControlAttachReady(sessionID: attachment.sessionID))
+
+  if !args.controlAttachSmokePaths.isEmpty {
+    for path in args.controlAttachSmokePaths {
+      do {
+        let response = try requestLiveControl(
+          fd: attachment.fd,
+          request: LiveControlAttachRequest(method: "GET", path: path, body: nil))
+        printJSON(LiveControlAttachSmokeResponse(path: response.path, status: response.status))
+      } catch {
+        fail("control smoke request failed for \(path): \(error)")
+      }
+    }
+    exit(0)
+  }
+
+  while let line = readLine() {
+    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { continue }
+    do {
+      let request = try JSONDecoder().decode(
+        LiveControlAttachRequest.self,
+        from: Data(trimmed.utf8))
+      printJSON(try requestLiveControl(fd: attachment.fd, request: request))
+    } catch {
+      fputs("laban-agent: control proxy request failed: \(error)\n", stderr)
+      fflush(stderr)
+    }
+  }
+  exit(0)
+}
+
 func installTerminationSource(
   signal signalNumber: Int32,
   runtime: HeadlessDebugRuntime,
@@ -210,6 +324,10 @@ if let emojiRenderingMode = args.emojiRenderingMode {
   UserDefaults.standard.setVolatileDomain(
     [EmojiRenderingSettings.defaultsKey: emojiRenderingMode.rawValue],
     forName: UserDefaults.argumentDomain)
+}
+
+if args.controlAttach {
+  runLiveControlAttach(args)
 }
 
 if let replayPath = args.replayCapture {

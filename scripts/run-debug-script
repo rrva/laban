@@ -57,7 +57,11 @@ def run_command(cmd, cwd):
         raise ScriptError(f"command failed with exit {result.returncode}: {' '.join(cmd)}")
 
 
-def http_json(server_url, token, method, path, body=None):
+def is_unix_debug_server(server_url):
+    return not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", server_url)
+
+
+def http_request_bytes(server_url, token, method, path, body=None):
     if not path.startswith("/debug"):
         raise ScriptError(f"refusing non-debug path: {path}")
     data = None
@@ -65,30 +69,47 @@ def http_json(server_url, token, method, path, body=None):
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
+
+    if is_unix_debug_server(server_url):
+        cmd = [
+            "curl",
+            "-sS",
+            "--unix-socket",
+            server_url,
+            "-X",
+            method,
+            "-w",
+            "\n%{http_code}",
+        ]
+        for key, value in headers.items():
+            cmd.extend(["-H", f"{key}: {value}"])
+        if data is not None:
+            cmd.extend(["--data-binary", "@-"])
+        cmd.append(f"http://localhost{path}")
+        result = subprocess.run(
+            cmd,
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            raise ScriptError(f"{method} {path} failed: {stderr}") from None
+        raw, separator, status_bytes = result.stdout.rpartition(b"\n")
+        if not separator:
+            raise ScriptError(f"{method} {path} returned malformed curl response")
+        try:
+            status = int(status_bytes.decode("ascii"))
+        except ValueError as exc:
+            raise ScriptError(f"{method} {path} returned invalid HTTP status") from exc
+        if not 200 <= status < 300:
+            text = raw.decode("utf-8", errors="replace")
+            raise ScriptError(f"{method} {path} returned HTTP {status}: {text}")
+        return raw
+
     request = urllib.request.Request(
         server_url.rstrip("/") + path, data=data, headers=headers, method=method
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise ScriptError(f"{method} {path} returned HTTP {exc.code}: {raw}") from exc
-    except urllib.error.URLError as exc:
-        raise ScriptError(f"{method} {path} failed: {exc}") from exc
-    try:
-        return json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ScriptError(f"{method} {path} did not return JSON: {exc}") from exc
-
-
-def http_bytes(server_url, token, method, path):
-    if not path.startswith("/debug"):
-        raise ScriptError(f"refusing non-debug path: {path}")
-    request = urllib.request.Request(
-        server_url.rstrip("/") + path,
-        headers={"Authorization": f"Bearer {token}"},
-        method=method,
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -98,6 +119,18 @@ def http_bytes(server_url, token, method, path):
         raise ScriptError(f"{method} {path} returned HTTP {exc.code}: {raw}") from exc
     except urllib.error.URLError as exc:
         raise ScriptError(f"{method} {path} failed: {exc}") from exc
+
+
+def http_json(server_url, token, method, path, body=None):
+    raw = http_request_bytes(server_url, token, method, path, body)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ScriptError(f"{method} {path} did not return JSON: {exc}") from exc
+
+
+def http_bytes(server_url, token, method, path):
+    return http_request_bytes(server_url, token, method, path)
 
 
 def read_readiness(process, timeout_seconds, stderr_path):

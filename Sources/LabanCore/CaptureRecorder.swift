@@ -2,7 +2,6 @@ import CoreGraphics
 import CryptoKit
 import Darwin
 import Foundation
-import LabanCore
 import LabanRenderer
 import LabanTerminalCore
 
@@ -20,7 +19,7 @@ public enum CaptureRecorderError: Error, Equatable {
   case missingManifest
 }
 
-public final class CaptureRecorder: CaptureSink {
+public final class CaptureRecorder: TerminalSurfaceCaptureSink {
   public let runId: String
   public let directoryURL: URL
   public let screenshots: CaptureScreenshotPolicy
@@ -521,12 +520,12 @@ public final class CaptureRecorder: CaptureSink {
 
 }
 
-enum CaptureHash {
-  static func sha256(_ data: Data) -> String {
+public enum CaptureHash {
+  public static func sha256(_ data: Data) -> String {
     hex(SHA256.hash(data: data))
   }
 
-  static func hex<Bytes: Sequence>(_ bytes: Bytes) -> String where Bytes.Element == UInt8 {
+  public static func hex<Bytes: Sequence>(_ bytes: Bytes) -> String where Bytes.Element == UInt8 {
     bytes.map { String(format: "%02x", $0) }.joined()
   }
 }
@@ -584,6 +583,12 @@ public struct CapturedSurface: Codable, Equatable, Sendable {
   public var width: Int
   public var height: Int
   public var scale: Double
+
+  public init(width: Int, height: Int, scale: Double) {
+    self.width = width
+    self.height = height
+    self.scale = scale
+  }
 }
 
 public struct CapturedFrameCommands: Codable, Equatable, Sendable {
@@ -592,6 +597,18 @@ public struct CapturedFrameCommands: Codable, Equatable, Sendable {
   public var backend: String
   public var surface: CapturedSurface
   public var commands: [CapturedFrameCommand]
+
+  public init(
+    frame: Int,
+    backend: String,
+    surface: CapturedSurface,
+    commands: [CapturedFrameCommand]
+  ) {
+    self.frame = frame
+    self.backend = backend
+    self.surface = surface
+    self.commands = commands
+  }
 }
 
 public struct CapturedFrameCommand: Codable, Equatable, Sendable {
@@ -617,14 +634,14 @@ public struct CapturedRect: Codable, Equatable, Sendable {
   public var width: Double
   public var height: Double
 
-  init(_ rect: CGRect) {
+  public init(_ rect: CGRect) {
     self.x = Double(rect.origin.x)
     self.y = Double(rect.origin.y)
     self.width = Double(rect.size.width)
     self.height = Double(rect.size.height)
   }
 
-  var cgRect: CGRect {
+  public var cgRect: CGRect {
     CGRect(x: x, y: y, width: width, height: height)
   }
 }

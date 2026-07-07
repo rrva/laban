@@ -246,11 +246,11 @@ public final class CommandProposalStore: @unchecked Sendable {
   }
 
   #if DEBUG
-  public func resetForTesting() {
-    lock.lock()
-    proposals = [:]
-    lock.unlock()
-  }
+    public func resetForTesting() {
+      lock.lock()
+      proposals = [:]
+      lock.unlock()
+    }
   #endif
 }
 

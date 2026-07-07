@@ -24,7 +24,7 @@ final class IntentCatalogTests: XCTestCase {
 
   func testStarterDescriptorsArePresentWithObserveGuiSurface() throws {
     let expectedGuiObserve: Set<String> = [
-      "app.state",
+      "app.state"
     ]
     let expectedHeadlessOnlyInput: Set<String> = [
       "tab.select",
