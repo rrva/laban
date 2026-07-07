@@ -522,6 +522,64 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(queries[0].readRedaction, .appObserveSummary)
   }
 
+  func testMalformedRequestReturns400Or405() throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let (methodStatus, _) = try request(
+      socketPath: socketPath,
+      path: "/debug/health",
+      method: "INVALID",
+      token: nil)
+    XCTAssertEqual(methodStatus, 405)
+
+    let fd = try ControlUDSClient.connect(socketPath: socketPath)
+    defer { Darwin.close(fd) }
+    let duplicateAuth =
+      "GET /debug/health HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer a\r\nAuthorization: Bearer b\r\n\r\n"
+    try sendRaw(fd, Data(duplicateAuth.utf8))
+    var raw = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    let deadline = Date().addingTimeInterval(2)
+    while Date() < deadline {
+      let n = recv(fd, &buffer, buffer.count, 0)
+      if n < 0 && errno == EINTR { continue }
+      if n <= 0 { break }
+      raw.append(contentsOf: buffer[0..<n])
+    }
+    XCTAssertTrue(raw.prefix(9).elementsEqual(Data("HTTP/1.1 ".utf8)))
+    XCTAssertNotNil(raw.range(of: Data("400".utf8)))
+  }
+
+  func testOversizedBodyReturns413() throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let fd = try ControlUDSClient.connect(socketPath: socketPath)
+    defer { Darwin.close(fd) }
+    let request =
+      "POST /debug/actions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5000000\r\n\r\n"
+    try sendRaw(fd, Data(request.utf8))
+
+    var raw = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    let deadline = Date().addingTimeInterval(2)
+    while Date() < deadline {
+      let n = recv(fd, &buffer, buffer.count, 0)
+      if n < 0 && errno == EINTR { continue }
+      if n <= 0 { break }
+      raw.append(contentsOf: buffer[0..<n])
+    }
+    XCTAssertTrue(raw.prefix(9).elementsEqual(Data("HTTP/1.1 ".utf8)))
+    XCTAssertNotNil(raw.range(of: Data("413".utf8)))
+  }
+
   func testUnauthorizedRequestProducesExactlyOneResponse() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)

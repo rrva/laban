@@ -40,6 +40,14 @@ public final class LabanControlServer {
     case failure(status: Int)
   }
 
+  private enum ParseResult {
+    case ok(IncomingHTTPRequest)
+    case badRequest
+    case methodNotAllowed
+    case payloadTooLarge
+    case connectionClosed
+  }
+
   private static let requestReadTimeout: TimeInterval = 5
   private static let maxHeaderBytes = 64 * 1024
   private static let maxBodyBytes = 4 * 1024 * 1024
@@ -435,7 +443,22 @@ public final class LabanControlServer {
     var connectionTier: ControlTokenTier?
 
     requestLoop: while true {
-      guard let incoming = readHTTPRequest(clientFD) else { break requestLoop }
+      let incoming: IncomingHTTPRequest
+      switch readHTTPRequest(clientFD) {
+      case .ok(let request):
+        incoming = request
+      case .badRequest:
+        send(clientFD, .error(400, "bad request"), persistSession: false)
+        break requestLoop
+      case .methodNotAllowed:
+        send(clientFD, .error(405, "method not allowed"), persistSession: false)
+        break requestLoop
+      case .payloadTooLarge:
+        send(clientFD, .error(413, "payload too large"), persistSession: false)
+        break requestLoop
+      case .connectionClosed:
+        break requestLoop
+      }
 
       if incoming.method == "POST", incoming.path == Self.sessionAttachPath {
         let peerPID = Self.peerPID(clientFD: clientFD)
@@ -496,16 +519,17 @@ public final class LabanControlServer {
     return evaluateAuthorization(peerOutcome: .ok, authorization: authorization)
   }
 
-  private func readHTTPRequest(_ clientFD: Int32) -> IncomingHTTPRequest? {
+  private func readHTTPRequest(_ clientFD: Int32) -> ParseResult {
     var raw = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
     var headerEnd = -1
     let headerDeadline = Date().addingTimeInterval(Self.requestReadTimeout)
     while raw.count < Self.maxHeaderBytes {
-      if Date() > headerDeadline { return nil }
+      if Date() > headerDeadline { return .badRequest }
       let n = recv(clientFD, &buffer, buffer.count, 0)
       if n < 0 && errno == EINTR { continue }
-      guard n > 0 else { return nil }
+      if n == 0 { return .connectionClosed }
+      if n < 0 { return .badRequest }
       raw.append(contentsOf: buffer[0..<n])
       if let range = raw.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) {
         headerEnd = range.upperBound
@@ -513,48 +537,53 @@ public final class LabanControlServer {
       }
     }
 
-    guard headerEnd >= 0 else { return nil }
+    guard headerEnd >= 0 else { return .badRequest }
     guard let headerString = String(data: raw[0..<headerEnd], encoding: .utf8) else {
-      return nil
+      return .badRequest
     }
     let lines = headerString.components(separatedBy: "\r\n")
-    guard let requestLine = lines.first else { return nil }
+    guard let requestLine = lines.first else { return .badRequest }
     let parts = requestLine.components(separatedBy: " ")
-    guard parts.count >= 2 else { return nil }
+    guard parts.count >= 2 else { return .badRequest }
 
     let method = parts[0]
     let parsedTarget = Self.parseRequestTarget(parts[1])
     let headers = parseHeaders(Array(lines.dropFirst()))
 
-    guard method == "GET" || method == "POST" else { return nil }
-    guard headers.authorizationCount <= 1 else { return nil }
+    guard method == "GET" || method == "POST" else { return .methodNotAllowed }
+    guard headers.authorizationCount <= 1 else { return .badRequest }
 
     let contentLength: Int
     switch parseContentLength(headers.contentLengthHeader, method: method) {
     case .success(let length):
       contentLength = length
-    case .failure:
-      return nil
+    case .failure(let status):
+      switch status {
+      case 413: return .payloadTooLarge
+      default: return .badRequest
+      }
     }
 
     var body = Data(raw[headerEnd...].prefix(contentLength))
     let bodyDeadline = Date().addingTimeInterval(Self.requestReadTimeout)
     while body.count < contentLength {
-      if Date() > bodyDeadline { return nil }
+      if Date() > bodyDeadline { return .badRequest }
       let need = min(contentLength - body.count, 4096)
       var bodyBuffer = [UInt8](repeating: 0, count: need)
       let n = recv(clientFD, &bodyBuffer, need, 0)
       if n < 0 && errno == EINTR { continue }
-      guard n > 0 else { return nil }
+      if n == 0 { return .connectionClosed }
+      if n < 0 { return .badRequest }
       body.append(contentsOf: bodyBuffer[0..<n])
     }
 
-    return IncomingHTTPRequest(
-      method: method,
-      path: parsedTarget.path,
-      query: parsedTarget.query,
-      headers: headers,
-      body: body)
+    return .ok(
+      IncomingHTTPRequest(
+        method: method,
+        path: parsedTarget.path,
+        query: parsedTarget.query,
+        headers: headers,
+        body: body))
   }
 
   private func handleSessionAttach(body: Data, peerPID: pid_t?) -> (
