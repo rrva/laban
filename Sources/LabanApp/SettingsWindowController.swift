@@ -591,7 +591,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
     restoreCheckbox.state = RestoreOnLaunchSettings.isEnabled ? .on : .off
     controlServerCheckbox.state = ControlServerSettings.isEnabled ? .on : .off
-    agentAttachedSessionCheckbox.state = AgentAttachedSessionSettings.isEnabled ? .on : .off
+    agentAttachedSessionCheckbox.state = AgentAttachedSessionSettings.isEnabled() ? .on : .off
     profileRecorderCheckbox.state = ProfileRecorderSettings.persisted() ? .on : .off
     profileRecorderHelpLabel.stringValue = ProfileRecorderSettings.settingsHelpText
     if let row = identityOptions.firstIndex(of: TerminalIdentitySettings.identity()) {
