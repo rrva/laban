@@ -1,0 +1,312 @@
+# Controlling Agent Control Plane Guide
+
+This guide is for a local agent process that wants to observe and assist a live
+Laban terminal session through the Phase 2 control plane. It describes the live
+GUI contract. The older headless debug server has a wider fixture/testing
+surface; do not assume headless-only actions exist in the live app.
+
+## Contract summary
+
+- Transport is HTTP/1.1 over a Unix domain socket. There is no TCP listener.
+- The app-level discovery credential is an `app-observe` bearer token stored in
+  `control.json`. It is for redacted app/session metadata only.
+- A spawned controlling agent uses C14 attach: redeem the one-shot
+  `LABAN_SESSION_ATTACH` bootstrap once, then keep that same socket connection
+  open. The held connection is the session credential.
+- Session credentials are scoped to the agent's own session. Omit target session
+  IDs where possible. If a target session ID is supplied, it must be the attached
+  session or the request is rejected.
+- Phase 2 does not allow live PTY input, key injection, mouse injection,
+  clipboard writes, tab switching, or cross-app control. Use command proposals
+  for commands the user may choose to run.
+
+## Security rules for agents
+
+Treat these as hard requirements, not suggestions.
+
+1. Never print, log, persist, transmit, or put in crash diagnostics:
+   `LABAN_SESSION_ATTACH`, app-observe bearer tokens, raw HTTP Authorization
+   headers, or an attached control fd.
+2. Do not spawn child processes that inherit the attached control fd. Use
+   close-on-exec and close unknown fds before `exec` where practical.
+3. Do not cache `LABAN_SESSION_ATTACH`; it is single-use and should be consumed
+   immediately.
+4. Do not reconnect after C14 attach. If the held connection closes, report that
+   the session control connection was lost and let the launcher create a new
+   agent/session.
+5. Do not use the app-observe token to infer or reconstruct terminal content.
+   It intentionally exposes only redacted status/metadata.
+6. Do not attempt live input through unsupported debug actions. In Phase 2,
+   direct terminal driving is out of scope.
+
+## Availability prerequisites
+
+The live control plane exists only when all of these are true:
+
+- Laban's Settings checkbox **Enable agent control server** is on.
+- The process was not launched with `LABAN_CONTROL_SERVER=0`.
+- The current user owns the socket and connects from the same uid.
+- For C14 session attach, the agent was launched in an eligible agent-attached
+  session and received `LABAN_SESSION_ATTACH` from Laban.
+
+The security-floor contract is that `LABAN_SESSION_ATTACH` is only injected for
+explicit agent attach/dev/E2E paths, not for ordinary shells. A controlling agent
+must handle its absence cleanly.
+
+## Environment variables
+
+| Variable | Who gets it | Meaning |
+|---|---|---|
+| `LABAN_CONTROL_URL` | Shells/agents launched by Laban while the server is running | Absolute Unix socket path. Use this with `--unix-socket` or the native client. |
+| `LABAN_SESSION_ATTACH` | Eligible controlling agent only | One-shot bootstrap for C14 attach. Not a reusable token. |
+| `LABAN_CONTROL_DIR` | Dev/test override | Directory containing `control.json`; defaults to `~/Library/Application Support/Laban`. |
+| `LABAN_CONTROL_SERVER=0` | App launch override | Force-disables the live control server. |
+| `LABAN_CONTROL_ATTACH_ENV=1` | Dev/E2E opt-in | Enables explicit attach-bootstrap injection in agent-attached dev paths. |
+
+## App-observe: redacted status from `control.json`
+
+External local helpers that are not session-attached may read `control.json` and
+perform redacted observation.
+
+Default path:
+
+```sh
+CONTROL_JSON="${LABAN_CONTROL_DIR:-$HOME/Library/Application Support/Laban}/control.json"
+SOCK="$(jq -r .url "$CONTROL_JSON")"
+TOKEN="$(jq -r .token "$CONTROL_JSON")"
+```
+
+Minimal redacted state query:
+
+```sh
+curl --silent --show-error \
+  --unix-socket "$SOCK" \
+  -H "Authorization: Bearer $TOKEN" \
+  http://localhost/debug/state | jq
+```
+
+Expected `app-observe` behavior:
+
+- `GET /debug/state` returns app/window/session metadata with sensitive fields
+  redacted.
+- It must not include terminal content, find needles, selection text,
+  notification bodies, command proposal text, or other sensitive session data.
+- Sensitive session endpoints should return `403` or be unavailable.
+
+Use app-observe for dashboards, liveness checks, and choosing whether a session
+exists. Use C14 attach for own-session sensitive reads.
+
+## C14 session attach through `laban-agent`
+
+The recommended controlling-agent entrypoint is:
+
+```sh
+laban-agent --control-attach
+```
+
+It requires both `LABAN_CONTROL_URL` and `LABAN_SESSION_ATTACH`. It redeems the
+bootstrap over the Unix socket, keeps the authenticated socket open, and proxies
+newline-delimited JSON requests from stdin.
+
+On success it prints a first readiness line:
+
+```json
+{"mode":"control-attach","ok":true,"sessionID":"<session-id>"}
+```
+
+After that, send one JSON object per line:
+
+```json
+{"method":"GET","path":"/debug/state"}
+```
+
+Each response is one JSON object:
+
+```json
+{"path":"/debug/state","status":200,"body":"{...raw response body...}"}
+```
+
+`body` is a string containing the HTTP response body. If the endpoint returns
+JSON, parse `body` as JSON after parsing the outer proxy response.
+
+Smoke check:
+
+```sh
+laban-agent --control-attach --control-attach-smoke=/debug/state
+```
+
+The smoke mode verifies attach and prints the HTTP status for each requested
+path. Use JSONL mode for real clients because it returns bodies.
+
+### JSONL examples
+
+Read own-session rich state:
+
+```sh
+printf '%s\n' \
+  '{"method":"GET","path":"/debug/state"}' \
+  | laban-agent --control-attach
+```
+
+Read own-session visible grid:
+
+```sh
+printf '%s\n' \
+  '{"method":"GET","path":"/debug/sessions/<session-id>?includeGrid=true"}' \
+  | laban-agent --control-attach
+```
+
+Scroll the own-session viewport up by 40 rows:
+
+```sh
+printf '%s\n' \
+  '{"method":"POST","path":"/debug/actions","body":"{\"action\":\"scrollViewport\",\"deltaRows\":-40}"}' \
+  | laban-agent --control-attach
+```
+
+Propose a command for user review. This never writes bytes to the PTY:
+
+```sh
+printf '%s\n' \
+  '{"method":"POST","path":"/debug/actions","body":"{\"action\":\"propose\",\"command\":\"git status --short\",\"purpose\":\"Inspect the working tree before editing\"}"}' \
+  | laban-agent --control-attach
+```
+
+For long-lived control, start `laban-agent --control-attach` once, read the
+ready line, keep stdin/stdout open, and multiplex requests on that process. Do
+not start a new `laban-agent --control-attach` for every request; the bootstrap
+is one-shot.
+
+## Live GUI endpoint subset for session-attached agents
+
+The live GUI supports a deliberately small subset. The best client behavior is
+to probe the endpoint and handle `403`/`404`, because the headless debug server
+has many more endpoints than the live app.
+
+| Endpoint | Method | Body/query | Use |
+|---|---:|---|---|
+| `/debug/state` | `GET` | none | Rich own-session state. App-observe receives redacted summary instead. |
+| `/debug/sessions` | `GET` | none | Session list scoped to the attached session. |
+| `/debug/sessions/<session-id>` | `GET` | `includeGrid=true` optional | Own-session details; with `includeGrid=true`, returns visible-grid cells. |
+| `/debug/selection` | `GET` | none | Current selection projection and selected text for the attached session. |
+| `/debug/find/state` | `GET` | omit `sessionID` | Current find state for the attached session. |
+| `/debug/shell-integration/state` | `GET` | omit `sessionID` | OSC 133 phase and last command exit code. |
+| `/debug/terminal-modes` | `GET` | none | DEC/private mode flags for the attached session. |
+| `/debug/scroll-indicator/state` | `GET` | `hover=true` optional | Scroll-indicator state for the attached session. |
+| `/debug/actions` | `POST` | `{"action":"scrollViewport","deltaRows":N}` | Move scrollback viewport. Positive/negative rows move according to app semantics. |
+| `/debug/actions` | `POST` | `{"action":"propose","command":"...","purpose":"..."}` | Create a user-reviewed command proposal. |
+
+For session-attached callers, omit `sessionID`, `sessionId`, `targetSessionID`,
+and `targetSessionId` unless a specific API shape requires it. If supplied, it
+must equal the readiness `sessionID`.
+
+## Unsupported live actions in Phase 2
+
+These may exist in discovery output or headless docs, but a live controlling
+agent must treat them as unavailable unless a future lease explicitly grants
+them:
+
+- `typeText`, `key`, mouse actions, paste/copy, clipboard mutation.
+- `newTab`, `closeTab`, `selectTab`, tab movement, window resize.
+- `find.start`, `find.step`, `find.stop` as live control actions.
+- Capture, replay, fixture, render-trace, pixel-probe, and screenshot artifact
+  writes unless running the headless/debug fixture surface.
+
+## Command proposals
+
+A proposal is a review object shown to the user. It is not terminal input.
+
+Request body:
+
+```json
+{
+  "action": "propose",
+  "command": "git status --short",
+  "purpose": "Inspect the working tree before editing"
+}
+```
+
+Response body:
+
+```json
+{
+  "ok": true,
+  "proposalID": "<uuid>",
+  "targetSessionID": "<session-id>",
+  "state": "pendingReview",
+  "writtenToPTY": false
+}
+```
+
+Rules:
+
+- Keep command text short and exact. The UI displays a safe escaped form.
+- Explain why the command is useful in `purpose`.
+- Never assume proposal acceptance. Wait for ordinary terminal/shell state to
+  reflect any user-run command.
+- A `429` means the pending proposal queue is full; stop proposing until the
+  user resolves earlier proposals.
+
+## Error handling
+
+| Status | Meaning | Agent behavior |
+|---:|---|---|
+| `200` | Success | Parse the body according to the endpoint. |
+| `400` | Malformed request or no such local target | Fix the client request; do not retry unchanged. |
+| `401` | Missing/invalid bearer or invalid/spent bootstrap | For C14, exit and let the launcher create a fresh attach path. |
+| `403` | Capability or session scope denied | Do not retry. Remove unsupported behavior from the client. |
+| `404` | Endpoint unavailable on live GUI, or target not found | Probe a supported endpoint or degrade gracefully. |
+| `413` | Body too large | Shrink command/purpose/request. |
+| `429` | Too many pending command proposals | Stop proposing and wait for user action. |
+
+Connection-level failures mean the held C14 credential is gone. Do not attempt to
+recover by reusing the old bootstrap.
+
+## Suggested controlling-agent loop
+
+1. Check `LABAN_CONTROL_URL`. If absent, control is unavailable.
+2. If `LABAN_SESSION_ATTACH` is present, start `laban-agent --control-attach`.
+3. Read the ready line and store `sessionID` only in memory.
+4. Query `/debug/state` and `/debug/sessions/<sessionID>?includeGrid=true`.
+5. Observe state changes using supported GET endpoints.
+6. When action is useful, prefer `command.propose`; use `scrollViewport` only for
+   navigation.
+7. On any `403`, remove that behavior from the current session; it is not an
+   intermittent failure.
+8. On connection close, report loss of control and stop.
+
+## Direct HTTP request shape
+
+For clients using the Swift `ControlUDSClient` or another UDS HTTP client:
+
+```http
+GET /debug/state HTTP/1.1
+Host: localhost
+Authorization: Bearer <app-observe-token>
+Connection: close
+
+```
+
+For an already attached C14 connection, subsequent requests on that same socket
+omit `Authorization`; the server binds the session credential to the connection.
+
+```http
+GET /debug/state HTTP/1.1
+Host: localhost
+Connection: keep-alive
+
+```
+
+POST requests must include `Content-Length` and JSON body bytes. Duplicate
+`Authorization` or malformed `Content-Length` headers are rejected.
+
+## Implementation pointers
+
+- Environment names: `Sources/LabanCore/Control/SessionLaunchContext.swift`
+- App-observe advertisement: `Sources/LabanControl/ControlAdvertisement.swift`
+- C14 attach route: `Sources/LabanControl/LabanControlServer.swift`
+- UDS client and `laban-agent --control-attach` behavior:
+  `Sources/LabanControl/ControlUDSClient.swift`, `Sources/LabanAgent/main.swift`
+- Live GUI router subset: `Sources/LabanApp/Control/LiveIntentRouter.swift`
+- Intent capability metadata: `Sources/LabanCore/Intents/IntentCatalog.swift`
+- Route catalog: `Sources/LabanControl/ControlRouteCatalog.swift`
