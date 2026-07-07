@@ -434,8 +434,8 @@ public final class LabanControlServer {
     setReceiveTimeout(clientFD)
     var connectionTier: ControlTokenTier?
 
-    while true {
-      guard let incoming = readHTTPRequest(clientFD) else { break }
+    requestLoop: while true {
+      guard let incoming = readHTTPRequest(clientFD) else { break requestLoop }
 
       if incoming.method == "POST", incoming.path == Self.sessionAttachPath {
         let peerPID = Self.peerPID(clientFD: clientFD)
@@ -446,7 +446,7 @@ public final class LabanControlServer {
           connectionTier = boundTier
         }
         send(clientFD, response, persistSession: connectionTier != nil)
-        if connectionTier == nil { break }
+        if connectionTier == nil { break requestLoop }
         continue
       }
 
@@ -460,18 +460,18 @@ public final class LabanControlServer {
           targetSession: sessionID(from: tokenTier),
           tokenTier: tokenTier)
         send(clientFD, .error(403, "forbidden"), persistSession: connectionTier != nil)
-        break
+        break requestLoop
       case .unauthorized:
         reportDeny(reason: .unauthorized, targetSession: sessionID(from: tokenTier))
         send(clientFD, Self.unauthorizedResponse(), persistSession: connectionTier != nil)
-        break
+        break requestLoop
       case .ok:
         break
       }
 
       guard let tokenTier else {
         send(clientFD, Self.unauthorizedResponse(), persistSession: connectionTier != nil)
-        break
+        break requestLoop
       }
 
       let response = route(
