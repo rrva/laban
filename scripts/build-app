@@ -68,7 +68,7 @@ prefix_map_flags=" \
 # the bin-path existence check below with a confusing "produced no
 # binary" message. Three separate invocations share the incremental
 # cache, so the only cost is running the planner three times.
-for product in LabanApp laband labpty; do
+for product in LabanApp laban-agent laband labpty; do
   # shellcheck disable=SC2086
   swift build -c "$build_config" --product "$product" $prefix_map_flags
 done
@@ -90,7 +90,7 @@ bin=$(swift build -c "$build_config" --product LabanApp --show-bin-path $prefix_
 # `terminalBackendMenu` because the cache held a pre-refactor signature
 # and `swift build` linked from cache without recompiling MenuCommands.
 missing=""
-for product in LabanApp laband labpty; do
+for product in LabanApp laban-agent laband labpty; do
   if [ ! -x "$bin/$product" ]; then
     missing="${missing} $bin/$product"
   fi
@@ -103,13 +103,14 @@ if [ -n "$missing" ]; then
 fi
 
 cp -f "$bin/LabanApp" "${bundle_dir}/MacOS/LabanApp"
+cp -f "$bin/laban-agent" "${bundle_dir}/MacOS/laban-agent"
 cp -f "$bin/laband" "${bundle_dir}/MacOS/laband"
 cp -f "$bin/labpty" "${bundle_dir}/MacOS/labpty"
 
 # Post-cp sanity: the destinations must be present, non-empty, and
 # executable. Catches a stale or zero-byte source the existence check
 # above couldn't, and any cp that silently no-ops.
-for product in LabanApp laband labpty; do
+for product in LabanApp laban-agent laband labpty; do
   dest="${bundle_dir}/MacOS/${product}"
   if [ ! -s "$dest" ] || [ ! -x "$dest" ]; then
     printf 'build-app failed: %s missing, empty, or non-executable\n' \
@@ -218,6 +219,7 @@ else
   # at the per-object .o files under /Users/<name>/.../.build/...). Function
   # symbols stay so crash reports still symbolicate.
   strip -S "${bundle_dir}/MacOS/LabanApp"
+  strip -S "${bundle_dir}/MacOS/laban-agent"
   strip -S "${bundle_dir}/MacOS/laband"
   strip -S "${bundle_dir}/MacOS/labpty"
 fi
@@ -228,7 +230,7 @@ fi
 # NULs before signing. Skipped for --profile builds because the same scrub
 # zeroes N_OSO debug-map paths that Instruments needs.
 if [ "$profile_build" = 0 ]; then
-python3 - "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty" <<'PY'
+python3 - "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laban-agent" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty" <<'PY'
 import re, sys
 patterns = [
     re.compile(rb"/Users/[^\x00]*"),
@@ -249,7 +251,7 @@ PY
 # directory or a hard-coded developer identity. New regressions get
 # caught here before the bundle is signed or zipped.
 verify_clean() {
-  for bin_path in "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty"; do
+  for bin_path in "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laban-agent" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty"; do
     matches=$(LC_ALL=C strings -a "$bin_path" |
       grep -E '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' || true)
     if [ -n "$matches" ]; then
@@ -276,6 +278,7 @@ verify_signature() {
 if [ "${LABAN_SKIP_CODESIGN:-0}" = "1" ]; then
   printf 'build-app: codesign skipped (LABAN_SKIP_CODESIGN=1; output may not launch)\n'
 elif [ -n "${LABAN_CODESIGN_IDENTITY:-}" ]; then
+  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laban-agent"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laband"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/labpty"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/LabanApp"
@@ -283,6 +286,7 @@ elif [ -n "${LABAN_CODESIGN_IDENTITY:-}" ]; then
   verify_signature
   printf 'build-app: codesigned with %s\n' "$LABAN_CODESIGN_IDENTITY"
 else
+  codesign --force --sign - "${bundle_dir}/MacOS/laban-agent"
   codesign --force --sign - "${bundle_dir}/MacOS/laband"
   codesign --force --sign - "${bundle_dir}/MacOS/labpty"
   codesign --force --sign - "${bundle_dir}/MacOS/LabanApp"
