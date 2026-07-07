@@ -387,7 +387,11 @@ final class AppSessionCoordinator {
       onTabMetadataRefreshed?(model)
       return
     }
-    guard let labandClient else { return }
+    guard let labandClient else {
+      onTabMetadataRefreshed?(model)
+      return
+    }
+    defer { onTabMetadataRefreshed?(model) }
     let infos: [LabandSessionInfo]
     do {
       infos = try labandClient.listSessions()
@@ -403,7 +407,6 @@ final class AppSessionCoordinator {
       let signals = surfaceSignals(from: info)
       _ = model.applySurfaceSignals(signals, forTab: tab.id, now: now)
     }
-    onTabMetadataRefreshed?(model)
   }
 
   func detach() {
