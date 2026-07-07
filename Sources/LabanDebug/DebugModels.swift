@@ -85,20 +85,11 @@ typealias SessionGridResponse = LabanCore.SessionGridResponse
 typealias CellCoordResponse = LabanCore.CellCoordResponse
 typealias SelectionResponse = LabanCore.SelectionResponse
 typealias ScrollIndicatorStateResponse = LabanCore.ScrollIndicatorStateResponse
-
-public struct HealthResponse: Encodable {
-  public var ok: Bool
-  public var mode: String
-  public var frame: Int
-  public var focused: Bool
-
-  public init(ok: Bool, mode: String, frame: Int, focused: Bool) {
-    self.ok = ok
-    self.mode = mode
-    self.frame = frame
-    self.focused = focused
-  }
-}
+public typealias HealthResponse = LabanCore.HealthResponse
+public typealias DebugDiscoveryEndpoint = LabanCore.DebugDiscoveryEndpoint
+public typealias DebugDiscoveryControl = LabanCore.DebugDiscoveryControl
+public typealias DebugDiscoveryExample = LabanCore.DebugDiscoveryExample
+public typealias DebugDiscoveryResponse = LabanCore.DebugDiscoveryResponse
 
 struct SurfaceResponse: Encodable {
   var width: Int
@@ -249,102 +240,6 @@ struct WaitResult: Encodable {
   var frame: Int
   var elapsedMs: Double
   var error: String?
-}
-
-// MARK: - Discovery response
-
-public struct DebugDiscoveryEndpoint: Encodable {
-  public var method: String
-  public var path: String
-  public var category: String
-  public var summary: String
-  public var queryParameters: [String]
-  public var requestSchema: String?
-  public var responseSchema: String?
-
-  public init(
-    method: String,
-    path: String,
-    category: String,
-    summary: String,
-    queryParameters: [String],
-    requestSchema: String? = nil,
-    responseSchema: String? = nil
-  ) {
-    self.method = method
-    self.path = path
-    self.category = category
-    self.summary = summary
-    self.queryParameters = queryParameters
-    self.requestSchema = requestSchema
-    self.responseSchema = responseSchema
-  }
-}
-
-public struct DebugDiscoveryControl: Encodable {
-  public var name: String
-  public var summary: String
-
-  public init(name: String, summary: String) {
-    self.name = name
-    self.summary = summary
-  }
-}
-
-public struct DebugDiscoveryExample: Encodable {
-  public var title: String
-  public var command: String
-
-  public init(title: String, command: String) {
-    self.title = title
-    self.command = command
-  }
-}
-
-public struct DebugDiscoveryResponse: Encodable {
-  public var name: String
-  public var schema: String
-  public var runId: String
-  public var mode: String
-  public var frame: Int
-  public var artifactRoot: String
-  public var fixtureRoot: String
-  public var entrypoints: [String]
-  public var endpoints: [DebugDiscoveryEndpoint]
-  public var actions: [DebugDiscoveryControl]
-  public var waitConditions: [DebugDiscoveryControl]
-  public var fixtureActions: [DebugDiscoveryControl]
-  public var examples: [DebugDiscoveryExample]
-
-  public init(
-    name: String,
-    schema: String,
-    runId: String,
-    mode: String,
-    frame: Int,
-    artifactRoot: String,
-    fixtureRoot: String,
-    entrypoints: [String],
-    endpoints: [DebugDiscoveryEndpoint],
-    actions: [DebugDiscoveryControl],
-    waitConditions: [DebugDiscoveryControl],
-    fixtureActions: [DebugDiscoveryControl],
-    examples: [DebugDiscoveryExample]
-  ) {
-    self.name = name
-    self.schema = schema
-    self.runId = runId
-    self.mode = mode
-    self.frame = frame
-    self.artifactRoot = artifactRoot
-    self.fixtureRoot = fixtureRoot
-    self.entrypoints = entrypoints
-    self.endpoints = endpoints
-    self.actions = actions
-    self.waitConditions = waitConditions
-    self.fixtureActions = fixtureActions
-    self.examples = examples
-  }
 }
 
 // MARK: - Render trace response types

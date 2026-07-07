@@ -49,7 +49,7 @@ public final class LabanControlServer {
   }
 
   private static let requestReadTimeout: TimeInterval = 5
-  private static let attachedConnectionReadTimeout: TimeInterval = 300
+  private static let attachedConnectionReadTimeout: TimeInterval = 0
   private static let maxHeaderBytes = 64 * 1024
   private static let maxBodyBytes = 4 * 1024 * 1024
 
@@ -61,6 +61,8 @@ public final class LabanControlServer {
   private let surface: Surface
   private let catalog: IntentCatalog
   private let readinessRunID: String?
+  private let expectedAgentExecutablePath: String?
+  private let allowDevAgentExecutablePath: Bool
   private weak var securityObserver: (any ControlSecurityObserver)?
   private let connectionQueue = DispatchQueue(
     label: "com.laban.control.conn", attributes: .concurrent)
@@ -91,12 +93,16 @@ public final class LabanControlServer {
     surface: Surface,
     catalog: IntentCatalog = .all,
     readinessRunID: String? = nil,
+    expectedAgentExecutablePath: String? = ControlProcessInfo.defaultExpectedAgentExecutablePath(),
+    allowDevAgentExecutablePath: Bool = false,
     securityObserver: (any ControlSecurityObserver)? = nil
   ) {
     self.router = router
     self.surface = surface
     self.catalog = catalog
     self.readinessRunID = readinessRunID
+    self.expectedAgentExecutablePath = expectedAgentExecutablePath
+    self.allowDevAgentExecutablePath = allowDevAgentExecutablePath
     self.securityObserver = securityObserver
   }
 
@@ -174,7 +180,12 @@ public final class LabanControlServer {
       attachLock.unlock()
       return .pending
     }
-    guard Self.isAllowedAttachRedeemer(peerPID: peerPID, shellPID: shellPID) else {
+    guard Self.isAllowedAttachRedeemer(
+      peerPID: peerPID,
+      shellPID: shellPID,
+      expectedAgentExecutablePath: expectedAgentExecutablePath,
+      allowDevAgentExecutablePath: allowDevAgentExecutablePath)
+    else {
       attachLock.unlock()
       return .invalid
     }
@@ -264,7 +275,12 @@ public final class LabanControlServer {
     public static var skipExecutableVerificationForTests = false
   #endif
 
-  public static func isAllowedAttachRedeemer(peerPID: pid_t, shellPID: pid_t) -> Bool {
+  public static func isAllowedAttachRedeemer(
+    peerPID: pid_t,
+    shellPID: pid_t,
+    expectedAgentExecutablePath: String? = ControlProcessInfo.defaultExpectedAgentExecutablePath(),
+    allowDevAgentExecutablePath: Bool = false
+  ) -> Bool {
     guard let parentPID = parentPID(of: peerPID), parentPID == shellPID else {
       return false
     }
@@ -272,7 +288,10 @@ public final class LabanControlServer {
       if skipExecutableVerificationForTests { return true }
     #endif
     guard let executablePath = ControlProcessInfo.executablePath(for: peerPID),
-      ControlProcessInfo.isLabanAgentExecutable(executablePath)
+      ControlProcessInfo.isLabanAgentExecutable(
+        executablePath,
+        expectedExecutablePath: expectedAgentExecutablePath,
+        allowDevBuildPath: allowDevAgentExecutablePath)
     else {
       return false
     }
@@ -852,6 +871,9 @@ public final class LabanControlServer {
     }
 
     guard let intentID = DebugActionIntentID.intentID(forAction: envelope.action) else {
+      if surface == .gui {
+        return .error(404, "unavailable on gui")
+      }
       return router.route(
         .unsupportedDebugAction(UnsupportedDebugActionInput(action: envelope.action)))
     }

@@ -24,7 +24,6 @@ final class CatalogParityTests: XCTestCase {
     "debug.discovery",
     "debug.capabilities",
     "debug.health",
-    "debug.action.unsupported",
   ]
 
   func testSharedIntentsReturnNonErrorOnBothSurfaces() throws {
@@ -234,13 +233,6 @@ final class CatalogParityTests: XCTestCase {
         headlessBody: proposeBody(sessionID: headlessSessionID),
         guiBody: proposeBody(sessionID: guiSessionID),
         compareShape: true),
-      ParityCase(
-        intentID: "debug.action.unsupported",
-        method: "POST",
-        headlessPath: "/debug/actions",
-        guiPath: "/debug/actions",
-        body: Data(#"{"action":"catalogParityUnknownAction"}"#.utf8),
-        compareShape: false),
     ]
   }
 
@@ -296,6 +288,33 @@ final class CatalogParityTests: XCTestCase {
       method: method,
       token: token,
       body: body)
+  }
+
+  func testLabanAppReleaseBoundaryDoesNotImportOrDependOnLabanDebug() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let packageText = try String(contentsOf: root.appendingPathComponent("Package.swift"))
+    guard let targetStart = packageText.range(of: #"name: "LabanApp","#) else {
+      return XCTFail("Package.swift missing LabanApp target")
+    }
+    let targetTail = packageText[targetStart.lowerBound...]
+    let targetEnd =
+      targetTail.dropFirst().range(of: #"\n    .executableTarget("#)?.lowerBound
+      ?? targetTail.dropFirst().range(of: #"\n    .testTarget("#)?.lowerBound
+      ?? targetTail.endIndex
+    let targetBlock = String(targetTail[..<targetEnd])
+    XCTAssertFalse(targetBlock.contains(#""LabanDebug""#))
+
+    let appURL = root.appendingPathComponent("Sources/LabanApp", isDirectory: true)
+    guard let enumerator = FileManager.default.enumerator(
+      at: appURL,
+      includingPropertiesForKeys: nil)
+    else {
+      return XCTFail("missing Sources/LabanApp")
+    }
+    for case let file as URL in enumerator where file.pathExtension == "swift" {
+      let text = try String(contentsOf: file)
+      XCTAssertFalse(text.contains("import LabanDebug"), file.path)
+    }
   }
 }
 

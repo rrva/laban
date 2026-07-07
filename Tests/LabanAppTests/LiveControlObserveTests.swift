@@ -241,6 +241,50 @@ final class LiveControlObserveTests: XCTestCase {
     XCTAssertEqual(selectTab.0, 404)
   }
 
+  func testSessionObserveUnknownGuiActionReturns404WithoutActiveIDs() throws {
+    let (_, router, ownSessionID, otherSessionID) = try makeModelRouterAndSessions()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let sessionToken = server.mintSessionObserveToken(sessionID: ownSessionID)
+    let (status, data) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/actions",
+      method: "POST",
+      token: sessionToken,
+      body: Data(#"{"action":"futureAction"}"#.utf8))
+
+    XCTAssertEqual(status, 404)
+    let raw = String(data: data, encoding: .utf8) ?? ""
+    XCTAssertFalse(raw.contains(ownSessionID))
+    XCTAssertFalse(raw.contains(otherSessionID))
+    XCTAssertFalse(raw.contains("activeSessionId"))
+    XCTAssertFalse(raw.contains("activeTabId"))
+  }
+
+  func testStaleSessionObserveStateDoesNotFallBackToGlobalActiveSession() throws {
+    let (_, router, _, otherSessionID) = try makeModelRouterAndSessions()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let sessionToken = server.mintSessionObserveToken(sessionID: "stale-session")
+    let (status, data) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/state",
+      token: sessionToken)
+    XCTAssertEqual(status, 200)
+
+    let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let tabs = try XCTUnwrap(json["tabs"] as? [[String: Any]])
+    XCTAssertTrue(tabs.isEmpty)
+    XCTAssertNil(json["activeSessionId"])
+    XCTAssertNil(json["activeTabId"])
+    let raw = String(data: data, encoding: .utf8) ?? ""
+    XCTAssertFalse(raw.contains(otherSessionID))
+  }
+
   func testGUIDiscoveryAndHealthEndpointsReturn200() throws {
     let (model, router, _, _) = try makeModelRouterAndSessions()
     _ = model
@@ -256,12 +300,30 @@ final class LiveControlObserveTests: XCTestCase {
     let discoveryJSON = try JSONSerialization.jsonObject(with: discoveryData) as? [String: Any]
     XCTAssertEqual(discoveryJSON?["mode"] as? String, "gui")
     XCTAssertEqual(discoveryJSON?["name"] as? String, "laban-debug")
+    let appObserveActions = discoveryJSON?["actions"] as? [[String: Any]]
+    XCTAssertEqual(appObserveActions?.compactMap { $0["name"] as? String } ?? [], [])
 
     let (capabilitiesStatus, _) = try request(
       socketPath: start.socketPath,
       path: "/debug/capabilities",
       token: start.appObserveToken)
     XCTAssertEqual(capabilitiesStatus, 200)
+
+    let sessionToken = server.mintSessionObserveToken(sessionID: model.tabs[0].sessionId)
+    let (sessionDiscoveryStatus, sessionDiscoveryData) = try request(
+      socketPath: start.socketPath,
+      path: "/debug",
+      token: sessionToken)
+    XCTAssertEqual(sessionDiscoveryStatus, 200)
+    let sessionDiscoveryJSON =
+      try JSONSerialization.jsonObject(with: sessionDiscoveryData) as? [String: Any]
+    let actions = try XCTUnwrap(sessionDiscoveryJSON?["actions"] as? [[String: Any]])
+    let actionNames = Set(actions.compactMap { $0["name"] as? String })
+    XCTAssertEqual(actionNames, ["propose", "scrollViewport"])
+    XCTAssertFalse(actionNames.contains("typeText"))
+    XCTAssertFalse(actionNames.contains("key"))
+    XCTAssertFalse(actionNames.contains("paste"))
+    XCTAssertFalse(actionNames.contains("setClipboardText"))
 
     let (healthStatus, healthData) = try request(
       socketPath: start.socketPath,

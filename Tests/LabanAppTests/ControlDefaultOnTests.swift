@@ -461,7 +461,10 @@ final class ControlDefaultOnTests: XCTestCase {
 
   func testBundledAgentPathPassesExecutableValidation() {
     let bundledPath = "/Applications/Laban.app/Contents/MacOS/laban-agent"
-    XCTAssertTrue(ControlProcessInfo.isLabanAgentExecutable(bundledPath))
+    XCTAssertTrue(
+      ControlProcessInfo.isLabanAgentExecutable(
+        bundledPath,
+        expectedExecutablePath: bundledPath))
   }
 }
 
