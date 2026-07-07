@@ -35,6 +35,11 @@ public protocol ControlSecurityObserver: AnyObject, Sendable {
   func didAuthorize(_ context: ControlSecurityContext)
   func didDeny(_ context: ControlSecurityContext, reason: ControlSecurityDenyReason)
   func didPrivilegedActivity(_ context: ControlSecurityContext)
+  func didAttachAuthorize(_ context: ControlSecurityContext)
+}
+
+public extension ControlSecurityObserver {
+  func didAttachAuthorize(_ context: ControlSecurityContext) {}
 }
 
 extension LabanControlPolicy {

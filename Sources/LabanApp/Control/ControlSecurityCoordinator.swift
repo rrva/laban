@@ -30,6 +30,11 @@ final class ControlSecurityCoordinator: ControlSecurityObserver, @unchecked Send
     armIndicator()
   }
 
+  func didAttachAuthorize(_ context: ControlSecurityContext) {
+    EventLog.shared.log("control.attach", auditPayload(from: context))
+    armIndicator()
+  }
+
   private func auditPayload(
     from context: ControlSecurityContext,
     extra: [String: Any] = [:]
