@@ -580,6 +580,37 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertNotNil(raw.range(of: Data("413".utf8)))
   }
 
+  func testAcceptedClientFdsAreCloseOnExec() throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let bootstrap = server.mintSessionAttachBootstrap(sessionID: "sess-fd")
+    server.registerAttachShellPID(sessionID: "sess-fd", shellPID: getppid())
+
+    let (fd, _) = try ControlUDSClient.redeemAttachBootstrap(
+      socketPath: socketPath,
+      bootstrap: bootstrap)
+    defer { Darwin.close(fd) }
+
+    let listenerFD = server.testListenerFD
+    let script =
+      "for fd in \(listenerFD) \(fd); do if [ -e /dev/fd/${fd} ]; then exit 1; fi; done; exit 0"
+    var pid = pid_t(0)
+    let args: [UnsafeMutablePointer<CChar>?] = [
+      strdup("/bin/sh"), strdup("-c"), strdup(script), nil
+    ]
+    defer { for arg in args { free(arg) } }
+    let result = posix_spawn(&pid, "/bin/sh", nil, nil, args, environ)
+    XCTAssertEqual(result, 0)
+
+    var status: Int32 = 0
+    waitpid(pid, &status, 0)
+    XCTAssertEqual(status, 0, "child inherited control listener fd \(listenerFD) or client fd \(fd)")
+  }
+
   func testUnauthorizedRequestProducesExactlyOneResponse() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)

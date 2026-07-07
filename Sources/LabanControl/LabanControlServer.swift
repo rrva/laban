@@ -64,6 +64,11 @@ public final class LabanControlServer {
   private let connectionQueue = DispatchQueue(
     label: "com.laban.control.conn", attributes: .concurrent)
   private var fd: Int32 = -1
+
+  #if DEBUG
+    public var testListenerFD: Int32 { fd }
+  #endif
+
   private var socketPath: String?
   private var tokens: [String: ControlTokenTier] = [:]
   private let tokenLock = NSLock()
