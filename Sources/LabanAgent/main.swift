@@ -254,16 +254,33 @@ func runLiveControlAttach(_ args: AgentArgs) -> Never {
   }
 
   var attachment: (fd: Int32, sessionID: String)?
-  let attempts = 5
-  for attempt in 0..<attempts {
+  var attempt = 0
+  let maxEarlyAttempts = 30
+  let maxFailureAttempts = 5
+  while true {
     do {
       attachment = try ControlUDSClient.redeemAttachBootstrap(
         socketPath: socketPath,
         bootstrap: bootstrap)
       break
+    } catch let error as ControlUDSClientError {
+      attempt += 1
+      switch error {
+      case .attachTooEarly:
+        if attempt >= maxEarlyAttempts {
+          fail("control attach timed out waiting for shell registration")
+        }
+      default:
+        if attempt >= maxFailureAttempts {
+          fail("control attach failed after \(attempt) attempts: \(error)")
+        }
+      }
+      let delay = min(0.1 * pow(2.0, Double(attempt)), 1.0)
+      Thread.sleep(forTimeInterval: delay)
     } catch {
-      if attempt == attempts - 1 {
-        fail("control attach failed after \(attempts) attempts: \(error)")
+      attempt += 1
+      if attempt >= maxFailureAttempts {
+        fail("control attach failed after \(attempt) attempts: \(error)")
       }
       let delay = min(0.1 * pow(2.0, Double(attempt)), 1.0)
       Thread.sleep(forTimeInterval: delay)

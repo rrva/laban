@@ -23,6 +23,9 @@ final class ControlAvailabilityParityTests: XCTestCase {
     "selection.read",
     "terminal.scrollViewport",
     "command.propose",
+    "debug.discovery",
+    "debug.capabilities",
+    "debug.health",
     DebugActionIntentID.unsupported,
   ]
 

@@ -461,7 +461,7 @@ final class LabanControlServerTests: XCTestCase {
       path: LabanControlServer.sessionAttachPath,
       method: "POST",
       body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
-    XCTAssertEqual(unregisteredStatus, 401)
+    XCTAssertEqual(unregisteredStatus, 425)
 
     server.registerAttachShellPID(
       sessionID: "sess-1",
@@ -794,5 +794,40 @@ private final class SpyIntentRouter: IntentRouter {
     lock.lock()
     defer { lock.unlock() }
     return routedArtifacts
+  }
+}
+
+final class ControlProcessInfoTests: XCTestCase {
+  func testRejectsArbitraryPathNamedLabanAgent() {
+    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/tmp/laban-agent"))
+    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/usr/local/bin/laban-agent"))
+    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/Users/rrj/bin/laban-agent"))
+  }
+
+  func testRejectsSymlinkToWrongPath() throws {
+    let tmp = FileManager.default.temporaryDirectory
+    let fakeAgent = tmp.appendingPathComponent(UUID().uuidString + "-laban-agent")
+    let symlink = tmp.appendingPathComponent(UUID().uuidString + "-laban-agent-link")
+    try Data().write(to: fakeAgent)
+    try FileManager.default.createSymbolicLink(
+      at: symlink,
+      withDestinationURL: fakeAgent)
+    defer {
+      try? FileManager.default.removeItem(at: fakeAgent)
+      try? FileManager.default.removeItem(at: symlink)
+    }
+
+    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable(symlink.path))
+  }
+
+  func testRejectsWrongBaseName() {
+    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/Applications/Laban.app/Contents/MacOS/laban-agent-evil"))
+    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/Applications/Laban.app/Contents/MacOS/laband"))
+  }
+
+  func testAcceptsDevBuildPathOnlyWhenAllowed() {
+    let devPath = "/Users/rrj/.cursor/worktrees/laban/c2yt/.build/arm64-apple-macosx/debug/laban-agent"
+    XCTAssertTrue(ControlProcessInfo.isLabanAgentExecutable(devPath, allowDevBuildPath: true))
+    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable(devPath, allowDevBuildPath: false))
   }
 }

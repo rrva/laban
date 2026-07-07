@@ -92,6 +92,8 @@ final class ControlDefaultOnTests: XCTestCase {
   func testAgentAttachedLaunchContextCarriesSingleUseBootstrap() throws {
     LabanControlServer.skipExecutableVerificationForTests = true
     defer { LabanControlServer.skipExecutableVerificationForTests = false }
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
 
     let coordinator = ControlSessionLaunchCoordinator()
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
@@ -128,7 +130,59 @@ final class ControlDefaultOnTests: XCTestCase {
     XCTAssertEqual(ownStatus, 200)
   }
 
-  func testAgentAttachedLaunchInjectsBootstrapByDefault() throws {
+  func testAttachedConnectionSurvivesIdleBeyondRequestTimeout() throws {
+    LabanControlServer.skipExecutableVerificationForTests = true
+    defer { LabanControlServer.skipExecutableVerificationForTests = false }
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
+    let coordinator = ControlSessionLaunchCoordinator()
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
+
+    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    let bootstrap = try XCTUnwrap(context.sessionObserveBootstrap)
+    server.registerAttachShellPID(sessionID: context.sessionID, shellPID: getppid())
+
+    let (fd, redeemedSessionID) = try ControlUDSClient.redeemAttachBootstrap(
+      socketPath: start.socketPath,
+      bootstrap: bootstrap)
+    defer { Darwin.close(fd) }
+    XCTAssertEqual(redeemedSessionID, context.sessionID)
+
+    // Wait longer than the normal request-read timeout; the authenticated
+    // connection must stay open for interactive agent usage.
+    Thread.sleep(forTimeInterval: 6)
+
+    let (status, _) = try ControlUDSClient.request(
+      fd: fd,
+      path: "/debug/state",
+      keepConnectionOpen: true)
+    XCTAssertEqual(status, 200)
+  }
+
+  func testAgentAttachedLaunchDoesNotInjectBootstrapWithoutOptIn() throws {
+    unsetenv(ControlEnvironmentKeys.attachEnvOptIn)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
+    let coordinator = ControlSessionLaunchCoordinator()
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
+
+    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    XCTAssertNil(context.sessionObserveBootstrap)
+    XCTAssertNil(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach])
+    XCTAssertTrue(context.isAgentAttached)
+  }
+
+  func testAgentAttachedLaunchInjectsBootstrapWithEnvOptIn() throws {
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
     let coordinator = ControlSessionLaunchCoordinator()
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
     let start = try server.start()
@@ -141,7 +195,7 @@ final class ControlDefaultOnTests: XCTestCase {
     XCTAssertTrue(context.isAgentAttached)
   }
 
-  func testAttachRedeemRequiresShellPIDRegistration() throws {
+  func testAttachRedeemBeforeShellPIDRegistrationReturnsTooEarly() throws {
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
     let start = try server.start()
     defer { server.stop() }
@@ -152,10 +206,45 @@ final class ControlDefaultOnTests: XCTestCase {
       path: LabanControlServer.sessionAttachPath,
       method: "POST",
       body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
-    XCTAssertEqual(status, 401)
+    XCTAssertEqual(status, 425)
+  }
+
+  func testAttachRedeemWithSpentOrUnknownBootstrapReturnsUnauthorized() throws {
+    LabanControlServer.skipExecutableVerificationForTests = true
+    defer { LabanControlServer.skipExecutableVerificationForTests = false }
+
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let (statusUnknown, _) = try request(
+      socketPath: start.socketPath,
+      path: LabanControlServer.sessionAttachPath,
+      method: "POST",
+      body: Data(#"{"bootstrap":"not-a-real-bootstrap"}"#.utf8))
+    XCTAssertEqual(statusUnknown, 401)
+
+    let bootstrap = server.mintSessionAttachBootstrap(sessionID: "sess-once")
+    server.registerAttachShellPID(sessionID: "sess-once", shellPID: getppid())
+    let (statusFirst, _) = try request(
+      socketPath: start.socketPath,
+      path: LabanControlServer.sessionAttachPath,
+      method: "POST",
+      body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
+    XCTAssertEqual(statusFirst, 200)
+
+    let (statusSpent, _) = try request(
+      socketPath: start.socketPath,
+      path: LabanControlServer.sessionAttachPath,
+      method: "POST",
+      body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
+    XCTAssertEqual(statusSpent, 401)
   }
 
   func testTryRegisterShellPIDAcceptsExplicitOverride() throws {
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
     let coordinator = ControlSessionLaunchCoordinator()
     let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
     let start = try server.start()
@@ -192,6 +281,8 @@ final class ControlDefaultOnTests: XCTestCase {
   func testPreallocatedSessionIDMatchesRedeemedScope() throws {
     LabanControlServer.skipExecutableVerificationForTests = true
     defer { LabanControlServer.skipExecutableVerificationForTests = false }
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
 
     let coordinator = ControlSessionLaunchCoordinator()
     var attachBootstrap: String?
@@ -366,6 +457,11 @@ final class ControlDefaultOnTests: XCTestCase {
       method: method,
       token: token,
       body: body)
+  }
+
+  func testBundledAgentPathPassesExecutableValidation() {
+    let bundledPath = "/Applications/Laban.app/Contents/MacOS/laban-agent"
+    XCTAssertTrue(ControlProcessInfo.isLabanAgentExecutable(bundledPath))
   }
 }
 

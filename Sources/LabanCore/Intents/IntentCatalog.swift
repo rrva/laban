@@ -19,6 +19,7 @@ public enum DataSensitivity: String, Codable, Sendable {
   case clipboard
   case screenshot
   case trace
+  case sensitivePrivate
 }
 
 public enum Surface: Sendable, Equatable {
@@ -727,7 +728,7 @@ public struct IntentCatalog: Sendable {
       category: "app",
       summary: "Read current application state (session/fixture rich view).",
       requiredCapability: .observeSensitive,
-      dataSensitivity: .nonSensitiveState,
+      dataSensitivity: .sensitivePrivate,
       availability: guiObserve,
       outputSchema: stateOutputSchema),
     descriptor(
@@ -954,15 +955,18 @@ public struct IntentCatalog: Sendable {
     descriptor(
       id: "debug.discovery", kind: .query, category: "discovery",
       summary: "List debug endpoints and examples.",
-      requiredCapability: .observe, dataSensitivity: .none),
+      requiredCapability: .observe, dataSensitivity: .none,
+      availability: guiObserve),
     descriptor(
       id: "debug.capabilities", kind: .query, category: "discovery",
       summary: "Alias for debug discovery.",
-      requiredCapability: .observe, dataSensitivity: .none),
+      requiredCapability: .observe, dataSensitivity: .none,
+      availability: guiObserve),
     descriptor(
       id: "debug.health", kind: .query, category: "readiness",
       summary: "Report debug process readiness.",
-      requiredCapability: .observe, dataSensitivity: .none),
+      requiredCapability: .observe, dataSensitivity: .none,
+      availability: guiObserve),
     descriptor(
       id: "app.accessibility", kind: .query, category: "state",
       summary: "Return terminal accessibility projection.",

@@ -11,6 +11,9 @@ import os
 
 final class AppSessionCoordinatorTests: XCTestCase {
   func testDaemonAgentAttachedSessionRedeemsC14FromChildEnv() throws {
+    setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
+    defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
+
     let labandURL = URL(fileURLWithPath: ".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
       throw XCTSkip("laband binary is not built")
@@ -54,6 +57,9 @@ final class AppSessionCoordinatorTests: XCTestCase {
       sessionFactory: { size, context in
         try Session.fixture(size: size, sessionID: context.sessionID)
       })
+    LabanControlServer.skipExecutableVerificationForTests = true
+    defer { LabanControlServer.skipExecutableVerificationForTests = false }
+
     let controlServer = LabanControlServer(router: C14DaemonAttachRouter(), surface: .gui)
     let controlStart = try controlServer.start()
     defer { controlServer.stop() }

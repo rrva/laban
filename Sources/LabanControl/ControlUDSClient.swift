@@ -150,7 +150,13 @@ public enum ControlUDSClient {
       body: body,
       timeout: timeout,
       keepConnectionOpen: true)
-    guard status == 200 else {
+    switch status {
+    case 200:
+      break
+    case 425:
+      Darwin.close(fd)
+      throw ControlUDSClientError.attachTooEarly
+    default:
       Darwin.close(fd)
       throw ControlUDSClientError.attachRedeemFailed(status: status)
     }
@@ -188,4 +194,5 @@ public enum ControlUDSClientError: Error, Equatable {
   case socketFailed
   case pathTooLong
   case attachRedeemFailed(status: Int)
+  case attachTooEarly
 }

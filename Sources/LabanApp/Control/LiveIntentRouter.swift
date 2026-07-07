@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import LabanCore
+import LabanDebug
 import LabanTerminalCore
 
 /// Live GUI hooks for building shared control projections from AppModel.
@@ -139,6 +141,10 @@ final class LiveIntentRouter: IntentRouter {
         scopedSessionID: query.scopedSessionID,
         readRedaction: query.readRedaction)
       switch query.intentID {
+      case "debug.discovery", "debug.capabilities":
+        return json(guiDiscoveryResponse())
+      case "debug.health":
+        return json(guiHealthResponse())
       case "app.state", "app.stateSummary":
         return json(ControlStateProjections.stateResponse(ctx))
       case "app.accessibility":
@@ -274,6 +280,34 @@ final class LiveIntentRouter: IntentRouter {
       clientSnapshotProvider: nil,
       accessibilityValueProvider: { [environment] tab in environment.accessibilityValueProvider(tab)
       })
+  }
+
+  private func guiDiscoveryResponse() -> DebugDiscoveryResponse {
+    let artifactRoot = FileManager.default.urls(
+      for: .documentDirectory, in: .userDomainMask
+    ).first?.path ?? ""
+    return DebugDiscoveryResponse(
+      name: "laban-debug",
+      schema: "schemas/debug/discovery.schema.json",
+      runId: ProcessInfo.processInfo.globallyUniqueString,
+      mode: "gui",
+      frame: environment.frame,
+      artifactRoot: artifactRoot,
+      fixtureRoot: "",
+      entrypoints: ["/debug", "/debug/capabilities"],
+      endpoints: DebugDiscoveryEndpoint.catalog,
+      actions: DebugDiscoveryCatalog.actions,
+      waitConditions: DebugDiscoveryCatalog.waitConditions,
+      fixtureActions: DebugDiscoveryCatalog.fixtureActions,
+      examples: DebugDiscoveryCatalog.examples)
+  }
+
+  private func guiHealthResponse() -> HealthResponse {
+    HealthResponse(
+      ok: model != nil,
+      mode: "gui",
+      frame: environment.frame,
+      focused: NSApplication.shared.isActive)
   }
 
   private func json<T: Encodable>(_ value: T, status: Int = 200) -> ControlResponse {

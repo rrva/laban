@@ -16,13 +16,13 @@ extension DebugDiscoveryEndpoint {
 
   /// The `/debug` discovery endpoint list, sourced from the shared route
   /// catalog so the doc survives `DebugHTTPServer`'s removal byte-stably.
-  static var catalog: [DebugDiscoveryEndpoint] {
+  public static var catalog: [DebugDiscoveryEndpoint] {
     ControlRouteCatalog.endpoints.map { DebugDiscoveryEndpoint(binding: $0.binding) }
   }
 }
 
-enum DebugDiscoveryCatalog {
-  static let actions: [DebugDiscoveryControl] = [
+public enum DebugDiscoveryCatalog {
+  public static let actions: [DebugDiscoveryControl] = [
     DebugDiscoveryControl(name: "newTab", summary: "Create and select a new tab."),
     DebugDiscoveryControl(name: "closeTab", summary: "Close a tab by id or the active tab."),
     DebugDiscoveryControl(name: "selectTab", summary: "Select a tab by tabId."),
@@ -65,7 +65,7 @@ enum DebugDiscoveryCatalog {
       name: "setTabMetadata", summary: "Set workspace, process, or agent metadata."),
   ]
 
-  static let waitConditions: [DebugDiscoveryControl] = [
+  public static let waitConditions: [DebugDiscoveryControl] = [
     DebugDiscoveryControl(name: "frameAtLeast", summary: "Wait until frame is at least a value."),
     DebugDiscoveryControl(name: "tabCount", summary: "Wait until a tab count is reached."),
     DebugDiscoveryControl(name: "activeTab", summary: "Wait until a tab is active."),
@@ -80,14 +80,14 @@ enum DebugDiscoveryCatalog {
       summary: "Wait for a render-trace invariant level and kind."),
   ]
 
-  static let fixtureActions: [DebugDiscoveryControl] = [
+  public static let fixtureActions: [DebugDiscoveryControl] = [
     DebugDiscoveryControl(
       name: "load", summary: "Load a fixture JSON file by relative path under fixtureRoot."),
     DebugDiscoveryControl(name: "restart", summary: "Restart the current fixture from step zero."),
     DebugDiscoveryControl(name: "step", summary: "Apply one or more fixture steps."),
   ]
 
-  static let examples: [DebugDiscoveryExample] = [
+  public static let examples: [DebugDiscoveryExample] = [
     DebugDiscoveryExample(
       title: "List capabilities",
       command: #"curl -H "Authorization: Bearer $DEBUG_TOKEN" "$DEBUG_URL/debug" | jq"#),

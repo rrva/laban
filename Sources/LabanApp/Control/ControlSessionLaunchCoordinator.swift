@@ -32,7 +32,9 @@ final class ControlSessionLaunchCoordinator {
       env[ControlEnvironmentKeys.controlURL] = controlSocketPath
     }
     var bootstrap: String?
-    if isAgentAttached, ControlSessionAttachPolicy.injectBootstrapIntoEnvironment,
+    if isAgentAttached,
+      ControlSessionAttachPolicy.injectBootstrapIntoEnvironment,
+      ProcessInfo.processInfo.environment[ControlEnvironmentKeys.attachEnvOptIn] == "1",
       let controlServer
     {
       bootstrap = controlServer.mintSessionAttachBootstrap(sessionID: sessionID)
