@@ -139,7 +139,7 @@ final class LiveIntentRouter: IntentRouter {
         scopedSessionID: query.scopedSessionID,
         readRedaction: query.readRedaction)
       switch query.intentID {
-      case "app.state":
+      case "app.state", "app.stateSummary":
         return json(ControlStateProjections.stateResponse(ctx))
       case "app.accessibility":
         return json(ControlStateProjections.accessibilityResponse(ctx))

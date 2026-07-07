@@ -645,7 +645,7 @@ public final class LabanControlServer {
       body: body)
 
     let intentID: String
-    switch route.resolveIntentID(request) {
+    switch route.resolveIntentID(request, tokenTier) {
     case .resolved(let id):
       intentID = id
     case .failed(let response):
@@ -668,10 +668,7 @@ public final class LabanControlServer {
     let targetSession = resolveTargetSession(request: request, body: body)
     let granted = LabanControlPolicy.grants(for: tokenTier)
     let scope = LabanControlPolicy.tokenScope(for: tokenTier)
-    let requiredCapability = effectiveRequiredCapability(
-      intentID: intentID,
-      descriptorCapability: descriptor.requiredCapability,
-      tokenTier: tokenTier)
+    let requiredCapability = descriptor.requiredCapability
     guard granted.contains(requiredCapability) else {
       reportDeny(
         intentID: intentID,
@@ -707,22 +704,6 @@ public final class LabanControlServer {
         tokenTier: tokenTier)
     }
     return response
-  }
-
-  private func effectiveRequiredCapability(
-    intentID: String,
-    descriptorCapability: Capability,
-    tokenTier: ControlTokenTier
-  ) -> Capability {
-    if intentID == "app.state" {
-      switch tokenTier {
-      case .appObserve:
-        return .observe
-      case .sessionObserve, .fixture:
-        return .observeSensitive
-      }
-    }
-    return descriptorCapability
   }
 
   private func sessionID(from tokenTier: ControlTokenTier?) -> String? {

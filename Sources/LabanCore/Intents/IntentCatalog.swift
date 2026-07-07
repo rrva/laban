@@ -713,11 +713,20 @@ public struct IntentCatalog: Sendable {
 
   private static let starterDescriptors: [IntentDescriptor] = [
     descriptor(
+      id: "app.stateSummary",
+      kind: .query,
+      category: "app",
+      summary: "Read redacted application state safe for app-observe tokens.",
+      requiredCapability: .observe,
+      dataSensitivity: .nonSensitiveState,
+      availability: guiObserve,
+      outputSchema: stateOutputSchema),
+    descriptor(
       id: "app.state",
       kind: .query,
       category: "app",
-      summary: "Read current application state.",
-      requiredCapability: .observe,
+      summary: "Read current application state (session/fixture rich view).",
+      requiredCapability: .observeSensitive,
       dataSensitivity: .nonSensitiveState,
       availability: guiObserve,
       outputSchema: stateOutputSchema),
