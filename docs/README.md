@@ -11,6 +11,7 @@ durable detail here.
 ## Process
 
 - `process/dev-process.md` - autonomous debug and headless test harness.
+- `process/controlling-agent-control-plane.md` - live GUI control-plane usage for local controlling agents.
 - `process/agent-operating-guide.md` - detailed agent workflow and taste rules.
 - `process/worktree-isolation.md` - isolated runs for concurrent agents.
 - `process/observability.md` - agent-legible logs, events, metrics, and traces.
