@@ -16,7 +16,7 @@ enum ControlRouteResolution {
 
 struct ControlRoute {
   let endpoint: ControlEndpointDescriptor
-  let resolveIntentID: (ControlHTTPRequest) -> ControlRouteResolution
+  let resolveIntentID: (ControlHTTPRequest, ControlTokenTier) -> ControlRouteResolution
   let dispatch: (LabanControlServer, ControlHTTPRequest, ControlTokenTier) -> ControlResponse
 
   func match(method: String, path: String) -> [String: String]? {
@@ -382,10 +382,24 @@ public enum ControlRouteCatalog {
     [
       ControlRoute(
         endpoint: endpoint(for: "GET", "/debug/state"),
-        resolveIntentID: { _ in .resolved("app.state") },
+        resolveIntentID: { _, tokenTier in
+          switch tokenTier {
+          case .appObserve:
+            return .resolved("app.stateSummary")
+          case .sessionObserve, .fixture:
+            return .resolved("app.state")
+          }
+        },
         dispatch: { server, _, tokenTier in
-          server.router.query(
-            server.legacyQueryInput(intentID: "app.state", params: [:], tokenTier: tokenTier))
+          let intentID: String
+          switch tokenTier {
+          case .appObserve:
+            intentID = "app.stateSummary"
+          case .sessionObserve, .fixture:
+            intentID = "app.state"
+          }
+          return server.router.query(
+            server.legacyQueryInput(intentID: intentID, params: [:], tokenTier: tokenTier))
         })
     ]
     + legacyJSONReadRoutes
@@ -393,7 +407,7 @@ public enum ControlRouteCatalog {
     + [
       ControlRoute(
         endpoint: endpoint(for: "GET", "/debug/sessions/<id>"),
-        resolveIntentID: { _ in .resolved("session.detail") },
+        resolveIntentID: { _, _ in .resolved("session.detail") },
         dispatch: { server, request, tokenTier in
           var params = request.query
           params["sessionId"] = request.pathParameters["id"] ?? ""
@@ -403,7 +417,7 @@ public enum ControlRouteCatalog {
         }),
       ControlRoute(
         endpoint: endpoint(for: "GET", "/debug/screenshot"),
-        resolveIntentID: { _ in .resolved("artifact.screenshot") },
+        resolveIntentID: { _, _ in .resolved("artifact.screenshot") },
         dispatch: { server, request, _ in
           server.router.artifact(
             ArtifactRequest(id: "artifact.screenshot", params: request.query))
@@ -411,7 +425,7 @@ public enum ControlRouteCatalog {
         }),
       ControlRoute(
         endpoint: endpoint(for: "GET", "/debug/cast/recent"),
-        resolveIntentID: { _ in .resolved("cast.recent") },
+        resolveIntentID: { _, _ in .resolved("cast.recent") },
         dispatch: { server, request, _ in
           server.router.artifact(ArtifactRequest(id: "cast.recent", params: request.query))
             ?? .error(501, "not yet ported")
@@ -457,7 +471,7 @@ public enum ControlRouteCatalog {
       let endpoint = endpoint(for: method, path)
       return ControlRoute(
         endpoint: endpoint,
-        resolveIntentID: { _ in
+        resolveIntentID: { _, _ in
           guard let intentID = endpoint.fixedIntentId else {
             return .failed(.error(500, "missing intent mapping"))
           }
@@ -497,7 +511,7 @@ public enum ControlRouteCatalog {
       let endpoint = endpoint(for: method, path)
       return ControlRoute(
         endpoint: endpoint,
-        resolveIntentID: { _ in
+        resolveIntentID: { _, _ in
           guard let intentID = endpoint.fixedIntentId else {
             return .failed(.error(500, "missing intent mapping"))
           }
@@ -550,7 +564,8 @@ public enum ControlRouteCatalog {
   }
 
   private static func resolveActionIntentID(
-    _ request: ControlHTTPRequest
+    _ request: ControlHTTPRequest,
+    _ tokenTier: ControlTokenTier
   ) -> ControlRouteResolution {
     guard let envelope = try? JSONDecoder().decode(DebugActionEnvelope.self, from: request.body)
     else {

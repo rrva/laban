@@ -32,7 +32,7 @@ public final class HeadlessIntentRouter: IntentRouter {
       return json(runtime.discovery())
     case "debug.health":
       return json(runtime.health())
-    case "app.state":
+    case "app.state", "app.stateSummary":
       return json(runtime.state())
     case "app.accessibility":
       return json(runtime.accessibility())
