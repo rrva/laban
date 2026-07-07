@@ -695,12 +695,16 @@ final class MainWindowController: NSWindowController {
   /// C13: explicit production entry for an agent-attached first tab.
   static func shouldLaunchAgentAttachedSession(
     environment: [String: String] = ProcessInfo.processInfo.environment,
-    arguments: [String] = CommandLine.arguments
+    arguments: [String] = CommandLine.arguments,
+    defaults: UserDefaults = .standard
   ) -> Bool {
     if environment[ControlEnvironmentKeys.agentAttachedSessionAtLaunch] == "1" {
       return true
     }
-    return arguments.contains("--agent-attached-session")
+    if arguments.contains("--agent-attached-session") {
+      return true
+    }
+    return AgentAttachedSessionSettings.isEnabled(defaults: defaults)
   }
 
   func startControlServer(model: AppModel?, router: LiveIntentRouter? = nil) {
