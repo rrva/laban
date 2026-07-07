@@ -799,7 +799,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let (slot, ringRebuild) = peekNextRingSlot()
     ensureSlotDamageStateSized(rebuild: ringRebuild)
 
-    let forcesEveryone = ringRebuild || configChangedSincePreviousFrame(clearColor: clearColor) || damage == .full
+    let forcesEveryone =
+      ringRebuild || configChangedSincePreviousFrame(clearColor: clearColor) || damage == .full
     if forcesEveryone {
       for i in slotNeedsForceFull.indices { slotNeedsForceFull[i] = true }
     }

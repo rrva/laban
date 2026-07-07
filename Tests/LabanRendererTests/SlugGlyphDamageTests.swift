@@ -319,6 +319,8 @@ final class SlugGlyphDamageTests: XCTestCase {
     XCTAssertTrue(expected.render(commandsB, damage: .full))
     let expectedHash = hash(try XCTUnwrap(expected.pngData))
 
-    XCTAssertEqual(partialHash, expectedHash, "partial renderer must successfully repaint background after clear color changes")
+    XCTAssertEqual(
+      partialHash, expectedHash,
+      "partial renderer must successfully repaint background after clear color changes")
   }
 }
