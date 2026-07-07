@@ -14,13 +14,11 @@ public enum ControlAdvertisement {
 
   public static func write(url: String, token: String, pid: Int32, runId: String) throws {
     let dir = directory()
-    try FileManager.default.createDirectory(
-      at: dir,
-      withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700])
+    try ControlDirectorySecurity.rejectSymlinkDirectory(at: dir)
+    try ControlDirectorySecurity.ensurePrivateDirectory(at: dir)
     let file = dir.appendingPathComponent("control.json")
-    let payload = [
-      "pid": String(pid),
+    let payload: [String: Any] = [
+      "pid": Int(pid),
       "runId": runId,
       "token": token,
       "url": url,

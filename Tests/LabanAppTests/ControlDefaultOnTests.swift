@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LabanControl
 import LabanCore
@@ -64,6 +65,7 @@ final class ControlDefaultOnTests: XCTestCase {
     let token = try XCTUnwrap(payload["token"] as? String)
     XCTAssertEqual(token, start.appObserveToken)
     XCTAssertEqual(payload["url"] as? String, start.socketPath)
+    XCTAssertTrue(payload["pid"] is Int)
 
     let (sensitiveStatus, _) = try request(
       socketPath: start.socketPath,
@@ -102,15 +104,11 @@ final class ControlDefaultOnTests: XCTestCase {
       sessionID: context.sessionID,
       shellPID: ProcessInfo.processInfo.processIdentifier)
 
-    let (firstStatus, firstBody) = try request(
+    let (fd, redeemedSessionID) = try ControlUDSClient.redeemAttachBootstrap(
       socketPath: start.socketPath,
-      path: LabanControlServer.sessionAttachPath,
-      method: "POST",
-      body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
-    XCTAssertEqual(firstStatus, 200)
-    let firstJSON = try JSONSerialization.jsonObject(with: firstBody) as! [String: Any]
-    let sessionToken = try XCTUnwrap(firstJSON["token"] as? String)
-    XCTAssertEqual(firstJSON["sessionID"] as? String, context.sessionID)
+      bootstrap: bootstrap)
+    defer { Darwin.close(fd) }
+    XCTAssertEqual(redeemedSessionID, context.sessionID)
 
     let (secondStatus, _) = try request(
       socketPath: start.socketPath,
@@ -119,10 +117,10 @@ final class ControlDefaultOnTests: XCTestCase {
       body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
     XCTAssertEqual(secondStatus, 401)
 
-    let (ownStatus, _) = try request(
-      socketPath: start.socketPath,
+    let (ownStatus, _) = try ControlUDSClient.request(
+      fd: fd,
       path: "/debug/selection",
-      token: sessionToken)
+      keepConnectionOpen: true)
     XCTAssertEqual(ownStatus, 200)
   }
 
@@ -215,20 +213,17 @@ final class ControlDefaultOnTests: XCTestCase {
     server.registerAttachShellPID(
       sessionID: tab.sessionId,
       shellPID: ProcessInfo.processInfo.processIdentifier)
-    let (_, body) = try udsRequest(
+    let (fd, redeemedSessionID) = try ControlUDSClient.redeemAttachBootstrap(
       socketPath: start.socketPath,
-      path: LabanControlServer.sessionAttachPath,
-      method: "POST",
-      body: Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8))
-    let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
-    XCTAssertEqual(json["sessionID"] as? String, tab.sessionId)
+      bootstrap: bootstrap)
+    defer { Darwin.close(fd) }
+    XCTAssertEqual(redeemedSessionID, tab.sessionId)
 
-    let sessionToken = try XCTUnwrap(json["token"] as? String)
     let otherTab = try model.createTab()
-    let (crossStatus, _) = try udsRequest(
-      socketPath: start.socketPath,
+    let (crossStatus, _) = try ControlUDSClient.request(
+      fd: fd,
       path: "/debug/sessions/\(otherTab.sessionId)",
-      token: sessionToken)
+      keepConnectionOpen: true)
     XCTAssertEqual(crossStatus, 403)
   }
 
@@ -278,17 +273,7 @@ final class ControlDefaultOnTests: XCTestCase {
     let start = try server.start()
     defer { server.stop() }
 
-    let sessionBootstrap = server.mintSessionAttachBootstrap(sessionID: "s1")
-    server.registerAttachShellPID(
-      sessionID: "s1",
-      shellPID: ProcessInfo.processInfo.processIdentifier)
-    let (_, attachBody) = try request(
-      socketPath: start.socketPath,
-      path: LabanControlServer.sessionAttachPath,
-      method: "POST",
-      body: Data(#"{"bootstrap":"\#(sessionBootstrap)"}"#.utf8))
-    let attachJSON = try JSONSerialization.jsonObject(with: attachBody) as! [String: Any]
-    let sessionToken = try XCTUnwrap(attachJSON["token"] as? String)
+    let sessionToken = server.mintSessionObserveToken(sessionID: "s1")
 
     for token in [start.appObserveToken, sessionToken] {
       let input = try request(

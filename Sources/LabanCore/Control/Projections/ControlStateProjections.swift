@@ -28,9 +28,22 @@ public enum ControlStateProjections {
       findStateBySession: findStates,
       cursorSettings: cursorSettingsResponse(activeTab: scopedActiveTab ?? activeTab, ctx: ctx),
       emojiRendering: emojiRenderingSettingsResponse(),
-      attentionNotifications: ctx.model.recentAttentionNotificationDecisions.map(
+      attentionNotifications: filteredAttentionNotifications(ctx).map(
         attentionNotificationDecisionResponse)
     )
+  }
+
+  private static func filteredAttentionNotifications(_ ctx: ControlProjectionContext)
+    -> [AttentionNotificationDecision]
+  {
+    let all = ctx.model.recentAttentionNotificationDecisions
+    guard let scoped = ctx.scopedSessionID else { return all }
+    return all.filter { decision in
+      guard let tab = ctx.model.tabs.first(where: { $0.id == decision.event.tabId }) else {
+        return false
+      }
+      return tab.sessionId == scoped
+    }
   }
 
   public static func accessibilityResponse(_ ctx: ControlProjectionContext) -> AccessibilityResponse {

@@ -118,6 +118,32 @@ final class CommandProposalsTests: XCTestCase {
     XCTAssertEqual(status, 403)
   }
 
+  func testSafeRenderingEscapesZeroWidthSpace() {
+    let rendered = CommandProposalSafeText.render("echo safe\u{200B}tail")
+    XCTAssertTrue(rendered.displayText.contains("[INVIS:U+200B]"))
+    XCTAssertEqual(rendered.displayText, rendered.copyText)
+  }
+
+  func testOversizedProposalRejected() throws {
+    let model = try AppModel()
+    _ = try model.createTab()
+    let sessionID = try XCTUnwrap(model.tabs.first?.sessionId)
+    let router = LiveIntentRouter(model: model)
+    let server = LabanControlServer(router: router, surface: .gui, catalog: .shared)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let sessionToken = server.mintSessionObserveToken(sessionID: sessionID)
+    let huge = String(repeating: "A", count: CommandProposalStore.maxCommandBytes + 1)
+    let body = proposeBody(sessionID: sessionID, command: huge)
+    let (status, _) = try request(
+      socketPath: socketPath,
+      token: sessionToken,
+      body: body)
+    XCTAssertEqual(status, 413)
+  }
+
   func testSafeRenderingEscapesHiddenNewline() {
     let rendered = CommandProposalSafeText.render("echo safe\nrm -rf /")
     XCTAssertTrue(rendered.displayText.contains("\\n"))

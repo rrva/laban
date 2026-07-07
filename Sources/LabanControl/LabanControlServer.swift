@@ -32,6 +32,7 @@ public final class LabanControlServer {
     var authorization: String?
     var authorizationCount = 0
     var contentLengthHeader: String?
+    var connection: String?
   }
 
   private enum ContentLengthResult {
@@ -97,6 +98,9 @@ public final class LabanControlServer {
 
   public func start() throws -> GUIControlStartResult {
     let path = Self.defaultControlSocketPath()
+    let controlDir = ControlAdvertisement.directory()
+    try ControlDirectorySecurity.rejectSymlinkDirectory(at: controlDir)
+    try ControlDirectorySecurity.ensurePrivateDirectory(at: controlDir)
     try bindListener(at: path)
     let appObserveToken = Self.makeToken()
     registerToken(appObserveToken, tier: .appObserve)
@@ -136,8 +140,8 @@ public final class LabanControlServer {
     }
   }
 
-  /// Redeems a bootstrap once, registering a session-observe bearer token.
-  public func redeemSessionAttachBootstrap(_ bootstrap: String, peerPID: pid_t) -> (token: String, sessionID: String)? {
+  /// Redeems a bootstrap once, binding session-observe auth to the redeeming connection (C14).
+  public func redeemSessionAttachBootstrap(_ bootstrap: String, peerPID: pid_t) -> String? {
     attachLock.lock()
     guard var entry = attachBootstraps[bootstrap], !entry.consumed else {
       attachLock.unlock()
@@ -153,11 +157,10 @@ public final class LabanControlServer {
     attachBootstraps[bootstrap] = entry
     let sessionID = entry.sessionID
     attachLock.unlock()
-    let token = mintSessionObserveToken(sessionID: sessionID)
-    return (token, sessionID)
+    return sessionID
   }
 
-  /// Mints a session-observe token bound to `sessionID`.
+  /// Mints a session-observe bearer for tests and fixture runtimes only — not C14 production attach.
   public func mintSessionObserveToken(sessionID: String) -> String {
     let token = Self.makeToken()
     registerToken(token, tier: .sessionObserve(sessionID: sessionID))
@@ -337,13 +340,8 @@ public final class LabanControlServer {
   private func bindListener(at path: String) throws {
     guard fd < 0 else { throw LabanControlServerError.alreadyStarted }
 
-    let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700])
-
-    unlink(path)
+    let controlDir = URL(fileURLWithPath: path).deletingLastPathComponent()
+    try ControlDirectorySecurity.prepareSocketPath(path)
 
     let listener = socket(AF_UNIX, SOCK_STREAM, 0)
     guard listener >= 0 else { throw LabanControlServerError.socketFailed }
@@ -410,19 +408,99 @@ public final class LabanControlServer {
     }
   }
 
+  private struct IncomingHTTPRequest {
+    let method: String
+    let path: String
+    let query: [String: String]
+    let headers: ParsedHeaders
+    let body: Data
+
+    var wantsKeepAlive: Bool {
+      headers.connection?.lowercased().contains("keep-alive") == true
+    }
+  }
+
   private func handleConnection(_ clientFD: Int32) {
     defer { Darwin.close(clientFD) }
+    guard Self.evaluatePeerCredential(clientFD: clientFD) == .ok else {
+      send(clientFD, .error(403, "forbidden"), persistSession: false)
+      return
+    }
     setReceiveTimeout(clientFD)
+    var connectionTier: ControlTokenTier?
 
+    while true {
+      guard let incoming = readHTTPRequest(clientFD) else { break }
+
+      if incoming.method == "POST", incoming.path == Self.sessionAttachPath {
+        let peerPID = Self.peerPID(clientFD: clientFD)
+        let (response, boundTier) = handleSessionAttach(
+          body: incoming.body,
+          peerPID: peerPID)
+        if let boundTier {
+          connectionTier = boundTier
+        }
+        send(clientFD, response, persistSession: connectionTier != nil)
+        if connectionTier == nil { break }
+        continue
+      }
+
+      let (authOutcome, tokenTier) = resolveAuthorization(
+        authorization: incoming.headers.authorization,
+        connectionTier: connectionTier)
+      switch authOutcome {
+      case .forbidden:
+        reportDeny(
+          reason: .peerCredential,
+          targetSession: sessionID(from: tokenTier),
+          tokenTier: tokenTier)
+        send(clientFD, .error(403, "forbidden"), persistSession: connectionTier != nil)
+        break
+      case .unauthorized:
+        reportDeny(reason: .unauthorized, targetSession: sessionID(from: tokenTier))
+        send(clientFD, Self.unauthorizedResponse(), persistSession: connectionTier != nil)
+        break
+      case .ok:
+        break
+      }
+
+      guard let tokenTier else {
+        send(clientFD, Self.unauthorizedResponse(), persistSession: connectionTier != nil)
+        break
+      }
+
+      let response = route(
+        method: incoming.method,
+        path: incoming.path,
+        query: incoming.query,
+        body: incoming.body,
+        tokenTier: tokenTier)
+      let persist = connectionTier != nil || incoming.wantsKeepAlive
+      send(clientFD, response, persistSession: persist)
+      if !persist { break }
+    }
+  }
+
+  private func resolveAuthorization(
+    authorization: String?,
+    connectionTier: ControlTokenTier?
+  ) -> (GuardOutcome, ControlTokenTier?) {
+    if let connectionTier {
+      return (.ok, connectionTier)
+    }
+    return evaluateAuthorization(peerOutcome: .ok, authorization: authorization)
+  }
+
+  private func readHTTPRequest(_ clientFD: Int32) -> IncomingHTTPRequest? {
     var raw = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
     var headerEnd = -1
     let headerDeadline = Date().addingTimeInterval(Self.requestReadTimeout)
     while raw.count < Self.maxHeaderBytes {
-      if Date() > headerDeadline { return }
+      if Date() > headerDeadline { return nil }
       let n = recv(clientFD, &buffer, buffer.count, 0)
       if n < 0 && errno == EINTR { continue }
-      guard n > 0 else { return }
+      guard n > 0 else { return nil }
       raw.append(contentsOf: buffer[0..<n])
       if let range = raw.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) {
         headerEnd = range.upperBound
@@ -430,128 +508,75 @@ public final class LabanControlServer {
       }
     }
 
-    guard headerEnd >= 0 else {
-      send(clientFD, .error(413, "request too large"))
-      return
-    }
+    guard headerEnd >= 0 else { return nil }
     guard let headerString = String(data: raw[0..<headerEnd], encoding: .utf8) else {
-      send(clientFD, .error(400, "bad request"))
-      return
+      return nil
     }
     let lines = headerString.components(separatedBy: "\r\n")
-    guard let requestLine = lines.first else {
-      send(clientFD, .error(400, "bad request"))
-      return
-    }
+    guard let requestLine = lines.first else { return nil }
     let parts = requestLine.components(separatedBy: " ")
-    guard parts.count >= 2 else {
-      send(clientFD, .error(400, "bad request"))
-      return
-    }
+    guard parts.count >= 2 else { return nil }
 
     let method = parts[0]
-    let rawPath = parts[1]
-    let parsedTarget = Self.parseRequestTarget(rawPath)
+    let parsedTarget = Self.parseRequestTarget(parts[1])
     let headers = parseHeaders(Array(lines.dropFirst()))
 
-    guard method == "GET" || method == "POST" else {
-      send(clientFD, .error(405, "method not allowed"))
-      return
-    }
-    guard headers.authorizationCount <= 1 else {
-      send(clientFD, .error(400, "duplicate authorization header"))
-      return
-    }
+    guard method == "GET" || method == "POST" else { return nil }
+    guard headers.authorizationCount <= 1 else { return nil }
 
     let contentLength: Int
     switch parseContentLength(headers.contentLengthHeader, method: method) {
     case .success(let length):
       contentLength = length
-    case .failure(let status):
-      send(clientFD, .error(status, status == 413 ? "request too large" : "bad request"))
-      return
+    case .failure:
+      return nil
     }
 
     var body = Data(raw[headerEnd...].prefix(contentLength))
     let bodyDeadline = Date().addingTimeInterval(Self.requestReadTimeout)
     while body.count < contentLength {
-      if Date() > bodyDeadline { return }
+      if Date() > bodyDeadline { return nil }
       let need = min(contentLength - body.count, 4096)
       var bodyBuffer = [UInt8](repeating: 0, count: need)
       let n = recv(clientFD, &bodyBuffer, need, 0)
       if n < 0 && errno == EINTR { continue }
-      guard n > 0 else { return }
+      guard n > 0 else { return nil }
       body.append(contentsOf: bodyBuffer[0..<n])
     }
 
-    let peerOutcome = Self.evaluatePeerCredential(clientFD: clientFD)
-    if method == "POST", parsedTarget.path == Self.sessionAttachPath {
-      let peerPID = Self.peerPID(clientFD: clientFD)
-      send(clientFD, handleSessionAttach(body: body, peerOutcome: peerOutcome, peerPID: peerPID))
-      return
-    }
-
-    let (authOutcome, tokenTier) = evaluateAuthorization(
-      peerOutcome: peerOutcome,
-      authorization: headers.authorization)
-    switch authOutcome {
-    case .forbidden:
-      reportDeny(
-        reason: peerOutcome == .forbidden ? .peerCredential : .forbiddenCapability,
-        targetSession: sessionID(from: tokenTier),
-        tokenTier: tokenTier)
-      send(clientFD, .error(403, "forbidden"))
-      return
-    case .unauthorized:
-      reportDeny(reason: .unauthorized, targetSession: sessionID(from: tokenTier))
-      send(clientFD, Self.unauthorizedResponse())
-      return
-    case .ok:
-      break
-    }
-
-    guard let tokenTier else {
-      send(clientFD, Self.unauthorizedResponse())
-      return
-    }
-
-    send(
-      clientFD,
-      route(
-        method: method,
-        path: parsedTarget.path,
-        query: parsedTarget.query,
-        body: body,
-        tokenTier: tokenTier))
+    return IncomingHTTPRequest(
+      method: method,
+      path: parsedTarget.path,
+      query: parsedTarget.query,
+      headers: headers,
+      body: body)
   }
 
-  private func handleSessionAttach(body: Data, peerOutcome: GuardOutcome, peerPID: pid_t?) -> ControlResponse {
-    guard peerOutcome == .ok else {
-      return .error(403, "forbidden")
-    }
+  private func handleSessionAttach(body: Data, peerPID: pid_t?) -> (ControlResponse, ControlTokenTier?) {
     guard let peerPID else {
-      return .error(403, "forbidden")
+      return (.error(403, "forbidden"), nil)
     }
     guard
       let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
       let bootstrap = json["bootstrap"] as? String,
       !bootstrap.isEmpty
     else {
-      return .error(400, "bad request")
+      return (.error(400, "bad request"), nil)
     }
-    guard let redeemed = redeemSessionAttachBootstrap(bootstrap, peerPID: peerPID) else {
-      return .error(401, "invalid or spent bootstrap")
+    guard let sessionID = redeemSessionAttachBootstrap(bootstrap, peerPID: peerPID) else {
+      return (.error(401, "invalid or spent bootstrap"), nil)
     }
     let payload: [String: Any] = [
       "ok": true,
-      "token": redeemed.token,
-      "sessionID": redeemed.sessionID,
+      "sessionID": sessionID,
     ]
     guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     else {
-      return .error(500, "internal error")
+      return (.error(500, "internal error"), nil)
     }
-    return ControlResponse(status: 200, contentType: "application/json", body: data)
+    return (
+      ControlResponse(status: 200, contentType: "application/json", body: data),
+      .sessionObserve(sessionID: sessionID))
   }
 
   private func route(
@@ -606,10 +631,14 @@ public final class LabanControlServer {
     let targetSession = resolveTargetSession(request: request, body: body)
     let granted = LabanControlPolicy.grants(for: tokenTier)
     let scope = LabanControlPolicy.tokenScope(for: tokenTier)
-    guard granted.contains(descriptor.requiredCapability) else {
+    let requiredCapability = effectiveRequiredCapability(
+      intentID: intentID,
+      descriptorCapability: descriptor.requiredCapability,
+      tokenTier: tokenTier)
+    guard granted.contains(requiredCapability) else {
       reportDeny(
         intentID: intentID,
-        capability: descriptor.requiredCapability,
+        capability: requiredCapability,
         reason: .forbiddenCapability,
         targetSession: targetSession,
         tokenTier: tokenTier)
@@ -625,19 +654,38 @@ public final class LabanControlServer {
     else {
       reportDeny(
         intentID: intentID,
-        capability: descriptor.requiredCapability,
+        capability: requiredCapability,
         reason: .forbiddenScope,
         targetSession: targetSession,
         tokenTier: tokenTier)
       return .error(403, "forbidden")
     }
 
-    reportAuthorize(
-      intentID: intentID,
-      capability: descriptor.requiredCapability,
-      targetSession: targetSession,
-      tokenTier: tokenTier)
-    return route.dispatch(self, request, tokenTier)
+    let response = route.dispatch(self, request, tokenTier)
+    if (200..<300).contains(response.status) {
+      reportAuthorize(
+        intentID: intentID,
+        capability: requiredCapability,
+        targetSession: targetSession,
+        tokenTier: tokenTier)
+    }
+    return response
+  }
+
+  private func effectiveRequiredCapability(
+    intentID: String,
+    descriptorCapability: Capability,
+    tokenTier: ControlTokenTier
+  ) -> Capability {
+    if intentID == "app.state" {
+      switch tokenTier {
+      case .appObserve:
+        return .observe
+      case .sessionObserve, .fixture:
+        return .observeSensitive
+      }
+    }
+    return descriptorCapability
   }
 
   private func sessionID(from tokenTier: ControlTokenTier?) -> String? {
@@ -826,6 +874,8 @@ public final class LabanControlServer {
         if parsed.authorization == nil { parsed.authorization = value }
       case "content-length":
         parsed.contentLengthHeader = value
+      case "connection":
+        if parsed.connection == nil { parsed.connection = value }
       default:
         continue
       }
@@ -849,11 +899,11 @@ public final class LabanControlServer {
     return .success(length)
   }
 
-  private func send(_ clientFD: Int32, _ response: ControlResponse) {
+  private func send(_ clientFD: Int32, _ response: ControlResponse, persistSession: Bool) {
     var header = "HTTP/1.1 \(response.status) \(Self.statusText(response.status))\r\n"
     header += "Content-Type: \(response.contentType)\r\n"
     header += "Content-Length: \(response.body.count)\r\n"
-    header += "Connection: close\r\n"
+    header += persistSession ? "Connection: keep-alive\r\n" : "Connection: close\r\n"
     for (name, value) in response.headers.sorted(by: { $0.key < $1.key }) {
       header += "\(name): \(value)\r\n"
     }

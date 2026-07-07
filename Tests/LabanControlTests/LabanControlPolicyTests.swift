@@ -164,7 +164,7 @@ final class LabanControlPolicyTests: XCTestCase {
     let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
     XCTAssertEqual(json["url"] as? String, socketPath)
     XCTAssertEqual(json["token"] as? String, "app-observe-token")
-    XCTAssertEqual(json["pid"] as? String, "42")
+    XCTAssertEqual(json["pid"] as? Int, 42)
     XCTAssertEqual(json["runId"] as? String, "run-test")
 
     let attributes = try FileManager.default.attributesOfItem(atPath: dir.path)

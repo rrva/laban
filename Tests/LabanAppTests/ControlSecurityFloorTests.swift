@@ -53,6 +53,35 @@ final class ControlSecurityFloorTests: XCTestCase {
     XCTAssertNil(entry["token"])
   }
 
+  func testSessionObserveAppStateLightsIndicatorAndAudit() throws {
+    let indicator = IndicatorSpy()
+    let coordinator = ControlSecurityCoordinator(indicatorHost: indicator)
+    let (model, router, sessionID, _) = try makeModelRouterAndSessions()
+    _ = model
+    let server = LabanControlServer(
+      router: router, surface: .gui, securityObserver: coordinator)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let sessionToken = server.mintSessionObserveToken(sessionID: sessionID)
+    let (status, _) = try request(
+      socketPath: socketPath,
+      path: "/debug/state",
+      token: sessionToken)
+    XCTAssertEqual(status, 200)
+
+    let indicatorLit = expectation(description: "indicator")
+    DispatchQueue.main.async {
+      if indicator.active { indicatorLit.fulfill() }
+    }
+    wait(for: [indicatorLit], timeout: 2)
+
+    let entry = try XCTUnwrap(Self.latestEventLogEntry(matching: "control.privileged"))
+    XCTAssertEqual(entry["intent"] as? String, "app.state")
+    XCTAssertEqual(entry["capability"] as? String, Capability.observeSensitive.rawValue)
+  }
+
   func testDisableSwitchStopsServerAndRemovesControlJSON() throws {
     let controlDir = try makeTempControlDirectory()
     defer {

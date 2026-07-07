@@ -44,11 +44,29 @@ public enum ControlUDSClient {
     path: String,
     token: String? = nil,
     body: Data? = nil,
-    timeout: TimeInterval = 5
+    timeout: TimeInterval = 5,
+    keepConnectionOpen: Bool = false
   ) throws -> (status: Int, body: Data) {
     let fd = try connect(socketPath: socketPath)
+    if keepConnectionOpen {
+      return try request(
+        fd: fd,
+        method: method,
+        path: path,
+        token: token,
+        body: body,
+        timeout: timeout,
+        keepConnectionOpen: true)
+    }
     defer { Darwin.close(fd) }
-    return try request(fd: fd, method: method, path: path, token: token, body: body, timeout: timeout)
+    return try request(
+      fd: fd,
+      method: method,
+      path: path,
+      token: token,
+      body: body,
+      timeout: timeout,
+      keepConnectionOpen: false)
   }
 
   public static func request(
@@ -57,7 +75,8 @@ public enum ControlUDSClient {
     path: String,
     token: String? = nil,
     body: Data? = nil,
-    timeout: TimeInterval = 5
+    timeout: TimeInterval = 5,
+    keepConnectionOpen: Bool = false
   ) throws -> (status: Int, body: Data) {
     var recvTimeout = timeval(
       tv_sec: Int(timeout),
@@ -75,7 +94,7 @@ public enum ControlUDSClient {
       request += "Content-Type: application/json\r\n"
       request += "Content-Length: \(body.count)\r\n"
     }
-    request += "Connection: close\r\n"
+    request += keepConnectionOpen ? "Connection: keep-alive\r\n" : "Connection: close\r\n"
     request += "\r\n"
 
     var payload = Data(request.utf8)
@@ -126,6 +145,36 @@ public enum ControlUDSClient {
     return (status, bodyData)
   }
 
+  /// Redeems a C14 attach bootstrap and leaves the connection open for session-scoped reads.
+  public static func redeemAttachBootstrap(
+    socketPath: String,
+    bootstrap: String,
+    timeout: TimeInterval = 5
+  ) throws -> (fd: Int32, sessionID: String) {
+    let fd = try connect(socketPath: socketPath)
+    let body = Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8)
+    let (status, responseBody) = try request(
+      fd: fd,
+      method: "POST",
+      path: LabanControlServer.sessionAttachPath,
+      body: body,
+      timeout: timeout,
+      keepConnectionOpen: true)
+    guard status == 200 else {
+      Darwin.close(fd)
+      throw ControlUDSClientError.attachRedeemFailed(status: status)
+    }
+    let json = try JSONSerialization.jsonObject(with: responseBody) as! [String: Any]
+    guard json["ok"] as? Bool == true,
+      let sessionID = json["sessionID"] as? String,
+      !sessionID.isEmpty
+    else {
+      Darwin.close(fd)
+      throw ControlUDSClientError.attachRedeemFailed(status: status)
+    }
+    return (fd, sessionID)
+  }
+
   private static func sendAll(fd: Int32, data: Data) throws {
     try data.withUnsafeBytes { rawBuffer in
       guard let base = rawBuffer.baseAddress else { return }
@@ -148,4 +197,5 @@ public enum ControlUDSClient {
 public enum ControlUDSClientError: Error, Equatable {
   case socketFailed
   case pathTooLong
+  case attachRedeemFailed(status: Int)
 }

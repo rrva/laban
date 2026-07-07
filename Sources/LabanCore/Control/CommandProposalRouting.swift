@@ -22,11 +22,28 @@ public enum CommandProposalRouting {
     guard sessionExists(targetSessionID) else {
       return .error(400, "no session for propose")
     }
+    guard command.utf8.count <= CommandProposalStore.maxCommandBytes else {
+      return .error(413, "command too large")
+    }
+    if let purpose = request.purpose, purpose.utf8.count > CommandProposalStore.maxPurposeBytes {
+      return .error(413, "purpose too large")
+    }
 
-    let response = CommandProposalService.propose(
-      command: command,
-      purpose: request.purpose,
-      targetSessionID: targetSessionID)
+    let response: CommandProposeResponse
+    do {
+      response = try CommandProposalService.propose(
+        command: command,
+        purpose: request.purpose,
+        targetSessionID: targetSessionID)
+    } catch CommandProposalStore.SubmitError.storeFull {
+      return .error(429, "too many proposals")
+    } catch CommandProposalStore.SubmitError.commandTooLarge {
+      return .error(413, "command too large")
+    } catch CommandProposalStore.SubmitError.purposeTooLarge {
+      return .error(413, "purpose too large")
+    } catch {
+      return .error(500, "internal error")
+    }
     return ControlResponse.json(response)
   }
 }
