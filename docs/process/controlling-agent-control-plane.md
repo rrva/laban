@@ -61,7 +61,7 @@ must handle its absence cleanly.
 | `LABAN_SESSION_ATTACH` | Eligible controlling agent only | One-shot bootstrap for C14 attach. Not a reusable token. |
 | `LABAN_CONTROL_DIR` | Dev/test override | Directory containing `control.json`; defaults to `~/Library/Application Support/Laban`. |
 | `LABAN_CONTROL_SERVER=0` | App launch override | Force-disables the live control server. |
-| `LABAN_CONTROL_ATTACH_ENV=1` | Dev/E2E opt-in | Enables explicit attach-bootstrap injection in agent-attached dev paths. |
+| `LABAN_CONTROL_ATTACH_ENV=1` | Dev/E2E opt-in | Required for `LABAN_SESSION_ATTACH` to be injected into agent-attached dev/E2E sessions. Ordinary shells never receive it. |
 
 ## App-observe: redacted status from `control.json`
 
@@ -185,6 +185,9 @@ has many more endpoints than the live app.
 
 | Endpoint | Method | Body/query | Use |
 |---|---:|---|---|
+| `/debug` | `GET` | none | Discovery document listing endpoints, controls, and examples. |
+| `/debug/capabilities` | `GET` | none | Alias for `/debug` for clients that probe `/debug/capabilities`. |
+| `/debug/health` | `GET` | none | Readiness check: returns process readiness (`ok`, `mode`, `frame`, `focused`). |
 | `/debug/state` | `GET` | none | Rich own-session state. App-observe receives redacted summary instead. |
 | `/debug/sessions` | `GET` | none | Session list scoped to the attached session. |
 | `/debug/sessions/<session-id>` | `GET` | `includeGrid=true` optional | Own-session details; with `includeGrid=true`, returns visible-grid cells. |
@@ -257,6 +260,7 @@ Rules:
 | `403` | Capability or session scope denied | Do not retry. Remove unsupported behavior from the client. |
 | `404` | Endpoint unavailable on live GUI, or target not found | Probe a supported endpoint or degrade gracefully. |
 | `413` | Body too large | Shrink command/purpose/request. |
+| `425` | C14 attach requested before shell PID registered | Retry briefly; the bootstrap is valid but the session is not ready yet. |
 | `429` | Too many pending command proposals | Stop proposing and wait for user action. |
 
 Connection-level failures mean the held C14 credential is gone. Do not attempt to
