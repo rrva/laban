@@ -30,6 +30,7 @@ public enum ControlAdvertisement {
     guard tmpFD >= 0 else {
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
+    try ControlFD.setCloseOnExec(tmpFD)
     var installed = false
     defer {
       Darwin.close(tmpFD)

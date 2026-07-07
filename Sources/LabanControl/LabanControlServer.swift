@@ -343,6 +343,7 @@ public final class LabanControlServer {
 
     let listener = socket(AF_UNIX, SOCK_STREAM, 0)
     guard listener >= 0 else { throw LabanControlServerError.socketFailed }
+    try ControlFD.setCloseOnExec(listener)
 
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
@@ -391,6 +392,12 @@ public final class LabanControlServer {
         accept(listener, ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { $0 }, &clientLen)
       }
       if clientFD >= 0 {
+        do {
+          try ControlFD.setCloseOnExec(clientFD)
+        } catch {
+          Darwin.close(clientFD)
+          continue
+        }
         connectionQueue.async { [self] in handleConnection(clientFD) }
         continue
       }

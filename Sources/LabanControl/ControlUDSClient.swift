@@ -5,6 +5,7 @@ public enum ControlUDSClient {
   public static func connect(socketPath: String) throws -> Int32 {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw ControlUDSClientError.socketFailed }
+    try ControlFD.setCloseOnExec(fd)
 
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
