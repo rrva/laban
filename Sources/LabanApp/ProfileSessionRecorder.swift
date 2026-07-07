@@ -1,4 +1,8 @@
 import Foundation
+import Logging
+import NIO
+import ProfileRecorder
+import _ProfileRecorderSampleConversion
 
 enum ProfileSessionRecorderError: LocalizedError {
   case profilerNotRunning
@@ -18,8 +22,8 @@ enum ProfileSessionRecorderError: LocalizedError {
 }
 
 /// Background CPU sampling that accumulates into a session file without any
-/// on-surface pill. Chunks are captured back-to-back so coverage stays
-/// continuous while the toggle is on.
+/// on-surface pill. Each chunk is sampled, symbolicated, and appended while
+/// the toggle is on.
 final class ProfileSessionRecorder: @unchecked Sendable {
   static let shared = ProfileSessionRecorder()
 
@@ -28,15 +32,17 @@ final class ProfileSessionRecorder: @unchecked Sendable {
     recording ? L10n.tr("Stop CPU Recording") : L10n.tr("Start CPU Recording")
   }
 
-  /// Each chunk is 500 samples at 10 ms (~5 s). The next chunk starts as soon
-  /// as the previous one finishes so there is no idle gap between chunks.
+  /// Each chunk is 500 samples at 10 ms (~5 s), then symbolicated and appended
+  /// before the next chunk starts.
   private static let chunkSamples = 500
-  private static let chunkInterval = "10 ms"
+  private static let chunkInterval = TimeAmount.milliseconds(10)
   private static let minimumExportBytes = 64
+  private static let profilerLogger = Logging.Logger(label: "laban.profile-session-recorder")
 
   private let lock = NSLock()
+  private let recordingQueue = DispatchQueue(label: "laban.cpu-profile-session", qos: .utility)
   private var recording = false
-  private var recordingTask: Task<Void, Never>?
+  private var recordingWorkItem: DispatchWorkItem?
   private var sessionFileURL: URL?
   private var chunkCount = 0
 
@@ -55,7 +61,9 @@ final class ProfileSessionRecorder: @unchecked Sendable {
   }
 
   func start() throws {
-    guard ProfileRecorderSettings.findProfilerSocket() != nil else {
+    guard ProfileRecorderSampler.isSupportedPlatform,
+      ProfileRecorderSettings.resolve().pattern != nil
+    else {
       throw ProfileSessionRecorderError.profilerNotRunning
     }
 
@@ -70,13 +78,15 @@ final class ProfileSessionRecorder: @unchecked Sendable {
     sessionFileURL = sessionURL
     chunkCount = 0
     recording = true
+    let workItem = DispatchWorkItem { [weak self] in
+      self?.recordingLoop()
+    }
+    recordingWorkItem = workItem
     lock.unlock()
 
     AppLog.app.info("CPU session recording started: \(sessionURL.path)")
 
-    recordingTask = Task.detached(priority: .utility) { [weak self] in
-      self?.recordingLoop()
-    }
+    recordingQueue.async(execute: workItem)
   }
 
   func stop() {
@@ -86,12 +96,12 @@ final class ProfileSessionRecorder: @unchecked Sendable {
       return
     }
     recording = false
-    let task = recordingTask
-    recordingTask = nil
+    let workItem = recordingWorkItem
+    recordingWorkItem = nil
     let path = sessionFileURL?.path ?? ""
     lock.unlock()
 
-    task?.cancel()
+    workItem?.cancel()
     AppLog.app.info("CPU session recording stopped: \(path)")
   }
 
@@ -114,7 +124,7 @@ final class ProfileSessionRecorder: @unchecked Sendable {
   }
 
   private func recordingLoop() {
-    while !Task.isCancelled {
+    while true {
       lock.lock()
       let active = recording
       let sessionURL = sessionFileURL
@@ -122,20 +132,84 @@ final class ProfileSessionRecorder: @unchecked Sendable {
       guard active, let sessionURL else { break }
 
       do {
-        let chunk = try ProfileCapture.sampleData(
-          samples: Self.chunkSamples,
-          interval: Self.chunkInterval)
+        let chunk = try captureChunk()
         guard !chunk.isEmpty else { continue }
         try appendChunk(chunk, to: sessionURL)
         lock.lock()
         chunkCount += 1
         lock.unlock()
       } catch {
-        if Task.isCancelled { break }
         AppLog.app.error("CPU session chunk failed: \(String(describing: error))")
         Thread.sleep(forTimeInterval: 1)
       }
     }
+    lock.lock()
+    if recordingWorkItem?.isCancelled == false {
+      recordingWorkItem = nil
+    }
+    lock.unlock()
+  }
+
+  private func captureChunk() throws -> Data {
+    let box = ChunkResultBox()
+    let semaphore = DispatchSemaphore(value: 0)
+    Task.detached(priority: .utility) {
+      do {
+        let data = try await Self.captureChunkAsync()
+        box.set(.success(data))
+      } catch {
+        box.set(.failure(error))
+      }
+      semaphore.signal()
+    }
+    semaphore.wait()
+    return try box.get().get()
+  }
+
+  private static func captureChunkAsync() async throws -> Data {
+    try await ProfileRecorderSampler.sharedInstance.withSymbolizedSamplesInPerfScriptFormat(
+      sampleCount: chunkSamples,
+      timeBetweenSamples: chunkInterval,
+      logger: profilerLogger
+    ) { path in
+      try demangleProfileFile(at: URL(fileURLWithPath: path))
+    }
+  }
+
+  private static func demangleProfileFile(at inputURL: URL) throws -> Data {
+    let outputURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-profile-session-\(UUID().uuidString).perf")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    defer { try? FileManager.default.removeItem(at: outputURL) }
+
+    let inputHandle = try FileHandle(forReadingFrom: inputURL)
+    let outputHandle = try FileHandle(forWritingTo: outputURL)
+    defer {
+      try? inputHandle.close()
+      try? outputHandle.close()
+    }
+
+    let demangle = Process()
+    demangle.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
+    demangle.arguments = ["demangle", "--compact"]
+    demangle.standardInput = inputHandle
+    demangle.standardOutput = outputHandle
+
+    let stderrPipe = Pipe()
+    demangle.standardError = stderrPipe
+
+    try demangle.run()
+    demangle.waitUntilExit()
+
+    guard demangle.terminationStatus == 0 else {
+      let detail = String(
+        data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      throw ProfileCaptureError.captureFailed(
+        detail?.isEmpty == false ? detail! : "swift demangle failed")
+    }
+    let demangledData = try Data(contentsOf: outputURL)
+    return demangledData.isEmpty ? try Data(contentsOf: inputURL) : demangledData
   }
 
   private func appendChunk(_ chunk: Data, to sessionURL: URL) throws {
@@ -151,5 +225,22 @@ final class ProfileSessionRecorder: @unchecked Sendable {
     guard let sessionFileURL else { return 0 }
     let attrs = try? FileManager.default.attributesOfItem(atPath: sessionFileURL.path)
     return attrs?[.size] as? Int ?? 0
+  }
+}
+
+private final class ChunkResultBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var result: Result<Data, Error>?
+
+  func set(_ result: Result<Data, Error>) {
+    lock.lock()
+    self.result = result
+    lock.unlock()
+  }
+
+  func get() -> Result<Data, Error> {
+    lock.lock()
+    defer { lock.unlock() }
+    return result ?? .failure(ProfileCaptureError.captureFailed("profile chunk did not finish"))
   }
 }

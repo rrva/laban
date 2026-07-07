@@ -4,6 +4,7 @@ import CoreText
 import LabanControl
 import LabanCore
 import LabanRenderer
+import ProfileRecorder
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
@@ -252,16 +253,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
       item.state = secureKeyboardEntryEnabled ? .on : .off
     }
     if item.action == #selector(captureProfile(_:)) {
+      guard !ProfileSessionRecorder.shared.isRecording else { return false }
       let capturing = windowController?.terminalView?.isProfileCaptureActive == true
-      return ProfileRecorderSettings.findProfilerSocket() != nil && !capturing
-        && !ProfileSessionRecorder.shared.isRecording
+      return !capturing && ProfileRecorderSettings.findProfilerSocket() != nil
     }
     if item.action == #selector(toggleProfileSessionRecording(_:)) {
       let recording = ProfileSessionRecorder.shared.isRecording
       item.title = ProfileSessionRecorder.menuTitle(recording: recording)
       item.state = recording ? .on : .off
       let captureActive = windowController?.terminalView?.isProfileCaptureActive == true
-      return recording || (ProfileRecorderSettings.findProfilerSocket() != nil && !captureActive)
+      return recording
+        || (ProfileRecorderSampler.isSupportedPlatform
+          && ProfileRecorderSettings.resolve().pattern != nil && !captureActive)
     }
     if item.action == #selector(exportProfileSession(_:)) {
       return ProfileSessionRecorder.shared.hasExportableData

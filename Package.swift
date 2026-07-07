@@ -81,7 +81,9 @@ let package = Package(
       name: "LabanApp",
       dependencies: [
         "LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore", "LabanControl",
+        .product(name: "ProfileRecorder", package: "swift-profile-recorder"),
         .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
+        .product(name: "_ProfileRecorderSampleConversion", package: "swift-profile-recorder"),
       ],
       resources: [
         .copy("Resources/AppIcon.icns"),
