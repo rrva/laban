@@ -5,6 +5,16 @@ import LabanCore
 import XCTest
 
 final class LabanControlServerTests: XCTestCase {
+  override func setUp() {
+    super.setUp()
+    LabanControlServer.skipExecutableVerificationForTests = true
+  }
+
+  override func tearDown() {
+    LabanControlServer.skipExecutableVerificationForTests = false
+    super.tearDown()
+  }
+
   func testGuardMatrix() {
     XCTAssertEqual(
       LabanControlServer.evaluateGuard(
@@ -498,12 +508,19 @@ final class LabanControlServerTests: XCTestCase {
   }
 
   func testAttachRedeemAllowsOnlyDirectShellChild() {
+    LabanControlServer.skipExecutableVerificationForTests = false
+    defer { LabanControlServer.skipExecutableVerificationForTests = true }
     let selfPID = ProcessInfo.processInfo.processIdentifier
     XCTAssertFalse(
       LabanControlServer.isAllowedAttachRedeemer(peerPID: selfPID, shellPID: selfPID))
-    XCTAssertTrue(
+    XCTAssertFalse(
       LabanControlServer.isAllowedAttachRedeemer(
         peerPID: selfPID, shellPID: getppid()))
+  }
+
+  func testLabanAgentExecutablePathIsRecognized() {
+    XCTAssertTrue(ControlProcessInfo.isLabanAgentExecutable("/Applications/Laban.app/Contents/MacOS/laban-agent"))
+    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/usr/bin/zsh"))
   }
 
   func testAppObserveQuerySetsReadRedaction() throws {
