@@ -45,20 +45,9 @@ public enum ControlUDSClient {
     path: String,
     token: String? = nil,
     body: Data? = nil,
-    timeout: TimeInterval = 5,
-    keepConnectionOpen: Bool = false
+    timeout: TimeInterval = 5
   ) throws -> (status: Int, body: Data) {
     let fd = try connect(socketPath: socketPath)
-    if keepConnectionOpen {
-      return try request(
-        fd: fd,
-        method: method,
-        path: path,
-        token: token,
-        body: body,
-        timeout: timeout,
-        keepConnectionOpen: true)
-    }
     defer { Darwin.close(fd) }
     return try request(
       fd: fd,
