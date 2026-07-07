@@ -125,6 +125,28 @@ final class LabanControlPolicyTests: XCTestCase {
     XCTAssertEqual(router.legacyQueries(), [LegacyDebugQueryInput(intentID: "clipboard.read")])
   }
 
+  func testSessionObserveTokenDeniesOtherSessionForPlainObserveTarget() throws {
+    let catalog = IntentCatalog.all
+    let granted = LabanControlPolicy.grants(for: .sessionObserve(sessionID: "own"))
+    let scope = LabanControlPolicy.tokenScope(for: .sessionObserve(sessionID: "own"))
+
+    XCTAssertFalse(
+      LabanControlPolicy.authorize(
+        intentID: "scrollIndicator.state",
+        catalog: catalog,
+        granted: granted,
+        targetSession: "other",
+        tokenScope: scope))
+
+    XCTAssertTrue(
+      LabanControlPolicy.authorize(
+        intentID: "scrollIndicator.state",
+        catalog: catalog,
+        granted: granted,
+        targetSession: nil,
+        tokenScope: scope))
+  }
+
   func testPolicyGrantsMatchCatalogTiers() {
     XCTAssertEqual(LabanControlPolicy.grants(for: .appObserve), [.observe])
     XCTAssertEqual(

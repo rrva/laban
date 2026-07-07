@@ -13,10 +13,6 @@ public enum ControlTokenTier: Sendable, Equatable {
 }
 
 public struct LabanControlPolicy: Sendable {
-  private static let sessionScopedCapabilities: Set<Capability> = [
-    .observeSensitive, .navigate, .propose,
-  ]
-
   public static func grants(for tier: ControlTokenTier) -> Set<Capability> {
     switch tier {
     case .appObserve:
@@ -50,9 +46,6 @@ public struct LabanControlPolicy: Sendable {
     let required = descriptor.requiredCapability
     guard granted.contains(required) else {
       return false
-    }
-    guard sessionScopedCapabilities.contains(required) else {
-      return true
     }
 
     switch tokenScope {
