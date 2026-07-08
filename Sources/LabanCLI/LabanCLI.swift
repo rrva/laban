@@ -22,7 +22,7 @@ typealias AgentProxyRequest = (
   _ envelope: AgentProxyEnvelope
 ) throws -> (status: Int, body: String)
 
-typealias LazyAttachRequest = (
+typealias LazyAttachRequestHandler = (
   _ cliCommand: String,
   _ method: String,
   _ path: String,
@@ -36,7 +36,7 @@ enum LabanCLI {
     controlDirectory: URL? = nil,
     request: @escaping LabanCLIRequest = liveRequest,
     agentProxyRequest: @escaping AgentProxyRequest = liveAgentProxyRequest,
-    lazyAttachRequest: @escaping LazyAttachRequest = LazyAttachClient.perform,
+    lazyAttachRequest: @escaping LazyAttachRequestHandler = LazyAttachClient.perform,
     agentProxyURL: String? = nil,
     executablePath: @escaping () -> String = liveExecutablePath
   ) -> LabanCLIResult {
@@ -102,7 +102,7 @@ enum LabanCLI {
     controlDirectory: URL?,
     request: LabanCLIRequest,
     agentProxyRequest: AgentProxyRequest,
-    lazyAttachRequest: LazyAttachRequest,
+    lazyAttachRequest: LazyAttachRequestHandler,
     agentProxyURL: String?,
     executablePath: () -> String
   ) throws -> LabanCLIResult {
@@ -321,7 +321,7 @@ enum LabanCLI {
 
   private static func performSessionRequest(
     agentProxyRequest: AgentProxyRequest,
-    lazyAttachRequest: LazyAttachRequest,
+    lazyAttachRequest: LazyAttachRequestHandler,
     agentProxyURL: String?,
     cliCommand: String,
     method: String,
