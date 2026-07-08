@@ -102,7 +102,8 @@ enum LazyAttachClient {
       throw LazyAttachClientError.denied(message)
     }
 
-    guard let response = try? JSONDecoder().decode(LazyAttachResponse.self, from: responseData) else {
+    guard let response = try? JSONDecoder().decode(LazyAttachResponse.self, from: responseData)
+    else {
       throw LazyAttachClientError.malformedResponse
     }
     return (response.downstreamStatus, response.downstreamBody)

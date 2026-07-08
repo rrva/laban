@@ -13,7 +13,8 @@ final class ControlAttachPrincipalTests: XCTestCase {
       identity(100, path: "/bin/zsh"),
     ])
     let principal = chain.principal
-    XCTAssertEqual(principal?.identity.executablePath, "/Applications/Codex.app/Contents/MacOS/Codex")
+    XCTAssertEqual(
+      principal?.identity.executablePath, "/Applications/Codex.app/Contents/MacOS/Codex")
     XCTAssertEqual(principal?.isGenericInterpreter, false)
     XCTAssertEqual(principal?.isPersistable, false)
     XCTAssertEqual(chain.helperChainSummary, "zsh -> Codex -> node -> laban")
@@ -51,7 +52,8 @@ final class ControlAttachPrincipalTests: XCTestCase {
     let identity = identity(
       100,
       path: "/Applications/Codex.app/Contents/MacOS/Codex",
-      signing: ControlCodeSigningIdentity(designatedRequirement: "anchor", isAdHocOrUnsigned: false))
+      signing: ControlCodeSigningIdentity(designatedRequirement: "anchor", isAdHocOrUnsigned: false)
+    )
     XCTAssertTrue(ControlAttachPrincipal.isPersistable(identity))
   }
 

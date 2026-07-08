@@ -68,7 +68,10 @@ final class ControlSecurityAuditTests: XCTestCase {
     let observer = SpySecurityObserver()
     let router = AuditSpyRouter()
     let tree = FakeAuditProcessTreeInspector(tree: [
-      100: (parent: 50, identity: makeIdentity(100, path: "/Applications/Laban.app/Contents/MacOS/laban")),
+      100: (
+        parent: 50,
+        identity: makeIdentity(100, path: "/Applications/Laban.app/Contents/MacOS/laban")
+      ),
       50: (parent: 1, identity: makeIdentity(50, path: "/bin/zsh")),
     ])
     let server = LabanControlServer(
@@ -155,11 +158,21 @@ private final class SpySecurityObserver: ControlSecurityObserver {
   func didPrivilegedActivity(_ context: ControlSecurityContext) {}
   func didAttachAuthorize(_ context: ControlSecurityContext) {}
 
-  func didAttachRequest(_ context: ControlSecurityContext) { append("control.attach.requested", context) }
-  func didAttachApprove(_ context: ControlSecurityContext, mode: String) { append("control.attach.approved", context) }
-  func didAttachDeny(_ context: ControlSecurityContext, reason: ControlSecurityDenyReason) { append("control.attach.denied", context) }
-  func didAttachRevoke(_ context: ControlSecurityContext) { append("control.attach.revoked", context) }
-  func didAttachAutoApprove(_ context: ControlSecurityContext, approvalID: String) { append("control.attach.autoApproved", context) }
+  func didAttachRequest(_ context: ControlSecurityContext) {
+    append("control.attach.requested", context)
+  }
+  func didAttachApprove(_ context: ControlSecurityContext, mode: String) {
+    append("control.attach.approved", context)
+  }
+  func didAttachDeny(_ context: ControlSecurityContext, reason: ControlSecurityDenyReason) {
+    append("control.attach.denied", context)
+  }
+  func didAttachRevoke(_ context: ControlSecurityContext) {
+    append("control.attach.revoked", context)
+  }
+  func didAttachAutoApprove(_ context: ControlSecurityContext, approvalID: String) {
+    append("control.attach.autoApproved", context)
+  }
 
   private func append(_ name: String, _ context: ControlSecurityContext) {
     lock.lock()
@@ -190,7 +203,9 @@ private final class FakeAuditApprovalDelegate: ControlAttachApprovalDelegate {
 private struct FakeAuditProcessTreeInspector: ControlProcessTreeInspecting {
   let tree: [pid_t: (parent: pid_t?, identity: ControlProcessIdentity)]
   func parentPID(of pid: pid_t) -> pid_t? { tree[pid]?.parent }
-  func identity(for pid: pid_t) -> ControlProcessIdentity { tree[pid]?.identity ?? makeIdentity(pid) }
+  func identity(for pid: pid_t) -> ControlProcessIdentity {
+    tree[pid]?.identity ?? makeIdentity(pid)
+  }
 
   private func makeIdentity(_ pid: pid_t) -> ControlProcessIdentity {
     ControlProcessIdentity(pid: pid, uid: getuid())
@@ -198,8 +213,12 @@ private struct FakeAuditProcessTreeInspector: ControlProcessTreeInspecting {
 }
 
 private struct FakeAuditCodeSigningInspector: ControlCodeSigningInspecting {
-  func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity? { nil }
-  func validatesLivePID(_ pid: pid_t, startTime: Date, against requirement: String) -> Bool { false }
+  func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity? {
+    nil
+  }
+  func validatesLivePID(_ pid: pid_t, startTime: Date, against requirement: String) -> Bool {
+    false
+  }
 }
 
 private final class AuditSpyRouter: IntentRouter {

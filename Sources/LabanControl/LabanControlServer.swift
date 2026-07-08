@@ -218,7 +218,9 @@ public final class LabanControlServer {
   }
 
   public func canLazyAttachDescendant(sessionID: String, peerPID: pid_t) -> Bool {
-    guard let shellSession = resolveUniqueShellSessionAncestor(peerPID: peerPID) else { return false }
+    guard let shellSession = resolveUniqueShellSessionAncestor(peerPID: peerPID) else {
+      return false
+    }
     guard shellSession.sessionID == sessionID else { return false }
     return resolveAttachProcessChain(peerPID: peerPID, shellPID: shellSession.shellPID) != nil
   }
@@ -1213,9 +1215,10 @@ public final class LabanControlServer {
 
     let (sessionID, shellIdentity) = shellSession
 
-    guard let chain = resolveAttachProcessChain(
-      peerPID: peerPID,
-      shellPID: shellIdentity.shellPID)
+    guard
+      let chain = resolveAttachProcessChain(
+        peerPID: peerPID,
+        shellPID: shellIdentity.shellPID)
     else {
       reportLazyAttachDeny(sessionID: sessionID, reason: "notDescendantOfRegisteredSession")
       return .error(403, "notDescendantOfRegisteredSession")
@@ -1240,12 +1243,16 @@ public final class LabanControlServer {
     let principalWithSigning = ControlAttachPrincipal(
       identity: identityWithSigning,
       isGenericInterpreter: principal.isGenericInterpreter,
-      isPersistable: principal.isPersistable && ControlAttachPrincipal.isPersistable(identityWithSigning),
+      isPersistable: principal.isPersistable
+        && ControlAttachPrincipal.isPersistable(identityWithSigning),
       helperChain: principal.helperChain)
 
-    let allowlistEntry = ControlLazyAttachAllowlist.entry(cliCommand: cliCommand)
+    let allowlistEntry =
+      ControlLazyAttachAllowlist.entry(cliCommand: cliCommand)
       ?? ControlLazyAttachAllowlist.entry(method: method, path: path, intentID: "")
-    let (resolvedRouteID, resolvedIntentID, resolvedCapability, resolvedSensitivity, resolvedSideEffect) = resolveRouteAndIntent(
+    let (
+      resolvedRouteID, resolvedIntentID, resolvedCapability, resolvedSensitivity, resolvedSideEffect
+    ) = resolveRouteAndIntent(
       method: method,
       path: path,
       query: parseQueryString(queryString),
@@ -1255,17 +1262,21 @@ public final class LabanControlServer {
       let resolvedIntentID = resolvedIntentID,
       let resolvedCapability = resolvedCapability,
       let resolvedSensitivity = resolvedSensitivity,
-      ControlLazyAttachAllowlist.isAllowlisted(method: method, path: path, intentID: resolvedIntentID)
+      ControlLazyAttachAllowlist.isAllowlisted(
+        method: method, path: path, intentID: resolvedIntentID)
     else {
       reportLazyAttachDeny(sessionID: sessionID, reason: "lazyRouteNotAllowed")
       return .error(403, "lazyRouteNotAllowed")
     }
 
-    let rawSessionRequest = method == "POST" && path == "/debug/actions"
+    let rawSessionRequest =
+      method == "POST" && path == "/debug/actions"
       && cliCommand == "session.request"
-    let allowlistMatch = ControlLazyAttachAllowlist.entry(method: method, path: path, intentID: resolvedIntentID)
+    let allowlistMatch = ControlLazyAttachAllowlist.entry(
+      method: method, path: path, intentID: resolvedIntentID)
     let isPersistableOperation = allowlistMatch?.persistable == true
-    let canPersist = principalWithSigning.isPersistable && isPersistableOperation && !rawSessionRequest
+    let canPersist =
+      principalWithSigning.isPersistable && isPersistableOperation && !rawSessionRequest
 
     guard let descriptor = catalog.descriptor(id: resolvedIntentID) else {
       return .error(404, "not found")
@@ -1323,7 +1334,8 @@ public final class LabanControlServer {
       tokenLock.lock()
       tokens[approvedToken] = approvedTier
       tokenLock.unlock()
-      reportLazyAttachAutoApproved(sessionID: sessionID, approvalID: matchingRecord.id, intentID: resolvedIntentID)
+      reportLazyAttachAutoApproved(
+        sessionID: sessionID, approvalID: matchingRecord.id, intentID: resolvedIntentID)
       let downstream = route(
         method: method,
         path: path,
@@ -1341,7 +1353,9 @@ public final class LabanControlServer {
     }
 
     lazyAttachLock.lock()
-    let existingKey = pendingLazyAttachRequests.first { $0.value.peerPID == peerPID && $0.value.resolvedIntentID == resolvedIntentID }?.key
+    let existingKey = pendingLazyAttachRequests.first {
+      $0.value.peerPID == peerPID && $0.value.resolvedIntentID == resolvedIntentID
+    }?.key
     if existingKey != nil {
       lazyAttachLock.unlock()
       reportLazyAttachDeny(sessionID: sessionID, reason: "approvalRateLimited")
@@ -1439,7 +1453,9 @@ public final class LabanControlServer {
     tokenLock.lock()
     tokens[approvedToken] = approvedTier
     tokenLock.unlock()
-    reportLazyAttachApproved(sessionID: sessionID, approvalID: approvalID, intentID: resolvedIntentID, mode: effectiveDecision == .alwaysAllowSignedIdentity ? "always" : "once")
+    reportLazyAttachApproved(
+      sessionID: sessionID, approvalID: approvalID, intentID: resolvedIntentID,
+      mode: effectiveDecision == .alwaysAllowSignedIdentity ? "always" : "once")
     let downstream = route(
       method: method,
       path: path,
@@ -1585,7 +1601,8 @@ public final class LabanControlServer {
       "downstreamStatus": downstream.status,
       "downstreamBody": bodyString,
     ]
-    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    else {
       return .error(500, "internal error")
     }
     return ControlResponse(

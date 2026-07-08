@@ -133,7 +133,9 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
       allowedSideEffectClasses: allowedSideEffectClasses)
   }
 
-  private func makePrincipal(path: String = "/Applications/Codex.app/Contents/MacOS/Codex") -> ControlAttachPrincipal {
+  private func makePrincipal(path: String = "/Applications/Codex.app/Contents/MacOS/Codex")
+    -> ControlAttachPrincipal
+  {
     ControlAttachPrincipal(
       identity: ControlProcessIdentity(
         pid: 100,

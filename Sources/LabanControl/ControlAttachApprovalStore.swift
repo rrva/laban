@@ -75,7 +75,8 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
       guard capabilities.isSubset(of: recordCapabilities) else { continue }
       guard record.allowedSideEffectClasses.contains(sideEffectClass) else { continue }
       guard dataSensitivity.compareSensitivity(to: record.maxDataSensitivity) else { continue }
-      guard recordMatchesPrincipal(record, principal: principal, signingInspector: signingInspector) else { continue }
+      guard recordMatchesPrincipal(record, principal: principal, signingInspector: signingInspector)
+      else { continue }
       return record
     }
     return nil

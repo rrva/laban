@@ -22,17 +22,18 @@ final class LazyAttachCLITests: XCTestCase {
 
   func testBrokerMissingFallsBackToLazyAttach() {
     var lazyCalled = false
-    let lazyAttachRequest: (String, String, String, [String: String], String?) throws -> (Int, String) = {
-      cliCommand, method, path, _, _ in
-      lazyCalled = true
-      XCTAssertEqual(cliCommand, "session.state")
-      XCTAssertEqual(method, "GET")
-      XCTAssertEqual(path, "/debug/state")
-      return (
-        200,
-        "{\"ok\":true,\"sessionID\":\"s1\",\"approval\":\"once\",\"downstreamStatus\":200,\"downstreamBody\":\"{\\\"ok\\\":true}\"}"
-      )
-    }
+    let lazyAttachRequest:
+      (String, String, String, [String: String], String?) throws -> (Int, String) = {
+        cliCommand, method, path, _, _ in
+        lazyCalled = true
+        XCTAssertEqual(cliCommand, "session.state")
+        XCTAssertEqual(method, "GET")
+        XCTAssertEqual(path, "/debug/state")
+        return (
+          200,
+          "{\"ok\":true,\"sessionID\":\"s1\",\"approval\":\"once\",\"downstreamStatus\":200,\"downstreamBody\":\"{\\\"ok\\\":true}\"}"
+        )
+      }
     let result = LabanCLI.run(
       command: .sessionState(json: true),
       lazyAttachRequest: lazyAttachRequest)
@@ -48,10 +49,11 @@ final class LazyAttachCLITests: XCTestCase {
   }
 
   func testDenialMapsToExitCode5() {
-    let lazyAttachRequest: (String, String, String, [String: String], String?) throws -> (Int, String) = {
-      _, _, _, _, _ in
-      throw LazyAttachClientError.denied("user denied")
-    }
+    let lazyAttachRequest:
+      (String, String, String, [String: String], String?) throws -> (Int, String) = {
+        _, _, _, _, _ in
+        throw LazyAttachClientError.denied("user denied")
+      }
     let result = LabanCLI.run(
       command: .sessionState(json: true),
       lazyAttachRequest: lazyAttachRequest)
@@ -59,10 +61,11 @@ final class LazyAttachCLITests: XCTestCase {
   }
 
   func testTimeoutMapsToExitCode4() {
-    let lazyAttachRequest: (String, String, String, [String: String], String?) throws -> (Int, String) = {
-      _, _, _, _, _ in
-      throw LazyAttachClientError.timeout("approval timed out")
-    }
+    let lazyAttachRequest:
+      (String, String, String, [String: String], String?) throws -> (Int, String) = {
+        _, _, _, _, _ in
+        throw LazyAttachClientError.timeout("approval timed out")
+      }
     let result = LabanCLI.run(
       command: .sessionState(json: true),
       lazyAttachRequest: lazyAttachRequest)
@@ -70,10 +73,14 @@ final class LazyAttachCLITests: XCTestCase {
   }
 
   func testSessionCommandsIgnoreLABANSessionAttach() {
-    let lazyAttachRequest: (String, String, String, [String: String], String?) throws -> (Int, String) = {
-      _, _, _, _, _ in
-      return (200, "{\"ok\":true,\"sessionID\":\"s1\",\"approval\":\"once\",\"downstreamStatus\":200,\"downstreamBody\":\"{}\"}")
-    }
+    let lazyAttachRequest:
+      (String, String, String, [String: String], String?) throws -> (Int, String) = {
+        _, _, _, _, _ in
+        return (
+          200,
+          "{\"ok\":true,\"sessionID\":\"s1\",\"approval\":\"once\",\"downstreamStatus\":200,\"downstreamBody\":\"{}\"}"
+        )
+      }
     setenv("LABAN_SESSION_ATTACH", "bootstrap-secret", 1)
     defer { unsetenv("LABAN_SESSION_ATTACH") }
     let result = LabanCLI.run(
@@ -85,10 +92,11 @@ final class LazyAttachCLITests: XCTestCase {
   }
 
   func testNoTokenInStderr() {
-    let lazyAttachRequest: (String, String, String, [String: String], String?) throws -> (Int, String) = {
-      _, _, _, _, _ in
-      throw LazyAttachClientError.denied("denied")
-    }
+    let lazyAttachRequest:
+      (String, String, String, [String: String], String?) throws -> (Int, String) = {
+        _, _, _, _, _ in
+        throw LazyAttachClientError.denied("denied")
+      }
     setenv("LABAN_SESSION_ATTACH", "secret-token", 1)
     defer { unsetenv("LABAN_SESSION_ATTACH") }
     let result = LabanCLI.run(

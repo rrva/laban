@@ -21,7 +21,9 @@ final class ControlAttachAncestryTests: XCTestCase {
     let inspector = FakeProcessTreeInspector(tree: [
       400: (parent: 300, identity: identity(400, path: "/usr/local/bin/laban")),
       300: (parent: 200, identity: identity(300, path: "/usr/local/bin/node")),
-      200: (parent: 100, identity: identity(200, path: "/Applications/Codex.app/Contents/MacOS/Codex")),
+      200: (
+        parent: 100, identity: identity(200, path: "/Applications/Codex.app/Contents/MacOS/Codex")
+      ),
       100: (parent: 50, identity: identity(100, path: "/bin/zsh")),
       50: (parent: 1, identity: identity(50, path: "/bin/zsh")),
     ])
@@ -34,7 +36,7 @@ final class ControlAttachAncestryTests: XCTestCase {
 
   func testNonDescendantIsRejected() {
     let inspector = FakeProcessTreeInspector(tree: [
-      1000: (parent: 1, identity: identity(1000, path: "/usr/local/bin/laban")),
+      1000: (parent: 1, identity: identity(1000, path: "/usr/local/bin/laban"))
     ])
     let server = makeServer(inspector: inspector)
     server.registerAttachShellPID(sessionID: "s1", shellPID: 50)
@@ -45,7 +47,7 @@ final class ControlAttachAncestryTests: XCTestCase {
 
   func testAmbiguousDescendantOfTwoSessionsIsRejected() {
     let inspector = FakeProcessTreeInspector(tree: [
-      100: (parent: 50, identity: identity(100, path: "/bin/zsh")),
+      100: (parent: 50, identity: identity(100, path: "/bin/zsh"))
     ])
     let server = makeServer(inspector: inspector)
     server.registerAttachShellPID(sessionID: "s1", shellPID: 50)

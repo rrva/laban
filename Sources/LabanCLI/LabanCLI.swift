@@ -481,7 +481,8 @@ extension LabanCLIError: CustomStringConvertible {
     case .agentControlUnavailable:
       return "LABAN_AGENT_CONTROL_URL is not set; try `laban agent run -- <command>`"
     case .sessionProxyRequiresBroker:
-      return "session proxy requires broker mode; restart the agent with `laban agent run -- <agent>` for long-lived session control."
+      return
+        "session proxy requires broker mode; restart the agent with `laban agent run -- <agent>` for long-lived session control."
     }
   }
 }
