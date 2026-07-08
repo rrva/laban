@@ -53,8 +53,21 @@ helper source.
 - [x] (2026-07-07) Folded in final review hardening: child agents must not
   inherit the held C14 upstream fd or proxy fds, the proxy has resource caps for
   buggy descendants, and broker/child shutdown has a concrete default policy.
-- [ ] Milestone 1: Add shared app-observe discovery parsing and a `laban` CLI
+- [x] Milestone 1: Add shared app-observe discovery parsing and a `laban` CLI
   product for app-observe reads.
+  - [x] `Sources/LabanControl/ControlDiscovery.swift` with secure open-then-`fstat`
+    parsing, symlink/permission/size validation, trusted socket-path checks, and
+    redacted output.
+  - [x] `laban` executable product and `LabanCLI` target in `Package.swift`.
+  - [x] App-observe commands: `discover`, `status`, `health`, `capabilities`,
+    `request`, `completions`, and `install-cli`.
+  - [x] `scripts/build-app` builds, copies, strips, scrubs, and signs `laban`
+    alongside the other bundled executables.
+  - [x] `Tests/LabanControlTests/ControlDiscoveryTests.swift` and
+    `Tests/LabanCLITests/LabanCLITests.swift` pass.
+  - [ ] Installed-shim E2E (`laban agent run` direct-child shim acceptance)
+    deferred to Milestone 2 because it requires the `laban agent run` broker/
+    `execve` launcher and cannot be validated without Milestone 2.
 - [ ] Milestone 2: Extend `laban-agent --control-attach` with a private
   session proxy and add `laban agent run -- <command>` as an `execve` launcher.
 - [ ] Milestone 2b: Add session CLI commands (`laban session ...`, `laban

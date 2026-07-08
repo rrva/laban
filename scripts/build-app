@@ -68,7 +68,7 @@ prefix_map_flags=" \
 # the bin-path existence check below with a confusing "produced no
 # binary" message. Three separate invocations share the incremental
 # cache, so the only cost is running the planner three times.
-for product in LabanApp laban-agent laband labpty; do
+for product in LabanApp laban-agent laband labpty laban; do
   # shellcheck disable=SC2086
   swift build -c "$build_config" --product "$product" $prefix_map_flags
 done
@@ -90,7 +90,7 @@ bin=$(swift build -c "$build_config" --product LabanApp --show-bin-path $prefix_
 # `terminalBackendMenu` because the cache held a pre-refactor signature
 # and `swift build` linked from cache without recompiling MenuCommands.
 missing=""
-for product in LabanApp laban-agent laband labpty; do
+for product in LabanApp laban-agent laband labpty laban; do
   if [ ! -x "$bin/$product" ]; then
     missing="${missing} $bin/$product"
   fi
@@ -106,11 +106,12 @@ cp -f "$bin/LabanApp" "${bundle_dir}/MacOS/LabanApp"
 cp -f "$bin/laban-agent" "${bundle_dir}/MacOS/laban-agent"
 cp -f "$bin/laband" "${bundle_dir}/MacOS/laband"
 cp -f "$bin/labpty" "${bundle_dir}/MacOS/labpty"
+cp -f "$bin/laban" "${bundle_dir}/MacOS/laban"
 
 # Post-cp sanity: the destinations must be present, non-empty, and
 # executable. Catches a stale or zero-byte source the existence check
 # above couldn't, and any cp that silently no-ops.
-for product in LabanApp laban-agent laband labpty; do
+for product in LabanApp laban-agent laband labpty laban; do
   dest="${bundle_dir}/MacOS/${product}"
   if [ ! -s "$dest" ] || [ ! -x "$dest" ]; then
     printf 'build-app failed: %s missing, empty, or non-executable\n' \
@@ -222,6 +223,7 @@ else
   strip -S "${bundle_dir}/MacOS/laban-agent"
   strip -S "${bundle_dir}/MacOS/laband"
   strip -S "${bundle_dir}/MacOS/labpty"
+  strip -S "${bundle_dir}/MacOS/laban"
 fi
 
 # SwiftPM's auto-generated `Bundle.module` accessors and native dependencies can
@@ -230,7 +232,7 @@ fi
 # NULs before signing. Skipped for --profile builds because the same scrub
 # zeroes N_OSO debug-map paths that Instruments needs.
 if [ "$profile_build" = 0 ]; then
-python3 - "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laban-agent" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty" <<'PY'
+python3 - "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laban-agent" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty" "${bundle_dir}/MacOS/laban" <<'PY'
 import re, sys
 patterns = [
     re.compile(rb"/Users/[^\x00]*"),
@@ -251,7 +253,7 @@ PY
 # directory or a hard-coded developer identity. New regressions get
 # caught here before the bundle is signed or zipped.
 verify_clean() {
-  for bin_path in "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laban-agent" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty"; do
+  for bin_path in "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laban-agent" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty" "${bundle_dir}/MacOS/laban"; do
     matches=$(LC_ALL=C strings -a "$bin_path" |
       grep -E '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' || true)
     if [ -n "$matches" ]; then
@@ -281,6 +283,7 @@ elif [ -n "${LABAN_CODESIGN_IDENTITY:-}" ]; then
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laban-agent"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laband"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/labpty"
+  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laban"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/LabanApp"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "$app_bundle"
   verify_signature
@@ -289,6 +292,7 @@ else
   codesign --force --sign - "${bundle_dir}/MacOS/laban-agent"
   codesign --force --sign - "${bundle_dir}/MacOS/laband"
   codesign --force --sign - "${bundle_dir}/MacOS/labpty"
+  codesign --force --sign - "${bundle_dir}/MacOS/laban"
   codesign --force --sign - "${bundle_dir}/MacOS/LabanApp"
   codesign --force --sign - "$app_bundle"
   verify_signature
