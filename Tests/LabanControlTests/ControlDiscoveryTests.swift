@@ -212,7 +212,9 @@ final class ControlDiscoveryTests: XCTestCase {
     let file = dir.appendingPathComponent("control.json")
     try writeRawControlFile(
       at: file,
-      payload: ["url": dir.appendingPathComponent("control.sock").path, "pid": 1234, "runId": "run-1"])
+      payload: [
+        "url": dir.appendingPathComponent("control.sock").path, "pid": 1234, "runId": "run-1",
+      ])
 
     XCTAssertThrowsError(
       try ControlDiscovery.read(fileURL: file, controlDirectory: dir)
@@ -227,7 +229,9 @@ final class ControlDiscoveryTests: XCTestCase {
     let file = dir.appendingPathComponent("control.json")
     try writeRawControlFile(
       at: file,
-      payload: ["url": dir.appendingPathComponent("control.sock").path, "token": sentinel, "pid": 1234])
+      payload: [
+        "url": dir.appendingPathComponent("control.sock").path, "token": sentinel, "pid": 1234,
+      ])
 
     XCTAssertThrowsError(
       try ControlDiscovery.read(fileURL: file, controlDirectory: dir)
@@ -242,7 +246,9 @@ final class ControlDiscoveryTests: XCTestCase {
     let file = dir.appendingPathComponent("control.json")
     try writeRawControlFile(
       at: file,
-      payload: ["url": dir.appendingPathComponent("control.sock").path, "token": sentinel, "runId": "run-1"])
+      payload: [
+        "url": dir.appendingPathComponent("control.sock").path, "token": sentinel, "runId": "run-1",
+      ])
 
     XCTAssertThrowsError(
       try ControlDiscovery.read(fileURL: file, controlDirectory: dir)

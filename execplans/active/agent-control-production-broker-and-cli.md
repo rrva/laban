@@ -68,10 +68,66 @@ helper source.
   - [ ] Installed-shim E2E (`laban agent run` direct-child shim acceptance)
     deferred to Milestone 2 because it requires the `laban agent run` broker/
     `execve` launcher and cannot be validated without Milestone 2.
-- [ ] Milestone 2: Extend `laban-agent --control-attach` with a private
+- [x] Milestone 2: Extend `laban-agent --control-attach` with a private
   session proxy and add `laban agent run -- <command>` as an `execve` launcher.
-- [ ] Milestone 2b: Add session CLI commands (`laban session ...`, `laban
+  - [x] `ControlEnvironmentKeys.agentControlURL = "LABAN_AGENT_CONTROL_URL"` in
+    `Sources/LabanCore/Control/SessionLaunchContext.swift`.
+  - [x] `Sources/LabanAgent/ControlAttachProxyServer.swift`: private UDS proxy
+    with `0700` temp directory, close-on-exec listener/accepted/upstream fds,
+    `SO_NOSIGPIPE` on sent sockets, same-uid peer check, optional
+    descendant-of-child check, bounded JSONL line/body size, concurrent client
+    limit, queue depth limit, idle timeout, structured 4xx errors for
+    oversized/idle/malformed/busy conditions, multiple JSONL requests per
+    accepted client, serialized forwarding over the single held C14 upstream,
+    and periodic heartbeat.
+  - [x] `laban-agent --control-attach-serve-cli` and
+    `--control-attach-run -- COMMAND [ARG ...]` flags; raw `--control-attach`
+    JSONL stdin/stdout mode unchanged when new flags are absent.
+  - [x] `laban agent run -- <command>` process-replaces into the sibling
+    `laban-agent` resolved from the realpath of the running `laban` executable.
+  - [x] Child launch uses `posix_spawnp` so command names like `env`/`git`
+    resolve through `$PATH`; sets `LABAN_AGENT_CONTROL_URL`, preserves
+    `LABAN_CONTROL_URL`, removes `LABAN_SESSION_ATTACH` and
+    `LABAN_CONTROL_ATTACH_ENV`, preserves stdio, exits with child status,
+    cleans up the proxy socket directory, and waits robustly against `EINTR`.
+  - [x] `SIGINT` forwarded to the child; `SIGTERM`/`SIGHUP` trigger graceful
+    child termination with a bounded grace period before `SIGKILL`; signal
+    dispatch sources are retained for the lifetime of the broker/child.
+  - [x] `Tests/LabanAgentTests/ControlAttachProxyServerTests.swift` covers
+    proxy directory permissions, listener/accepted close-on-exec, request
+    forwarding, process-tree rejection, descendant checks, multiple JSONL
+    requests on one connection, structured errors for oversized
+    lines/bodies/malformed JSON/too-many-clients/idle-clients/full-queues,
+    upstream survival after client errors, heartbeat over the held C14 fd,
+    and that the launched child does not inherit the held upstream fd or the
+    proxy listener fd.
+  - [x] `Tests/LabanAgentTests/ChildLauncherTests.swift` covers the testable
+    child environment/argv builder, `$PATH` lookup, environment stripping,
+    and wait-status decoding (normal exit, signal death, waitpid failure).
+  - [ ] Full installed-E2E verification of child stdio preservation, socket
+    cleanup, and `SIGINT`/`SIGTERM`/`SIGHUP` behavior is deferred to
+    Milestone 5.
+- [x] Milestone 2b: Add session CLI commands (`laban session ...`, `laban
   propose ...`) that use `LABAN_AGENT_CONTROL_URL` and never redeem C14 directly.
+  - [x] `Sources/LabanCLI/AgentLauncher.swift`: `execve` into the sibling
+    `laban-agent`; preflight checks `LABAN_CONTROL_URL` and `LABAN_SESSION_ATTACH`
+    without printing their values.
+  - [x] `Sources/LabanCLI/AgentProxyClient.swift`: JSONL UDS client for the agent
+    proxy, plus request builders for `session state`, `session scroll`, and
+    `propose`.
+  - [x] `laban session state --json`, `laban session request ...`,
+    `laban session scroll --rows N --json`, `laban session proxy`, and
+    `laban propose --purpose TEXT -- COMMAND ...` commands; arguments after
+    the `--` separator are preserved exactly for `agent run` and `propose`.
+  - [x] Session commands fail early when `LABAN_AGENT_CONTROL_URL` is missing and
+    suggest `laban agent run -- <command>`.
+  - [x] `propose` joins multiple argv pieces with POSIX single-quote escaping and
+    never writes PTY bytes.
+  - [x] `Tests/LabanCLITests/AgentLauncherTests.swift`,
+    `Tests/LabanCLITests/AgentProxyClientTests.swift`, and extended
+    `Tests/LabanCLITests/LabanCLITests.swift` cover parsing, sibling resolution,
+    missing-env behavior, proxy request routing, and separator-preservation
+    tests for `agent run` and `propose`.
 - [ ] Milestone 2c: Add production-grade inventory, terminal text capture,
   streaming/wait commands, agent hooks, exit codes, completions, and install
   shims so the CLI is useful beyond raw state/proposal smoke tests.
@@ -1119,3 +1175,24 @@ bundled app because `ControlProcessInfo.isLabanAgentExecutable` compares the pee
 path to the bundled helper path, and `LabanControlServer.isAllowedAttachRedeemer`
 also requires the peer process parent PID to equal the registered session shell
 PID.
+
+Review-fix pass (2026-07-08): the first implementation used `Process` for the
+child (no `$PATH` lookup), leaked signal dispatch sources, closed accepted clients
+after one request, returned `nil` for oversized/idle clients, and stripped global
+flags after the `agent run`/`propose` `--` separator. Fixes applied:
+`ChildLauncher` now uses `posix_spawnp` with `POSIX_SPAWN_CLOEXEC_DEFAULT` and a
+new process group, plus a testable env/argv builder; signal sources are retained;
+the proxy buffers per-client read leftovers, serves multiple JSONL requests per
+connection, returns structured 4xx errors, tracks active clients exactly, sets
+`SO_NOSIGPIPE` on sent sockets, and accepts injectable `ProxyLimits` for tests;
+`LabanArgumentParser` preserves post-separator arguments; `waitpid` retries on
+`EINTR` and a pure `ChildLauncher.exitStatus(waitResult:status:)` helper makes
+wait failure explicit. New tests cover accepted-fd close-on-exec, child fd
+inheritance, too-many-clients/idle/full-queue errors, heartbeat over the held
+C14 fd, and wait-status decoding.
+
+Formatting: an earlier `swift format --recursive Sources Tests` pass changed
+line-wrapping in files outside this feature (e.g. `Sources/LabanApp/Control/LiveIntentRouter.swift`,
+`Sources/LabanControl/*.swift`, `Sources/LabanCore/Control/Projections/*.swift`,
+and a few test files). Those changes are kept because `./scripts/lint` requires
+them; they are purely stylistic and do not change behavior.

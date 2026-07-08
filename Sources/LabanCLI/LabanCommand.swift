@@ -8,6 +8,12 @@ enum LabanCommand: Equatable {
   case request(method: String, path: String, body: String?, json: Bool)
   case completions(shell: String)
   case installCLI(prefix: String?, dryRun: Bool)
+  case agentRun(command: [String])
+  case sessionState(json: Bool)
+  case sessionRequest(method: String, path: String, body: String?, json: Bool)
+  case sessionScroll(rows: Int, json: Bool)
+  case sessionProxy
+  case propose(purpose: String, command: [String])
   case help
 }
 
@@ -24,6 +30,17 @@ struct LabanArgumentParser {
     let command = args.removeFirst()
     if command == "--help" || command == "-h" {
       return .success(.help)
+    }
+
+    // `agent run -- ...` and `propose --purpose ... -- ...` have their own
+    // parsing rules and must preserve every word after the `--` separator.
+    switch command {
+    case "agent":
+      return parseAgent(args: args)
+    case "propose":
+      return parsePropose(args: args)
+    default:
+      break
     }
 
     var json = false
@@ -91,8 +108,121 @@ struct LabanArgumentParser {
       return .success(.installCLI(prefix: prefix, dryRun: dryRun))
     case "help":
       return .success(.help)
+    case "session":
+      return parseSession(args: args, json: json, body: body)
     default:
       return .failure(.unknownCommand(command))
     }
+  }
+
+  // MARK: - Subcommand parsers
+
+  private static func parseAgent(
+    args: [String]
+  ) -> Result<LabanCommand, LabanArgumentError> {
+    guard args.first == "run" else {
+      return .failure(.unknownCommand("agent \(args.first ?? "")"))
+    }
+    let rest = Array(args.dropFirst())
+    guard let separator = rest.firstIndex(of: "--") else {
+      return .failure(.missingArgument("-- COMMAND"))
+    }
+    let command = Array(rest[(rest.index(after: separator))...])
+    guard !command.isEmpty else {
+      return .failure(.missingArgument("COMMAND"))
+    }
+    return .success(.agentRun(command: command))
+  }
+
+  private static func parseSession(
+    args: [String],
+    json: Bool,
+    body: String?
+  ) -> Result<LabanCommand, LabanArgumentError> {
+    guard let subcommand = args.first else {
+      return .failure(.missingArgument("session subcommand"))
+    }
+    let rest = Array(args.dropFirst())
+    switch subcommand {
+    case "state":
+      return .success(.sessionState(json: json))
+    case "request":
+      guard rest.count >= 2 else {
+        return .failure(.missingArgument("METHOD PATH"))
+      }
+      return .success(
+        .sessionRequest(
+          method: rest[0], path: rest[1], body: body, json: json))
+    case "scroll":
+      let (rows, remaining) = extractIntegerOption(
+        named: "--rows",
+        from: rest)
+      guard let rows else {
+        return .failure(.missingArgument("--rows"))
+      }
+      guard remaining.isEmpty else {
+        return .failure(.unknownCommand("session scroll \(remaining.joined(separator: " "))"))
+      }
+      return .success(.sessionScroll(rows: rows, json: json))
+    case "proxy":
+      return .success(.sessionProxy)
+    default:
+      return .failure(.unknownCommand("session \(subcommand)"))
+    }
+  }
+
+  private static func parsePropose(
+    args: [String]
+  ) -> Result<LabanCommand, LabanArgumentError> {
+    guard let separator = args.firstIndex(of: "--") else {
+      return .failure(.missingArgument("-- COMMAND"))
+    }
+
+    let optionPart = Array(args[..<separator])
+    let commandPart = Array(args[(args.index(after: separator))...])
+    guard !commandPart.isEmpty else {
+      return .failure(.missingArgument("COMMAND"))
+    }
+
+    let purpose: String
+    if let idx = optionPart.firstIndex(of: "--purpose") {
+      let valueIndex = optionPart.index(after: idx)
+      guard valueIndex < optionPart.count else {
+        return .failure(.missingArgument("--purpose"))
+      }
+      purpose = optionPart[valueIndex]
+    } else if let idx = optionPart.firstIndex(where: { $0.hasPrefix("--purpose=") }) {
+      purpose = String(optionPart[idx].dropFirst("--purpose=".count))
+    } else {
+      return .failure(.missingArgument("--purpose"))
+    }
+
+    return .success(.propose(purpose: purpose, command: commandPart))
+  }
+
+  // MARK: - Helpers
+
+  private static func extractIntegerOption(
+    named option: String,
+    from args: [String]
+  ) -> (value: Int?, remaining: [String]) {
+    var rest = args
+    if let idx = rest.firstIndex(of: option) {
+      rest.remove(at: idx)
+      guard idx < rest.count,
+        let value = Int(rest[idx])
+      else {
+        return (nil, rest)
+      }
+      rest.remove(at: idx)
+      return (value, rest)
+    }
+    if let idx = rest.firstIndex(where: { $0.hasPrefix("\(option)=") }) {
+      let arg = rest[idx]
+      let raw = String(arg.dropFirst(option.count + 1))
+      rest.remove(at: idx)
+      return (Int(raw), rest)
+    }
+    return (nil, rest)
   }
 }

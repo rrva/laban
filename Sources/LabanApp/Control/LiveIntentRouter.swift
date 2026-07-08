@@ -210,7 +210,8 @@ final class LiveIntentRouter: IntentRouter {
     session.scrollViewport(deltaRows: deltaRows)
     let ctx = projectionContext(
       model: model, scopedSessionID: scopedSessionID, readRedaction: .none)
-    return json(ControlStateProjections.actionResult(ok: true, ctx: ctx, targetSessionID: sessionID))
+    return json(
+      ControlStateProjections.actionResult(ok: true, ctx: ctx, targetSessionID: sessionID))
   }
 
   private func commandProposeAction(body: Data, scopedSessionID: String?) -> ControlResponse {
@@ -276,9 +277,10 @@ final class LiveIntentRouter: IntentRouter {
   }
 
   private func guiDiscoveryResponse(readRedaction: ControlReadRedaction) -> DebugDiscoveryResponse {
-    let artifactRoot = FileManager.default.urls(
-      for: .documentDirectory, in: .userDomainMask
-    ).first?.path ?? ""
+    let artifactRoot =
+      FileManager.default.urls(
+        for: .documentDirectory, in: .userDomainMask
+      ).first?.path ?? ""
     return DebugDiscoveryResponse(
       name: "laban-debug",
       schema: "schemas/debug/discovery.schema.json",
@@ -295,7 +297,8 @@ final class LiveIntentRouter: IntentRouter {
       examples: guiDiscoveryExamples(readRedaction: readRedaction))
   }
 
-  private func guiDiscoveryEndpoints(readRedaction: ControlReadRedaction) -> [DebugDiscoveryEndpoint]
+  private func guiDiscoveryEndpoints(readRedaction: ControlReadRedaction)
+    -> [DebugDiscoveryEndpoint]
   {
     ControlRouteCatalog.endpoints.compactMap { endpoint in
       guard endpointPermittedInGUIDiscovery(endpoint, readRedaction: readRedaction) else {
@@ -303,7 +306,9 @@ final class LiveIntentRouter: IntentRouter {
       }
       let binding = endpoint.binding
       let isActionEndpoint = binding.path == "/debug/actions"
-      let summary = isActionEndpoint ? "GUI-safe actions available to the authenticated token." : binding.summary
+      let summary =
+        isActionEndpoint
+        ? "GUI-safe actions available to the authenticated token." : binding.summary
       let requestSchema = isActionEndpoint ? nil : binding.legacyRequestSchemaPath
       return DebugDiscoveryEndpoint(
         method: binding.method,
@@ -390,11 +395,14 @@ final class LiveIntentRouter: IntentRouter {
     }
   }
 
-  private func guiDiscoveryExamples(readRedaction: ControlReadRedaction) -> [DebugDiscoveryExample] {
+  private func guiDiscoveryExamples(readRedaction: ControlReadRedaction) -> [DebugDiscoveryExample]
+  {
     var examples = [
       DebugDiscoveryExample(
         title: "List capabilities",
-        command: #"curl --unix-socket "$LABAN_CONTROL_URL" -H "Authorization: Bearer $LABAN_TOKEN" http://laban/debug | jq"#)
+        command:
+          #"curl --unix-socket "$LABAN_CONTROL_URL" -H "Authorization: Bearer $LABAN_TOKEN" http://laban/debug | jq"#
+      )
     ]
     let actionNames = Set(guiDiscoveryActions(readRedaction: readRedaction).map(\.name))
     if actionNames.contains("scrollViewport") {
@@ -402,14 +410,16 @@ final class LiveIntentRouter: IntentRouter {
         DebugDiscoveryExample(
           title: "Scroll own session",
           command:
-            #"curl --unix-socket "$LABAN_CONTROL_URL" -H "Authorization: Bearer $LABAN_TOKEN" -X POST http://laban/debug/actions -d '{"action":"scrollViewport","deltaRows":1}'"#))
+            #"curl --unix-socket "$LABAN_CONTROL_URL" -H "Authorization: Bearer $LABAN_TOKEN" -X POST http://laban/debug/actions -d '{"action":"scrollViewport","deltaRows":1}'"#
+        ))
     }
     if actionNames.contains("propose") {
       examples.append(
         DebugDiscoveryExample(
           title: "Propose a command",
           command:
-            #"curl --unix-socket "$LABAN_CONTROL_URL" -H "Authorization: Bearer $LABAN_TOKEN" -X POST http://laban/debug/actions -d '{"action":"propose","command":"echo hello","purpose":"user review"}'"#))
+            #"curl --unix-socket "$LABAN_CONTROL_URL" -H "Authorization: Bearer $LABAN_TOKEN" -X POST http://laban/debug/actions -d '{"action":"propose","command":"echo hello","purpose":"user review"}'"#
+        ))
     }
     return examples
   }

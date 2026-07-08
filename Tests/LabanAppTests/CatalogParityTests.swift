@@ -305,9 +305,10 @@ final class CatalogParityTests: XCTestCase {
     XCTAssertFalse(targetBlock.contains(#""LabanDebug""#))
 
     let appURL = root.appendingPathComponent("Sources/LabanApp", isDirectory: true)
-    guard let enumerator = FileManager.default.enumerator(
-      at: appURL,
-      includingPropertiesForKeys: nil)
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: appURL,
+        includingPropertiesForKeys: nil)
     else {
       return XCTFail("missing Sources/LabanApp")
     }

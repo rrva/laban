@@ -338,7 +338,8 @@ public enum ControlStateProjections {
       attentionNotifications: [])
   }
 
-  private static func sessionObserveStateResponse(_ ctx: ControlProjectionContext) -> StateResponse {
+  private static func sessionObserveStateResponse(_ ctx: ControlProjectionContext) -> StateResponse
+  {
     let tabs = filteredTabs(ctx).enumerated().map { index, tab in
       tabResponse(for: tab, index: index, ctx: ctx, redaction: .sessionObserveSummary)
     }

@@ -38,8 +38,8 @@ public protocol ControlSecurityObserver: AnyObject, Sendable {
   func didAttachAuthorize(_ context: ControlSecurityContext)
 }
 
-public extension ControlSecurityObserver {
-  func didAttachAuthorize(_ context: ControlSecurityContext) {}
+extension ControlSecurityObserver {
+  public func didAttachAuthorize(_ context: ControlSecurityContext) {}
 }
 
 extension LabanControlPolicy {

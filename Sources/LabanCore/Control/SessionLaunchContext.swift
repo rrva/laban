@@ -37,6 +37,9 @@ public struct SessionLaunchContext: Equatable, Sendable {
 public enum ControlEnvironmentKeys {
   public static let controlURL = "LABAN_CONTROL_URL"
   public static let sessionAttach = "LABAN_SESSION_ATTACH"
+  /// URL of the `laban-agent` session proxy socket for descendants launched by
+  /// `laban agent run -- <command>`. This is a session-scoped credential.
+  public static let agentControlURL = "LABAN_AGENT_CONTROL_URL"
   /// When set to `"0"`, the GUI control server does not start (force-disable).
   public static let controlServerForceDisable = "LABAN_CONTROL_SERVER"
   /// When set to `"1"`, agent-attached sessions receive `LABAN_SESSION_ATTACH`
