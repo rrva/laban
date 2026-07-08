@@ -64,13 +64,7 @@ private final class LazyAttachDenyDelegate: ControlAttachApprovalDelegate,
 
 public func runLazyAttachInstalledSmoke() -> Int32 {
   let fm = FileManager.default
-  let testDir = fm.temporaryDirectory
-    .appendingPathComponent("laban-lazy-attach-test-\(UUID().uuidString)")
-  do {
-    try fm.createDirectory(at: testDir, withIntermediateDirectories: true)
-  } catch {
-    lazyAttachTestFail("failed to create test directory: \(error)")
-  }
+  let testDir = makeShortTemporaryDirectory()
 
   // Point control discovery at the temp directory for this test.
   setenv("LABAN_CONTROL_DIR", testDir.path, 1)
@@ -217,6 +211,21 @@ private enum SmokeResult: CustomStringConvertible, Equatable {
     case .failed(let message): return "failed: \(message)"
     }
   }
+}
+
+private func makeShortTemporaryDirectory() -> URL {
+  var template = Array("/tmp/lbn-la.XXXXXX".utf8CString)
+  let path = template.withUnsafeMutableBufferPointer { buffer -> String? in
+    guard let baseAddress = buffer.baseAddress, let createdPath = Darwin.mkdtemp(baseAddress)
+    else {
+      return nil
+    }
+    return String(cString: createdPath)
+  }
+  guard let path else {
+    lazyAttachTestFail("failed to create short temporary directory")
+  }
+  return URL(fileURLWithPath: path, isDirectory: true)
 }
 
 private func runCodex(
