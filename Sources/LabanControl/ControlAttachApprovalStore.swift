@@ -1,4 +1,5 @@
 import Foundation
+import LabanCore
 
 public final class ControlAttachApprovalStore: @unchecked Sendable {
   public static let defaultsKey = "LabanControlAttachApprovalRecordsV1"

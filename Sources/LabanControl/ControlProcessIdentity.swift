@@ -143,7 +143,7 @@ public struct ControlProcessTreeInspector: ControlProcessTreeInspecting {
     else {
       return nil
     }
-    var tv = info.kp_proc.p_starttime
+    let tv = info.kp_proc.p_starttime
     return Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + Double(tv.tv_usec) / 1_000_000)
   }
 }
