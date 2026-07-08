@@ -3,7 +3,10 @@ import Foundation
 
 public enum ControlAdvertisement {
   public static func directory() -> URL {
-    if let dir = ProcessInfo.processInfo.environment["LABAN_CONTROL_DIR"], !dir.isEmpty {
+    if let cDir = getenv("LABAN_CONTROL_DIR"),
+      let dir = String(utf8String: cDir),
+      !dir.isEmpty
+    {
       return URL(fileURLWithPath: dir, isDirectory: true)
     }
     let base =

@@ -498,6 +498,7 @@ final class MainWindowController: NSWindowController {
       controller.controlServer = bootstrappedControl.server
       controller.controlSecurityCoordinator = ControlSecurityCoordinator(indicatorHost: termView)
       bootstrappedControl.server.setSecurityObserver(controller.controlSecurityCoordinator)
+      bootstrappedControl.server.setApprovalDelegate(ControlAttachApprovalPresenter.shared)
     }
     controller.model = model
     controller.terminalView = termView
@@ -726,6 +727,7 @@ final class MainWindowController: NSWindowController {
         router: liveRouter,
         surface: .gui,
         securityObserver: security)
+      server.setApprovalDelegate(ControlAttachApprovalPresenter.shared)
       let info = try server.start()
       try ControlAdvertisement.write(
         url: info.socketPath,

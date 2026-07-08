@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Verify the installed Laban app bundle and the broker-first control path.
+# The broker-first path is the deterministic launch path: `laban agent run -- <agent>`.
+# This script is idempotent and does not mutate the installed bundle.
+
+APP="${1:-${LABAN_APP:-$HOME/Laban.app}}"
+if [[ ! -d "$APP" ]]; then
+  echo "CONTROL_BROKER_INSTALLED_SMOKE_FAIL: app not found at $APP" >&2
+  exit 1
+fi
+
+echo "Verifying app bundle code signing..."
+codesign --verify --deep --strict "$APP" || {
+  echo "CONTROL_BROKER_INSTALLED_SMOKE_FAIL: code signing verification failed" >&2
+  exit 1
+}
+
+LABAN_HELPER="$APP/Contents/MacOS/laban"
+AGENT_HELPER="$APP/Contents/MacOS/laban-agent"
+
+for helper in "$LABAN_HELPER" "$AGENT_HELPER"; do
+  if [[ ! -x "$helper" ]]; then
+    echo "CONTROL_BROKER_INSTALLED_SMOKE_FAIL: missing helper $helper" >&2
+    exit 1
+  fi
+  echo "Code signing metadata for $helper:"
+  codesign -dv "$helper" 2>&1 | sed 's/^/  /'
+done
+
+EXPECTED_AGENT_PATH="$APP/Contents/MacOS/laban-agent"
+if [[ "$AGENT_HELPER" != "$EXPECTED_AGENT_PATH" ]]; then
+  echo "CONTROL_BROKER_INSTALLED_SMOKE_FAIL: agent path mismatch $AGENT_HELPER vs $EXPECTED_AGENT_PATH" >&2
+  exit 1
+fi
+
+echo "Broker installed-bundle smoke checks passed."
+echo "CONTROL_BROKER_INSTALLED_SMOKE_OK"

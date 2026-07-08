@@ -22,12 +22,21 @@ typealias AgentProxyRequest = (
   _ envelope: AgentProxyEnvelope
 ) throws -> (status: Int, body: String)
 
+typealias LazyAttachRequestHandler = (
+  _ cliCommand: String,
+  _ method: String,
+  _ path: String,
+  _ query: [String: String],
+  _ body: String?
+) throws -> (status: Int, body: String)
+
 enum LabanCLI {
   static func run(
     command: LabanCommand,
     controlDirectory: URL? = nil,
     request: @escaping LabanCLIRequest = liveRequest,
     agentProxyRequest: @escaping AgentProxyRequest = liveAgentProxyRequest,
+    lazyAttachRequest: @escaping LazyAttachRequestHandler = LazyAttachClient.perform,
     agentProxyURL: String? = nil,
     executablePath: @escaping () -> String = liveExecutablePath
   ) -> LabanCLIResult {
@@ -37,6 +46,7 @@ enum LabanCLI {
         controlDirectory: controlDirectory,
         request: request,
         agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
         agentProxyURL: agentProxyURL,
         executablePath: executablePath)
     } catch let error as ControlDiscoveryError {
@@ -49,6 +59,16 @@ enum LabanCLI {
         exitCode: 3,
         stdout: "",
         stderr: "laban: \(LabanCLIError.agentControlUnavailable)")
+    } catch LabanCLIError.sessionProxyRequiresBroker {
+      return LabanCLIResult(
+        exitCode: 3,
+        stdout: "",
+        stderr: "laban: \(LabanCLIError.sessionProxyRequiresBroker)")
+    } catch let error as LazyAttachClientError {
+      return LabanCLIResult(
+        exitCode: lazyAttachExitCode(error),
+        stdout: "",
+        stderr: "laban: \(error)")
     } catch let error as LabanArgumentError {
       return LabanCLIResult(
         exitCode: 2,
@@ -82,6 +102,7 @@ enum LabanCLI {
     controlDirectory: URL?,
     request: LabanCLIRequest,
     agentProxyRequest: AgentProxyRequest,
+    lazyAttachRequest: LazyAttachRequestHandler,
     agentProxyURL: String?,
     executablePath: () -> String
   ) throws -> LabanCLIResult {
@@ -152,36 +173,58 @@ enum LabanCLI {
       AgentLauncher.invoke(command: command)
 
     case .sessionState(let json):
-      return try performAgentProxyRequest(
+      return try performSessionRequest(
         agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
         agentProxyURL: agentProxyURL,
-        envelope: AgentProxyClient.stateRequest(),
+        cliCommand: "session.state",
+        method: "GET",
+        path: "/debug/state",
+        query: [:],
+        body: nil,
         json: json)
 
     case .sessionRequest(let method, let path, let body, let json):
-      return try performAgentProxyRequest(
+      return try performSessionRequest(
         agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
         agentProxyURL: agentProxyURL,
-        envelope: AgentProxyEnvelope(method: method, path: path, body: body),
+        cliCommand: "session.request",
+        method: method,
+        path: path,
+        query: [:],
+        body: body,
         json: json)
 
     case .sessionScroll(let rows, let json):
-      return try performAgentProxyRequest(
+      return try performSessionRequest(
         agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
         agentProxyURL: agentProxyURL,
-        envelope: AgentProxyClient.scrollRequest(rows: rows),
+        cliCommand: "session.scroll",
+        method: "POST",
+        path: "/debug/actions",
+        query: ["rows": String(rows)],
+        body: AgentProxyClient.scrollRequest(rows: rows).body,
         json: json)
 
     case .sessionProxy:
-      let proxyURL = try requireAgentControlURL(override: agentProxyURL)
+      guard let proxyURL = agentProxyURLFromEnvironment(override: agentProxyURL) else {
+        throw LabanCLIError.sessionProxyRequiresBroker
+      }
       try AgentProxyClient.proxyStdio(proxyURL: proxyURL)
       return LabanCLIResult(exitCode: 0, stdout: "", stderr: "")
 
     case .propose(let purpose, let command):
-      return try performAgentProxyRequest(
+      return try performSessionRequest(
         agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
         agentProxyURL: agentProxyURL,
-        envelope: AgentProxyClient.proposeRequest(purpose: purpose, command: command),
+        cliCommand: "command.propose",
+        method: "POST",
+        path: "/debug/actions",
+        query: [:],
+        body: AgentProxyClient.proposeRequest(purpose: purpose, command: command).body,
         json: true)
 
     case .help:
@@ -259,6 +302,54 @@ enum LabanCLI {
       !url.isEmpty
     else {
       throw LabanCLIError.agentControlUnavailable
+    }
+    return url
+  }
+
+  private static func lazyAttachExitCode(_ error: LazyAttachClientError) -> Int32 {
+    switch error {
+    case .controlPlaneUnavailable:
+      return 3
+    case .timeout:
+      return 4
+    case .denied, .sessionChanged, .rateLimited:
+      return 5
+    case .malformedResponse:
+      return 6
+    }
+  }
+
+  private static func performSessionRequest(
+    agentProxyRequest: AgentProxyRequest,
+    lazyAttachRequest: LazyAttachRequestHandler,
+    agentProxyURL: String?,
+    cliCommand: String,
+    method: String,
+    path: String,
+    query: [String: String],
+    body: String?,
+    json: Bool
+  ) throws -> LabanCLIResult {
+    if let proxyURL = agentProxyURLFromEnvironment(override: agentProxyURL) {
+      let envelope = AgentProxyEnvelope(method: method, path: path, body: body)
+      let (status, responseBody) = try agentProxyRequest(proxyURL, envelope)
+      return formatProxyResponse(status: status, body: responseBody, json: json)
+    }
+    let (status, responseBody) = try lazyAttachRequest(
+      cliCommand,
+      method,
+      path,
+      query,
+      body)
+    return formatResponse(status: status, body: Data(responseBody.utf8), json: json)
+  }
+
+  private static func agentProxyURLFromEnvironment(override: String?) -> String? {
+    if let override, !override.isEmpty { return override }
+    guard let url = ProcessInfo.processInfo.environment[ControlEnvironmentKeys.agentControlURL],
+      !url.isEmpty
+    else {
+      return nil
     }
     return url
   }
@@ -357,14 +448,19 @@ let usageText = """
       agent run -- COMMAND [ARG ...] Process-replace into the bundled laban-agent
                                      broker and run COMMAND with LABAN_AGENT_CONTROL_URL.
 
-    Session-scoped commands (require LABAN_AGENT_CONTROL_URL):
-      session state --json           GET /debug/state through the agent proxy.
+    Session-scoped commands:
+      session state --json           GET /debug/state via agent proxy or lazy attach.
       session request METHOD PATH [--body JSON] [--json]
-                                     Send a raw proxy request.
-      session scroll --rows N --json Scroll the bound session viewport.
-      session proxy                  Forward JSONL stdin/stdout through the proxy.
+                                     Send a raw request via agent proxy or lazy attach.
+      session scroll --rows N --json Scroll the bound session viewport via agent proxy or lazy attach.
+      session proxy                  Forward JSONL stdin/stdout through the agent proxy (requires LABAN_AGENT_CONTROL_URL).
       propose --purpose TEXT -- COMMAND [ARG ...]
-                                     Propose a command for user review.
+                                     Propose a command for user review via agent proxy or lazy attach.
+
+    Lazy attach fallback:
+      When LABAN_AGENT_CONTROL_URL is unset, session-scoped commands discover
+      control.json and request a live, one-time user approval for the requested
+      action. The agent proxy remains available when LABAN_AGENT_CONTROL_URL is set.
 
     Global options:
       --json                         Write machine-readable JSON to stdout.
@@ -374,6 +470,7 @@ let usageText = """
 enum LabanCLIError: Error, Equatable {
   case unknownShell(String)
   case agentControlUnavailable
+  case sessionProxyRequiresBroker
 }
 
 extension LabanCLIError: CustomStringConvertible {
@@ -383,6 +480,9 @@ extension LabanCLIError: CustomStringConvertible {
       return "unknown shell: \(shell)"
     case .agentControlUnavailable:
       return "LABAN_AGENT_CONTROL_URL is not set; try `laban agent run -- <command>`"
+    case .sessionProxyRequiresBroker:
+      return
+        "session proxy requires broker mode; restart the agent with `laban agent run -- <agent>` for long-lived session control."
     }
   }
 }

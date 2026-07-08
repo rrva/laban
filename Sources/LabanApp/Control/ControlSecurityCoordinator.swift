@@ -35,6 +35,34 @@ final class ControlSecurityCoordinator: ControlSecurityObserver, @unchecked Send
     armIndicator()
   }
 
+  func didAttachRequest(_ context: ControlSecurityContext) {
+    EventLog.shared.log("control.attach.requested", auditPayload(from: context))
+  }
+
+  func didAttachApprove(_ context: ControlSecurityContext, mode: String) {
+    EventLog.shared.log(
+      "control.attach.approved",
+      auditPayload(from: context, extra: ["mode": mode]))
+    armIndicator()
+  }
+
+  func didAttachDeny(_ context: ControlSecurityContext, reason: ControlSecurityDenyReason) {
+    EventLog.shared.log(
+      "control.attach.denied",
+      auditPayload(from: context, extra: ["reason": reason.rawValue]))
+  }
+
+  func didAttachRevoke(_ context: ControlSecurityContext) {
+    EventLog.shared.log("control.attach.revoked", auditPayload(from: context))
+  }
+
+  func didAttachAutoApprove(_ context: ControlSecurityContext, approvalID: String) {
+    EventLog.shared.log(
+      "control.attach.autoApproved",
+      auditPayload(from: context, extra: ["approvalID": approvalID]))
+    armIndicator()
+  }
+
   private func auditPayload(
     from context: ControlSecurityContext,
     extra: [String: Any] = [:]

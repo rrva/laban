@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Dispatch
 import Foundation
@@ -79,6 +80,20 @@ public final class LabanControlServer {
   private let attachLock = NSLock()
   private var thread: Thread?
 
+  private var attachShellIdentitiesBySessionID: [String: RegisteredAttachShellIdentity] = [:]
+  private let shellIdentityLock = NSLock()
+
+  private var pendingLazyAttachRequests: [String: ControlAttachApprovalContext] = [:]
+  private var lastLazyDenyByPrincipalFingerprint: [String: Date] = [:]
+  private let lazyAttachLock = NSLock()
+  private let lazyDenyCooldown: TimeInterval = 2
+  private let maxConcurrentPendingLazyAttachRequests = 8
+
+  private var processTreeInspector: any ControlProcessTreeInspecting = ControlProcessTreeInspector()
+  private var codeSigningInspector: any ControlCodeSigningInspecting = ControlCodeSigningInspector()
+  public var approvalStore: ControlAttachApprovalStore
+  public weak var approvalDelegate: (any ControlAttachApprovalDelegate)?
+
   private struct SessionAttachBootstrap: Equatable {
     let sessionID: String
     var consumed: Bool
@@ -86,7 +101,26 @@ public final class LabanControlServer {
     var shellPID: pid_t?
   }
 
+  private final class LazyApprovalResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _decision: ControlAttachApprovalDecision = .deny
+
+    var decision: ControlAttachApprovalDecision {
+      lock.lock()
+      defer { lock.unlock() }
+      return _decision
+    }
+
+    func set(_ decision: ControlAttachApprovalDecision) {
+      lock.lock()
+      _decision = decision
+      lock.unlock()
+    }
+  }
+
   public static let sessionAttachPath = "/control/session/attach"
+  public static let lazyAttachRequestPath = "/control/session/attach/request"
+  public static let maxLazyAttachBodySize = 256 * 1024
 
   public init(
     router: IntentRouter,
@@ -95,7 +129,10 @@ public final class LabanControlServer {
     readinessRunID: String? = nil,
     expectedAgentExecutablePath: String? = ControlProcessInfo.defaultExpectedAgentExecutablePath(),
     allowDevAgentExecutablePath: Bool = false,
-    securityObserver: (any ControlSecurityObserver)? = nil
+    securityObserver: (any ControlSecurityObserver)? = nil,
+    processTreeInspector: (any ControlProcessTreeInspecting)? = nil,
+    codeSigningInspector: (any ControlCodeSigningInspecting)? = nil,
+    approvalStore: ControlAttachApprovalStore? = nil
   ) {
     self.router = router
     self.surface = surface
@@ -104,6 +141,25 @@ public final class LabanControlServer {
     self.expectedAgentExecutablePath = expectedAgentExecutablePath
     self.allowDevAgentExecutablePath = allowDevAgentExecutablePath
     self.securityObserver = securityObserver
+    if let processTreeInspector {
+      self.processTreeInspector = processTreeInspector
+    }
+    if let codeSigningInspector {
+      self.codeSigningInspector = codeSigningInspector
+    }
+    if let approvalStore {
+      self.approvalStore = approvalStore
+    } else {
+      self.approvalStore = ControlAttachApprovalStore(signer: Self.makeDefaultApprovalSigner())
+    }
+  }
+
+  private static func makeDefaultApprovalSigner() -> ControlAttachApprovalRecordSigning? {
+    #if canImport(Security)
+      return ControlAttachApprovalRecordKeychainSigner()
+    #else
+      return nil
+    #endif
   }
 
   public static func defaultControlSocketPath() -> String {
@@ -158,6 +214,46 @@ public final class LabanControlServer {
       entry.shellPID = shellPID
       attachBootstraps[bootstrap] = entry
     }
+
+    guard let identity = processTreeInspector.identity(for: shellPID) else { return }
+    let shellIdentity = RegisteredAttachShellIdentity(
+      sessionID: sessionID,
+      shellPID: shellPID,
+      shellStartTime: identity.startTime,
+      shellUID: identity.uid,
+      shellExecutablePath: identity.executablePath)
+    shellIdentityLock.lock()
+    attachShellIdentitiesBySessionID[sessionID] = shellIdentity
+    shellIdentityLock.unlock()
+  }
+
+  public func unregisterAttachShellIdentity(sessionID: String) {
+    shellIdentityLock.lock()
+    attachShellIdentitiesBySessionID.removeValue(forKey: sessionID)
+    shellIdentityLock.unlock()
+    lazyAttachLock.lock()
+    for (key, context) in pendingLazyAttachRequests where context.sessionID == sessionID {
+      pendingLazyAttachRequests.removeValue(forKey: key)
+    }
+    lazyAttachLock.unlock()
+  }
+
+  public func setApprovalDelegate(_ delegate: (any ControlAttachApprovalDelegate)?) {
+    approvalDelegate = delegate
+  }
+
+  public func hasRegisteredShell(sessionID: String) -> Bool {
+    shellIdentityLock.lock()
+    defer { shellIdentityLock.unlock() }
+    return attachShellIdentitiesBySessionID[sessionID] != nil
+  }
+
+  public func canLazyAttachDescendant(sessionID: String, peerPID: pid_t) -> Bool {
+    guard let shellSession = resolveUniqueShellSessionAncestor(peerPID: peerPID) else {
+      return false
+    }
+    guard shellSession.sessionID == sessionID else { return false }
+    return resolveAttachProcessChain(peerPID: peerPID, shellPID: shellSession.shell.shellPID) != nil
   }
 
   public enum SessionAttachRedeemResult {
@@ -220,6 +316,13 @@ public final class LabanControlServer {
     attachLock.lock()
     attachBootstraps = [:]
     attachLock.unlock()
+    shellIdentityLock.lock()
+    attachShellIdentitiesBySessionID.removeAll()
+    shellIdentityLock.unlock()
+    lazyAttachLock.lock()
+    pendingLazyAttachRequests.removeAll()
+    lastLazyDenyByPrincipalFingerprint.removeAll()
+    lazyAttachLock.unlock()
     thread = nil
   }
 
@@ -260,6 +363,7 @@ public final class LabanControlServer {
   }
 
   private static let localPeerPID: Int32 = 3
+  private static let localPeerToken: Int32 = 0x006
 
   public static func peerPID(clientFD: Int32) -> pid_t? {
     var pid: pid_t = 0
@@ -268,6 +372,17 @@ public final class LabanControlServer {
       return nil
     }
     return pid
+  }
+
+  public static func peerAuditToken(clientFD: Int32) -> Data? {
+    var token = AuditToken()
+    var len = socklen_t(MemoryLayout<AuditToken>.size)
+    guard getsockopt(clientFD, SOL_LOCAL, localPeerToken, &token, &len) == 0 else {
+      return nil
+    }
+    guard len == MemoryLayout<AuditToken>.size else { return nil }
+    let data = withUnsafeBytes(of: &token) { Data($0) }
+    return data
   }
 
   #if DEBUG
@@ -529,6 +644,17 @@ public final class LabanControlServer {
         continue
       }
 
+      if incoming.method == "POST", incoming.path == Self.lazyAttachRequestPath {
+        let peerPID = Self.peerPID(clientFD: clientFD)
+        let response = handleLazyAttachRequest(
+          clientFD: clientFD,
+          body: incoming.body,
+          peerPID: peerPID,
+          appObserveToken: incoming.headers.authorization)
+        send(clientFD, response, persistSession: false)
+        break requestLoop
+      }
+
       let (authOutcome, tokenTier) = resolveAuthorization(
         authorization: incoming.headers.authorization,
         connectionTier: connectionTier)
@@ -612,8 +738,13 @@ public final class LabanControlServer {
     guard method == "GET" || method == "POST" else { return .methodNotAllowed }
     guard headers.authorizationCount <= 1 else { return .badRequest }
 
+    let isLazyAttach =
+      method == "POST" && parsedTarget.path == Self.lazyAttachRequestPath
+    let maxBodyBytes =
+      isLazyAttach ? Self.maxLazyAttachBodySize : Self.maxBodyBytes
+
     let contentLength: Int
-    switch parseContentLength(headers.contentLengthHeader, method: method) {
+    switch parseContentLength(headers.contentLengthHeader, method: method, maxBytes: maxBodyBytes) {
     case .success(let length):
       contentLength = length
     case .failure(let status):
@@ -742,13 +873,19 @@ public final class LabanControlServer {
         tokenTier: tokenTier)
       return .error(403, "forbidden")
     }
+    let bodyHashForConstraint = (body.isEmpty ? nil : computeSHA256(body))
     guard
       LabanControlPolicy.authorize(
         intentID: intentID,
         catalog: catalog,
         granted: granted,
         targetSession: targetSession,
-        tokenScope: scope)
+        tokenScope: scope,
+        tokenTier: tokenTier,
+        method: method,
+        path: path,
+        query: queryForConstraint(query),
+        bodySHA256: bodyHashForConstraint)
     else {
       reportDeny(
         intentID: intentID,
@@ -772,10 +909,12 @@ public final class LabanControlServer {
 
   private func sessionID(from tokenTier: ControlTokenTier?) -> String? {
     guard let tokenTier else { return nil }
-    if case .sessionObserve(let sessionID) = tokenTier {
+    switch tokenTier {
+    case .sessionObserve(let sessionID), .approvedSession(let sessionID, _, _, _):
       return sessionID
+    case .appObserve, .fixture:
+      return nil
     }
-    return nil
   }
 
   private func reportDeny(
@@ -826,15 +965,16 @@ public final class LabanControlServer {
     tokenTier: ControlTokenTier
   ) -> LegacyDebugQueryInput {
     let scopedSessionID: String?
-    if case .sessionObserve(let sessionID) = tokenTier {
+    switch tokenTier {
+    case .sessionObserve(let sessionID), .approvedSession(let sessionID, _, _, _):
       scopedSessionID = sessionID
-    } else {
+    case .appObserve, .fixture:
       scopedSessionID = nil
     }
     let readRedaction: ControlReadRedaction =
       switch tokenTier {
       case .appObserve: .appObserveSummary
-      case .sessionObserve: .sessionObserveSummary
+      case .sessionObserve, .approvedSession: .sessionObserveSummary
       case .fixture: .none
       }
     return LegacyDebugQueryInput(
@@ -842,6 +982,14 @@ public final class LabanControlServer {
       params: params,
       scopedSessionID: scopedSessionID,
       readRedaction: readRedaction)
+  }
+
+  private func queryForConstraint(_ query: [String: String]) -> String {
+    var pairs: [String] = []
+    for (key, value) in query.sorted(by: { $0.key < $1.key }) {
+      pairs.append("\(key)=\(value)")
+    }
+    return pairs.joined(separator: "&")
   }
 
   private func resolveTargetSession(request: ControlHTTPRequest, body: Data) -> String? {
@@ -933,7 +1081,7 @@ public final class LabanControlServer {
     guard parts.count > 1 else {
       return (path, [:])
     }
-    return (path, parseQueryString(String(parts[1])))
+    return (path, Self.parseQueryString(String(parts[1])))
   }
 
   private static func parseQueryString(_ queryString: String) -> [String: String] {
@@ -982,7 +1130,8 @@ public final class LabanControlServer {
 
   private func parseContentLength(
     _ header: String?,
-    method: String
+    method: String,
+    maxBytes: Int
   ) -> ContentLengthResult {
     guard let header, !header.isEmpty else {
       return method == "POST" ? .failure(status: 400) : .success(0)
@@ -990,7 +1139,7 @@ public final class LabanControlServer {
     guard let length = Int(header), length >= 0 else {
       return .failure(status: 400)
     }
-    guard length <= Self.maxBodyBytes else {
+    guard length <= maxBytes else {
       return .failure(status: 413)
     }
     return .success(length)
@@ -1040,6 +1189,8 @@ public final class LabanControlServer {
     case 403: return "Forbidden"
     case 404: return "Not Found"
     case 405: return "Method Not Allowed"
+    case 408: return "Request Timeout"
+    case 409: return "Conflict"
     case 413: return "Payload Too Large"
     case 425: return "Too Early"
     case 429: return "Too Many Requests"
@@ -1047,5 +1198,646 @@ public final class LabanControlServer {
     case 501: return "Not Implemented"
     default: return "Unknown"
     }
+  }
+
+  // MARK: - Lazy Attach
+
+  private func handleLazyAttachRequest(
+    clientFD: Int32,
+    body: Data,
+    peerPID: pid_t?,
+    appObserveToken: String?
+  ) -> ControlResponse {
+    guard let peerPID = peerPID, peerPID > 0 else {
+      reportLazyAttachDeny(sessionID: nil, reason: "processIdentityUnavailable")
+      return .error(403, "processIdentityUnavailable")
+    }
+
+    let token = appObserveToken.flatMap { header -> String? in
+      let value = header.trimmingCharacters(in: .whitespaces)
+      guard value.lowercased().hasPrefix("bearer ") else { return nil }
+      return String(value.dropFirst(7))
+    }
+    guard let token, validateAppObserveToken(token) else {
+      return .error(401, "unauthorized")
+    }
+
+    guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+      let clientRequestID = json["clientRequestID"] as? String,
+      !clientRequestID.isEmpty,
+      UUID(uuidString: clientRequestID) != nil,
+      let cliCommand = json["cliCommand"] as? String,
+      !cliCommand.isEmpty,
+      let intendedRequest = json["intendedRequest"] as? [String: Any],
+      let method = intendedRequest["method"] as? String,
+      !method.isEmpty,
+      let path = intendedRequest["path"] as? String,
+      !path.isEmpty
+    else {
+      return .error(400, "bad request")
+    }
+
+    let queryString = intendedRequest["query"] as? String ?? ""
+    let bodyData: Data?
+    if let bodyBase64 = intendedRequest["bodyBase64"] as? String {
+      guard let decoded = Data(base64Encoded: bodyBase64) else {
+        return .error(400, "bad request")
+      }
+      bodyData = decoded
+    } else {
+      bodyData = nil
+    }
+    let bodySHA256 = intendedRequest["bodySHA256"] as? String
+    let computedHash = bodyData.map { computeSHA256($0) }
+    if bodyData != nil, bodySHA256 == nil || bodySHA256 != computedHash {
+      return .error(400, "bodySHA256 mismatch")
+    }
+    if bodyData == nil, bodySHA256 != nil {
+      return .error(400, "bodySHA256 mismatch")
+    }
+    if let bodyData, bodyData.count > Self.maxLazyAttachBodySize {
+      return .error(413, "request body too large")
+    }
+
+    var peerIdentity: ControlProcessIdentity
+    switch processTreeInspector.identity(for: peerPID) {
+    case .some(let identity) where identity.uid == getuid():
+      peerIdentity = identity
+    default:
+      reportLazyAttachDeny(sessionID: nil, reason: "processIdentityUnavailable")
+      return .error(403, "processIdentityUnavailable")
+    }
+    if let auditToken = Self.peerAuditToken(clientFD: clientFD) {
+      peerIdentity.auditToken = auditToken
+    }
+    guard let peerStartTime = peerIdentity.startTime else {
+      reportLazyAttachDeny(sessionID: nil, reason: "processIdentityUnavailable")
+      return .error(403, "processIdentityUnavailable")
+    }
+
+    guard let shellSession = resolveUniqueShellSessionAncestor(peerPID: peerPID) else {
+      reportLazyAttachDeny(sessionID: nil, reason: "notDescendantOfRegisteredSession")
+      return .error(403, "notDescendantOfRegisteredSession")
+    }
+
+    let (sessionID, shellIdentity) = shellSession
+
+    guard
+      let chain = resolveAttachProcessChain(
+        peerPID: peerPID,
+        shellPID: shellIdentity.shellPID,
+        peerIdentity: peerIdentity)
+    else {
+      reportLazyAttachDeny(sessionID: sessionID, reason: "notDescendantOfRegisteredSession")
+      return .error(403, "notDescendantOfRegisteredSession")
+    }
+
+    guard let principal = chain.principal else {
+      reportLazyAttachDeny(sessionID: sessionID, reason: "principalIdentityUnavailable")
+      return .error(403, "principalIdentityUnavailable")
+    }
+    guard let principalStartTime = principal.identity.startTime else {
+      reportLazyAttachDeny(sessionID: sessionID, reason: "processIdentityUnavailable")
+      return .error(403, "processIdentityUnavailable")
+    }
+
+    var identityWithSigning = principal.identity
+    if let signing = codeSigningInspector.signingIdentity(
+      forLivePID: principal.identity.pid,
+      startTime: principalStartTime,
+      auditToken: principal.identity.auditToken)
+    {
+      identityWithSigning.signing = signing
+    }
+    let principalWithSigning = ControlAttachPrincipal(
+      identity: identityWithSigning,
+      isGenericInterpreter: ControlAttachPrincipal.isGenericInterpreter(identityWithSigning),
+      isPersistable: ControlAttachPrincipal.isPersistable(identityWithSigning),
+      helperChain: principal.helperChain)
+
+    let (
+      _, resolvedIntentID, _, resolvedSensitivity, _
+    ) = resolveRouteAndIntent(
+      method: method,
+      path: path,
+      query: Self.parseQueryString(queryString),
+      body: bodyData ?? Data(),
+      sessionID: sessionID)
+
+    guard let resolvedIntentID = resolvedIntentID,
+      ControlLazyAttachAllowlist.isAllowlisted(
+        method: method, path: path, intentID: resolvedIntentID)
+    else {
+      reportLazyAttachDeny(sessionID: sessionID, reason: "lazyRouteNotAllowed")
+      return .error(403, "lazyRouteNotAllowed")
+    }
+
+    let rawSessionRequest = cliCommand == "session.request"
+    let allowlistMatch = ControlLazyAttachAllowlist.entry(
+      method: method, path: path, intentID: resolvedIntentID)
+    let isPersistableOperation = allowlistMatch?.persistable == true
+    let canPersist =
+      principalWithSigning.isPersistable && isPersistableOperation
+      && !rawSessionRequest
+
+    guard let descriptor = catalog.descriptor(id: resolvedIntentID) else {
+      return .error(404, "not found")
+    }
+    guard descriptor.availability.permits(surface) else {
+      reportLazyAttachDeny(sessionID: sessionID, reason: "surfaceUnavailable")
+      return .error(404, "unavailable on \(surface)")
+    }
+
+    let routeIDForRecord = "\(method) \(path)"
+    let sideEffectClass = sideEffectClassFor(descriptor.sideEffects)
+    let capabilities = [descriptor.requiredCapability]
+    let principalIdentityFingerprint = principalWithSigning.identity.stablePrincipalFingerprint
+
+    let approvalID = "\(sessionID.prefix(8))-\(clientRequestID.prefix(8))"
+    let context = ControlAttachApprovalContext(
+      approvalID: approvalID,
+      sessionID: sessionID,
+      peerPID: peerPID,
+      peerStartTime: peerStartTime,
+      auditToken: peerIdentity.auditToken,
+      principalFingerprint: principalWithSigning.identity.fingerprint,
+      method: method,
+      path: path,
+      query: queryString,
+      bodySHA256: computedHash,
+      resolvedRouteID: routeIDForRecord,
+      resolvedIntentID: resolvedIntentID,
+      capabilities: capabilities,
+      maxDataSensitivity: resolvedSensitivity,
+      allowedSideEffectClasses: [sideEffectClass])
+
+    let matchingRecord = approvalStore.findMatching(
+      principal: principalWithSigning,
+      sessionID: sessionID,
+      shellIdentityFingerprint: shellIdentity.fingerprint,
+      routeID: routeIDForRecord,
+      intentID: resolvedIntentID,
+      capabilities: Set(capabilities),
+      dataSensitivity: resolvedSensitivity,
+      sideEffectClass: sideEffectClass,
+      signingInspector: codeSigningInspector)
+
+    if let matchingRecord = matchingRecord {
+      guard revalidateLazyAttachContext(context, clientFD: clientFD, body: bodyData ?? Data())
+      else {
+        reportLazyAttachDeny(sessionID: sessionID, reason: "sessionChanged")
+        return .error(409, "sessionChanged")
+      }
+      let approvedToken = Self.makeToken()
+      let approvedTier = ControlTokenTier.approvedSession(
+        sessionID: sessionID,
+        approvalID: matchingRecord.id,
+        capabilities: capabilities,
+        constraint: ControlTokenConstraint(
+          method: method,
+          path: path,
+          query: queryString,
+          bodySHA256: computedHash,
+          resolvedRouteID: routeIDForRecord,
+          resolvedIntentID: resolvedIntentID))
+      tokenLock.lock()
+      tokens[approvedToken] = approvedTier
+      tokenLock.unlock()
+      reportLazyAttachAutoApproved(
+        sessionID: sessionID, approvalID: matchingRecord.id, intentID: resolvedIntentID)
+      let downstream = route(
+        method: method,
+        path: path,
+        query: Self.parseQueryString(queryString),
+        body: bodyData ?? Data(),
+        tokenTier: approvedTier)
+      tokenLock.lock()
+      tokens.removeValue(forKey: approvedToken)
+      tokenLock.unlock()
+      approvalStore.updateLastUsed(id: matchingRecord.id)
+      return lazyAttachResponse(
+        sessionID: sessionID,
+        approval: "always",
+        downstream: downstream)
+    }
+
+    lazyAttachLock.lock()
+    let existingKey = pendingLazyAttachRequests.first {
+      $0.value.peerPID == peerPID && $0.value.resolvedIntentID == resolvedIntentID
+    }?.key
+    if existingKey != nil {
+      lazyAttachLock.unlock()
+      reportLazyAttachDeny(sessionID: sessionID, reason: "approvalRateLimited")
+      return .error(429, "approvalRateLimited")
+    }
+    if let lastDeny = lastLazyDenyByPrincipalFingerprint[principalWithSigning.identity.fingerprint],
+      Date().timeIntervalSince(lastDeny) < lazyDenyCooldown
+    {
+      lazyAttachLock.unlock()
+      reportLazyAttachDeny(sessionID: sessionID, reason: "approvalRateLimited")
+      return .error(429, "approvalRateLimited")
+    }
+    guard pendingLazyAttachRequests.count < maxConcurrentPendingLazyAttachRequests else {
+      lazyAttachLock.unlock()
+      reportLazyAttachDeny(sessionID: sessionID, reason: "approvalRateLimited")
+      return .error(429, "approvalRateLimited")
+    }
+    let pendingRequestID = UUID().uuidString
+    pendingLazyAttachRequests[pendingRequestID] = context
+    lazyAttachLock.unlock()
+
+    reportLazyAttachRequest(sessionID: sessionID, intentID: resolvedIntentID)
+
+    let delegate = approvalDelegate
+    let verifiedDisplayName =
+      principalWithSigning.isPersistable
+      ? principalWithSigning.identity.signing?.displayName
+        ?? principalWithSigning.identity.executableBaseName
+      : principalWithSigning.identity.executableBaseName
+    let persistenceDisabledReason: String?
+    if canPersist {
+      persistenceDisabledReason = nil
+    } else if !principalWithSigning.isPersistable {
+      persistenceDisabledReason = "This app is not a stable signed application."
+    } else {
+      persistenceDisabledReason = "This operation cannot be remembered for this route."
+    }
+    let request = ControlAttachApprovalRequest(
+      id: approvalID,
+      principalDisplayName: verifiedDisplayName,
+      principalIsVerified: principalWithSigning.isPersistable,
+      helperChainSummary: chain.helperChainSummary,
+      principalPath: principalWithSigning.identity.executablePath,
+      sessionDisplay: "\(sessionID.suffix(4))",
+      operationSummary: descriptor.summary,
+      dataSensitivity: resolvedSensitivity,
+      capabilities: capabilities.map(\Capability.rawValue),
+      canPersist: canPersist,
+      persistenceDisabledReason: persistenceDisabledReason)
+
+    let semaphore = DispatchSemaphore(value: 0)
+    let approvalResult = LazyApprovalResult()
+
+    delegate?.requestControlAttachApproval(request) { [weak self] approvedDecision in
+      guard let self else { return }
+      self.lazyAttachLock.lock()
+      self.pendingLazyAttachRequests.removeValue(forKey: pendingRequestID)
+      self.lazyAttachLock.unlock()
+      approvalResult.set(approvedDecision)
+      semaphore.signal()
+    }
+
+    let timeoutResult = semaphore.wait(timeout: .now() + 30)
+    if timeoutResult == .timedOut {
+      lazyAttachLock.lock()
+      pendingLazyAttachRequests.removeValue(forKey: pendingRequestID)
+      lastLazyDenyByPrincipalFingerprint[principalWithSigning.identity.fingerprint] = Date()
+      lazyAttachLock.unlock()
+      reportLazyAttachDeny(sessionID: sessionID, reason: "approvalTimeout")
+      return .error(408, "approvalTimeout")
+    }
+
+    switch approvalResult.decision {
+    case .deny:
+      lazyAttachLock.lock()
+      lastLazyDenyByPrincipalFingerprint[principalWithSigning.identity.fingerprint] = Date()
+      lazyAttachLock.unlock()
+      reportLazyAttachDeny(sessionID: sessionID, reason: "userDenied")
+      return .error(403, "userDenied")
+    case .allowOnce, .alwaysAllowSignedIdentity:
+      break
+    }
+
+    guard revalidateLazyAttachContext(context, clientFD: clientFD, body: bodyData ?? Data()) else {
+      lazyAttachLock.lock()
+      lastLazyDenyByPrincipalFingerprint[principalWithSigning.identity.fingerprint] = Date()
+      lazyAttachLock.unlock()
+      reportLazyAttachDeny(sessionID: sessionID, reason: "sessionChanged")
+      return .error(409, "sessionChanged")
+    }
+
+    let effectiveDecision: ControlAttachApprovalDecision
+    let decision = approvalResult.decision
+    if decision == .alwaysAllowSignedIdentity, !canPersist {
+      effectiveDecision = .allowOnce
+    } else {
+      effectiveDecision = decision
+    }
+
+    if effectiveDecision == .alwaysAllowSignedIdentity {
+      let signingRequirement = principalWithSigning.identity.signing?.designatedRequirement ?? ""
+      let record = ControlAttachApprovalRecord(
+        id: approvalID,
+        displayName: principalWithSigning.identity.displayName,
+        bundleIdentifier: principalWithSigning.identity.signing?.bundleIdentifier,
+        signing: principalWithSigning.identity.signing ?? ControlCodeSigningIdentity(),
+        signingRequirement: signingRequirement,
+        sessionID: sessionID,
+        shellIdentityFingerprint: shellIdentity.fingerprint,
+        allowedRouteIDs: [routeIDForRecord],
+        allowedIntentIDs: [resolvedIntentID],
+        capabilities: capabilities,
+        maxDataSensitivity: resolvedSensitivity,
+        allowedSideEffectClasses: [sideEffectClass],
+        principalIdentityFingerprint: principalIdentityFingerprint)
+      approvalStore.add(record)
+    }
+
+    let approvedToken = Self.makeToken()
+    let approvedTier = ControlTokenTier.approvedSession(
+      sessionID: sessionID,
+      approvalID: approvalID,
+      capabilities: capabilities,
+      constraint: ControlTokenConstraint(
+        method: method,
+        path: path,
+        query: queryString,
+        bodySHA256: computedHash,
+        resolvedRouteID: routeIDForRecord,
+        resolvedIntentID: resolvedIntentID))
+    tokenLock.lock()
+    tokens[approvedToken] = approvedTier
+    tokenLock.unlock()
+    reportLazyAttachApproved(
+      sessionID: sessionID, approvalID: approvalID, intentID: resolvedIntentID,
+      mode: effectiveDecision == .alwaysAllowSignedIdentity ? "always" : "once")
+    let downstream = route(
+      method: method,
+      path: path,
+      query: Self.parseQueryString(queryString),
+      body: bodyData ?? Data(),
+      tokenTier: approvedTier)
+    tokenLock.lock()
+    tokens.removeValue(forKey: approvedToken)
+    tokenLock.unlock()
+    return lazyAttachResponse(
+      sessionID: sessionID,
+      approval: effectiveDecision == .alwaysAllowSignedIdentity ? "always" : "once",
+      downstream: downstream)
+  }
+
+  private func validateAppObserveToken(_ token: String) -> Bool {
+    tokenLock.lock()
+    defer { tokenLock.unlock() }
+    for (storedToken, tier) in tokens {
+      if Self.constantTimeEquals(storedToken, token) { return tier == .appObserve }
+    }
+    return false
+  }
+
+  private func resolveUniqueShellSessionAncestor(
+    peerPID: pid_t
+  ) -> (sessionID: String, shell: RegisteredAttachShellIdentity)? {
+    shellIdentityLock.lock()
+    let identities = attachShellIdentitiesBySessionID
+    shellIdentityLock.unlock()
+
+    var matched: (sessionID: String, shell: RegisteredAttachShellIdentity)?
+    var currentPID: pid_t? = peerPID
+
+    while let pid = currentPID, pid > 1 {
+      guard let identity = processTreeInspector.identity(for: pid),
+        identity.uid == getuid()
+      else {
+        return nil
+      }
+      for (sessionID, shell) in identities where shell.shellPID == pid {
+        if matched != nil {
+          return nil
+        }
+        guard let shellStartTime = shell.shellStartTime,
+          let currentStartTime = identity.startTime,
+          currentStartTime == shellStartTime,
+          shell.shellUID == identity.uid
+        else {
+          return nil
+        }
+        matched = (sessionID, shell)
+      }
+      currentPID = processTreeInspector.parentPID(of: pid)
+    }
+
+    guard let matched else { return nil }
+    return matched
+  }
+
+  private func resolveAttachProcessChain(
+    peerPID: pid_t,
+    shellPID: pid_t,
+    peerIdentity: ControlProcessIdentity? = nil
+  ) -> ControlAttachProcessChain? {
+    var entries: [ControlProcessIdentity] = []
+    var currentPID: pid_t? = peerPID
+    while let pid = currentPID, pid > 0 {
+      let identity: ControlProcessIdentity
+      if let peerIdentity, pid == peerPID {
+        identity = peerIdentity
+      } else {
+        guard let lookedUp = processTreeInspector.identity(for: pid) else {
+          return nil
+        }
+        identity = lookedUp
+      }
+      guard identity.uid == getuid(), identity.startTime != nil else {
+        return nil
+      }
+      entries.append(identity)
+      if pid == shellPID { break }
+      currentPID = processTreeInspector.parentPID(of: pid)
+    }
+    guard let last = entries.last, last.pid == shellPID else { return nil }
+    return ControlAttachProcessChain(entries: entries)
+  }
+
+  private func resolveRouteAndIntent(
+    method: String,
+    path: String,
+    query: [String: String],
+    body: Data,
+    sessionID: String
+  ) -> (
+    routeID: String?,
+    intentID: String?,
+    capability: Capability?,
+    sensitivity: String,
+    sideEffectClass: String
+  ) {
+    for candidate in ControlRouteCatalog.routes {
+      guard candidate.match(method: method, path: path) != nil else { continue }
+      let request = ControlHTTPRequest(
+        method: method,
+        path: path,
+        query: query,
+        pathParameters: [:],
+        body: body)
+      switch candidate.resolveIntentID(request, .sessionObserve(sessionID: sessionID)) {
+      case .resolved(let intentID):
+        guard let descriptor = catalog.descriptor(id: intentID) else { continue }
+        return (
+          "\(method) \(path)",
+          intentID,
+          descriptor.requiredCapability,
+          descriptor.dataSensitivity.rawValue,
+          sideEffectClassFor(descriptor.sideEffects)
+        )
+      case .failed:
+        continue
+      }
+    }
+    return (nil, nil, nil, "none", "none")
+  }
+
+  private func sideEffectClassFor(_ sideEffects: IntentDescriptor.SideEffects) -> String {
+    if sideEffects.ptyInput { return "ptyInput" }
+    if sideEffects.lifecycle { return "lifecycle" }
+    if sideEffects.clipboard { return "clipboard" }
+    if sideEffects.filesystem { return "filesystem" }
+    if sideEffects.network { return "network" }
+    return "none"
+  }
+
+  private func computeSHA256(_ data: Data) -> String {
+    let digest = SHA256.hash(data: data)
+    return digest.map { String(format: "%02x", $0) }.joined()
+  }
+
+  private func revalidateLazyAttachContext(
+    _ context: ControlAttachApprovalContext,
+    clientFD: Int32,
+    body: Data
+  ) -> Bool {
+    guard let currentPID = Self.peerPID(clientFD: clientFD) else { return false }
+    guard currentPID == context.peerPID else { return false }
+    guard var peerIdentity = processTreeInspector.identity(for: currentPID),
+      let startTime = peerIdentity.startTime
+    else { return false }
+    guard startTime == context.peerStartTime else { return false }
+    if let auditToken = context.auditToken {
+      peerIdentity.auditToken = auditToken
+    }
+
+    guard let (sessionID, shell) = resolveUniqueShellSessionAncestor(peerPID: currentPID),
+      sessionID == context.sessionID
+    else { return false }
+
+    guard
+      let chain = resolveAttachProcessChain(
+        peerPID: currentPID,
+        shellPID: shell.shellPID,
+        peerIdentity: peerIdentity)
+    else { return false }
+    guard let principal = chain.principal,
+      let principalStartTime = principal.identity.startTime
+    else { return false }
+    var revalidatedIdentity = principal.identity
+    if revalidatedIdentity.pid == currentPID {
+      revalidatedIdentity.auditToken = context.auditToken
+    }
+    if let signing = codeSigningInspector.signingIdentity(
+      forLivePID: principal.identity.pid,
+      startTime: principalStartTime,
+      auditToken: revalidatedIdentity.auditToken)
+    {
+      revalidatedIdentity.signing = signing
+    }
+    guard revalidatedIdentity.fingerprint == context.principalFingerprint else { return false }
+
+    let computedHash = body.isEmpty ? nil : computeSHA256(body)
+    guard computedHash == context.bodySHA256 else { return false }
+
+    let (
+      resolvedRouteID,
+      resolvedIntentID,
+      resolvedCapability,
+      resolvedSensitivity,
+      resolvedSideEffect
+    ) = resolveRouteAndIntent(
+      method: context.method,
+      path: context.path,
+      query: Self.parseQueryString(context.query),
+      body: body,
+      sessionID: sessionID)
+    guard resolvedRouteID == context.resolvedRouteID,
+      resolvedIntentID == context.resolvedIntentID,
+      resolvedCapability.map({ context.capabilities.contains($0) }) == true,
+      resolvedSensitivity == context.maxDataSensitivity,
+      resolvedSideEffect == context.allowedSideEffectClasses.first
+    else { return false }
+
+    return true
+  }
+
+  private func lazyAttachResponse(
+    sessionID: String,
+    approval: String,
+    downstream: ControlResponse
+  ) -> ControlResponse {
+    let bodyString = String(data: downstream.body, encoding: .utf8) ?? ""
+    let payload: [String: Any] = [
+      "ok": true,
+      "sessionID": sessionID,
+      "approval": approval,
+      "downstreamStatus": downstream.status,
+      "downstreamBody": bodyString,
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    else {
+      return .error(500, "internal error")
+    }
+    return ControlResponse(
+      status: 200,
+      contentType: "application/json",
+      body: data)
+  }
+
+  private func reportLazyAttachDeny(
+    sessionID: String?,
+    reason: String
+  ) {
+    let context = ControlSecurityContext(
+      intentID: "control.attach.request",
+      capability: .observeSensitive,
+      surface: surface,
+      sessionID: sessionID)
+    securityObserver?.didAttachDeny(context, reason: .forbiddenScope)
+  }
+
+  private func reportLazyAttachApproved(
+    sessionID: String,
+    approvalID: String,
+    intentID: String,
+    mode: String
+  ) {
+    let context = ControlSecurityContext(
+      intentID: intentID,
+      capability: .observeSensitive,
+      surface: surface,
+      sessionID: sessionID)
+    securityObserver?.didAttachApprove(context, mode: mode)
+  }
+
+  private func reportLazyAttachAutoApproved(
+    sessionID: String,
+    approvalID: String,
+    intentID: String
+  ) {
+    let context = ControlSecurityContext(
+      intentID: intentID,
+      capability: .observeSensitive,
+      surface: surface,
+      sessionID: sessionID)
+    securityObserver?.didAttachAutoApprove(context, approvalID: approvalID)
+  }
+
+  private func reportLazyAttachRequest(
+    sessionID: String,
+    intentID: String
+  ) {
+    let context = ControlSecurityContext(
+      intentID: intentID,
+      capability: .observeSensitive,
+      surface: surface,
+      sessionID: sessionID)
+    securityObserver?.didAttachRequest(context)
   }
 }

@@ -9,7 +9,35 @@ public enum TokenScope: Sendable, Equatable {
 public enum ControlTokenTier: Sendable, Equatable {
   case appObserve
   case sessionObserve(sessionID: String)
+  case approvedSession(
+    sessionID: String, approvalID: String, capabilities: [Capability],
+    constraint: ControlTokenConstraint)
   case fixture
+}
+
+public struct ControlTokenConstraint: Sendable, Equatable {
+  public let method: String
+  public let path: String
+  public let query: String
+  public let bodySHA256: String?
+  public let resolvedRouteID: String
+  public let resolvedIntentID: String
+
+  public init(
+    method: String,
+    path: String,
+    query: String,
+    bodySHA256: String?,
+    resolvedRouteID: String,
+    resolvedIntentID: String
+  ) {
+    self.method = method
+    self.path = path
+    self.query = query
+    self.bodySHA256 = bodySHA256
+    self.resolvedRouteID = resolvedRouteID
+    self.resolvedIntentID = resolvedIntentID
+  }
 }
 
 public struct LabanControlPolicy: Sendable {
@@ -19,6 +47,8 @@ public struct LabanControlPolicy: Sendable {
       return [.observe]
     case .sessionObserve:
       return [.observe, .observeSensitive, .navigate, .propose]
+    case .approvedSession(_, _, let capabilities, _):
+      return Set(capabilities)
     case .fixture:
       return [.fixture, .observe, .observeSensitive, .navigate, .propose, .input]
     }
@@ -28,7 +58,7 @@ public struct LabanControlPolicy: Sendable {
     switch tier {
     case .appObserve, .fixture:
       return .wholeApp
-    case .sessionObserve(let sessionID):
+    case .sessionObserve(let sessionID), .approvedSession(let sessionID, _, _, _):
       return .session(sessionID)
     }
   }
@@ -38,7 +68,12 @@ public struct LabanControlPolicy: Sendable {
     catalog: IntentCatalog,
     granted: Set<Capability>,
     targetSession: String?,
-    tokenScope: TokenScope
+    tokenScope: TokenScope,
+    tokenTier: ControlTokenTier? = nil,
+    method: String? = nil,
+    path: String? = nil,
+    query: String? = nil,
+    bodySHA256: String? = nil
   ) -> Bool {
     guard let descriptor = catalog.descriptor(id: intentID) else {
       return false
@@ -53,7 +88,18 @@ public struct LabanControlPolicy: Sendable {
       return true
     case .session(let ownSessionID):
       let effectiveTarget = targetSession ?? ownSessionID
-      return effectiveTarget == ownSessionID
+      guard effectiveTarget == ownSessionID else { return false }
+      if case .approvedSession(_, _, _, let constraint) = tokenTier {
+        guard let method, let path, let query else { return false }
+        guard constraint.method == method else { return false }
+        guard constraint.path == path else { return false }
+        guard constraint.query == query else { return false }
+        guard constraint.bodySHA256 == bodySHA256 else { return false }
+        guard constraint.resolvedRouteID == "\(method) \(path)" else { return false }
+        guard constraint.resolvedIntentID == intentID else { return false }
+        return true
+      }
+      return true
     }
   }
 }
