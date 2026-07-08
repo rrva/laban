@@ -26,6 +26,7 @@ let package = Package(
     .executable(name: "laban-agent", targets: ["LabanAgent"]),
     .executable(name: "laband", targets: ["Laband"]),
     .executable(name: "labpty", targets: ["Labpty"]),
+    .executable(name: "laban", targets: ["LabanCLI"]),
     .executable(name: "find-perf", targets: ["FindPerf"]),
     .executable(name: "bench-pty-drain", targets: ["BenchPtyDrain"]),
     .executable(name: "bench-keystroke-latency", targets: ["BenchKeystrokeLatency"]),
@@ -76,6 +77,10 @@ let package = Package(
     .executableTarget(
       name: "LabanControlGen",
       dependencies: ["LabanControl", "LabanCore"]
+    ),
+    .executableTarget(
+      name: "LabanCLI",
+      dependencies: ["LabanControl"]
     ),
     .executableTarget(
       name: "LabanApp",
@@ -152,6 +157,10 @@ let package = Package(
     .testTarget(
       name: "LabanControlTests",
       dependencies: ["LabanControl", "LabanCore"]
+    ),
+    .testTarget(
+      name: "LabanCLITests",
+      dependencies: ["LabanCLI", "LabanControl"]
     ),
     .testTarget(
       name: "LabandTests",
