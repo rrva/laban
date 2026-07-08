@@ -4,6 +4,12 @@ import LabanCore
 import XCTest
 
 final class ControlSecurityAuditTests: XCTestCase {
+  private var retainedApprovalDelegates: [FakeAuditApprovalDelegate] = []
+
+  override func tearDown() {
+    retainedApprovalDelegates.removeAll()
+    super.tearDown()
+  }
 
   func testLazyAttachApprovalEmitsRequestedAndApprovedEvents() throws {
     let (server, socketPath, token, observer) = try makeServer()
@@ -73,10 +79,11 @@ final class ControlSecurityAuditTests: XCTestCase {
   ) throws -> (LabanControlServer, String, String, SpySecurityObserver) {
     let observer = SpySecurityObserver()
     let router = AuditSpyRouter()
+    let peerPID = pid_t(ProcessInfo.processInfo.processIdentifier)
     let tree = FakeAuditProcessTreeInspector(tree: [
-      100: (
+      peerPID: (
         parent: 50,
-        identity: makeIdentity(100, path: "/Applications/Laban.app/Contents/MacOS/laban")
+        identity: makeIdentity(peerPID, path: "/Applications/Laban.app/Contents/MacOS/laban")
       ),
       50: (parent: 1, identity: makeIdentity(50, path: "/bin/zsh")),
     ])
@@ -88,7 +95,9 @@ final class ControlSecurityAuditTests: XCTestCase {
       codeSigningInspector: FakeAuditCodeSigningInspector())
     let start = try server.start()
     server.registerAttachShellPID(sessionID: "s1", shellPID: 50)
-    server.setApprovalDelegate(FakeAuditApprovalDelegate(decision: decision))
+    let delegate = FakeAuditApprovalDelegate(decision: decision)
+    retainedApprovalDelegates.append(delegate)
+    server.setApprovalDelegate(delegate)
     return (server, start.socketPath, start.appObserveToken, observer)
   }
 

@@ -136,9 +136,11 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
     capabilities: [Capability] = [.observe],
     maxDataSensitivity: String = "nonSensitiveState",
     allowedSideEffectClasses: [String] = ["read"],
-    principalIdentityFingerprint: String = makePrincipal().identity.stablePrincipalFingerprint
+    principalIdentityFingerprint: String? = nil
   ) -> ControlAttachApprovalRecord {
-    ControlAttachApprovalRecord(
+    let resolvedPrincipalIdentityFingerprint =
+      principalIdentityFingerprint ?? makePrincipal().identity.stablePrincipalFingerprint
+    return ControlAttachApprovalRecord(
       id: id,
       displayName: displayName,
       signing: ControlCodeSigningIdentity(
@@ -151,7 +153,7 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
       capabilities: capabilities,
       maxDataSensitivity: maxDataSensitivity,
       allowedSideEffectClasses: allowedSideEffectClasses,
-      principalIdentityFingerprint: principalIdentityFingerprint)
+      principalIdentityFingerprint: resolvedPrincipalIdentityFingerprint)
   }
 
   private func makePrincipal(path: String = "/Applications/Codex.app/Contents/MacOS/Codex")

@@ -8,8 +8,10 @@ final class LazyAttachPersistedApprovalScopeTests: XCTestCase {
 
   private var cleanupDefaults: UserDefaults?
   private var cleanupSuiteName: String?
+  private var retainedApprovalDelegates: [FakeApprovalDelegate] = []
 
   override func tearDown() {
+    retainedApprovalDelegates.removeAll()
     if let cleanupDefaults, let cleanupSuiteName {
       cleanupDefaults.removePersistentDomain(forName: cleanupSuiteName)
       cleanupDefaults.removeSuite(named: cleanupSuiteName)
@@ -105,7 +107,9 @@ final class LazyAttachPersistedApprovalScopeTests: XCTestCase {
       approvalStore: approvalStore)
     let start = try server.start()
     server.registerAttachShellPID(sessionID: "s1", shellPID: 50)
-    server.setApprovalDelegate(FakeApprovalDelegate(decision: .deny))
+    let delegate = FakeApprovalDelegate(decision: .deny)
+    retainedApprovalDelegates.append(delegate)
+    server.setApprovalDelegate(delegate)
 
     let record = ControlAttachApprovalRecord(
       id: "persisted-state",
