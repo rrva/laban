@@ -12,7 +12,7 @@ struct LazyAttachIntendedRequest: Encodable {
   var method: String
   var path: String
   var query: String
-  var body: String?
+  var bodyBase64: String?
   var bodySHA256: String?
 }
 
@@ -29,6 +29,7 @@ enum LazyAttachClientError: Error, CustomStringConvertible {
   case denied(String)
   case timeout(String)
   case sessionChanged(String)
+  case rateLimited(String)
   case malformedResponse
 
   var description: String {
@@ -41,6 +42,8 @@ enum LazyAttachClientError: Error, CustomStringConvertible {
       return "timeout: \(reason)"
     case .sessionChanged(let reason):
       return "session changed: \(reason)"
+    case .rateLimited(let reason):
+      return "rate limited: \(reason)"
     case .malformedResponse:
       return "malformed response"
     }
@@ -48,7 +51,7 @@ enum LazyAttachClientError: Error, CustomStringConvertible {
 }
 
 enum LazyAttachClient {
-  static let clientRequestIDLength = 16
+  static let maxBodySize = 256 * 1024
 
   static func perform(
     cliCommand: String,
@@ -61,6 +64,10 @@ enum LazyAttachClient {
     let requestID = makeRequestID()
     let bodyString = body ?? ""
     let bodyData = Data(bodyString.utf8)
+    guard bodyData.count <= maxBodySize else {
+      throw LazyAttachClientError.denied("request body too large")
+    }
+    let bodyBase64 = bodyData.isEmpty ? nil : bodyData.base64EncodedString()
     let bodySHA256 = bodyData.isEmpty ? nil : computeSHA256(bodyData)
 
     let queryString = query.sorted { $0.key < $1.key }
@@ -71,7 +78,7 @@ enum LazyAttachClient {
       method: method,
       path: path,
       query: queryString,
-      body: bodyString.isEmpty ? nil : bodyString,
+      bodyBase64: bodyBase64,
       bodySHA256: bodySHA256)
 
     let request = LazyAttachRequest(
@@ -97,7 +104,7 @@ enum LazyAttachClient {
         throw LazyAttachClientError.sessionChanged(message)
       }
       if status == 429 {
-        throw LazyAttachClientError.timeout(message)
+        throw LazyAttachClientError.rateLimited(message)
       }
       throw LazyAttachClientError.denied(message)
     }
@@ -118,8 +125,7 @@ enum LazyAttachClient {
   }
 
   private static func makeRequestID() -> String {
-    let chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-    return String((0..<clientRequestIDLength).map { _ in chars.randomElement()! })
+    UUID().uuidString
   }
 
   private static func computeSHA256(_ data: Data) -> String {

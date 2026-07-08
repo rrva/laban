@@ -89,14 +89,14 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
     signingInspector: ControlCodeSigningInspecting?
   ) -> Bool {
     guard let principalSigning = principal.identity.signing else { return false }
-    if let requirement = record.signing.designatedRequirement,
-      let startTime = principal.identity.startTime,
-      let inspector = signingInspector
-    {
+    let requirement = record.signingRequirement
+    guard !requirement.isEmpty else { return false }
+    guard let startTime = principal.identity.startTime else { return false }
+    if let inspector = signingInspector {
       return inspector.validatesLivePID(
         principal.identity.pid, startTime: startTime, against: requirement)
     }
-    return record.signing == principalSigning
+    return requirement == (principalSigning.designatedRequirement ?? "")
   }
 }
 

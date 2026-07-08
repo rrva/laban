@@ -95,13 +95,13 @@ final class ControlSecurityAuditTests: XCTestCase {
     path: String
   ) throws -> (Int, Data) {
     let intendedRequest: [String: Any] = [
-      "clientRequestID": "audit-req-1",
+      "clientRequestID": "550e8400-e29b-41d4-a716-446655440000",
       "cliCommand": cliCommand,
       "intendedRequest": [
         "method": method,
         "path": path,
         "query": "",
-        "body": NSNull(),
+        "bodyBase64": NSNull(),
         "bodySHA256": NSNull(),
       ],
     ]
@@ -137,7 +137,7 @@ private struct AuditEvent {
   let payload: [String: Any]
 }
 
-private final class SpySecurityObserver: ControlSecurityObserver {
+private final class SpySecurityObserver: ControlSecurityObserver, @unchecked Sendable {
   private let lock = NSLock()
   private var _events: [AuditEvent] = []
 
@@ -189,7 +189,7 @@ private final class SpySecurityObserver: ControlSecurityObserver {
   }
 }
 
-private final class FakeAuditApprovalDelegate: ControlAttachApprovalDelegate {
+private final class FakeAuditApprovalDelegate: ControlAttachApprovalDelegate, @unchecked Sendable {
   let decision: ControlAttachApprovalDecision
   init(decision: ControlAttachApprovalDecision) { self.decision = decision }
   func requestControlAttachApproval(
@@ -203,12 +203,10 @@ private final class FakeAuditApprovalDelegate: ControlAttachApprovalDelegate {
 private struct FakeAuditProcessTreeInspector: ControlProcessTreeInspecting {
   let tree: [pid_t: (parent: pid_t?, identity: ControlProcessIdentity)]
   func parentPID(of pid: pid_t) -> pid_t? { tree[pid]?.parent }
-  func identity(for pid: pid_t) -> ControlProcessIdentity {
-    tree[pid]?.identity ?? makeIdentity(pid)
-  }
-
-  private func makeIdentity(_ pid: pid_t) -> ControlProcessIdentity {
-    ControlProcessIdentity(pid: pid, uid: getuid())
+  func identity(for pid: pid_t) -> ControlProcessIdentity? {
+    var identity = tree[pid]?.identity
+    identity?.parentPID = tree[pid]?.parent
+    return identity
   }
 }
 

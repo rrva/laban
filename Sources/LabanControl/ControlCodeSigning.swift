@@ -13,6 +13,7 @@ import Foundation
     public init() {}
 
     public func identity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity? {
+      guard processStartTimeMatches(pid: pid, startTime: startTime) else { return nil }
       guard let code = code(forPID: pid) else { return nil }
       guard let staticCode = staticCode(for: code) else { return nil }
 
@@ -37,6 +38,7 @@ import Foundation
     }
 
     public func validateLivePID(_ pid: pid_t, startTime: Date, requirement: String) -> Bool {
+      guard processStartTimeMatches(pid: pid, startTime: startTime) else { return false }
       guard let code = code(forPID: pid) else { return false }
 
       var requirementRef: SecRequirement?
@@ -46,6 +48,12 @@ import Foundation
 
       let verifyStatus = SecCodeCheckValidity(code, SecCSFlags(), requirementRef)
       return verifyStatus == errSecSuccess
+    }
+
+    private func processStartTimeMatches(pid: pid_t, startTime: Date) -> Bool {
+      guard let liveStartTime = ControlProcessTreeInspector().identity(for: pid)?.startTime
+      else { return false }
+      return liveStartTime == startTime
     }
 
     private func code(forPID pid: pid_t) -> SecCode? {

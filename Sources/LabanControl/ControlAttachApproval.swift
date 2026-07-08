@@ -36,6 +36,7 @@ public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
   public var displayName: String
   public var bundleIdentifier: String?
   public var signing: ControlCodeSigningIdentity
+  public var signingRequirement: String
   public var scope: ControlAttachApprovalScope
   public var sessionID: String
   public var shellIdentityFingerprint: String
@@ -54,6 +55,7 @@ public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
     displayName: String,
     bundleIdentifier: String? = nil,
     signing: ControlCodeSigningIdentity,
+    signingRequirement: String = "",
     scope: ControlAttachApprovalScope = .currentRegisteredSession,
     sessionID: String,
     shellIdentityFingerprint: String,
@@ -71,6 +73,10 @@ public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
     self.displayName = displayName
     self.bundleIdentifier = bundleIdentifier
     self.signing = signing
+    self.signingRequirement =
+      signingRequirement.isEmpty
+      ? (signing.designatedRequirement ?? "")
+      : signingRequirement
     self.scope = scope
     self.sessionID = sessionID
     self.shellIdentityFingerprint = shellIdentityFingerprint
@@ -196,30 +202,24 @@ public struct ControlAttachProcessChain: Sendable, Equatable {
   }
 
   public var principal: ControlAttachPrincipal? {
-    let helpers = Set(
-      ControlAttachConstants.bundledHelpers + ControlAttachConstants.genericInterpreters)
-    var nonHelpers: [ControlProcessIdentity] = []
-    for entry in entries.reversed() {
-      let basename = entry.displayName
-      if helpers.contains(basename) {
-        continue
-      }
-      nonHelpers.append(entry)
+    var nonBundled: [ControlProcessIdentity] = []
+    for entry in entries.reversed() where !ControlAttachPrincipal.isBundledHelper(entry) {
+      nonBundled.append(entry)
     }
-    guard let principalEntry = nonHelpers.first else { return nil }
+    let principalEntry =
+      nonBundled.first { !ControlAttachPrincipal.isGenericInterpreter($0) }
+      ?? nonBundled.first
+    guard let principalEntry else { return nil }
     let isGeneric = ControlAttachPrincipal.isGenericInterpreter(principalEntry)
-    let hasStableSigning =
-      (principalEntry.signing?.isAdHocOrUnsigned == false)
-      && principalEntry.signing?.designatedRequirement != nil
     return ControlAttachPrincipal(
       identity: principalEntry,
       isGenericInterpreter: isGeneric,
-      isPersistable: hasStableSigning && !isGeneric,
+      isPersistable: ControlAttachPrincipal.isPersistable(principalEntry),
       helperChain: entries)
   }
 
   public var helperChainSummary: String {
-    let names = entries.map { $0.displayName }
+    let names = entries.reversed().map { $0.displayName }
     return names.joined(separator: " -> ")
   }
 }
@@ -243,8 +243,11 @@ public struct ControlAttachPrincipal: Sendable, Equatable {
   }
 
   public static func isGenericInterpreter(_ identity: ControlProcessIdentity) -> Bool {
-    let name = identity.displayName
-    return ControlAttachConstants.genericInterpreters.contains(name)
+    if !identity.executableBaseName.isEmpty {
+      return ControlAttachConstants.genericInterpreters.contains(identity.executableBaseName)
+    }
+    return ControlAttachConstants.genericInterpreterSigningIdentifiers.contains(
+      identity.signing?.signingIdentifier ?? "")
   }
 
   public static func isGenericInterpreter(_ basename: String) -> Bool {
@@ -252,15 +255,17 @@ public struct ControlAttachPrincipal: Sendable, Equatable {
   }
 
   public static func isBundledHelper(_ identity: ControlProcessIdentity) -> Bool {
-    let name = identity.displayName
-    return ControlAttachConstants.bundledHelpers.contains(name)
+    if !identity.executableBaseName.isEmpty {
+      return ControlAttachConstants.bundledHelpers.contains(identity.executableBaseName)
+    }
+    return identity.signing?.bundleIdentifier?.hasSuffix(".Laban") == true
   }
 
   public static func isPersistable(_ identity: ControlProcessIdentity) -> Bool {
     !isGenericInterpreter(identity)
       && !isBundledHelper(identity)
       && identity.signing?.isAdHocOrUnsigned == false
-      && identity.signing?.designatedRequirement != nil
+      && identity.signing?.designatedRequirement?.isEmpty == false
   }
 }
 
@@ -271,6 +276,11 @@ public enum ControlAttachConstants {
     "sh", "zsh", "bash", "fish",
     "python", "python3", "node", "npm", "npx", "pnpm", "yarn", "bun", "deno", "uv", "pipx",
     "ruby", "perl", "php", "java", "osascript", "swift", "xcrun",
+  ]
+
+  public static let genericInterpreterSigningIdentifiers: [String] = [
+    "com.apple.swift", "com.apple.python", "com.apple.javascript",
+    "org.python.python", "org.nodejs.node", "com.apple.ruby",
   ]
 }
 
