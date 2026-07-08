@@ -11,4 +11,14 @@ public enum ControlFD {
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
   }
+
+  public static func setNoSigPipe(_ fd: Int32) throws {
+    var one = Int32(1)
+    guard
+      setsockopt(
+        fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size)) == 0
+    else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+  }
 }

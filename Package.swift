@@ -80,7 +80,7 @@ let package = Package(
     ),
     .executableTarget(
       name: "LabanCLI",
-      dependencies: ["LabanControl"]
+      dependencies: ["LabanControl", "LabanCore"]
     ),
     .executableTarget(
       name: "LabanApp",
@@ -174,6 +174,10 @@ let package = Package(
       name: "LabanAppTests",
       dependencies: ["LabanApp", "LabanControl", "LabanDebug", "LabanAgent", "Laband", "Labpty"],
       exclude: ["Fixtures"]
+    ),
+    .testTarget(
+      name: "LabanAgentTests",
+      dependencies: ["LabanAgent", "LabanControl", "LabanCore"]
     ),
   ]
 )

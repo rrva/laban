@@ -849,7 +849,8 @@ final class ControlProcessInfoTests: XCTestCase {
   }
 
   func testAcceptsDevBuildPathOnlyWhenAllowed() {
-    let devPath = "/Users/rrj/.cursor/worktrees/laban/c2yt/.build/arm64-apple-macosx/debug/laban-agent"
+    let devPath =
+      "/Users/rrj/.cursor/worktrees/laban/c2yt/.build/arm64-apple-macosx/debug/laban-agent"
     XCTAssertTrue(
       ControlProcessInfo.isLabanAgentExecutable(
         devPath,

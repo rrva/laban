@@ -24,6 +24,8 @@ struct AgentArgs {
   var replayCapture: String? = nil
   var replayMode: CaptureReplayMode = .both
   var controlAttach = false
+  var controlAttachServeCLI = false
+  var controlAttachRunCommand: [String]? = nil
   var controlAttachSmokePaths: [String] = []
   /// Optional persistence directory. When set, the headless runtime
   /// wires the same PersistenceCoordinator / TranscriptHost /
@@ -38,12 +40,28 @@ struct AgentArgs {
 func parseArgs() -> AgentArgs {
   var a = AgentArgs()
   for arg in CommandLine.arguments.dropFirst() {
+    // Once we are collecting the child command for --control-attach-run,
+    // stop interpreting flags. The first `--` after the run flag is the
+    // argv separator and is dropped.
+    if a.controlAttachRunCommand != nil {
+      if a.controlAttachRunCommand!.isEmpty && arg == "--" {
+        continue
+      }
+      a.controlAttachRunCommand!.append(arg)
+      continue
+    }
+
     switch arg {
     case "--help", "-h": a.help = true
     case "--headless": a.headless = true
     case "--deterministic": a.deterministic = true
     case "--debug-server": a.debugServerAddress = "127.0.0.1:0"
     case "--control-attach": a.controlAttach = true
+    case "--control-attach-serve-cli": a.controlAttachServeCLI = true
+    case "--control-attach-run":
+      a.controlAttach = true
+      a.controlAttachServeCLI = true
+      a.controlAttachRunCommand = []
     case PersistenceRestoreLaunchFlag.argument: a.noPersistenceRestore = true
     case PersistenceRestoreLaunchFlag.noPersistenceArgument: a.noPersistence = true
     default:
@@ -94,6 +112,12 @@ func usage() -> String {
     laban-agent --headless --debug-server[=127.0.0.1:0] [options]
     laban-agent --replay-capture=PATH [--replay-mode=both|terminal|renderer]
     laban-agent --control-attach [--control-attach-smoke=PATH ...]
+    laban-agent --control-attach --control-attach-serve-cli [--control-attach-run -- COMMAND [ARG ...]]
+
+  Control-attach serve options:
+    --control-attach-serve-cli      Start a private UDS proxy for CLI descendants.
+    --control-attach-run -- COMMAND Launch COMMAND with LABAN_AGENT_CONTROL_URL set,
+                                    preserving stdin/stdout/stderr. Implies serve-cli.
 
   Debug server options:
     --fixture=PATH                  Load a deterministic fixture session.
@@ -199,18 +223,8 @@ struct LiveControlAttachReady: Encodable {
   var mode = "control-attach"
   var ok = true
   var sessionID: String
-}
-
-struct LiveControlAttachRequest: Decodable {
-  var method: String?
-  var path: String
-  var body: String?
-}
-
-struct LiveControlAttachResponse: Encodable {
-  var path: String
-  var status: Int
-  var body: String
+  /// Proxy socket path; present only when the broker is serving the CLI surface.
+  var agentControlURL: String? = nil
 }
 
 struct LiveControlAttachSmokeResponse: Encodable {
@@ -291,8 +305,6 @@ func runLiveControlAttach(_ args: AgentArgs) -> Never {
   }
   defer { Darwin.close(attachment.fd) }
 
-  printJSON(LiveControlAttachReady(sessionID: attachment.sessionID))
-
   if !args.controlAttachSmokePaths.isEmpty {
     for path in args.controlAttachSmokePaths {
       do {
@@ -306,6 +318,45 @@ func runLiveControlAttach(_ args: AgentArgs) -> Never {
     }
     exit(0)
   }
+
+  if args.controlAttachServeCLI {
+    let proxy: ControlAttachProxyServer
+    do {
+      proxy = try ControlAttachProxyServer(
+        upstreamFD: attachment.fd,
+        allowedRootPID: nil)
+    } catch {
+      fail("failed to start control-attach CLI proxy: \(error)")
+    }
+
+    if let command = args.controlAttachRunCommand {
+      runAttachedChild(command: command, proxy: proxy)
+    }
+
+    printJSON(
+      LiveControlAttachReady(
+        sessionID: attachment.sessionID,
+        agentControlURL: proxy.socketPath))
+    installProxyTerminationSources(proxy: proxy)
+
+    while let line = readLine() {
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      if trimmed.isEmpty { continue }
+      do {
+        let request = try JSONDecoder().decode(
+          LiveControlAttachRequest.self,
+          from: Data(trimmed.utf8))
+        printJSON(try requestLiveControl(fd: attachment.fd, request: request))
+      } catch {
+        fputs("laban-agent: control proxy request failed: \(error)\n", stderr)
+        fflush(stderr)
+      }
+    }
+    proxy.stop()
+    exit(0)
+  }
+
+  printJSON(LiveControlAttachReady(sessionID: attachment.sessionID))
 
   while let line = readLine() {
     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -321,6 +372,99 @@ func runLiveControlAttach(_ args: AgentArgs) -> Never {
     }
   }
   exit(0)
+}
+
+// Retain signal dispatch sources for the lifetime of the broker/child.
+private var retainedProxyTerminationSources: [DispatchSourceSignal] = []
+private var retainedChildSignalSources: [DispatchSourceSignal] = []
+
+/// Launches the agent child with the proxy URL in its environment, ties proxy
+/// access to the child process tree, and keeps the broker alive until the child
+/// exits or the broker is asked to shut down.
+func runAttachedChild(command: [String], proxy: ControlAttachProxyServer) -> Never {
+  let configuration: ChildLaunchConfiguration
+  do {
+    configuration = try ChildLauncher.prepareConfiguration(
+      command: command,
+      agentControlURL: proxy.socketPath)
+  } catch {
+    proxy.stop()
+    fail("failed to prepare child command: \(error)")
+  }
+
+  let childPID: pid_t
+  do {
+    childPID = try ChildLauncher.launch(configuration)
+  } catch {
+    proxy.stop()
+    fail("failed to launch child command '\(configuration.argv0)': \(error)")
+  }
+
+  proxy.setAllowedRootPID(childPID)
+
+  // The child was spawned with POSIX_SPAWN_SETPGROUP into its own process
+  // group, so signals can target the whole tree.
+  proxy.onUpstreamLost = {
+    terminateChildOrGroup(pid: childPID)
+  }
+
+  DispatchQueue.global().async {
+    var status: Int32 = 0
+    var result: pid_t
+    repeat {
+      result = waitpid(childPID, &status, 0)
+    } while result == -1 && errno == EINTR
+
+    let exitStatus = ChildLauncher.exitStatus(waitResult: result, status: status)
+    proxy.stop()
+    exit(exitStatus)
+  }
+
+  installChildSignalSources(childPID: childPID)
+  dispatchMain()
+}
+
+func installProxyTerminationSources(proxy: ControlAttachProxyServer) {
+  for sig in [SIGINT, SIGTERM, SIGHUP] {
+    Darwin.signal(sig, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    source.setEventHandler {
+      proxy.stop()
+      exit(0)
+    }
+    source.resume()
+    retainedProxyTerminationSources.append(source)
+  }
+}
+
+func installChildSignalSources(childPID: pid_t) {
+  Darwin.signal(SIGINT, SIG_IGN)
+  let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+  intSource.setEventHandler {
+    _ = Darwin.kill(-childPID, SIGINT)
+  }
+  intSource.resume()
+  retainedChildSignalSources.append(intSource)
+
+  for sig in [SIGTERM, SIGHUP] {
+    Darwin.signal(sig, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    source.setEventHandler {
+      terminateChildOrGroup(pid: childPID)
+    }
+    source.resume()
+    retainedChildSignalSources.append(source)
+  }
+}
+
+func terminateChildOrGroup(pid: pid_t) {
+  _ = Darwin.kill(-pid, SIGTERM)
+  DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+    // If the child is still around after the grace period, force-kill it.
+    if Darwin.kill(-pid, 0) == 0 || errno == EPERM {
+      _ = Darwin.kill(-pid, SIGKILL)
+    }
+  }
 }
 
 func installTerminationSource(

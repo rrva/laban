@@ -180,11 +180,12 @@ public final class LabanControlServer {
       attachLock.unlock()
       return .pending
     }
-    guard Self.isAllowedAttachRedeemer(
-      peerPID: peerPID,
-      shellPID: shellPID,
-      expectedAgentExecutablePath: expectedAgentExecutablePath,
-      allowDevAgentExecutablePath: allowDevAgentExecutablePath)
+    guard
+      Self.isAllowedAttachRedeemer(
+        peerPID: peerPID,
+        shellPID: shellPID,
+        expectedAgentExecutablePath: expectedAgentExecutablePath,
+        allowDevAgentExecutablePath: allowDevAgentExecutablePath)
     else {
       attachLock.unlock()
       return .invalid
@@ -197,12 +198,12 @@ public final class LabanControlServer {
   }
 
   #if DEBUG
-  /// Mints a session-observe bearer for tests and fixture runtimes only — not C14 production attach.
-  public func mintSessionObserveToken(sessionID: String) -> String {
-    let token = Self.makeToken()
-    registerToken(token, tier: .sessionObserve(sessionID: sessionID))
-    return token
-  }
+    /// Mints a session-observe bearer for tests and fixture runtimes only — not C14 production attach.
+    public func mintSessionObserveToken(sessionID: String) -> String {
+      let token = Self.makeToken()
+      registerToken(token, tier: .sessionObserve(sessionID: sessionID))
+      return token
+    }
   #endif
 
   public func stop() {

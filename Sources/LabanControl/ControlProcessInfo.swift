@@ -45,7 +45,8 @@ public enum ControlProcessInfo {
   public static func defaultExpectedAgentExecutablePath() -> String? {
     let bundleURL = Bundle.main.bundleURL.resolvingSymlinksInPath()
     guard bundleURL.pathExtension == "app" else { return nil }
-    return bundleURL
+    return
+      bundleURL
       .appendingPathComponent("Contents", isDirectory: true)
       .appendingPathComponent("MacOS", isDirectory: true)
       .appendingPathComponent("laban-agent")

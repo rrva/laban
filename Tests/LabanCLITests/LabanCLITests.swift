@@ -1,7 +1,8 @@
 import Foundation
 import LabanControl
-@testable import LabanCLI
 import XCTest
+
+@testable import LabanCLI
 
 final class LabanCLITests: XCTestCase {
   private let sentinel = "SECRET_SENTINEL_DO_NOT_PRINT"
@@ -66,7 +67,8 @@ final class LabanCLITests: XCTestCase {
 
   func testParseRequestWithBodySpace() {
     XCTAssertEqual(
-      LabanArgumentParser.parse(["request", "POST", "/debug/actions", "--body", "{\"x\":1}"]).success,
+      LabanArgumentParser.parse(["request", "POST", "/debug/actions", "--body", "{\"x\":1}"])
+        .success,
       .request(method: "POST", path: "/debug/actions", body: "{\"x\":1}", json: false))
   }
 
@@ -241,6 +243,169 @@ final class LabanCLITests: XCTestCase {
     let formatted = LabanCLI.formattedOutput(outcome)
     XCTAssertEqual(formatted.stdout, "ok\n")
     XCTAssertEqual(formatted.stderr, "")
+  }
+
+  // MARK: - Agent command parsing
+
+  func testParseAgentRun() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["agent", "run", "--", "git", "status"]).success,
+      .agentRun(command: ["git", "status"]))
+  }
+
+  func testParseAgentRunRequiresSeparator() {
+    guard case .failure(let error) = LabanArgumentParser.parse(["agent", "run", "git"]) else {
+      XCTFail("expected failure")
+      return
+    }
+    XCTAssertEqual(error, .missingArgument("-- COMMAND"))
+  }
+
+  func testParseSessionStateJSON() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["session", "state", "--json"]).success,
+      .sessionState(json: true))
+  }
+
+  func testParseSessionRequest() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse([
+        "session", "request", "POST", "/debug/actions",
+        "--body", "{\"action\":\"scrollViewport\"}",
+        "--json",
+      ]).success,
+      .sessionRequest(
+        method: "POST",
+        path: "/debug/actions",
+        body: "{\"action\":\"scrollViewport\"}",
+        json: true))
+  }
+
+  func testParseSessionScroll() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["session", "scroll", "--rows", "-40", "--json"]).success,
+      .sessionScroll(rows: -40, json: true))
+  }
+
+  func testParseSessionProxy() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["session", "proxy"]).success,
+      .sessionProxy)
+  }
+
+  func testParsePropose() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse([
+        "propose", "--purpose", "Inspect repo", "--", "git", "status",
+      ]).success,
+      .propose(purpose: "Inspect repo", command: ["git", "status"]))
+  }
+
+  func testParseProposePurposeEquals() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse([
+        "propose", "--purpose=Inspect repo", "--", "git", "status",
+      ]).success,
+      .propose(purpose: "Inspect repo", command: ["git", "status"]))
+  }
+
+  func testParseAgentRunPreservesFlagsAfterSeparator() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse([
+        "agent", "run", "--", "tool", "--json", "--body", "x",
+      ]).success,
+      .agentRun(command: ["tool", "--json", "--body", "x"]))
+  }
+
+  func testParseProposePreservesFlagsAfterSeparator() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse([
+        "propose", "--purpose", "P", "--", "echo", "--json", "--body", "x",
+      ]).success,
+      .propose(purpose: "P", command: ["echo", "--json", "--body", "x"]))
+  }
+
+  // MARK: - Session command behavior
+
+  func testSessionStateUsesAgentControlURLAndNotC14() {
+    let result = LabanCLI.run(
+      command: .sessionState(json: true),
+      controlDirectory: URL(fileURLWithPath: "/nonexistent/control/dir"),
+      agentProxyRequest: { proxyURL, envelope in
+        XCTAssertEqual(proxyURL, "unix:///proxy.sock")
+        XCTAssertEqual(envelope.method, "GET")
+        XCTAssertEqual(envelope.path, "/debug/state")
+        return (200, "{\"ok\":true}")
+      },
+      agentProxyURL: "unix:///proxy.sock",
+      executablePath: { "/tmp/laban" })
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertTrue(result.stdout.contains("\"ok\":true"))
+    XCTAssertTrue(result.stderr.isEmpty)
+  }
+
+  func testSessionStateMissingProxyEnvSuggestsAgentRun() {
+    let result = LabanCLI.run(
+      command: .sessionState(json: true),
+      controlDirectory: URL(fileURLWithPath: "/nonexistent/control/dir"),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      executablePath: { "/tmp/laban" })
+
+    XCTAssertEqual(result.exitCode, 3)
+    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
+    XCTAssertTrue(result.stderr.contains("laban agent run -- <command>"))
+    XCTAssertFalse(result.stdout.contains("SECRET"))
+  }
+
+  func testSessionScrollPostsScrollViewportAction() {
+    let result = LabanCLI.run(
+      command: .sessionScroll(rows: -40, json: true),
+      agentProxyRequest: { proxyURL, envelope in
+        XCTAssertEqual(proxyURL, "unix:///proxy.sock")
+        XCTAssertEqual(envelope.path, "/debug/actions")
+        XCTAssertEqual(envelope.body, "{\"action\":\"scrollViewport\",\"deltaRows\":-40}")
+        return (200, "{\"ok\":true}")
+      },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertTrue(result.stdout.contains("\"ok\":true"))
+  }
+
+  func testProposePostsProposeAction() {
+    let result = LabanCLI.run(
+      command: .propose(purpose: "Inspect", command: ["git", "status"]),
+      agentProxyRequest: { proxyURL, envelope in
+        XCTAssertEqual(proxyURL, "unix:///proxy.sock")
+        XCTAssertEqual(envelope.path, "/debug/actions")
+        XCTAssertTrue(envelope.body?.contains("\"action\":\"propose\"") ?? false)
+        XCTAssertTrue(envelope.body?.contains("\"command\":\"git status\"") ?? false)
+        XCTAssertTrue(envelope.body?.contains("\"purpose\":\"Inspect\"") ?? false)
+        return (200, "{\"proposalID\":\"p1\",\"writtenToPTY\":false}")
+      },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertTrue(result.stdout.contains("\"proposalID\":\"p1\""))
+    XCTAssertTrue(result.stdout.contains("\"writtenToPTY\":false"))
+  }
+
+  func testSessionRequestNon2xxExitsNonzero() {
+    let result = LabanCLI.run(
+      command: .sessionRequest(
+        method: "POST",
+        path: "/debug/actions",
+        body: "{\"action\":\"typeText\"}",
+        json: true),
+      agentProxyRequest: { _, _ in
+        return (403, "{\"error\":\"forbidden\"}")
+      },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 5)
+    XCTAssertTrue(result.stdout.contains("forbidden"))
+    XCTAssertTrue(result.stderr.contains("server returned 403"))
   }
 }
 
