@@ -190,9 +190,35 @@ public enum ControlUDSClient {
   }
 }
 
-public enum ControlUDSClientError: Error, Equatable {
+public enum ControlUDSClientError: Error, Equatable, CustomStringConvertible, LocalizedError {
   case socketFailed
   case pathTooLong
   case attachRedeemFailed(status: Int)
   case attachTooEarly
+
+  public var description: String {
+    switch self {
+    case .socketFailed:
+      return "failed to open the Laban control socket"
+    case .pathTooLong:
+      return "the Laban control socket path is too long"
+    case .attachRedeemFailed(status: 401):
+      return """
+        direct session attach was rejected by Laban (HTTP 401). The bootstrap is \
+        probably stale or this helper was launched from an already-running \
+        agent/tool subprocess. For one-off session commands, use `laban session \
+        ...` so lazy attach can ask for approval. For long-lived control, start \
+        a fresh agent from the Laban tab shell with `laban agent run -- <agent>` \
+        before launching the agent.
+        """
+    case .attachRedeemFailed(let status):
+      return "direct session attach was rejected by Laban (HTTP \(status))"
+    case .attachTooEarly:
+      return "direct session attach is waiting for the shell to finish registering"
+    }
+  }
+
+  public var errorDescription: String? {
+    description
+  }
 }
