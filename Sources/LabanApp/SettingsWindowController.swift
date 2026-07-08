@@ -1,5 +1,6 @@
 import AppKit
 import LabanCore
+import LabanControl
 import LabanRenderer
 
 /// The native Settings (⌘,) window. It surfaces the choices that used to live
@@ -75,6 +76,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     checkboxWithTitle: L10n.tr("Enable sampling profiler (applies on next launch)"), target: nil,
     action: nil)
   private let profileRecorderHelpLabel = NSTextField(wrappingLabelWithString: "")
+  private let approvalStore = ControlAttachApprovalStore()
+  private let approvalsStackView = NSStackView()
+  private let approvalsRefreshButton = NSButton(
+    title: L10n.tr("Refresh"), target: nil, action: nil)
 
   /// Theme index (into `themeController.orderedThemes`) behind each popup row,
   /// or -1 for the dark/light separator. Maps a popup selection back to a theme.
@@ -357,6 +362,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     testNotificationButton.toolTip =
       "Sends one native macOS notification through the same path as tab attention."
 
+    approvalsRefreshButton.target = self
+    approvalsRefreshButton.action = #selector(approvalsRefreshClicked(_:))
+    approvalsRefreshButton.bezelStyle = .rounded
+    approvalsRefreshButton.toolTip =
+      "Reload the list of approved lazy-attach principals."
+    approvalsStackView.orientation = .vertical
+    approvalsStackView.alignment = .leading
+    approvalsStackView.spacing = 8
+
     let appearanceGrid = makeSettingsGrid([
       [makeLabel(L10n.tr("Theme:")), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
@@ -395,12 +409,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [NSGridCell.emptyContentView, testNotificationButton],
     ])
 
+    let approvalsGrid = makeSettingsGrid([
+      [makeLabel(L10n.tr("Approvals:")), approvalsRefreshButton],
+      [NSGridCell.emptyContentView, makeApprovalsListView()],
+    ])
+
     let tabs = NSTabView(frame: .zero)
     tabs.translatesAutoresizingMaskIntoConstraints = false
     tabs.addTabViewItem(makeTabItem(label: L10n.tr("Appearance"), grid: appearanceGrid))
     tabs.addTabViewItem(makeTabItem(label: L10n.tr("Terminal"), grid: terminalGrid))
     tabs.addTabViewItem(makeTabItem(label: L10n.tr("Rendering"), grid: renderingGrid))
     tabs.addTabViewItem(makeTabItem(label: L10n.tr("Notifications"), grid: notificationsGrid))
+    tabs.addTabViewItem(makeTabItem(label: L10n.tr("Agent"), grid: approvalsGrid))
     content.addSubview(tabs)
     NSLayoutConstraint.activate([
       tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
@@ -834,6 +854,73 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   private func formatSubpixelValue(_ value: Float) -> String {
     String(format: "%.2f", value)
+  }
+
+  // MARK: Agent Approvals
+
+  private func makeApprovalsListView() -> NSScrollView {
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 360, height: 180))
+    scroll.hasVerticalScroller = true
+    scroll.borderType = .bezelBorder
+    scroll.autohidesScrollers = true
+    scroll.translatesAutoresizingMaskIntoConstraints = false
+    scroll.widthAnchor.constraint(equalToConstant: 360).isActive = true
+    scroll.heightAnchor.constraint(equalToConstant: 180).isActive = true
+    scroll.documentView = approvalsStackView
+    refreshApprovalsList()
+    return scroll
+  }
+
+  private func refreshApprovalsList() {
+    approvalsStackView.subviews.forEach { $0.removeFromSuperview() }
+    let records = approvalStore.loadAll().filter { $0.isRevoked == false }
+    if records.isEmpty {
+      let label = makeSmallLabel("No active lazy-attach approvals.")
+      approvalsStackView.addArrangedSubview(label)
+    } else {
+      for record in records {
+        let row = NSStackView(views: [makeApprovalLabel(record), makeRevokeButton(record)])
+        row.orientation = .horizontal
+        row.spacing = 8
+        row.alignment = .firstBaseline
+        approvalsStackView.addArrangedSubview(row)
+      }
+    }
+  }
+
+  private func makeApprovalLabel(_ record: ControlAttachApprovalRecord) -> NSTextField {
+    let text = "\(record.displayName) — \(record.allowedIntentIDs.joined(separator: ", "))"
+    let label = NSTextField(labelWithString: text)
+    label.lineBreakMode = .byTruncatingTail
+    label.usesSingleLineMode = true
+    label.preferredMaxLayoutWidth = 240
+    return label
+  }
+
+  private func makeRevokeButton(_ record: ControlAttachApprovalRecord) -> NSButton {
+    let button = NSButton(title: L10n.tr("Revoke"), target: self, action: #selector(revokeApprovalClicked(_:)))
+    button.bezelStyle = .rounded
+    button.toolTip = "Revoke approval for \(record.displayName)"
+    button.identifier = NSUserInterfaceItemIdentifier(record.id)
+    return button
+  }
+
+  @objc private func approvalsRefreshClicked(_ sender: Any?) {
+    refreshApprovalsList()
+  }
+
+  @objc private func revokeApprovalClicked(_ sender: NSButton) {
+    guard let id = sender.identifier?.rawValue else { return }
+    approvalStore.revoke(id: id)
+    refreshApprovalsList()
+    // Audit the revocation through the security coordinator.
+    let security = ControlSecurityCoordinator(indicatorHost: nil)
+    let context = ControlSecurityContext(
+      intentID: "control.attach.revoke",
+      capability: .observeSensitive,
+      surface: .gui,
+      sessionID: nil)
+    security.didAttachRevoke(context)
   }
 
   // MARK: Titles

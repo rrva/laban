@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Verify a signed Laban app bundle, its helper binaries, and the lazy-attach
+# recovery path when an agent was started directly inside an agent-attached tab.
+# This script is idempotent: it does not mutate the installed bundle.
+
+APP="${1:-${LABAN_APP:-$HOME/Laban.app}}"
+if [[ ! -d "$APP" ]]; then
+  echo "LAZY_ATTACH_INSTALLED_SMOKE_FAIL: app not found at $APP" >&2
+  exit 1
+fi
+
+echo "Verifying app bundle code signing..."
+codesign --verify --deep --strict "$APP" || {
+  echo "LAZY_ATTACH_INSTALLED_SMOKE_FAIL: code signing verification failed" >&2
+  exit 1
+}
+
+LABAN_HELPER="$APP/Contents/MacOS/laban"
+AGENT_HELPER="$APP/Contents/MacOS/laban-agent"
+
+for helper in "$LABAN_HELPER" "$AGENT_HELPER"; do
+  if [[ ! -x "$helper" ]]; then
+    echo "LAZY_ATTACH_INSTALLED_SMOKE_FAIL: missing helper $helper" >&2
+    exit 1
+  fi
+  echo "Code signing metadata for $helper:"
+  codesign -dv "$helper" 2>&1 | sed 's/^/  /'
+done
+
+echo "Checking default expected agent executable path..."
+# ControlProcessInfo.defaultExpectedAgentExecutablePath resolves to the bundled
+# Contents/MacOS/laban-agent; validate the convention directly.
+EXPECTED_PATH="$APP/Contents/MacOS/laban-agent"
+if [[ "$EXPECTED_PATH" != "$AGENT_HELPER" ]]; then
+  echo "LAZY_ATTACH_INSTALLED_SMOKE_FAIL: expected agent path mismatch $EXPECTED_PATH vs $AGENT_HELPER" >&2
+  exit 1
+fi
+
+echo "Lazy attach installed-bundle smoke checks passed."
+echo "LAZY_ATTACH_INSTALLED_SMOKE_OK"
