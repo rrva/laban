@@ -77,7 +77,7 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
     signingInspector: ControlCodeSigningInspecting? = nil
   ) -> ControlAttachApprovalRecord? {
     let records = loadAll()
-    let leafFingerprint = principal.helperChain.first?.fingerprint
+    let principalFingerprint = principal.identity.stablePrincipalFingerprint
     for record in records where record.isRevoked == false {
       guard record.sessionID == sessionID else { continue }
       guard record.shellIdentityFingerprint == shellIdentityFingerprint else { continue }
@@ -87,7 +87,7 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
       guard capabilities.isSubset(of: recordCapabilities) else { continue }
       guard record.allowedSideEffectClasses.contains(sideEffectClass) else { continue }
       guard dataSensitivity.compareSensitivity(to: record.maxDataSensitivity) else { continue }
-      if let leafFingerprint, record.leafIdentityFingerprint != leafFingerprint { continue }
+      if record.principalIdentityFingerprint != principalFingerprint { continue }
       guard
         recordMatchesPrincipal(
           record,

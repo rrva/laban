@@ -120,7 +120,7 @@ final class LazyAttachPersistedApprovalScopeTests: XCTestCase {
       capabilities: [.observeSensitive],
       maxDataSensitivity: "sensitivePrivate",
       allowedSideEffectClasses: ["none"],
-      leafIdentityFingerprint: peerIdentity.fingerprint)
+      principalIdentityFingerprint: peerIdentity.stablePrincipalFingerprint)
     server.approvalStore.add(record)
 
     return (server, start.socketPath, start.appObserveToken)

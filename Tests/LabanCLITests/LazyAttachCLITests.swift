@@ -1,8 +1,9 @@
 import Foundation
-import LabanCLI
 import LabanControl
 import LabanCore
 import XCTest
+
+@testable import LabanCLI
 
 final class LazyAttachCLITests: XCTestCase {
 

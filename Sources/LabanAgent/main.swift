@@ -35,6 +35,7 @@ struct AgentArgs {
   var persistenceDir: String? = nil
   var noPersistenceRestore = false
   var noPersistence = false
+  var lazyAttachTest = false
 }
 
 func parseArgs() -> AgentArgs {
@@ -64,6 +65,7 @@ func parseArgs() -> AgentArgs {
       a.controlAttachRunCommand = []
     case PersistenceRestoreLaunchFlag.argument: a.noPersistenceRestore = true
     case PersistenceRestoreLaunchFlag.noPersistenceArgument: a.noPersistence = true
+    case "--lazy-attach-test": a.lazyAttachTest = true
     default:
       if arg.hasPrefix("--fixture=") {
         a.fixture = String(arg.dropFirst("--fixture=".count))
@@ -118,6 +120,11 @@ func usage() -> String {
     --control-attach-serve-cli      Start a private UDS proxy for CLI descendants.
     --control-attach-run -- COMMAND Launch COMMAND with LABAN_AGENT_CONTROL_URL set,
                                     preserving stdin/stdout/stderr. Implies serve-cli.
+
+  Lazy-attach test options:
+    --lazy-attach-test              Exercise direct-agent lazy attach, helper/principal
+                                    binding, persistence, and revocation against a
+                                    temporary control server and exit.
 
   Debug server options:
     --fixture=PATH                  Load a deterministic fixture session.
@@ -496,6 +503,11 @@ if let emojiRenderingMode = args.emojiRenderingMode {
   UserDefaults.standard.setVolatileDomain(
     [EmojiRenderingSettings.defaultsKey: emojiRenderingMode.rawValue],
     forName: UserDefaults.argumentDomain)
+}
+
+if args.lazyAttachTest {
+  let exitCode = runLazyAttachInstalledSmoke()
+  exit(exitCode)
 }
 
 if args.controlAttach {

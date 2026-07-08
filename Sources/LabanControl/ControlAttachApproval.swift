@@ -45,7 +45,7 @@ public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
   public var capabilities: [Capability]
   public var maxDataSensitivity: String
   public var allowedSideEffectClasses: [String]
-  public var leafIdentityFingerprint: String
+  public var principalIdentityFingerprint: String
   public var hmac: String
   public var createdAt: Date
   public var lastUsedAt: Date?
@@ -66,7 +66,7 @@ public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
     capabilities: [Capability],
     maxDataSensitivity: String,
     allowedSideEffectClasses: [String],
-    leafIdentityFingerprint: String,
+    principalIdentityFingerprint: String,
     hmac: String = "",
     createdAt: Date = Date(),
     lastUsedAt: Date? = nil,
@@ -89,7 +89,7 @@ public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
     self.capabilities = capabilities
     self.maxDataSensitivity = maxDataSensitivity
     self.allowedSideEffectClasses = allowedSideEffectClasses
-    self.leafIdentityFingerprint = leafIdentityFingerprint
+    self.principalIdentityFingerprint = principalIdentityFingerprint
     self.hmac = hmac
     self.createdAt = createdAt
     self.lastUsedAt = lastUsedAt

@@ -87,7 +87,7 @@ public final class LabanControlServer {
   private var lastLazyDenyByPrincipalFingerprint: [String: Date] = [:]
   private let lazyAttachLock = NSLock()
   private let lazyDenyCooldown: TimeInterval = 2
-  private let maxConcurrentPendingLazyAttachRequests = 100
+  private let maxConcurrentPendingLazyAttachRequests = 8
 
   private var processTreeInspector: any ControlProcessTreeInspecting = ControlProcessTreeInspector()
   private var codeSigningInspector: any ControlCodeSigningInspecting = ControlCodeSigningInspector()
@@ -1332,15 +1332,12 @@ public final class LabanControlServer {
       return .error(403, "lazyRouteNotAllowed")
     }
 
-    let rawSessionRequest =
-      method == "POST" && path == "/debug/actions"
-      && cliCommand == "session.request"
+    let rawSessionRequest = cliCommand == "session.request"
     let allowlistMatch = ControlLazyAttachAllowlist.entry(
       method: method, path: path, intentID: resolvedIntentID)
     let isPersistableOperation = allowlistMatch?.persistable == true
-    let isPrincipalLeaf = principalWithSigning.identity.pid == peerPID
     let canPersist =
-      isPrincipalLeaf && principalWithSigning.isPersistable && isPersistableOperation
+      principalWithSigning.isPersistable && isPersistableOperation
       && !rawSessionRequest
 
     guard let descriptor = catalog.descriptor(id: resolvedIntentID) else {
@@ -1354,9 +1351,7 @@ public final class LabanControlServer {
     let routeIDForRecord = "\(method) \(path)"
     let sideEffectClass = sideEffectClassFor(descriptor.sideEffects)
     let capabilities = [descriptor.requiredCapability]
-    let leafIdentityFingerprint =
-      principalWithSigning.helperChain.first?.fingerprint
-      ?? principalWithSigning.identity.fingerprint
+    let principalIdentityFingerprint = principalWithSigning.identity.stablePrincipalFingerprint
 
     let approvalID = "\(sessionID.prefix(8))-\(clientRequestID.prefix(8))"
     let context = ControlAttachApprovalContext(
@@ -1544,7 +1539,7 @@ public final class LabanControlServer {
         capabilities: capabilities,
         maxDataSensitivity: resolvedSensitivity,
         allowedSideEffectClasses: [sideEffectClass],
-        leafIdentityFingerprint: leafIdentityFingerprint)
+        principalIdentityFingerprint: principalIdentityFingerprint)
       approvalStore.add(record)
     }
 
