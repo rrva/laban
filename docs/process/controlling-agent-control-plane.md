@@ -177,6 +177,70 @@ ready line, keep stdin/stdout open, and multiplex requests on that process. Do
 not start a new `laban-agent --control-attach` for every request; the bootstrap
 is one-shot.
 
+## Lazy attach fallback for already-running agents
+
+A process that is already running in a Laban-registered shell session can
+request a one-time, live GUI approval instead of a pre-injected C14 bootstrap.
+This is the **lazy attach** fallback. The `laban` CLI uses it automatically when
+`LABAN_AGENT_CONTROL_URL` is not set.
+
+Lazy attach request shape:
+
+```json
+POST /control/session/attach/request
+Authorization: Bearer <app-observe-token>
+Content-Type: application/json
+
+{
+  "clientRequestID": "<unique-request-id>",
+  "cliCommand": "session.state",
+  "intendedRequest": {
+    "method": "GET",
+    "path": "/debug/state",
+    "query": "",
+    "body": null,
+    "bodySHA256": null
+  }
+}
+```
+
+`cliCommand` is one of `session.state`, `session.scroll`, `command.propose`, or
+`session.request` for advanced use. `bodySHA256` is required when `body` is
+present and must match the SHA-256 of the `body` string.
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "sessionID": "<session-id>",
+  "approval": "once",
+  "downstreamStatus": 200,
+  "downstreamBody": "{...raw response body...}"
+}
+```
+
+The user is shown the requesting principal, operation, and data sensitivity. They
+can choose **Allow Once**, **Always Allow This App for This Session**, or **Deny**.
+Always Allow is only offered for stable, signed, non-generic principals (not
+shells, interpreters, or package runners). Approval records are stored in
+UserDefaults under `LabanControlAttachApprovalRecordsV1` and can be revoked in
+Laban's Settings, Agent tab.
+
+HTTP status mapping:
+
+| Status | Meaning |
+|---|---|
+| `200` | Approved and downstream executed. |
+| `401` | App-observe token invalid or missing. |
+| `403` | Denied, not a descendant of a registered session, or route not allowed. |
+| `408` | Approval dialog timed out. |
+| `409` | Session or process identity changed during approval. |
+| `429` | A pending request for this principal/intent is already in flight. |
+
+`session proxy` is not available through lazy attach; it requires the broker
+path with `LABAN_AGENT_CONTROL_URL`.
+
 ## Live GUI endpoint subset for session-attached agents
 
 The live GUI supports a deliberately small subset. The best client behavior is
