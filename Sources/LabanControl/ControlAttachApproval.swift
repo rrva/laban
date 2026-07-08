@@ -45,6 +45,8 @@ public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
   public var capabilities: [Capability]
   public var maxDataSensitivity: String
   public var allowedSideEffectClasses: [String]
+  public var leafIdentityFingerprint: String
+  public var hmac: String
   public var createdAt: Date
   public var lastUsedAt: Date?
   public var revokedAt: Date?
@@ -64,6 +66,8 @@ public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
     capabilities: [Capability],
     maxDataSensitivity: String,
     allowedSideEffectClasses: [String],
+    leafIdentityFingerprint: String,
+    hmac: String = "",
     createdAt: Date = Date(),
     lastUsedAt: Date? = nil,
     revokedAt: Date? = nil
@@ -85,6 +89,8 @@ public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
     self.capabilities = capabilities
     self.maxDataSensitivity = maxDataSensitivity
     self.allowedSideEffectClasses = allowedSideEffectClasses
+    self.leafIdentityFingerprint = leafIdentityFingerprint
+    self.hmac = hmac
     self.createdAt = createdAt
     self.lastUsedAt = lastUsedAt
     self.revokedAt = revokedAt
@@ -104,6 +110,7 @@ public enum ControlAttachApprovalDecision: Equatable, Sendable {
 public struct ControlAttachApprovalRequest: Sendable {
   public let id: String
   public let principalDisplayName: String
+  public let principalIsVerified: Bool
   public let helperChainSummary: String
   public let principalPath: String?
   public let sessionDisplay: String
@@ -116,6 +123,7 @@ public struct ControlAttachApprovalRequest: Sendable {
   public init(
     id: String,
     principalDisplayName: String,
+    principalIsVerified: Bool,
     helperChainSummary: String,
     principalPath: String?,
     sessionDisplay: String,
@@ -127,6 +135,7 @@ public struct ControlAttachApprovalRequest: Sendable {
   ) {
     self.id = id
     self.principalDisplayName = principalDisplayName
+    self.principalIsVerified = principalIsVerified
     self.helperChainSummary = helperChainSummary
     self.principalPath = principalPath
     self.sessionDisplay = sessionDisplay
@@ -150,6 +159,7 @@ public struct ControlAttachApprovalContext: Sendable, Equatable {
   public let sessionID: String
   public let peerPID: pid_t
   public let peerStartTime: Date?
+  public let auditToken: Data?
   public let principalFingerprint: String
   public let method: String
   public let path: String
@@ -166,6 +176,7 @@ public struct ControlAttachApprovalContext: Sendable, Equatable {
     sessionID: String,
     peerPID: pid_t,
     peerStartTime: Date?,
+    auditToken: Data? = nil,
     principalFingerprint: String,
     method: String,
     path: String,
@@ -181,6 +192,7 @@ public struct ControlAttachApprovalContext: Sendable, Equatable {
     self.sessionID = sessionID
     self.peerPID = peerPID
     self.peerStartTime = peerStartTime
+    self.auditToken = auditToken
     self.principalFingerprint = principalFingerprint
     self.method = method
     self.path = path

@@ -9,6 +9,7 @@ public struct ControlProcessIdentity: Equatable, Sendable {
   public var executablePath: String?
   public var arguments: [String]
   public var signing: ControlCodeSigningIdentity?
+  public var auditToken: Data?
 
   public init(
     pid: pid_t,
@@ -17,7 +18,8 @@ public struct ControlProcessIdentity: Equatable, Sendable {
     uid: uid_t = getuid(),
     executablePath: String? = nil,
     arguments: [String] = [],
-    signing: ControlCodeSigningIdentity? = nil
+    signing: ControlCodeSigningIdentity? = nil,
+    auditToken: Data? = nil
   ) {
     self.pid = pid
     self.parentPID = parentPID
@@ -26,6 +28,7 @@ public struct ControlProcessIdentity: Equatable, Sendable {
     self.executablePath = executablePath
     self.arguments = arguments
     self.signing = signing
+    self.auditToken = auditToken
   }
 
   public var displayName: String {
@@ -104,14 +107,25 @@ public struct ControlCodeSigningIdentity: Codable, Equatable, Sendable {
   }
 }
 
+public struct AuditToken {
+  public var val: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
+
+  public init() {
+    self.val = (0, 0, 0, 0, 0, 0, 0, 0)
+  }
+}
+
 public protocol ControlProcessTreeInspecting: Sendable {
   func parentPID(of pid: pid_t) -> pid_t?
   func identity(for pid: pid_t) -> ControlProcessIdentity?
 }
 
 public protocol ControlCodeSigningInspecting: Sendable {
-  func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity?
-  func validatesLivePID(_ pid: pid_t, startTime: Date, against requirement: String) -> Bool
+  func signingIdentity(forLivePID pid: pid_t, startTime: Date, auditToken: Data?)
+    -> ControlCodeSigningIdentity?
+  func validatesLivePID(
+    _ pid: pid_t, startTime: Date, auditToken: Data?, against requirement: String
+  ) -> Bool
 }
 
 public struct ControlProcessTreeInspector: ControlProcessTreeInspecting {
@@ -163,19 +177,37 @@ public struct ControlProcessTreeInspector: ControlProcessTreeInspecting {
 public final class ControlCodeSigningInspector: ControlCodeSigningInspecting, @unchecked Sendable {
   public init() {}
 
-  public func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity?
-  {
+  public func signingIdentity(
+    forLivePID pid: pid_t,
+    startTime: Date,
+    auditToken: Data?
+  ) -> ControlCodeSigningIdentity? {
     #if canImport(Security)
       let cs = ControlCodeSigning()
+      if let auditToken, !auditToken.isEmpty {
+        if let identity = cs.identity(forAuditToken: auditToken) {
+          return identity
+        }
+      }
       return cs.identity(forLivePID: pid, startTime: startTime)
     #else
       return nil
     #endif
   }
 
-  public func validatesLivePID(_ pid: pid_t, startTime: Date, against requirement: String) -> Bool {
+  public func validatesLivePID(
+    _ pid: pid_t,
+    startTime: Date,
+    auditToken: Data?,
+    against requirement: String
+  ) -> Bool {
     #if canImport(Security)
       let cs = ControlCodeSigning()
+      if let auditToken, !auditToken.isEmpty {
+        if cs.validate(auditToken: auditToken, requirement: requirement) {
+          return true
+        }
+      }
       return cs.validateLivePID(pid, startTime: startTime, requirement: requirement)
     #else
       return false

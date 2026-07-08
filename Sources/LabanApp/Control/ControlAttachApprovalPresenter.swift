@@ -19,15 +19,20 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     completion: @escaping @Sendable (ControlAttachApprovalDecision) -> Void
   ) {
     let alert = NSAlert()
-    alert.messageText = "Allow \"\(request.principalDisplayName)\" to control Laban?"
+    if request.principalIsVerified {
+      alert.messageText = "Allow \"\(request.principalDisplayName)\" to control Laban?"
+    } else {
+      alert.messageText =
+        "Allow the unverified app \"\(request.principalDisplayName)\" to control Laban?"
+    }
     alert.informativeText = formatInformativeText(for: request)
     alert.alertStyle = .warning
 
-    let allowOnceButton = alert.addButton(withTitle: "Allow Once")
+    alert.addButton(withTitle: "Allow Once")
     let alwaysAllowButton: NSButton? =
       request.canPersist
       ? alert.addButton(withTitle: "Always Allow This App for This Session") : nil
-    let denyButton = alert.addButton(withTitle: "Deny")
+    alert.addButton(withTitle: "Deny")
 
     if !request.canPersist, let reason = request.persistenceDisabledReason {
       alert.suppressionButton?.title = reason
@@ -60,12 +65,20 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
 
   private func formatInformativeText(for request: ControlAttachApprovalRequest) -> String {
     var lines: [String] = []
-    lines.append("An app wants to use Laban on your behalf.")
+    if request.principalIsVerified {
+      lines.append("A verified app wants to use Laban on your behalf.")
+    } else {
+      lines.append(
+        "An unverified, unsigned, or generic interpreter wants to use Laban on your behalf.")
+      lines.append("Verify the path below before approving.")
+    }
     lines.append("")
     lines.append("Operation: \(request.operationSummary)")
     lines.append("Session: \(request.sessionDisplay)")
     if let path = request.principalPath, !path.isEmpty {
       lines.append("Path: \(path)")
+    } else if !request.principalDisplayName.isEmpty {
+      lines.append("Process: \(request.principalDisplayName)")
     }
     lines.append("Chain: \(request.helperChainSummary)")
     lines.append("Data sensitivity: \(request.dataSensitivity)")

@@ -3,6 +3,8 @@ import Foundation
 #if canImport(Security)
   import Security
 
+  private let kSecGuestAttributeAudit: CFString = "audit" as CFString
+
   /// macOS code-signing inspection for live PIDs.
   ///
   /// This uses `SecCodeCopyGuestWithAttributes` to obtain a code object for the
@@ -15,6 +17,26 @@ import Foundation
     public func identity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity? {
       guard processStartTimeMatches(pid: pid, startTime: startTime) else { return nil }
       guard let code = code(forPID: pid) else { return nil }
+      return identity(for: code)
+    }
+
+    public func identity(forAuditToken auditToken: Data) -> ControlCodeSigningIdentity? {
+      guard let code = code(forAuditToken: auditToken) else { return nil }
+      return identity(for: code)
+    }
+
+    public func validateLivePID(_ pid: pid_t, startTime: Date, requirement: String) -> Bool {
+      guard processStartTimeMatches(pid: pid, startTime: startTime) else { return false }
+      guard let code = code(forPID: pid) else { return false }
+      return validate(code: code, requirement: requirement)
+    }
+
+    public func validate(auditToken: Data, requirement: String) -> Bool {
+      guard let code = code(forAuditToken: auditToken) else { return false }
+      return validate(code: code, requirement: requirement)
+    }
+
+    private func identity(for code: SecCode) -> ControlCodeSigningIdentity? {
       guard let staticCode = staticCode(for: code) else { return nil }
 
       var info: CFDictionary?
@@ -37,10 +59,7 @@ import Foundation
         isAdHocOrUnsigned: isAdHoc)
     }
 
-    public func validateLivePID(_ pid: pid_t, startTime: Date, requirement: String) -> Bool {
-      guard processStartTimeMatches(pid: pid, startTime: startTime) else { return false }
-      guard let code = code(forPID: pid) else { return false }
-
+    private func validate(code: SecCode, requirement: String) -> Bool {
       var requirementRef: SecRequirement?
       let reqStatus = SecRequirementCreateWithString(
         requirement as CFString, SecCSFlags(), &requirementRef)
@@ -59,6 +78,18 @@ import Foundation
     private func code(forPID pid: pid_t) -> SecCode? {
       var code: SecCode?
       let attributes: [CFString: Any] = [kSecGuestAttributePid: pid]
+      let status = SecCodeCopyGuestWithAttributes(
+        nil, attributes as CFDictionary, SecCSFlags(), &code)
+      guard status == errSecSuccess else { return nil }
+      return code
+    }
+
+    private func code(forAuditToken auditToken: Data) -> SecCode? {
+      let auditTokenLength = 32
+      guard auditToken.count == auditTokenLength else { return nil }
+      var code: SecCode?
+      let data = auditToken as CFData
+      let attributes: [CFString: Any] = [kSecGuestAttributeAudit: data]
       let status = SecCodeCopyGuestWithAttributes(
         nil, attributes as CFDictionary, SecCSFlags(), &code)
       guard status == errSecSuccess else { return nil }

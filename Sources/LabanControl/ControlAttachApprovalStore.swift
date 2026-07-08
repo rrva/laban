@@ -5,10 +5,15 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
   public static let defaultsKey = "LabanControlAttachApprovalRecordsV1"
 
   private let defaults: UserDefaults
+  private let signer: ControlAttachApprovalRecordSigning?
   private let lock = NSLock()
 
-  public init(defaults: UserDefaults = .standard) {
+  public init(
+    defaults: UserDefaults = .standard,
+    signer: ControlAttachApprovalRecordSigning? = nil
+  ) {
     self.defaults = defaults
+    self.signer = signer
   }
 
   public func loadAll() -> [ControlAttachApprovalRecord] {
@@ -16,7 +21,11 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
     defer { lock.unlock() }
     guard let data = defaults.data(forKey: Self.defaultsKey) else { return [] }
     do {
-      return try JSONDecoder().decode([ControlAttachApprovalRecord].self, from: data)
+      let records = try JSONDecoder().decode([ControlAttachApprovalRecord].self, from: data)
+      if let signer = signer {
+        return records.filter { signer.isValid($0) }
+      }
+      return records
     } catch {
       return []
     }
@@ -26,7 +35,8 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     do {
-      let data = try JSONEncoder().encode(records)
+      let signedRecords = signer.map { signer in records.map { signer.sign($0) } } ?? records
+      let data = try JSONEncoder().encode(signedRecords)
       defaults.set(data, forKey: Self.defaultsKey)
     } catch {
       // Fail silently; approvals should not crash the app.
@@ -67,6 +77,7 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
     signingInspector: ControlCodeSigningInspecting? = nil
   ) -> ControlAttachApprovalRecord? {
     let records = loadAll()
+    let leafFingerprint = principal.helperChain.first?.fingerprint
     for record in records where record.isRevoked == false {
       guard record.sessionID == sessionID else { continue }
       guard record.shellIdentityFingerprint == shellIdentityFingerprint else { continue }
@@ -76,7 +87,13 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
       guard capabilities.isSubset(of: recordCapabilities) else { continue }
       guard record.allowedSideEffectClasses.contains(sideEffectClass) else { continue }
       guard dataSensitivity.compareSensitivity(to: record.maxDataSensitivity) else { continue }
-      guard recordMatchesPrincipal(record, principal: principal, signingInspector: signingInspector)
+      if let leafFingerprint, record.leafIdentityFingerprint != leafFingerprint { continue }
+      guard
+        recordMatchesPrincipal(
+          record,
+          principal: principal,
+          signingInspector: signingInspector,
+          auditToken: principal.identity.auditToken)
       else { continue }
       return record
     }
@@ -86,7 +103,8 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
   private func recordMatchesPrincipal(
     _ record: ControlAttachApprovalRecord,
     principal: ControlAttachPrincipal,
-    signingInspector: ControlCodeSigningInspecting?
+    signingInspector: ControlCodeSigningInspecting?,
+    auditToken: Data?
   ) -> Bool {
     guard let principalSigning = principal.identity.signing else { return false }
     let requirement = record.signingRequirement
@@ -94,7 +112,7 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
     guard let startTime = principal.identity.startTime else { return false }
     if let inspector = signingInspector {
       return inspector.validatesLivePID(
-        principal.identity.pid, startTime: startTime, against: requirement)
+        principal.identity.pid, startTime: startTime, auditToken: auditToken, against: requirement)
     }
     return requirement == (principalSigning.designatedRequirement ?? "")
   }
