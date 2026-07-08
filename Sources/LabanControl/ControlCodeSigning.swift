@@ -21,11 +21,11 @@ import Foundation
         staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info)
       guard infoStatus == errSecSuccess, let info else { return nil }
 
-      let dict = info as! [String: Any]
-      let team = dict[kSecCodeInfoTeamIdentifier as String] as? String
-      let signingID = dict[kSecCodeInfoIdentifier as String] as? String
+      let dict = info as! [CFString: Any]
+      let team = dict[kSecCodeInfoTeamIdentifier] as? String
+      let signingID = dict[kSecCodeInfoIdentifier] as? String
       let isAdHoc = team == nil
-      let designatedRequirement = requirementString(for: code)
+      let designatedRequirement = requirementString(for: staticCode)
 
       return ControlCodeSigningIdentity(
         teamIdentifier: team,
@@ -50,7 +50,7 @@ import Foundation
 
     private func code(forPID pid: pid_t) -> SecCode? {
       var code: SecCode?
-      let attributes: [String: Any] = [kSecGuestAttributePid: pid]
+      let attributes: [CFString: Any] = [kSecGuestAttributePid: pid]
       let status = SecCodeCopyGuestWithAttributes(
         nil, attributes as CFDictionary, SecCSFlags(), &code)
       guard status == errSecSuccess else { return nil }
@@ -64,9 +64,9 @@ import Foundation
       return staticCode
     }
 
-    private func requirementString(for code: SecCode) -> String? {
+    private func requirementString(for staticCode: SecStaticCode) -> String? {
       var requirement: SecRequirement?
-      let status = SecCodeCopyDesignatedRequirement(code, SecCSFlags(), &requirement)
+      let status = SecCodeCopyDesignatedRequirement(staticCode, SecCSFlags(), &requirement)
       guard status == errSecSuccess, let requirement else { return nil }
 
       var string: CFString?

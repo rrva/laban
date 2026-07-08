@@ -1261,7 +1261,6 @@ public final class LabanControlServer {
     guard let resolvedRouteID = resolvedRouteID,
       let resolvedIntentID = resolvedIntentID,
       let resolvedCapability = resolvedCapability,
-      let resolvedSensitivity = resolvedSensitivity,
       ControlLazyAttachAllowlist.isAllowlisted(
         method: method, path: path, intentID: resolvedIntentID)
     else {
@@ -1375,7 +1374,7 @@ public final class LabanControlServer {
       sessionDisplay: "\(sessionID.suffix(4))",
       operationSummary: descriptor.summary,
       dataSensitivity: resolvedSensitivity,
-      capabilities: capabilities.map(\.Capability.rawValue),
+      capabilities: capabilities.map(\Capability.rawValue),
       canPersist: canPersist,
       persistenceDisabledReason: canPersist ? nil : "This app is not a stable signed application.")
 
