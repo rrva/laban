@@ -84,11 +84,14 @@ public final class LabanControlServer {
   private let shellIdentityLock = NSLock()
 
   private var pendingLazyAttachRequests: [String: ControlAttachApprovalContext] = [:]
+  private var lastLazyDenyByPrincipalFingerprint: [String: Date] = [:]
   private let lazyAttachLock = NSLock()
+  private let lazyDenyCooldown: TimeInterval = 2
+  private let maxConcurrentPendingLazyAttachRequests = 100
 
   private var processTreeInspector: any ControlProcessTreeInspecting = ControlProcessTreeInspector()
   private var codeSigningInspector: any ControlCodeSigningInspecting = ControlCodeSigningInspector()
-  private var approvalStore: ControlAttachApprovalStore = ControlAttachApprovalStore()
+  public var approvalStore: ControlAttachApprovalStore
   public weak var approvalDelegate: (any ControlAttachApprovalDelegate)?
 
   private struct SessionAttachBootstrap: Equatable {
@@ -146,7 +149,17 @@ public final class LabanControlServer {
     }
     if let approvalStore {
       self.approvalStore = approvalStore
+    } else {
+      self.approvalStore = ControlAttachApprovalStore(signer: Self.makeDefaultApprovalSigner())
     }
+  }
+
+  private static func makeDefaultApprovalSigner() -> ControlAttachApprovalRecordSigning? {
+    #if canImport(Security)
+      return ControlAttachApprovalRecordKeychainSigner()
+    #else
+      return nil
+    #endif
   }
 
   public static func defaultControlSocketPath() -> String {
@@ -308,6 +321,7 @@ public final class LabanControlServer {
     shellIdentityLock.unlock()
     lazyAttachLock.lock()
     pendingLazyAttachRequests.removeAll()
+    lastLazyDenyByPrincipalFingerprint.removeAll()
     lazyAttachLock.unlock()
     thread = nil
   }
@@ -349,6 +363,7 @@ public final class LabanControlServer {
   }
 
   private static let localPeerPID: Int32 = 3
+  private static let localPeerToken: Int32 = 0x006
 
   public static func peerPID(clientFD: Int32) -> pid_t? {
     var pid: pid_t = 0
@@ -357,6 +372,17 @@ public final class LabanControlServer {
       return nil
     }
     return pid
+  }
+
+  public static func peerAuditToken(clientFD: Int32) -> Data? {
+    var token = AuditToken()
+    var len = socklen_t(MemoryLayout<AuditToken>.size)
+    guard getsockopt(clientFD, SOL_LOCAL, localPeerToken, &token, &len) == 0 else {
+      return nil
+    }
+    guard len == MemoryLayout<AuditToken>.size else { return nil }
+    let data = withUnsafeBytes(of: &token) { Data($0) }
+    return data
   }
 
   #if DEBUG
@@ -712,8 +738,13 @@ public final class LabanControlServer {
     guard method == "GET" || method == "POST" else { return .methodNotAllowed }
     guard headers.authorizationCount <= 1 else { return .badRequest }
 
+    let isLazyAttach =
+      method == "POST" && parsedTarget.path == Self.lazyAttachRequestPath
+    let maxBodyBytes =
+      isLazyAttach ? Self.maxLazyAttachBodySize : Self.maxBodyBytes
+
     let contentLength: Int
-    switch parseContentLength(headers.contentLengthHeader, method: method) {
+    switch parseContentLength(headers.contentLengthHeader, method: method, maxBytes: maxBodyBytes) {
     case .success(let length):
       contentLength = length
     case .failure(let status):
@@ -1099,7 +1130,8 @@ public final class LabanControlServer {
 
   private func parseContentLength(
     _ header: String?,
-    method: String
+    method: String,
+    maxBytes: Int
   ) -> ContentLengthResult {
     guard let header, !header.isEmpty else {
       return method == "POST" ? .failure(status: 400) : .success(0)
@@ -1107,7 +1139,7 @@ public final class LabanControlServer {
     guard let length = Int(header), length >= 0 else {
       return .failure(status: 400)
     }
-    guard length <= Self.maxBodyBytes else {
+    guard length <= maxBytes else {
       return .failure(status: 413)
     }
     return .success(length)
@@ -1227,11 +1259,16 @@ public final class LabanControlServer {
       return .error(413, "request body too large")
     }
 
-    guard let peerIdentity = processTreeInspector.identity(for: peerPID),
-      peerIdentity.uid == getuid()
-    else {
+    var peerIdentity: ControlProcessIdentity
+    switch processTreeInspector.identity(for: peerPID) {
+    case .some(let identity) where identity.uid == getuid():
+      peerIdentity = identity
+    default:
       reportLazyAttachDeny(sessionID: nil, reason: "processIdentityUnavailable")
       return .error(403, "processIdentityUnavailable")
+    }
+    if let auditToken = Self.peerAuditToken(clientFD: clientFD) {
+      peerIdentity.auditToken = auditToken
     }
     guard let peerStartTime = peerIdentity.startTime else {
       reportLazyAttachDeny(sessionID: nil, reason: "processIdentityUnavailable")
@@ -1248,7 +1285,8 @@ public final class LabanControlServer {
     guard
       let chain = resolveAttachProcessChain(
         peerPID: peerPID,
-        shellPID: shellIdentity.shellPID)
+        shellPID: shellIdentity.shellPID,
+        peerIdentity: peerIdentity)
     else {
       reportLazyAttachDeny(sessionID: sessionID, reason: "notDescendantOfRegisteredSession")
       return .error(403, "notDescendantOfRegisteredSession")
@@ -1266,15 +1304,15 @@ public final class LabanControlServer {
     var identityWithSigning = principal.identity
     if let signing = codeSigningInspector.signingIdentity(
       forLivePID: principal.identity.pid,
-      startTime: principalStartTime)
+      startTime: principalStartTime,
+      auditToken: principal.identity.auditToken)
     {
       identityWithSigning.signing = signing
     }
     let principalWithSigning = ControlAttachPrincipal(
       identity: identityWithSigning,
-      isGenericInterpreter: principal.isGenericInterpreter,
-      isPersistable: principal.isPersistable
-        && ControlAttachPrincipal.isPersistable(identityWithSigning),
+      isGenericInterpreter: ControlAttachPrincipal.isGenericInterpreter(identityWithSigning),
+      isPersistable: ControlAttachPrincipal.isPersistable(identityWithSigning),
       helperChain: principal.helperChain)
 
     let (
@@ -1300,8 +1338,10 @@ public final class LabanControlServer {
     let allowlistMatch = ControlLazyAttachAllowlist.entry(
       method: method, path: path, intentID: resolvedIntentID)
     let isPersistableOperation = allowlistMatch?.persistable == true
+    let isPrincipalLeaf = principalWithSigning.identity.pid == peerPID
     let canPersist =
-      principalWithSigning.isPersistable && isPersistableOperation && !rawSessionRequest
+      isPrincipalLeaf && principalWithSigning.isPersistable && isPersistableOperation
+      && !rawSessionRequest
 
     guard let descriptor = catalog.descriptor(id: resolvedIntentID) else {
       return .error(404, "not found")
@@ -1314,6 +1354,9 @@ public final class LabanControlServer {
     let routeIDForRecord = "\(method) \(path)"
     let sideEffectClass = sideEffectClassFor(descriptor.sideEffects)
     let capabilities = [descriptor.requiredCapability]
+    let leafIdentityFingerprint =
+      principalWithSigning.helperChain.first?.fingerprint
+      ?? principalWithSigning.identity.fingerprint
 
     let approvalID = "\(sessionID.prefix(8))-\(clientRequestID.prefix(8))"
     let context = ControlAttachApprovalContext(
@@ -1321,6 +1364,7 @@ public final class LabanControlServer {
       sessionID: sessionID,
       peerPID: peerPID,
       peerStartTime: peerStartTime,
+      auditToken: peerIdentity.auditToken,
       principalFingerprint: principalWithSigning.identity.fingerprint,
       method: method,
       path: path,
@@ -1344,6 +1388,11 @@ public final class LabanControlServer {
       signingInspector: codeSigningInspector)
 
     if let matchingRecord = matchingRecord {
+      guard revalidateLazyAttachContext(context, clientFD: clientFD, body: bodyData ?? Data())
+      else {
+        reportLazyAttachDeny(sessionID: sessionID, reason: "sessionChanged")
+        return .error(409, "sessionChanged")
+      }
       let approvedToken = Self.makeToken()
       let approvedTier = ControlTokenTier.approvedSession(
         sessionID: sessionID,
@@ -1386,15 +1435,42 @@ public final class LabanControlServer {
       reportLazyAttachDeny(sessionID: sessionID, reason: "approvalRateLimited")
       return .error(429, "approvalRateLimited")
     }
-    pendingLazyAttachRequests[clientRequestID] = context
+    if let lastDeny = lastLazyDenyByPrincipalFingerprint[principalWithSigning.identity.fingerprint],
+      Date().timeIntervalSince(lastDeny) < lazyDenyCooldown
+    {
+      lazyAttachLock.unlock()
+      reportLazyAttachDeny(sessionID: sessionID, reason: "approvalRateLimited")
+      return .error(429, "approvalRateLimited")
+    }
+    guard pendingLazyAttachRequests.count < maxConcurrentPendingLazyAttachRequests else {
+      lazyAttachLock.unlock()
+      reportLazyAttachDeny(sessionID: sessionID, reason: "approvalRateLimited")
+      return .error(429, "approvalRateLimited")
+    }
+    let pendingRequestID = UUID().uuidString
+    pendingLazyAttachRequests[pendingRequestID] = context
     lazyAttachLock.unlock()
 
     reportLazyAttachRequest(sessionID: sessionID, intentID: resolvedIntentID)
 
     let delegate = approvalDelegate
+    let verifiedDisplayName =
+      principalWithSigning.isPersistable
+      ? principalWithSigning.identity.signing?.displayName
+        ?? principalWithSigning.identity.executableBaseName
+      : principalWithSigning.identity.executableBaseName
+    let persistenceDisabledReason: String?
+    if canPersist {
+      persistenceDisabledReason = nil
+    } else if !principalWithSigning.isPersistable {
+      persistenceDisabledReason = "This app is not a stable signed application."
+    } else {
+      persistenceDisabledReason = "This operation cannot be remembered for this route."
+    }
     let request = ControlAttachApprovalRequest(
       id: approvalID,
-      principalDisplayName: principalWithSigning.identity.displayName,
+      principalDisplayName: verifiedDisplayName,
+      principalIsVerified: principalWithSigning.isPersistable,
       helperChainSummary: chain.helperChainSummary,
       principalPath: principalWithSigning.identity.executablePath,
       sessionDisplay: "\(sessionID.suffix(4))",
@@ -1402,7 +1478,7 @@ public final class LabanControlServer {
       dataSensitivity: resolvedSensitivity,
       capabilities: capabilities.map(\Capability.rawValue),
       canPersist: canPersist,
-      persistenceDisabledReason: canPersist ? nil : "This app is not a stable signed application.")
+      persistenceDisabledReason: persistenceDisabledReason)
 
     let semaphore = DispatchSemaphore(value: 0)
     let approvalResult = LazyApprovalResult()
@@ -1410,7 +1486,7 @@ public final class LabanControlServer {
     delegate?.requestControlAttachApproval(request) { [weak self] approvedDecision in
       guard let self else { return }
       self.lazyAttachLock.lock()
-      self.pendingLazyAttachRequests.removeValue(forKey: clientRequestID)
+      self.pendingLazyAttachRequests.removeValue(forKey: pendingRequestID)
       self.lazyAttachLock.unlock()
       approvalResult.set(approvedDecision)
       semaphore.signal()
@@ -1419,7 +1495,8 @@ public final class LabanControlServer {
     let timeoutResult = semaphore.wait(timeout: .now() + 30)
     if timeoutResult == .timedOut {
       lazyAttachLock.lock()
-      pendingLazyAttachRequests.removeValue(forKey: clientRequestID)
+      pendingLazyAttachRequests.removeValue(forKey: pendingRequestID)
+      lastLazyDenyByPrincipalFingerprint[principalWithSigning.identity.fingerprint] = Date()
       lazyAttachLock.unlock()
       reportLazyAttachDeny(sessionID: sessionID, reason: "approvalTimeout")
       return .error(408, "approvalTimeout")
@@ -1427,6 +1504,9 @@ public final class LabanControlServer {
 
     switch approvalResult.decision {
     case .deny:
+      lazyAttachLock.lock()
+      lastLazyDenyByPrincipalFingerprint[principalWithSigning.identity.fingerprint] = Date()
+      lazyAttachLock.unlock()
       reportLazyAttachDeny(sessionID: sessionID, reason: "userDenied")
       return .error(403, "userDenied")
     case .allowOnce, .alwaysAllowSignedIdentity:
@@ -1434,6 +1514,9 @@ public final class LabanControlServer {
     }
 
     guard revalidateLazyAttachContext(context, clientFD: clientFD, body: bodyData ?? Data()) else {
+      lazyAttachLock.lock()
+      lastLazyDenyByPrincipalFingerprint[principalWithSigning.identity.fingerprint] = Date()
+      lazyAttachLock.unlock()
       reportLazyAttachDeny(sessionID: sessionID, reason: "sessionChanged")
       return .error(409, "sessionChanged")
     }
@@ -1460,7 +1543,8 @@ public final class LabanControlServer {
         allowedIntentIDs: [resolvedIntentID],
         capabilities: capabilities,
         maxDataSensitivity: resolvedSensitivity,
-        allowedSideEffectClasses: [sideEffectClass])
+        allowedSideEffectClasses: [sideEffectClass],
+        leafIdentityFingerprint: leafIdentityFingerprint)
       approvalStore.add(record)
     }
 
@@ -1500,8 +1584,10 @@ public final class LabanControlServer {
   private func validateAppObserveToken(_ token: String) -> Bool {
     tokenLock.lock()
     defer { tokenLock.unlock() }
-    guard let tier = tokens[token] else { return false }
-    return tier == .appObserve
+    for (storedToken, tier) in tokens {
+      if Self.constantTimeEquals(storedToken, token) { return tier == .appObserve }
+    }
+    return false
   }
 
   private func resolveUniqueShellSessionAncestor(
@@ -1542,15 +1628,22 @@ public final class LabanControlServer {
 
   private func resolveAttachProcessChain(
     peerPID: pid_t,
-    shellPID: pid_t
+    shellPID: pid_t,
+    peerIdentity: ControlProcessIdentity? = nil
   ) -> ControlAttachProcessChain? {
     var entries: [ControlProcessIdentity] = []
     var currentPID: pid_t? = peerPID
     while let pid = currentPID, pid > 0 {
-      guard let identity = processTreeInspector.identity(for: pid),
-        identity.uid == getuid(),
-        identity.startTime != nil
-      else {
+      let identity: ControlProcessIdentity
+      if let peerIdentity, pid == peerPID {
+        identity = peerIdentity
+      } else {
+        guard let lookedUp = processTreeInspector.identity(for: pid) else {
+          return nil
+        }
+        identity = lookedUp
+      }
+      guard identity.uid == getuid(), identity.startTime != nil else {
         return nil
       }
       entries.append(identity)
@@ -1620,24 +1713,35 @@ public final class LabanControlServer {
   ) -> Bool {
     guard let currentPID = Self.peerPID(clientFD: clientFD) else { return false }
     guard currentPID == context.peerPID else { return false }
-    guard let peerIdentity = processTreeInspector.identity(for: currentPID),
+    guard var peerIdentity = processTreeInspector.identity(for: currentPID),
       let startTime = peerIdentity.startTime
     else { return false }
     guard startTime == context.peerStartTime else { return false }
+    if let auditToken = context.auditToken {
+      peerIdentity.auditToken = auditToken
+    }
 
     guard let (sessionID, shell) = resolveUniqueShellSessionAncestor(peerPID: currentPID),
       sessionID == context.sessionID
     else { return false }
 
-    guard let chain = resolveAttachProcessChain(peerPID: currentPID, shellPID: shell.shellPID)
+    guard
+      let chain = resolveAttachProcessChain(
+        peerPID: currentPID,
+        shellPID: shell.shellPID,
+        peerIdentity: peerIdentity)
     else { return false }
     guard let principal = chain.principal,
       let principalStartTime = principal.identity.startTime
     else { return false }
     var revalidatedIdentity = principal.identity
+    if revalidatedIdentity.pid == currentPID {
+      revalidatedIdentity.auditToken = context.auditToken
+    }
     if let signing = codeSigningInspector.signingIdentity(
       forLivePID: principal.identity.pid,
-      startTime: principalStartTime)
+      startTime: principalStartTime,
+      auditToken: revalidatedIdentity.auditToken)
     {
       revalidatedIdentity.signing = signing
     }

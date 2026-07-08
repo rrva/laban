@@ -52,11 +52,17 @@ final class ControlSecurityAuditTests: XCTestCase {
       method: "GET",
       path: "/debug/state")
 
-    for payload in observer.payloads() {
-      let json = jsonString(payload)
-      XCTAssertFalse(json.contains("token"))
-      XCTAssertFalse(json.contains("LABAN_SESSION_ATTACH"))
-      XCTAssertFalse(json.contains("Authorization"))
+    let contextStrings = observer.contexts().map { contextString($0) }
+    let payloadStrings = observer.payloads().map { jsonString($0) }
+    let allStrings = contextStrings + payloadStrings
+
+    for text in allStrings {
+      XCTAssertFalse(text.contains("token"), "audit payload contains 'token': \(text)")
+      XCTAssertFalse(
+        text.contains("LABAN_SESSION_ATTACH"), "audit payload contains bootstrap: \(text)")
+      XCTAssertFalse(
+        text.contains("Authorization"), "audit payload contains Authorization header: \(text)")
+      XCTAssertFalse(text.contains(token), "audit payload contains app-observe token: \(text)")
     }
   }
 
@@ -120,6 +126,18 @@ final class ControlSecurityAuditTests: XCTestCase {
       .flatMap { String(data: $0, encoding: .utf8) } ?? ""
   }
 
+  private func contextString(_ context: ControlSecurityContext) -> String {
+    let surface = context.surface == .gui ? "gui" : "headless"
+    let capability = context.capability?.rawValue ?? ""
+    return [
+      "intent:\(context.intentID ?? "")",
+      "capability:\(capability)",
+      "surface:\(surface)",
+      "session:\(context.sessionID ?? "")",
+      "timestamp:\(context.timestamp.timeIntervalSince1970)",
+    ].joined(separator: ";")
+  }
+
   private func makeIdentity(_ pid: pid_t, path: String) -> ControlProcessIdentity {
     ControlProcessIdentity(
       pid: pid,
@@ -134,6 +152,7 @@ final class ControlSecurityAuditTests: XCTestCase {
 
 private struct AuditEvent {
   let name: String
+  let context: ControlSecurityContext
   let payload: [String: Any]
 }
 
@@ -153,6 +172,12 @@ private final class SpySecurityObserver: ControlSecurityObserver, @unchecked Sen
     return _events.map(\.payload)
   }
 
+  func contexts() -> [ControlSecurityContext] {
+    lock.lock()
+    defer { lock.unlock() }
+    return _events.map(\.context)
+  }
+
   func didAuthorize(_ context: ControlSecurityContext) {}
   func didDeny(_ context: ControlSecurityContext, reason: ControlSecurityDenyReason) {}
   func didPrivilegedActivity(_ context: ControlSecurityContext) {}
@@ -162,29 +187,39 @@ private final class SpySecurityObserver: ControlSecurityObserver, @unchecked Sen
     append("control.attach.requested", context)
   }
   func didAttachApprove(_ context: ControlSecurityContext, mode: String) {
-    append("control.attach.approved", context)
+    append("control.attach.approved", context, extra: ["mode": mode])
   }
   func didAttachDeny(_ context: ControlSecurityContext, reason: ControlSecurityDenyReason) {
-    append("control.attach.denied", context)
+    append("control.attach.denied", context, extra: ["reason": reason.rawValue])
   }
   func didAttachRevoke(_ context: ControlSecurityContext) {
     append("control.attach.revoked", context)
   }
   func didAttachAutoApprove(_ context: ControlSecurityContext, approvalID: String) {
-    append("control.attach.autoApproved", context)
+    append("control.attach.autoApproved", context, extra: ["approvalID": approvalID])
   }
 
-  private func append(_ name: String, _ context: ControlSecurityContext) {
+  private func append(
+    _ name: String,
+    _ context: ControlSecurityContext,
+    extra: [String: Any] = [:]
+  ) {
     lock.lock()
+    var payload: [String: Any] = [
+      "intent": context.intentID ?? "",
+      "capability": context.capability?.rawValue ?? "",
+      "surface": context.surface == .gui ? "gui" : "headless",
+      "session": context.sessionID ?? "",
+      "timestamp": ISO8601DateFormatter().string(from: context.timestamp),
+    ]
+    for (key, value) in extra {
+      payload[key] = value
+    }
     _events.append(
       AuditEvent(
         name: name,
-        payload: [
-          "intent": context.intentID ?? "",
-          "capability": context.capability?.rawValue ?? "",
-          "surface": context.surface == .gui ? "gui" : "headless",
-          "session": context.sessionID ?? "",
-        ]))
+        context: context,
+        payload: payload))
     lock.unlock()
   }
 }
@@ -211,10 +246,17 @@ private struct FakeAuditProcessTreeInspector: ControlProcessTreeInspecting {
 }
 
 private struct FakeAuditCodeSigningInspector: ControlCodeSigningInspecting {
-  func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity? {
+  func signingIdentity(
+    forLivePID pid: pid_t, startTime: Date, auditToken: Data?
+  ) -> ControlCodeSigningIdentity? {
     nil
   }
-  func validatesLivePID(_ pid: pid_t, startTime: Date, against requirement: String) -> Bool {
+  func validatesLivePID(
+    _ pid: pid_t,
+    startTime: Date,
+    auditToken: Data?,
+    against requirement: String
+  ) -> Bool {
     false
   }
 }

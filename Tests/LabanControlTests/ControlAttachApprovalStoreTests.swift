@@ -5,10 +5,10 @@ import XCTest
 
 final class ControlAttachApprovalStoreTests: XCTestCase {
 
+  private let signer = ControlAttachApprovalRecordHMACSigner(key: Data("test-approval-key".utf8))
+
   func testAddAndRevoke() {
-    let defaults = UserDefaults(suiteName: "test-laban-approval-store")!
-    defer { defaults.removeSuite(named: "test-laban-approval-store") }
-    let store = ControlAttachApprovalStore(defaults: defaults)
+    let (defaults, store) = makeStore()
 
     let record = makeRecord(id: "r1", displayName: "Codex", sessionID: "s1")
     store.add(record)
@@ -19,9 +19,7 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
   }
 
   func testFindMatchingRequiresSessionAndShell() {
-    let defaults = UserDefaults(suiteName: "test-laban-approval-store")!
-    defer { defaults.removeSuite(named: "test-laban-approval-store") }
-    let store = ControlAttachApprovalStore(defaults: defaults)
+    let (defaults, store) = makeStore()
 
     let record = makeRecord(
       id: "r1",
@@ -57,9 +55,7 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
   }
 
   func testFindMatchingRejectsDifferentRouteOrIntent() {
-    let defaults = UserDefaults(suiteName: "test-laban-approval-store")!
-    defer { defaults.removeSuite(named: "test-laban-approval-store") }
-    let store = ControlAttachApprovalStore(defaults: defaults)
+    let (defaults, store) = makeStore()
 
     let record = makeRecord(
       id: "r1",
@@ -84,9 +80,7 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
   }
 
   func testRevokedRecordNotAutoApproved() {
-    let defaults = UserDefaults(suiteName: "test-laban-approval-store")!
-    defer { defaults.removeSuite(named: "test-laban-approval-store") }
-    let store = ControlAttachApprovalStore(defaults: defaults)
+    let (defaults, store) = makeStore()
 
     let record = makeRecord(id: "r1", displayName: "Codex")
     store.add(record)
@@ -105,7 +99,32 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
     XCTAssertNil(match)
   }
 
+  func testTamperedRecordIsRejected() throws {
+    let (defaults, store) = makeStore()
+
+    let record = makeRecord(id: "r1", displayName: "Codex")
+    store.add(record)
+
+    guard let data = defaults.data(forKey: ControlAttachApprovalStore.defaultsKey) else {
+      XCTFail("missing stored data")
+      return
+    }
+    var records = try JSONDecoder().decode([ControlAttachApprovalRecord].self, from: data)
+    records[0].sessionID = "tampered"
+    let tamperedData = try JSONEncoder().encode(records)
+    defaults.set(tamperedData, forKey: ControlAttachApprovalStore.defaultsKey)
+
+    XCTAssertEqual(store.loadAll().count, 0)
+  }
+
   // MARK: - Helpers
+
+  private func makeStore() -> (UserDefaults, ControlAttachApprovalStore) {
+    let suiteName = "test-laban-approval-store-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    return (defaults, ControlAttachApprovalStore(defaults: defaults, signer: signer))
+  }
 
   private func makeRecord(
     id: String,
@@ -116,7 +135,8 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
     allowedIntentIDs: [String] = ["app.state"],
     capabilities: [Capability] = [.observe],
     maxDataSensitivity: String = "nonSensitiveState",
-    allowedSideEffectClasses: [String] = ["read"]
+    allowedSideEffectClasses: [String] = ["read"],
+    leafIdentityFingerprint: String = "leaf"
   ) -> ControlAttachApprovalRecord {
     ControlAttachApprovalRecord(
       id: id,
@@ -130,7 +150,8 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
       allowedIntentIDs: allowedIntentIDs,
       capabilities: capabilities,
       maxDataSensitivity: maxDataSensitivity,
-      allowedSideEffectClasses: allowedSideEffectClasses)
+      allowedSideEffectClasses: allowedSideEffectClasses,
+      leafIdentityFingerprint: leafIdentityFingerprint)
   }
 
   private func makePrincipal(path: String = "/Applications/Codex.app/Contents/MacOS/Codex")

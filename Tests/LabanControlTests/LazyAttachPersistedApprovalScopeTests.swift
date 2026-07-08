@@ -6,6 +6,19 @@ import XCTest
 
 final class LazyAttachPersistedApprovalScopeTests: XCTestCase {
 
+  private var cleanupDefaults: UserDefaults?
+  private var cleanupSuiteName: String?
+
+  override func tearDown() {
+    if let cleanupDefaults, let cleanupSuiteName {
+      cleanupDefaults.removePersistentDomain(forName: cleanupSuiteName)
+      cleanupDefaults.removeSuite(named: cleanupSuiteName)
+      self.cleanupDefaults = nil
+      self.cleanupSuiteName = nil
+    }
+    super.tearDown()
+  }
+
   func testStateApprovalDoesNotAutoApproveScroll() throws {
     let (server, socketPath, token) = try makeServerWithRecord()
     defer { server.stop() }
@@ -77,11 +90,19 @@ final class LazyAttachPersistedApprovalScopeTests: XCTestCase {
       )
     }
     let processTree = FakeProcessTreeInspector(tree: tree)
+    let suiteName = "test-laban-persisted-scope-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    self.cleanupDefaults = defaults
+    self.cleanupSuiteName = suiteName
+    let approvalStore = ControlAttachApprovalStore(
+      defaults: defaults,
+      signer: ControlAttachApprovalRecordHMACSigner(key: Data("test-approval-key".utf8)))
     let server = LabanControlServer(
       router: router,
       surface: .headless,
       processTreeInspector: processTree,
-      codeSigningInspector: FakeCodeSigningInspector())
+      codeSigningInspector: FakeCodeSigningInspector(),
+      approvalStore: approvalStore)
     let start = try server.start()
     server.registerAttachShellPID(sessionID: "s1", shellPID: 50)
     server.setApprovalDelegate(FakeApprovalDelegate(decision: .deny))
@@ -98,7 +119,8 @@ final class LazyAttachPersistedApprovalScopeTests: XCTestCase {
       allowedIntentIDs: ["app.state"],
       capabilities: [.observeSensitive],
       maxDataSensitivity: "sensitivePrivate",
-      allowedSideEffectClasses: ["none"])
+      allowedSideEffectClasses: ["none"],
+      leafIdentityFingerprint: peerIdentity.fingerprint)
     server.approvalStore.add(record)
 
     return (server, start.socketPath, start.appObserveToken)
@@ -174,12 +196,19 @@ private struct FakeProcessTreeInspector: ControlProcessTreeInspecting {
 }
 
 private struct FakeCodeSigningInspector: ControlCodeSigningInspecting {
-  func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity? {
+  func signingIdentity(
+    forLivePID pid: pid_t, startTime: Date, auditToken: Data?
+  ) -> ControlCodeSigningIdentity? {
     ControlCodeSigningIdentity(
       designatedRequirement: "req",
       isAdHocOrUnsigned: false)
   }
-  func validatesLivePID(_ pid: pid_t, startTime: Date, against requirement: String) -> Bool {
+  func validatesLivePID(
+    _ pid: pid_t,
+    startTime: Date,
+    auditToken: Data?,
+    against requirement: String
+  ) -> Bool {
     requirement == "req"
   }
 }
