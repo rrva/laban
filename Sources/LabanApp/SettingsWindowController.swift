@@ -891,7 +891,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   }
 
   private func makeApprovalLabel(_ record: ControlAttachApprovalRecord) -> NSTextField {
-    let text = "\(record.displayName) — \(record.allowedIntentIDs.joined(separator: ", "))"
+    let scope = (record.allowedRouteIDs + record.allowedIntentIDs).joined(separator: ", ")
+    let text = "\(record.displayName) — \(scope)"
     let label = NSTextField(labelWithString: text)
     label.lineBreakMode = .byTruncatingTail
     label.usesSingleLineMode = true

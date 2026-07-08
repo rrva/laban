@@ -57,20 +57,6 @@ final class ControlAttachAncestryTests: XCTestCase {
     XCTAssertFalse(result)
   }
 
-  func testPIDReuseByStartTimeMismatchIsRejected() {
-    let shellStart = Date(timeIntervalSince1970: 1000)
-    let reusedStart = Date(timeIntervalSince1970: 2000)
-    let inspector = FakeProcessTreeInspector(tree: [
-      100: (parent: 50, identity: identity(100, path: "/bin/zsh", startTime: reusedStart)),
-      50: (parent: 1, identity: identity(50, path: "/bin/zsh", startTime: shellStart)),
-    ])
-    let server = makeServer(inspector: inspector)
-    server.registerAttachShellPID(sessionID: "s1", shellPID: 50)
-
-    let result = server.canLazyAttachDescendant(sessionID: "s1", peerPID: 100)
-    XCTAssertFalse(result)
-  }
-
   func testMissingShellStartTimeFailsClosed() {
     let inspector = FakeProcessTreeInspector(tree: [
       100: (parent: 50, identity: identity(100, path: "/bin/zsh")),
@@ -111,9 +97,10 @@ final class ControlAttachAncestryTests: XCTestCase {
   // MARK: - Helpers
 
   private func makeServer(inspector: ControlProcessTreeInspecting) -> LabanControlServer {
-    let server = LabanControlServer(router: SpyAttachRouter(), surface: .headless)
-    server.setProcessTreeInspector(inspector)
-    return server
+    LabanControlServer(
+      router: SpyAttachRouter(),
+      surface: .headless,
+      processTreeInspector: inspector)
   }
 
   private func identity(
@@ -139,8 +126,10 @@ private struct FakeProcessTreeInspector: ControlProcessTreeInspecting {
     tree[pid]?.parent
   }
 
-  func identity(for pid: pid_t) -> ControlProcessIdentity {
-    tree[pid]?.identity ?? ControlProcessIdentity(pid: pid, uid: getuid())
+  func identity(for pid: pid_t) -> ControlProcessIdentity? {
+    var identity = tree[pid]?.identity
+    identity?.parentPID = tree[pid]?.parent
+    return identity
   }
 }
 

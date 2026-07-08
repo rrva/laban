@@ -38,6 +38,16 @@ public struct ControlProcessIdentity: Equatable, Sendable {
     return "process \(pid)"
   }
 
+  public var executableBaseName: String {
+    if let path = executablePath, !path.isEmpty {
+      return URL(fileURLWithPath: path).lastPathComponent
+    }
+    if let identifier = signing?.signingIdentifier, !identifier.isEmpty {
+      return identifier
+    }
+    return "process \(pid)"
+  }
+
   public var fingerprint: String {
     var parts: [String] = []
     parts.append("pid=\(pid)")
@@ -96,7 +106,7 @@ public struct ControlCodeSigningIdentity: Codable, Equatable, Sendable {
 
 public protocol ControlProcessTreeInspecting: Sendable {
   func parentPID(of pid: pid_t) -> pid_t?
-  func identity(for pid: pid_t) -> ControlProcessIdentity
+  func identity(for pid: pid_t) -> ControlProcessIdentity?
 }
 
 public protocol ControlCodeSigningInspecting: Sendable {
@@ -108,33 +118,31 @@ public struct ControlProcessTreeInspector: ControlProcessTreeInspecting {
   public init() {}
 
   public func parentPID(of pid: pid_t) -> pid_t? {
-    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
-    var info = kinfo_proc()
-    var size = MemoryLayout<kinfo_proc>.stride
-    guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0,
-      size >= MemoryLayout<kinfo_proc>.stride
-    else {
-      return nil
-    }
+    guard let info = kinfoProc(for: pid) else { return nil }
     let ppid = info.kp_eproc.e_ppid
     return ppid > 0 ? ppid : nil
   }
 
-  public func identity(for pid: pid_t) -> ControlProcessIdentity {
+  public func identity(for pid: pid_t) -> ControlProcessIdentity? {
+    guard let info = kinfoProc(for: pid) else { return nil }
+    let uid = info.kp_eproc.e_ucred.cr_uid
+    guard uid == getuid() else { return nil }
+    let startTime = processStartTime(from: info)
+    guard startTime != nil else { return nil }
+    let ppid = info.kp_eproc.e_ppid
+    let parentPID = ppid > 0 ? ppid : nil
     let executablePath = ControlProcessInfo.executablePath(for: pid)
-    let startTime = processStartTime(pid: pid)
-    let parentPID = parentPID(of: pid)
     return ControlProcessIdentity(
       pid: pid,
       parentPID: parentPID,
       startTime: startTime,
-      uid: getuid(),
+      uid: uid,
       executablePath: executablePath,
       arguments: [],
       signing: nil)
   }
 
-  private func processStartTime(pid: pid_t) -> Date? {
+  private func kinfoProc(for pid: pid_t) -> kinfo_proc? {
     var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
     var info = kinfo_proc()
     var size = MemoryLayout<kinfo_proc>.stride
@@ -143,12 +151,16 @@ public struct ControlProcessTreeInspector: ControlProcessTreeInspecting {
     else {
       return nil
     }
+    return info
+  }
+
+  private func processStartTime(from info: kinfo_proc) -> Date? {
     let tv = info.kp_proc.p_starttime
     return Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + Double(tv.tv_usec) / 1_000_000)
   }
 }
 
-public final class ControlCodeSigningInspector: ControlCodeSigningInspecting {
+public final class ControlCodeSigningInspector: ControlCodeSigningInspecting, @unchecked Sendable {
   public init() {}
 
   public func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity?

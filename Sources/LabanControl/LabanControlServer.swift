@@ -98,8 +98,26 @@ public final class LabanControlServer {
     var shellPID: pid_t?
   }
 
+  private final class LazyApprovalResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _decision: ControlAttachApprovalDecision = .deny
+
+    var decision: ControlAttachApprovalDecision {
+      lock.lock()
+      defer { lock.unlock() }
+      return _decision
+    }
+
+    func set(_ decision: ControlAttachApprovalDecision) {
+      lock.lock()
+      _decision = decision
+      lock.unlock()
+    }
+  }
+
   public static let sessionAttachPath = "/control/session/attach"
   public static let lazyAttachRequestPath = "/control/session/attach/request"
+  public static let maxLazyAttachBodySize = 256 * 1024
 
   public init(
     router: IntentRouter,
@@ -184,7 +202,7 @@ public final class LabanControlServer {
       attachBootstraps[bootstrap] = entry
     }
 
-    let identity = processTreeInspector.identity(for: shellPID)
+    guard let identity = processTreeInspector.identity(for: shellPID) else { return }
     let shellIdentity = RegisteredAttachShellIdentity(
       sessionID: sessionID,
       shellPID: shellPID,
@@ -1175,6 +1193,7 @@ public final class LabanControlServer {
     guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
       let clientRequestID = json["clientRequestID"] as? String,
       !clientRequestID.isEmpty,
+      UUID(uuidString: clientRequestID) != nil,
       let cliCommand = json["cliCommand"] as? String,
       !cliCommand.isEmpty,
       let intendedRequest = json["intendedRequest"] as? [String: Any],
@@ -1188,8 +1207,11 @@ public final class LabanControlServer {
 
     let queryString = intendedRequest["query"] as? String ?? ""
     let bodyData: Data?
-    if let bodyString = intendedRequest["body"] as? String {
-      bodyData = Data(bodyString.utf8)
+    if let bodyBase64 = intendedRequest["bodyBase64"] as? String {
+      guard let decoded = Data(base64Encoded: bodyBase64) else {
+        return .error(400, "bad request")
+      }
+      bodyData = decoded
     } else {
       bodyData = nil
     }
@@ -1201,8 +1223,16 @@ public final class LabanControlServer {
     if bodyData == nil, bodySHA256 != nil {
       return .error(400, "bodySHA256 mismatch")
     }
+    if let bodyData, bodyData.count > Self.maxLazyAttachBodySize {
+      return .error(413, "request body too large")
+    }
 
-    let peerIdentity = processTreeInspector.identity(for: peerPID)
+    guard let peerIdentity = processTreeInspector.identity(for: peerPID),
+      peerIdentity.uid == getuid()
+    else {
+      reportLazyAttachDeny(sessionID: nil, reason: "processIdentityUnavailable")
+      return .error(403, "processIdentityUnavailable")
+    }
     guard let peerStartTime = peerIdentity.startTime else {
       reportLazyAttachDeny(sessionID: nil, reason: "processIdentityUnavailable")
       return .error(403, "processIdentityUnavailable")
@@ -1247,20 +1277,16 @@ public final class LabanControlServer {
         && ControlAttachPrincipal.isPersistable(identityWithSigning),
       helperChain: principal.helperChain)
 
-    let allowlistEntry =
-      ControlLazyAttachAllowlist.entry(cliCommand: cliCommand)
-      ?? ControlLazyAttachAllowlist.entry(method: method, path: path, intentID: "")
     let (
-      resolvedRouteID, resolvedIntentID, resolvedCapability, resolvedSensitivity, resolvedSideEffect
+      _, resolvedIntentID, _, resolvedSensitivity, _
     ) = resolveRouteAndIntent(
       method: method,
       path: path,
       query: Self.parseQueryString(queryString),
-      body: bodyData ?? Data())
+      body: bodyData ?? Data(),
+      sessionID: sessionID)
 
-    guard let resolvedRouteID = resolvedRouteID,
-      let resolvedIntentID = resolvedIntentID,
-      let resolvedCapability = resolvedCapability,
+    guard let resolvedIntentID = resolvedIntentID,
       ControlLazyAttachAllowlist.isAllowlisted(
         method: method, path: path, intentID: resolvedIntentID)
     else {
@@ -1379,16 +1405,14 @@ public final class LabanControlServer {
       persistenceDisabledReason: canPersist ? nil : "This app is not a stable signed application.")
 
     let semaphore = DispatchSemaphore(value: 0)
-    var decision: ControlAttachApprovalDecision = .deny
-    var delegateCompleted = false
+    let approvalResult = LazyApprovalResult()
 
     delegate?.requestControlAttachApproval(request) { [weak self] approvedDecision in
       guard let self else { return }
       self.lazyAttachLock.lock()
       self.pendingLazyAttachRequests.removeValue(forKey: clientRequestID)
       self.lazyAttachLock.unlock()
-      decision = approvedDecision
-      delegateCompleted = true
+      approvalResult.set(approvedDecision)
       semaphore.signal()
     }
 
@@ -1401,7 +1425,7 @@ public final class LabanControlServer {
       return .error(408, "approvalTimeout")
     }
 
-    switch decision {
+    switch approvalResult.decision {
     case .deny:
       reportLazyAttachDeny(sessionID: sessionID, reason: "userDenied")
       return .error(403, "userDenied")
@@ -1409,12 +1433,13 @@ public final class LabanControlServer {
       break
     }
 
-    guard revalidateLazyAttachContext(context, clientFD: clientFD) else {
+    guard revalidateLazyAttachContext(context, clientFD: clientFD, body: bodyData ?? Data()) else {
       reportLazyAttachDeny(sessionID: sessionID, reason: "sessionChanged")
       return .error(409, "sessionChanged")
     }
 
     let effectiveDecision: ControlAttachApprovalDecision
+    let decision = approvalResult.decision
     if decision == .alwaysAllowSignedIdentity, !canPersist {
       effectiveDecision = .allowOnce
     } else {
@@ -1422,11 +1447,13 @@ public final class LabanControlServer {
     }
 
     if effectiveDecision == .alwaysAllowSignedIdentity {
+      let signingRequirement = principalWithSigning.identity.signing?.designatedRequirement ?? ""
       let record = ControlAttachApprovalRecord(
         id: approvalID,
         displayName: principalWithSigning.identity.displayName,
         bundleIdentifier: principalWithSigning.identity.signing?.bundleIdentifier,
         signing: principalWithSigning.identity.signing ?? ControlCodeSigningIdentity(),
+        signingRequirement: signingRequirement,
         sessionID: sessionID,
         shellIdentityFingerprint: shellIdentity.fingerprint,
         allowedRouteIDs: [routeIDForRecord],
@@ -1488,14 +1515,19 @@ public final class LabanControlServer {
     var currentPID: pid_t? = peerPID
 
     while let pid = currentPID, pid > 1 {
-      let identity = processTreeInspector.identity(for: pid)
+      guard let identity = processTreeInspector.identity(for: pid),
+        identity.uid == getuid()
+      else {
+        return nil
+      }
       for (sessionID, shell) in identities where shell.shellPID == pid {
         if matched != nil {
           return nil
         }
         guard let shellStartTime = shell.shellStartTime,
           let currentStartTime = identity.startTime,
-          currentStartTime == shellStartTime
+          currentStartTime == shellStartTime,
+          shell.shellUID == identity.uid
         else {
           return nil
         }
@@ -1515,7 +1547,12 @@ public final class LabanControlServer {
     var entries: [ControlProcessIdentity] = []
     var currentPID: pid_t? = peerPID
     while let pid = currentPID, pid > 0 {
-      let identity = processTreeInspector.identity(for: pid)
+      guard let identity = processTreeInspector.identity(for: pid),
+        identity.uid == getuid(),
+        identity.startTime != nil
+      else {
+        return nil
+      }
       entries.append(identity)
       if pid == shellPID { break }
       currentPID = processTreeInspector.parentPID(of: pid)
@@ -1528,7 +1565,8 @@ public final class LabanControlServer {
     method: String,
     path: String,
     query: [String: String],
-    body: Data
+    body: Data,
+    sessionID: String
   ) -> (
     routeID: String?,
     intentID: String?,
@@ -1544,7 +1582,7 @@ public final class LabanControlServer {
         query: query,
         pathParameters: [:],
         body: body)
-      switch candidate.resolveIntentID(request, .appObserve) {
+      switch candidate.resolveIntentID(request, .sessionObserve(sessionID: sessionID)) {
       case .resolved(let intentID):
         guard let descriptor = catalog.descriptor(id: intentID) else { continue }
         return (
@@ -1577,13 +1615,56 @@ public final class LabanControlServer {
 
   private func revalidateLazyAttachContext(
     _ context: ControlAttachApprovalContext,
-    clientFD: Int32
+    clientFD: Int32,
+    body: Data
   ) -> Bool {
     guard let currentPID = Self.peerPID(clientFD: clientFD) else { return false }
     guard currentPID == context.peerPID else { return false }
-    let identity = processTreeInspector.identity(for: currentPID)
-    guard let startTime = identity.startTime else { return false }
+    guard let peerIdentity = processTreeInspector.identity(for: currentPID),
+      let startTime = peerIdentity.startTime
+    else { return false }
     guard startTime == context.peerStartTime else { return false }
+
+    guard let (sessionID, shell) = resolveUniqueShellSessionAncestor(peerPID: currentPID),
+      sessionID == context.sessionID
+    else { return false }
+
+    guard let chain = resolveAttachProcessChain(peerPID: currentPID, shellPID: shell.shellPID)
+    else { return false }
+    guard let principal = chain.principal,
+      let principalStartTime = principal.identity.startTime
+    else { return false }
+    var revalidatedIdentity = principal.identity
+    if let signing = codeSigningInspector.signingIdentity(
+      forLivePID: principal.identity.pid,
+      startTime: principalStartTime)
+    {
+      revalidatedIdentity.signing = signing
+    }
+    guard revalidatedIdentity.fingerprint == context.principalFingerprint else { return false }
+
+    let computedHash = body.isEmpty ? nil : computeSHA256(body)
+    guard computedHash == context.bodySHA256 else { return false }
+
+    let (
+      resolvedRouteID,
+      resolvedIntentID,
+      resolvedCapability,
+      resolvedSensitivity,
+      resolvedSideEffect
+    ) = resolveRouteAndIntent(
+      method: context.method,
+      path: context.path,
+      query: Self.parseQueryString(context.query),
+      body: body,
+      sessionID: sessionID)
+    guard resolvedRouteID == context.resolvedRouteID,
+      resolvedIntentID == context.resolvedIntentID,
+      resolvedCapability.map({ context.capabilities.contains($0) }) == true,
+      resolvedSensitivity == context.maxDataSensitivity,
+      resolvedSideEffect == context.allowedSideEffectClasses.first
+    else { return false }
+
     return true
   }
 

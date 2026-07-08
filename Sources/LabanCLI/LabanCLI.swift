@@ -209,10 +209,10 @@ enum LabanCLI {
         json: json)
 
     case .sessionProxy:
-      guard agentProxyURLFromEnvironment(override: agentProxyURL) != nil else {
+      guard let proxyURL = agentProxyURLFromEnvironment(override: agentProxyURL) else {
         throw LabanCLIError.sessionProxyRequiresBroker
       }
-      try AgentProxyClient.proxyStdio(proxyURL: agentProxyURL!)
+      try AgentProxyClient.proxyStdio(proxyURL: proxyURL)
       return LabanCLIResult(exitCode: 0, stdout: "", stderr: "")
 
     case .propose(let purpose, let command):
@@ -312,7 +312,7 @@ enum LabanCLI {
       return 3
     case .timeout:
       return 4
-    case .denied, .sessionChanged:
+    case .denied, .sessionChanged, .rateLimited:
       return 5
     case .malformedResponse:
       return 6

@@ -95,6 +95,8 @@ public struct LabanControlPolicy: Sendable {
         guard constraint.path == path else { return false }
         guard constraint.query == query else { return false }
         guard constraint.bodySHA256 == bodySHA256 else { return false }
+        guard constraint.resolvedRouteID == "\(method) \(path)" else { return false }
+        guard constraint.resolvedIntentID == intentID else { return false }
         return true
       }
       return true
