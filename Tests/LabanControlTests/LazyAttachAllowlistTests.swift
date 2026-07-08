@@ -33,8 +33,10 @@ final class LazyAttachAllowlistTests: XCTestCase {
 
   func testRouteAndIntentLookup() {
     XCTAssertTrue(
-      ControlLazyAttachAllowlist.isAllowlisted(method: "GET", path: "/debug/state", intentID: "app.state"))
+      ControlLazyAttachAllowlist.isAllowlisted(
+        method: "GET", path: "/debug/state", intentID: "app.state"))
     XCTAssertFalse(
-      ControlLazyAttachAllowlist.isAllowlisted(method: "POST", path: "/debug/actions", intentID: "input.typeText"))
+      ControlLazyAttachAllowlist.isAllowlisted(
+        method: "POST", path: "/debug/actions", intentID: "input.typeText"))
   }
 }

@@ -25,7 +25,8 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
 
     let allowOnceButton = alert.addButton(withTitle: "Allow Once")
     let alwaysAllowButton: NSButton? =
-      request.canPersist ? alert.addButton(withTitle: "Always Allow This App for This Session") : nil
+      request.canPersist
+      ? alert.addButton(withTitle: "Always Allow This App for This Session") : nil
     let denyButton = alert.addButton(withTitle: "Deny")
 
     if !request.canPersist, let reason = request.persistenceDisabledReason {

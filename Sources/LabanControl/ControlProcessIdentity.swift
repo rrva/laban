@@ -151,21 +151,22 @@ public struct ControlProcessTreeInspector: ControlProcessTreeInspecting {
 public final class ControlCodeSigningInspector: ControlCodeSigningInspecting {
   public init() {}
 
-  public func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity? {
+  public func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity?
+  {
     #if canImport(Security)
-    let cs = ControlCodeSigning()
-    return cs.identity(forLivePID: pid, startTime: startTime)
+      let cs = ControlCodeSigning()
+      return cs.identity(forLivePID: pid, startTime: startTime)
     #else
-    return nil
+      return nil
     #endif
   }
 
   public func validatesLivePID(_ pid: pid_t, startTime: Date, against requirement: String) -> Bool {
     #if canImport(Security)
-    let cs = ControlCodeSigning()
-    return cs.validateLivePID(pid, startTime: startTime, requirement: requirement)
+      let cs = ControlCodeSigning()
+      return cs.validateLivePID(pid, startTime: startTime, requirement: requirement)
     #else
-    return false
+      return false
     #endif
   }
 }

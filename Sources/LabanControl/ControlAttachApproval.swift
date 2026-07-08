@@ -196,7 +196,8 @@ public struct ControlAttachProcessChain: Sendable, Equatable {
   }
 
   public var principal: ControlAttachPrincipal? {
-    let helpers = Set(ControlAttachConstants.bundledHelpers + ControlAttachConstants.genericInterpreters)
+    let helpers = Set(
+      ControlAttachConstants.bundledHelpers + ControlAttachConstants.genericInterpreters)
     var nonHelpers: [ControlProcessIdentity] = []
     for entry in entries.reversed() {
       let basename = entry.displayName
@@ -207,7 +208,8 @@ public struct ControlAttachProcessChain: Sendable, Equatable {
     }
     guard let principalEntry = nonHelpers.first else { return nil }
     let isGeneric = ControlAttachPrincipal.isGenericInterpreter(principalEntry)
-    let hasStableSigning = (principalEntry.signing?.isAdHocOrUnsigned == false)
+    let hasStableSigning =
+      (principalEntry.signing?.isAdHocOrUnsigned == false)
       && principalEntry.signing?.designatedRequirement != nil
     return ControlAttachPrincipal(
       identity: principalEntry,

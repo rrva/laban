@@ -1,6 +1,6 @@
 import AppKit
-import LabanCore
 import LabanControl
+import LabanCore
 import LabanRenderer
 
 /// The native Settings (⌘,) window. It surfaces the choices that used to live
@@ -872,7 +872,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   }
 
   private func refreshApprovalsList() {
-    approvalsStackView.subviews.forEach { $0.removeFromSuperview() }
+    for subview in approvalsStackView.subviews {
+      subview.removeFromSuperview()
+    }
     let records = approvalStore.loadAll().filter { $0.isRevoked == false }
     if records.isEmpty {
       let label = makeSmallLabel("No active lazy-attach approvals.")
@@ -898,7 +900,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   }
 
   private func makeRevokeButton(_ record: ControlAttachApprovalRecord) -> NSButton {
-    let button = NSButton(title: L10n.tr("Revoke"), target: self, action: #selector(revokeApprovalClicked(_:)))
+    let button = NSButton(
+      title: L10n.tr("Revoke"), target: self, action: #selector(revokeApprovalClicked(_:)))
     button.bezelStyle = .rounded
     button.toolTip = "Revoke approval for \(record.displayName)"
     button.identifier = NSUserInterfaceItemIdentifier(record.id)

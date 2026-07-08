@@ -9,7 +9,9 @@ public enum TokenScope: Sendable, Equatable {
 public enum ControlTokenTier: Sendable, Equatable {
   case appObserve
   case sessionObserve(sessionID: String)
-  case approvedSession(sessionID: String, approvalID: String, capabilities: [Capability], constraint: ControlTokenConstraint)
+  case approvedSession(
+    sessionID: String, approvalID: String, capabilities: [Capability],
+    constraint: ControlTokenConstraint)
   case fixture
 }
 
