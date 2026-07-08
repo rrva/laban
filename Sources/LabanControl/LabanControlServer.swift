@@ -222,7 +222,7 @@ public final class LabanControlServer {
       return false
     }
     guard shellSession.sessionID == sessionID else { return false }
-    return resolveAttachProcessChain(peerPID: peerPID, shellPID: shellSession.shellPID) != nil
+    return resolveAttachProcessChain(peerPID: peerPID, shellPID: shellSession.shell.shellPID) != nil
   }
 
   public enum SessionAttachRedeemResult {
@@ -1032,7 +1032,7 @@ public final class LabanControlServer {
     guard parts.count > 1 else {
       return (path, [:])
     }
-    return (path, parseQueryString(String(parts[1])))
+    return (path, Self.parseQueryString(String(parts[1])))
   }
 
   private static func parseQueryString(_ queryString: String) -> [String: String] {
@@ -1255,7 +1255,7 @@ public final class LabanControlServer {
     ) = resolveRouteAndIntent(
       method: method,
       path: path,
-      query: parseQueryString(queryString),
+      query: Self.parseQueryString(queryString),
       body: bodyData ?? Data())
 
     guard let resolvedRouteID = resolvedRouteID,
@@ -1319,7 +1319,7 @@ public final class LabanControlServer {
       signingInspector: codeSigningInspector)
 
     if let matchingRecord = matchingRecord {
-      let approvedToken = makeToken()
+      let approvedToken = Self.makeToken()
       let approvedTier = ControlTokenTier.approvedSession(
         sessionID: sessionID,
         approvalID: matchingRecord.id,
@@ -1339,7 +1339,7 @@ public final class LabanControlServer {
       let downstream = route(
         method: method,
         path: path,
-        query: parseQueryString(queryString),
+        query: Self.parseQueryString(queryString),
         body: bodyData ?? Data(),
         tokenTier: approvedTier)
       tokenLock.lock()
@@ -1375,7 +1375,7 @@ public final class LabanControlServer {
       sessionDisplay: "\(sessionID.suffix(4))",
       operationSummary: descriptor.summary,
       dataSensitivity: resolvedSensitivity,
-      capabilities: capabilities.map(\.rawValue),
+      capabilities: capabilities.map(\.Capability.rawValue),
       canPersist: canPersist,
       persistenceDisabledReason: canPersist ? nil : "This app is not a stable signed application.")
 
@@ -1438,7 +1438,7 @@ public final class LabanControlServer {
       approvalStore.add(record)
     }
 
-    let approvedToken = makeToken()
+    let approvedToken = Self.makeToken()
     let approvedTier = ControlTokenTier.approvedSession(
       sessionID: sessionID,
       approvalID: approvalID,
@@ -1459,7 +1459,7 @@ public final class LabanControlServer {
     let downstream = route(
       method: method,
       path: path,
-      query: parseQueryString(queryString),
+      query: Self.parseQueryString(queryString),
       body: bodyData ?? Data(),
       tokenTier: approvedTier)
     tokenLock.lock()
