@@ -64,6 +64,16 @@ public struct ControlProcessIdentity: Equatable, Sendable {
     }
     return parts.joined(separator: ";")
   }
+
+  /// A stable fingerprint for the identity that is safe to store in persisted
+  /// approval records. It does not include the process PID or start time, so it
+  /// matches the same signed app across a new process instance.
+  public var stablePrincipalFingerprint: String {
+    if let signing, let requirement = signing.designatedRequirement, !requirement.isEmpty {
+      return requirement
+    }
+    return executablePath ?? "pid=\(pid)"
+  }
 }
 
 public struct ControlCodeSigningIdentity: Codable, Equatable, Sendable {

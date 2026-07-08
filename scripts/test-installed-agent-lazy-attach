@@ -38,5 +38,9 @@ if [[ "$EXPECTED_PATH" != "$AGENT_HELPER" ]]; then
   exit 1
 fi
 
-echo "Lazy attach installed-bundle smoke checks passed."
-echo "LAZY_ATTACH_INSTALLED_SMOKE_OK"
+echo "Running direct-agent lazy attach integration test..."
+if "$AGENT_HELPER" --lazy-attach-test; then
+  echo "LAZY_ATTACH_INSTALLED_SMOKE_OK"
+else
+  exit $?
+fi
