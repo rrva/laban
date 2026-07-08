@@ -23,11 +23,11 @@ it first needs it. Laban derives the real approval principal from the process
 chain between the tab shell and the `laban` helper, shows a user-visible approval
 dialog naming that principal, the session, and the server-derived operation, and
 then dispatches the approved request. Future requests from the same trusted
-signed app may be auto-approved only when the user chose "Always Allow This App"
-and the request stays within the stored capability set. Users can still use
-`laban agent run -- <agent>` for the clean broker-first path; lazy approved
-dispatch is a safer recovery path for already-running agents, not a replacement
-for the broker.
+signed app may be auto-approved only when the user chose the session-scoped
+always-allow option and the request stays within the stored capability set. Users
+can still use `laban agent run -- <agent>` for the clean broker-first path; lazy
+approved dispatch is a safer recovery path for already-running agents, not a
+replacement for the broker.
 
 The demonstrable result is: start an agent-attached Laban tab, run `codex`
 directly, and then from inside Codex run
@@ -92,13 +92,13 @@ identity persisted by "Always Allow".
 - Decision: The approval principal is derived from the process chain between the
   registered session shell and the peer helper. The bundled `laban` CLI and
   `laban-agent` binaries are transport helpers and must never be the identity
-  shown to the user or persisted by "Always Allow This App".
+  shown to the user or persisted by "Always Allow This App for This Session".
   Rationale: For a direct Codex workflow, the UDS peer is usually `laban`, not
   Codex. Trusting the helper would confuse the user and grant unrelated
   descendants access through the same helper.
   Date/Author: 2026-07-08 / Codex.
 
-- Decision: "Always Allow This App" is available only for a stable signed,
+- Decision: "Always Allow This App for This Session" is available only for a stable signed,
   non-generic attach principal. Unsigned binaries, ad-hoc-signed binaries,
   scripts, shells, generic interpreters, package-manager runners, build/tool
   wrappers, and bundled Laban helpers are allow-once only.
@@ -216,10 +216,16 @@ Definitions used in this plan:
   session, resolved route, resolved intent, exact capability set, peer process
   identity, principal identity, and expiry.
 - "Persisted approval" means a local UserDefaults record that permits future
-  auto-approval for a stable signed non-generic principal when the requested
-  capability set is a subset of the approved capability set and the process is
-  still a same-user descendant of the registered session shell. Persisted
-  approval is not itself a bearer credential.
+  auto-approval for a stable signed non-generic principal only when all of the
+  following match: the current principal satisfies the stored signing
+  requirement; the principal is still a same-user descendant of a registered
+  session shell; the approval scope matches the current session; the resolved
+  route ID is in the stored allowed route set; the resolved intent ID is in the
+  stored allowed intent set; the requested capability set is a subset of the
+  stored capability set; the requested data sensitivity is no greater than the
+  stored maximum; and the requested side-effect class is in the stored allowed
+  side-effect set. Persisted approval is not a bearer credential and is not
+  capability-only.
 - "Lease" means an implementation fallback only: a temporary bearer token created
   after approval. Lazy attach should prefer server-side approved dispatch. If a
   lease is used, it must be single-use, request-bound, non-persisted, and never
@@ -294,6 +300,36 @@ The production implementation can use the same kernel calls already present in
 `LabanControlServer.parentPID(of:)` and `ControlProcessInfo.executablePath(for:)`.
 Tests must use a fake tree.
 
+For lazy attach security decisions, process `startTime` is required. A process
+identity with `startTime == nil` may be used for display or diagnostics, but it
+is not eligible for registered shell identity creation, descendant eligibility,
+peer identity revalidation, principal identity binding, approved dispatch, or
+request-bound lease binding. Never treat two missing start times as equal.
+Missing shell, peer, or principal start time fails closed with HTTP `403` and
+code `processIdentityUnavailable`.
+
+Add a code-signing inspection protocol in `LabanControl` so the control server,
+not only the AppKit UI, can validate persistence decisions:
+
+```swift
+public protocol ControlCodeSigningInspecting: Sendable {
+  func signingIdentity(forLivePID pid: pid_t, startTime: Date) -> ControlCodeSigningIdentity?
+  func validatesLivePID(_ pid: pid_t, startTime: Date, against requirement: String) -> Bool
+}
+```
+
+The production implementation may live in a macOS-specific file and use
+Security.framework. Tests use fakes. Code-signing identity for approval and
+matching must be obtained from the live process identified by pid plus start
+time, using macOS code-signing APIs for the running code object where available.
+Path-based static validation is a display fallback only and must not by itself
+authorize persisted approvals. Persisted matching uses the stored designated
+requirement or equivalent requirement validation. `codeHash` is stored for
+audit/debugging and may be used for unsigned/ad-hoc allow-once display, but it is
+not the primary stable key for signed app updates. If the implementation cannot
+validate the current live principal against the stored signing requirement,
+auto-approval fails closed and the user is prompted again.
+
 Extend `LabanControlServer` so registered shell identities live independently of
 single-use bootstraps. Today `registerAttachShellPID(sessionID:shellPID:)`
 updates bootstrap entries. Add a durable in-memory map:
@@ -344,7 +380,7 @@ Principal selection rules:
 3. Prefer the nearest non-generic stable signed app or binary between the shell
    and the helper.
 4. If no stable signed non-generic principal exists, the request can still be
-   shown as "Allow Once", but "Always Allow This App" is unavailable.
+   shown as "Allow Once", but "Always Allow This App for This Session" is unavailable.
 5. The prompt shows both the principal and a short helper chain summary, for
    example `Codex -> laban helper`.
 6. Persisted approvals are keyed to the principal signing identity, never to the
@@ -354,13 +390,25 @@ Add approval record types. A persisted record should contain no bearer tokens an
 no terminal content:
 
 ```swift
+public enum ControlAttachApprovalScope: Codable, Equatable, Sendable {
+  case currentRegisteredSession
+  // A future plan may add allAgentAttachedSessions after explicit UX review.
+}
+
 public struct ControlAttachApprovalRecord: Codable, Equatable, Sendable {
   public var schemaVersion: Int
   public var id: String
   public var displayName: String
   public var bundleIdentifier: String?
   public var signing: ControlCodeSigningIdentity
+  public var scope: ControlAttachApprovalScope
+  public var sessionID: String
+  public var shellIdentityFingerprint: String
+  public var allowedRouteIDs: [String]
+  public var allowedIntentIDs: [String]
   public var capabilities: [Capability]
+  public var maxDataSensitivity: String
+  public var allowedSideEffectClasses: [String]
   public var createdAt: Date
   public var lastUsedAt: Date?
   public var revokedAt: Date?
@@ -377,12 +425,33 @@ Persisted approval matching requires:
 - the current principal signature validates,
 - the current principal satisfies the stored signing requirement,
 - the current principal is not a generic interpreter/helper,
-- the requested capability set is a subset of the stored capability set, and
+- the approval scope matches the current session,
+- the current registered shell identity matches `shellIdentityFingerprint`,
+- the resolved route ID is in `allowedRouteIDs`,
+- the resolved intent ID is in `allowedIntentIDs`,
+- the requested capability set is a subset of the stored capability set,
+- the requested data sensitivity is no greater than the stored maximum,
+- the requested side-effect class is in the stored allowed side-effect classes,
+  and
 - the peer remains a same-user descendant of the registered session shell.
+
+For MVP, persisted approvals are session-scoped. An "Always Allow" record
+applies only while the same registered session shell identity remains live. It
+expires when the session closes or the registered shell identity changes. The UI
+button text is `Always Allow This App for This Session`. A future plan may add
+global app approvals; if global approvals are added, the prompt and Settings UI
+must explicitly say `Always Allow This App for Future Agent-Attached Laban
+Sessions`.
 
 Unsigned binaries, ad-hoc-signed binaries, scripts, generic interpreters,
 package runners, shells, and the bundled Laban helpers may only be approved once.
 They are never persisted by path plus hash in UserDefaults.
+
+An "Always Allow" created from `laban session state --json` allows future
+`GET /debug/state` / `app.state` lazy requests only. It does not allow
+`session scroll`, `command.propose`, raw `session request` to another route,
+logs, clipboard diagnostics, terminal byte-flow diagnostics, screenshots,
+artifacts, fixture routes, or any route with a different intent ID.
 
 Acceptance for Milestone 1:
 
@@ -390,12 +459,17 @@ Acceptance for Milestone 1:
   tool-runner chains.
 - Unit tests prove non-descendants and ambiguous descendants are rejected.
 - Unit tests prove PID reuse is rejected by process start-time mismatch.
+- Unit tests prove missing shell start time, missing peer start time, or missing
+  principal start time makes lazy attach ineligible and does not fall back to
+  PID-only matching.
 - Unit tests prove stale shell registration is removed on session close.
 - Unit tests prove the attach principal is Codex or another real agent/app in a
   `shell -> agent -> tool -> laban` chain, not the bundled `laban` helper.
 - Unit tests prove unsigned, ad-hoc, shell, generic interpreter, package runner,
   and bundled Laban helper identities cannot produce persisted always-allow
   records.
+- Unit tests prove an always-allow record created for `GET /debug/state` does not
+  auto-approve any other route or intent sharing `.observeSensitive`.
 - Existing C14 direct-child redemption tests still pass unchanged.
 
 ### Milestone 2: Approved Dispatch Endpoint
@@ -423,6 +497,23 @@ It requires:
 - exactly one registered session shell ancestor, and
 - a JSON body describing the intended request, not the security summary.
 
+Add `ControlLazyAttachAllowlist`. Lazy approved dispatch supports only this MVP
+allowlist:
+
+| CLI command | Method/path | Required route/intent | Persistable |
+| --- | --- | --- | --- |
+| `laban session state --json` | `GET /debug/state` | `app.state` | yes, exact route/intent only |
+| `laban session scroll --rows N --json` | `POST /debug/actions` action `scrollViewport` | `terminal.scrollViewport` | no for MVP unless a later edit adds a separate exact route/intent grant |
+| `laban propose --purpose ...` | `POST /debug/actions` action `propose` | `command.propose` | no for MVP unless a later edit adds a separate exact route/intent grant |
+
+`laban session request METHOD PATH` remains broker-only unless the resolved
+method, path, route, and intent appear in `ControlLazyAttachAllowlist`.
+Unsupported lazy routes fail before UI with HTTP `403` and code
+`lazyRouteNotAllowed`. Raw `session request` may use lazy approved dispatch only
+when the resolved route and intent are present in `ControlLazyAttachAllowlist`.
+"Always Allow" is disabled for raw `session request` unless the route/intent pair
+is one of the built-in typed commands.
+
 Request body shape:
 
 ```json
@@ -438,6 +529,12 @@ Request body shape:
   }
 }
 ```
+
+`cliCommand` is diagnostics-only and untrusted. It must not be shown as the
+security summary unless it matches the server-resolved route and intent. If
+`intendedRequest.body` is present, the server computes SHA-256 over the exact
+request body bytes and rejects mismatched `bodySHA256` before showing UI. If
+`body` is null, `bodySHA256` must be null.
 
 The server resolves the route and intent before approval. It derives:
 
@@ -473,6 +570,11 @@ Response body on approval:
 }
 ```
 
+`/control/session/attach/request` returns HTTP `200` only when approval and
+dispatch transport succeed. The downstream HTTP status is carried in
+`downstreamStatus`; the CLI maps its own exit code from the approval status first
+and the downstream status second.
+
 The server must never log terminal text, app-observe tokens,
 `LABAN_SESSION_ATTACH`, raw Authorization headers, or caller-provided reason
 text. Audit logs may include approval ID, principal display name, signing
@@ -500,7 +602,7 @@ public protocol ControlAttachApprovalDelegate: AnyObject, Sendable {
 the delegate in Milestone 4. Tests can inject a deterministic delegate.
 
 Do not block the main thread. The server can block the worker handling this one
-request on a semaphore or condition variable with a short timeout, because the
+request on a semaphore or condition variable with a 30-second timeout, because the
 requester is waiting for a command response, but the delegate must call into
 AppKit asynchronously on the main queue.
 
@@ -508,8 +610,9 @@ Lazy approval requests are bounded and coalesced:
 
 - at most one visible lazy approval prompt per session,
 - at most one pending request per principal/session/capability tuple,
-- a bounded global pending request count,
-- duplicate matching requests are coalesced or rejected with `429`,
+- at most eight pending lazy approval requests globally,
+- duplicate matching requests within a two-second window are coalesced or
+  rejected with `429`,
 - pending requests are cancelled on session close, app shutdown, timeout, or
   detectable client disconnect.
 
@@ -517,7 +620,8 @@ HTTP status mapping:
 
 - `200` approved,
 - `403` with code `userDenied` when the user denies,
-- `408` with code `approvalTimeout` when no answer arrives before timeout,
+- `408` with code `approvalTimeout` when no answer arrives before the 30-second
+  approval timeout,
 - `409` with code `sessionChanged` when session or process identity changed
   during approval,
 - `429` with code `approvalRateLimited` when pending/rate limits are exceeded.
@@ -538,6 +642,29 @@ approvedSession(sessionID:approvalID:capabilities:constraint:)
 The policy layer authorizes an approved-session context only when the target
 session matches, the requested capability is in the approved set, and the current
 request satisfies the approved request constraint.
+
+When adding `ControlTokenTier.approvedSession(...)`, update every switch over
+`ControlTokenTier`: `LabanControlPolicy.grants(for:)`,
+`LabanControlPolicy.tokenScope(for:)`, `LabanControlPolicy.authorize(...)`,
+`ControlRouteCatalog` route resolution for `/debug/state`,
+`LabanControlServer.sessionID(from:)`, `LabanControlServer.legacyQueryInput(...)`,
+and `LabanControlServer.reportAuthorize(...)` / deny context where needed. For
+`/debug/state`, `.approvedSession` resolves to `app.state`, not
+`app.stateSummary`, but only when the approved constraint matches the current
+request. `legacyQueryInput` must set `scopedSessionID` to the approved session
+and use session-observe redaction semantics without granting unrelated
+session-observe authority.
+
+The server and `ControlAttachApprovalStore` validate every
+`.alwaysAllowSignedIdentity` decision independently of the UI. If the delegate
+returns `.alwaysAllowSignedIdentity` for a non-persistable principal,
+non-persistable route, raw `session request`, generic interpreter,
+unsigned/ad-hoc process, script, package runner, build wrapper, or bundled Laban
+helper, the server does not persist the record. It treats the decision as
+`allowOnce` only if the one-shot request itself is otherwise eligible; otherwise
+it denies with `403 approvalNotPersistable`. Tests must prove a malicious or fake
+delegate returning `.alwaysAllowSignedIdentity` cannot create a persisted record
+for non-persistable identities or non-persistable operations.
 
 If implementation constraints require returning a lease token instead of
 server-side dispatch, the token must be single-use, non-persisted, and
@@ -560,6 +687,9 @@ Acceptance for Milestone 2:
 - A timed-out delegate returns a clear timeout response.
 - A stale session/process identity returns `409 sessionChanged`.
 - Rate-limited duplicate requests return `429 approvalRateLimited`.
+- A non-allowlisted route or action returns `403 lazyRouteNotAllowed` before UI.
+- A fake delegate returning `.alwaysAllowSignedIdentity` for a non-persistable
+  identity or operation cannot create a persisted record.
 - Sensitive values do not appear in audit payloads, stdout/stderr test fixtures,
   or thrown error descriptions.
 
@@ -624,16 +754,28 @@ laban session scroll --rows N --json
 laban propose --purpose TEXT -- COMMAND [ARG ...]
 ```
 
-`laban session proxy` remains broker-only in this milestone, because it is a
-long-lived stream. It should keep the existing `LABAN_AGENT_CONTROL_URL`
-requirement and explain that already-running agents can use one-shot session
-commands or restart through `laban agent run -- <agent>`.
+`laban session request METHOD PATH` is broker-only unless the resolved route and
+intent are present in `ControlLazyAttachAllowlist`. `laban session proxy` remains
+broker-only in this milestone, because it is a long-lived stream. It should keep
+the existing `LABAN_AGENT_CONTROL_URL` requirement and print:
+
+```text
+laban: session proxy requires broker mode; restart the agent with
+`laban agent run -- <agent>` for long-lived session control.
+```
+
+Document tmux/screen limitations: descendant-of-shell lazy approval may not work
+for process trees that escape the tab shell ancestry through a long-lived
+external daemon, such as some `tmux` or `screen` layouts. The fallback is
+`laban agent run -- <agent>`.
 
 Acceptance for Milestone 3:
 
 - CLI tests prove broker-present behavior is unchanged.
 - CLI tests prove broker-missing behavior requests lazy approved dispatch and
   returns the downstream response for the intended command.
+- CLI tests prove `laban session request` is broker-only unless the route/intent
+  pair is allowlisted.
 - CLI tests prove denial, timeout, ineligible process, sessionChanged,
   approvalRateLimited, and malformed approval response map to the documented exit
   codes.
@@ -667,7 +809,7 @@ Session: c2yt (session ...D27)
 Operation: Read current session state
 Data: private session metadata; no keyboard input, clipboard, or tab switching
 
-[Allow Once] [Always Allow This App] [Deny]
+[Allow Once] [Always Allow This App for This Session] [Deny]
 ```
 
 The prompt must use server-derived route, intent, capability, sensitivity, target
@@ -676,7 +818,7 @@ the primary security summary.
 
 If the attach principal is unsigned, ad-hoc signed, a script, a generic shell,
 an interpreter, a package runner, a build/tool wrapper, or a bundled Laban
-helper, omit or disable "Always Allow This App" and explain that only "Allow
+helper, omit or disable "Always Allow This App for This Session" and explain that only "Allow
 Once" is available. Examples of non-persistable principals include `sh`, `zsh`,
 `bash`, `fish`, `python`, `python3`, `node`, `npm`, `npx`, `pnpm`, `yarn`, `bun`,
 `deno`, `uv`, `pipx`, `ruby`, `perl`, `php`, `java`, `osascript`, `swift`,
@@ -706,7 +848,8 @@ Wire `ControlSecurityCoordinator` to log:
 - `control.attach.denied`,
 - `control.attach.revoked`,
 - `control.attach.autoApproved`,
-- `control.privileged` for commands that use an approved lazy lease.
+- `control.privileged` for commands that use approved lazy dispatch or a fallback
+  single-use request-bound lease.
 
 Audit payloads must include no terminal text, no token values, no raw argv beyond
 the display-safe process name/path needed for accountability, no full executable
@@ -719,7 +862,7 @@ Update `docs/process/controlling-agent-control-plane.md` with:
 - broker-first recommended workflow,
 - lazy attach recovery workflow for already-running agents,
 - exact expected diagnostics for denial, timeout, and ineligible process,
-- security rules for "Always Allow This App",
+- security rules for "Always Allow This App for This Session",
 - revocation instructions,
 - the fact that `session proxy` remains broker-only.
 
@@ -781,7 +924,7 @@ Manual installed acceptance:
 6. Observe JSON session state for the same tab and no token output.
 7. Repeat, choose "Deny", and observe exit code `5` plus a human denial
    diagnostic.
-8. If using a signed Codex app, choose "Always Allow This App", run the command
+8. If using a signed Codex app, choose "Always Allow This App for This Session", run the command
    again, and observe no second prompt plus an audit entry and visible indicator.
 9. Revoke the approval in Settings and verify the next command prompts again.
 
@@ -864,11 +1007,15 @@ Behavioral acceptance:
   Laban shell.
 - Denying the dialog fails with exit `5`.
 - Letting the dialog time out fails with exit `4`.
-- "Always Allow This App" is shown only for stable signed, non-generic
-  principals, can be revoked, and never stores bearer tokens or helper identity
-  as the trusted principal.
+- "Always Allow This App for This Session" is shown only for stable signed,
+  non-generic principals, can be revoked, and never stores bearer tokens or
+  helper identity as the trusted principal.
 - Approved requests are session-scoped, route-bound, body-bound, and cannot
   target another session or be replayed for another operation.
+- Persisted approvals are route/intent-bound and session-scoped; an approval for
+  `GET /debug/state` does not auto-approve any other `.observeSensitive` route.
+- Missing shell, peer, or principal process start time fails closed with
+  `processIdentityUnavailable`.
 - Audit logs and CLI output contain no `LABAN_SESSION_ATTACH`, app-observe token,
   lease token, raw Authorization header, terminal text payload, or
   caller-provided reason text.
@@ -895,10 +1042,16 @@ A separate fresh-state reviewer must verify the following before this ExecPlan i
 considered complete. The executing agent must not mark the plan done until this
 gate passes.
 
-- [ ] `rg -n "redeemAttachBootstrap|LABAN_SESSION_ATTACH" Sources/LabanCLI`
-  returns no matches in session command implementation paths.
+- [ ] `rg -n "redeemAttachBootstrap|LABAN_SESSION_ATTACH"
+  Sources/LabanCLI/AgentProxyClient.swift Sources/LabanCLI/LabanCLI.swift`
+  returns no hits in session command execution or lazy fallback code. Hits are
+  allowed only in `AgentLauncher.swift` and only for `laban agent run`
+  preflight/help text that never prints the value.
 - [ ] `rg -n "lazy.*sessionObserve|sessionObserve.*lazy|lease.*sessionObserve"
   Sources Tests` returns no production match.
+- [ ] `rg -n "switch tokenTier|case \\.appObserve|case \\.sessionObserve"
+  Sources/LabanControl` has been reviewed, and tests cover every
+  `ControlTokenTier` switch after adding `.approvedSession`.
 - [ ] `swift test --disable-sandbox --filter ControlAttachAncestryTests` exits
   0.
 - [ ] `swift test --disable-sandbox --filter ControlAttachPrincipalTests` exits
@@ -907,17 +1060,31 @@ gate passes.
   exits 0.
 - [ ] `swift test --disable-sandbox --filter LazyAttachApprovedRequestTests`
   exits 0.
+- [ ] `swift test --disable-sandbox --filter LazyAttachAllowlistTests` exits 0.
 - [ ] `swift test --disable-sandbox --filter LazyAttachCLITests` exits 0.
+- [ ] `swift test --disable-sandbox --filter LazyAttachPersistedApprovalScopeTests`
+  exits 0.
 - [ ] `swift test --disable-sandbox --filter ControlSecurityAuditTests` exits 0.
+- [ ] `swift test --disable-sandbox --filter LazyAttachCLITests/testSessionCommandsIgnoreLABANSessionAttach`
+  exits 0.
 - [ ] Tests prove PID reuse is rejected by process start-time mismatch.
+- [ ] Tests prove missing process start time fails closed and does not fall back
+  to PID-only matching.
 - [ ] Tests prove stale shell registration is removed on session close.
 - [ ] Tests prove a state approval cannot be reused for scroll, propose, another
   body, another session, or a second request.
-- [ ] Tests prove "Always Allow This App" is hidden for unsigned, ad-hoc, shell,
+- [ ] Tests prove an always-allow record for `GET /debug/state` does not
+  auto-approve any other route or intent sharing `.observeSensitive`.
+- [ ] Tests prove every non-allowlisted route/action is rejected before UI with
+  `lazyRouteNotAllowed`.
+- [ ] Tests prove "Always Allow This App for This Session" is hidden for unsigned, ad-hoc, shell,
   generic interpreter, package runner, and bundled Laban helper principals.
-- [ ] Tests prove "Always Allow This App" is shown only for a stable signed
+- [ ] Tests prove "Always Allow This App for This Session" is shown only for a stable signed
   non-generic principal and is keyed to that principal, not to the Laban CLI
   helper.
+- [ ] Tests prove a fake delegate returning `.alwaysAllowSignedIdentity` for
+  `node`, `python`, `zsh`, `bash`, `laban`, `laban-agent`, unsigned binaries,
+  ad-hoc binaries, and raw `session request` cannot create a persisted record.
 - [ ] Tests prove approval timeout, denial, rate limiting, and `sessionChanged`
   errors map to the documented CLI exit codes.
 - [ ] Installed smoke verifies app/helper code signing and prints
@@ -929,7 +1096,3 @@ gate passes.
 - [ ] `git diff --check` exits 0.
 
 Review status: NOT REVIEWED
-
-Review findings:
-
-(none yet)
