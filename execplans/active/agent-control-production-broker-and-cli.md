@@ -53,6 +53,23 @@ helper source.
 - [x] (2026-07-07) Folded in final review hardening: child agents must not
   inherit the held C14 upstream fd or proxy fds, the proxy has resource caps for
   buggy descendants, and broker/child shutdown has a concrete default policy.
+- [x] (2026-07-09) Closed MVP gate review finding 1 (installed-shim C14 E2E).
+  `Tests/LabanControlTests/InstalledShimAttachRedeemerTests.swift` spawns real
+  process chains through a shim matching `InstallCLI.installShim`'s exact
+  template and proves `LabanControlServer.isAllowedAttachRedeemer` accepts a
+  shim that exec'd into the agent binary and rejects one that forked an extra
+  hop, with the real executable-path check enabled (no test bypass).
+  `Sources/LabanAgent/AgentRunShimTestHarness.swift`, wired behind a new
+  `--agent-run-shim-test` flag in `Sources/LabanAgent/main.swift` and invoked
+  from `scripts/test-installed-control-broker`, installs a real shim via the
+  bundled `laban install-cli`, verifies the shim is final-exec, then drives
+  `laban agent run` through that shim from a real spawned shell against a real
+  running `LabanControlServer`, confirming the C14 redemption and the child
+  process both succeed end to end. The installed-smoke half needs a fresh
+  `scripts/build-app` build and reinstall to run against a real signed bundle;
+  validated here via `swift build`/`swift test` against the compiled
+  `laban-agent` product, which fails gracefully outside a `.app` bundle rather
+  than exercising the installed path.
 - [x] Milestone 1: Add shared app-observe discovery parsing and a `laban` CLI
   product for app-observe reads.
   - [x] `Sources/LabanControl/ControlDiscovery.swift` with secure open-then-`fstat`

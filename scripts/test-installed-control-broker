@@ -35,5 +35,10 @@ if [[ "$AGENT_HELPER" != "$EXPECTED_AGENT_PATH" ]]; then
   exit 1
 fi
 
-echo "Broker installed-bundle smoke checks passed."
-echo "CONTROL_BROKER_INSTALLED_SMOKE_OK"
+echo "Running installed-shim agent run integration test..."
+if "$AGENT_HELPER" --agent-run-shim-test; then
+  echo "Broker installed-bundle smoke checks passed."
+  echo "CONTROL_BROKER_INSTALLED_SMOKE_OK"
+else
+  exit $?
+fi

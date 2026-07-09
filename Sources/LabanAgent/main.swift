@@ -36,6 +36,7 @@ struct AgentArgs {
   var noPersistenceRestore = false
   var noPersistence = false
   var lazyAttachTest = false
+  var agentRunShimTest = false
 }
 
 func parseArgs() -> AgentArgs {
@@ -66,6 +67,7 @@ func parseArgs() -> AgentArgs {
     case PersistenceRestoreLaunchFlag.argument: a.noPersistenceRestore = true
     case PersistenceRestoreLaunchFlag.noPersistenceArgument: a.noPersistence = true
     case "--lazy-attach-test": a.lazyAttachTest = true
+    case "--agent-run-shim-test": a.agentRunShimTest = true
     default:
       if arg.hasPrefix("--fixture=") {
         a.fixture = String(arg.dropFirst("--fixture=".count))
@@ -125,6 +127,10 @@ func usage() -> String {
     --lazy-attach-test              Exercise direct-agent lazy attach, helper/principal
                                     binding, persistence, and revocation against a
                                     temporary control server and exit.
+    --agent-run-shim-test           Install the real `laban` shim into a scratch
+                                    prefix, run `laban agent run` through it from a
+                                    real shell, and confirm the resulting broker
+                                    satisfies the C14 direct-child verifier and exit.
 
   Debug server options:
     --fixture=PATH                  Load a deterministic fixture session.
@@ -537,6 +543,11 @@ if let emojiRenderingMode = args.emojiRenderingMode {
 
 if args.lazyAttachTest {
   let exitCode = runLazyAttachInstalledSmoke()
+  exit(exitCode)
+}
+
+if args.agentRunShimTest {
+  let exitCode = runAgentRunShimInstalledSmoke()
   exit(exitCode)
 }
 
