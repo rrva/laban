@@ -159,6 +159,11 @@ final class MainWindowController: NSWindowController {
         sessionCoordinator: sessionCoordForAttach,
         model: model)
     }
+    let priorTabClosedForControl = model.onTabClosed
+    model.onTabClosed = { tabId in
+      priorTabClosedForControl?(tabId)
+      controlLaunchCoordinator.noteTabClosed(tabID: tabId)
+    }
     let isPersistenceEnabled = {
       persistenceSyncEnabled && RestoreOnLaunchSettings.isEnabled
     }
@@ -611,7 +616,9 @@ final class MainWindowController: NSWindowController {
         priorTabCreatedForObserver?(tabId, session)
         observerHost?.attach(session: session, tabId: tabId)
       }
+      let priorTabClosedForObserver = model.onTabClosed
       model.onTabClosed = { [weak observerHost] tabId in
+        priorTabClosedForObserver?(tabId)
         observerHost?.detach(tabId: tabId)
       }
       for (tab, session) in model.allSessions() {

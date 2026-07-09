@@ -89,6 +89,34 @@ final class ControlDefaultOnTests: XCTestCase {
     XCTAssertFalse(context.isAgentAttached)
   }
 
+  func testNonPendingShellRegistrationRestoresLazyAttachAncestry() throws {
+    let coordinator = ControlSessionLaunchCoordinator()
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
+
+    let context = coordinator.prepareLaunch(tabID: "tab-restored", isAgentAttached: false)
+    XCTAssertNil(context.sessionObserveBootstrap)
+    XCTAssertFalse(coordinator.hasPendingAttachRegistration(sessionID: context.sessionID))
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size, sessionID: context.sessionID)
+    coordinator.tryRegisterShellPID(
+      sessionID: context.sessionID,
+      session: session,
+      shellPID: getppid())
+
+    XCTAssertTrue(
+      server.canLazyAttachDescendant(sessionID: context.sessionID, peerPID: getpid()))
+
+    coordinator.noteTabClosed(tabID: "tab-restored")
+    XCTAssertFalse(
+      server.canLazyAttachDescendant(sessionID: context.sessionID, peerPID: getpid()))
+  }
+
   func testAgentAttachedLaunchContextCarriesSingleUseBootstrap() throws {
     LabanControlServer.skipExecutableVerificationForTests = true
     defer { LabanControlServer.skipExecutableVerificationForTests = false }

@@ -70,6 +70,16 @@ identity persisted by "Always Allow".
   indicator, and operator documentation.
 - [ ] Milestone 5: Add installed-bundle end-to-end coverage for direct-Codex
   lazy attach and for the existing broker-first path.
+- [x] (2026-07-09) Dogfooded GUI restart while Codex remained alive under
+  labpty. Confirmed the app-observe token was republished and direct C14 became
+  stale as intended, but lazy attach failed before approval because restored
+  live sessions were not re-registered as shell ancestors in the new GUI control
+  server. Fixed shell identity registration to cover non-pending restored
+  sessions without minting a bootstrap.
+- [x] (2026-07-09) Dogfooded the redesigned lazy-attach approval sheet in an
+  installed app build. Fixed the AppKit accessory sizing regression that clipped
+  detail rows outside the alert, then confirmed "Always Allow" made a repeated
+  private session-state read return without reopening the sheet.
 - [ ] Review Gate passed.
 
 ## Decision Log
@@ -1020,6 +1030,25 @@ Behavioral acceptance:
   lease token, raw Authorization header, terminal text payload, or
   caller-provided reason text.
 - The "Agent" indicator appears during approved lazy attach activity.
+
+## Surprises & Discoveries
+
+- Observation: Restarting Laban while an agent-attached Codex process survived
+  under labpty republished `control.json` with a new app-observe token, and
+  direct C14 failed with the expected stale-bootstrap HTTP 401. However,
+  `laban session state --json` failed immediately with
+  `notDescendantOfRegisteredSession` instead of reaching approval.
+  Evidence: the restored active tab reported shell PID `7742`, and the OS tree
+  still had `labpty -> zsh(7742) -> node codex -> codex -> tool process`; the
+  failure was caused by the new GUI control server not repopulating
+  `attachShellIdentitiesBySessionID` for restored live sessions.
+
+- Observation: `NSAlert` did not size the approval details correctly when the
+  accessory view only had Auto Layout constraints. The sheet rendered narrow and
+  the detail rows overlapped the message/title area.
+  Evidence: the installed build showed clipped rows until the accessory stack
+  was given an explicit frame width and fitting height; after reinstall and
+  restart, the same approval prompt rendered as a bounded centered sheet.
 
 ## Idempotence and Recovery
 
