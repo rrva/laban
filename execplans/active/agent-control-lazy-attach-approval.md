@@ -111,7 +111,9 @@ identity persisted by "Always Allow".
   installed app build. Fixed the AppKit accessory sizing regression that clipped
   detail rows outside the alert, then confirmed "Always Allow" made a repeated
   private session-state read return without reopening the sheet.
-- [ ] Review Gate passed.
+- [ ] Review Gate passed. (First fresh-state review ran 2026-07-09 against
+  commit ccc847d and FAILED with 7 findings; see the Review findings list
+  under the Review Gate section.)
 
 ## Decision Log
 
@@ -1109,41 +1111,68 @@ A separate fresh-state reviewer must verify the following before this ExecPlan i
 considered complete. The executing agent must not mark the plan done until this
 gate passes.
 
-- [ ] `rg -n "redeemAttachBootstrap|LABAN_SESSION_ATTACH"
+- [x] `rg -n "redeemAttachBootstrap|LABAN_SESSION_ATTACH"
   Sources/LabanCLI/AgentProxyClient.swift Sources/LabanCLI/LabanCLI.swift`
   returns no hits in session command execution or lazy fallback code. Hits are
   allowed only in `AgentLauncher.swift` and only for `laban agent run`
-  preflight/help text that never prints the value.
-- [ ] `rg -n "lazy.*sessionObserve|sessionObserve.*lazy|lease.*sessionObserve"
-  Sources Tests` returns no production match.
-- [ ] `rg -n "switch tokenTier|case \\.appObserve|case \\.sessionObserve"
+  preflight/help text that never prints the value. (Verified 2026-07-09: no
+  hits, rg exit 1.)
+- [x] `rg -n "lazy.*sessionObserve|sessionObserve.*lazy|lease.*sessionObserve"
+  Sources Tests` returns no production match. (Verified 2026-07-09: no hits,
+  rg exit 1.)
+- [x] `rg -n "switch tokenTier|case \\.appObserve|case \\.sessionObserve"
   Sources/LabanControl` has been reviewed, and tests cover every
-  `ControlTokenTier` switch after adding `.approvedSession`.
-- [ ] `swift test --disable-sandbox --filter ControlAttachAncestryTests` exits
-  0.
-- [ ] `swift test --disable-sandbox --filter ControlAttachPrincipalTests` exits
-  0.
-- [ ] `swift test --disable-sandbox --filter ControlAttachApprovalStoreTests`
-  exits 0.
-- [ ] `swift test --disable-sandbox --filter LazyAttachApprovedRequestTests`
-  exits 0.
-- [ ] `swift test --disable-sandbox --filter LazyAttachAllowlistTests` exits 0.
-- [ ] `swift test --disable-sandbox --filter LazyAttachCLITests` exits 0.
-- [ ] `swift test --disable-sandbox --filter LazyAttachPersistedApprovalScopeTests`
-  exits 0.
-- [ ] `swift test --disable-sandbox --filter ControlSecurityAuditTests` exits 0.
-- [ ] `swift test --disable-sandbox --filter LazyAttachCLITests/testSessionCommandsIgnoreLABANSessionAttach`
-  exits 0.
+  `ControlTokenTier` switch after adding `.approvedSession`. (Verified
+  2026-07-09: switches in `LabanControlPolicy.grants/tokenScope/authorize`,
+  `ControlRouteCatalog` `/debug/state` resolve and dispatch, and
+  `LabanControlServer.sessionID(from:)` / `legacyQueryInput` all handle
+  `.approvedSession` explicitly with no `default` over the tier; covered by
+  `ApprovedSessionTokenTierSwitchTests` (4 tests),
+  `ApprovedSessionStateRedactionTests` (2 tests), and end-to-end dispatch in
+  `LazyAttachApprovedRequestTests.testAllowOnceDispatchesAndReturnsDownstream`.)
+- [x] `swift test --disable-sandbox --filter ControlAttachAncestryTests` exits
+  0. (7 tests, 0 failures.)
+- [x] `swift test --disable-sandbox --filter ControlAttachPrincipalTests` exits
+  0. (6 tests, 0 failures.)
+- [x] `swift test --disable-sandbox --filter ControlAttachApprovalStoreTests`
+  exits 0. (8 tests, 0 failures.)
+- [x] `swift test --disable-sandbox --filter LazyAttachApprovedRequestTests`
+  exits 0. (4 tests, 0 failures.)
+- [x] `swift test --disable-sandbox --filter LazyAttachAllowlistTests` exits 0.
+  (5 tests, 0 failures.)
+- [x] `swift test --disable-sandbox --filter LazyAttachCLITests` exits 0.
+  (7 tests, 0 failures.)
+- [x] `swift test --disable-sandbox --filter LazyAttachPersistedApprovalScopeTests`
+  exits 0. (2 tests, 0 failures.)
+- [x] `swift test --disable-sandbox --filter ControlSecurityAuditTests` exits 0.
+  (3 tests, 0 failures.)
+- [x] `swift test --disable-sandbox --filter LazyAttachCLITests/testSessionCommandsIgnoreLABANSessionAttach`
+  exits 0. (1 test, 0 failures.)
 - [ ] Tests prove PID reuse is rejected by process start-time mismatch.
-- [ ] Tests prove missing process start time fails closed and does not fall back
+- [x] Tests prove missing process start time fails closed and does not fall back
   to PID-only matching.
-- [ ] Tests prove stale shell registration is removed on session close.
+  (`ControlAttachAncestryTests.testMissingShellStartTimeFailsClosed` and
+  `testMissingPeerStartTimeFailsClosed`: PIDs match, start time is nil,
+  eligibility is rejected.)
+- [x] Tests prove stale shell registration is removed on session close.
+  (`ControlAttachAncestryTests.testStaleShellRegistrationRemovedOnSessionClose`;
+  the app-side call site is
+  `ControlSessionLaunchCoordinator.swift:99`.)
 - [ ] Tests prove a state approval cannot be reused for scroll, propose, another
   body, another session, or a second request.
-- [ ] Tests prove an always-allow record for `GET /debug/state` does not
+- [x] Tests prove an always-allow record for `GET /debug/state` does not
   auto-approve any other route or intent sharing `.observeSensitive`.
-- [ ] Tests prove every non-allowlisted route/action is rejected before UI with
+  (`LazyAttachPersistedApprovalScopeTests.testStateApprovalDoesNotAutoApproveScroll`,
+  `ControlAttachApprovalStoreTests.testFindMatchingRejectsDifferentRouteOrIntent`,
+  and `LazyAttachApprovedRequestTests.testNonAllowlistedRouteReturns403BeforeUI`
+  which proves `clipboard.read`, another `.observeSensitive` intent, cannot be
+  lazily dispatched at all.)
+- [x] Tests prove every non-allowlisted route/action is rejected before UI with
   `lazyRouteNotAllowed`.
+  (`LazyAttachApprovedRequestTests.testNonAllowlistedRouteReturns403BeforeUI`
+  asserts 403 `lazyRouteNotAllowed` and that the delegate was never prompted;
+  `LazyAttachAllowlistTests.testRouteAndIntentLookup` covers the negative
+  lookup path.)
 - [ ] Tests prove "Always Allow This App for This Session" is hidden for unsigned, ad-hoc, shell,
   generic interpreter, package runner, and bundled Laban helper principals.
 - [ ] Tests prove "Always Allow This App for This Session" is shown only for a stable signed
@@ -1155,11 +1184,132 @@ gate passes.
 - [ ] Tests prove approval timeout, denial, rate limiting, and `sessionChanged`
   errors map to the documented CLI exit codes.
 - [ ] Installed smoke verifies app/helper code signing and prints
-  `LAZY_ATTACH_INSTALLED_SMOKE_OK`.
+  `LAZY_ATTACH_INSTALLED_SMOKE_OK`. ENVIRONMENT-BLOCKED (2026-07-09): the
+  signing-verification half ran (codesign verify passed, both helper
+  metadata blocks printed, expected agent path matched), but the harness
+  half failed with `LAZY_ATTACH_INSTALLED_SMOKE_FAIL: first direct-agent
+  lazy attach request failed: rejected`; the harness result file shows
+  `laban: denied: {"error":"notDescendantOfRegisteredSession"}` exit 5.
+  Root cause is the review shell's ancestry: the ancestry walk in
+  `LabanControlServer.resolveUniqueShellSessionAncestor` continues past the
+  matched registered shell up to PID 1 and fails closed on the root-owned
+  `login` process that hosts this reviewer's iTerm2 shell (verified with
+  `ps -o pid,ppid,uid,comm` up the chain: `login` runs as uid 0). The same
+  failure reproduced against both `~/Laban.app` (built at 5dfeab3+dirty)
+  and a fresh `scripts/build-app` bundle from this tree, sandboxed and
+  unsandboxed, so it is hosting-environment-dependent, not a regression in
+  the commit under review. Already tracked as the standing task
+  "Investigate ancestry walk failing under non-same-uid ancestors
+  (login-hosted shells)". Not counted as a gate failure, but the smoke has
+  not been observed printing `LAZY_ATTACH_INSTALLED_SMOKE_OK` in this
+  environment.
 - [ ] Secret-scan fixtures prove logs/errors/audit do not contain lease tokens,
   app-observe tokens, `LABAN_SESSION_ATTACH`, raw Authorization headers,
   terminal text, or caller-provided reason text.
-- [ ] `./scripts/lint` exits 0.
-- [ ] `git diff --check` exits 0.
+- [x] `./scripts/lint` exits 0. (Verified 2026-07-09.)
+- [x] `git diff --check` exits 0. (Verified 2026-07-09.)
 
-Review status: NOT REVIEWED
+### Review findings
+
+Fresh-state review, 2026-07-09, commit `ccc847d`. HEAD at review time was
+`35d32e0`, two commits ahead of `ccc847d`, but `git diff --stat ccc847d..HEAD`
+touches only `docs/` and `execplans/`; all reviewed Sources, Tests, and
+scripts are identical to `ccc847d`. Test commands were run with the
+module-cache workaround documented in Validation and Acceptance.
+
+1. PID reuse by start-time mismatch is untested at the ancestry layer. The
+   defenses exist in code
+   (`Sources/LabanControl/LabanControlServer.swift:1627` compares the
+   recorded shell start time against the freshly read identity, and
+   `Sources/LabanControl/LabanControlServer.swift:1733` compares the peer
+   start time during pre-dispatch revalidation), but no test exercises
+   either mismatch branch: every `FakeProcessTreeInspector` in
+   `Tests/LabanControlTests/ControlAttachAncestryTests.swift` and
+   `Tests/LabanControlTests/LazyAttachPersistedApprovalScopeTests.swift`
+   holds an immutable `let tree`, so the identity read at
+   `registerAttachShellPID` time always equals the identity read at
+   eligibility time. The only start-time-mismatch test is
+   `ControlProcessIdentityAndSigningTests.testStartTimeMismatchFailsClosed`
+   (`Tests/LabanControlTests/ControlProcessIdentityAndSigningTests.swift:63`),
+   which covers the code-signing inspector, not shell or peer identity
+   binding. A mutable fake tree that swaps the identity behind a PID after
+   registration would close this.
+2. The one-shot reuse item is only partially proven. Covered: scroll
+   (`LazyAttachPersistedApprovalScopeTests.testStateApprovalDoesNotAutoApproveScroll`),
+   another session
+   (`testStateApprovalDoesNotAutoApproveOtherSession` and
+   `ApprovedSessionStateRedactionTests.testApprovedSessionDifferentSessionIDIsRejectedByPolicy`),
+   propose at the store layer
+   (`ControlAttachApprovalStoreTests.testFindMatchingRejectsDifferentRouteOrIntent`).
+   Not covered: another body (no test sends a mismatched `bodySHA256` or
+   authorizes with a different body hash; every test constraint uses
+   `bodySHA256: nil` or a hash of the actual body) and a second request (no
+   test proves a completed `allowOnce` dispatch cannot be replayed and that
+   a second identical request re-prompts;
+   `LazyAttachApprovedRequestTests.testRateLimitedDuplicateRequest` only
+   covers concurrent duplicates).
+3. No test proves the "Always Allow" button is hidden for non-persistable
+   principals. `ControlAttachApprovalPresenter` adds the button only when
+   `request.canPersist`
+   (`Sources/LabanApp/Control/ControlAttachApprovalPresenter.swift:34`),
+   but `rg -rln "ControlAttachApprovalPresenter|canPersist" Tests` returns
+   no hits: there is no presenter rendering test at all. The underlying
+   `ControlAttachPrincipal.isPersistable` logic is tested for a shell
+   (`zsh`), a generic interpreter (`python3`), an unsigned/ad-hoc binary,
+   and the bundled helper in
+   `Tests/LabanControlTests/ControlAttachPrincipalTests.swift`, but no test
+   covers a package runner (`npm`, `npx`, `pnpm`, ...) at any layer, and the
+   `canPersist`-to-button mapping is unverified. Milestone 4 acceptance
+   ("Unit or debug-hook tests cover the presenter rendering ...") was not
+   implemented.
+4. No test proves "Always Allow" is shown only for a stable signed
+   non-generic principal and persisted keyed to that principal. The
+   principal-selection half is covered
+   (`ControlAttachPrincipalTests.testPrincipalCanPersistForSignedNonGeneric`,
+   `testBundledLabanHelperIsNeverPrincipal`), and store matching keys on
+   `principalIdentityFingerprint`, but no test drives the server persistence
+   path (`Sources/LabanControl/LabanControlServer.swift:1546`) with a
+   delegate returning `.alwaysAllowSignedIdentity` and then asserts the
+   stored record is keyed to the principal rather than the `laban` helper.
+   The only coverage is the installed smoke harness
+   (`Sources/LabanAgent/LazyAttachTestHarness.swift`), which skips the
+   persistence checks for ad-hoc-signed helpers and is environment-blocked
+   here (see the smoke item).
+5. The malicious-delegate check has zero coverage: `rg -n "alwaysAllow"
+   Tests --glob '*.swift'` returns no hits, so no test returns
+   `.alwaysAllowSignedIdentity` for `node`, `python`, `zsh`, `bash`,
+   `laban`, `laban-agent`, unsigned binaries, ad-hoc binaries, or raw
+   `session request` and asserts no record is persisted. The server-side
+   guard exists (`Sources/LabanControl/LabanControlServer.swift:1540`
+   downgrades non-persistable always-allow decisions), but Milestone 2
+   acceptance explicitly required tests proving a fake delegate cannot
+   create such records.
+6. CLI exit-code mapping is only half tested. Covered: denial maps to 5
+   (`LazyAttachCLITests.testDenialMapsToExitCode5`) and timeout maps to 4
+   (`testTimeoutMapsToExitCode4`). Not covered: `sessionChanged` and
+   `rateLimited` mapping to 5; `lazyAttachExitCode` handles them
+   (`Sources/LabanCLI/LabanCLI.swift:309`), and `LazyAttachClient` raises
+   them (`Sources/LabanCLI/LazyAttachClient.swift:104` and `:107`), but
+   `rg -n "rateLimited|sessionChanged" Tests/LabanCLITests` returns no
+   hits. There is also no server-level test producing `408 approvalTimeout`
+   or `409 sessionChanged` (the slow delegate in
+   `testRateLimitedDuplicateRequest` is only used to hold a pending slot).
+7. The secret-scan item is only partially proven.
+   `ControlSecurityAuditTests.testAuditPayloadsContainNoTokens` asserts
+   audit payloads contain no `token` substring, no `LABAN_SESSION_ATTACH`,
+   no `Authorization`, and not the live app-observe token value, and
+   `LazyAttachCLITests.testNoTokenInStderr` plus
+   `testSessionCommandsIgnoreLABANSessionAttach` cover CLI stdout/stderr.
+   But no fixture scans for a lease/approved-token value (the internal
+   token minted at `Sources/LabanControl/LabanControlServer.swift:1409` is
+   never asserted absent from responses, errors, or audit), and no fixture
+   plants a terminal-text sentinel and proves it stays out of audit
+   payloads. Caller-provided reason text is vacuously safe: the request
+   parser (`Sources/LabanControl/LabanControlServer.swift:1245`) accepts no
+   reason field, so nothing can leak; noting this for completeness rather
+   than as a gap.
+
+Review status: FAILED (2026-07-09, commit ccc847d): 7 findings, see Review
+findings. Items 4 through 12 (test-suite runs), the three grep checks, lint,
+and `git diff --check` all passed; the installed smoke is
+environment-blocked, not failed.
