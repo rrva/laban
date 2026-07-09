@@ -368,7 +368,12 @@ public final class LabanControlServer {
     return .ok
   }
 
-  private static let localPeerPID: Int32 = 3
+  // LOCAL_PEERPID (0x002) retrieves the peer's real pid, not LOCAL_PEEREPID
+  // (0x003, effective pid). Peer identity checks (C14 direct-child checks,
+  // lazy-attach principal derivation, proxy descendant checks) must gate on
+  // the real pid: effective pid can differ from real pid under setuid or
+  // posix_spawn scenarios, which is the wrong identity to authorize against.
+  private static let localPeerPID: Int32 = 2
   private static let localPeerToken: Int32 = 0x006
 
   public static func peerPID(clientFD: Int32) -> pid_t? {
