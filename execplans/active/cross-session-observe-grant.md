@@ -454,10 +454,14 @@ of truth for the entire request.
 Milestone 1 carries a mandatory named test,
 `testGrantedReadPayloadSessionEqualsAuditedTarget`: for each of the five
 grant intents, dispatch a granted cross-session read and assert the
-dispatched payload's session id equals the audited target session id.
-(Allow Once is unaffected by the mismatch class: `.approvedSession` is
-bound to the TARGET, so `scopedSessionID` already becomes the target on
-that path.)
+dispatched payload's session id equals the audited target session id. The
+test exercises every target-key form `resolveTargetSession` honors: the
+four query/body keys (`sessionID`, `sessionId`, `targetSessionID`,
+`targetSessionId`) AND the path-parameter form (`GET /debug/sessions/<id>`,
+the canonical `session.detail` route the CLI verb actually sends), per
+NOTE 11. (Allow Once is unaffected by the mismatch class:
+`.approvedSession` is bound to the TARGET, so `scopedSessionID` already
+becomes the target on that path.)
 
 ## The Asking Flow
 
@@ -526,9 +530,13 @@ Request body (both transports):
 `purpose` is untrusted display text: length-capped, rendered with the C15
 safe-rendering rules (byte-exact, control/newline/bidi characters visibly
 escaped, no ANSI interpretation), never used for authorization or audit
-identity. `intendedRequest` is required on the lazy transport (Allow Once
-must dispatch something) and optional on the held connection (where Allow
-Once creates a single-read `.approvedSession` dispatch the same way).
+identity. `intendedRequest` is required for Allow Once eligibility on BOTH
+transports (Allow Once authorizes exactly one server-resolved read, so
+there must be a resolved read to bind). On the held connection a request
+MAY omit `intendedRequest`, but then the sheet offers only
+"Allow While Both Sessions Live" and "Deny"; the Allow Once button is
+absent, and there is no fallback read (NOTE 10 resolution:
+require-for-eligibility, no implicit dispatch).
 
 ### Target resolution and the title-ambiguity rule
 
@@ -716,9 +724,12 @@ text.
 the existing approvals list (`makeApprovalsListView` pattern): one row per
 grant record showing principal display name, source and target (title +
 id suffix at record time), created date, state (active / expired / revoked),
-and a Revoke button for active ones. Revoke removes the in-memory grant
-immediately (the very next read gets `403 grantRevoked`) and stamps
-`revokedAt` on the mirror record. Titles rendered in these rows are
+and a Revoke button for active ones. Revoke stamps `revokedAt` on the
+in-memory entry immediately and on the mirror record; the entry is kept in
+the table with `revokedAt` set (removed later by the expiry sweep), so the
+very next read fails check 1 and gets the distinct `403 grantRevoked` code
+that the error table and behavioral acceptance assume (NOTE 9 resolution:
+keep-and-stamp, not remove). Titles rendered in these rows are
 attacker-influenceable strings recorded at approval time and render under
 the C15 escaping rules (see "The sheet"), so a crafted title cannot
 misalign a Revoke button with a different grant.
@@ -1133,10 +1144,12 @@ claims completion.
 - [ ] Shared target resolution (FINDING 1): `swift test --disable-sandbox
   --filter
   CrossSessionObserveGrantPolicyTests/testGrantedReadPayloadSessionEqualsAuditedTarget`
-  exits 0, and the test body covers all five grant intents and all four
+  exits 0, and the test body covers all five grant intents, all four
   target keys (`sessionID`, `sessionId`, `targetSessionID`,
-  `targetSessionId`); mutate the dispatch wiring so `scopedSessionID` stays
-  pinned to the source on a granted request, rerun, expect failure, revert.
+  `targetSessionId`), and the path-parameter form
+  (`GET /debug/sessions/<id>`, NOTE 11); mutate the dispatch wiring so
+  `scopedSessionID` stays pinned to the source on a granted request, rerun,
+  expect failure, revert.
 - [ ] Broker attribution row (FINDING 2): a presenter test proves that on a
   held broker connection the sheet renders the "Requested via broker from
   within <Principal>'s process tree (exact requester not verifiable)" row
@@ -1613,6 +1626,25 @@ route agents use most.
   catalog/code or an unstated residual; correcting them in the body keeps
   the plan self-contained and the second review round focused on substance.
   Date/Author: 2026-07-09 / Fable orchestrator per review.
+
+- Decision: The three second-round notes are resolved as follows. NOTE 9:
+  revocation keeps the in-memory entry with `revokedAt` stamped until the
+  expiry sweep (keep-and-stamp, not remove), preserving the distinct
+  `403 grantRevoked` code the error table and behavioral acceptance assume.
+  NOTE 10: `intendedRequest` is required for Allow Once eligibility on both
+  transports; a held-connection request that omits it gets a sheet without
+  the Allow Once button and there is no implicit fallback read. NOTE 11:
+  `testGrantedReadPayloadSessionEqualsAuditedTarget` and its gate item also
+  exercise the path-parameter target form (`GET /debug/sessions/<id>`), the
+  route the CLI verb actually sends, in addition to the four query/body
+  keys.
+  Rationale: NOTE 9's two readings both fail closed, but only keep-and-stamp
+  matches the specified error taxonomy; NOTE 10's alternative (an implicit
+  fallback read) would dispatch something the user never saw named, which
+  contradicts "the user approves one specific operation"; NOTE 11 closes the
+  gap between what the resolver honors and what the FINDING 1 test proves,
+  on the highest-traffic form.
+  Date/Author: 2026-07-09 / Fable orchestrator per second-round review.
 
 ## Idempotence and Recovery
 
