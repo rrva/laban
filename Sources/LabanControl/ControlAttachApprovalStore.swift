@@ -23,6 +23,17 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
   public func loadAll() -> [ControlAttachApprovalRecord] {
     lock.lock()
     defer { lock.unlock() }
+    return loadAllLocked()
+  }
+
+  public func save(_ records: [ControlAttachApprovalRecord]) {
+    lock.lock()
+    defer { lock.unlock() }
+    saveLocked(records)
+  }
+
+  /// Callers must hold `lock`.
+  private func loadAllLocked() -> [ControlAttachApprovalRecord] {
     guard let data = defaults.data(forKey: Self.defaultsKey) else { return [] }
     do {
       let records = try JSONDecoder().decode([ControlAttachApprovalRecord].self, from: data)
@@ -35,9 +46,8 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
     }
   }
 
-  public func save(_ records: [ControlAttachApprovalRecord]) {
-    lock.lock()
-    defer { lock.unlock() }
+  /// Callers must hold `lock`.
+  private func saveLocked(_ records: [ControlAttachApprovalRecord]) {
     do {
       let signedRecords = signer.map { signer in records.map { signer.sign($0) } } ?? records
       let data = try JSONEncoder().encode(signedRecords)
@@ -47,26 +57,36 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
     }
   }
 
+  /// Each mutation below holds `lock` across its entire load-modify-save
+  /// sequence so a concurrent mutation on the same record (e.g. a revoke
+  /// racing an updateLastUsed) cannot read stale state and clobber the
+  /// other's write when it saves.
   public func add(_ record: ControlAttachApprovalRecord) {
-    var records = loadAll()
+    lock.lock()
+    defer { lock.unlock() }
+    var records = loadAllLocked()
     records.append(record)
-    save(records)
+    saveLocked(records)
   }
 
   public func revoke(id: String) {
-    var records = loadAll()
+    lock.lock()
+    defer { lock.unlock() }
+    var records = loadAllLocked()
     guard let index = records.firstIndex(where: { $0.id == id }) else { return }
     var record = records[index]
     record.revokedAt = Date()
     records[index] = record
-    save(records)
+    saveLocked(records)
   }
 
   public func updateLastUsed(id: String) {
-    var records = loadAll()
+    lock.lock()
+    defer { lock.unlock() }
+    var records = loadAllLocked()
     guard let index = records.firstIndex(where: { $0.id == id }) else { return }
     records[index].lastUsedAt = Date()
-    save(records)
+    saveLocked(records)
   }
 
   public func findMatching(

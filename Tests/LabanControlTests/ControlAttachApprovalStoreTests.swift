@@ -18,6 +18,38 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
     XCTAssertTrue(store.loadAll().first?.isRevoked == true)
   }
 
+  func testConcurrentRevokeAndUpdateLastUsedDoNotClobberEachOther() {
+    // Regression for a race where each mutation loaded, released the lock,
+    // then saved: a concurrent updateLastUsed could load the pre-revoke
+    // state and overwrite the revoke on save. With the whole load-modify-
+    // save sequence under one lock, whichever mutation runs second must
+    // observe the first mutation's write, so both changes always survive
+    // regardless of interleaving.
+    for iteration in 0..<50 {
+      let (_, store) = makeStore()
+      let id = "concurrent-\(iteration)"
+      store.add(makeRecord(id: id, displayName: "Codex", sessionID: "s1"))
+
+      let group = DispatchGroup()
+      let queue = DispatchQueue(label: "approval-store-concurrency-test", attributes: .concurrent)
+      group.enter()
+      queue.async {
+        store.revoke(id: id)
+        group.leave()
+      }
+      group.enter()
+      queue.async {
+        store.updateLastUsed(id: id)
+        group.leave()
+      }
+      group.wait()
+
+      let record = store.loadAll().first { $0.id == id }
+      XCTAssertNotNil(record?.revokedAt, "iteration \(iteration): revoke must not be lost")
+      XCTAssertNotNil(record?.lastUsedAt, "iteration \(iteration): updateLastUsed must not be lost")
+    }
+  }
+
   func testFindMatchingRequiresSessionAndShell() {
     let (_, store) = makeStore()
 
