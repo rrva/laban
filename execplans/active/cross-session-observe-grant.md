@@ -1058,7 +1058,7 @@ executing agent must not mark this plan done until the gate passes. Item 0
 gates all implementation; items 1+ apply once the corresponding milestone
 claims completion.
 
-- [ ] **0. Design review (NOW, before any implementation).** A fresh
+- [x] **0. Design review (NOW, before any implementation).** A fresh
   security reviewer reads the "Threat Analysis" section of this file and
   either (a) records "threat analysis ACCEPTED" with a date here, or (b)
   records concrete findings (threat, scenario, affected section) in this
@@ -1070,6 +1070,8 @@ claims completion.
   or fixture intent. Second round (after the 2026-07-09 revision): also
   confirm the three first-round findings and eight notes recorded below are
   each resolved by the revised body text.
+  threat analysis ACCEPTED 2026-07-09, second round (content commit
+  3782a3f, fresh-state security review).
 - [ ] `rg -n "crossSessionObserveGrantIntentIDs" Sources/LabanControl/LabanControlPolicy.swift`
   shows exactly the set `{session.detail, selection.read, find.state,
   shellIntegration.state, scrollIndicator.state}`; adding any id requiring
@@ -1161,11 +1163,14 @@ claims completion.
 - [ ] `swift run LabanControlGen --check` passes; `./scripts/lint` exits 0;
   `./scripts/check` exits 0; `git diff --check` exits 0.
 
-Review status: NOT REVIEWED (revision after first review round;
-second-round review pending). The first-round record below (2026-07-09,
-commit 35d32e0, item 0 NOT PASSED, three findings, eight notes) is kept
-verbatim; the body has been revised to fold every finding and note in, per
-the Decision Log entries dated 2026-07-09 (Fable orchestrator per review).
+Review status: item 0 PASSED, second round (2026-07-09, content commit
+3782a3f, fresh-state security review); threat analysis ACCEPTED.
+Items 1+ remain open pending their milestones. The first-round record
+below (2026-07-09, commit 35d32e0, item 0 NOT PASSED, three findings,
+eight notes) is kept verbatim; the body was revised to fold every finding
+and note in, per the Decision Log entries dated 2026-07-09 (Fable
+orchestrator per review), and the second round verified each resolution
+against the revised text and the cited sources.
 
 Review findings (filled in by the review agent):
 
