@@ -80,6 +80,46 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertFalse(readiness.runId.isEmpty)
   }
 
+  func testAcceptedSocketConfigurationSetsNoSigPipe() throws {
+    var fds: [Int32] = [-1, -1]
+    let pairResult = fds.withUnsafeMutableBufferPointer { buffer -> Int32 in
+      socketpair(AF_UNIX, SOCK_STREAM, 0, buffer.baseAddress)
+    }
+    XCTAssertEqual(pairResult, 0)
+    let clientFD = fds[0]
+    let peerFD = fds[1]
+    defer {
+      Darwin.close(clientFD)
+      Darwin.close(peerFD)
+    }
+
+    var before: Int32 = 0
+    var beforeLen = socklen_t(MemoryLayout<Int32>.size)
+    XCTAssertEqual(getsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &before, &beforeLen), 0)
+    XCTAssertEqual(before, 0, "precondition: SO_NOSIGPIPE should default to unset")
+
+    try LabanControlServer.configureAcceptedSocket(clientFD)
+
+    var after: Int32 = 0
+    var afterLen = socklen_t(MemoryLayout<Int32>.size)
+    XCTAssertEqual(getsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &after, &afterLen), 0)
+    XCTAssertNotEqual(after, 0, "accepted control sockets must set SO_NOSIGPIPE")
+
+    // Also prove close-on-exec was preserved by the shared configuration path.
+    let flags = fcntl(clientFD, F_GETFD)
+    XCTAssertGreaterThanOrEqual(flags, 0)
+    XCTAssertEqual(flags & FD_CLOEXEC, FD_CLOEXEC)
+
+    // With SO_NOSIGPIPE set, closing the peer's read side and sending must
+    // surface EPIPE instead of raising SIGPIPE (which would otherwise
+    // terminate the process on the default disposition).
+    Darwin.close(peerFD)
+    var byte: UInt8 = 0
+    let sendResult = Darwin.send(clientFD, &byte, 1, 0)
+    XCTAssertEqual(sendResult, -1)
+    XCTAssertEqual(errno, EPIPE)
+  }
+
   func testStateRouteDispatchesQuery() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .gui)

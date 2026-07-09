@@ -582,7 +582,7 @@ public final class LabanControlServer {
       }
       if clientFD >= 0 {
         do {
-          try ControlFD.setCloseOnExec(clientFD)
+          try Self.configureAcceptedSocket(clientFD)
         } catch {
           Darwin.close(clientFD)
           continue
@@ -600,6 +600,16 @@ public final class LabanControlServer {
       }
       break
     }
+  }
+
+  /// Applies the socket options required on every accepted control-plane
+  /// connection before it is handed to `handleConnection`: close-on-exec so
+  /// the fd does not leak into spawned children, and SO_NOSIGPIPE so a
+  /// client closing its read side mid-send raises EPIPE instead of SIGPIPE
+  /// (which would otherwise crash the process).
+  public static func configureAcceptedSocket(_ clientFD: Int32) throws {
+    try ControlFD.setCloseOnExec(clientFD)
+    try ControlFD.setNoSigPipe(clientFD)
   }
 
   private struct IncomingHTTPRequest {
