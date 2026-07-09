@@ -55,12 +55,14 @@ The demonstrable scenario, end to end:
        Allow Codex to observe another Laban session?
 
        Requester:      Codex
-       Chain:          Codex -> laban helper
+       Via:            Requested via broker from within Codex's process
+                       tree (exact requester not verifiable)
        From session:   c2yt (session ...D27)
        Target session: build (session ...4B2)
        Target cwd:     ~/wrk/laban
        Target process: ninja
-       Data:           Visible terminal text and scrollback of the target
+       Data:           Viewport text, selection, find state, and scrollback
+                       line counts of the target
        Not included:   No input, no clipboard, no tab switching, no proposals
                        to the target, no other sessions
 
@@ -96,8 +98,14 @@ actuation work and stays strictly observe-only.
   (`ControlAttachApproval.swift`, `ControlAttachApprovalStore.swift`,
   `LabanControlPolicy.swift`, `ControlAttachApprovalPresenter.swift`).
 - [x] (2026-07-09) Drafted this design plan (this document).
-- [ ] Design Review Gate item 0 passed (fresh security reviewer accepts the
-  threat analysis or records findings).
+- [x] (2026-07-09) First design review round completed (fresh-state security
+  review against commit 35d32e0): item 0 NOT PASSED; three findings and
+  eight notes recorded in the Review Gate section (kept there verbatim).
+- [x] (2026-07-09) Design revised per that review: all three findings and
+  all eight notes folded into the body; orchestrator decisions recorded in
+  the Decision Log (entries dated 2026-07-09, Fable orchestrator per
+  review). Second review round pending.
+- [ ] Design Review Gate item 0 passed (second review round).
 - [ ] Milestone 1 (grant model + policy change in `LabanControl`). NOT
   STARTED; gated on the design review.
 - [ ] Milestone 2 (request endpoint, target resolution, approval flow). NOT
@@ -134,8 +142,9 @@ Assume no prior knowledge. The moving parts, by full path:
   every intent with a `requiredCapability` (`observe`, `observeSensitive`,
   `navigate`, `propose`, `input`, `fixture`) and a `dataSensitivity`. The
   sensitive own-session read family relevant here is the set of
-  `gui: true` query intents requiring `.observeSensitive`, plus two
-  `.observe`-tier state queries; the exact grant set is listed below.
+  `gui: true` query intents requiring `.observeSensitive`, plus one
+  `.observe`-tier state query (`scrollIndicator.state`); the exact grant
+  set is listed below.
 - **Lazy-attach approval machinery** (all shipped; this plan reuses it):
   - `Sources/LabanControl/ControlProcessIdentity.swift`:
     `ControlProcessIdentity` (pid, parent pid, start time, uid, executable
@@ -234,11 +243,23 @@ Review Gate checks each one mechanically.
 - **G5: The dialog shows Laban's identity for the target, never only the
   attacker-influenceable title.** Tab title AND session id suffix AND cwd
   AND foreground process are shown together; the grant binds to the session
-  id resolved at approval time and is never re-resolved by title.
+  id resolved at approval time and is never re-resolved by title. Only the
+  session id suffix is Laban-authoritative; cwd and process name are
+  context and are themselves attacker-influenceable (threat (c)).
 - **G6: Persisted records are advisory, not authoritative.** Authority lives
   in the control server's in-memory grant table for the current app run.
   UserDefaults records exist for the Settings list and audit continuity; a
   record with no matching in-memory entry grants nothing (threat (f)).
+- **G7: The standing invariants document moves in the same change.**
+  `docs/process/control-plane-threat-model.md` and
+  `Tests/LabanControlTests/ControlPlaneInvariantTests.swift` are amended in
+  the same commits that land the mechanisms: I2 gains the grant exception
+  with its exact conditions (Milestone 1), I7's gui `.propose` set becomes
+  `{command.propose, session.requestObserveGrant}` (Milestone 2), and a new
+  invariant I8 states that grants widen only the fixed read set for one
+  (principal, source session, target session) tuple and die with either
+  shell death, revocation, or runID change (Milestone 1). This follows that
+  document's own "Rules for changes" for a fourth trust derivation.
 
 ## The Grant Model
 
@@ -257,7 +278,8 @@ with a new pure type in a new file
       public let runID: String                    // control server launch runID
       public let principalFingerprint: String     // ControlProcessIdentity.stablePrincipalFingerprint
       public let principalDisplayName: String
-      public let signingRequirement: String       // empty only for one-shot grants
+      public let signingRequirement: String       // always non-empty; one-shot
+                                                  // grants never construct this type
       public let sourceSessionID: String
       public let sourceShellFingerprint: String   // RegisteredAttachShellIdentity.fingerprint
       public let targetSessionID: String
@@ -317,7 +339,7 @@ A single named constant in `Sources/LabanControl/LabanControlPolicy.swift`
 (so the Review Gate can grep it):
 
     public static let crossSessionObserveGrantIntentIDs: Set<String> = [
-      "session.detail",          // grid text, scrollback ranges, cwd, process, exit state
+      "session.detail",          // viewport grid text, scrollback line counts, cwd, process, exit state
       "selection.read",          // current selection text
       "find.state",              // find needle + match state
       "shellIntegration.state",  // OSC 133 prompt/command phase
@@ -325,15 +347,31 @@ A single named constant in `Sources/LabanControl/LabanControlPolicy.swift`
     ]
 
 These are precisely the live-GUI session-scoped observe reads the agent
-already has for its own session, applied to the target. Visible grid text
-and scrollback ranges arrive through `session.detail`
+already has for its own session, applied to the target through the shared
+target resolution specified under "One resolved target for policy,
+dispatch, and audit" below. Viewport grid text and scrollback LINE COUNTS
+(not scrollback text) arrive through `session.detail`
 (`GET /debug/sessions/<id>`), which is why no new read intent is needed.
+
+Two clarifications from the first review round (NOTE 7):
+
+- Allow Once needs no Milestone 1 policy change at all: the one-shot
+  dispatch rides `.approvedSession(sessionID: TARGET)`, which the shipped
+  `LabanControlPolicy.authorize` already accepts via scope
+  `.session(TARGET)` plus constraint binding. The `grantedSessions`
+  widening exists only for standing grants exercised over a held
+  source-session credential.
+- `scrollIndicator.state` requires only `.observe`, and the app-observe
+  token's `.wholeApp` scope can already read it for any session today. Its
+  membership in the grant set is redundant but harmless; it is kept so the
+  grant read set matches the own-session observe family one for one.
 
 Deliberate exclusions, each with the reason:
 
-- `app.accessibility`: an active-session-shaped projection with no explicit
-  session-target parameter today; adding cross-session targeting to it is a
-  separate change, out of scope.
+- `app.accessibility`: excluded to keep the MVP read set minimal; its text
+  projection substantially overlaps `session.detail`. (The shared target
+  resolution below would make it technically feasible; revisit only with a
+  concrete consumer.)
 - `session.list` and rich `app.state`: whole-app reads that stay redacted to
   the source session. A grant names one target; it never widens enumeration.
 - `terminal.scrollViewport` (navigate), `command.propose` (propose): a grant
@@ -385,6 +423,42 @@ modeling it as scope keeps the catalog's classification orthogonal
 (requiredCapability x dataSensitivity x scope) and avoids re-classifying every
 descriptor.
 
+### One resolved target for policy, dispatch, and audit
+
+The first review round found a target-mismatch class (Review Gate,
+FINDING 1): the policy check would resolve the target from the request keys
+the server honors (`sessionID`, `sessionId`, `targetSessionID`,
+`targetSessionId`), while active-session-shaped projections such as
+`ControlStateProjections.selectionResponse` take no session parameter and
+read `ctx.scopedSessionID`, which `legacyQueryInput` pins to the SOURCE
+session for a `.sessionObserve` credential. With a grant active, a request
+naming the target could pass policy, read the SOURCE, and audit a TARGET
+read that never happened. The same class hits `find.state`,
+`shellIntegration.state`, and `scrollIndicator.state` through the
+`targetSessionID`/`targetSessionId` keys.
+
+The fix is structural, adopted over dropping `selection.read` from the set
+(Decision Log): the policy-resolved effective target is the single source
+of truth for the entire request.
+
+- `LabanControlServer` resolves the effective target once per request (the
+  C12 defaulting plus the seven-point grant check), before authorization.
+- That one value flows into the dispatch context: `legacyQueryInput`'s
+  `scopedSessionID` becomes the granted TARGET when and only when a grant
+  authorized an explicit cross-session target. In every other case it stays
+  pinned to the credential's own session, byte-identical to today.
+- The same value is what `reportAuthorize` and `control.observeGrant.used`
+  record. Policy target, dispatch target, and audited target are one
+  variable and cannot drift.
+
+Milestone 1 carries a mandatory named test,
+`testGrantedReadPayloadSessionEqualsAuditedTarget`: for each of the five
+grant intents, dispatch a granted cross-session read and assert the
+dispatched payload's session id equals the audited target session id.
+(Allow Once is unaffected by the mismatch class: `.approvedSession` is
+bound to the TARGET, so `scopedSessionID` already becomes the target on
+that path.)
+
 ## The Asking Flow
 
 ### Typed intent
@@ -417,13 +491,23 @@ machinery:
    `laban-agent` (a bundled helper, never the principal); the principal is
    derived by inspecting the helper's non-helper child subtree (the agent it
    launched), using the same `ControlAttachPrincipal.isPersistable` rules.
-   See Decision Log entry "downward principal step".
+   See Decision Log entry "downward principal step". Attribution limit on
+   this transport (first review round, FINDING 2): the broker proxy
+   (`Sources/LabanAgent/ControlAttachProxyServer.swift`) accepts any
+   descendant of the allowed root pid and forwards requests without
+   conveying the requesting descendant's identity, so Laban can verify the
+   principal (the brokered agent) but NOT which process below it actually
+   asked. The sheet must not render a chain row that implies verification;
+   it renders the transport-specific row specified in "The sheet" instead.
+   As an explicit non-MVP follow-up, the proxy MAY later forward the
+   requesting descendant's pid and start time as display-only enrichment;
+   that forwarded identity is never authorization input.
 2. **Lazy CLI path** (agent started directly in the tab): a new route
    `POST /control/session/observe-grant/request`, shaped exactly like the
    shipped `POST /control/session/attach/request`: same-uid peer, app-observe
    token, peer identity with mandatory start time, exactly one registered
    source-shell ancestor, upward-chain principal derivation. The lazy request
-   body carries the grant ask plus, optionally, one intended read to dispatch
+   body carries the grant ask plus, REQUIRED, one intended read to dispatch
    on Allow Once.
 
 Request body (both transports):
@@ -548,11 +632,35 @@ on the existing one, because the row set differs: it adds
     }
     public protocol ControlObserveGrantApprovalDelegate: AnyObject, Sendable { ... }
 
-All strings that originate outside Laban (title, purpose, process name) are
-rendered under the C15 safe-rendering contract: byte-exact with visible
-escaping of control, newline, C1, and Unicode bidi characters, length caps,
-no ANSI interpretation. The session id suffix and cwd rows come from Laban's
-own registry and are the anchor the user can trust.
+The requester attribution row is transport-specific (FINDING 2). On the
+lazy CLI transport, where the upward chain walk is live-verified, the sheet
+renders the familiar chain row ("Chain: Codex -> laban helper"). On a held
+broker connection, where the real requester below the brokered agent is not
+verifiable, the sheet must NOT render a chain row that implies
+verification; it renders instead:
+
+    Via: Requested via broker from within Codex's process tree
+         (exact requester not verifiable)
+
+The "Data:" row states what the grant actually unlocks: "Viewport text,
+selection, find state, and scrollback line counts of the target". It must
+NOT say "scrollback text", because `session.detail` returns viewport grid
+text (capped) plus scrollback line counts only. Callout: if a future
+scrollback-text read (for example the planned `session.getText`) ever joins
+`crossSessionObserveGrantIntentIDs`, this row's wording MUST change in the
+same diff, and existing standing grants must not silently widen (a set
+change invalidates active grants; see Milestone 1).
+
+All strings that originate outside Laban (title, purpose, process name,
+cwd) are rendered under the C15 safe-rendering contract: byte-exact with
+visible escaping of control, newline, C1, and Unicode bidi characters,
+length caps, no ANSI interpretation. Only the session id suffix comes from
+Laban's own registry and is the one Laban-authoritative anchor; cwd and
+process name are contextual hints an attacker can shape (threat (c)). The
+same escaping applies to every other surface that renders these strings:
+the Settings "Cross-Session Observation" rows and the per-tab badge and
+its hover text (NOTE 6), so a crafted title cannot misrender which grant a
+Revoke button belongs to.
 
 ### Indicator on both tabs
 
@@ -603,7 +711,10 @@ grant record showing principal display name, source and target (title +
 id suffix at record time), created date, state (active / expired / revoked),
 and a Revoke button for active ones. Revoke removes the in-memory grant
 immediately (the very next read gets `403 grantRevoked`) and stamps
-`revokedAt` on the mirror record.
+`revokedAt` on the mirror record. Titles rendered in these rows are
+attacker-influenceable strings recorded at approval time and render under
+the C15 escaping rules (see "The sheet"), so a crafted title cannot
+misalign a Revoke button with a different grant.
 
 ## Threat Analysis
 
@@ -620,7 +731,12 @@ source, target) that returns `429 approvalDenyCooldown` without UI. Residual
 risk: a patient agent can re-ask once a minute; the dialog names the
 principal each time, and repeated denials are visible in the audit log.
 Accepted for MVP; a future escalation (auto-mute after N denials) is noted
-as an open follow-up, not built.
+as an open follow-up, not built. Queue-sharing residual (NOTE 8), also
+accepted for MVP: grant prompts share the single visible-prompt queue and
+the global pending cap of eight with lazy-attach prompts, so a flood of
+lazy-attach requests can starve grant requests into `429`/timeout, and vice
+versa. This fails closed (starvation denies, never approves) and is
+user-visible in diagnostics and audit.
 
 **(b) Confused deputy: a compromised child of the agent requests grants.**
 Example: a malicious npm postinstall running under Codex requests a grant;
@@ -634,14 +750,27 @@ shell and peer (upward rule), or the brokered agent child of `laban-agent`
 (downward rule, held connection). This is the same attribution limit lazy
 attach already accepts: within one session's process tree, Laban cannot
 distinguish the agent from code the agent ran. The boundary is the session
-and the human; the mitigations are (1) the dialog always shows the full
-helper chain so `Codex -> npm -> laban helper` is visibly different from
-`Codex -> laban helper`, (2) the grant is observe-only and revocable, (3) a
-standing grant binds to the principal fingerprint AND signing requirement,
-so a directly spawned unsigned binary cannot ride a Codex grant, and (4)
-every use is audited. Residual risk accepted and stated: descendants of the
-granted principal inside the source session share its widened read scope for
-the grant's lifetime.
+and the human; the mitigations are (1) on the lazy CLI transport, the
+dialog shows the live-verified chain, so `Codex -> npm -> laban helper` is
+visibly different from `Codex -> laban helper`, (2) the grant is
+observe-only and revocable, (3) a standing grant binds to the principal
+fingerprint AND signing requirement, so a directly spawned unsigned binary
+cannot ride a Codex grant, and (4) every use is audited. Mitigation (1)
+does NOT exist on the held broker transport (first review round,
+FINDING 2): the broker proxy accepts any descendant of the allowed root pid
+and forwards requests without conveying the requesting descendant's
+identity, so requester attribution below the brokered agent is IMPOSSIBLE
+there; a malicious tool subprocess's request and Codex's own request reach
+Laban identically. Consequently the sheet must not render a chain row that
+implies verification on that transport; it renders "Requested via broker
+from within Codex's process tree (exact requester not verifiable)" (see
+"The sheet"). A future revision MAY have the proxy forward the requesting
+descendant's pid and start time as display-only enrichment; explicitly
+non-MVP, and never authorization input. Residual risk accepted and stated,
+covering both transports: descendants of the granted principal inside the
+source session share its widened read scope for the grant's lifetime, and
+on the broker transport the human approves the principal's whole process
+tree, not a specific requester.
 
 **(c) Title spoofing to trick the user into granting the wrong tab.** A
 program in tab C can set its own title to `build` (OSC title escape) hoping
@@ -652,9 +781,21 @@ title selectors resolving to more than one session fail with
 for the resolved target (title + session id suffix + cwd + foreground
 process) so a `build`-titled tab whose cwd is `/tmp/evil` and process is
 `curl` is visibly wrong; titles and purpose render under the C15
-safe-rendering rules; and the grant binds to the session id resolved at
+safe-rendering rules (extended to the Settings rows and the per-tab badge
+hover text, NOTE 6); and the grant binds to the session id resolved at
 approval time, never re-resolved by title, so post-approval title swaps
-change nothing.
+change nothing. Residual, stated explicitly (NOTE 4): cwd and foreground
+process name are ALSO attacker-influenceable (a program in the attacker's
+tab can chdir to any readable path and exec a binary named `ninja`), so of
+the four rows only the session id suffix is Laban-authoritative, and the
+user has no independent way to bind a suffix to a visible tab in the MVP.
+The practical harm of a successful misdirection is bounded: the agent
+observes attacker-chosen content, which is observed-content injection
+toward the agent, a hazard that exists for ANY observed session (a
+legitimately granted target can also print manipulative text). It never
+grants the attacker's tab any authority. Accepted for MVP; a
+future "reveal target tab" affordance (flash or focus-highlight the target
+tab from the dialog) is noted as a follow-up, not built.
 
 **(d) TOCTOU between approval and read.** The session behind the dialog may
 be replaced (tab closed and reopened, shell exited, PID reused) between the
@@ -715,13 +856,16 @@ design does not.)
 
 ## Milestones
 
-### Milestone 0: Design review (this document is the deliverable). Status: IN REVIEW
+### Milestone 0: Design review (this document is the deliverable). Status: FIRST ROUND DONE, REVISED, SECOND ROUND PENDING
 
 Scope: this plan, reviewed by a fresh-state security reviewer per Review
 Gate item 0. No code. Acceptance: the reviewer accepts the threat analysis
 or records findings; findings are folded into this document; the Decision
 Log records any change of course. Implementation may not start before this
-passes.
+passes. First round (2026-07-09, commit 35d32e0): NOT PASSED with three
+findings and eight notes, recorded verbatim in the Review Gate section.
+This revision folds all of them in; a second fresh-state round must now run
+against the revised text.
 
 ### Milestone 1: Grant model and policy (LabanControl). Status: NOT STARTED
 
@@ -729,9 +873,32 @@ Scope: pure types plus policy, no UI, no routes. What exists at the end:
 `ControlSessionObserveGrant` and `ControlSessionObserveGrantStore` (files
 named above), the `sessionObserveGrantsByID` table with the seven-point
 validity check and expiry sweep in `LabanControlServer`, the
-`crossSessionObserveGrantIntentIDs` constant, and the
+`crossSessionObserveGrantIntentIDs` constant, the
 `grantedSessions:` parameter threaded through
-`LabanControlPolicy.authorize` and its call sites.
+`LabanControlPolicy.authorize` and its call sites, and the shared target
+resolution (FINDING 1): the policy-resolved effective target flows into the
+dispatch context, so `legacyQueryInput`'s `scopedSessionID` becomes the
+granted target when and only when a grant authorized an explicit
+cross-session target, and the audited target is the same value. (Because
+`crossSessionObserveGrantIntentIDs` is compiled in and no grant survives
+restart, a change to the set can never widen an existing standing grant;
+new set, new build, no surviving grants.)
+
+Same-change documentation and invariant-suite amendments (FINDING 3, per
+the "Rules for changes" in `docs/process/control-plane-threat-model.md`):
+in the same commits that land this milestone, amend that document so I2
+gains the grant exception with its exact conditions (an explicit
+cross-session target is allowed only when a live in-memory grant matches
+the (principal, source session, target session) tuple, the intent is in
+`crossSessionObserveGrantIntentIDs`, both registered shell identities are
+live with matching start times, and the runID matches; everything else
+still denies), and add a new invariant I8: grants widen only the fixed read
+set for one (principal, source session, target session) tuple and die with
+either shell death, revocation, or runID change. Update
+`Tests/LabanControlTests/ControlPlaneInvariantTests.swift` in the same
+commits (extend `testSessionScopeDeniesCrossSessionOnAllTiers` for the
+grant exception; add an I8 test), naming this review per that document's
+rules.
 
 Tests (new suite `CrossSessionObserveGrantPolicyTests` in
 `Tests/LabanControlTests/`): deny-without-grant is byte-identical to today
@@ -741,11 +908,18 @@ intent ids; a granted target with a non-listed intent (for example
 omitted target still resolves to own session even with a grant active;
 grant for principal P does not widen principal Q; source-shell death,
 target-shell death, runID mismatch, and revocation each kill the grant;
-mirror records without an in-memory entry grant nothing.
+mirror records without an in-memory entry grant nothing; and the mandatory
+named test `testGrantedReadPayloadSessionEqualsAuditedTarget`: for each of
+the five grant intents, dispatch a granted cross-session read and assert
+the dispatched payload's session id equals the audited target session id
+(this is the FINDING 1 regression test; it must exercise the
+query/body target keys `sessionID`, `sessionId`, `targetSessionID`,
+`targetSessionId` that `resolveTargetSession` honors).
 
 Acceptance: `swift test --disable-sandbox --filter
 CrossSessionObserveGrantPolicyTests` exits 0; `swift test --disable-sandbox
---filter LabanControlTests` still exits 0 unchanged.
+--filter ControlPlaneInvariantTests` exits 0 with the I2/I8 updates; `swift
+test --disable-sandbox --filter LabanControlTests` exits 0.
 
 ### Milestone 2: Request endpoint, target resolution, approval flow. Status: NOT STARTED
 
@@ -755,10 +929,21 @@ Scope: the `session.requestObserveGrant` catalog descriptor (and the 2C
 `POST /debug/actions` action `requestObserveGrant` on the held connection,
 title/sessionID target resolution with the ambiguity codes, the
 `ControlObserveGrantApprovalDelegate` protocol with an injectable fake for
-tests, Allow Once dispatch via `.approvedSession` with constraint binding,
-standing-grant creation with server-side persistability validation, the
-coalescing/rate-limit/deny-cooldown rules, and the downward principal step
-for broker connections.
+tests, Allow Once dispatch via `.approvedSession` with constraint binding
+(no `grantedSessions` involvement; the shipped policy already covers this
+path, NOTE 7), standing-grant creation with server-side persistability
+validation, the coalescing/rate-limit/deny-cooldown rules, and the
+downward principal step for broker connections (with the FINDING 2
+transport-specific attribution row, never an implied-verified chain).
+
+Same-change documentation and invariant-suite amendments (FINDING 3): in
+the same commits that land this milestone, amend
+`docs/process/control-plane-threat-model.md` so I7's gui `.propose` set
+becomes `{command.propose, session.requestObserveGrant}`, and update
+`testGuiCatalogFloorHasNoActuationAndExactAllowlists` in
+`Tests/LabanControlTests/ControlPlaneInvariantTests.swift` (and the
+`Tests/LabanAppTests/CatalogParityTests.swift` assertion it mirrors) in
+those same commits, naming this review per that document's rules.
 
 Tests (`CrossSessionObserveGrantRequestTests`): fake delegate allowOnce
 dispatches exactly the intended read against the target and returns the
@@ -780,7 +965,9 @@ passes after regenerating discovery for the new descriptor.
 
 Scope: `ControlObserveGrantApprovalPresenter` (AppKit, per the shipped
 NSAlert accessory sizing pattern), the C15-safe rendering of title, purpose,
-and process name, the `ControlSecurityObserver` grant callbacks and pinned
+process name, and cwd on the sheet AND on the Settings rows AND on the
+per-tab badge hover text (NOTE 6), the transport-specific attribution row
+(FINDING 2), the `ControlSecurityObserver` grant callbacks and pinned
 indicator behavior, per-tab observation badges on source and target, the
 Settings "Cross-Session Observation" list with Revoke, and the seven
 `control.observeGrant.*` audit events.
@@ -789,10 +976,13 @@ Tests: presenter rendering tests for a persistable principal (three
 buttons), a generic interpreter (no standing button, reason shown), and a
 title containing `ESC[`, newline, and a bidi override (rendered escaped,
 byte-exact, and the dialog also shows id suffix + cwd + process: the
-title-spoof dialog content test); revocation makes the next read fail
-`grantRevoked`; audit tests prove no tokens/paths/purpose text in payloads;
-an indicator test proves the pin outlives the 30-second TTL while a grant is
-active and decays after expiry.
+title-spoof dialog content test); a broker-transport rendering test
+asserting the sheet contains the "Requested via broker ... (exact requester
+not verifiable)" row and NO chain row implying verification; a Settings-row
+and badge-hover escaping test with the same hostile title; revocation makes
+the next read fail `grantRevoked`; audit tests prove no tokens/paths/
+purpose text in payloads; an indicator test proves the pin outlives the
+30-second TTL while a grant is active and decays after expiry.
 
 Acceptance: `swift test --disable-sandbox --filter LabanAppTests` includes
 the new tests and exits 0; a manual run shows both tabs badged during a
@@ -926,12 +1116,44 @@ claims completion.
 - [ ] The 2C positive allowlist test now asserts the `gui:true` `.propose`
   set equals exactly `{command.propose, session.requestObserveGrant}` and
   the `.navigate` set is still exactly `{terminal.scrollViewport}`.
+- [ ] Shared target resolution (FINDING 1): `swift test --disable-sandbox
+  --filter
+  CrossSessionObserveGrantPolicyTests/testGrantedReadPayloadSessionEqualsAuditedTarget`
+  exits 0, and the test body covers all five grant intents and all four
+  target keys (`sessionID`, `sessionId`, `targetSessionID`,
+  `targetSessionId`); mutate the dispatch wiring so `scopedSessionID` stays
+  pinned to the source on a granted request, rerun, expect failure, revert.
+- [ ] Broker attribution row (FINDING 2): a presenter test proves that on a
+  held broker connection the sheet renders the "Requested via broker from
+  within <Principal>'s process tree (exact requester not verifiable)" row
+  and renders NO "Chain:" row; on the lazy CLI transport the chain row is
+  present. `rg -n "not verifiable" Sources/LabanApp/Control` returns the
+  presenter hit.
+- [ ] Standing invariants moved in the same change (FINDING 3, Milestone 1):
+  `rg -n "I8" docs/process/control-plane-threat-model.md` shows the new
+  grant invariant; the I2 text names the grant exception and its conditions
+  (live in-memory grant, tuple match, intent set, both shell identities,
+  runID); `git log --follow -1 --name-only` for the commit that introduced
+  `grantedSessions` also lists `docs/process/control-plane-threat-model.md`
+  and `Tests/LabanControlTests/ControlPlaneInvariantTests.swift`; `swift
+  test --disable-sandbox --filter ControlPlaneInvariantTests` exits 0.
+- [ ] Standing invariants moved in the same change (FINDING 3, Milestone 2):
+  `rg -n "session.requestObserveGrant" docs/process/control-plane-threat-model.md`
+  shows I7's updated propose set; the commit that adds the
+  `session.requestObserveGrant` descriptor also touches that document and
+  `ControlPlaneInvariantTests.swift`
+  (`testGuiCatalogFloorHasNoActuationAndExactAllowlists` updated).
+- [ ] Settings and badge escaping (NOTE 6): a test feeds the hostile title
+  from the title-spoof test into a grant record and asserts the Settings row
+  string and the badge hover string render it escaped, byte-exact.
 - [ ] `swift run LabanControlGen --check` passes; `./scripts/lint` exits 0;
   `./scripts/check` exits 0; `git diff --check` exits 0.
 
-Review status: ITEM 0 REVIEWED 2026-07-09 (commit 35d32e0, fresh-state
-security review): NOT PASSED. Three blocking findings and eight notes are
-recorded below. Items 1+ are not applicable yet (no implementation exists).
+Review status: NOT REVIEWED (revision after first review round;
+second-round review pending). The first-round record below (2026-07-09,
+commit 35d32e0, item 0 NOT PASSED, three findings, eight notes) is kept
+verbatim; the body has been revised to fold every finding and note in, per
+the Decision Log entries dated 2026-07-09 (Fable orchestrator per review).
 
 Review findings (filled in by the review agent):
 
@@ -1165,12 +1387,94 @@ and is user-visible, acceptable for MVP.
 
 - Decision: `app.accessibility`, `session.list`, and rich `app.state` are
   excluded from the grant read set for MVP.
-  Rationale: `app.accessibility` is an active-session-shaped projection with
-  no explicit target parameter; widening it needs its own targeting design.
-  `session.list`/`app.state` are whole-app reads; a grant names one target
-  and must not become enumeration. The five included ids cover the stated
-  goal (watch another session's content and state) via `session.detail`.
-  Date/Author: 2026-07-09 / Claude.
+  Rationale: `session.list`/`app.state` are whole-app reads; a grant names
+  one target and must not become enumeration. `app.accessibility` is
+  excluded to keep the MVP set minimal; its text projection substantially
+  overlaps `session.detail`. (The original rationale, "no explicit target
+  parameter", was superseded by the shared-resolver decision below, which
+  makes targeting uniform; the exclusion stands on minimalism.) The five
+  included ids cover the stated goal (watch another session's content and
+  state) via `session.detail`.
+  Date/Author: 2026-07-09 / Claude; rationale updated 2026-07-09 / Fable
+  orchestrator per review.
+
+- Decision: FINDING 1 is fixed with a shared target resolver, not by
+  dropping `selection.read` from the grant set. The policy-resolved
+  effective target is the single source of truth and flows into the
+  dispatch context: `legacyQueryInput`'s `scopedSessionID` becomes the
+  granted target when and only when a grant authorized an explicit
+  cross-session target; the audited target is the same value. Milestone 1
+  carries the mandatory named test
+  `testGrantedReadPayloadSessionEqualsAuditedTarget` (payload-session ==
+  audited-target for each of the five intents), plus a matching mechanical
+  Review Gate item.
+  Rationale: The mismatch class is not specific to `selection.read`; it
+  also hits `find.state`, `shellIntegration.state`, and
+  `scrollIndicator.state` via the `targetSessionID`/`targetSessionId` keys
+  that `resolveTargetSession` honors but the projections ignore. Dropping
+  one intent would leave the class in place; unifying resolution removes it
+  for all current and future granted reads and makes the audit trail
+  truthful by construction.
+  Date/Author: 2026-07-09 / Fable orchestrator per review.
+
+- Decision: FINDING 2 is resolved by honest display, not by proxy
+  attribution. Threat (b)'s residual acceptance now states that on a held
+  broker connection requester attribution below the brokered agent is
+  impossible; the sheet must not render a chain row that implies
+  verification and instead renders "Requested via broker from within
+  <Principal>'s process tree (exact requester not verifiable)". The proxy
+  MAY forward the requesting descendant's pid and start time as
+  display-only enrichment in a future revision; recorded as an explicit
+  non-MVP follow-up, never authorization input.
+  Rationale: The broker proxy forwards requests without conveying the
+  requesting descendant's identity, so any chain rendered on that transport
+  would be constructed, not verified; a security dialog must not imply
+  verification it does not have. Forwarded self-reported identity cannot be
+  trusted for authorization even later, which is why the follow-up is
+  display-only by decision, not by deferral.
+  Date/Author: 2026-07-09 / Fable orchestrator per review.
+
+- Decision: FINDING 3 is resolved by same-change invariant maintenance,
+  written into the milestones (and G7): Milestone 1 amends
+  `docs/process/control-plane-threat-model.md` I2 (grant exception with its
+  exact conditions) and adds invariant I8 (grants widen only the fixed read
+  set for one (principal, source session, target session) tuple and die
+  with either shell death, revocation, or runID change); Milestone 2 amends
+  I7 (gui `.propose` set becomes `{command.propose,
+  session.requestObserveGrant}`). The corresponding
+  `ControlPlaneInvariantTests` updates land in the same commits, and
+  mechanical gate items check the pairing.
+  Rationale: That document's own "Rules for changes" names a cross-session
+  observe grant as the example of a fourth trust derivation that must add
+  its invariants in the same change that lands the mechanism; shipping
+  without the amendments would leave I2 and I7 asserting properties the
+  code no longer has, the exact cross-path drift the document exists to
+  prevent.
+  Date/Author: 2026-07-09 / Fable orchestrator per review.
+
+- Decision: All eight first-round review notes are folded into the body:
+  the `.observe`-tier count corrected to one (`scrollIndicator.state`,
+  NOTE 1); the sheet's Data row states viewport grid text plus scrollback
+  line counts, never "scrollback text", with a callout that the row must
+  change in the same diff if `session.getText` ever joins the set (NOTE 2);
+  the `signingRequirement` comment corrected: one-shot grants never
+  construct `ControlSessionObserveGrant` (NOTE 3); threat (c) states
+  explicitly that cwd and process name are attacker-influenceable, only the
+  session id suffix is Laban-authoritative, and misdirection harm is
+  bounded to observed-content injection toward the agent (NOTE 4);
+  `intendedRequest` is REQUIRED on the lazy transport and optional on held
+  connections, with the Transports wording aligned (NOTE 5); C15 escaping
+  extends to the Settings rows and the per-tab badge hover text (NOTE 6);
+  the body now states that Allow Once rides `.approvedSession` and needs no
+  Milestone 1 policy change, and that `scrollIndicator.state`'s membership
+  is redundant but kept for family symmetry (NOTE 7); the shared-queue
+  starvation between grant and lazy-attach prompts is recorded in threat
+  (a) as accepted for MVP because it fails closed and is user-visible
+  (NOTE 8).
+  Rationale: Each note was either a factual error against the shipped
+  catalog/code or an unstated residual; correcting them in the body keeps
+  the plan self-contained and the second review round focused on substance.
+  Date/Author: 2026-07-09 / Fable orchestrator per review.
 
 ## Idempotence and Recovery
 
