@@ -71,13 +71,16 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     stack.setFrameSize(NSSize(width: detailsWidth, height: 1))
 
     stack.addArrangedSubview(
-      detailRow("Operation", shortOperationSummary(request.operationSummary), rowWidth: detailsWidth)
+      detailRow(
+        "Operation", shortOperationSummary(request.operationSummary), rowWidth: detailsWidth)
     )
     stack.addArrangedSubview(detailRow("Session", request.sessionDisplay, rowWidth: detailsWidth))
-    stack.addArrangedSubview(detailRow("Requester", request.principalDisplayName, rowWidth: detailsWidth))
+    stack.addArrangedSubview(
+      detailRow("Requester", request.principalDisplayName, rowWidth: detailsWidth))
     if let path = request.principalPath, !path.isEmpty {
       stack.addArrangedSubview(
-        detailRow("Path", compactPath(path), tooltip: path, monospaced: true, rowWidth: detailsWidth)
+        detailRow(
+          "Path", compactPath(path), tooltip: path, monospaced: true, rowWidth: detailsWidth)
       )
     }
     stack.addArrangedSubview(detailRow("Chain", request.helperChainSummary, rowWidth: detailsWidth))
@@ -148,7 +151,7 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     row.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
       titleField.widthAnchor.constraint(equalToConstant: 76),
-      row.widthAnchor.constraint(equalToConstant: rowWidth)
+      row.widthAnchor.constraint(equalToConstant: rowWidth),
     ])
     return row
   }
