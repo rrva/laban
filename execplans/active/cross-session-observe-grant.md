@@ -1325,6 +1325,127 @@ pending cap of eight with lazy attach; a flood of lazy-attach requests can
 starve grant requests into `429`/timeout, and vice versa. This fails closed
 and is user-visible, acceptable for MVP.
 
+Second round: accepted (2026-07-09, content commit 3782a3f, fresh-state
+security review). Threat analysis ACCEPTED; item 0 checked above. No
+blocking findings; three new notes below, none gating implementation.
+
+Confirmations item 0 requires, re-run against the revised text:
+
+- Threats (a) through (f): each is addressed or its residual risk is
+  explicitly accepted. (a) now records the shared-queue starvation residual
+  (NOTE 8) as accepted for MVP. (b) now states that requester attribution
+  below the brokered agent is impossible on the held broker transport and
+  accepts the whole-process-tree residual on both transports (FINDING 2).
+  (c) now states that cwd and foreground process name are
+  attacker-influenceable, that only the session id suffix is
+  Laban-authoritative, and that misdirection harm is bounded to
+  observed-content injection toward the agent (NOTE 4). (d), (e), and (f)
+  are unchanged from the first round and remain accepted. PASS.
+- G1 through G7 internal consistency: the two first-round contradictions
+  are closed. The shared target resolver makes policy target, dispatch
+  target, and audited target one value (FINDING 1), and G7 plus Milestones
+  1 and 2 schedule the I2/I7/I8 threat-model amendments and the matching
+  `ControlPlaneInvariantTests` updates in the same commits as their
+  mechanisms (FINDING 3), which satisfies the "Rules for changes" in
+  `docs/process/control-plane-threat-model.md` (that section names a
+  cross-session observe grant as its fourth-trust-derivation example). No
+  new G-level contradiction found between the revised sections. PASS.
+- Five-intent grant read set, re-verified against
+  `Sources/LabanCore/Intents/IntentCatalog.swift` at 3782a3f, not the
+  plan's claims: `session.detail`, `selection.read`, `find.state` are
+  `.observeSensitive` with `.visibleText`; `shellIntegration.state` is
+  `.observeSensitive` with `.nonSensitiveState`; `scrollIndicator.state`
+  is `.observe` with `.nonSensitiveState`; all five are `kind: .query`
+  with `availability: guiObserve`. No write, navigate, propose, input, or
+  fixture intent is in the set. PASS.
+
+First-round finding resolutions, each verified in the revised body:
+
+- FINDING 1 RESOLVED. "One resolved target for policy, dispatch, and
+  audit" makes the policy-resolved effective target the single value that
+  scopes dispatch (`legacyQueryInput`'s `scopedSessionID`) and audit;
+  Milestone 1 carries the mandatory named test
+  `testGrantedReadPayloadSessionEqualsAuditedTarget` over all five intents
+  and the four target keys, with a matching mutate-and-expect-failure gate
+  item. Spot-checked against `LabanControlServer.swift`:
+  `resolveTargetSession` honors exactly `sessionID`, `sessionId`,
+  `targetSessionID`, `targetSessionId` (plus the path parameter `id`; see
+  NOTE 11), and `legacyQueryInput` pins `scopedSessionID` to the
+  credential's session, exactly as the finding described. The Allow Once
+  parenthetical matches the `.approvedSession` arm of `legacyQueryInput`,
+  which already scopes to the approval's target.
+- FINDING 2 RESOLVED. Threat (b) and "Transports" item 1 now state the
+  broker attribution limit honestly, the sheet renders the "Requested via
+  broker from within <Principal>'s process tree (exact requester not
+  verifiable)" row and never a chain row implying verification on that
+  transport, the Purpose mock dialog was updated to match, and
+  proxy-forwarded descendant identity is an explicit non-MVP display-only
+  follow-up, never authorization input. Spot-checked
+  `Sources/LabanAgent/ControlAttachProxyServer.swift`: peers are checked
+  only to be the allowed root pid or a descendant of it, and
+  `forwardRequest` conveys method, path, and body upstream with no peer
+  identity, so no verified chain below the brokered agent is possible.
+- FINDING 3 RESOLVED. G7 plus the same-change amendment paragraphs in
+  Milestones 1 and 2 (I2 grant exception with exact conditions, new I8,
+  I7 propose set becoming {command.propose, session.requestObserveGrant})
+  land with their mechanisms, `ControlPlaneInvariantTests` updates in the
+  same commits, and mechanical gate items check the commit pairing.
+
+First-round note resolutions:
+
+- NOTE 1 RESOLVED: the family is now the `.observeSensitive` gui query
+  intents plus one `.observe`-tier state query (`scrollIndicator.state`),
+  matching the catalog.
+- NOTE 2 RESOLVED: the Data row reads "Viewport text, selection, find
+  state, and scrollback line counts of the target", never "scrollback
+  text", with the callout that the wording must change in the same diff if
+  a scrollback-text read ever joins the set and that a set change cannot
+  silently widen existing grants (compiled-in constant, no restart
+  survival).
+- NOTE 3 RESOLVED: `signingRequirement` is now "always non-empty; one-shot
+  grants never construct this type".
+- NOTE 4 RESOLVED: threat (c) and G5 state the cwd/process-name residual
+  explicitly, name the session id suffix as the only Laban-authoritative
+  row, bound the harm to observed-content injection, and record the
+  "reveal target tab" affordance as a follow-up, not built.
+- NOTE 5 RESOLVED: `intendedRequest` is REQUIRED on the lazy transport in
+  both places (Transports item 2 and the request-body paragraph). A
+  remaining held-connection ambiguity is NOTE 10.
+- NOTE 6 RESOLVED: C15 escaping extends to the Settings rows and the
+  per-tab badge hover text in "The sheet", "Settings", Milestone 3, and a
+  gate item.
+- NOTE 7 RESOLVED: the body now states Allow Once rides `.approvedSession`
+  with no Milestone 1 policy change, and that `scrollIndicator.state`'s
+  membership is redundant but kept for one-for-one family symmetry.
+- NOTE 8 RESOLVED: the queue-sharing starvation residual is recorded in
+  threat (a) as accepted for MVP (fails closed, user-visible).
+
+Second-round notes (none blocking; fold into Milestones 1 and 2):
+
+NOTE 9: Revocation mechanics are described two ways. "In-memory authority"
+says a revoked grant fails check 1 (`revokedAt == nil`) and returns `403
+grantRevoked`, but "Settings" says Revoke "removes the in-memory grant
+immediately"; with the entry removed, the next read finds no grant and
+falls through to the plain C12 `403`, never `grantRevoked`. Both readings
+fail closed, so this is consistency, not safety. Milestone 1 should pick
+one: keep the entry with `revokedAt` stamped until expiry sweep (the error
+table and behavioral acceptance assume the distinct code), or remove it
+and drop `grantRevoked` from the table and acceptance.
+
+NOTE 10: `intendedRequest` is optional on the held connection, yet Allow
+Once "authorizes exactly one server-resolved read". The plan does not say
+what Allow Once dispatches, or whether the button is offered, when a
+held-connection request omits `intendedRequest`. Milestone 2 should
+specify: require `intendedRequest` for Allow Once eligibility on both
+transports, or define the fallback read explicitly.
+
+NOTE 11: `resolveTargetSession` also honors the path parameter `id`, the
+canonical target key for `session.detail` (`GET /debug/sessions/<id>`) and
+the form the CLI verb actually sends. The FINDING 1 gate item and named
+test enumerate only the four query/body keys; extend the test to exercise
+the path-parameter form as well so the shared resolver is proven on the
+route agents use most.
+
 ## Decision Log
 
 - Decision: Model cross-session observe as a scope widening
