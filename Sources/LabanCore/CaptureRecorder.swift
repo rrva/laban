@@ -52,6 +52,9 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
     buildConfiguration: String = "debug",
     gitSha: String = "unknown"
   ) throws {
+    if let name {
+      try CaptureRecorder.validateCaptureName(name)
+    }
     self.runId = CaptureRecorder.makeRunId(name: name)
     self.screenshots = screenshots
     self.executable = executable
@@ -114,6 +117,17 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
   public static func validateCaptureName(_ name: String) throws {
     guard !name.isEmpty else { throw CaptureRecorderError.invalidName }
     guard !name.contains("/") && !name.contains("\\") && name != "." && name != ".." else {
+      throw CaptureRecorderError.outsideArtifactRoot
+    }
+  }
+
+  /// Validates a caller-supplied sidecar key (a snapshot bundle file name or
+  /// similar) before it is interpolated into a path. Rejects path
+  /// separators and "." / ".." segments so a malicious key cannot escape
+  /// the capture directory.
+  public static func validateSidecarKey(_ key: String) throws {
+    guard !key.isEmpty else { throw CaptureRecorderError.invalidName }
+    guard !key.contains("/") && !key.contains("\\") && key != "." && key != ".." else {
       throw CaptureRecorderError.outsideArtifactRoot
     }
   }
@@ -349,6 +363,7 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
   public func writeSnapshotBundle(frame: Int, files: [String: Data]) throws -> String {
     let relDir = String(format: "snapshots/snapshot-%06d", frame)
     for (name, data) in files {
+      try CaptureRecorder.validateSidecarKey(name)
       _ = try writeSidecar(data: data, relativePath: "\(relDir)/\(name)")
     }
     let manifest = ["frame": frame, "files": Array(files.keys).sorted()] as [String: Any]

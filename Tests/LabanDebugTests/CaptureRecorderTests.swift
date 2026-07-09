@@ -129,6 +129,65 @@ final class CaptureRecorderTests: XCTestCase {
     XCTAssertEqual(mode & S_IRWXO, 0)
   }
 
+  func testInitRejectsDotAndDotDotNames() throws {
+    let root = tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    XCTAssertThrowsError(try CaptureRecorder(artifactRoot: root, name: ".")) { error in
+      XCTAssertEqual(error as? CaptureRecorderError, .outsideArtifactRoot)
+    }
+    XCTAssertThrowsError(try CaptureRecorder(artifactRoot: root, name: "..")) { error in
+      XCTAssertEqual(error as? CaptureRecorderError, .outsideArtifactRoot)
+    }
+  }
+
+  func testInitAcceptsNormalNameAndCreatesDirectory() throws {
+    let root = tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recorder = try CaptureRecorder(artifactRoot: root, name: "normal-name")
+    _ = try recorder.finish()
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: root.appendingPathComponent("normal-name").path))
+  }
+
+  func testWriteSnapshotBundleRejectsPathTraversalKeys() throws {
+    let root = tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recorder = try CaptureRecorder(artifactRoot: root, name: "snapshot-traversal")
+
+    XCTAssertThrowsError(
+      try recorder.writeSnapshotBundle(frame: 1, files: ["../evil": Data("x".utf8)])
+    ) { error in
+      XCTAssertEqual(error as? CaptureRecorderError, .outsideArtifactRoot)
+    }
+    XCTAssertThrowsError(
+      try recorder.writeSnapshotBundle(frame: 1, files: ["a/b": Data("x".utf8)])
+    ) { error in
+      XCTAssertEqual(error as? CaptureRecorderError, .outsideArtifactRoot)
+    }
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: root.appendingPathComponent("evil").path),
+      "traversal key must not escape the capture directory")
+  }
+
+  func testWriteSnapshotBundleAcceptsNormalKeys() throws {
+    let root = tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recorder = try CaptureRecorder(artifactRoot: root, name: "snapshot-normal")
+
+    let relDir = try recorder.writeSnapshotBundle(
+      frame: 2, files: ["a.txt": Data("x".utf8), "b.json": Data("{}".utf8)])
+    _ = try recorder.finish()
+
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: root.appendingPathComponent("snapshot-normal/\(relDir)/a.txt").path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: root.appendingPathComponent("snapshot-normal/\(relDir)/b.json").path))
+  }
+
   func testSchemaExamplesAreValidJSON() throws {
     let manifest = """
       {"schemaVersion":1,"kind":"laban-capture","runId":"r","createdAt":"now","app":{"gitSha":"unknown","buildConfiguration":"debug","executable":"x"},"privacy":{"containsTerminalBytes":true,"containsScreenshots":false,"redaction":"none"},"timeline":{"path":"timeline.ndjson","events":0},"streams":{},"frames":{"count":0}}
