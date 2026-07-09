@@ -929,11 +929,162 @@ claims completion.
 - [ ] `swift run LabanControlGen --check` passes; `./scripts/lint` exits 0;
   `./scripts/check` exits 0; `git diff --check` exits 0.
 
-Review status: NOT REVIEWED (design complete 2026-07-09; item 0 pending).
+Review status: ITEM 0 REVIEWED 2026-07-09 (commit 35d32e0, fresh-state
+security review): NOT PASSED. Three blocking findings and eight notes are
+recorded below. Items 1+ are not applicable yet (no implementation exists).
 
 Review findings (filled in by the review agent):
 
-(none yet)
+Fresh-state security review of item 0, 2026-07-09, against commit 35d32e0.
+Confirmations item 0 requires:
+
+- Threats (a) through (f): (a), (d), (e), and (f) are addressed or their
+  residual risk is explicitly accepted in the text. (b) is not fully accepted
+  as written; its stated mitigation (1) does not exist on the held broker
+  transport (FINDING 2). (c) is addressed; see NOTE 4 for an unstated
+  residual.
+- G1 through G6 internal consistency: fails on two contradictions between
+  sections and against the standing invariants document (FINDING 1,
+  FINDING 3); otherwise the constraints match the mechanisms described.
+- Five-intent grant read set, verified against
+  `Sources/LabanCore/Intents/IntentCatalog.swift` (not the plan's claims):
+  all five ids exist, all are `kind: .query` with `availability: guiObserve`
+  (gui-available); `requiredCapability` is `.observeSensitive` for
+  `session.detail`, `selection.read`, `find.state`, `shellIntegration.state`
+  and `.observe` for `scrollIndicator.state`; `dataSensitivity` is
+  `.visibleText` for `session.detail`, `selection.read`, `find.state` and
+  `.nonSensitiveState` for the other two. No write, navigate, propose,
+  input, or fixture intent is in the set. PASS.
+
+FINDING 1: Policy target and dispatch target are resolved by different code,
+and `selection.read` cannot target another session at all. Scenario: with a
+standing grant for TARGET, a source-bound `.sessionObserve` credential sends
+`GET /debug/selection?sessionID=TARGET`. The proposed policy check uses
+`LabanControlServer.resolveTargetSession` (which reads `sessionID`,
+`sessionId`, `targetSessionID`, `targetSessionId` from query and body) and
+allows the request, but the dispatched projection
+`ControlStateProjections.selectionResponse` takes no session parameter and
+reads `ctx.scopedSessionID`, which `legacyQueryInput` pins to the SOURCE
+session for a `.sessionObserve` credential. The read returns source-session
+data while `reportAuthorize` and the planned `control.observeGrant.used`
+event record a cross-session read of TARGET that never happened. The same
+mismatch class exists for `find.state`, `shellIntegration.state`, and
+`scrollIndicator.state` when the caller uses the
+`targetSessionID`/`targetSessionId` keys, which `resolveTargetSession`
+honors but the projections ignore. (Allow Once is unaffected because
+`.approvedSession` is bound to the TARGET, so `scopedSessionID` becomes the
+target.) Affected sections: "What a Grant Unlocks" (the claim that the five
+reads are "applied to the target"), "Audit events", Milestone 1. Why the
+design as written fails: `selection.read` has exactly the property (an
+active-session-shaped projection with no explicit session-target parameter)
+that the plan itself uses to exclude `app.accessibility`, so the grant set
+contradicts its own exclusion rationale, and the audit trail, a core
+threat (e) mitigation, would assert cross-session reads that did not occur.
+Fix direction: drop `selection.read` from the MVP set, or specify one shared
+target resolver used by both the policy check and the dispatch (for example,
+the server passes the policy-resolved target into `legacyQueryInput` as the
+scoped read target when a grant authorized it), plus a test asserting the
+dispatched payload's session equals the audited target.
+
+FINDING 2: Threat (b) mitigation (1) does not exist on the held broker
+connection. Scenario: `laban agent run -- codex` exposes
+`LABAN_AGENT_CONTROL_URL` to the agent child and every descendant
+(`Sources/LabanAgent/ControlAttachProxyServer.swift` accepts any descendant
+of the allowed root pid and forwards requests without conveying the
+requesting descendant's identity). A malicious tool subprocess posts
+`requestObserveGrant` through the proxy; Laban's UDS peer is `laban-agent`,
+and the planned downward principal step attributes the request to the agent
+child recorded at broker launch, so the sheet shows
+`Chain: Codex -> laban helper` even though npm-postinstall-level code asked.
+The threat (b) text claims "the dialog always shows the full helper chain so
+`Codex -> npm -> laban helper` is visibly different from
+`Codex -> laban helper`"; on this transport that is false, because the
+chain Laban can verify never contains the real requester. Affected sections:
+"Threat Analysis (b)", "The Asking Flow / Transports" item 1, Decision Log
+entry "downward principal step". Why the design as written fails: item 0
+requires each threat's residual risk to be explicitly accepted in the text,
+and (b)'s acceptance is premised on a chain-display mitigation that one of
+the two supported transports cannot deliver, so the accepted residual is
+understated. Fix direction: extend the (b) residual acceptance to state that
+on a held broker connection requester attribution below the brokered agent
+is impossible and the chain row degrades to principal plus helper, or have
+the proxy forward the requesting descendant's pid and start time so Laban
+can render a live-verified chain (display only, never authorization).
+
+FINDING 3: The design contradicts standing invariants I2 and I7 in
+`docs/process/control-plane-threat-model.md` and does not schedule their
+amendment. Scenario: I2 states that for a session-bound credential "a
+request targeting another session is denied for every capability in
+{observeSensitive, navigate, propose}"; the `grantedSessions` widening makes
+that statement false for `.observeSensitive` the moment Milestone 1 lands.
+I7 states the gui `.propose` set is exactly `{command.propose}`; the
+`session.requestObserveGrant` descriptor in Milestone 2 breaks it. That
+document's "Rules for changes" section explicitly requires a fourth trust
+derivation (naming a cross-session observe grant as its example) to add its
+invariants to the document and to the invariant suite in the same change
+that lands the mechanism. This plan updates the 2C catalog parity test but
+never mentions `control-plane-threat-model.md` or the invariant suite.
+Affected sections: Milestones 1 and 2, "Design Constraints" (G1). Why the
+design as written fails: the constraints are presented as consistent with
+the standing control-plane invariants, but shipping the plan as written
+leaves I2 and I7 asserting properties the code no longer has, which is the
+cross-path drift that document exists to prevent. Fix direction: add to
+Milestones 1 and 2 the matching edits to
+`docs/process/control-plane-threat-model.md` (I2 gains the grant exception
+with its conditions, I7's propose set gains `session.requestObserveGrant`,
+and a new invariant states that grants widen only the five-intent read set
+for one principal/source/target pair and die with either shell, revocation,
+or runID change) plus the corresponding invariant-suite updates, naming this
+review per that document's rules.
+
+NOTE 1: "Context and Orientation" describes the grant family as the
+`gui: true` `.observeSensitive` query intents "plus two `.observe`-tier
+state queries"; only `scrollIndicator.state` is `.observe`
+(`shellIntegration.state` is `.observeSensitive` in the catalog). The count
+is one, not two.
+
+NOTE 2: The sheet's "Data:" row says "Visible terminal text and scrollback
+of the target", but `session.detail` returns viewport grid text (capped at
+2,000 cells) plus scrollback line counts, not scrollback text. Overstating
+is the safe direction, but the row should state what the grant actually
+unlocks, and must be revisited if a future `session.getText` joins the set.
+
+NOTE 3: `ControlSessionObserveGrant.signingRequirement` is commented "empty
+only for one-shot grants", but one-shot grants are never retained in the
+table ("Nothing persists"). Drop the comment or state that one-shots never
+construct the type.
+
+NOTE 4: Threat (c) presents target cwd and foreground process as anchors,
+but both are attacker-influenceable (a program in the attacker's tab can
+chdir to any readable path and exec a binary named `ninja`); only the
+session id suffix is Laban-authoritative, and the user has no independent
+way to bind a suffix to a visible tab. The practical harm of misdirection is
+observed-content injection toward the agent, which exists for any observed
+session; state this residual explicitly.
+
+NOTE 5: "Transports" item 2 says the lazy request body carries the intended
+read "optionally", while the request-body paragraph says `intendedRequest`
+"is required on the lazy transport". Align the wording.
+
+NOTE 6: The C15 safe-rendering requirement is stated for the sheet only. The
+Settings "Cross-Session Observation" rows and the per-tab badge/hover text
+also render attacker-influenceable titles recorded at approval time; extend
+C15 (or at least control/bidi escaping) to those surfaces so a crafted title
+cannot misrender which grant a Revoke button belongs to.
+
+NOTE 7: `scrollIndicator.state` requires only `.observe`, and the shipped
+`authorize` gives app-observe tokens `.wholeApp` scope, so any `control.json`
+holder can already read it for any session today; its inclusion in the grant
+set is redundant but harmless. Separately, Allow Once needs no Milestone 1
+policy change at all: `.approvedSession(sessionID: TARGET)` passes the
+shipped `authorize` via scope `.session(TARGET)` plus constraint binding.
+The plan is consistent with this but never states it; saying so keeps
+Milestone 2's one-shot path from appearing to depend on `grantedSessions`.
+
+NOTE 8: Grant prompts share the single visible-prompt queue and the global
+pending cap of eight with lazy attach; a flood of lazy-attach requests can
+starve grant requests into `429`/timeout, and vice versa. This fails closed
+and is user-visible, acceptable for MVP.
 
 ## Decision Log
 
