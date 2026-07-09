@@ -166,6 +166,22 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
     XCTAssertEqual(symlinkSigner.sign(record).hmac, "")
   }
 
+  #if canImport(Security) && DEBUG
+    func testKeychainSignerRNGFailureFallbackIsNeverAllZeros() {
+      // Regression for a defect where SecRandomCopyBytes failure produced a
+      // predictable all-zeros HMAC key. The signer must fall back to
+      // arc4random_buf (which cannot fail) instead, so it stays functional
+      // without a static, forgeable key. Exercise the fallback path
+      // directly since forcing SecRandomCopyBytes to fail is not feasible
+      // in this harness.
+      for _ in 0..<8 {
+        let key = ControlAttachApprovalRecordKeychainSigner.rngFailureFallbackKeyForTests()
+        XCTAssertEqual(key.count, 32)
+        XCTAssertNotEqual(key, Data(repeating: 0, count: 32))
+      }
+    }
+  #endif
+
   // MARK: - Helpers
 
   private func makeStore() -> (UserDefaults, ControlAttachApprovalStore) {

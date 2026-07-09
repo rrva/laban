@@ -243,11 +243,32 @@ public final class ControlAttachApprovalRecordFileSigner: ControlAttachApprovalR
       if let data = loadKey(service: service, account: account) { return data }
       var bytes = [UInt8](repeating: 0, count: 32)
       let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-      guard status == errSecSuccess else { return Data(repeating: 0, count: 32) }
-      let data = Data(bytes)
+      // SecRandomCopyBytes failure must never yield a predictable all-zeros
+      // HMAC key. Fall back to arc4random_buf, which cannot fail, so the
+      // signer stays functional with an unpredictable key instead of a
+      // static one an attacker could forge signatures against.
+      let data = status == errSecSuccess ? Data(bytes) : randomKey()
       storeKey(data, service: service, account: account)
       return data
     }
+
+    private static func randomKey() -> Data {
+      var key = Data(count: 32)
+      key.withUnsafeMutableBytes { rawBuffer in
+        if let base = rawBuffer.baseAddress {
+          arc4random_buf(base, rawBuffer.count)
+        }
+      }
+      return key
+    }
+
+    #if DEBUG
+      /// Test hook exposing the SecRandomCopyBytes-failure fallback so tests
+      /// can assert it never produces a predictable all-zeros key.
+      public static func rngFailureFallbackKeyForTests() -> Data {
+        randomKey()
+      }
+    #endif
 
     private static func loadKey(service: String, account: String) -> Data? {
       let query: [CFString: Any] = [
