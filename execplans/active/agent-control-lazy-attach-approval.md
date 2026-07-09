@@ -1090,6 +1090,24 @@ Behavioral acceptance:
   Review Gate stays unchecked and Review status stays NOT REVIEWED, because a
   fresh-state review of the landed code has not run yet.
 
+- Observation: `resolveUniqueShellSessionAncestor` walked from the peer PID all
+  the way to PID 1, requiring every ancestor (including those above an already
+  matched registered shell) to be same-uid and identity-resolvable. When Laban
+  or a test process runs under a root-owned `login` process, the walk hit that
+  ancestor and returned nil even though a valid registered shell had already
+  matched further down the chain, so lazy attach was dead whenever Laban's own
+  ancestry contained a non-same-uid process. Evidence: the fresh-state reviewer
+  reported `ControlDefaultOnTests.testNonPendingShellRegistrationRestoresLazyAttachAncestry`
+  failing deterministically in login-hosted environments (2026-07-09). Fix: the
+  same-uid and identity-resolvable requirement still covers every hop from the
+  peer up to and including the matched shell; on the first ancestor above that
+  point whose identity is unavailable or non-same-uid, the walk now stops and
+  returns the already-matched shell instead of failing the whole resolution,
+  since ancestors past a privilege boundary cannot extend or invalidate a
+  same-uid chain that already closed. A boundary encountered before any match
+  still fails closed, and the second-match ambiguity check within the same-uid
+  chain is unchanged.
+
 ## Idempotence and Recovery
 
 All added tests and scripts must be safe to run repeatedly. Approval records

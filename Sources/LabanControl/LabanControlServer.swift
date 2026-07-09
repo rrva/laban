@@ -1618,6 +1618,12 @@ public final class LabanControlServer {
       guard let identity = processTreeInspector.identity(for: pid),
         identity.uid == getuid()
       else {
+        // Ancestors above a privilege boundary (non-same-uid, or identity
+        // unresolvable) cannot extend a same-uid chain. If a shell was
+        // already matched below this boundary, the nearer attribution is
+        // correct and the walk stops here. If nothing matched yet, the
+        // peer-to-shell chain is broken and resolution fails closed.
+        if let matched { return matched }
         return nil
       }
       for (sessionID, shell) in identities where shell.shellPID == pid {

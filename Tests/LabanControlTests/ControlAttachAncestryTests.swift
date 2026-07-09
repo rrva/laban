@@ -81,6 +81,81 @@ final class ControlAttachAncestryTests: XCTestCase {
     XCTAssertFalse(result)
   }
 
+  func testPrivilegeBoundaryAboveMatchedShellStillResolves() {
+    // peer -> tool -> shell(registered) -> app -> login(root) -> pid1
+    let inspector = FakeProcessTreeInspector(tree: [
+      500: (parent: 400, identity: identity(500, path: "/usr/local/bin/laban")),
+      400: (parent: 300, identity: identity(400, path: "/usr/bin/tool")),
+      300: (parent: 200, identity: identity(300, path: "/bin/zsh")),
+      200: (parent: 100, identity: identity(200, path: "/usr/local/bin/app")),
+      100: (parent: 1, identity: identity(100, path: "/usr/bin/login", uid: 0)),
+    ])
+    let server = makeServer(inspector: inspector)
+    server.registerAttachShellPID(sessionID: "s1", shellPID: 300)
+
+    let result = server.canLazyAttachDescendant(sessionID: "s1", peerPID: 500)
+    XCTAssertTrue(result)
+  }
+
+  func testPrivilegeBoundaryBeforeAnyMatchFailsClosed() {
+    // peer -> sudoHelper(root) -> shell(registered, never reached)
+    let inspector = FakeProcessTreeInspector(tree: [
+      600: (parent: 700, identity: identity(600, path: "/usr/local/bin/laban")),
+      700: (parent: 800, identity: identity(700, path: "/usr/bin/sudo", uid: 0)),
+      800: (parent: 1, identity: identity(800, path: "/bin/zsh")),
+    ])
+    let server = makeServer(inspector: inspector)
+    server.registerAttachShellPID(sessionID: "s1", shellPID: 800)
+
+    let result = server.canLazyAttachDescendant(sessionID: "s1", peerPID: 600)
+    XCTAssertFalse(result)
+  }
+
+  func testNearerShellWinsAtPrivilegeBoundaryWithoutAmbiguityFailure() {
+    // peer -> shellB(registered s2) -> middle(root) -> shellA(registered s1)
+    let inspector = FakeProcessTreeInspector(tree: [
+      900: (parent: 850, identity: identity(900, path: "/usr/local/bin/laban")),
+      850: (parent: 800, identity: identity(850, path: "/bin/zsh")),
+      800: (parent: 750, identity: identity(800, path: "/usr/bin/login", uid: 0)),
+      750: (parent: 1, identity: identity(750, path: "/bin/zsh")),
+    ])
+    let server = makeServer(inspector: inspector)
+    server.registerAttachShellPID(sessionID: "s1", shellPID: 750)
+    server.registerAttachShellPID(sessionID: "s2", shellPID: 850)
+
+    let result = server.canLazyAttachDescendant(sessionID: "s2", peerPID: 900)
+    XCTAssertTrue(result)
+  }
+
+  func testUnresolvableIdentityAboveMatchedShellStillResolves() {
+    // peer -> tool -> shell(registered) -> (parent pid has no identity at all)
+    let inspector = FakeProcessTreeInspector(tree: [
+      1500: (parent: 1400, identity: identity(1500, path: "/usr/local/bin/laban")),
+      1400: (parent: 1300, identity: identity(1400, path: "/usr/bin/tool")),
+      1300: (parent: 1200, identity: identity(1300, path: "/bin/zsh")),
+      // 1200 intentionally absent from the tree: identity(for: 1200) resolves to nil.
+    ])
+    let server = makeServer(inspector: inspector)
+    server.registerAttachShellPID(sessionID: "s1", shellPID: 1300)
+
+    let result = server.canLazyAttachDescendant(sessionID: "s1", peerPID: 1500)
+    XCTAssertTrue(result)
+  }
+
+  func testUnresolvableIdentityBelowMatchedShellFailsClosed() {
+    // peer -> (parent pid has no identity at all) -> shell(registered, never reached)
+    let inspector = FakeProcessTreeInspector(tree: [
+      1600: (parent: 1550, identity: identity(1600, path: "/usr/local/bin/laban")),
+      // 1550 intentionally absent from the tree: identity(for: 1550) resolves to nil.
+      1500: (parent: 1, identity: identity(1500, path: "/bin/zsh")),
+    ])
+    let server = makeServer(inspector: inspector)
+    server.registerAttachShellPID(sessionID: "s1", shellPID: 1500)
+
+    let result = server.canLazyAttachDescendant(sessionID: "s1", peerPID: 1600)
+    XCTAssertFalse(result)
+  }
+
   func testStaleShellRegistrationRemovedOnSessionClose() {
     let inspector = FakeProcessTreeInspector(tree: [
       100: (parent: 50, identity: identity(100, path: "/bin/zsh")),
@@ -106,13 +181,14 @@ final class ControlAttachAncestryTests: XCTestCase {
   private func identity(
     _ pid: pid_t,
     path: String,
-    startTime: Date? = Date()
+    startTime: Date? = Date(),
+    uid: uid_t = getuid()
   ) -> ControlProcessIdentity {
     ControlProcessIdentity(
       pid: pid,
       parentPID: nil,
       startTime: startTime,
-      uid: getuid(),
+      uid: uid,
       executablePath: path,
       arguments: [],
       signing: nil)
