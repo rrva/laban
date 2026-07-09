@@ -49,6 +49,50 @@ final class ControlAttachProxyServerTests: XCTestCase {
     XCTAssertTrue(flags & FD_CLOEXEC != 0)
   }
 
+  func testStopRemovesSocketFileAndTempDirectory() throws {
+    let upstream = try FakeUpstreamServer().start()
+    defer { upstream.stop() }
+
+    let proxy = try ControlAttachProxyServer(upstreamFD: upstream.clientFD, allowedRootPID: nil)
+    let tempDirectory = proxy.testTempDirectory
+    let socketPath = proxy.socketPath
+    XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: tempDirectory.path))
+
+    proxy.stop()
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: tempDirectory.path))
+  }
+
+  func testStopIsIdempotent() throws {
+    let upstream = try FakeUpstreamServer().start()
+    defer { upstream.stop() }
+
+    let proxy = try ControlAttachProxyServer(upstreamFD: upstream.clientFD, allowedRootPID: nil)
+    let socketPath = proxy.socketPath
+
+    proxy.stop()
+    // A second stop() must not crash, throw, or resurrect the socket.
+    proxy.stop()
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+  }
+
+  // NOTE: a `deinit`-triggered cleanup test (constructing a proxy, dropping
+  // every strong reference, and asserting the socket/temp dir are gone
+  // without an explicit `stop()`) was attempted here but is not reachable as
+  // a cheap test: `init` starts an accept thread as
+  // `Thread { [weak self] in self?.acceptLoop() }`, and `self?.acceptLoop()`
+  // promotes `self` to a strong local reference for the entire call, which
+  // blocks in `accept()` until a client connects or `stop()` closes the
+  // listener fd. That means the accept thread itself keeps the proxy alive
+  // for as long as nothing calls `stop()`, so `deinit` cannot fire from ARC
+  // alone in the "constructed, abandoned, no explicit stop" scenario this
+  // finding asked to cover. `testStopIsIdempotent` and
+  // `testStopRemovesSocketFileAndTempDirectory` above cover the explicit
+  // `stop()` cleanup path, which is the reachable one.
+
   func testProxyRejectsPeerOutsideChildTree() throws {
     let upstream = try FakeUpstreamServer(
       response: (

@@ -427,7 +427,7 @@ func runAttachedChild(command: [String], proxy: ControlAttachProxyServer) -> Nev
     exit(exitStatus)
   }
 
-  installChildSignalSources(childPID: childPID)
+  retainedChildSignalSources.append(contentsOf: installChildSignalSources(childPID: childPID))
   dispatchMain()
 }
 
@@ -444,29 +444,59 @@ func installProxyTerminationSources(proxy: ControlAttachProxyServer) {
   }
 }
 
-func installChildSignalSources(childPID: pid_t) {
-  Darwin.signal(SIGINT, SIG_IGN)
-  let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-  intSource.setEventHandler {
-    _ = Darwin.kill(-childPID, SIGINT)
-  }
-  intSource.resume()
-  retainedChildSignalSources.append(intSource)
+/// Pure mapping from a signal delivered to the broker to the action it should
+/// take against its child. Extracted from `installChildSignalSources` so the
+/// signal semantics can be unit tested without installing real
+/// `DispatchSourceSignal` handlers.
+enum ChildSignalAction: Equatable {
+  /// Forward the given signal straight through to the child's process group.
+  case forward(Int32)
+  /// Ask the child's process group to exit gracefully (SIGTERM), escalating
+  /// to SIGKILL after a bounded grace period if it is still alive.
+  case gracefulTerminate
+}
 
-  for sig in [SIGTERM, SIGHUP] {
-    Darwin.signal(sig, SIG_IGN)
-    let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-    source.setEventHandler {
-      terminateChildOrGroup(pid: childPID)
-    }
-    source.resume()
-    retainedChildSignalSources.append(source)
+func childSignalAction(for signalNumber: Int32) -> ChildSignalAction? {
+  switch signalNumber {
+  case SIGINT:
+    return .forward(SIGINT)
+  case SIGTERM, SIGHUP:
+    return .gracefulTerminate
+  default:
+    return nil
   }
 }
 
-func terminateChildOrGroup(pid: pid_t) {
+/// Installs one dispatch signal source per handled signal and returns them so
+/// the caller controls their lifetime. Production retains them in the global
+/// `retainedChildSignalSources` array for the life of the broker; tests keep
+/// their own scoped array so sources from one test cannot outlive it and fire
+/// against a since-reaped/reused pid in a later test.
+func installChildSignalSources(
+  childPID: pid_t, graceSeconds: TimeInterval = 5
+) -> [DispatchSourceSignal] {
+  var sources: [DispatchSourceSignal] = []
+  for sig in [SIGINT, SIGTERM, SIGHUP] {
+    guard let action = childSignalAction(for: sig) else { continue }
+    Darwin.signal(sig, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    source.setEventHandler {
+      switch action {
+      case .forward(let signalToForward):
+        _ = Darwin.kill(-childPID, signalToForward)
+      case .gracefulTerminate:
+        terminateChildOrGroup(pid: childPID, graceSeconds: graceSeconds)
+      }
+    }
+    source.resume()
+    sources.append(source)
+  }
+  return sources
+}
+
+func terminateChildOrGroup(pid: pid_t, graceSeconds: TimeInterval = 5) {
   _ = Darwin.kill(-pid, SIGTERM)
-  DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+  DispatchQueue.global().asyncAfter(deadline: .now() + graceSeconds) {
     // If the child is still around after the grace period, force-kill it.
     if Darwin.kill(-pid, 0) == 0 || errno == EPERM {
       _ = Darwin.kill(-pid, SIGKILL)
