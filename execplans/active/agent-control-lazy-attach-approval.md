@@ -1248,7 +1248,16 @@ gate passes.
 - [ ] Tests prove approval timeout, denial, rate limiting, and `sessionChanged`
   errors map to the documented CLI exit codes.
 - [ ] Installed smoke verifies app/helper code signing and prints
-  `LAZY_ATTACH_INSTALLED_SMOKE_OK`. ENVIRONMENT-BLOCKED (2026-07-09): the
+  `LAZY_ATTACH_INSTALLED_SMOKE_OK`. UNBLOCKED (2026-07-09, later the same
+  day): after the ancestry privilege-boundary fix (`ab53168`), a fresh
+  `scripts/build-app` + `scripts/install-app` at `3782a3f` made
+  `scripts/test-installed-agent-lazy-attach` print
+  `LAZY_ATTACH_INSTALLED_SMOKE_OK` (exit 0) in the same login-hosted
+  environment that previously failed;
+  `scripts/test-installed-control-broker` also printed
+  `CONTROL_BROKER_INSTALLED_SMOKE_OK`. Left unchecked for the fresh
+  re-review to confirm. Original blocked record follows.
+  ENVIRONMENT-BLOCKED (2026-07-09): the
   signing-verification half ran (codesign verify passed, both helper
   metadata blocks printed, expected agent path matched), but the harness
   half failed with `LAZY_ATTACH_INSTALLED_SMOKE_FAIL: first direct-agent
