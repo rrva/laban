@@ -48,6 +48,25 @@ final class ControlAttachPrincipalTests: XCTestCase {
     XCTAssertFalse(ControlAttachPrincipal.isPersistable(identity))
   }
 
+  func testPrincipalCannotPersistForPackageRunner() {
+    // Package runners (npm, npx, pnpm, ...) are generic interpreters per
+    // ControlAttachConstants.genericInterpreters, so they cannot persist even
+    // if code-signed.
+    for basename in ["npm", "npx", "pnpm"] {
+      let identity = identity(
+        100,
+        path: "/usr/local/bin/\(basename)",
+        signing: ControlCodeSigningIdentity(
+          designatedRequirement: "req", isAdHocOrUnsigned: false))
+      XCTAssertFalse(
+        ControlAttachPrincipal.isPersistable(identity),
+        "\(basename) must not be persistable")
+      XCTAssertTrue(
+        ControlAttachPrincipal.isGenericInterpreter(identity),
+        "\(basename) must be classified as a generic interpreter")
+    }
+  }
+
   func testPrincipalCanPersistForSignedNonGeneric() {
     let identity = identity(
       100,

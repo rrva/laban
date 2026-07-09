@@ -5,6 +5,19 @@ import LabanCore
 final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unchecked Sendable {
   static let shared = ControlAttachApprovalPresenter()
 
+  /// The alert button titles this presenter would construct for `request`,
+  /// in the order they are added to the alert (first button ==
+  /// `alertFirstButtonReturn`). Factored out of `presentOnMain` so button
+  /// presence/order is unit-testable without driving `NSAlert`/`NSApp`.
+  static func buttonTitles(for request: ControlAttachApprovalRequest) -> [String] {
+    var titles = ["Allow Once"]
+    if request.canPersist {
+      titles.append("Always Allow")
+    }
+    titles.append("Deny")
+    return titles
+  }
+
   func requestControlAttachApproval(
     _ request: ControlAttachApprovalRequest,
     completion: @escaping @Sendable (ControlAttachApprovalDecision) -> Void
@@ -30,12 +43,10 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     alert.accessoryView = makeDetailsView(for: request)
     alert.alertStyle = .warning
 
-    alert.addButton(withTitle: "Allow Once")
     let canAlwaysAllow = request.canPersist
-    if canAlwaysAllow {
-      alert.addButton(withTitle: "Always Allow")
+    for title in Self.buttonTitles(for: request) {
+      alert.addButton(withTitle: title)
     }
-    alert.addButton(withTitle: "Deny")
 
     let finish: (NSApplication.ModalResponse) -> Void = { response in
       switch response {

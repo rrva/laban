@@ -156,6 +156,32 @@ final class ControlAttachAncestryTests: XCTestCase {
     XCTAssertFalse(result)
   }
 
+  func testSwappedShellIdentityAfterRegistrationFailsEligibility() {
+    // PID reuse at the ancestry layer: the shell PID is registered against
+    // one process identity, then a different process (same PID, different
+    // start time) takes over that PID before the eligibility check runs.
+    let inspector = MutableFakeProcessTreeInspector(tree: [
+      100: (parent: 50, identity: identity(100, path: "/bin/zsh")),
+      50: (
+        parent: 1,
+        identity: identity(50, path: "/bin/zsh", startTime: Date(timeIntervalSince1970: 1000))
+      ),
+    ])
+    let server = makeServer(inspector: inspector)
+    server.registerAttachShellPID(sessionID: "s1", shellPID: 50)
+
+    XCTAssertTrue(server.canLazyAttachDescendant(sessionID: "s1", peerPID: 100))
+
+    // A new process now occupies PID 50 (different start time == PID reuse).
+    inspector.setIdentity(
+      identity(50, path: "/bin/zsh", startTime: Date(timeIntervalSince1970: 2000)),
+      parent: 1,
+      for: 50)
+
+    let result = server.canLazyAttachDescendant(sessionID: "s1", peerPID: 100)
+    XCTAssertFalse(result)
+  }
+
   func testStaleShellRegistrationRemovedOnSessionClose() {
     let inspector = FakeProcessTreeInspector(tree: [
       100: (parent: 50, identity: identity(100, path: "/bin/zsh")),
@@ -203,6 +229,43 @@ private struct FakeProcessTreeInspector: ControlProcessTreeInspecting {
   }
 
   func identity(for pid: pid_t) -> ControlProcessIdentity? {
+    var identity = tree[pid]?.identity
+    identity?.parentPID = tree[pid]?.parent
+    return identity
+  }
+}
+
+/// A `ControlProcessTreeInspecting` whose backing tree can be mutated after
+/// construction, so a test can register a shell PID against one identity and
+/// then swap in a different identity behind the same PID (simulating PID
+/// reuse) before the eligibility or revalidation check runs.
+private final class MutableFakeProcessTreeInspector: ControlProcessTreeInspecting,
+  @unchecked Sendable
+{
+  private let lock = NSLock()
+  private var tree: [pid_t: (parent: pid_t?, identity: ControlProcessIdentity)]
+
+  init(tree: [pid_t: (parent: pid_t?, identity: ControlProcessIdentity)]) {
+    self.tree = tree
+  }
+
+  func setIdentity(
+    _ identity: ControlProcessIdentity, parent: pid_t?, for pid: pid_t
+  ) {
+    lock.lock()
+    tree[pid] = (parent: parent, identity: identity)
+    lock.unlock()
+  }
+
+  func parentPID(of pid: pid_t) -> pid_t? {
+    lock.lock()
+    defer { lock.unlock() }
+    return tree[pid]?.parent
+  }
+
+  func identity(for pid: pid_t) -> ControlProcessIdentity? {
+    lock.lock()
+    defer { lock.unlock() }
     var identity = tree[pid]?.identity
     identity?.parentPID = tree[pid]?.parent
     return identity

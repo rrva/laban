@@ -73,6 +73,30 @@ final class LazyAttachCLITests: XCTestCase {
     XCTAssertEqual(result.exitCode, 4)
   }
 
+  func testSessionChangedMapsToExitCode5() {
+    let lazyAttachRequest:
+      (String, String, String, [String: String], String?) throws -> (Int, String) = {
+        _, _, _, _, _ in
+        throw LazyAttachClientError.sessionChanged("identity swapped mid-approval")
+      }
+    let result = LabanCLI.run(
+      command: .sessionState(json: true),
+      lazyAttachRequest: lazyAttachRequest)
+    XCTAssertEqual(result.exitCode, 5)
+  }
+
+  func testRateLimitedMapsToExitCode5() {
+    let lazyAttachRequest:
+      (String, String, String, [String: String], String?) throws -> (Int, String) = {
+        _, _, _, _, _ in
+        throw LazyAttachClientError.rateLimited("too many pending requests")
+      }
+    let result = LabanCLI.run(
+      command: .sessionState(json: true),
+      lazyAttachRequest: lazyAttachRequest)
+    XCTAssertEqual(result.exitCode, 5)
+  }
+
   func testSessionCommandsIgnoreLABANSessionAttach() {
     let lazyAttachRequest:
       (String, String, String, [String: String], String?) throws -> (Int, String) = {

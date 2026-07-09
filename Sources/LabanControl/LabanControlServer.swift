@@ -93,6 +93,14 @@ public final class LabanControlServer {
   private var codeSigningInspector: any ControlCodeSigningInspecting = ControlCodeSigningInspector()
   public var approvalStore: ControlAttachApprovalStore
   public weak var approvalDelegate: (any ControlAttachApprovalDelegate)?
+  private let lazyAttachApprovalTimeout: TimeInterval
+
+  #if DEBUG
+    /// Test seam: fires with each internal approved-dispatch token as it is
+    /// minted, so tests can prove the token never leaks into responses,
+    /// errors, or audit payloads. Production code never reads this.
+    public var onApprovedTokenMintedForTesting: (@Sendable (String) -> Void)?
+  #endif
 
   private struct SessionAttachBootstrap: Equatable {
     let sessionID: String
@@ -132,7 +140,8 @@ public final class LabanControlServer {
     securityObserver: (any ControlSecurityObserver)? = nil,
     processTreeInspector: (any ControlProcessTreeInspecting)? = nil,
     codeSigningInspector: (any ControlCodeSigningInspecting)? = nil,
-    approvalStore: ControlAttachApprovalStore? = nil
+    approvalStore: ControlAttachApprovalStore? = nil,
+    lazyAttachApprovalTimeout: TimeInterval = 30
   ) {
     self.router = router
     self.surface = surface
@@ -141,6 +150,7 @@ public final class LabanControlServer {
     self.expectedAgentExecutablePath = expectedAgentExecutablePath
     self.allowDevAgentExecutablePath = allowDevAgentExecutablePath
     self.securityObserver = securityObserver
+    self.lazyAttachApprovalTimeout = lazyAttachApprovalTimeout
     if let processTreeInspector {
       self.processTreeInspector = processTreeInspector
     }
@@ -1408,6 +1418,9 @@ public final class LabanControlServer {
         return .error(409, "sessionChanged")
       }
       let approvedToken = Self.makeToken()
+      #if DEBUG
+        onApprovedTokenMintedForTesting?(approvedToken)
+      #endif
       let approvedTier = ControlTokenTier.approvedSession(
         sessionID: sessionID,
         approvalID: matchingRecord.id,
@@ -1506,7 +1519,7 @@ public final class LabanControlServer {
       semaphore.signal()
     }
 
-    let timeoutResult = semaphore.wait(timeout: .now() + 30)
+    let timeoutResult = semaphore.wait(timeout: .now() + lazyAttachApprovalTimeout)
     if timeoutResult == .timedOut {
       lazyAttachLock.lock()
       pendingLazyAttachRequests.removeValue(forKey: pendingRequestID)
@@ -1563,6 +1576,9 @@ public final class LabanControlServer {
     }
 
     let approvedToken = Self.makeToken()
+    #if DEBUG
+      onApprovedTokenMintedForTesting?(approvedToken)
+    #endif
     let approvedTier = ControlTokenTier.approvedSession(
       sessionID: sessionID,
       approvalID: approvalID,

@@ -72,6 +72,98 @@ final class ControlSecurityAuditTests: XCTestCase {
     }
   }
 
+  func testApprovedTokenNeverLeaksIntoResponseOrAudit() throws {
+    let (server, socketPath, token, observer) = try makeServer()
+    defer { server.stop() }
+
+    let mintedTokens = MintedTokenBox()
+    #if DEBUG
+      server.onApprovedTokenMintedForTesting = { minted in
+        mintedTokens.append(minted)
+      }
+    #endif
+
+    let (_, body) = try lazyAttach(
+      server: server,
+      socketPath: socketPath,
+      appObserveToken: token,
+      cliCommand: "session.state",
+      method: "GET",
+      path: "/debug/state")
+
+    #if DEBUG
+      let tokensToCheck = mintedTokens.all()
+      XCTAssertFalse(tokensToCheck.isEmpty, "expected the debug seam to capture a minted token")
+
+      let responseText = String(data: body, encoding: .utf8) ?? ""
+      let contextStrings = observer.contexts().map { contextString($0) }
+      let payloadStrings = observer.payloads().map { jsonString($0) }
+      let allAuditStrings = contextStrings + payloadStrings
+
+      for mintedToken in tokensToCheck {
+        XCTAssertFalse(
+          responseText.contains(mintedToken),
+          "approved-dispatch token leaked into the HTTP response body")
+        for text in allAuditStrings {
+          XCTAssertFalse(
+            text.contains(mintedToken),
+            "approved-dispatch token leaked into an audit payload: \(text)")
+        }
+      }
+    #endif
+  }
+
+  func testDownstreamResponseSentinelDoesNotLeakIntoAuditPayloads() throws {
+    // The downstream response body (what the routed handler returns) flows
+    // back to the CLI inside `downstreamBody`, but must never be copied into
+    // an audit event. Plant a terminal-text sentinel in the router's response
+    // and confirm it reaches the CLI-facing body but not the audit payloads.
+    let sentinel = "TERMINAL-TEXT-SENTINEL-4f8b2c1a"
+    let observer = SpySecurityObserver()
+    let router = SentinelBodyRouter(sentinel: sentinel)
+    let peerPID = pid_t(ProcessInfo.processInfo.processIdentifier)
+    let tree = FakeAuditProcessTreeInspector(tree: [
+      peerPID: (
+        parent: 50,
+        identity: makeIdentity(peerPID, path: "/Applications/Laban.app/Contents/MacOS/laban")
+      ),
+      50: (parent: 1, identity: makeIdentity(50, path: "/bin/zsh")),
+    ])
+    let server = LabanControlServer(
+      router: router,
+      surface: .headless,
+      securityObserver: observer,
+      processTreeInspector: tree,
+      codeSigningInspector: FakeAuditCodeSigningInspector())
+    let start = try server.start()
+    defer { server.stop() }
+    server.registerAttachShellPID(sessionID: "s1", shellPID: 50)
+    let delegate = FakeAuditApprovalDelegate(decision: .allowOnce)
+    retainedApprovalDelegates.append(delegate)
+    server.setApprovalDelegate(delegate)
+
+    let (_, body) = try lazyAttach(
+      server: server,
+      socketPath: start.socketPath,
+      appObserveToken: start.appObserveToken,
+      cliCommand: "session.state",
+      method: "GET",
+      path: "/debug/state")
+
+    let responseText = String(data: body, encoding: .utf8) ?? ""
+    XCTAssertTrue(
+      responseText.contains(sentinel),
+      "downstream body sentinel should reach the CLI-facing response")
+
+    let contextStrings = observer.contexts().map { contextString($0) }
+    let payloadStrings = observer.payloads().map { jsonString($0) }
+    for text in contextStrings + payloadStrings {
+      XCTAssertFalse(
+        text.contains(sentinel),
+        "downstream terminal-text sentinel leaked into an audit payload: \(text)")
+    }
+  }
+
   // MARK: - Helpers
 
   private func makeServer(
@@ -274,5 +366,37 @@ private final class AuditSpyRouter: IntentRouter {
   func route(_ intent: Intent) -> ControlResponse { .json(["ok": true]) }
   func query(_ query: Query) -> ControlResponse { .json(["ok": true]) }
   func query(_ query: LegacyDebugQueryInput) -> ControlResponse { .json(["ok": true]) }
+  func artifact(_ request: ArtifactRequest) -> ControlResponse? { nil }
+}
+
+/// Thread-safe accumulator for tokens captured via
+/// `LabanControlServer.onApprovedTokenMintedForTesting`.
+private final class MintedTokenBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var tokens: [String] = []
+
+  func append(_ token: String) {
+    lock.lock()
+    tokens.append(token)
+    lock.unlock()
+  }
+
+  func all() -> [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return tokens
+  }
+}
+
+/// A router whose downstream response body always contains a fixed sentinel
+/// string, regardless of which dispatch method the server routes through.
+private final class SentinelBodyRouter: IntentRouter {
+  let sentinel: String
+  init(sentinel: String) { self.sentinel = sentinel }
+  func route(_ intent: Intent) -> ControlResponse { .json(["ok": "true", "text": sentinel]) }
+  func query(_ query: Query) -> ControlResponse { .json(["ok": "true", "text": sentinel]) }
+  func query(_ query: LegacyDebugQueryInput) -> ControlResponse {
+    .json(["ok": "true", "text": sentinel])
+  }
   func artifact(_ request: ArtifactRequest) -> ControlResponse? { nil }
 }

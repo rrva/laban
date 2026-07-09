@@ -99,6 +99,85 @@ final class LazyAttachApprovedRequestTests: XCTestCase {
     XCTAssertTrue(text.contains("approvalRateLimited"))
   }
 
+  func testMismatchedBodySHA256IsDenied() throws {
+    let (server, socketPath, token) = try makeServer()
+    defer { server.stop() }
+
+    let delegate = FakeApprovalDelegate(decision: .allowOnce)
+    server.setApprovalDelegate(delegate)
+
+    // Declare a bodySHA256 that does not match the actual body bytes sent.
+    let bodyString = #"{"action":"scrollViewport","deltaRows":-40}"#
+    let bodyData = Data(bodyString.utf8)
+    let wrongHash = String(repeating: "0", count: 64)
+    let intendedRequest: [String: Any] = [
+      "clientRequestID": "550e8400-e29b-41d4-a716-446655440003",
+      "cliCommand": "session.scroll",
+      "intendedRequest": [
+        "method": "POST",
+        "path": "/debug/actions",
+        "query": "",
+        "bodyBase64": bodyData.base64EncodedString(),
+        "bodySHA256": wrongHash,
+      ],
+    ]
+    let payload = try JSONSerialization.data(withJSONObject: intendedRequest, options: [])
+    let (status, body) = try ControlUDSClient.request(
+      socketPath: socketPath,
+      method: "POST",
+      path: LabanControlServer.lazyAttachRequestPath,
+      token: token,
+      body: payload,
+      timeout: 0.5)
+
+    XCTAssertEqual(status, 400)
+    let text = String(data: body, encoding: .utf8) ?? ""
+    XCTAssertTrue(text.contains("bodySHA256"), "expected bodySHA256 mismatch error, got: \(text)")
+    XCTAssertFalse(delegate.prompted, "a bad request must be rejected before prompting the user")
+  }
+
+  func testCompletedAllowOnceDispatchIsNotReplayable() throws {
+    let (server, socketPath, token) = try makeServer()
+    defer { server.stop() }
+
+    let delegate = FakeApprovalDelegate(decision: .allowOnce)
+    server.setApprovalDelegate(delegate)
+
+    let (firstStatus, firstBody) = try lazyAttach(
+      server: server,
+      socketPath: socketPath,
+      appObserveToken: token,
+      cliCommand: "session.state",
+      method: "GET",
+      path: "/debug/state",
+      clientRequestID: "550e8400-e29b-41d4-a716-446655440010")
+    XCTAssertEqual(firstStatus, 200)
+    let firstJSON = try JSONSerialization.jsonObject(with: firstBody) as! [String: Any]
+    XCTAssertEqual(firstJSON["approval"] as? String, "once")
+    XCTAssertEqual(delegate.promptCount, 1)
+
+    // allowOnce grants no persisted record, so an identical follow-up request
+    // must go through approval again (re-prompt), never be silently
+    // auto-dispatched from a prior allowOnce grant. Flip the decision to deny
+    // to prove the replay is NOT auto-authorized: if it were, this would
+    // still return 200; since it re-prompts and the delegate now denies, it
+    // must return 403.
+    delegate.decision = .deny
+    let (secondStatus, secondBody) = try lazyAttach(
+      server: server,
+      socketPath: socketPath,
+      appObserveToken: token,
+      cliCommand: "session.state",
+      method: "GET",
+      path: "/debug/state",
+      clientRequestID: "550e8400-e29b-41d4-a716-446655440011")
+
+    XCTAssertEqual(delegate.promptCount, 2, "replay must re-prompt the delegate, not auto-dispatch")
+    XCTAssertEqual(secondStatus, 403)
+    let secondText = String(data: secondBody, encoding: .utf8) ?? ""
+    XCTAssertTrue(secondText.contains("userDenied"))
+  }
+
   // MARK: - Helpers
 
   private func makeServer() throws -> (LabanControlServer, String, String) {
@@ -173,24 +252,55 @@ final class LazyAttachApprovedRequestTests: XCTestCase {
 }
 
 private final class FakeApprovalDelegate: ControlAttachApprovalDelegate, @unchecked Sendable {
-  let decision: ControlAttachApprovalDecision
-  var prompted = false
+  private let lock = NSLock()
+  private var _decision: ControlAttachApprovalDecision
+  private var _prompted = false
+  private var _promptCount = 0
   var slow = false
 
+  var decision: ControlAttachApprovalDecision {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return _decision
+    }
+    set {
+      lock.lock()
+      _decision = newValue
+      lock.unlock()
+    }
+  }
+
+  var prompted: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return _prompted
+  }
+
+  var promptCount: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return _promptCount
+  }
+
   init(decision: ControlAttachApprovalDecision) {
-    self.decision = decision
+    self._decision = decision
   }
 
   func requestControlAttachApproval(
     _ request: ControlAttachApprovalRequest,
     completion: @escaping @Sendable (ControlAttachApprovalDecision) -> Void
   ) {
-    prompted = true
+    lock.lock()
+    _prompted = true
+    _promptCount += 1
+    let currentDecision = _decision
+    lock.unlock()
     if slow {
       // Never complete, simulating a slow approval.
       return
     }
-    completion(decision)
+    completion(currentDecision)
   }
 }
 

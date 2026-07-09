@@ -114,6 +114,52 @@ identity persisted by "Always Allow".
 - [ ] Review Gate passed. (First fresh-state review ran 2026-07-09 against
   commit ccc847d and FAILED with 7 findings; see the Review findings list
   under the Review Gate section.)
+- [x] (2026-07-09) Closed all 7 test-coverage findings from the 2026-07-09
+  fresh-state review (commit ccc847d), building on the already-landed
+  ancestry-boundary fix (commit `ab53168`). Every change is a test-only
+  addition plus three additive, behavior-preserving test seams: an injectable
+  `lazyAttachApprovalTimeout` constructor parameter on `LabanControlServer`, a
+  DEBUG-only `onApprovedTokenMintedForTesting` closure fired at both
+  approved-token mint sites, and a `ControlAttachApprovalPresenter
+  .buttonTitles(for:)` extraction so button presence/order is unit-testable
+  without driving `NSAlert`. No production behavior changed and no real
+  defect was found. New tests per finding:
+  1. PID reuse by start-time mismatch:
+     `ControlAttachAncestryTests.testSwappedShellIdentityAfterRegistrationFailsEligibility`
+     (ancestry layer) and
+     `LazyAttachServerRevalidationTests.testSwappedPeerIdentityDuringApprovalFailsPreDispatchRevalidationWith409`
+     (pre-dispatch revalidation), both using a new mutable fake process tree
+     that swaps an identity behind a PID mid-test.
+  2. One-shot reuse:
+     `LazyAttachApprovedRequestTests.testMismatchedBodySHA256IsDenied` and
+     `testCompletedAllowOnceDispatchIsNotReplayable`.
+  3. Presenter rendering:
+     `ControlAttachApprovalPresenterTests` (6 tests covering present for a
+     signed non-generic principal; absent for zsh, python3, a package runner,
+     an unsigned/ad-hoc binary, and the bundled laban helper) plus
+     `ControlAttachPrincipalTests.testPrincipalCannotPersistForPackageRunner`.
+  4. Server persistence keyed to principal, not helper peer:
+     `LazyAttachPrincipalPersistenceTests.testPersistedRecordIsKeyedToPrincipalNotHelperPeer`.
+  5. Malicious delegate cannot force persistence:
+     `LazyAttachPrincipalPersistenceTests.testMaliciousDelegateCannotPersistForGenericOrUnsignedPrincipals`
+     (node, python, zsh, bash, laban, laban-agent, unsigned, ad-hoc) and
+     `testMaliciousDelegateCannotPersistForRawSessionRequestRoute`.
+  6. CLI exit codes and server statuses:
+     `LazyAttachCLITests.testSessionChangedMapsToExitCode5` and
+     `testRateLimitedMapsToExitCode5`, plus
+     `LazyAttachServerRevalidationTests.testApprovalTimeoutIsInjectableAndProduces408`
+     and `testSwappedPeerIdentityDuringApprovalFailsPreDispatchRevalidationWith409`
+     (409 sessionChanged), enabled by the new injectable
+     `lazyAttachApprovalTimeout` constructor parameter.
+  7. Secret-scan:
+     `ControlSecurityAuditTests.testApprovedTokenNeverLeaksIntoResponseOrAudit`
+     (using the new `onApprovedTokenMintedForTesting` seam) and
+     `testDownstreamResponseSentinelDoesNotLeakIntoAuditPayloads`.
+  Full validation:
+  `CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-module-cache" SWIFT_MODULE_CACHE_PATH="$PWD/.build/swift-module-cache" swift test --disable-sandbox --filter 'LabanControlTests|LabanCLITests|LabanAppTests'`
+  (700 tests, 0 failures) and `./scripts/lint` (exit 0). Review Gate
+  checkboxes and the Review findings list are left untouched; a fresh
+  re-review should update them.
 
 ## Decision Log
 
