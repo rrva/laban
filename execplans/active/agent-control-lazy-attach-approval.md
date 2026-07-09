@@ -111,9 +111,13 @@ identity persisted by "Always Allow".
   installed app build. Fixed the AppKit accessory sizing regression that clipped
   detail rows outside the alert, then confirmed "Always Allow" made a repeated
   private session-state read return without reopening the sheet.
-- [ ] Review Gate passed. (First fresh-state review ran 2026-07-09 against
-  commit ccc847d and FAILED with 7 findings; see the Review findings list
-  under the Review Gate section.)
+- [x] (2026-07-09) Review Gate passed. The first fresh-state review ran
+  2026-07-09 against commit ccc847d and FAILED with 7 findings (see the
+  Review findings list under the Review Gate section). A second fresh-state
+  re-review ran the full gate from scratch on 2026-07-09 against commit
+  658b575, confirmed each of the 7 findings is closed by the named tests, and
+  passed every item, including the previously environment-blocked installed
+  smoke (LAZY_ATTACH_INSTALLED_SMOKE_OK, exit 0).
 - [x] (2026-07-09) Closed all 7 test-coverage findings from the 2026-07-09
   fresh-state review (commit ccc847d), building on the already-landed
   ancestry-boundary fix (commit `ab53168`). Every change is a test-only
@@ -1180,9 +1184,11 @@ gate passes.
   returns no hits in session command execution or lazy fallback code. Hits are
   allowed only in `AgentLauncher.swift` and only for `laban agent run`
   preflight/help text that never prints the value. (Verified 2026-07-09: no
+  hits, rg exit 1. Re-verified in the 2026-07-09 re-review at 658b575: no
   hits, rg exit 1.)
 - [x] `rg -n "lazy.*sessionObserve|sessionObserve.*lazy|lease.*sessionObserve"
   Sources Tests` returns no production match. (Verified 2026-07-09: no hits,
+  rg exit 1. Re-verified in the 2026-07-09 re-review at 658b575: no hits,
   rg exit 1.)
 - [x] `rg -n "switch tokenTier|case \\.appObserve|case \\.sessionObserve"
   Sources/LabanControl` has been reviewed, and tests cover every
@@ -1193,26 +1199,37 @@ gate passes.
   `.approvedSession` explicitly with no `default` over the tier; covered by
   `ApprovedSessionTokenTierSwitchTests` (4 tests),
   `ApprovedSessionStateRedactionTests` (2 tests), and end-to-end dispatch in
-  `LazyAttachApprovedRequestTests.testAllowOnceDispatchesAndReturnsDownstream`.)
+  `LazyAttachApprovedRequestTests.testAllowOnceDispatchesAndReturnsDownstream`.
+  Re-verified in the 2026-07-09 re-review at 658b575: same switch sites all
+  handle `.approvedSession`; `ApprovedSessionTokenTierSwitchTests` 4 tests and
+  `ApprovedSessionStateRedactionTests` 2 tests, 0 failures.)
 - [x] `swift test --disable-sandbox --filter ControlAttachAncestryTests` exits
-  0. (7 tests, 0 failures.)
+  0. (7 tests, 0 failures. Re-review at 658b575: 13 tests, 0 failures.)
 - [x] `swift test --disable-sandbox --filter ControlAttachPrincipalTests` exits
-  0. (6 tests, 0 failures.)
+  0. (6 tests, 0 failures. Re-review at 658b575: 7 tests, 0 failures.)
 - [x] `swift test --disable-sandbox --filter ControlAttachApprovalStoreTests`
-  exits 0. (8 tests, 0 failures.)
+  exits 0. (8 tests, 0 failures. Re-review at 658b575: 8 tests, 0 failures.)
 - [x] `swift test --disable-sandbox --filter LazyAttachApprovedRequestTests`
-  exits 0. (4 tests, 0 failures.)
+  exits 0. (4 tests, 0 failures. Re-review at 658b575: 6 tests, 0 failures.)
 - [x] `swift test --disable-sandbox --filter LazyAttachAllowlistTests` exits 0.
-  (5 tests, 0 failures.)
+  (5 tests, 0 failures. Re-review at 658b575: 5 tests, 0 failures.)
 - [x] `swift test --disable-sandbox --filter LazyAttachCLITests` exits 0.
-  (7 tests, 0 failures.)
+  (7 tests, 0 failures. Re-review at 658b575: 9 tests, 0 failures.)
 - [x] `swift test --disable-sandbox --filter LazyAttachPersistedApprovalScopeTests`
-  exits 0. (2 tests, 0 failures.)
+  exits 0. (2 tests, 0 failures. Re-review at 658b575: 2 tests, 0 failures.)
 - [x] `swift test --disable-sandbox --filter ControlSecurityAuditTests` exits 0.
-  (3 tests, 0 failures.)
+  (3 tests, 0 failures. Re-review at 658b575: 5 tests, 0 failures.)
 - [x] `swift test --disable-sandbox --filter LazyAttachCLITests/testSessionCommandsIgnoreLABANSessionAttach`
-  exits 0. (1 test, 0 failures.)
-- [ ] Tests prove PID reuse is rejected by process start-time mismatch.
+  exits 0. (1 test, 0 failures. Re-review at 658b575: 1 test, 0 failures.)
+- [x] Tests prove PID reuse is rejected by process start-time mismatch.
+  (Re-review 2026-07-09 at 658b575:
+  `ControlAttachAncestryTests.testSwappedShellIdentityAfterRegistrationFailsEligibility`
+  uses a mutable fake tree to swap the shell identity behind PID 50 to a
+  different start time after registration and asserts eligibility flips from
+  true to false;
+  `LazyAttachServerRevalidationTests.testSwappedPeerIdentityDuringApprovalFailsPreDispatchRevalidationWith409`
+  swaps the peer identity mid-approval and asserts 409 sessionChanged with no
+  downstream dispatch. Both pass.)
 - [x] Tests prove missing process start time fails closed and does not fall back
   to PID-only matching.
   (`ControlAttachAncestryTests.testMissingShellStartTimeFailsClosed` and
@@ -1222,8 +1239,20 @@ gate passes.
   (`ControlAttachAncestryTests.testStaleShellRegistrationRemovedOnSessionClose`;
   the app-side call site is
   `ControlSessionLaunchCoordinator.swift:99`.)
-- [ ] Tests prove a state approval cannot be reused for scroll, propose, another
+- [x] Tests prove a state approval cannot be reused for scroll, propose, another
   body, another session, or a second request.
+  (Re-review 2026-07-09 at 658b575: scroll via
+  `LazyAttachPersistedApprovalScopeTests.testStateApprovalDoesNotAutoApproveScroll`;
+  another session via `testStateApprovalDoesNotAutoApproveOtherSession` and
+  `ApprovedSessionStateRedactionTests.testApprovedSessionDifferentSessionIDIsRejectedByPolicy`;
+  propose via
+  `ControlAttachApprovalStoreTests.testFindMatchingRejectsDifferentRouteOrIntent`;
+  another body via
+  `LazyAttachApprovedRequestTests.testMismatchedBodySHA256IsDenied` (400
+  before UI, delegate never prompted); a second request via
+  `LazyAttachApprovedRequestTests.testCompletedAllowOnceDispatchIsNotReplayable`
+  (identical follow-up re-prompts and a deny returns 403, promptCount 2).
+  All pass.)
 - [x] Tests prove an always-allow record for `GET /debug/state` does not
   auto-approve any other route or intent sharing `.observeSensitive`.
   (`LazyAttachPersistedApprovalScopeTests.testStateApprovalDoesNotAutoApproveScroll`,
@@ -1237,18 +1266,63 @@ gate passes.
   asserts 403 `lazyRouteNotAllowed` and that the delegate was never prompted;
   `LazyAttachAllowlistTests.testRouteAndIntentLookup` covers the negative
   lookup path.)
-- [ ] Tests prove "Always Allow This App for This Session" is hidden for unsigned, ad-hoc, shell,
+- [x] Tests prove "Always Allow This App for This Session" is hidden for unsigned, ad-hoc, shell,
   generic interpreter, package runner, and bundled Laban helper principals.
-- [ ] Tests prove "Always Allow This App for This Session" is shown only for a stable signed
+  (Re-review 2026-07-09 at 658b575: `ControlAttachApprovalPresenterTests`
+  proves `buttonTitles(for:)`, the pure function `presentOnMain` uses to add
+  alert buttons, omits "Always Allow" for zsh, python3, a package runner
+  (npm), an unsigned/ad-hoc binary, and the bundled laban helper, and
+  includes it for a signed non-generic principal. The `canPersist` flag those
+  tests key on is server-derived at `LabanControlServer.swift:1368` from
+  `principalWithSigning.isPersistable`, whose per-family logic is covered by
+  `ControlAttachPrincipalTests.testPrincipalCannotPersistForGenericInterpreter`,
+  `testPrincipalCannotPersistForUnsignedBinary`, and
+  `testPrincipalCannotPersistForPackageRunner` (npm, npx, pnpm, yarn, bun,
+  uv, pipx). All pass.)
+- [x] Tests prove "Always Allow This App for This Session" is shown only for a stable signed
   non-generic principal and is keyed to that principal, not to the Laban CLI
   helper.
-- [ ] Tests prove a fake delegate returning `.alwaysAllowSignedIdentity` for
+  (Re-review 2026-07-09 at 658b575:
+  `ControlAttachApprovalPresenterTests.testAlwaysAllowButtonPresentForSignedNonGenericPrincipal`
+  covers the shown-only-for half;
+  `LazyAttachPrincipalPersistenceTests.testPersistedRecordIsKeyedToPrincipalNotHelperPeer`
+  drives the full server path with a shell -> Codex -> laban-helper chain, a
+  delegate returning `.alwaysAllowSignedIdentity`, and asserts the single
+  persisted record carries the Codex principal fingerprint, not the helper
+  peer fingerprint, and does not describe the laban helper. Both pass.)
+- [x] Tests prove a fake delegate returning `.alwaysAllowSignedIdentity` for
   `node`, `python`, `zsh`, `bash`, `laban`, `laban-agent`, unsigned binaries,
   ad-hoc binaries, and raw `session request` cannot create a persisted record.
-- [ ] Tests prove approval timeout, denial, rate limiting, and `sessionChanged`
+  (Re-review 2026-07-09 at 658b575:
+  `LazyAttachPrincipalPersistenceTests.testMaliciousDelegateCannotPersistForGenericOrUnsignedPrincipals`
+  iterates exactly node, python, zsh, bash, laban, laban-agent, an unsigned
+  binary, and an ad-hoc binary, asserts the store stays empty, and asserts
+  the decision degrades to allowOnce (200 "once") or 403 rather than being
+  masked; `testMaliciousDelegateCannotPersistForRawSessionRequestRoute`
+  covers raw `session.request` for a signed non-generic principal. Both
+  pass.)
+- [x] Tests prove approval timeout, denial, rate limiting, and `sessionChanged`
   errors map to the documented CLI exit codes.
-- [ ] Installed smoke verifies app/helper code signing and prints
-  `LAZY_ATTACH_INSTALLED_SMOKE_OK`. UNBLOCKED (2026-07-09, later the same
+  (Re-review 2026-07-09 at 658b575: CLI mapping via
+  `LazyAttachCLITests.testTimeoutMapsToExitCode4`,
+  `testDenialMapsToExitCode5`, `testRateLimitedMapsToExitCode5`, and
+  `testSessionChangedMapsToExitCode5`; server-level statuses via
+  `LazyAttachServerRevalidationTests.testApprovalTimeoutIsInjectableAndProduces408`
+  (injectable `lazyAttachApprovalTimeout`, never-completing delegate, 408
+  approvalTimeout) and
+  `testSwappedPeerIdentityDuringApprovalFailsPreDispatchRevalidationWith409`
+  (409 sessionChanged), plus 429 in
+  `LazyAttachApprovedRequestTests.testRateLimitedDuplicateRequest`. All
+  pass.)
+- [x] Installed smoke verifies app/helper code signing and prints
+  `LAZY_ATTACH_INSTALLED_SMOKE_OK`.
+  (Re-review 2026-07-09 at 658b575:
+  `scripts/test-installed-agent-lazy-attach "$HOME/Laban.app"` against the
+  installed bundle stamped `LABANBuildCommit=38cf85f` (an ancestor of
+  658b575) printed the codesign verification, both helper metadata blocks,
+  the expected agent path check, and `LAZY_ATTACH_INSTALLED_SMOKE_OK`, exit
+  0, in the same login-hosted environment that was previously blocked.)
+  UNBLOCKED (2026-07-09, later the same
   day): after the ancestry privilege-boundary fix (`ab53168`), a fresh
   `scripts/build-app` + `scripts/install-app` at `3782a3f` made
   `scripts/test-installed-agent-lazy-attach` print
@@ -1276,11 +1350,28 @@ gate passes.
   (login-hosted shells)". Not counted as a gate failure, but the smoke has
   not been observed printing `LAZY_ATTACH_INSTALLED_SMOKE_OK` in this
   environment.
-- [ ] Secret-scan fixtures prove logs/errors/audit do not contain lease tokens,
+- [x] Secret-scan fixtures prove logs/errors/audit do not contain lease tokens,
   app-observe tokens, `LABAN_SESSION_ATTACH`, raw Authorization headers,
   terminal text, or caller-provided reason text.
-- [x] `./scripts/lint` exits 0. (Verified 2026-07-09.)
-- [x] `git diff --check` exits 0. (Verified 2026-07-09.)
+  (Re-review 2026-07-09 at 658b575:
+  `ControlSecurityAuditTests.testAuditPayloadsContainNoTokens` covers
+  app-observe token value, `token` substrings, `LABAN_SESSION_ATTACH`, and
+  `Authorization`;
+  `testApprovedTokenNeverLeaksIntoResponseOrAudit` captures the real minted
+  approved-dispatch token through the DEBUG-only
+  `onApprovedTokenMintedForTesting` seam, asserts the seam fired, and scans
+  the HTTP response body plus all audit contexts/payloads for it;
+  `testDownstreamResponseSentinelDoesNotLeakIntoAuditPayloads` plants a
+  terminal-text sentinel in the downstream body, proves it reaches the
+  CLI-facing response but no audit payload. Caller-provided reason text
+  remains vacuously safe: the request parser accepts no reason field.
+  `LazyAttachCLITests.testNoTokenInStderr` and
+  `testSessionCommandsIgnoreLABANSessionAttach` cover CLI stdout/stderr. All
+  pass.)
+- [x] `./scripts/lint` exits 0. (Verified 2026-07-09. Re-verified in the
+  2026-07-09 re-review at 658b575: exit 0.)
+- [x] `git diff --check` exits 0. (Verified 2026-07-09. Re-verified in the
+  2026-07-09 re-review at 658b575: exit 0.)
 
 ### Review findings
 
@@ -1382,7 +1473,61 @@ module-cache workaround documented in Validation and Acceptance.
    reason field, so nothing can leak; noting this for completeness rather
    than as a gap.
 
-Review status: FAILED (2026-07-09, commit ccc847d): 7 findings, see Review
-findings. Items 4 through 12 (test-suite runs), the three grep checks, lint,
-and `git diff --check` all passed; the installed smoke is
+### Re-review confirmation of the 7 findings
+
+Fresh-state re-review, 2026-07-09, commit `658b575`. The full gate was re-run
+from scratch, not just the deltas. Each finding from the ccc847d review is
+now closed by passing tests:
+
+1. PID reuse by start-time mismatch:
+   `ControlAttachAncestryTests.testSwappedShellIdentityAfterRegistrationFailsEligibility`
+   (shell identity swapped behind PID 50 after registration via a mutable
+   fake tree; eligibility flips to false) and
+   `LazyAttachServerRevalidationTests.testSwappedPeerIdentityDuringApprovalFailsPreDispatchRevalidationWith409`
+   (peer identity swapped mid-approval; 409 sessionChanged, no dispatch).
+2. One-shot reuse, another body and second request:
+   `LazyAttachApprovedRequestTests.testMismatchedBodySHA256IsDenied` (wrong
+   bodySHA256 rejected 400 before UI, delegate never prompted) and
+   `testCompletedAllowOnceDispatchIsNotReplayable` (identical follow-up after
+   a completed allowOnce dispatch re-prompts; deny returns 403, promptCount
+   2).
+3. Presenter rendering: `ControlAttachApprovalPresenterTests` (6 tests over
+   `buttonTitles(for:)`, which `presentOnMain` uses to build the alert):
+   button present for a signed non-generic principal, absent for zsh,
+   python3, npm (package runner), unsigned/ad-hoc, and the bundled laban
+   helper; package-runner persistability also covered at the principal layer
+   by `ControlAttachPrincipalTests.testPrincipalCannotPersistForPackageRunner`.
+4. Server persistence keyed to principal:
+   `LazyAttachPrincipalPersistenceTests.testPersistedRecordIsKeyedToPrincipalNotHelperPeer`
+   (shell -> Codex -> laban helper chain; the persisted record carries the
+   Codex fingerprint, not the helper fingerprint).
+5. Malicious delegate:
+   `LazyAttachPrincipalPersistenceTests.testMaliciousDelegateCannotPersistForGenericOrUnsignedPrincipals`
+   (node, python, zsh, bash, laban, laban-agent, unsigned, ad-hoc; store
+   stays empty, decision degrades to allowOnce or 403) and
+   `testMaliciousDelegateCannotPersistForRawSessionRequestRoute`.
+6. Exit codes and server statuses:
+   `LazyAttachCLITests.testSessionChangedMapsToExitCode5` and
+   `testRateLimitedMapsToExitCode5` (CLI mapping), plus
+   `LazyAttachServerRevalidationTests.testApprovalTimeoutIsInjectableAndProduces408`
+   and `testSwappedPeerIdentityDuringApprovalFailsPreDispatchRevalidationWith409`
+   (server 408/409 via the injectable `lazyAttachApprovalTimeout`).
+7. Secret-scan:
+   `ControlSecurityAuditTests.testApprovedTokenNeverLeaksIntoResponseOrAudit`
+   (real minted token captured through the DEBUG-only
+   `onApprovedTokenMintedForTesting` seam, asserted absent from response and
+   audit) and `testDownstreamResponseSentinelDoesNotLeakIntoAuditPayloads`
+   (terminal-text sentinel reaches the CLI-facing body, never audit).
+
+The previously environment-blocked installed smoke now prints
+`LAZY_ATTACH_INSTALLED_SMOKE_OK` (exit 0) against `~/Laban.app`
+(LABANBuildCommit 38cf85f, an ancestor of 658b575), confirming the ab53168
+ancestry privilege-boundary fix. No new findings.
+
+Prior review status: FAILED (2026-07-09, commit ccc847d): 7 findings, see
+Review findings. Items 4 through 12 (test-suite runs), the three grep checks,
+lint, and `git diff --check` all passed; the installed smoke was
 environment-blocked, not failed.
+
+Review status: PASSED (2026-07-09, commit 658b575, fresh-state re-review
+after 7 findings fixed)
