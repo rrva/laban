@@ -87,26 +87,28 @@ final class InstalledShimAttachRedeemerTests: XCTestCase {
   }
 
   /// Sanity check on the executable-path half of the verifier in isolation:
-  /// a direct child of the shell whose executable is not the expected agent
-  /// binary (a plain `/bin/sh` sibling process, not the shim's target) must
-  /// still be rejected even though the parent-PID check alone would pass.
+  /// a genuine direct child of the shell (the parent-PID check passes)
+  /// whose executable is not the expected agent binary must still be
+  /// rejected, and the rejection must come specifically from the
+  /// executable-path branch, not the parent-PID branch. The first
+  /// assertion proves the parent-PID check alone would pass (by skipping
+  /// executable verification); the second proves that with executable
+  /// verification enabled, that same peer is rejected.
   func testDirectChildWithWrongExecutableIsRejected() throws {
-    let fixture = try ShimChainFixture.make(chain: .execOnly)
+    let fixture = try ShimChainFixture.make(chain: .directChildNonAgentExecutable)
     defer { fixture.cleanUp() }
 
-    // Spawn a second, unrelated direct child of the same shell whose
-    // executable is not the fixture's agent stub.
-    let impostorPIDFile = fixture.workDirectory.appendingPathComponent("impostor.pid").path
-    let script =
-      "echo $$ > '\(impostorPIDFile)'; exec sleep 30"
-    let impostorPID = try fixture.spawnDirectChild(script: script)
-    defer { fixture.killAndReap(impostorPID) }
+    let impostorPeerPID = try fixture.spawnAndWaitForPeerPID()
 
-    guard let impostorPeerPID = ShimChainFixture.waitForPID(atPath: impostorPIDFile, timeout: 3)
-    else {
-      XCTFail("impostor process never reported its pid")
-      return
-    }
+    LabanControlServer.skipExecutableVerificationForTests = true
+    XCTAssertTrue(
+      LabanControlServer.isAllowedAttachRedeemer(
+        peerPID: impostorPeerPID,
+        shellPID: fixture.shellPID,
+        expectedAgentExecutablePath: fixture.agentExecutablePath,
+        allowDevAgentExecutablePath: false),
+      "with executable verification skipped, a genuine direct child of the "
+        + "registered shell must pass on the parent-PID check alone")
 
     LabanControlServer.skipExecutableVerificationForTests = false
     XCTAssertFalse(
@@ -115,7 +117,21 @@ final class InstalledShimAttachRedeemerTests: XCTestCase {
         shellPID: fixture.shellPID,
         expectedAgentExecutablePath: fixture.agentExecutablePath,
         allowDevAgentExecutablePath: false),
-      "a direct child running a non-agent executable must be rejected")
+      "a direct child running a non-agent executable must be rejected once "
+        + "executable verification runs")
+  }
+}
+
+/// A hard failure for a shim chain fixture that never reached the expected
+/// state (for example, never reported its peer pid within the timeout).
+/// Thrown instead of `XCTSkip` where the timeout itself is the regression a
+/// test exists to catch, so the failure surfaces as a test failure rather
+/// than a silently green skip.
+private struct ShimChainError: Error, CustomStringConvertible {
+  let description: String
+
+  init(_ description: String) {
+    self.description = description
   }
 }
 
@@ -141,6 +157,13 @@ private struct ShimChainFixture {
     /// `exec`-ing into it, inserting an extra fork hop between the launching
     /// shell and the final process.
     case forkInsertedExtraHop
+    /// Backgrounds a second, independent child directly under the launching
+    /// shell (no extra fork hop) that reports its own pid and then `exec`s a
+    /// real non-agent system binary at its real path. The reported peer is
+    /// therefore a genuine direct child of the registered shell whose
+    /// executable is not the agent binary, isolating the executable-path
+    /// half of the verifier.
+    case directChildNonAgentExecutable
   }
 
   let workDirectory: URL
@@ -182,6 +205,27 @@ private struct ShimChainFixture {
       launchScript = "\(shellQuote(symlinkPath)) & wait"
     case .forkInsertedExtraHop:
       launchScript = "( \(shellQuote(shimPath)) & wait ) & wait"
+    case .directChildNonAgentExecutable:
+      // A direct child of the launching shell (single fork, no extra hop,
+      // same as .execOnly) that reports its own pid and then `exec`s a real
+      // system binary at its real path instead of the agent stub. Written
+      // as its own `#!/bin/sh` script (rather than inlined via `sh -c`) so
+      // that `$$` inside it names the script interpreter's own pid, not the
+      // launching shell's, exactly mirroring how the real shim's `exec`
+      // preserves pid identity.
+      let nonAgentScriptPath = workDirectory.appendingPathComponent(
+        "non-agent-direct-child"
+      ).path
+      let nonAgentScriptContent = """
+        #!/bin/sh
+        echo $$ > \(shellQuote(peerPIDFilePath))
+        exec /bin/sleep 30
+        """
+      try nonAgentScriptContent.write(
+        toFile: nonAgentScriptPath, atomically: true, encoding: .utf8)
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755], ofItemAtPath: nonAgentScriptPath)
+      launchScript = "\(shellQuote(nonAgentScriptPath)) & wait"
     }
 
     let shellPID = try Self.spawnShellChild(script: launchScript)
@@ -195,30 +239,16 @@ private struct ShimChainFixture {
   }
 
   /// Waits for the spawned chain's final process to report its own pid, then
-  /// returns it as the "peer" a redemption request would present.
+  /// returns it as the "peer" a redemption request would present. A timeout
+  /// here means the chain never reached the point of `exec`-ing into a
+  /// process that reports its pid, i.e. exactly the regression this suite
+  /// exists to catch (a shim that fails to exec or report its pid), so it
+  /// must fail the test rather than skip it.
   func spawnAndWaitForPeerPID() throws -> pid_t {
     guard let peerPID = Self.waitForPID(atPath: peerPIDFilePath, timeout: 3) else {
-      throw XCTSkip("shim chain never reported a peer pid")
+      throw ShimChainError("shim chain never reported a peer pid")
     }
     return peerPID
-  }
-
-  /// Spawns an independent direct child of the same registered shell,
-  /// running the given script via `/bin/sh -c`. Used to construct an
-  /// "impostor" peer that is a real direct child but not the agent binary.
-  func spawnDirectChild(script: String) throws -> pid_t {
-    var pid: pid_t = 0
-    let argv: [UnsafeMutablePointer<CChar>?] = [
-      strdup("/bin/sh"), strdup("-c"), strdup(script), nil,
-    ]
-    defer { for arg in argv { free(arg) } }
-    var envp: [UnsafeMutablePointer<CChar>?] = [nil]
-    defer { for e in envp { free(e) } }
-    let result = posix_spawnp(&pid, "/bin/sh", nil, nil, argv, &envp)
-    guard result == 0 else {
-      throw NSError(domain: "ShimChainFixture", code: Int(result))
-    }
-    return pid
   }
 
   func killAndReap(_ pid: pid_t) {
