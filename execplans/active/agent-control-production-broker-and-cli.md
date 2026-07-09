@@ -1109,73 +1109,172 @@ any item.
 
 ### MVP gate (Milestones 1, 2, 2b): run now
 
-- [ ] `rg -n "LABAN_SESSION_ATTACH" Sources/LabanAgent Sources/LabanApp Tests`
+- [x] `rg -n "LABAN_SESSION_ATTACH" Sources/LabanAgent Sources/LabanApp Tests`
   shows `laban-agent --control-attach --control-attach-serve-cli
   --control-attach-run` removes the bootstrap before launching the child agent,
-  and tests assert that behavior.
-- [ ] `rg -n "redeemAttachBootstrap" Sources/LabanCLI Tests/LabanCLITests`
+  and tests assert that behavior. (Strip site:
+  `Sources/LabanAgent/ChildLauncher.swift:52-53`. Tests:
+  `ChildLauncherTests.testPrepareConfigurationSetsProxyURLAndStripsAttachKeys`,
+  `ChildLauncherTests.testLaunchResolvesCommandViaPATH` asserts the spawned
+  child's env output contains no `LABAN_SESSION_ATTACH`.)
+- [x] `rg -n "redeemAttachBootstrap" Sources/LabanCLI Tests/LabanCLITests`
   returns no hits outside comments explicitly asserting the CLI must not call it.
-- [ ] `rg -n "LABAN_SESSION_ATTACH" Sources/LabanCLI` returns no hits in
+  (Zero hits.)
+- [x] `rg -n "LABAN_SESSION_ATTACH" Sources/LabanCLI` returns no hits in
   `session` command execution code; hits are allowed only in `agent run`
   preflight errors and help text, and those code paths must not print the
-  variable value.
-- [ ] `rg -n "agent serve|--control-attach-serve-cli.*--json|agentControlURL"
+  variable value. (Zero literal hits; symbolic
+  `ControlEnvironmentKeys.sessionAttach` appears only in
+  `Sources/LabanCLI/AgentLauncher.swift:16,63`, both `agent run` preflight,
+  printing only the variable name.)
+- [x] `rg -n "agent serve|--control-attach-serve-cli.*--json|agentControlURL"
   Sources/LabanCLI docs Tests` shows no production `laban agent serve` command
-  that prints a reusable proxy URL without a child-process boundary.
-- [ ] `rg -n "import LabanDebug" Sources/LabanCLI Sources/LabanApp` returns no
+  that prints a reusable proxy URL without a child-process boundary. (Hits are
+  env-key reads and the `agent run` argv; no serve subcommand exists.)
+- [x] `rg -n "import LabanDebug" Sources/LabanCLI Sources/LabanApp` returns no
   hits.
-- [ ] `rg -n "typeText|sendKey|paste|mouse|clipboard|selectTab|newTab|closeTab"`
+- [x] `rg -n "typeText|sendKey|paste|mouse|clipboard|selectTab|newTab|closeTab"`
   over the broker/client implementation shows no live broker route forwarding
-  those actions.
-- [ ] `rtk swift build --product laban` passes.
-- [ ] `rtk swift build --product laban-agent` passes.
-- [ ] `rtk swift test --filter ControlDiscoveryTests` passes.
-- [ ] `rtk swift test --filter LabanCLITests` passes.
-- [ ] A unit test proves `laban discover --json` redacts a synthetic
+  those actions. (Zero hits in `Sources/LabanAgent` and `Sources/LabanCLI`.)
+- [x] `rtk swift build --product laban` passes.
+- [x] `rtk swift build --product laban-agent` passes.
+- [x] `rtk swift test --filter ControlDiscoveryTests` passes. (23 tests, 0
+  failures.)
+- [x] `rtk swift test --filter LabanCLITests` passes. (59 tests across matched
+  suites, 0 failures.)
+- [x] A unit test proves `laban discover --json` redacts a synthetic
   `control.json` token whose value is `SECRET_SENTINEL_DO_NOT_PRINT`.
-- [ ] `ControlDiscovery` opens `control.json`, validates the opened fd with
+  (`LabanCLITests.testDiscoverJSONRedactsToken`.)
+- [x] `ControlDiscovery` opens `control.json`, validates the opened fd with
   `fstat`, rejects symlinks/insecure modes/oversized files, checks or documents
-  the trusted socket path, and never logs the token.
-- [ ] A unit test proves `laban agent run -- echo hi` constructs an `execve`
+  the trusted socket path, and never logs the token. (Impl uses lstat then
+  `O_RDONLY|O_NOFOLLOW` then `fstat`; tests
+  `testOpenThenFstatSecureReadAcceptsOwnerOnly`, `testRejectsSymlink`,
+  `testRejectsGroupReadable/OtherReadable/GroupWritable/WorldWritable`,
+  `testRejectsOversizedFile`, `testRejectsDirectory`,
+  `testAcceptsTrustedSocketPathInsideControlDirectory`,
+  `testRejectsSocketPathOutsideControlDirectory`,
+  `testRejectsRelativeSocketPathEscape`,
+  `testRedactedOutputDoesNotIncludeToken`.)
+- [x] A unit test proves `laban agent run -- echo hi` constructs an `execve`
   argv for a sibling `laban-agent` path and does not search `$PATH`.
+  (`AgentLauncherTests.testPrepareInvocationResolvesSiblingAgentPath`,
+  `testPrepareInvocationResolvesDevBuildSibling`,
+  `testPrepareInvocationArgv`.)
 - [ ] An installed-shim test proves the shim is a symlink, hardlink, native
   `execve` launcher, or final-`exec` shell wrapper, and that `laban agent run`
   through the shim still satisfies the C14 direct-child verifier.
-- [ ] A broker held idle longer than the attached-session timeout can still
+- [x] A broker held idle longer than the attached-session timeout can still
   serve `laban session state --json`, or the test proves no attached-session
-  idle timeout applies.
-- [ ] A test proves the child launched by `laban agent run -- <probe>` does not
+  idle timeout applies. (Satisfied on the second branch:
+  `LabanControlServer.attachedConnectionReadTimeout = 0` means no attached
+  idle timeout, and
+  `ControlDefaultOnTests.testAttachedConnectionSurvivesIdleBeyondRequestTimeout`
+  passes; the broker additionally heartbeats, proven by
+  `ControlAttachProxyServerTests.testProxySendsHeartbeat`.)
+- [x] A test proves the child launched by `laban agent run -- <probe>` does not
   inherit the held app-control/C14 upstream fd, the proxy listener fd, or any
   accepted proxy client fd.
-- [ ] Tests prove oversized JSONL lines, oversized request bodies, too many
+  (`ControlAttachProxyServerTests.testChildDoesNotInheritProxyOrUpstreamFDs`
+  checks upstream and listener via the child's `/dev/fd`; accepted client fds
+  are proven close-on-exec by `testAcceptedClientFDIsCloseOnExec` and the
+  launcher sets `POSIX_SPAWN_CLOEXEC_DEFAULT`.)
+- [x] Tests prove oversized JSONL lines, oversized request bodies, too many
   concurrent clients, slow/idle clients, and full request queues return
   structured proxy errors without closing or corrupting the held C14 upstream.
+  (`testProxyRejectsOversizedLine` (413, with explicit upstream-survival
+  recovery assertion), `testProxyRejectsOversizedBody` (413),
+  `testProxyRejectsTooManyConcurrentClients` (429), `testProxyRejectsIdleClient`
+  (408), `testProxyRejectsFullQueue` (429), `testProxyRejectsMalformedJSON`
+  (400); error responses are written only to the client fd.)
 - [ ] `laban agent run` preserves child stdin/stdout/stderr, exits with the
   child status, removes the proxy socket, and has tested
   `SIGINT`/`SIGTERM`/`SIGHUP` behavior.
-- [ ] A unit test proves `laban session state --json` reads
+- [x] A unit test proves `laban session state --json` reads
   `LABAN_AGENT_CONTROL_URL`, constructs `GET /debug/state`, and does not read
   `LABAN_SESSION_ATTACH`.
-- [ ] `rtk swift run laban completions zsh` emits shell completions without
-  reading `control.json`.
-- [ ] The CLI install shim points at `Contents/MacOS/laban`, not
-  `Contents/MacOS/laban-agent`.
-- [ ] A test proves the agent proxy socket directory is `0700` and accepted fds
-  have close-on-exec set.
-- [ ] A test proves the agent proxy rejects a same-uid process outside the
+  (`LabanCLITests.testSessionStateUsesAgentControlURLAndNotC14`; no
+  `sessionAttach` reads exist in `Sources/LabanCLI` session code, and
+  `LazyAttachCLITests` prove a planted `LABAN_SESSION_ATTACH` value never
+  appears in output.)
+- [x] `rtk swift run laban completions zsh` emits shell completions without
+  reading `control.json`. (Ran the built binary; exit 0 with `#compdef laban`
+  output. `LabanCLITests.testCompletionsZshDoesNotReadControlJSON` passes with
+  a nonexistent control directory.)
+- [x] The CLI install shim points at `Contents/MacOS/laban`, not
+  `Contents/MacOS/laban-agent`. (`LabanCLITests.testInstallCLIWritesShim`
+  asserts shim content `exec '<bundle>/Contents/MacOS/laban' "$@"`.)
+- [x] A test proves the agent proxy socket directory is `0700` and accepted fds
+  have close-on-exec set. (`testProxyDirectoryIsPrivate`,
+  `testAcceptedClientFDIsCloseOnExec`.)
+- [x] A test proves the agent proxy rejects a same-uid process outside the
   launched child process tree when an allowed root pid is configured.
-- [ ] `rtk swift test --filter CommandProposals` passes and includes a test where
-  proposal creation does not call any PTY write path.
-- [ ] `rtk swift test --filter AppSessionCoordinatorTests` passes and includes an
+  (`testProxyRejectsPeerOutsideChildTree`, expects 403.)
+- [x] `rtk swift test --filter CommandProposals` passes and includes a test where
+  proposal creation does not call any PTY write path. (12 tests, 0 failures;
+  `testProposeDoesNotWritePTYBytesHeadless` and
+  `testProposeDoesNotWritePTYBytesGuiRouter`.)
+- [x] `rtk swift test --filter AppSessionCoordinatorTests` passes and includes an
   installed/bundled-helper-style launch that uses the exact expected helper path.
-- [ ] `rtk ./scripts/test-installed-control-broker` passes.
-- [ ] `rtk ./scripts/check` passes.
-- [ ] Documentation does not instruct generic clients to redeem C14 directly
-  with `ControlUDSClient.redeemAttachBootstrap`.
-- [ ] No token value appears in test logs or artifacts except inside the
-  intended `control.json` app-observe file.
+  (10 tests, 0 failures, no skips;
+  `testDaemonAgentAttachedSessionRedeemsC14FromChildEnv` passes
+  `expectedAgentExecutablePath` and redeems C14 from a shell child that execs
+  that exact path.)
+- [x] `rtk ./scripts/test-installed-control-broker` passes. (Ran against
+  `$HOME/Laban.app`; `CONTROL_BROKER_INSTALLED_SMOKE_OK`, exit 0.)
+- [x] `rtk ./scripts/check` passes. (Verified-by-orchestrator-run at this
+  commit; reviewer subset `./scripts/lint` (exit 0) and full `swift build`
+  (exit 0) passed independently.)
+- [x] Documentation does not instruct generic clients to redeem C14 directly
+  with `ControlUDSClient.redeemAttachBootstrap`. (`redeemAttachBootstrap`
+  appears nowhere in `docs/`; the guide recommends `laban agent run` first and
+  positions raw `--control-attach` as the bundled-helper path.)
+- [x] No token value appears in test logs or artifacts except inside the
+  intended `control.json` app-observe file. (Full captured test-run logs
+  contain zero occurrences of `SECRET_SENTINEL_DO_NOT_PRINT`,
+  `bootstrap-secret`, `secret-token`, or `SECRET_ATTACH`.)
 
-Review status: NOT REVIEWED
+Review status: FAILED (2026-07-09, commit ccc847d, fresh-state review): 2 findings
+
+Review findings (MVP gate):
+
+1. Missing installed-shim C14 E2E. The shim shape is unit tested
+   (`Tests/LabanCLITests/LabanCLITests.swift:189`,
+   `testInstallCLIWritesShim`, asserts a final-`exec` shell wrapper), but no
+   test runs `laban agent run` through an installed shim and proves the C14
+   direct-child verifier accepts it. `scripts/test-installed-control-broker`
+   (lines 14-36) checks only code signing, helper presence, and the agent
+   helper path; it never invokes `laban agent run`, and no other test or
+   script exercises the shim-to-C14 chain (rg "agent run" over `Tests` and
+   `scripts` finds only an error-message assertion in
+   `Tests/LabanControlTests/ControlUDSClientErrorTests.swift`). The Progress
+   section itself records this deferral (this file, Milestone 1 checklist,
+   installed-shim E2E item), but the gate item as written requires the test.
+2. `SIGINT`/`SIGTERM`/`SIGHUP` behavior, child stdio preservation, and proxy
+   socket cleanup for `laban agent run` are implemented but untested. Signal
+   handling lives in `Sources/LabanAgent/main.swift:435-481`
+   (`installChildSignalSources`, `terminateChildOrGroup` with 5s grace) and
+   cleanup in `ControlAttachProxyServer.stop()` (unlink plus temp-dir
+   removal), but `rg -n "SIGINT|SIGTERM|SIGHUP" Tests/LabanAgentTests
+   Tests/LabanCLITests` returns no hits, and no test asserts the socket
+   directory is removed or that child stdio passes through untouched. Only
+   the wait-status decoding helpers are covered
+   (`ChildLauncherTests.testExitStatusDecodesNormalExit/SignalDeath/WaitFailure`).
+   The Progress section defers this ground to Milestone 5, but the gate item
+   as written requires tested behavior.
+
+Note (outside gate scope, for awareness):
+`ControlDefaultOnTests.testNonPendingShellRegistrationRestoresLazyAttachAncestry`
+fails deterministically in this reviewer's environment (not an MVP gate item;
+the gate-relevant `testAttachedConnectionSurvivesIdleBeyondRequestTimeout`
+passes in isolation). Cause: the reviewer's test process ancestry contains a
+root-owned `login` process, and
+`LabanControlServer.resolveUniqueShellSessionAncestor`
+(`Sources/LabanControl/LabanControlServer.swift:1617-1621`) returns nil when
+any ancestor is not same-uid, so `canLazyAttachDescendant` returns false at
+`Tests/LabanAppTests/ControlDefaultOnTests.swift:112`. The test implicitly
+assumes an all-same-uid ancestry chain, which does not hold for shells hosted
+under a `login`-spawned terminal.
 
 ### Extension gate (Milestones 2c, 3, 4, 5): run after those milestones land
 
