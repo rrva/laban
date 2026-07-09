@@ -106,6 +106,8 @@ helper source.
     and wait-status decoding (normal exit, signal death, waitpid failure).
   - [ ] Full installed-E2E verification of child stdio preservation, socket
     cleanup, and `SIGINT`/`SIGTERM`/`SIGHUP` behavior is deferred to
+    Milestone 5. `scripts/test-installed-control-broker` now exists and covers
+    part of this ground; remaining installed-E2E scope is still tracked under
     Milestone 5.
 - [x] Milestone 2b: Add session CLI commands (`laban session ...`, `laban
   propose ...`) that use `LABAN_AGENT_CONTROL_URL` and never redeem C14 directly.
@@ -342,6 +344,27 @@ The live probe exposed the concrete production gaps this plan addresses:
   checks, and audit behavior remain authoritative. CLI-side filters are only
   defense in depth.
   Date/Author: 2026-07-07 / Codex, from external review.
+
+- Decision: The CLI command surface is handwritten ergonomic commands, not
+  generated 1:1 from `IntentCatalog`, with a CLI/catalog drift test as the
+  parity mechanism instead of code generation.
+  Rationale: Generated CLIs are clunky: they produce awkward argument shapes
+  and lose the grouping (`laban session ...`, `laban propose ...`) that makes
+  the tool usable. This program doc's Phase 5 wording, "commands generated
+  from the catalog, 1:1," is amended to match. The drift test itself does not
+  exist yet; it is tracked as part of Milestone 2c work.
+  Date/Author: 2026-07-09 / Fable (orchestrator).
+
+- Decision: The lazy-attach approval path
+  (`execplans/active/agent-control-lazy-attach-approval.md`) shipped as an
+  extension of this plan's broker path, not a replacement for it.
+  Rationale: `laban agent run -- <agent>` remains the deterministic launch
+  path for new agents. The lazy-attach plan adds a recovery path for agents
+  that were already started directly inside an agent-attached Laban tab.
+  Session CLI commands now fall back to approved lazy dispatch when
+  `LABAN_AGENT_CONTROL_URL` is absent, exactly as that plan specifies; `laban
+  session proxy` stays broker-only either way.
+  Date/Author: 2026-07-09 / Fable (orchestrator).
 
 ## Plan of Work
 
@@ -1039,7 +1062,13 @@ complete.
 
 A separate fresh-state reviewer must verify these checks before this ExecPlan is
 considered complete. The executing agent must not mark this plan done until the
-gate passes.
+gate passes. The checks are split into two subsections because Milestones 1, 2,
+and 2b are the first merge target and reviewable now, while Milestones 2c, 3, 4,
+and 5 are production extensions that land later; each item stays with the
+milestone work it actually tests, regrouped below without deleting or weakening
+any item.
+
+### MVP gate (Milestones 1, 2, 2b): run now
 
 - [ ] `rg -n "LABAN_SESSION_ATTACH" Sources/LabanAgent Sources/LabanApp Tests`
   shows `laban-agent --control-attach --control-attach-serve-cli
@@ -1088,6 +1117,29 @@ gate passes.
 - [ ] A unit test proves `laban session state --json` reads
   `LABAN_AGENT_CONTROL_URL`, constructs `GET /debug/state`, and does not read
   `LABAN_SESSION_ATTACH`.
+- [ ] `rtk swift run laban completions zsh` emits shell completions without
+  reading `control.json`.
+- [ ] The CLI install shim points at `Contents/MacOS/laban`, not
+  `Contents/MacOS/laban-agent`.
+- [ ] A test proves the agent proxy socket directory is `0700` and accepted fds
+  have close-on-exec set.
+- [ ] A test proves the agent proxy rejects a same-uid process outside the
+  launched child process tree when an allowed root pid is configured.
+- [ ] `rtk swift test --filter CommandProposals` passes and includes a test where
+  proposal creation does not call any PTY write path.
+- [ ] `rtk swift test --filter AppSessionCoordinatorTests` passes and includes an
+  installed/bundled-helper-style launch that uses the exact expected helper path.
+- [ ] `rtk ./scripts/test-installed-control-broker` passes.
+- [ ] `rtk ./scripts/check` passes.
+- [ ] Documentation does not instruct generic clients to redeem C14 directly
+  with `ControlUDSClient.redeemAttachBootstrap`.
+- [ ] No token value appears in test logs or artifacts except inside the
+  intended `control.json` app-observe file.
+
+Review status: NOT REVIEWED
+
+### Extension gate (Milestones 2c, 3, 4, 5): run after those milestones land
+
 - [ ] A catalog parity test proves every non-raw CLI control command maps to an
   `IntentCatalog` intent, `ControlRouteCatalog` route, typed schema, capability,
   audit behavior, and live/headless router behavior or explicit documented
@@ -1107,30 +1159,12 @@ gate passes.
   same-uid process or another session.
 - [ ] A test proves `laban context --json` includes the bound session identity
   and recent screen text while excluding other sessions and tokens.
-- [ ] `rtk swift run laban completions zsh` emits shell completions without
-  reading `control.json`.
-- [ ] The CLI install shim points at `Contents/MacOS/laban`, not
-  `Contents/MacOS/laban-agent`.
-- [ ] A test proves the agent proxy socket directory is `0700` and accepted fds
-  have close-on-exec set.
-- [ ] A test proves the agent proxy rejects a same-uid process outside the
-  launched child process tree when an allowed root pid is configured.
-- [ ] `rtk swift test --filter CommandProposals` passes and includes a test where
-  proposal creation does not call any PTY write path.
-- [ ] `rtk swift test --filter AppSessionCoordinatorTests` passes and includes an
-  installed/bundled-helper-style launch that uses the exact expected helper path.
-- [ ] `rtk ./scripts/test-installed-control-broker` passes.
 - [ ] `rtk ./scripts/test-installed-laban-cli` passes.
-- [ ] `rtk ./scripts/check` passes.
 - [ ] `docs/process/controlling-agent-control-plane.md` documents `laban
   status --json`, `laban agent run -- <agent>`, `laban session state --json`,
   `laban list --json`, `laban session get-text`, `laban session subscribe`,
   `laban wait`, `laban badge`, `laban context`, `laban propose`, and
   `laban session proxy` before raw `--control-attach`.
-- [ ] Documentation does not instruct generic clients to redeem C14 directly
-  with `ControlUDSClient.redeemAttachBootstrap`.
-- [ ] No token value appears in test logs or artifacts except inside the
-  intended `control.json` app-observe file.
 
 Review status: NOT REVIEWED
 

@@ -60,16 +60,47 @@ identity persisted by "Always Allow".
   display server-derived capability and sensitivity; process identities must
   include start time to reject PID reuse; approval queueing, timeout, and broker
   compatibility must be explicit.
-- [ ] Milestone 1: Add process identity, descendant matching, and approval
-  records without changing authority yet.
-- [ ] Milestone 2: Add a live-GUI approved dispatch path that executes one
-  server-resolved request after user approval.
-- [ ] Milestone 3: Teach session-scoped CLI commands to fall back to lazy attach
-  when `LABAN_AGENT_CONTROL_URL` is missing.
-- [ ] Milestone 4: Add the approval dialog, settings surface, revocation, audit,
-  indicator, and operator documentation.
-- [ ] Milestone 5: Add installed-bundle end-to-end coverage for direct-Codex
-  lazy attach and for the existing broker-first path.
+- [x] (2026-07-09) Milestone 1: Add process identity, descendant matching, and
+  approval records without changing authority yet. Landed as
+  `Sources/LabanControl/ControlProcessIdentity.swift`,
+  `ControlAttachApproval.swift`, `ControlAttachApprovalStore.swift`,
+  `ControlAttachApprovalRecordSigner.swift`, `ControlLazyAttachAllowlist.swift`,
+  and `ControlCodeSigning.swift`, covered by `ControlAttachAncestryTests`,
+  `ControlAttachPrincipalTests`, `ControlAttachApprovalStoreTests`,
+  `LazyAttachAllowlistTests`, and `LazyAttachPersistedApprovalScopeTests`.
+- [x] (2026-07-09) Milestone 2: Add a live-GUI approved dispatch path that
+  executes one server-resolved request after user approval. Landed as the
+  `POST /control/session/attach/request` route in
+  `Sources/LabanControl/LabanControlServer.swift` and
+  `ControlTokenTier.approvedSession` in
+  `Sources/LabanControl/LabanControlPolicy.swift`, covered by
+  `LazyAttachApprovedRequestTests`.
+- [x] (2026-07-09) Milestone 3: Teach session-scoped CLI commands to fall back
+  to lazy attach when `LABAN_AGENT_CONTROL_URL` is missing. Landed as
+  `Sources/LabanCLI/LazyAttachClient.swift`, wired into the session state,
+  request, scroll, and propose commands (session proxy stays broker-only), with
+  exit codes 3/4/5/6 mapped through `lazyAttachExitCode` in
+  `Sources/LabanCLI/LabanCLI.swift`, covered by `LazyAttachCLITests` including
+  `testSessionCommandsIgnoreLABANSessionAttach`.
+- [x] (2026-07-09) Milestone 4: Add the approval dialog, settings surface,
+  revocation, audit, indicator, and operator documentation. Landed as
+  `Sources/LabanApp/Control/ControlAttachApprovalPresenter.swift` (the AppKit
+  sheet), the approvals list and revoke buttons in
+  `Sources/LabanApp/SettingsWindowController.swift`
+  (`makeApprovalsListView`, around line 862), and the
+  `control.attach.{requested,approved,denied,revoked,autoApproved}` audit
+  events in `Sources/LabanApp/Control/ControlSecurityCoordinator.swift`,
+  covered by `ControlSecurityAuditTests`. The operator guide
+  (`docs/process/controlling-agent-control-plane.md`) already had the lazy
+  attach section from this milestone; the broker-first recommended-workflow
+  section and the revocation subsection are being added in this same
+  documentation-reconciliation change.
+- [x] (2026-07-09) Milestone 5: Add installed-bundle end-to-end coverage for
+  direct-Codex lazy attach and for the existing broker-first path. Both
+  installed smoke scripts exist: `scripts/test-installed-agent-lazy-attach` and
+  `scripts/test-installed-control-broker`. Manual installed acceptance (the
+  numbered steps in this milestone's plan section) was dogfooded rather than
+  scripted, per the existing Surprises & Discoveries entries below.
 - [x] (2026-07-09) Dogfooded GUI restart while Codex remained alive under
   labpty. Confirmed the app-observe token was republished and direct C14 became
   stale as intended, but lazy attach failed before approval because restored
@@ -1049,6 +1080,13 @@ Behavioral acceptance:
   Evidence: the installed build showed clipped rows until the accessory stack
   was given an explicit frame width and fitting height; after reinstall and
   restart, the same approval prompt rendered as a bounded centered sheet.
+
+- Observation: this ExecPlan's `Progress` checkboxes lagged the implementation.
+  Documentation reconciliation on 2026-07-09 confirmed the feature landed and
+  merged (PR #9 and follow-up fixes, commits `d1a77c3` through `aa9ce89`) and
+  updated Milestones 1 through 5 to checked with file/test-suite evidence. The
+  Review Gate stays unchecked and Review status stays NOT REVIEWED, because a
+  fresh-state review of the landed code has not run yet.
 
 ## Idempotence and Recovery
 

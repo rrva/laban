@@ -20,6 +20,24 @@ Appendix A/B; nothing in the body below depends on reading them).
 > replace live typing as Phase 2's assistive feature. See **ADR 0024 Amendment
 > (2026-06-20)** and `execplans/active/agent-first-phase2-mount-live-and-security-floor.md`.
 
+> **Amendment (2026-07-09): Phase 2 shipped; broker and lazy attach; CLI is
+> handwritten.** (a) Phase 2 shipped 2026-07-07
+> (`execplans/active/agent-first-phase2-mount-live-and-security-floor.md`,
+> Milestones 2A-2F complete). Its UDS transport (C16) **resolves §8.6** and
+> supersedes the loopback-TCP and `Host`/`Origin` references in §3.4, §5.2, and
+> §5.4: the live surface binds a Unix domain socket, not a loopback port, so
+> those checks no longer apply as written. (b) Phase 5's MVP shipped: the `laban`
+> CLI, the `laban agent run` broker (execve into `laban-agent`, C14 direct-child
+> redeem, `LABAN_AGENT_CONTROL_URL` proxy socket for descendants), and the
+> lazy-attach approval path for agents already running outside the broker
+> (`execplans/active/agent-control-production-broker-and-cli.md`,
+> `execplans/active/agent-control-lazy-attach-approval.md`). (c) The §6 Phase 5
+> "generated 1:1" wording is amended: the CLI is **handwritten**, not generated
+> from `IntentCatalog`; a catalog-parity drift test is the intended parity
+> mechanism and is **pending** (tracked as Milestone 2c work in the broker/CLI
+> ExecPlan's Decision Log). Where §6 Phase 5 describes a generated CLI, read it
+> through this amendment.
+
 This is a **program roadmap**, not an executable ExecPlan. Phase 0 — the first
 executable slice — **shipped** as commit `0a2a230` and is archived at
 `execplans/completed/agent-first-phase0-control-seam.md`, which remains
@@ -516,9 +534,10 @@ behavior), and **status**.
   either router omits a shared intent; the §5.4 checklist + env-secrecy gate pass
   before the default flips. Live input actuation and autonomous driving are deferred
   to the Terminal-Lease ADR.
-- **Status:** **planned** — ExecPlan at
+- **Status:** **shipped (2026-07-07)** — ExecPlan at
   `execplans/active/agent-first-phase2-mount-live-and-security-floor.md` (observe-first;
-  milestones 2A–2F; not started).
+  milestones 2A–2F complete; repo-wide `scripts/check` close-out and Review Gate
+  still open).
 
 > Phases 3–4 are the **first-class product pillars** the live-control seam exists
 > to enable. They are promoted ahead of MCP and the truthful-fixture work.
@@ -587,7 +606,16 @@ optional second wrapper over the same contract (below).
   whole-app reads work with the file token alone; a session-scoped `laban` command in
   an agent-attached session reads its own session `200` and any other `403`; live
   driving is **not** present and returns only after the Terminal-Lease ADR.
-- **Status:** not started.
+- **Status:** in progress; MVP shipped (2026-07-08): the `laban` CLI, the
+  `laban agent run` broker, and the lazy-attach approval fallback for agents
+  already running outside the broker are implemented and merged
+  (`execplans/active/agent-control-production-broker-and-cli.md`,
+  `execplans/active/agent-control-lazy-attach-approval.md`). The CLI is
+  **handwritten**, not generated from `IntentCatalog` 1:1 as originally scoped;
+  a catalog-parity drift test to hold the two in sync is pending (Milestone 2c).
+  Remaining production-hardening scope (Milestones 2c-5: additional session
+  commands, proposal lifecycle, installed-CLI smoke coverage, docs) is tracked
+  in that ExecPlan's Progress section.
 
 #### Phase 5b — MCP wrapper *(deferred / optional)*
 
@@ -669,13 +697,19 @@ These are *not* resolved; the resolved-8 from v1 are recorded in Appendix B.
    observe-first amendment):** per-session, session-bound tokens are **pulled into
    Phase 2**, agent-attached-only; there is no app-wide control token. (Header
    Amendment; §5.1 superseded note.)
-6. **UDS transport (sharpened by Appendix D).** The competitive research supplies
-   the "concrete need": iTerm2, Wave, and kitty all prefer a Unix domain socket,
-   which sidesteps the whole DNS-rebinding/Host-Origin attack class and adds OS
-   permission gating. Re-decide at the Phase-2 boundary: keep loopback-HTTP-only,
-   or adopt iTerm2's **UDS-primary + HTTP-for-curl/debug** split? (Sub-question:
-   does loopback alone stop DNS-rebinding, or is Host/Origin strictly required —
-   the research's sharpest unresolved security point — which drives the must-haves.)
+6. **UDS transport (sharpened by Appendix D).** ~~The competitive research
+   supplies the "concrete need": iTerm2, Wave, and kitty all prefer a Unix domain
+   socket, which sidesteps the whole DNS-rebinding/Host-Origin attack class and
+   adds OS permission gating. Re-decide at the Phase-2 boundary: keep
+   loopback-HTTP-only, or adopt iTerm2's **UDS-primary + HTTP-for-curl/debug**
+   split? (Sub-question: does loopback alone stop DNS-rebinding, or is
+   Host/Origin strictly required, the research's sharpest unresolved security
+   point, which drives the must-haves.)~~ **Resolved (2026-06-21, C16):** the live
+   surface adopted UDS-primary, binding a Unix domain socket in a `0700` user
+   directory with no loopback TCP listener at all, dropping the
+   Host/Origin-matrix question as moot. See the Decision Log in
+   `execplans/active/agent-first-phase2-mount-live-and-security-floor.md` for
+   the full rationale.
 
 ## 9. Non-goals
 

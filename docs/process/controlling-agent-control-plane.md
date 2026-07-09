@@ -177,6 +177,33 @@ ready line, keep stdin/stdout open, and multiplex requests on that process. Do
 not start a new `laban-agent --control-attach` for every request; the bootstrap
 is one-shot.
 
+## Recommended workflow: broker-first
+
+The recommended way to run a controlling agent is through the broker, not lazy
+attach. Start the agent with:
+
+```sh
+laban agent run -- <agent-command>
+```
+
+`laban agent run` `execve`s into `laban-agent`, which performs the one-shot C14
+redeem as a direct child of the registered session shell and then holds that
+authenticated socket connection for the launched agent's lifetime. The agent
+process, and its descendants, receive `LABAN_AGENT_CONTROL_URL`: a private,
+per-process proxy socket that forwards requests over the held connection.
+
+With `LABAN_AGENT_CONTROL_URL` set, `laban session state`, `laban session
+request`, and `laban session scroll` talk to the proxy directly and never show
+a GUI approval dialog, because the C14 redeem already happened once, at
+launch, inside `laban agent run`. `laban session proxy` exists only in this
+path; it is broker-only, with no lazy-attach equivalent (see the note at the
+end of the next section).
+
+Lazy attach, described next, is a recovery path for a process that is already
+running in a registered session without having been started through `laban
+agent run`. It is not a replacement for the broker path: prefer `laban agent
+run` whenever you are the one starting the agent.
+
 ## Lazy attach fallback for already-running agents
 
 A process that is already running in a Laban-registered shell session can
@@ -240,6 +267,19 @@ HTTP status mapping:
 
 `session proxy` is not available through lazy attach; it requires the broker
 path with `LABAN_AGENT_CONTROL_URL`.
+
+### Revoking approvals
+
+"Always Allow This App for This Session" approvals persist as records in
+UserDefaults under `LabanControlAttachApprovalRecordsV1`. Each persisted record
+is listed in Laban's Settings window, Agent tab, in the approvals list, with a
+Revoke button next to it. Revoking a record does not tear down a request that
+is already in flight; it takes effect on the next request, which is then
+treated as unapproved and prompts again (or is denied, if the user does not
+respond in time). Approval records are scoped to the session they were granted
+for: when the registered session shell an approval applies to goes away, the
+record expires and no longer matches any later request, even from the same
+signed principal.
 
 ## Live GUI endpoint subset for session-attached agents
 

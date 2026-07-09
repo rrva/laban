@@ -10,14 +10,16 @@ full**, and §6 "Phase 2" there) and is governed by **ADR 0023** (architecture) 
 shipped as `execplans/completed/agent-first-phase1-intent-registry-and-labancontrol.md`
 (Review Gate APPROVED 2026-06-20).
 
-> **Status: IN PROGRESS — REFRAMED 2026-06-20 to observe-first; execution started
-> 2026-07-06.** An earlier
+> **Status: Milestones 2A-2F complete as of 2026-07-07.** Reframed 2026-06-20 to
+> observe-first; execution started 2026-07-06 and finished 2026-07-07. An earlier
 > draft of this phase mounted a live **agent-driven** control surface (input/mouse/
 > clipboard actuation, an app-wide control token). After a security deliberation
-> (recorded in the Decision Log) that direction is **deferred**: Phase 2 ships an
+> (recorded in the Decision Log) that direction is **deferred**: Phase 2 shipped an
 > **agent-observable terminal substrate**, not an agent-driven one. The actuation
 > layer moves to a future **Terminal-Lease / Computer-Use ADR**. This rewrite
-> supersedes the prior actuation-oriented draft; the git history holds it.
+> superseded the prior actuation-oriented draft; the git history holds it. What
+> remains open is the repo-wide `./scripts/check` close-out and the Review Gate
+> below; both are tracked in Progress.
 
 ## Strategy Pivot (2026-06-20) — read first
 
@@ -656,7 +658,7 @@ A fresh-state agent verifies (mechanical; from repo root) once executed:
 - [ ] Settings master toggle (`controlServerEnabled`) off ⇒ **complete opt-out**: after a relaunch the UDS is never created (no `control.sock`, connect fails), no `control.json` exists, and no session env carries `LABAN_SESSION_ATTACH`/`LABAN_CONTROL_URL` — even with observe-on-by-default and even if `LABAN_CONTROL_SERVER=1` is set.
 - [ ] `./scripts/check` exits 0; `./scripts/build-app` succeeds; `swift run LabanControlGen --check` passes.
 
-Review status: NOT REVIEWED (plan not yet executed).
+Review status: NOT REVIEWED (implementation complete 2026-07-07; fresh-state review pending).
 
 ## Idempotence and Recovery
 
