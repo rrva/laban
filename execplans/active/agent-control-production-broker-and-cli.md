@@ -366,6 +366,45 @@ The live probe exposed the concrete production gaps this plan addresses:
   session proxy` stays broker-only either way.
   Date/Author: 2026-07-09 / Fable (orchestrator).
 
+- Decision: Waits are broker-side bounded polling over existing observe
+  intents; `session subscribe` is deferred until the control protocol gains
+  sibling connection minting; no wait or subscribe primitive enters the wire
+  protocol before that.
+  Rationale: A session-observe credential is bound to the one connection that
+  redeemed the C14 bootstrap (`connectionTier` in
+  `Sources/LabanControl/LabanControlServer.swift`), and the bootstrap is
+  single-use, so an agent cannot open a second sensitive connection today. Any
+  server-side wait or stream would therefore monopolize the only sensitive
+  channel the broker has. `laban wait prompt` and `laban wait
+  command-finished` can be implemented truthfully in the broker by polling
+  `shellIntegration.state` (phase plus `completedCommandCount`) at a short
+  interval; each poll is a fast request that interleaves with other proxy
+  traffic, and nothing new lands on the wire, so nothing calcifies. The
+  protocol-level fix, planned with the Phase 3 event stream, is sibling
+  connection minting: an attached connection can request a one-shot nonce that
+  a new same-peer connection redeems for an additional connection-bound
+  session-observe credential dedicated to event streaming. NDJSON
+  `session subscribe` ships only on top of that, never on top of polling.
+  Date/Author: 2026-07-09 / Fable (orchestrator).
+
+- Decision: `laban context --json` is CLI-side composition over existing
+  intents (session identity, `shellIntegration.state`, `session.detail`
+  metadata, and a bounded `terminal.getText` tail), not a new fat server
+  endpoint. `laban list --json` is CLI-side formatting of the existing
+  app-observe `app.stateSummary`. New text capture ships as one new intent,
+  `terminal.getText`, classified `.observeSensitive` with `dataSensitivity:
+  .scrollback`, session-scoped, on both surfaces. `terminal.getText` and the
+  wait commands are broker-path only for now: they are not added to
+  `ControlLazyAttachAllowlist`, so the lazy-attach approval path cannot reach
+  full scrollback text with a one-shot approval.
+  Rationale: Composition avoids a new sensitive aggregate endpoint whose
+  redaction rules would duplicate the component intents; each component read
+  is already audited and policy-checked. Scrollback text is strictly more
+  sensitive than the `session state` summary the lazy allowlist grants today,
+  so extending lazy attach to it deserves its own review, not a side effect of
+  this milestone.
+  Date/Author: 2026-07-09 / Fable (orchestrator).
+
 ## Plan of Work
 
 ### Milestone 1: Shared Discovery and App-Observe CLI
