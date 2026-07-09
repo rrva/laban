@@ -155,11 +155,7 @@ public final class LabanControlServer {
   }
 
   private static func makeDefaultApprovalSigner() -> ControlAttachApprovalRecordSigning? {
-    #if canImport(Security)
-      return ControlAttachApprovalRecordKeychainSigner()
-    #else
-      return nil
-    #endif
+    ControlAttachApprovalStore.defaultSigner()
   }
 
   public static func defaultControlSocketPath() -> String {
@@ -850,6 +846,15 @@ public final class LabanControlServer {
     guard let descriptor = catalog.descriptor(id: intentID) else {
       return Self.missingDescriptorResponse(for: route)
     }
+    if intentID == DebugActionIntentID.unsupported {
+      return authorizeAndDispatch(
+        route: route,
+        request: request,
+        tokenTier: tokenTier,
+        descriptor: descriptor,
+        intentID: intentID,
+        body: body)
+    }
     guard descriptor.availability.permits(surface) else {
       reportDeny(
         intentID: intentID,
@@ -860,6 +865,23 @@ public final class LabanControlServer {
       return .error(404, "unavailable on \(surface)")
     }
 
+    return authorizeAndDispatch(
+      route: route,
+      request: request,
+      tokenTier: tokenTier,
+      descriptor: descriptor,
+      intentID: intentID,
+      body: body)
+  }
+
+  private func authorizeAndDispatch(
+    route: ControlRoute,
+    request: ControlHTTPRequest,
+    tokenTier: ControlTokenTier,
+    descriptor: IntentDescriptor,
+    intentID: String,
+    body: Data
+  ) -> ControlResponse {
     let targetSession = resolveTargetSession(request: request, body: body)
     let granted = LabanControlPolicy.grants(for: tokenTier)
     let scope = LabanControlPolicy.tokenScope(for: tokenTier)
@@ -882,9 +904,9 @@ public final class LabanControlServer {
         targetSession: targetSession,
         tokenScope: scope,
         tokenTier: tokenTier,
-        method: method,
-        path: path,
-        query: queryForConstraint(query),
+        method: request.method,
+        path: request.path,
+        query: queryForConstraint(request.query),
         bodySHA256: bodyHashForConstraint)
     else {
       reportDeny(
@@ -1020,9 +1042,6 @@ public final class LabanControlServer {
     }
 
     guard let intentID = DebugActionIntentID.intentID(forAction: envelope.action) else {
-      if surface == .gui {
-        return .error(404, "unavailable on gui")
-      }
       return router.route(
         .unsupportedDebugAction(UnsupportedDebugActionInput(action: envelope.action)))
     }

@@ -2,6 +2,13 @@
 
 static uint64_t reap_monotonic_ns(void);
 
+static void init_closed_session(labpty_session_t *session) {
+    assert(session != NULL);
+    memset(session, 0, sizeof(*session));
+    session->master_fd = -1;
+    session->slave_inspect_fd = -1;
+}
+
 static labpty_session_t *free_slot(labpty_registry_t *registry) {
     assert(registry != NULL);
     assert(registry->next_handle > 0);
@@ -100,6 +107,9 @@ void labpty_registry_init(labpty_registry_t *registry, const char *shm_dir) {
     assert(registry != NULL);
     assert(shm_dir != NULL);
     memset(registry, 0, sizeof(*registry));
+    for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
+        init_closed_session(&registry->sessions[i]);
+    }
     registry->next_handle = 1;
     snprintf(registry->shm_dir, sizeof(registry->shm_dir), "%s", shm_dir);
 }
@@ -211,7 +221,7 @@ labpty_status_t labpty_registry_open(
     if (slot->slave_inspect_fd > 0) {
         close(slot->slave_inspect_fd);
     }
-    memset(slot, 0, sizeof(*slot));
+    init_closed_session(slot);
     slot->used = 1;
     slot->alive = 1;
     slot->handle = handle;

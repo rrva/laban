@@ -76,7 +76,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     checkboxWithTitle: L10n.tr("Enable sampling profiler (applies on next launch)"), target: nil,
     action: nil)
   private let profileRecorderHelpLabel = NSTextField(wrappingLabelWithString: "")
-  private let approvalStore = ControlAttachApprovalStore()
+  private let approvalStore = ControlAttachApprovalStore(
+    signer: ControlAttachApprovalStore.defaultSigner())
   private let approvalsStackView = NSStackView()
   private let approvalsRefreshButton = NSButton(
     title: L10n.tr("Refresh"), target: nil, action: nil)

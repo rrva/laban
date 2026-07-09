@@ -345,16 +345,17 @@ final class LabanCLITests: XCTestCase {
     XCTAssertTrue(result.stderr.isEmpty)
   }
 
-  func testSessionStateMissingProxyEnvSuggestsAgentRun() {
+  func testSessionStateMissingProxyEnvUsesLazyAttach() {
     let result = LabanCLI.run(
       command: .sessionState(json: true),
       controlDirectory: URL(fileURLWithPath: "/nonexistent/control/dir"),
       agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, _, _, _ in throw LazyAttachClientError.controlPlaneUnavailable },
       executablePath: { "/tmp/laban" })
 
     XCTAssertEqual(result.exitCode, 3)
-    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
-    XCTAssertTrue(result.stderr.contains("laban agent run -- <command>"))
+    XCTAssertTrue(result.stderr.contains("control plane unavailable"))
+    XCTAssertFalse(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
     XCTAssertFalse(result.stdout.contains("SECRET"))
   }
 

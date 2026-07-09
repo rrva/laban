@@ -293,13 +293,16 @@ final class CatalogParityTests: XCTestCase {
   func testLabanAppReleaseBoundaryDoesNotImportOrDependOnLabanDebug() throws {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     let packageText = try String(contentsOf: root.appendingPathComponent("Package.swift"))
-    guard let targetStart = packageText.range(of: #"name: "LabanApp","#) else {
+    let appTargetMarker = ".executableTarget(\n      name: \"LabanApp\","
+    guard let targetStart = packageText.range(of: appTargetMarker) else {
       return XCTFail("Package.swift missing LabanApp target")
     }
     let targetTail = packageText[targetStart.lowerBound...]
     let targetEnd =
-      targetTail.dropFirst().range(of: #"\n    .executableTarget("#)?.lowerBound
-      ?? targetTail.dropFirst().range(of: #"\n    .testTarget("#)?.lowerBound
+      targetTail.dropFirst().range(of: "\n    .target(")?.lowerBound
+      ?? targetTail.dropFirst().range(of: "\n    .executableTarget(")?.lowerBound
+      ?? targetTail.dropFirst().range(of: "\n    .library(")?.lowerBound
+      ?? targetTail.dropFirst().range(of: "\n    .testTarget(")?.lowerBound
       ?? targetTail.endIndex
     let targetBlock = String(targetTail[..<targetEnd])
     XCTAssertFalse(targetBlock.contains(#""LabanDebug""#))

@@ -8,7 +8,7 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
   private let signer = ControlAttachApprovalRecordHMACSigner(key: Data("test-approval-key".utf8))
 
   func testAddAndRevoke() {
-    let (defaults, store) = makeStore()
+    let (_, store) = makeStore()
 
     let record = makeRecord(id: "r1", displayName: "Codex", sessionID: "s1")
     store.add(record)
@@ -19,7 +19,7 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
   }
 
   func testFindMatchingRequiresSessionAndShell() {
-    let (defaults, store) = makeStore()
+    let (_, store) = makeStore()
 
     let record = makeRecord(
       id: "r1",
@@ -55,7 +55,7 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
   }
 
   func testFindMatchingRejectsDifferentRouteOrIntent() {
-    let (defaults, store) = makeStore()
+    let (_, store) = makeStore()
 
     let record = makeRecord(
       id: "r1",
@@ -80,7 +80,7 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
   }
 
   func testRevokedRecordNotAutoApproved() {
-    let (defaults, store) = makeStore()
+    let (_, store) = makeStore()
 
     let record = makeRecord(id: "r1", displayName: "Codex")
     store.add(record)
@@ -117,6 +117,55 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
     XCTAssertEqual(store.loadAll().count, 0)
   }
 
+  func testDefaultSignerUsesFileBackedSigner() throws {
+    let dir = makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    setenv("LABAN_CONTROL_DIR", dir.path, 1)
+    defer { unsetenv("LABAN_CONTROL_DIR") }
+
+    let signer = try XCTUnwrap(ControlAttachApprovalStore.defaultSigner())
+    XCTAssertTrue(signer is ControlAttachApprovalRecordFileSigner)
+    #if canImport(Security)
+      XCTAssertFalse(signer is ControlAttachApprovalRecordKeychainSigner)
+    #endif
+  }
+
+  func testFileSignerCreatesPrivateStableKey() throws {
+    let dir = makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let keyURL = dir.appendingPathComponent("approval.key")
+    let signer = ControlAttachApprovalRecordFileSigner(keyURL: keyURL)
+
+    let signed = signer.sign(makeRecord(id: "file-key", displayName: "Codex"))
+
+    XCTAssertTrue(signer.isValid(signed))
+    XCTAssertTrue(ControlAttachApprovalRecordFileSigner(keyURL: keyURL).isValid(signed))
+    XCTAssertEqual(try posixPermissions(at: dir), 0o700)
+    XCTAssertEqual(try posixPermissions(at: keyURL), 0o600)
+  }
+
+  func testFileSignerRejectsSymlinkedKeyDirectory() throws {
+    let base = makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: base) }
+    let target = base.appendingPathComponent("target", isDirectory: true)
+    let link = base.appendingPathComponent("link", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: target,
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+    let record = makeRecord(id: "symlink-key", displayName: "Codex")
+    let signed = ControlAttachApprovalRecordFileSigner(
+      keyURL: target.appendingPathComponent("approval.key")
+    ).sign(record)
+
+    let symlinkSigner = ControlAttachApprovalRecordFileSigner(
+      keyURL: link.appendingPathComponent("approval.key"))
+    XCTAssertFalse(symlinkSigner.isValid(signed))
+    XCTAssertEqual(symlinkSigner.sign(record).hmac, "")
+  }
+
   // MARK: - Helpers
 
   private func makeStore() -> (UserDefaults, ControlAttachApprovalStore) {
@@ -124,6 +173,17 @@ final class ControlAttachApprovalStoreTests: XCTestCase {
     let defaults = UserDefaults(suiteName: suiteName)!
     defer { defaults.removePersistentDomain(forName: suiteName) }
     return (defaults, ControlAttachApprovalStore(defaults: defaults, signer: signer))
+  }
+
+  private func makeTemporaryDirectory() -> URL {
+    FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-approval-store-\(UUID().uuidString)", isDirectory: true)
+  }
+
+  private func posixPermissions(at url: URL) throws -> Int {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
+    return permissions.intValue
   }
 
   private func makeRecord(

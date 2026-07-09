@@ -44,7 +44,7 @@ final class ApprovedSessionTokenTierSwitchTests: XCTestCase {
     let tier: ControlTokenTier = .approvedSession(
       sessionID: "s1",
       approvalID: "a1",
-      capabilities: [.observe],
+      capabilities: [.observeSensitive],
       constraint: ControlTokenConstraint(
         method: "GET",
         path: "/debug/state",
@@ -56,7 +56,7 @@ final class ApprovedSessionTokenTierSwitchTests: XCTestCase {
       LabanControlPolicy.authorize(
         intentID: "app.state",
         catalog: catalog,
-        granted: [.observe],
+        granted: [.observeSensitive],
         targetSession: "s1",
         tokenScope: .session("s1"),
         tokenTier: tier,
@@ -68,7 +68,7 @@ final class ApprovedSessionTokenTierSwitchTests: XCTestCase {
       LabanControlPolicy.authorize(
         intentID: "app.state",
         catalog: catalog,
-        granted: [.observe],
+        granted: [.observeSensitive],
         targetSession: "s1",
         tokenScope: .session("s1"),
         tokenTier: tier,

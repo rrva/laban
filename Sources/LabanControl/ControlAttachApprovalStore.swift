@@ -4,6 +4,10 @@ import LabanCore
 public final class ControlAttachApprovalStore: @unchecked Sendable {
   public static let defaultsKey = "LabanControlAttachApprovalRecordsV1"
 
+  public static func defaultSigner() -> ControlAttachApprovalRecordSigning? {
+    ControlAttachApprovalRecordFileSigner()
+  }
+
   private let defaults: UserDefaults
   private let signer: ControlAttachApprovalRecordSigning?
   private let lock = NSLock()

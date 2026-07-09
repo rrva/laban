@@ -264,7 +264,8 @@ final class LiveControlObserveTests: XCTestCase {
   }
 
   func testStaleSessionObserveStateDoesNotFallBackToGlobalActiveSession() throws {
-    let (_, router, _, otherSessionID) = try makeModelRouterAndSessions()
+    let (model, router, _, otherSessionID) = try makeModelRouterAndSessions()
+    _ = model
     let server = LabanControlServer(router: router, surface: .gui)
     let start = try server.start()
     defer { server.stop() }
