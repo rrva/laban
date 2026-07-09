@@ -624,7 +624,11 @@ on the existing one, because the row set differs: it adds
 
     public struct ControlObserveGrantApprovalRequest: Sendable { ... }   // mirrors ControlAttachApprovalRequest,
                                                                          // plus targetSessionDisplay, targetCwd,
-                                                                         // targetProcessName, purpose (pre-escaped)
+                                                                         // targetProcessName, purpose (pre-escaped),
+                                                                         // and a transport indicator
+                                                                         // (lazyVerifiedChain vs brokerUnverified)
+                                                                         // so the presenter picks the right
+                                                                         // attribution row (FINDING 2)
     public enum ControlObserveGrantApprovalDecision: Equatable, Sendable {
       case allowOnce
       case allowWhileBothSessionsLive
@@ -695,7 +699,10 @@ Via `ControlSecurityCoordinator` to the persistent `EventLog`, following the
 - `control.observeGrant.autoApproved` (grantID; emitted when a standing
   grant satisfies a lazy one-shot request without UI)
 - `control.observeGrant.used` (grantID, intent id, target session id suffix;
-  every cross-session read, threat (e))
+  every cross-session read, threat (e)). The recorded target is the shared
+  policy-resolved effective target, the same value that scoped the
+  dispatch, so the audit trail cannot assert a cross-session read that did
+  not occur (FINDING 1).
 - `control.observeGrant.expired` (grantID, which side died)
 - `control.observeGrant.revoked` (grantID)
 
@@ -1014,6 +1021,7 @@ Implementation phase (later), from the repo root:
 
     swift test --disable-sandbox --filter CrossSessionObserveGrantPolicyTests
     swift test --disable-sandbox --filter CrossSessionObserveGrantRequestTests
+    swift test --disable-sandbox --filter ControlPlaneInvariantTests
     swift test --disable-sandbox --filter LabanAppTests
     swift run LabanControlGen --check
     ./scripts/lint
@@ -1026,9 +1034,11 @@ Behavioral acceptance, phrased as observations:
   attached agent exits 5 and the server logs a plain `403` denial: identical
   to today.
 - After "Allow While Both Sessions Live", the same command returns the
-  target's session detail JSON; both tabs show the observation badge; the
-  EventLog contains `control.observeGrant.approved` and one
-  `control.observeGrant.used` per read.
+  target's session detail JSON whose session id IS the target's (the
+  FINDING 1 payload-session == audited-target property, also asserted by
+  `testGrantedReadPayloadSessionEqualsAuditedTarget`); both tabs show the
+  observation badge; the EventLog contains `control.observeGrant.approved`
+  and one `control.observeGrant.used` per read naming that same target.
 - Closing EITHER tab, restarting Laban, or clicking Revoke in Settings makes
   the next read exit 5 with `grantExpired`/`grantRevoked` in the diagnostic.
 - After "Allow Once", exactly one read succeeds and the next one prompts
@@ -1055,9 +1065,11 @@ claims completion.
   section. Implementation milestones may not start until (a) is recorded.
   The reviewer must explicitly confirm each of: the (a)-(f) threats are
   addressed or their residual risk is explicitly accepted in the text; G1
-  through G6 are internally consistent with the mechanisms described; the
+  through G7 are internally consistent with the mechanisms described; the
   five-intent grant read set contains no write, navigate, propose, input,
-  or fixture intent.
+  or fixture intent. Second round (after the 2026-07-09 revision): also
+  confirm the three first-round findings and eight notes recorded below are
+  each resolved by the revised body text.
 - [ ] `rg -n "crossSessionObserveGrantIntentIDs" Sources/LabanControl/LabanControlPolicy.swift`
   shows exactly the set `{session.detail, selection.read, find.state,
   shellIntegration.state, scrollIndicator.state}`; adding any id requiring
@@ -1479,11 +1491,16 @@ and is user-visible, acceptable for MVP.
 ## Idempotence and Recovery
 
 The design phase is trivially idempotent (one file). For implementation:
-Milestone 1 is additive (a default-empty parameter and new types) and
-revertible by deleting the new files and the parameter; deny-by-default is
-preserved at every intermediate commit because `grantedSessions` defaults to
-empty. Milestone 2's route is new; removing it restores today's behavior
-exactly. Milestone 3's observer methods have default no-op implementations
+Milestone 1 is additive plus one focused dispatch change (a default-empty
+parameter, new types, and the shared target resolution that lets
+`scopedSessionID` carry a granted target); it is revertible by deleting the
+new files and the parameter and restoring the pinned `scopedSessionID`
+line; deny-by-default is preserved at every intermediate commit because
+`grantedSessions` defaults to empty, and with no grant in the table the
+shared resolver always yields the own session, so the dispatch change is
+behavior-neutral until a grant exists. The same-change threat-model and
+invariant-suite edits revert with their mechanisms. Milestone 2's route is
+new; removing it restores today's behavior exactly. Milestone 3's observer methods have default no-op implementations
 so partial adoption never breaks conformers. If a grant-widened read fails
 mid-flight, the CLI reports and the agent re-requests; the server never
 retries an approval on the agent's behalf. Revocation and expiry are safe to
@@ -1497,15 +1514,22 @@ End-state additions (all within existing targets; no new packages):
     LabanCore     IntentCatalog: + session.requestObserveGrant descriptor (+ ObserveGrantRequest schema)
     LabanControl  + ControlSessionObserveGrant.swift (grant + store + record types)
                   + crossSessionObserveGrantIntentIDs and grantedSessions in LabanControlPolicy
+                  + shared target resolution: policy-resolved target flows into legacyQueryInput's
+                    scopedSessionID when a grant authorized it (FINDING 1)
                   + POST /control/session/observe-grant/request route in LabanControlServer
                   + ControlObserveGrantApprovalRequest/Decision/Delegate in ControlAttachApproval.swift
                   + ControlSecurityObserver grant callbacks (default no-op)
-    LabanApp      + ControlObserveGrantApprovalPresenter.swift (AppKit sheet)
+    LabanApp      + ControlObserveGrantApprovalPresenter.swift (AppKit sheet, transport-specific
+                    attribution row per FINDING 2)
                   ControlSecurityCoordinator: grant audit events + pinned indicator
-                  SettingsWindowController: cross-session observation list + revoke
+                  SettingsWindowController: cross-session observation list + revoke (C15-escaped rows)
     LabanCLI      + session observe-grant request / session detail --session verbs
+    Tests         ControlPlaneInvariantTests: I2 grant exception + new I8 + I7 propose set,
+                    amended in the same commits as their mechanisms (FINDING 3)
     scripts       + test-installed-observe-grant
     docs          docs/process/controlling-agent-control-plane.md: grant section
+                  docs/process/control-plane-threat-model.md: I2 amendment, I7 amendment, new I8
+                    (same commits as Milestones 1 and 2)
 
 `LabanControl` keeps its `["LabanCore"]`-only dependency rule; all AppKit
 and Security-framework work stays in `LabanApp` behind the existing
