@@ -13,11 +13,24 @@ public enum CommandProposalRouting {
     guard let command = request.command, !command.isEmpty else {
       return .error(400, "missing command")
     }
-    guard
-      let targetSessionID = request.resolvedTargetSessionID(fallback: scopedSessionID)
-        ?? activeSessionID()
-    else {
-      return .error(400, "no session for propose")
+
+    let targetSessionID: String
+    if let scopedSessionID {
+      // A scoped caller is bound to exactly one session: never fall back to
+      // the app's active session, and reject outright if the request asks
+      // for a different session than the one it is scoped to.
+      let requestedTarget = request.resolvedTargetSessionID(fallback: nil)
+      if let requestedTarget, requestedTarget != scopedSessionID {
+        return .error(403, "forbidden")
+      }
+      targetSessionID = scopedSessionID
+    } else {
+      guard
+        let resolved = request.resolvedTargetSessionID(fallback: nil) ?? activeSessionID()
+      else {
+        return .error(400, "no session for propose")
+      }
+      targetSessionID = resolved
     }
     guard sessionExists(targetSessionID) else {
       return .error(400, "no session for propose")
