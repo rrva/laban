@@ -23,9 +23,10 @@ Measured baseline (20 s trace, Claude Code TUI with spinner + light output, ~12 
 - [x] (2026-07-10) M1: Make `FontAtlas.cellSize` a stored property. Commit `096be82`.
 - [x] (2026-07-10) M2: Cache per-(source, bold, italic) font identity so `CTFontCopyPostScriptName` leaves the per-run path. Commit `4b213e7`.
 - [x] (2026-07-10) M3: Hoist the no-decoration early-out to `appendGlyphRun`'s call site of `appendDecorations`. Commit `b03c9d4`.
-- [ ] M4: Skip redundant re-present blits when the published frame version is unchanged.
-- [ ] M5: Damage-aware instance building (only build instances intersecting effective damage bands).
+- [x] (2026-07-10) M4: Skip redundant re-present blits when the published frame version is unchanged. Commit `2475666`.
+- [x] (2026-07-10) M5: Damage-aware instance building (only build instances intersecting effective damage bands). Commit `c7437f8`.
 - [ ] Re-measure with the capture recipe below; update `Outcomes & Retrospective`.
+- [ ] Pending user verification: manual alternate-screen TUI flicker regression check for M4 (commit `f371eaa`'s scenario) has not been re-run since M4 landed; needs a visual check after install, per the "known hazards" note under M4 below.
 
 ## Context and Orientation
 
@@ -54,6 +55,10 @@ Definitions used below:
 - Observation: `FontAtlas.cellSize` (`Sources/LabanRenderer/FontAtlas.swift:163`) is a computed property performing two CoreText calls per access, and the slug path accesses it several times per glyph run per frame. 213 of the trace's 317 `CTFontGetGlyphsForCharacters` samples came from this getter, not from glyph resolution.
 - Observation: `swift test --filter Vector` (run per M1's validation instructions, since `cellSize` is shared across renderers) has a pre-existing failure unrelated to this plan: `VectorZoomGlyphSizeConsistencyTests.testGlyphSizesStaySingleAcrossZoomCommits` (10 assertion failures, "renderer never produced a non-dropped frame"/glyph-size mismatches across zoom commits). Reproduced identically on commit `115a838` (M0, before any `FontAtlas` change), so it predates this plan and is not a regression from M1's `cellSize` change. Not investigated further here; flag for a separate fix.
   Evidence: same 10 failures, same messages, on both `115a838` and the M1 commit `096be82`.
+- Observation: M4's spec text said to mark `lastPresentedFrameVersion = version` "only after `commandBuffer.commit()` succeeds." In practice `commandBuffer.commit()` in this present-thread usage is fire-and-forget with no synchronous success/failure signal to gate on, so the actual implementation marks the version presented (via `shouldEncodePresent(version:)`) right after `queue.makeCommandBuffer()` returns non-nil, i.e. before the `slug.present` signpost span and the blit/present/commit sequence, not strictly after `commit()`. `makeCommandBuffer()` returning `nil` is the one real synchronous failure point, and that path is still guarded (the version is not marked presented if it fails). Documented inline at the call site.
+- Observation: constructing a real `CAMetalDrawable` bound to a live `CAMetalLayer` is impractical in a headless test, so M4's test coverage exercises the extracted pure function `shouldEncodePresent(version:)` directly instead of `presentLatestTarget(into:)` itself. This fully covers the skip/no-skip decision (the only present-thread behavior change) without a Metal-drawable dependency.
+- Observation: `lastPresentedFrameVersion` uses a no-reset (monotonic-only) design rather than resetting to 0 in `resize()`. `publishedFrameVersion` only ever increments (`&+=1`) for the renderer's lifetime and is never rewound, so a post-resize republish always carries a strictly greater, never-before-seen version and can never be wrongly skipped, even though `resize` nils `latestPresentedTarget`. This avoids adding a reset call at every `latestPresentedTarget = nil` site and is simpler to reason about (one direction of travel for the version counter, full stop).
+- Observation: for M5, no existing test asserts full-screen instance counts during partial frames. The only test referencing `lastFrameGlyphFontSizes` (`VectorZoomGlyphSizeConsistencyTests`) targets `VectorGlyphRenderer`, a different renderer; the only `SlugGlyphRendererTests` case touching zoom diagnostics (`testGestureZoomScalesRenderedPixelsWithoutRebuildingGeometry`) uses `.full` damage for both renders it compares. So M5's per-row filtering needed no test-expectation adjustments elsewhere, only its own new test.
 
 ## Plan of Work
 
@@ -106,7 +111,7 @@ Work from the repository root (`/Users/rrj/wrk/laban`).
 1. Build and test after each milestone:
 
        ./scripts/build-app
-       swift test --filter SlugGlyphDamageTests    # expect: Executed 8 tests, with 0 failures (plus any tests this plan adds)
+       swift test --filter SlugGlyphDamageTests    # expect: Executed 10 tests, with 0 failures (8 original + 1 M4 + 1 M5)
 
 2. Install and hand off to the user for capture (never launch the app yourself; see `docs/process/agent-operating-guide.md`):
 
