@@ -26,8 +26,10 @@ Measured baseline (20 s trace, Claude Code TUI with spinner + light output, ~12 
 - [x] (2026-07-10) M4: Skip redundant re-present blits when the published frame version is unchanged. Commit `2475666`.
 - [x] (2026-07-10) M5: Damage-aware instance building (only build instances intersecting effective damage bands). Commit `c7437f8`.
 - [x] (2026-07-10) Re-measure captured and analyzed; see `Outcomes & Retrospective`. Build `8ca61689` installed to `~/Laban.app` and restarted via `scripts/restart-app --scroll-debug`; 20 s CPU-only xctrace capture of a spinner workload driven through `POST /scroll/input`.
-- [ ] Pending user verification: manual alternate-screen TUI flicker regression check for M4 (commit `f371eaa`'s scenario) has not been re-run since M4 landed; needs a visual check with a focused Laban window running a fullscreen TUI.
-- [ ] Pending: focused-window live verification of the M4 skip rate. The re-measure ran with the Laban window unfocused, so the present link was parked/deferred (~10 callbacks/10 s) and `slug.presentSkip` could not be observed at rate; the CPU wins below are unaffected (they are main-thread render-path wins), but the skip-percentage claim should be confirmed with a focused window via `GET /scroll/present-stats` (callbacks vs presented) or a signpost trace recorded from GUI Instruments in Immediate mode.
+- [x] (2026-07-10) User verified: manual alternate-screen TUI flicker regression check for M4 (commit `f371eaa`'s scenario) passed; no flicker or stale frames with a focused Laban window running a fullscreen TUI.
+- [x] (2026-07-10) Focused-window live verification of the M4 skip rate: over 15 s of a spinner workload with the window focused, `GET /scroll/present-stats` reported callbacks=174, presented=57, so 117 (67%) of present-link callbacks skipped the redundant blit. (The baseline's 88.7% figure came from a busier vsync-rate capture; the mechanism is confirmed either way: presented now tracks published frames instead of vsyncs.)
+
+This plan is complete: all milestones implemented, re-measured, and the M4 visual regression check passed.
 
 ## Outcomes & Retrospective
 
