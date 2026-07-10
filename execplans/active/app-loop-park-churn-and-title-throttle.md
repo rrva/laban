@@ -15,9 +15,9 @@ All three are workload-rhythm problems: a TUI that emits output every ~100 ms (s
 ## Progress
 
 - [x] (2026-07-10) Baseline profile captured and decomposed (see numbers above; analysis reproducible via the recipe below on any equivalent capture).
-- [ ] W1: Raise the labpty wake park quiet threshold from 50 ms to 500 ms.
-- [ ] W2: Debounce AppKit window-title application to at most ~5 sets/second with a trailing apply.
-- [ ] W3: Cheap no-new-output pre-check so `pollAllLabptyFeeds` skips the queue hop and ring read for quiet tabs.
+- [x] (2026-07-10, `722cf888`) W1: Raised the labpty wake park quiet threshold from 50 ms to 500 ms.
+- [x] (2026-07-10, `89c631a8`) W2: Debounced AppKit window-title application to at most ~5 sets/second with a trailing apply (`WindowTitleThrottle` + `applyWindowTitleIfNeeded()`; `WindowTitleThrottleTests` added, 6 tests).
+- [x] (2026-07-10, `3db77812`) W3: Cheap no-new-output pre-check so `pollAllLabptyFeeds` skips the queue hop and ring read for quiet tabs (`LabptyParserFeed.wakeIfOutputPending()`).
 - [ ] Re-measure with the same workload and compare the three subtree shares; record results in an `Outcomes & Retrospective` section.
 
 ## Context and Orientation
@@ -124,6 +124,17 @@ On a re-captured 20 s spinner-workload trace (same recipe, focused or unfocused 
 - Decision: W3 pre-checks only in `pollAllLabptyFeeds`, never in `wake()` itself.
   Rationale: every correctness-bearing wake path (daemon wake pipe, unpark response, reconnect) must stay unconditional so a stale offset mirror can only cause a spurious poll, never a missed one.
   Date/Author: 2026-07-10 / Claude + rrj.
+
+## Surprises & Discoveries
+
+- Observation: `lastAppliedWindowTitle` had exactly the two readers/writers named in the plan (`advanceFrame`, `refreshRecordingChrome`, plus a reset in `viewDidMoveToWindow`), confirmed with `rg lastAppliedWindowTitle` before removal, so it was safe to delete outright rather than keep alongside the new throttle.
+  Evidence: `rg -n "lastAppliedWindowTitle"` before the W2 edit returned only the three sites listed in the ExecPlan's orientation section.
+- Observation: `viewDidMoveToWindow()` used to null `lastAppliedWindowTitle` so a view moving to a new window (or losing its window) would not suppress a title set the new window has never seen. `WindowTitleThrottle` is a value type with no public "clear" method beyond re-init, so the equivalent fix is constructing a fresh `WindowTitleThrottle` instance there and clearing `pendingTitleApply`. This is behaviorally identical (both force the next title to go through `.apply` with no memory of any prior window's title) but is a type-shape difference worth flagging for the next reader who greps for the old reset pattern.
+  Evidence: `Sources/LabanApp/TerminalBitmapView.swift` `viewDidMoveToWindow()`.
+- Observation: the ExecPlan's illustrative pre-check pseudocode named the accessor `publishedLastOffsetSnapshot()`; the implementation instead calls `publishedLastOffset.withLock { $0 }` inline in `wakeIfOutputPending()` (no separate named accessor). Same semantics, just no extra indirection for a one-line lock read.
+  Evidence: `Sources/LabanApp/AppSessionCoordinator.swift`, `LabptyParserFeed.wakeIfOutputPending()`.
+- Observation: no test regressions or unexpected interactions surfaced across any of the three milestones; `swift test --filter LabanApp` grew from 446 to 452 tests (the 6 new `WindowTitleThrottleTests`) and stayed at 0 failures throughout, and `swift test --filter Labpty` stayed at 147 tests (1 pre-existing skip, `LabptyStressTests`), 0 failures, for all three milestones.
+  Evidence: test run transcripts captured during implementation (not reproduced here; rerun the two filters to confirm).
 
 ## Idempotence and Recovery
 
