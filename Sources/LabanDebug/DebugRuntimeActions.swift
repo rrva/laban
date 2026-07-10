@@ -80,6 +80,14 @@ extension HeadlessDebugRuntime {
     case .propose(let request):
       return DebugCommandProposalActions(runtime: self).propose(
         request, scopedSessionID: scopedSessionID)
+    case .proposalList:
+      return DebugCommandProposalActions(runtime: self).list(scopedSessionID: scopedSessionID)
+    case .proposalGet(let request):
+      return DebugCommandProposalActions(runtime: self).get(
+        request, scopedSessionID: scopedSessionID)
+    case .proposalCancel(let request):
+      return DebugCommandProposalActions(runtime: self).cancel(
+        request, scopedSessionID: scopedSessionID)
     case .mouseWheel(let request):
       return DebugMouseActions(runtime: self).mouseWheel(request)
     case .mouseDrag(let request):

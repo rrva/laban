@@ -4,6 +4,8 @@ public enum CommandProposalState: String, Codable, Sendable, Equatable {
   case pendingReview
   case dismissed
   case ran
+  case cancelledByAgent
+  case expired
 }
 
 public struct CommandProposal: Sendable, Equatable, Identifiable {
@@ -66,6 +68,102 @@ public struct CommandProposeResponse: Codable, Sendable, Equatable, JSONSchemaPr
         "writtenToPTY": .boolean,
       ],
       required: ["ok", "proposalID", "targetSessionID", "state", "writtenToPTY"],
+      additionalProperties: false)
+  }
+}
+
+/// One proposal as returned by `commandProposal.get` and in the
+/// `commandProposal.list` array. The command text is echoed back verbatim (it
+/// is agent-authored and already length-capped at submit time); consumers that
+/// render it must apply their own safe-rendering (see `CommandProposalSafeText`).
+public struct CommandProposalView: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var id: String
+  public var targetSessionID: String
+  public var command: String
+  public var purpose: String?
+  public var state: String
+  public var createdAt: Double
+
+  public init(_ proposal: CommandProposal) {
+    self.id = proposal.id
+    self.targetSessionID = proposal.targetSessionID
+    self.command = proposal.command
+    self.purpose = proposal.purpose
+    self.state = proposal.state.rawValue
+    self.createdAt = proposal.createdAt.timeIntervalSince1970
+  }
+
+  private static var stateValues: [String] {
+    [
+      CommandProposalState.pendingReview.rawValue,
+      CommandProposalState.dismissed.rawValue,
+      CommandProposalState.ran.rawValue,
+      CommandProposalState.cancelledByAgent.rawValue,
+      CommandProposalState.expired.rawValue,
+    ]
+  }
+
+  public static var jsonSchema: SchemaNode {
+    .object(
+      properties: [
+        "id": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "targetSessionID": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "command": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "purpose": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "state": .string(enumValues: stateValues, const: nil, format: nil, pattern: nil),
+        "createdAt": .number(min: nil, max: nil),
+      ],
+      required: ["id", "targetSessionID", "command", "state", "createdAt"],
+      additionalProperties: false)
+  }
+}
+
+/// Response for `commandProposal.list`: proposals scoped to the caller's own
+/// session, newest first.
+public struct CommandProposalListResponse: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var ok: Bool
+  public var proposals: [CommandProposalView]
+
+  public init(proposals: [CommandProposalView]) {
+    self.ok = true
+    self.proposals = proposals
+  }
+
+  public static var jsonSchema: SchemaNode {
+    .object(
+      properties: [
+        "ok": .boolean,
+        "proposals": .array(CommandProposalView.jsonSchema, minItems: 0),
+      ],
+      required: ["ok", "proposals"],
+      additionalProperties: false)
+  }
+}
+
+/// Response for `commandProposal.cancel`: the resulting state after the cancel
+/// attempt. `cancelled` is false when the proposal was already terminal.
+public struct CommandProposalCancelResponse: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var ok: Bool
+  public var proposalID: String
+  public var cancelled: Bool
+  public var state: String
+
+  public init(proposalID: String, cancelled: Bool, state: CommandProposalState) {
+    self.ok = true
+    self.proposalID = proposalID
+    self.cancelled = cancelled
+    self.state = state.rawValue
+  }
+
+  public static var jsonSchema: SchemaNode {
+    .object(
+      properties: [
+        "ok": .boolean,
+        "proposalID": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "cancelled": .boolean,
+        "state": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+      ],
+      required: ["ok", "proposalID", "cancelled", "state"],
       additionalProperties: false)
   }
 }
@@ -194,6 +292,11 @@ public final class CommandProposalStore: @unchecked Sendable {
   public static let maxStoredProposals = 64
   public static let maxCommandBytes = 4096
   public static let maxPurposeBytes = 1024
+  /// A proposal left in `pendingReview` past this age is reported `expired` on
+  /// the next read, so an agent polling `commandProposal.get` sees a terminal
+  /// state instead of a proposal that lingers forever after the user walked
+  /// away from the review UI.
+  public static let pendingReviewTTL: TimeInterval = 30 * 60
 
   public enum SubmitError: Error, Equatable {
     case commandTooLarge
@@ -201,10 +304,36 @@ public final class CommandProposalStore: @unchecked Sendable {
     case storeFull
   }
 
+  /// Result of a `cancel` request. `cancel` only transitions a proposal that is
+  /// still `pendingReview`; any terminal state is reported back so the caller
+  /// can map it to a `409`-style response rather than silently succeeding.
+  public enum CancelResult: Equatable {
+    case cancelled(CommandProposal)
+    case notFound
+    case alreadyTerminal(CommandProposalState)
+  }
+
   private let lock = NSLock()
   private var proposals: [String: CommandProposal] = [:]
+  private let now: @Sendable () -> Date
 
-  public init() {}
+  public init(now: @escaping @Sendable () -> Date = { Date() }) {
+    self.now = now
+  }
+
+  /// Applies lazy TTL expiry to a stored proposal: a `pendingReview` proposal
+  /// older than `pendingReviewTTL` is reported (and persisted) as `expired`.
+  /// Callers must hold `lock`.
+  private func resolvedLocked(_ proposal: CommandProposal) -> CommandProposal {
+    guard proposal.state == .pendingReview else { return proposal }
+    guard now().timeIntervalSince(proposal.createdAt) >= Self.pendingReviewTTL else {
+      return proposal
+    }
+    var expired = proposal
+    expired.state = .expired
+    proposals[proposal.id] = expired
+    return expired
+  }
 
   @discardableResult
   public func submit(
@@ -220,14 +349,19 @@ public final class CommandProposalStore: @unchecked Sendable {
     }
     lock.lock()
     defer { lock.unlock() }
-    proposals = proposals.filter { _, proposal in proposal.state == .pendingReview }
+    // Keep only proposals still awaiting review; terminal ones (ran, dismissed,
+    // cancelled, expired) are dropped so the store does not grow without bound.
+    proposals = proposals.filter { _, proposal in
+      resolvedLocked(proposal).state == .pendingReview
+    }
     guard proposals.count < Self.maxStoredProposals else {
       throw SubmitError.storeFull
     }
     let proposal = CommandProposal(
       targetSessionID: targetSessionID,
       command: command,
-      purpose: purpose)
+      purpose: purpose,
+      createdAt: now())
     proposals[proposal.id] = proposal
     return proposal
   }
@@ -235,7 +369,36 @@ public final class CommandProposalStore: @unchecked Sendable {
   public func proposal(id: String) -> CommandProposal? {
     lock.lock()
     defer { lock.unlock() }
-    return proposals[id]
+    guard let proposal = proposals[id] else { return nil }
+    return resolvedLocked(proposal)
+  }
+
+  /// All proposals whose target session is `sessionID`, newest first, with TTL
+  /// expiry applied. Session scoping is enforced by the caller (router), which
+  /// passes the caller's own scoped session.
+  public func list(targetSessionID: String) -> [CommandProposal] {
+    lock.lock()
+    defer { lock.unlock() }
+    return proposals.values
+      .map { resolvedLocked($0) }
+      .filter { $0.targetSessionID == targetSessionID }
+      .sorted { $0.createdAt > $1.createdAt }
+  }
+
+  /// Cancels a `pendingReview` proposal, moving it to `cancelledByAgent`. A
+  /// proposal already in a terminal state is not changed.
+  public func cancel(id: String) -> CancelResult {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let stored = proposals[id] else { return .notFound }
+    let resolved = resolvedLocked(stored)
+    guard resolved.state == .pendingReview else {
+      return .alreadyTerminal(resolved.state)
+    }
+    var cancelled = resolved
+    cancelled.state = .cancelledByAgent
+    proposals[id] = cancelled
+    return .cancelled(cancelled)
   }
 
   public func updateState(id: String, state: CommandProposalState) {

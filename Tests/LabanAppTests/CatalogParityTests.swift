@@ -22,6 +22,9 @@ final class CatalogParityTests: XCTestCase {
     "selection.read",
     "terminal.scrollViewport",
     "command.propose",
+    "commandProposal.list",
+    "commandProposal.get",
+    "commandProposal.cancel",
     "debug.discovery",
     "debug.capabilities",
     "debug.health",
@@ -129,12 +132,19 @@ final class CatalogParityTests: XCTestCase {
     XCTAssertEqual(guiNavigateIDs, ["terminal.scrollViewport"])
   }
 
-  func testGuiProposeAllowlistIsExactlyCommandPropose() {
+  func testGuiProposeAllowlistIsExactlyProposeAndLifecycle() {
     let guiProposeIDs = Set(
       IntentCatalog.shared.descriptors.filter {
         $0.availability.gui && $0.requiredCapability == .propose
       }.map(\.id))
-    XCTAssertEqual(guiProposeIDs, ["command.propose"])
+    XCTAssertEqual(
+      guiProposeIDs,
+      [
+        "command.propose",
+        "commandProposal.list",
+        "commandProposal.get",
+        "commandProposal.cancel",
+      ])
   }
 
   // MARK: - Helpers

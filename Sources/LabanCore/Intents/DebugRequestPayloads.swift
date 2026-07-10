@@ -61,6 +61,9 @@ public enum DebugActionIntentID {
     "dropFiles",
     "scrollViewport",
     "propose",
+    "proposalList",
+    "proposalGet",
+    "proposalCancel",
     "mouseWheel",
     "mouseDrag",
     "click",
@@ -96,6 +99,9 @@ public enum DebugActionIntentID {
     case "dropFiles": return "terminal.dropFiles"
     case "scrollViewport": return "terminal.scrollViewport"
     case "propose": return "command.propose"
+    case "proposalList": return "commandProposal.list"
+    case "proposalGet": return "commandProposal.get"
+    case "proposalCancel": return "commandProposal.cancel"
     case "mouseWheel": return "terminal.mouseWheel"
     case "mouseDrag": return "terminal.mouseDrag"
     case "click": return "terminal.click"
@@ -202,6 +208,37 @@ public struct UnsupportedDebugActionInput: Codable, Sendable, Equatable, JSONSch
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object(["action": DebugPayloadSchema.string], required: ["action"])
+  }
+}
+
+/// Request for `commandProposal.get` and `commandProposal.cancel`: names one
+/// proposal by id. `commandProposal.list` also decodes as this shape (id is
+/// ignored for list).
+public struct CommandProposalRefRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var action: String?
+  public var proposalID: String?
+  public var proposalId: String?
+
+  public init(action: String? = nil, proposalID: String? = nil, proposalId: String? = nil) {
+    self.action = action
+    self.proposalID = proposalID
+    self.proposalId = proposalId
+  }
+
+  public func resolvedProposalID() -> String? {
+    if let proposalID, !proposalID.isEmpty { return proposalID }
+    if let proposalId, !proposalId.isEmpty { return proposalId }
+    return nil
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": DebugPayloadSchema.string,
+        "proposalID": DebugPayloadSchema.string,
+        "proposalId": DebugPayloadSchema.string,
+      ],
+      required: ["action"])
   }
 }
 

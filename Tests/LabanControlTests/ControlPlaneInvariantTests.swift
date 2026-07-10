@@ -452,7 +452,15 @@ final class ControlPlaneInvariantTests: XCTestCase {
 
     let guiProposeIDs = Set(
       guiDescriptors.filter { $0.requiredCapability == .propose }.map(\.id))
-    XCTAssertEqual(guiProposeIDs, ["command.propose"])
+    XCTAssertEqual(
+      guiProposeIDs,
+      [
+        "command.propose",
+        "commandProposal.list",
+        "commandProposal.get",
+        "commandProposal.cancel",
+      ],
+      "the gui .propose set is command.propose plus its read/cancel lifecycle intents")
   }
 }
 

@@ -97,6 +97,13 @@ final class LiveIntentRouter: IntentRouter {
           return scrollViewportAction(body: input.body, scopedSessionID: input.scopedSessionID)
         case "command.propose":
           return commandProposeAction(body: input.body, scopedSessionID: input.scopedSessionID)
+        case "commandProposal.list":
+          return commandProposalListAction(scopedSessionID: input.scopedSessionID)
+        case "commandProposal.get":
+          return commandProposalGetAction(body: input.body, scopedSessionID: input.scopedSessionID)
+        case "commandProposal.cancel":
+          return commandProposalCancelAction(
+            body: input.body, scopedSessionID: input.scopedSessionID)
         default:
           return .error(404, "unavailable on gui")
         }
@@ -177,6 +184,12 @@ final class LiveIntentRouter: IntentRouter {
         return scrollViewportAction(body: input.body, scopedSessionID: input.scopedSessionID)
       case "command.propose":
         return commandProposeAction(body: input.body, scopedSessionID: input.scopedSessionID)
+      case "commandProposal.list":
+        return commandProposalListAction(scopedSessionID: input.scopedSessionID)
+      case "commandProposal.get":
+        return commandProposalGetAction(body: input.body, scopedSessionID: input.scopedSessionID)
+      case "commandProposal.cancel":
+        return commandProposalCancelAction(body: input.body, scopedSessionID: input.scopedSessionID)
       default:
         return .error(404, "unavailable on gui")
       }
@@ -250,6 +263,31 @@ final class LiveIntentRouter: IntentRouter {
       }
     }
     return response
+  }
+
+  private func commandProposalListAction(scopedSessionID: String?) -> ControlResponse {
+    guard let model = model else { return .error(500, "model released") }
+    return CommandProposalRouting.handleList(
+      scopedSessionID: scopedSessionID,
+      activeSessionID: { model.activeTab?.sessionId })
+  }
+
+  private func commandProposalGetAction(body: Data, scopedSessionID: String?) -> ControlResponse {
+    guard let model = model else { return .error(500, "model released") }
+    return CommandProposalRouting.handleGet(
+      body: body,
+      scopedSessionID: scopedSessionID,
+      activeSessionID: { model.activeTab?.sessionId })
+  }
+
+  private func commandProposalCancelAction(
+    body: Data, scopedSessionID: String?
+  ) -> ControlResponse {
+    guard let model = model else { return .error(500, "model released") }
+    return CommandProposalRouting.handleCancel(
+      body: body,
+      scopedSessionID: scopedSessionID,
+      activeSessionID: { model.activeTab?.sessionId })
   }
 
   private func decodeProposal(from body: Data) -> CommandProposeResponse? {
