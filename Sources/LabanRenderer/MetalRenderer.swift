@@ -1535,6 +1535,11 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     to destination: MTLTexture,
     commandBuffer: MTLCommandBuffer
   ) {
+    let signposter = RenderEncodeSignpost.signposter
+    let spanState = signposter.beginInterval(
+      "metal.encodeBlit",
+      "\(source.width, privacy: .public)x\(source.height, privacy: .public)")
+    defer { signposter.endInterval("metal.encodeBlit", spanState) }
     guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
     blit.label = "laban.metal.displaylink-present-blit"
     blit.copy(

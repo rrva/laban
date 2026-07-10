@@ -2000,6 +2000,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     to destination: MTLTexture,
     commandBuffer: MTLCommandBuffer
   ) {
+    let signposter = RenderEncodeSignpost.signposter
+    let spanState = signposter.beginInterval(
+      "slug.encodeBlit",
+      "\(source.width, privacy: .public)x\(source.height, privacy: .public)")
+    defer { signposter.endInterval("slug.encodeBlit", spanState) }
     guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
     blit.label = "laban.slug.present-blit"
     blit.copy(

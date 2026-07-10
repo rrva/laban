@@ -2321,6 +2321,11 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     to destination: MTLTexture,
     commandBuffer: MTLCommandBuffer
   ) {
+    let signposter = RenderEncodeSignpost.signposter
+    let spanState = signposter.beginInterval(
+      "vector.encodeBlit",
+      "\(source.width, privacy: .public)x\(source.height, privacy: .public)")
+    defer { signposter.endInterval("vector.encodeBlit", spanState) }
     guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
     blit.label = "laban.vector.present-blit"
     blit.copy(
