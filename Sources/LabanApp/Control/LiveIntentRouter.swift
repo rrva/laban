@@ -151,6 +151,8 @@ final class LiveIntentRouter: IntentRouter {
       case "shellIntegration.state":
         return legacyJSON(
           ControlStateProjections.shellIntegrationState(query: query.params, ctx: ctx))
+      case "terminal.getText":
+        return legacyJSON(ControlStateProjections.getTextResponse(query: query.params, ctx: ctx))
       case "scrollIndicator.state":
         return legacyJSON(
           ControlStateProjections.scrollIndicatorState(query: query.params, ctx: ctx))

@@ -183,6 +183,15 @@ public enum ControlRouteCatalog {
       intentID: "shellIntegration.state"),
     endpoint(
       method: "GET",
+      path: "/debug/text",
+      category: "terminal",
+      summary:
+        "Return bounded plain-text lines from the visible screen or full scrollback for the active or named session.",
+      queryParameters: ["sessionID", "sessionId", "source", "startLine", "endLine", "maxLines"],
+      responseSchema: "schemas/debug/get-text.schema.json",
+      intentID: "terminal.getText"),
+    endpoint(
+      method: "GET",
       path: "/debug/scroll-indicator/state",
       category: "state",
       summary:
@@ -448,6 +457,7 @@ public enum ControlRouteCatalog {
     ("GET", "/debug/persistence/restore-picker"),
     ("GET", "/debug/find/state"),
     ("GET", "/debug/shell-integration/state"),
+    ("GET", "/debug/text"),
     ("GET", "/debug/scroll-indicator/state"),
     ("GET", "/debug/scroll-trace"),
     ("GET", "/debug/sessions"),

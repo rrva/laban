@@ -159,6 +159,35 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(result.params, ["since": "7"])
   }
 
+  func testGetTextRoutePreservesQueryParameters() throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let (status, data) = try request(
+      socketPath: socketPath,
+      path: "/debug/text?source=scrollback&startLine=1&endLine=5&maxLines=100",
+      token: readiness.debugToken)
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(
+      router.legacyQueries(),
+      [
+        LegacyDebugQueryInput(
+          intentID: "terminal.getText",
+          params: [
+            "source": "scrollback", "startLine": "1", "endLine": "5", "maxLines": "100",
+          ])
+      ])
+    let result = try JSONDecoder().decode(SpyLegacyQueryResult.self, from: data)
+    XCTAssertEqual(result.intentID, "terminal.getText")
+    XCTAssertEqual(
+      result.params,
+      ["source": "scrollback", "startLine": "1", "endLine": "5", "maxLines": "100"])
+  }
+
   func testSessionDetailRouteDecodesPathAndPreservesQueryParameters() throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
@@ -463,8 +492,8 @@ final class LabanControlServerTests: XCTestCase {
 
   func testRouteCatalogCoversLegacyDebugSurfaceAndDescriptors() throws {
     let endpoints = ControlRouteCatalog.endpoints
-    XCTAssertEqual(endpoints.count, 45)
-    XCTAssertEqual(Set(endpoints.map { "\($0.binding.method) \($0.binding.path)" }).count, 45)
+    XCTAssertEqual(endpoints.count, 46)
+    XCTAssertEqual(Set(endpoints.map { "\($0.binding.method) \($0.binding.path)" }).count, 46)
     XCTAssertNotNil(
       endpoints.first { $0.binding.method == "GET" && $0.binding.path == "/debug/sessions/<id>" })
 

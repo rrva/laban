@@ -48,6 +48,8 @@ public final class HeadlessIntentRouter: IntentRouter {
       return json(runtime.findState(query: query.params))
     case "shellIntegration.state":
       return json(runtime.shellIntegrationState(query: query.params))
+    case "terminal.getText":
+      return json(runtime.getText(query: query.params))
     case "scrollIndicator.state":
       return json(runtime.scrollIndicatorState(query: query.params))
     case "scrollTrace":

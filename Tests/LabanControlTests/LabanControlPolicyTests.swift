@@ -63,6 +63,47 @@ final class LabanControlPolicyTests: XCTestCase {
     XCTAssertEqual(router.legacyQueries(), [])
   }
 
+  func testSessionObserveTokenAllowsOwnSessionGetTextAndDeniesOtherSession() throws {
+    let router = SpyPolicyRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let socketPath = try makeTempSocketPath()
+    _ = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let ownSession = "session-a"
+    let otherSession = "session-b"
+    let sessionToken = server.mintSessionObserveToken(sessionID: ownSession)
+
+    let omitted = try request(
+      socketPath: socketPath,
+      path: "/debug/text",
+      token: sessionToken)
+    XCTAssertEqual(omitted.0, 200)
+    XCTAssertEqual(
+      router.legacyQueries(),
+      [
+        LegacyDebugQueryInput(
+          intentID: "terminal.getText",
+          scopedSessionID: ownSession,
+          readRedaction: .sessionObserveSummary)
+      ])
+
+    router.reset()
+    let own = try request(
+      socketPath: socketPath,
+      path: "/debug/text?sessionId=\(ownSession)",
+      token: sessionToken)
+    XCTAssertEqual(own.0, 200)
+
+    router.reset()
+    let other = try request(
+      socketPath: socketPath,
+      path: "/debug/text?sessionId=\(otherSession)",
+      token: sessionToken)
+    XCTAssertEqual(other.0, 403)
+    XCTAssertEqual(router.legacyQueries(), [])
+  }
+
   func testSessionObserveTokenDeniesNavigateOnOtherSession() throws {
     let router = SpyPolicyRouter()
     let server = LabanControlServer(router: router, surface: .headless)

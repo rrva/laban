@@ -186,6 +186,21 @@
     "summary" : "Return OSC 133 shell-integration phase + last exit code for the active or named session."
   },
   {
+    "category" : "terminal",
+    "method" : "GET",
+    "path" : "\/debug\/text",
+    "queryParameters" : [
+      "sessionID",
+      "sessionId",
+      "source",
+      "startLine",
+      "endLine",
+      "maxLines"
+    ],
+    "responseSchema" : "schemas\/debug\/get-text.schema.json",
+    "summary" : "Return bounded plain-text lines from the visible screen or full scrollback for the active or named session."
+  },
+  {
     "category" : "state",
     "method" : "GET",
     "path" : "\/debug\/scroll-indicator\/state",

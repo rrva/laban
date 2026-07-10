@@ -15,6 +15,7 @@ final class CatalogParityTests: XCTestCase {
     "terminal.modes",
     "find.state",
     "shellIntegration.state",
+    "terminal.getText",
     "scrollIndicator.state",
     "session.list",
     "session.detail",
@@ -194,6 +195,13 @@ final class CatalogParityTests: XCTestCase {
         method: "GET",
         headlessPath: "/debug/shell-integration/state",
         guiPath: "/debug/shell-integration/state",
+        body: nil,
+        compareShape: true),
+      ParityCase(
+        intentID: "terminal.getText",
+        method: "GET",
+        headlessPath: "/debug/text?source=screen",
+        guiPath: "/debug/text?source=screen",
         body: nil,
         compareShape: true),
       ParityCase(

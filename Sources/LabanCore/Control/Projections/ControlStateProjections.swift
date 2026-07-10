@@ -109,6 +109,120 @@ public enum ControlStateProjections {
       sessionResponse(for: match.element, index: match.offset, includeGrid: includeGrid, ctx: ctx))
   }
 
+  /// Bounded plain-text line capture for one session's visible screen or full
+  /// scrollback. `truncated` reflects only the `maxLines`/hard-cap bound, not
+  /// a caller-requested `startLine`/`endLine` slice (getting exactly the
+  /// requested range is not truncation). An omitted `sessionId` resolves to
+  /// the caller's own scoped session (or the active tab, unscoped), mirroring
+  /// `shellIntegrationState(query:ctx:)`.
+  public static func getTextResponse(
+    query: [String: String],
+    ctx: ControlProjectionContext
+  ) -> ControlJSONResponse {
+    let requested = query["sessionID"] ?? query["sessionId"]
+    let targetId: Session.ID?
+    if let requested {
+      guard ctx.model.session(forSessionID: requested) != nil else {
+        return controlJSONError("session not found: \(requested)", status: 404)
+      }
+      targetId = requested
+    } else {
+      targetId = resolvedDefaultSessionID(ctx: ctx)
+    }
+    guard
+      let targetId,
+      let match = ctx.model.tabs.enumerated().first(where: { $0.element.sessionId == targetId })
+    else {
+      return controlJSONError("session not found", status: 404)
+    }
+    let tab = match.element
+
+    let source = query["source"] ?? "screen"
+    guard source == "screen" || source == "scrollback" else {
+      return controlJSONError(#"source must be "screen" or "scrollback""#, status: 400)
+    }
+
+    let hardCapLines = 2_000
+    var maxLines = 500
+    if let raw = query["maxLines"] {
+      guard let parsed = Int(raw), parsed >= 0 else {
+        return controlJSONError("maxLines must be a non-negative integer", status: 400)
+      }
+      maxLines = parsed
+    }
+    maxLines = min(maxLines, hardCapLines)
+
+    var startLine = 0
+    if let raw = query["startLine"] {
+      guard let parsed = Int(raw), parsed >= 0 else {
+        return controlJSONError("startLine must be a non-negative integer", status: 400)
+      }
+      startLine = parsed
+    }
+    var endLine: Int?
+    if let raw = query["endLine"] {
+      guard let parsed = Int(raw), parsed >= 0 else {
+        return controlJSONError("endLine must be a non-negative integer", status: 400)
+      }
+      endLine = parsed
+    }
+
+    let allLines = sourceLines(source: source, tab: tab, ctx: ctx)
+    let totalAvailable = allLines.count
+
+    var slice: [String] = []
+    if totalAvailable > 0 {
+      let effectiveEnd = min(endLine ?? (totalAvailable - 1), totalAvailable - 1)
+      if startLine <= effectiveEnd, startLine < totalAvailable {
+        slice = Array(allLines[startLine...effectiveEnd])
+      }
+    }
+
+    var truncated = false
+    if slice.count > maxLines {
+      slice = Array(slice.prefix(maxLines))
+      truncated = true
+    }
+
+    return controlJSONEncode(
+      TerminalGetTextResponse(
+        ok: true,
+        sessionId: tab.sessionId,
+        source: source,
+        lines: slice,
+        truncated: truncated,
+        totalAvailable: totalAvailable
+      ))
+  }
+
+  private static func sourceLines(
+    source: String,
+    tab: Tab,
+    ctx: ControlProjectionContext
+  ) -> [String] {
+    switch source {
+    case "screen":
+      if let snapshot = ctx.clientSnapshotProvider?(tab.sessionId) {
+        return snapshot.visibleText.components(separatedBy: "\n")
+      }
+      if let session = ctx.model.session(forTab: tab.id), let snapshot = session.snapshot() {
+        defer { laban_snapshot_destroy(snapshot) }
+        return TerminalSnapshotText.visibleText(from: snapshot, mode: .fullGrid)
+          .components(separatedBy: "\n")
+      }
+      return []
+    default:
+      guard let session = ctx.model.session(forTab: tab.id),
+        let viewport = session.viewportState(),
+        viewport.totalRows > 0,
+        let block = session.scrollbackBlock(rowOffset: 0, maxRows: viewport.totalRows)
+      else {
+        return []
+      }
+      return block.lines()
+    }
+  }
+
   public static func findStateResponse(_ state: TerminalFindState) -> FindStateResponse {
     FindStateResponse(
       isActive: state.isActive,

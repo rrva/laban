@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/get-text.schema.json",
+  "title": "Debug Terminal Get Text",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ok", "sessionId", "source", "lines", "truncated", "totalAvailable"],
+  "properties": {
+    "ok": {"type": "boolean"},
+    "sessionId": {"type": "string"},
+    "source": {
+      "type": "string",
+      "enum": ["screen", "scrollback"]
+    },
+    "lines": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "truncated": {"type": "boolean"},
+    "totalAvailable": {"type": "integer"}
+  }
+}

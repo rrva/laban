@@ -57,6 +57,32 @@ public struct ScrollbackBlock: Equatable, Sendable {
   }
 
   public var rows: Int { rowOffsets.count }
+
+  /// Returns the plain text of every row as separate strings, trimming the
+  /// trailing row-separator byte (and any NUL padding) the C extractor uses
+  /// between rows. Computes the UTF-8 byte view once and slices per row by
+  /// offset, mirroring the engine's row layout.
+  public func lines() -> [String] {
+    guard !rowOffsets.isEmpty else { return [] }
+    let bytes = Array(text.utf8)
+    var result: [String] = []
+    result.reserveCapacity(rowOffsets.count)
+    for row in 0..<rowOffsets.count {
+      let start = max(0, min(rowOffsets[row], bytes.count))
+      var end: Int
+      if row + 1 < rowOffsets.count {
+        end = max(start, min(rowOffsets[row + 1], bytes.count))
+        if end > start, bytes[end - 1] == 0x0A { end -= 1 }
+      } else {
+        end = bytes.count
+      }
+      while end > start, bytes[end - 1] == 0x0A || bytes[end - 1] == 0 {
+        end -= 1
+      }
+      result.append(String(decoding: bytes[start..<end], as: UTF8.self))
+    }
+    return result
+  }
 }
 
 /// Literal terminal-output search.

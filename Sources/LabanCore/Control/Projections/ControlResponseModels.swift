@@ -458,6 +458,31 @@ public struct ShellIntegrationStateResponse: Encodable {
   }
 }
 
+public struct TerminalGetTextResponse: Encodable {
+  public var ok: Bool
+  public var sessionId: String
+  public var source: String
+  public var lines: [String]
+  public var truncated: Bool
+  public var totalAvailable: Int
+
+  public init(
+    ok: Bool,
+    sessionId: String,
+    source: String,
+    lines: [String],
+    truncated: Bool,
+    totalAvailable: Int
+  ) {
+    self.ok = ok
+    self.sessionId = sessionId
+    self.source = source
+    self.lines = lines
+    self.truncated = truncated
+    self.totalAvailable = totalAvailable
+  }
+}
+
 public struct ScrollIndicatorStateResponse: Encodable {
   public var available: Bool
   public var input: TerminalScrollIndicator.Input?

@@ -17,6 +17,7 @@ final class ControlAvailabilityParityTests: XCTestCase {
     "terminal.modes",
     "find.state",
     "shellIntegration.state",
+    "terminal.getText",
     "scrollIndicator.state",
     "session.list",
     "session.detail",

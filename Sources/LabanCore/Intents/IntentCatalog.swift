@@ -1036,6 +1036,11 @@ public struct IntentCatalog: Sendable {
       requiredCapability: .observeSensitive, dataSensitivity: .visibleText,
       availability: guiObserve),
     descriptor(
+      id: "terminal.getText", kind: .query, category: "terminal",
+      summary: "Return bounded plain-text lines from the visible screen or full scrollback.",
+      requiredCapability: .observeSensitive, dataSensitivity: .scrollback,
+      availability: guiObserve),
+    descriptor(
       id: "render.state", kind: .query, category: "rendering",
       summary: "Return renderer state and draw stats.",
       requiredCapability: .fixture, dataSensitivity: .trace),
