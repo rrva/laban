@@ -9,6 +9,12 @@ public final class FontAtlas {
   public let ascent: CGFloat
   public let descent: CGFloat
   public let leading: CGFloat
+  // Nominal cell size (width = advance of 'M', height = ascent + descent + leading).
+  // Stored rather than computed: `font` is immutable per instance (a new
+  // FontAtlas is created for every font/size change, see `withPointSize`),
+  // so the two CoreText calls this needs only ever have one answer for the
+  // lifetime of an instance. Computed once here instead of per glyph run.
+  public let cellSize: (width: CGFloat, height: CGFloat)
   private var styledVariantCache:
     [UInt8: (font: CTFont, boldFallback: Bool, italicFallback: Bool)] = [:]
 
@@ -75,9 +81,21 @@ public final class FontAtlas {
     self.font = font
     self.fontPostScriptName = Self.postScriptName(of: font)
     self.pointSize = pointSize
-    self.ascent = CTFontGetAscent(font)
-    self.descent = CTFontGetDescent(font)
-    self.leading = CTFontGetLeading(font)
+    let ascent = CTFontGetAscent(font)
+    let descent = CTFontGetDescent(font)
+    let leading = CTFontGetLeading(font)
+    self.ascent = ascent
+    self.descent = descent
+    self.leading = leading
+    var glyph: CGGlyph = 0
+    var cp: UniChar = 77  // 'M'
+    CTFontGetGlyphsForCharacters(font, &cp, &glyph, 1)
+    var advance: CGSize = .zero
+    CTFontGetAdvancesForGlyphs(font, .default, &glyph, &advance, 1)
+    self.cellSize = (
+      width: ceil(advance.width),
+      height: ceil(ascent + descent + leading)
+    )
   }
 
   private static func makeFont(pointSize: CGFloat, fontName: String?) -> CTFont {
@@ -157,18 +175,5 @@ public final class FontAtlas {
     )
     styledVariantCache[key] = variant
     return variant
-  }
-
-  // Nominal cell size (width = advance of 'M', height = ascent + descent + leading).
-  public var cellSize: (width: CGFloat, height: CGFloat) {
-    var glyph: CGGlyph = 0
-    var cp: UniChar = 77  // 'M'
-    CTFontGetGlyphsForCharacters(font, &cp, &glyph, 1)
-    var advance: CGSize = .zero
-    CTFontGetAdvancesForGlyphs(font, .default, &glyph, &advance, 1)
-    return (
-      width: ceil(advance.width),
-      height: ceil(ascent + descent + leading)
-    )
   }
 }
