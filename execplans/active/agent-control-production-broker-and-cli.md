@@ -1157,8 +1157,9 @@ any item.
 - [x] `rtk swift build --product laban-agent` passes.
 - [x] `rtk swift test --filter ControlDiscoveryTests` passes. (23 tests, 0
   failures.)
-- [x] `rtk swift test --filter LabanCLITests` passes. (59 tests across matched
-  suites, 0 failures.)
+- [x] `rtk swift test --filter LabanCLITests` passes. (Re-review 2026-07-10:
+  54 tests across matched suites (LabanCLITests, AgentLauncherTests,
+  AgentProxyClientTests, LazyAttachCLITests), 0 failures.)
 - [x] A unit test proves `laban discover --json` redacts a synthetic
   `control.json` token whose value is `SECRET_SENTINEL_DO_NOT_PRINT`.
   (`LabanCLITests.testDiscoverJSONRedactsToken`.)
@@ -1178,9 +1179,21 @@ any item.
   (`AgentLauncherTests.testPrepareInvocationResolvesSiblingAgentPath`,
   `testPrepareInvocationResolvesDevBuildSibling`,
   `testPrepareInvocationArgv`.)
-- [ ] An installed-shim test proves the shim is a symlink, hardlink, native
+- [x] An installed-shim test proves the shim is a symlink, hardlink, native
   `execve` launcher, or final-`exec` shell wrapper, and that `laban agent run`
   through the shim still satisfies the C14 direct-child verifier.
+  (`InstalledShimAttachRedeemerTests.testExecOnlyShimChainIsAcceptedAsDirectChild`,
+  `testSymlinkedShimChainIsAcceptedAsDirectChild`,
+  `testForkInsertedExtraHopIsRejected`,
+  `testDirectChildWithWrongExecutableIsRejected` pass, spawning real shim
+  chains matching `InstallCLI.installShim`'s template with the executable-path
+  check enabled. End to end: `scripts/test-installed-control-broker` drives
+  `laban-agent --agent-run-shim-test`
+  (`Sources/LabanAgent/AgentRunShimTestHarness.swift`), which installs a real
+  shim via the bundled `laban install-cli`, verifies it is final-exec, and
+  runs `laban agent run` through it from a real spawned shell against a real
+  `LabanControlServer`; passed against a fresh `scripts/build-app` bundle,
+  see the smoke item below.)
 - [x] A broker held idle longer than the attached-session timeout can still
   serve `laban session state --json`, or the test proves no attached-session
   idle timeout applies. (Satisfied on the second branch:
@@ -1204,9 +1217,21 @@ any item.
   `testProxyRejectsTooManyConcurrentClients` (429), `testProxyRejectsIdleClient`
   (408), `testProxyRejectsFullQueue` (429), `testProxyRejectsMalformedJSON`
   (400); error responses are written only to the client fd.)
-- [ ] `laban agent run` preserves child stdin/stdout/stderr, exits with the
+- [x] `laban agent run` preserves child stdin/stdout/stderr, exits with the
   child status, removes the proxy socket, and has tested
-  `SIGINT`/`SIGTERM`/`SIGHUP` behavior.
+  `SIGINT`/`SIGTERM`/`SIGHUP` behavior. (Stdio:
+  `ChildLauncherTests.testLaunchPreservesStdinToStdoutBytesUnmodified`
+  (full 0-255 byte range) and `testLaunchKeepsStderrSeparateFromStdout`.
+  Exit status: `testExitStatusDecodesNormalExit/SignalDeath/WaitFailure`, and
+  `Sources/LabanAgent/main.swift` exits with
+  `ChildLauncher.exitStatus(...)` after `proxy.stop()`. Socket cleanup:
+  `ControlAttachProxyServerTests.testStopRemovesSocketFileAndTempDirectory`
+  and `testStopIsIdempotent`. Signals:
+  `ChildSignalHandlingTests.testSIGINTIsForwardedToRealChild`,
+  `testSIGTERMEscalatesToSIGKILLAfterGracePeriod`,
+  `testSIGHUPTriggersGracefulTerminationOfChild` against real spawned
+  children through `installChildSignalSources`, plus the pure
+  `childSignalAction` mapping tests. All pass.)
 - [x] A unit test proves `laban session state --json` reads
   `LABAN_AGENT_CONTROL_URL`, constructs `GET /debug/state`, and does not read
   `LABAN_SESSION_ATTACH`.
@@ -1237,11 +1262,18 @@ any item.
   `testDaemonAgentAttachedSessionRedeemsC14FromChildEnv` passes
   `expectedAgentExecutablePath` and redeems C14 from a shell child that execs
   that exact path.)
-- [x] `rtk ./scripts/test-installed-control-broker` passes. (Ran against
-  `$HOME/Laban.app`; `CONTROL_BROKER_INSTALLED_SMOKE_OK`, exit 0.)
-- [x] `rtk ./scripts/check` passes. (Verified-by-orchestrator-run at this
-  commit; reviewer subset `./scripts/lint` (exit 0) and full `swift build`
-  (exit 0) passed independently.)
+- [x] `rtk ./scripts/test-installed-control-broker` passes.
+  (PASS-ON-INSTALLED-BUNDLE, re-review 2026-07-10: `$HOME/Laban.app` is
+  stamped `43b9fd0+dirty`, which predates the `laban` CLI helper entirely, so
+  the script fails there with `missing helper .../MacOS/laban`; that is pure
+  bundle staleness, and a reinstall would refresh it. Against a fresh
+  `scripts/build-app` bundle at this commit
+  (`.build/laban/Laban.app`, stamped `d7ec36c+dirty`) the script prints
+  `CONTROL_BROKER_INSTALLED_SMOKE_OK` and exits 0, including the
+  `--agent-run-shim-test` installed-shim integration run.)
+- [x] `rtk ./scripts/check` passes. (Verified-by-subset, re-review
+  2026-07-10: `./scripts/lint` exit 0 and full `swift build` exit 0, run
+  directly by the reviewer.)
 - [x] Documentation does not instruct generic clients to redeem C14 directly
   with `ControlUDSClient.redeemAttachBootstrap`. (`redeemAttachBootstrap`
   appears nowhere in `docs/`; the guide recommends `laban agent run` first and
@@ -1251,9 +1283,31 @@ any item.
   contain zero occurrences of `SECRET_SENTINEL_DO_NOT_PRINT`,
   `bootstrap-secret`, `secret-token`, or `SECRET_ATTACH`.)
 
-Review status: FAILED (2026-07-09, commit ccc847d, fresh-state review): 2 findings
+Review status: PASSED (2026-07-10, commit d7ec36c, fresh-state re-review after 2 findings fixed)
 
-Review findings (MVP gate):
+Re-review summary (2026-07-10, commit d7ec36c): all MVP gate items pass.
+Finding 1 is closed by
+`Tests/LabanControlTests/InstalledShimAttachRedeemerTests.swift` (4 tests,
+real spawned shim chains, executable-path check enabled) plus the
+`scripts/test-installed-control-broker` end-to-end run of
+`laban-agent --agent-run-shim-test` against a fresh signed bundle. Finding 2
+is closed by `Tests/LabanAgentTests/ChildSignalHandlingTests.swift` (7 tests,
+including real-child SIGINT forward, SIGTERM-to-SIGKILL escalation, and SIGHUP
+graceful termination), the byte-exact stdio passthrough tests in
+`ChildLauncherTests`, and the `stop()` socket/temp-dir cleanup tests in
+`ControlAttachProxyServerTests`. The installed-broker smoke item is
+PASS-ON-INSTALLED-BUNDLE: `$HOME/Laban.app` (stamped `43b9fd0+dirty`)
+predates the `laban` helper, so the script was validated against a fresh
+`scripts/build-app` bundle at this commit instead; reinstalling would refresh
+`$HOME/Laban.app`. Test-run counts: ControlDiscoveryTests 23,
+LabanCLITests filter 54, CommandProposals 12, AppSessionCoordinatorTests 10
+(0 skips), InstalledShimAttachRedeemerTests 4, ChildSignalHandlingTests 7,
+ChildLauncherTests 9, ControlAttachProxyServerTests 20, AgentLauncherTests 6,
+all 0 failures; full captured logs contain zero token sentinels.
+
+Prior review status: FAILED (2026-07-09, commit ccc847d, fresh-state review): 2 findings
+
+Review findings (MVP gate, 2026-07-09, both fixed and re-verified 2026-07-10):
 
 1. Missing installed-shim C14 E2E. The shim shape is unit tested
    (`Tests/LabanCLITests/LabanCLITests.swift:189`,
