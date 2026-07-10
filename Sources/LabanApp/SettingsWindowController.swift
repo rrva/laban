@@ -31,7 +31,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let controlServerCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Enable agent control server"), target: nil, action: nil)
   private let agentAttachedSessionCheckbox = NSButton(
-    checkboxWithTitle: L10n.tr("Open first session as agent-attached on launch"), target: nil,
+    checkboxWithTitle: L10n.tr("Auto-attach agents at launch without approval (advanced)"),
+    target: nil,
     action: nil)
   private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let scrollModePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -254,8 +255,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     agentAttachedSessionCheckbox.target = self
     agentAttachedSessionCheckbox.action = #selector(agentAttachedSessionChanged(_:))
     agentAttachedSessionCheckbox.toolTip =
-      "Equivalent to launching Laban with --agent-attached-session. "
-      + "The first tab is agent-attached and receives the C14 attach bootstrap."
+      "Advanced / dev / CI. When on, the first tab at launch injects a one-time "
+      + "C14 attach bootstrap so an agent started with `laban agent run` can "
+      + "attach with no approval dialog. Most users do not need this: an agent "
+      + "already running in any tab can attach on demand through lazy attach "
+      + "(you approve it once). Requires the agent control server to be on."
 
     cursorStylePopUp.target = self
     cursorStylePopUp.action = #selector(cursorStyleChanged(_:))

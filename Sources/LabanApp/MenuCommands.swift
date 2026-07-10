@@ -83,12 +83,12 @@ enum MenuCommands {
         action: #selector(TerminalBitmapView.newTab(_:)),
         keyEquivalent: "t"
       ))
-    fileMenu.addItem(
-      NSMenuItem(
-        title: L10n.tr("New Agent-Attached Session"),
-        action: #selector(TerminalBitmapView.newAgentAttachedTab(_:)),
-        keyEquivalent: ""
-      ))
+    // Note: there is deliberately no "New Agent-Attached Session" menu item.
+    // An already-running agent in any tab reaches the control plane through
+    // lazy attach (a same-user descendant of the tab shell asks for one
+    // approved read, see docs/process/controlling-agent-control-plane.md); a
+    // deterministic no-dialog agent is launched with `laban agent run`. The
+    // per-tab menu action added nothing over those two paths.
     fileMenu.addItem(
       NSMenuItem(
         title: L10n.tr("Close Tab"),

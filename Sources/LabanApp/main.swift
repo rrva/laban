@@ -26,8 +26,12 @@ func usage() -> String {
                                control surface (default port 8787) and write a
                                viewport trace under
                                ~/Library/Logs/Laban/scroll-trace/. Debug-only.
-    --agent-attached-session   Open the first tab as agent-attached (C13/C14)
-                               and opt it into LABAN_CONTROL_ATTACH_ENV=1.
+    --agent-attached-session   Advanced/dev/CI: open the first tab so it injects
+                               a one-time C14 attach bootstrap (opts into
+                               LABAN_CONTROL_ATTACH_ENV=1), letting `laban agent
+                               run` attach with no approval dialog. Humans can
+                               instead let an already-running agent attach on
+                               demand via lazy attach (approve once).
     --profile-recorder[=<url>]  Enable the in-process sampling profiler. With no
                                value, listens under ~/Library/Application Support/
                                Laban/profiling/. Overrides the Settings toggle and
