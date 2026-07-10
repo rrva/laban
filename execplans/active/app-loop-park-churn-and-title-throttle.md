@@ -18,7 +18,22 @@ All three are workload-rhythm problems: a TUI that emits output every ~100 ms (s
 - [x] (2026-07-10, `722cf888`) W1: Raised the labpty wake park quiet threshold from 50 ms to 500 ms.
 - [x] (2026-07-10, `89c631a8`) W2: Debounced AppKit window-title application to at most ~5 sets/second with a trailing apply (`WindowTitleThrottle` + `applyWindowTitleIfNeeded()`; `WindowTitleThrottleTests` added, 6 tests).
 - [x] (2026-07-10, `3db77812`) W3: Cheap no-new-output pre-check so `pollAllLabptyFeeds` skips the queue hop and ring read for quiet tabs (`LabptyParserFeed.wakeIfOutputPending()`).
-- [ ] Re-measure with the same workload and compare the three subtree shares; record results in an `Outcomes & Retrospective` section.
+- [x] (2026-07-10) Re-measure captured and analyzed; see `Outcomes & Retrospective`. Build `91709b18` installed and restarted; 20 s CPU-only xctrace capture, same spinner workload shape, window unfocused like the baseline.
+
+## Outcomes & Retrospective
+
+Re-measure (2026-07-10, build `91709b18`, 20 s xctrace CPU-only, ~100 ms spinner via `POST /scroll/input`, Laban unfocused, matching baseline conditions). The re-measure trace carried ~5x the baseline's total sample weight because earlier queued workload commands overlapped in the tab (more genuine output per second, visible as a larger `appendGlyphRun` share); absolute row counts are therefore the honest comparison and are shown alongside shares:
+
+    marker                                baseline rows (share)   re-measure rows (share)
+    parkOutputWake RPC                     53  (0.49%)              0  (0.00%)
+    park machinery (excl. poll overlap)   180  (1.66%)             10  (0.02%)
+    labptyActiveDrainTick machinery       287  (2.65%)            131  (0.24%)
+    -[NSWindow _dosetTitle:]              288  (2.66%)              0  (0.00%)
+    LabptyParserFeed.poll() subtree       634  (5.86%)           1526  (2.80%)
+
+W1: zero park cycles ran during the workload (RPC rows 0), and the drain-tick machinery got cheaper in absolute terms even though the un-parked span is now 10x longer, because W3's pre-check makes the per-tick fan-out skip quiet feeds. W2: title sets went to zero in this capture; the baseline's ~14 sets/s title churn was itself fed by the park/unpark flapping of tab activity state, so W1 removed the churn source and the throttle is the backstop for TUIs that genuinely spin their OSC title (its 6 unit tests cover the semantics; a live Codex/Claude-Code-in-Laban session is the real-world check). W3: poll rows only halved rather than vanished because the measured tab genuinely produces output every 100 ms; the two-tab quiet-feed case is where the pre-check fully skips.
+
+One anomaly worth recording: a separate capture taken while the Laban window was focused showed `_dosetTitle` at 2.08% even with the throttle active, at ~13x the per-set cost of the unfocused baseline (focused-window title bars re-render more expensively). If focused-window title cost resurfaces, the next lever is widening the throttle interval or skipping title sets while a fullscreen TUI owns the tab, not further micro-optimization of the apply path.
 
 ## Context and Orientation
 
