@@ -19,10 +19,10 @@ Measured baseline (20 s trace, Claude Code TUI with spinner + light output, ~12 
 
 - [x] (2026-07-10) Signpost instrumentation shipped (`slug.render`, `slug.publish`, `slug.present`, `slug.encodeBlit`, `slug.skipFrame`, `slug.glyphBuild`, `slug.geometryUpload`) — commits `ff77024`, `fd06aa7`.
 - [x] (2026-07-10) Baseline captured and analyzed (`Untitled7.trace`, numbers above).
-- [ ] M0: Negative-cache failed glyph resolutions in `ensureGlyph`.
-- [ ] M1: Make `FontAtlas.cellSize` a stored property.
-- [ ] M2: Cache per-(source, bold, italic) font identity so `CTFontCopyPostScriptName` leaves the per-run path.
-- [ ] M3: Hoist the no-decoration early-out to `appendGlyphRun`'s call site of `appendDecorations`.
+- [x] (2026-07-10) M0: Negative-cache failed glyph resolutions in `ensureGlyph`. Commit `115a838`.
+- [x] (2026-07-10) M1: Make `FontAtlas.cellSize` a stored property. Commit `096be82`.
+- [x] (2026-07-10) M2: Cache per-(source, bold, italic) font identity so `CTFontCopyPostScriptName` leaves the per-run path. Commit `4b213e7`.
+- [x] (2026-07-10) M3: Hoist the no-decoration early-out to `appendGlyphRun`'s call site of `appendDecorations`. Commit `b03c9d4`.
 - [ ] M4: Skip redundant re-present blits when the published frame version is unchanged.
 - [ ] M5: Damage-aware instance building (only build instances intersecting effective damage bands).
 - [ ] Re-measure with the capture recipe below; update `Outcomes & Retrospective`.
@@ -52,6 +52,8 @@ Definitions used below:
 - Observation: instance building is damage-blind. Frames whose effective damage was `bands:4`/`bands:5` still built the full ~1,505 slug glyphs + ~330 raster instances; only the GPU fragment work is scissored.
   Evidence: `slug.render` end messages show the same instance counts for `eff= full` and `eff= bands:N` frames.
 - Observation: `FontAtlas.cellSize` (`Sources/LabanRenderer/FontAtlas.swift:163`) is a computed property performing two CoreText calls per access, and the slug path accesses it several times per glyph run per frame. 213 of the trace's 317 `CTFontGetGlyphsForCharacters` samples came from this getter, not from glyph resolution.
+- Observation: `swift test --filter Vector` (run per M1's validation instructions, since `cellSize` is shared across renderers) has a pre-existing failure unrelated to this plan: `VectorZoomGlyphSizeConsistencyTests.testGlyphSizesStaySingleAcrossZoomCommits` (10 assertion failures, "renderer never produced a non-dropped frame"/glyph-size mismatches across zoom commits). Reproduced identically on commit `115a838` (M0, before any `FontAtlas` change), so it predates this plan and is not a regression from M1's `cellSize` change. Not investigated further here; flag for a separate fix.
+  Evidence: same 10 failures, same messages, on both `115a838` and the M1 commit `096be82`.
 
 ## Plan of Work
 
