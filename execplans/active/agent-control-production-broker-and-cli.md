@@ -150,6 +150,56 @@ helper source.
 - [ ] Milestone 2c: Add production-grade inventory, terminal text capture,
   streaming/wait commands, agent hooks, exit codes, completions, and install
   shims so the CLI is useful beyond raw state/proposal smoke tests.
+  - [x] (2026-07-09) Delivered a subset: `terminal.getText` intent, `laban
+    session current`, `laban session get-text`, `laban context`, `laban wait
+    prompt`, and `laban wait command-finished`, plus a CLI/catalog drift
+    test proving every non-raw CLI command names a real `IntentCatalog` id.
+    - `terminal.getText`: new query intent, `dataSensitivity: .scrollback`,
+      session-scoped on both GUI and headless surfaces, deliberately excluded
+      from `ControlLazyAttachAllowlist` (see Decision Log, 2026-07-09,
+      "`laban context --json` is CLI-side composition..."). Route `GET
+      /debug/text`. Tests: `Tests/LabanAppTests/CatalogParityTests.swift`,
+      `Tests/LabanCoreTests/IntentCatalogTests.swift`.
+    - `laban session current --json`, `laban session get-text
+      --screen|--scrollback`, `laban context --json [--max-lines N]`:
+      broker-only (no lazy-attach fallback), compose `session.detail`,
+      `shellIntegration.state`, and `terminal.getText`, and redact any
+      token-like key before printing. Tests:
+      `testSessionCurrentComposesShellIntegrationAndSessionDetail`,
+      `testSessionCurrentMissingProxyEnvExitsThreeWithoutLazyAttach`,
+      `testSessionGetTextSendsQueryParametersAndReturnsBody`,
+      `testSessionGetTextMissingProxyEnvExitsThreeWithoutLazyAttach`,
+      `testSessionGetTextNon2xxExitsFive`,
+      `testContextComposesBundleAndNeverLeaksSentinel`,
+      `testContextPropagatesNon2xxFromGetTextLeg` in
+      `Tests/LabanCLITests/LabanCLITests.swift`.
+    - `laban wait prompt [--timeout SECONDS]`, `laban wait command-finished
+      [--timeout SECONDS]`: broker-side bounded polling of
+      `shellIntegration.state` every 200ms (default timeout 30s), per the
+      Decision Log's "Waits are broker-side bounded polling..." entry;
+      `ShellIntegrationStateResponse` gained `completedCommandCount` on the
+      wire so `wait command-finished` has something to compare against.
+      Tests: `testWaitPromptSucceedsOnceAtPromptIsObserved`,
+      `testWaitPromptTimesOutExitsFour`,
+      `testWaitPromptMissingProxyEnvExitsThreeWithoutLazyAttach`,
+      `testWaitPromptMalformedResponseExitsSix`,
+      `testWaitCommandFinishedSucceedsOnceCountIncrements`,
+      `testWaitCommandFinishedTimesOutExitsFour`,
+      `testWaitCommandFinishedMissingProxyEnvExitsThreeWithoutLazyAttach`,
+      `testWaitCommandFinishedMalformedResponseExitsSix` in
+      `Tests/LabanCLITests/LabanCLITests.swift`.
+    - CLI/catalog drift test: `Sources/LabanCLI/CLICatalogMapping.swift` maps
+      every `LabanCommand` case to an `IntentCatalog` id, a raw escape hatch
+      (`request`, `session request`, `session proxy`), or client-only.
+      Tests: `testEveryCommandCaseHasAMappingEntry`,
+      `testEveryCatalogBackedCommandNamesARealIntentID`,
+      `testTerminalGetTextRemainsBrokerOnlyAndOutOfLazyAttachAllowlist` in
+      `Tests/LabanCLITests/CLICatalogDriftTests.swift`.
+    - Deferred (not part of this subset): `laban list`, `session dump-screen`,
+      `session subscribe`, `badge`/`notify` hooks, and `wait proposal`. See
+      the Decision Log entries dated 2026-07-09 for the multiplexing
+      rationale behind deferring `session subscribe` and for why waits use
+      polling instead of a new wire primitive.
 - [ ] Milestone 3: Expand command proposals from a one-shot create action into a
   useful lifecycle with list/status/cancel, audit, and event/wait hooks.
 - [ ] Milestone 4: Make diagnostics, redaction, docs, and operator controls

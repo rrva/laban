@@ -204,6 +204,43 @@ running in a registered session without having been started through `laban
 agent run`. It is not a replacement for the broker path: prefer `laban agent
 run` whenever you are the one starting the agent.
 
+### Broker-only commands: identity, text capture, context, and waits
+
+These commands require `LABAN_AGENT_CONTROL_URL` and never fall back to lazy
+attach, because they read data more sensitive than the lazy-attach allowlist
+grants with a one-shot approval:
+
+```sh
+laban session current --json
+laban session get-text --screen [--start-line N] [--end-line N] [--max-lines N] --json
+laban session get-text --scrollback [--start-line N] [--end-line N] [--max-lines N] --json
+laban context --json [--max-lines N]
+laban wait prompt [--timeout SECONDS]
+laban wait command-finished [--timeout SECONDS]
+```
+
+- `session current --json` returns the proxy-bound session's identity, shell
+  phase, and last exit code. It composes `session.detail` and
+  `shellIntegration.state` and strips any key that looks like a credential
+  before printing.
+- `session get-text` returns bounded plain-text lines from the visible screen
+  (`--screen`) or full scrollback (`--scrollback`), addressed by line range,
+  capped by `--max-lines`. It calls the `terminal.getText` intent, which is
+  classified `dataSensitivity: .scrollback` and is deliberately excluded from
+  the lazy-attach allowlist.
+- `context --json` prints a compact bundle for agent prompts: bound session
+  identity, shell phase, `session.detail` metadata, and a bounded scrollback
+  tail. It is CLI-side composition over `session.detail`,
+  `shellIntegration.state`, and `terminal.getText`, not a new server endpoint.
+- `wait prompt` blocks until the bound session's shell integration phase
+  reaches `atPrompt`; `wait command-finished` blocks until the shell's
+  completed-command count increments. Both poll `shellIntegration.state` on
+  the broker every 200ms (default 30s timeout) rather than holding a
+  streaming connection open, because the single C14 upstream connection
+  cannot safely multiplex a long-lived stream. They exit `0` on success, `4`
+  on timeout, `3` when `LABAN_AGENT_CONTROL_URL` is unset, and `6` on a
+  malformed response.
+
 ## Lazy attach fallback for already-running agents
 
 A process that is already running in a Laban-registered shell session can
@@ -266,7 +303,10 @@ HTTP status mapping:
 | `429` | A pending request for this principal/intent is already in flight. |
 
 `session proxy` is not available through lazy attach; it requires the broker
-path with `LABAN_AGENT_CONTROL_URL`.
+path with `LABAN_AGENT_CONTROL_URL`. `session current`, `session get-text`,
+`context`, and `wait` are also broker-only for the same reason: they read
+data (bound-session identity, scrollback text) more sensitive than the
+lazy-attach allowlist grants with a one-shot approval.
 
 ### Revoking approvals
 
@@ -297,7 +337,8 @@ has many more endpoints than the live app.
 | `/debug/sessions/<session-id>` | `GET` | `includeGrid=true` optional | Own-session details; with `includeGrid=true`, returns visible-grid cells. |
 | `/debug/selection` | `GET` | none | Current selection projection and selected text for the attached session. |
 | `/debug/find/state` | `GET` | omit `sessionID` | Current find state for the attached session. |
-| `/debug/shell-integration/state` | `GET` | omit `sessionID` | OSC 133 phase and last command exit code. |
+| `/debug/shell-integration/state` | `GET` | omit `sessionID` | OSC 133 phase, last command exit code, and completed-command count. |
+| `/debug/text` | `GET` | `source=screen\|scrollback`, `startLine`, `endLine`, `maxLines` optional | Bounded plain-text lines from the visible screen or full scrollback for the attached session. |
 | `/debug/terminal-modes` | `GET` | none | DEC/private mode flags for the attached session. |
 | `/debug/scroll-indicator/state` | `GET` | `hover=true` optional | Scroll-indicator state for the attached session. |
 | `/debug/actions` | `POST` | `{"action":"scrollViewport","deltaRows":N}` | Move scrollback viewport. Positive/negative rows move according to app semantics. |
@@ -418,3 +459,7 @@ POST requests must include `Content-Length` and JSON body bytes. Duplicate
 - Live GUI router subset: `Sources/LabanApp/Control/LiveIntentRouter.swift`
 - Intent capability metadata: `Sources/LabanCore/Intents/IntentCatalog.swift`
 - Route catalog: `Sources/LabanControl/ControlRouteCatalog.swift`
+- `laban` CLI commands and broker-only dispatch: `Sources/LabanCLI/LabanCommand.swift`,
+  `Sources/LabanCLI/LabanCLI.swift`
+- CLI/catalog drift mapping: `Sources/LabanCLI/CLICatalogMapping.swift`,
+  `Tests/LabanCLITests/CLICatalogDriftTests.swift`
