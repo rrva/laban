@@ -219,6 +219,63 @@ final class SlugGlyphDamageTests: XCTestCase {
     XCTAssertEqual(partialHash, expectedHash)
   }
 
+  // MARK: - Force-full drain must not drop interleaved partial damage
+
+  /// Regression: a partial-damage frame that lands on a slot still flagged
+  /// force-full (any `.full` frame re-flags every slot, draining one per
+  /// frame) used to return before its bands reached the OTHER slots'
+  /// accumulators. One ring revolution later those rows silently reverted to
+  /// that slot's stale content — the git-pull / fullscreen-TUI flicker,
+  /// where scrolling output constantly interleaves `.full` frames with
+  /// partial progress-line updates. Interleaves partials into the middle of
+  /// a drain and requires the next genuinely partial frame to be
+  /// byte-identical to a full redraw.
+  func testPartialDamageDuringForceFullDrainIsNotDroppedForOtherSlots() throws {
+    try skipIfNoMetal()
+    let cellSize = makeFontAtlas().cellSize
+
+    for layout in [VectorSubpixelLayout.grayscale, .rgbStripe] {
+      var text = asciiText()
+      let renderer = try makeRenderer(layout: layout, cellSize: cellSize)
+      warmAllRingSlots(renderer, commands: frameCommands(text: text, cellSize: cellSize))
+
+      // A .full frame re-flags every slot force-full and renders slot 0.
+      XCTAssertTrue(
+        renderer.render(frameCommands(text: text, cellSize: cellSize), damage: .full))
+
+      // Two partial frames land on the still-flagged slots 1 and 2. Each
+      // renders full (so the screen looks right at the time); their bands
+      // must still be recorded for the slots that did NOT render them.
+      text[2] = mutatedLine(text[2], seed: 21)
+      XCTAssertTrue(
+        renderer.render(
+          frameCommands(text: text, cellSize: cellSize),
+          damage: damageForRow(2, cellSize: cellSize)))
+      text[5] = mutatedLine(text[5], seed: 23)
+      XCTAssertTrue(
+        renderer.render(
+          frameCommands(text: text, cellSize: cellSize),
+          damage: damageForRow(5, cellSize: cellSize)))
+
+      // Drain over: this frame hits slot 0 (last drawn before rows 2 and 5
+      // changed) down the genuinely-partial path. Its accumulator must carry
+      // rows 2 and 5, or they revert to the .full frame's content.
+      text[6] = mutatedLine(text[6], seed: 25)
+      XCTAssertTrue(
+        renderer.render(
+          frameCommands(text: text, cellSize: cellSize),
+          damage: damageForRow(6, cellSize: cellSize)))
+
+      let reference = try makeRenderer(layout: layout, cellSize: cellSize)
+      XCTAssertTrue(
+        reference.render(frameCommands(text: text, cellSize: cellSize), damage: .full))
+      XCTAssertEqual(
+        hash(try XCTUnwrap(renderer.pngData)),
+        hash(try XCTUnwrap(reference.pngData)),
+        "layout \(layout.name)")
+    }
+  }
+
   // MARK: - Cursor blink correctness
 
   func testCursorBlinkViaEmptyPartialTogglesExactlyCursorCells() throws {

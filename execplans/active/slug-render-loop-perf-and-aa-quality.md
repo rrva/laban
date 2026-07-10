@@ -1026,6 +1026,35 @@ Surprises & Discoveries:
   flakiness unrelated to `SlugGlyphRenderer`/M2 and out of this plan's scope;
   not investigated further here.
 
+### M2 correction (2026-07-09): force-full drain dropped interleaved partial damage
+
+The M2 implementation violated its own accumulation invariant ("union each
+incoming frame's damage into every slot's accumulator"): the
+`slotNeedsForceFull` early return in `resolveEffectiveDamage` ran *before*
+the all-slots union, so a partial-damage frame landing on a still-flagged
+slot rendered full (correct on screen) but never recorded its bands for the
+other two slots. Any `.full` frame re-flags all three slots and the flags
+drain one per frame, so content that alternates `.full` and `.partial` —
+scrolling command output with `\r`-rewritten progress lines (git pull), or a
+fullscreen TUI interleaving whole-screen repaints with spinner updates —
+dropped the partials' bands for the two undrained slots. One ring revolution
+later those rows reverted to that slot's stale content, then healed on the
+next dirtying: the visible "rendered, undone, re-rendered" flicker. Diagnosed
+from capture `appkit-2026-07-09T20-15-24Z` (355 pixel-hash changes across
+same-visible-hash frame pairs, in runs of 3-5 distinct pixel states — more
+than cursor blink can produce). Fix: accumulate into every slot first, then
+take the force-full early return. Second, `render()` consumes a slot's
+accumulator and force-full flag before the backpressure/allocation failure
+guards; the GPU-backpressure park path (`TerminalBitmapView.swift`,
+`backpressureInvalidationDecision.shouldPark`) can clear `renderInvalidated`
+without a retry, stranding the consumed damage. `render()` now restores the
+consumed damage (partial bands rejoin the accumulator; a consumed `.full`
+re-flags the slot) on every non-committed exit. Regression test:
+`testPartialDamageDuringForceFullDrainIsNotDroppedForOtherSlots` interleaves
+partials into the middle of a force-full drain and requires the next
+genuinely partial frame to be byte-identical to a full redraw; it fails
+without the reorder (both grayscale and rgbStripe) and passes with it.
+
 ### M3 results (2026-07-05): answered no
 
 Added a print-only exploration harness,

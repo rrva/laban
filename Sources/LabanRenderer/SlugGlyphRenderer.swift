@@ -805,12 +805,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       for i in slotNeedsForceFull.indices { slotNeedsForceFull[i] = true }
     }
 
-    if slotNeedsForceFull[slot] {
-      slotDamageAccumulators[slot] = DirtyYRangeSet([])
-      slotNeedsForceFull[slot] = false
-      return .render(damage: .full, slot: slot, ringRebuild: ringRebuild)
-    }
-
+    // Accumulate this frame's damage into EVERY slot before the force-full
+    // early return below. A partial frame that lands on a still-flagged slot
+    // renders full and looks correct on screen, but the other slots still
+    // need this frame's bands when their turn comes: returning early without
+    // accumulating made rows silently revert to a slot's stale content one
+    // ring revolution later (the git-pull / fullscreen-TUI flicker, where
+    // .full frames from scrolling constantly re-flag all slots and the
+    // partial progress-line updates in between were dropped).
     let incoming: DirtyYRangeSet
     if case .partial(let yRanges) = damage {
       incoming = DirtyYRangeSet(yRanges).union(
@@ -823,6 +825,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         slotDamageAccumulators[i] = slotDamageAccumulators[i].union(incoming)
       }
     }
+
+    if slotNeedsForceFull[slot] {
+      slotDamageAccumulators[slot] = DirtyYRangeSet([])
+      slotNeedsForceFull[slot] = false
+      return .render(damage: .full, slot: slot, ringRebuild: ringRebuild)
+    }
+
     let combined = slotDamageAccumulators[slot]
     slotDamageAccumulators[slot] = DirtyYRangeSet([])
     guard !combined.isEmpty else { return .skip }
@@ -850,6 +859,18 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     previousCursorRects = currentCursorRects
     snapshotConfigForNextFrame(clearColor: clearColor)
+
+    // resolveEffectiveDamage already consumed this slot's accumulator and
+    // force-full flag. If the frame fails below (backpressure, allocation),
+    // put that damage back so the retry cannot under-redraw the slot: most
+    // callers retry with .full anyway, but the backpressure park path does
+    // not guarantee it.
+    var frameCommitted = false
+    defer {
+      if !frameCommitted {
+        restoreConsumedDamage(effectiveDamage, slot: slot)
+      }
+    }
 
     lastRenderFailureReason = nil
     let dropIfBusy = dropNextFrameWhenBusy
@@ -1167,6 +1188,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       if waitForFrameCompletion {
         commandBuffer.waitUntilCompleted()
       }
+      frameCommitted = true
       releaseFrameOnExit = false
       return true
     }
@@ -1191,8 +1213,25 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     if waitForFrameCompletion {
       commandBuffer.waitUntilCompleted()
     }
+    frameCommitted = true
     releaseFrameOnExit = false
     return true
+  }
+
+  /// Undo `resolveEffectiveDamage`'s consumption of `slot`'s pending damage
+  /// after a failed (never-committed) render. A consumed `.full` becomes the
+  /// slot's force-full flag again; consumed partial bands rejoin the slot's
+  /// accumulator. Without this, a failure whose retry is not guaranteed to be
+  /// `.full` (the GPU-backpressure park path) would under-redraw the slot.
+  private func restoreConsumedDamage(_ damage: RenderDamage, slot: Int) {
+    guard slotNeedsForceFull.indices.contains(slot) else { return }
+    switch damage {
+    case .full:
+      slotNeedsForceFull[slot] = true
+    case .partial(let yRanges):
+      slotDamageAccumulators[slot] =
+        slotDamageAccumulators[slot].union(DirtyYRangeSet(yRanges))
+    }
   }
 
   public func referenceOutline(for scalar: Unicode.Scalar) -> GlyphCurveOutline? {
