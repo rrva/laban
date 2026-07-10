@@ -671,8 +671,12 @@ final class AppSessionCoordinator {
   }
 
   private func pollAllLabptyFeeds() {
+    // The only call site that uses the cheap pre-check: every other `wake()`
+    // caller (daemon wake pipe, unpark response, reconnect) must stay
+    // unconditional so a stale offset mirror can only cause a spurious poll,
+    // never a missed one (see `wakeIfOutputPending()`'s comment).
     for feed in labptyFeedByTabId.values {
-      feed.wake()
+      feed.wakeIfOutputPending()
     }
   }
 
@@ -1088,6 +1092,12 @@ private final class LabptyParserFeed {
   private var stopped = false
   // Touched only from `poll()` on the serial timer queue, like `lastOffset`.
   private var overflowGate = LabptyByteRingOverflowGate()
+  // Lock-guarded mirror of `lastOffset`, written by `poll()` right after it
+  // updates `lastOffset` itself. `lastOffset` is confined to `queue`; this
+  // mirror lets `wakeIfOutputPending()` read "how far have we consumed" from
+  // the main thread without hopping to `queue` first, which is the whole
+  // point (see that method's comment for the concurrency argument).
+  private let publishedLastOffset = OSAllocatedUnfairLock(initialState: UInt64(0))
 
   init(
     ptyHandle: UInt64,
@@ -1126,6 +1136,35 @@ private final class LabptyParserFeed {
     queue.async { [weak self] in
       self?.poll()
     }
+  }
+
+  // Called only from `pollAllLabptyFeeds()` (main thread) on the 8ms active
+  // drain tick, to skip the `queue.async` hop and the ring read in `poll()`
+  // for a tab that has produced nothing since our last consume. Every other
+  // caller of `wake()` (the daemon wake-pipe handler, the unpark response,
+  // reconnect) stays unconditional, so a stale `publishedLastOffset` mirror
+  // can only ever cause a spurious extra `poll()`, never a missed one.
+  //
+  // Memory-ordering argument: `reader.outputWriteOffset()` does an aligned
+  // acquire load of the daemon's monotonically increasing write-offset
+  // counter in the shared-memory ring (see
+  // `LabptyByteRingReader.outputWriteOffset()`, a read-only load from an
+  // mmap the daemon owns and only ever appends to; it is safe to call from
+  // any thread, including this one racing `poll()` on `queue`). We compare it
+  // against the offset `poll()` last published *after* consuming up to that
+  // point. Three interleavings are possible:
+  //  - the producer wrote nothing new: `outputWriteOffset() <=` the mirror,
+  //    we correctly skip.
+  //  - the producer wrote before our read and `poll()` already published the
+  //    new mirror value: we see the advance and wake, correctly.
+  //  - the producer writes concurrently with our read, racing `poll()`'s own
+  //    mirror update: worst case we read a stale (too-low) mirror and skip a
+  //    wake this tick, but the daemon's wake pipe still fires for that same
+  //    write, and `handleLabptyOutputWake` polls all feeds unconditionally,
+  //    so the output is never stranded, only picked up slightly later.
+  func wakeIfOutputPending() {
+    guard reader.outputWriteOffset() > publishedLastOffset.withLock({ $0 }) else { return }
+    wake()
   }
 
   func observedWakeParkEntry(
@@ -1167,6 +1206,10 @@ private final class LabptyParserFeed {
     }
     let result = reader.readSince(lastOffset)
     lastOffset = result.newOffset
+    // Publish right after consuming, so a concurrent `wakeIfOutputPending()`
+    // read on the main thread never observes an offset we have not actually
+    // finished handling yet.
+    publishedLastOffset.withLock { $0 = result.newOffset }
     IdleCounters.shared.noteLabptyPoll(byteCount: result.bytes.count)
     guard !result.bytes.isEmpty else { return }
     // The first read positions the cursor from offset 0, so its span covers the
