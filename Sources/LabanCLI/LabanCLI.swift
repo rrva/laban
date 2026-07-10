@@ -215,6 +215,58 @@ enum LabanCLI {
       try AgentProxyClient.proxyStdio(proxyURL: proxyURL)
       return LabanCLIResult(exitCode: 0, stdout: "", stderr: "")
 
+    case .sessionCurrent(let json):
+      switch try resolveBoundSessionDetail(
+        agentProxyRequest: agentProxyRequest,
+        agentProxyURL: agentProxyURL,
+        json: json)
+      {
+      case .success(let resolved):
+        return formatJSONObject(resolved.detail)
+      case .failure(let result):
+        return result
+      }
+
+    case .sessionGetText(let source, let startLine, let endLine, let maxLines, let json):
+      return try performAgentProxyRequest(
+        agentProxyRequest: agentProxyRequest,
+        agentProxyURL: agentProxyURL,
+        envelope: AgentProxyClient.getTextRequest(
+          source: source, startLine: startLine, endLine: endLine, maxLines: maxLines),
+        json: json)
+
+    case .context(let json, let maxLines):
+      switch try resolveBoundSessionDetail(
+        agentProxyRequest: agentProxyRequest,
+        agentProxyURL: agentProxyURL,
+        json: json)
+      {
+      case .failure(let result):
+        return result
+      case .success(let resolved):
+        let (textStatus, textBody) = try agentProxyRequest(
+          resolved.proxyURL,
+          AgentProxyClient.getTextRequest(source: "scrollback", maxLines: maxLines))
+        guard (200..<300).contains(textStatus) else {
+          return formatProxyResponse(status: textStatus, body: textBody, json: json)
+        }
+        guard let textObject = jsonObject(from: textBody) else {
+          return LabanCLIResult(
+            exitCode: 6, stdout: "", stderr: "laban: malformed terminal.getText response")
+        }
+        let bundle: [String: Any] = [
+          "ok": true,
+          "sessionId": resolved.sessionId,
+          "shellIntegration": [
+            "phase": resolved.phase,
+            "lastExitCode": resolved.lastExitCode.map { $0 as Any } ?? NSNull(),
+          ],
+          "session": resolved.detail,
+          "recentText": textObject,
+        ]
+        return formatJSONObject(bundle)
+      }
+
     case .propose(let purpose, let command):
       return try performSessionRequest(
         agentProxyRequest: agentProxyRequest,
@@ -365,6 +417,107 @@ enum LabanCLI {
     return formatProxyResponse(status: status, body: body, json: json)
   }
 
+  /// Resolved identity for `session current` and `context`.
+  private struct BoundSessionDetail {
+    var proxyURL: String
+    var sessionId: String
+    var phase: String
+    var lastExitCode: Int?
+    var detail: [String: Any]
+  }
+
+  private enum BoundSessionDetailOutcome {
+    case success(BoundSessionDetail)
+    case failure(LabanCLIResult)
+  }
+
+  /// Resolves the bound session's identity for `session current` and
+  /// `context`: `shellIntegration.state` (no `sessionId` query) reports the
+  /// caller's own scoped session, then `session.detail` fetches its full
+  /// metadata. Broker-only; throws `.agentControlUnavailable` (exit 3) when
+  /// `LABAN_AGENT_CONTROL_URL` is unset, and returns a formatted
+  /// `LabanCLIResult` failure for a non-2xx or malformed leg so callers do not
+  /// need their own status-code plumbing.
+  private static func resolveBoundSessionDetail(
+    agentProxyRequest: AgentProxyRequest,
+    agentProxyURL: String?,
+    json: Bool
+  ) throws -> BoundSessionDetailOutcome {
+    let proxyURL = try requireAgentControlURL(override: agentProxyURL)
+
+    let (shellStatus, shellBody) = try agentProxyRequest(
+      proxyURL, AgentProxyClient.shellIntegrationStateRequest())
+    guard (200..<300).contains(shellStatus) else {
+      return .failure(formatProxyResponse(status: shellStatus, body: shellBody, json: json))
+    }
+    guard let shellObject = jsonObject(from: shellBody),
+      let sessionId = shellObject["sessionId"] as? String
+    else {
+      return .failure(
+        LabanCLIResult(
+          exitCode: 6, stdout: "", stderr: "laban: malformed shellIntegration.state response"))
+    }
+    let phase = shellObject["phase"] as? String ?? "unknown"
+    let lastExitCode = shellObject["lastExitCode"] as? Int
+
+    let (detailStatus, detailBody) = try agentProxyRequest(
+      proxyURL, AgentProxyClient.sessionDetailRequest(sessionID: sessionId))
+    guard (200..<300).contains(detailStatus) else {
+      return .failure(formatProxyResponse(status: detailStatus, body: detailBody, json: json))
+    }
+    guard let detailObject = jsonObject(from: detailBody) else {
+      return .failure(
+        LabanCLIResult(exitCode: 6, stdout: "", stderr: "laban: malformed session.detail response"))
+    }
+
+    return .success(
+      BoundSessionDetail(
+        proxyURL: proxyURL,
+        sessionId: sessionId,
+        phase: phase,
+        lastExitCode: lastExitCode,
+        detail: redactingTokenLikeKeys(detailObject) as? [String: Any] ?? detailObject))
+  }
+
+  private static func jsonObject(from text: String) -> [String: Any]? {
+    guard let data = text.data(using: .utf8) else { return nil }
+    return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+  }
+
+  /// Recursively strips any key whose name contains "token" (case-insensitive)
+  /// from a decoded JSON value. `session current` and `context` forward
+  /// `session.detail` into their output verbatim; today's `SessionResponse`
+  /// carries no credential field, but this is defense-in-depth so a future
+  /// field addition on that response cannot silently start leaking a token
+  /// through these broker-only commands.
+  private static func redactingTokenLikeKeys(_ value: Any) -> Any {
+    if let dict = value as? [String: Any] {
+      var result: [String: Any] = [:]
+      for (key, nested) in dict where !key.lowercased().contains("token") {
+        result[key] = redactingTokenLikeKeys(nested)
+      }
+      return result
+    }
+    if let array = value as? [Any] {
+      return array.map(redactingTokenLikeKeys)
+    }
+    return value
+  }
+
+  /// Serializes a composed (CLI-side) JSON object with sorted keys. Used by
+  /// `session current` and `context`, whose output has no raw-passthrough
+  /// form to fall back to (unlike `formatResponse`/`formatProxyResponse`,
+  /// which forward a single server response body verbatim).
+  private static func formatJSONObject(_ object: [String: Any]) -> LabanCLIResult {
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+      let text = String(data: data, encoding: .utf8)
+    else {
+      return LabanCLIResult(exitCode: 6, stdout: "", stderr: "laban: failed to encode response")
+    }
+    return LabanCLIResult(exitCode: 0, stdout: text, stderr: "")
+  }
+
   private static func formatProxyResponse(
     status: Int,
     body: String,
@@ -454,13 +607,22 @@ let usageText = """
                                      Send a raw request via agent proxy or lazy attach.
       session scroll --rows N --json Scroll the bound session viewport via agent proxy or lazy attach.
       session proxy                  Forward JSONL stdin/stdout through the agent proxy (requires LABAN_AGENT_CONTROL_URL).
+      session current --json         Show the proxy-bound session identity (requires LABAN_AGENT_CONTROL_URL).
+      session get-text --screen|--scrollback [--start-line N] [--end-line N] [--max-lines N] [--json]
+                                     Capture bounded plain text from the bound session (requires LABAN_AGENT_CONTROL_URL).
       propose --purpose TEXT -- COMMAND [ARG ...]
                                      Propose a command for user review via agent proxy or lazy attach.
+
+    Agent context:
+      context --json [--max-lines N] Print bound session identity, shell phase, and a
+                                     recent-scrollback tail for prompt context (requires LABAN_AGENT_CONTROL_URL).
 
     Lazy attach fallback:
       When LABAN_AGENT_CONTROL_URL is unset, session-scoped commands discover
       control.json and request a live, one-time user approval for the requested
       action. The agent proxy remains available when LABAN_AGENT_CONTROL_URL is set.
+      session current, session get-text, and context are broker-only: they
+      require LABAN_AGENT_CONTROL_URL and do not fall back to lazy attach.
 
     Global options:
       --json                         Write machine-readable JSON to stdout.

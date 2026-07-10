@@ -89,6 +89,28 @@ enum AgentProxyClient {
     AgentProxyEnvelope(method: "GET", path: "/debug/state", body: nil)
   }
 
+  static func sessionDetailRequest(sessionID: String) -> AgentProxyEnvelope {
+    AgentProxyEnvelope(method: "GET", path: "/debug/sessions/\(sessionID)", body: nil)
+  }
+
+  static func shellIntegrationStateRequest() -> AgentProxyEnvelope {
+    AgentProxyEnvelope(method: "GET", path: "/debug/shell-integration/state", body: nil)
+  }
+
+  static func getTextRequest(
+    source: String,
+    startLine: Int? = nil,
+    endLine: Int? = nil,
+    maxLines: Int? = nil
+  ) -> AgentProxyEnvelope {
+    var query: [String] = ["source=\(source)"]
+    if let startLine { query.append("startLine=\(startLine)") }
+    if let endLine { query.append("endLine=\(endLine)") }
+    if let maxLines { query.append("maxLines=\(maxLines)") }
+    let path = "/debug/text?" + query.joined(separator: "&")
+    return AgentProxyEnvelope(method: "GET", path: path, body: nil)
+  }
+
   static func scrollRequest(rows: Int) -> AgentProxyEnvelope {
     let body = #"{"action":"scrollViewport","deltaRows":\#(rows)}"#
     return AgentProxyEnvelope(method: "POST", path: "/debug/actions", body: body)

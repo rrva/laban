@@ -13,6 +13,9 @@ enum LabanCommand: Equatable {
   case sessionRequest(method: String, path: String, body: String?, json: Bool)
   case sessionScroll(rows: Int, json: Bool)
   case sessionProxy
+  case sessionCurrent(json: Bool)
+  case sessionGetText(source: String, startLine: Int?, endLine: Int?, maxLines: Int?, json: Bool)
+  case context(json: Bool, maxLines: Int)
   case propose(purpose: String, command: [String])
   case help
 }
@@ -110,6 +113,8 @@ struct LabanArgumentParser {
       return .success(.help)
     case "session":
       return parseSession(args: args, json: json, body: body)
+    case "context":
+      return parseContext(args: args, json: json)
     default:
       return .failure(.unknownCommand(command))
     }
@@ -166,9 +171,65 @@ struct LabanArgumentParser {
       return .success(.sessionScroll(rows: rows, json: json))
     case "proxy":
       return .success(.sessionProxy)
+    case "current":
+      return .success(.sessionCurrent(json: json))
+    case "get-text":
+      return parseGetText(args: rest, json: json)
     default:
       return .failure(.unknownCommand("session \(subcommand)"))
     }
+  }
+
+  private static func parseGetText(
+    args: [String],
+    json: Bool
+  ) -> Result<LabanCommand, LabanArgumentError> {
+    var rest = args
+    var source = "screen"
+    var sawScreen = false
+    var sawScrollback = false
+    if let idx = rest.firstIndex(of: "--screen") {
+      sawScreen = true
+      rest.remove(at: idx)
+    }
+    if let idx = rest.firstIndex(of: "--scrollback") {
+      sawScrollback = true
+      rest.remove(at: idx)
+    }
+    guard !(sawScreen && sawScrollback) else {
+      return .failure(.unknownCommand("session get-text --screen --scrollback"))
+    }
+    if sawScrollback { source = "scrollback" }
+
+    let (startLine, afterStart) = extractIntegerOption(named: "--start-line", from: rest)
+    rest = afterStart
+    let (endLine, afterEnd) = extractIntegerOption(named: "--end-line", from: rest)
+    rest = afterEnd
+    let (maxLines, afterMax) = extractIntegerOption(named: "--max-lines", from: rest)
+    rest = afterMax
+
+    guard rest.isEmpty else {
+      return .failure(.unknownCommand("session get-text \(rest.joined(separator: " "))"))
+    }
+
+    return .success(
+      .sessionGetText(
+        source: source,
+        startLine: startLine,
+        endLine: endLine,
+        maxLines: maxLines,
+        json: json))
+  }
+
+  private static func parseContext(
+    args: [String],
+    json: Bool
+  ) -> Result<LabanCommand, LabanArgumentError> {
+    let (maxLines, remaining) = extractIntegerOption(named: "--max-lines", from: args)
+    guard remaining.isEmpty else {
+      return .failure(.unknownCommand("context \(remaining.joined(separator: " "))"))
+    }
+    return .success(.context(json: json, maxLines: maxLines ?? 40))
   }
 
   private static func parsePropose(

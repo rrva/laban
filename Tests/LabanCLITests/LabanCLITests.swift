@@ -293,6 +293,53 @@ final class LabanCLITests: XCTestCase {
       .sessionProxy)
   }
 
+  func testParseSessionCurrentJSON() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["session", "current", "--json"]).success,
+      .sessionCurrent(json: true))
+  }
+
+  func testParseSessionGetTextDefaultsToScreen() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["session", "get-text", "--json"]).success,
+      .sessionGetText(
+        source: "screen", startLine: nil, endLine: nil, maxLines: nil, json: true))
+  }
+
+  func testParseSessionGetTextScrollbackWithBounds() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse([
+        "session", "get-text", "--scrollback",
+        "--start-line", "5", "--end-line", "20", "--max-lines", "100", "--json",
+      ]).success,
+      .sessionGetText(
+        source: "scrollback", startLine: 5, endLine: 20, maxLines: 100, json: true))
+  }
+
+  func testParseSessionGetTextRejectsBothScreenAndScrollback() {
+    guard
+      case .failure(let error) = LabanArgumentParser.parse([
+        "session", "get-text", "--screen", "--scrollback",
+      ])
+    else {
+      XCTFail("expected failure")
+      return
+    }
+    XCTAssertEqual(error, .unknownCommand("session get-text --screen --scrollback"))
+  }
+
+  func testParseContextDefaultsToFortyMaxLines() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["context", "--json"]).success,
+      .context(json: true, maxLines: 40))
+  }
+
+  func testParseContextWithMaxLines() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["context", "--json", "--max-lines", "10"]).success,
+      .context(json: true, maxLines: 10))
+  }
+
   func testParsePropose() {
     XCTAssertEqual(
       LabanArgumentParser.parse([
@@ -390,6 +437,145 @@ final class LabanCLITests: XCTestCase {
     XCTAssertEqual(result.exitCode, 0)
     XCTAssertTrue(result.stdout.contains("\"proposalID\":\"p1\""))
     XCTAssertTrue(result.stdout.contains("\"writtenToPTY\":false"))
+  }
+
+  // MARK: - session current / session get-text / context behavior
+
+  func testSessionCurrentComposesShellIntegrationAndSessionDetail() {
+    let result = LabanCLI.run(
+      command: .sessionCurrent(json: true),
+      agentProxyRequest: { proxyURL, envelope in
+        XCTAssertEqual(proxyURL, "unix:///proxy.sock")
+        switch envelope.path {
+        case "/debug/shell-integration/state":
+          return (200, "{\"sessionId\":\"session-a\",\"phase\":\"atPrompt\",\"lastExitCode\":0}")
+        case "/debug/sessions/session-a":
+          return (200, "{\"id\":\"session-a\",\"tabId\":\"tab-a\"}")
+        default:
+          XCTFail("unexpected path \(envelope.path)")
+          return (500, "{}")
+        }
+      },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertTrue(result.stdout.contains("\"id\":\"session-a\""))
+    XCTAssertTrue(result.stdout.contains("\"tabId\":\"tab-a\""))
+    XCTAssertTrue(result.stderr.isEmpty)
+  }
+
+  func testSessionCurrentMissingProxyEnvExitsThreeWithoutLazyAttach() {
+    let result = LabanCLI.run(
+      command: .sessionCurrent(json: true),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, _, _, _ in fatalError("must not fall back to lazy attach") })
+
+    XCTAssertEqual(result.exitCode, 3)
+    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
+    XCTAssertFalse(result.stdout.contains(sentinel))
+  }
+
+  func testSessionGetTextSendsQueryParametersAndReturnsBody() {
+    let result = LabanCLI.run(
+      command: .sessionGetText(
+        source: "scrollback", startLine: 0, endLine: 9, maxLines: 50, json: true),
+      agentProxyRequest: { proxyURL, envelope in
+        XCTAssertEqual(proxyURL, "unix:///proxy.sock")
+        XCTAssertEqual(
+          envelope.path,
+          "/debug/text?source=scrollback&startLine=0&endLine=9&maxLines=50")
+        return (200, "{\"ok\":true,\"lines\":[\"a\",\"b\"]}")
+      },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertTrue(result.stdout.contains("\"lines\":[\"a\",\"b\"]"))
+  }
+
+  func testSessionGetTextMissingProxyEnvExitsThreeWithoutLazyAttach() {
+    let result = LabanCLI.run(
+      command: .sessionGetText(
+        source: "screen", startLine: nil, endLine: nil, maxLines: nil, json: true),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, _, _, _ in fatalError("must not fall back to lazy attach") })
+
+    XCTAssertEqual(result.exitCode, 3)
+    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
+    XCTAssertFalse(result.stdout.contains(sentinel))
+  }
+
+  func testSessionGetTextNon2xxExitsFive() {
+    let result = LabanCLI.run(
+      command: .sessionGetText(
+        source: "screen", startLine: nil, endLine: nil, maxLines: nil, json: true),
+      agentProxyRequest: { _, _ in (403, "{\"error\":\"forbidden\"}") },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 5)
+    XCTAssertTrue(result.stdout.contains("forbidden"))
+    XCTAssertTrue(result.stderr.contains("server returned 403"))
+  }
+
+  func testContextComposesBundleAndNeverLeaksSentinel() {
+    let result = LabanCLI.run(
+      command: .context(json: true, maxLines: 40),
+      agentProxyRequest: { proxyURL, envelope in
+        XCTAssertEqual(proxyURL, "unix:///proxy.sock")
+        switch envelope.path {
+        case "/debug/shell-integration/state":
+          return (200, "{\"sessionId\":\"session-a\",\"phase\":\"atPrompt\",\"lastExitCode\":0}")
+        case "/debug/sessions/session-a":
+          return (200, "{\"id\":\"session-a\",\"tabId\":\"tab-a\",\"token\":\"\(self.sentinel)\"}")
+        case "/debug/text?source=scrollback&maxLines=40":
+          return (200, "{\"ok\":true,\"lines\":[\"hello\",\"world\"]}")
+        default:
+          XCTFail("unexpected path \(envelope.path)")
+          return (500, "{}")
+        }
+      },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertTrue(result.stdout.contains("\"sessionId\":\"session-a\""))
+    XCTAssertTrue(result.stdout.contains("\"phase\":\"atPrompt\""))
+    XCTAssertTrue(result.stdout.contains("\"hello\""))
+    // session.detail is forwarded into the bundle after stripping any
+    // token-like key; assert a sentinel value never leaks into context
+    // output even when an upstream response body happens to carry one, so a
+    // future field addition cannot silently start forwarding tokens through
+    // `context`.
+    XCTAssertFalse(result.stdout.contains(sentinel))
+    XCTAssertFalse(result.stderr.contains(sentinel))
+  }
+
+  func testContextMissingProxyEnvExitsThreeWithoutLazyAttach() {
+    let result = LabanCLI.run(
+      command: .context(json: true, maxLines: 40),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, _, _, _ in fatalError("must not fall back to lazy attach") })
+
+    XCTAssertEqual(result.exitCode, 3)
+    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
+    XCTAssertFalse(result.stdout.contains(sentinel))
+  }
+
+  func testContextPropagatesNon2xxFromGetTextLeg() {
+    let result = LabanCLI.run(
+      command: .context(json: true, maxLines: 40),
+      agentProxyRequest: { _, envelope in
+        switch envelope.path {
+        case "/debug/shell-integration/state":
+          return (200, "{\"sessionId\":\"session-a\",\"phase\":\"atPrompt\",\"lastExitCode\":0}")
+        case "/debug/sessions/session-a":
+          return (200, "{\"id\":\"session-a\"}")
+        default:
+          return (403, "{\"error\":\"forbidden\"}")
+        }
+      },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 5)
+    XCTAssertTrue(result.stdout.contains("forbidden"))
   }
 
   func testSessionRequestNon2xxExitsNonzero() {
