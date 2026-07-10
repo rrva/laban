@@ -223,6 +223,20 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// (attrs bits | atlas bit). The trait is invariant per font; this avoids
   /// re-probing `CTFontGetSymbolicTraits` every glyph run.
   private var colorTraitCache: [UInt32: Bool] = [:]
+  /// Resolved (interned font ID, reference-atlas styled variant) per
+  /// (source == .sidebar, bold, italic) run-shape (8 combinations), keyed
+  /// like `colorTraitCache` (bit0 = sidebar, bit1 = bold, bit2 = italic).
+  /// `appendGlyphRun` otherwise called `FontAtlas.postScriptName(of:)`
+  /// (`CTFontCopyPostScriptName`) once per glyph run per frame just to feed
+  /// `internedFontID`; both reference atlases are stable between font
+  /// reconfigures, so the resolved pair only needs computing once per shape.
+  /// Invalidated whenever a reference atlas can change identity: cleared in
+  /// `reconfigureFonts` (replaces `referenceFontAtlas`/
+  /// `sidebarReferenceFontAtlas` directly) and in `refreshCJKFontCascade`
+  /// (only rebuilds `rasterAtlas`, not the reference atlases, but cleared
+  /// too for safety since nothing here is hot enough to matter).
+  private var runFontIdentityCache:
+    [UInt8: (fontID: Int, referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool))] = [:]
   private var lastFrameSolidsCount = 0
   private var lastFrameSlugGlyphsCount = 0
   private var lastFrameRasterGlyphsCount = 0
@@ -667,6 +681,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       device: device,
       fontAtlas: fontAtlas,
       scale: scale)
+    runFontIdentityCache.removeAll()
   }
 
   public func setSubpixelLayout(_ layout: VectorSubpixelLayout) {
@@ -682,10 +697,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   public func refreshCJKFontCascade() {
+    // Only rebuilds `rasterAtlas`, not `referenceFontAtlas`/
+    // `sidebarReferenceFontAtlas` (those change in `reconfigureFonts`), so
+    // strictly this cache would still be valid here. Invalidated anyway:
+    // nothing in this path is hot enough for the extra dictionary rebuild to
+    // matter, and it keeps the cache's invariant ("cleared whenever atlas
+    // state changes") simple to reason about from either call site alone.
     rasterAtlas = Self.makeRasterGlyphAtlas(
       device: device,
       fontAtlas: fontAtlas,
       scale: scale)
+    runFontIdentityCache.removeAll()
   }
 
   @discardableResult
@@ -1428,9 +1450,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let bold = attributes.contains(.bold)
     let italic = attributes.contains(.italic)
     let activeVariant = activeAtlas.styledFontVariant(bold: bold, italic: italic)
-    let referenceVariant = referenceAtlas.styledFontVariant(bold: bold, italic: italic)
-    let referencePostScriptName = FontAtlas.postScriptName(of: referenceVariant.font)
-    let fontID = internedFontID(postScriptName: referencePostScriptName, bold: bold, italic: italic)
+    let (fontID, referenceVariant) = runFontIdentity(
+      sidebar: source == .sidebar, bold: bold, italic: italic, referenceAtlas: referenceAtlas)
     frameGlyphFontSizes.insert(Double(activeAtlas.pointSize))
 
     // Run-level gates (mirrors VectorGlyphRenderer, see execplans/active/
@@ -1593,6 +1614,28 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     nextFontIdentityID += 1
     fontIdentityIntern[key] = id
     return id
+  }
+
+  /// Resolved (interned font ID, reference-atlas styled variant) for a run
+  /// shape, cached in `runFontIdentityCache` so `appendGlyphRun` no longer
+  /// calls `FontAtlas.postScriptName(of:)` (`CTFontCopyPostScriptName`) on
+  /// every glyph run every frame. There are only 8 possible run shapes
+  /// (sidebar x bold x italic); each is resolved once and reused until the
+  /// cache is invalidated.
+  private func runFontIdentity(
+    sidebar: Bool, bold: Bool, italic: Bool, referenceAtlas: FontAtlas
+  ) -> (fontID: Int, referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool)) {
+    var key: UInt8 = 0
+    if sidebar { key |= 0x1 }
+    if bold { key |= 0x2 }
+    if italic { key |= 0x4 }
+    if let cached = runFontIdentityCache[key] { return cached }
+    let referenceVariant = referenceAtlas.styledFontVariant(bold: bold, italic: italic)
+    let referencePostScriptName = FontAtlas.postScriptName(of: referenceVariant.font)
+    let fontID = internedFontID(postScriptName: referencePostScriptName, bold: bold, italic: italic)
+    let resolved = (fontID: fontID, referenceVariant: referenceVariant)
+    runFontIdentityCache[key] = resolved
+    return resolved
   }
 
   /// Font color-glyph trait, cached per (bold, italic) so the per-run cost is
