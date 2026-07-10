@@ -395,6 +395,32 @@ Rules:
 - A `429` means the pending proposal queue is full; stop proposing until the
   user resolves earlier proposals.
 
+### Proposal lifecycle
+
+A proposal moves through these states: `pendingReview` (just created),
+`ran` (the user chose to run it), `dismissed` (the user rejected it),
+`cancelledByAgent` (the agent withdrew it), and `expired` (it sat in
+`pendingReview` past the review TTL). All states except `pendingReview` are
+terminal.
+
+Broker-only lifecycle commands (each requires `LABAN_AGENT_CONTROL_URL`, is
+scoped to the bound session, and never writes PTY bytes):
+
+```sh
+laban proposal list --json                 # proposals for the bound session, newest first
+laban proposal status <PROPOSAL_ID> --json # one proposal's current state
+laban proposal cancel <PROPOSAL_ID> --json # withdraw a still-pending proposal
+laban wait proposal --id <PROPOSAL_ID> --state ran [--timeout SECONDS]
+```
+
+Over the wire these are the `commandProposal.list`, `commandProposal.get`, and
+`commandProposal.cancel` actions on `POST /debug/actions`, all requiring the
+`propose` capability. `cancel` only transitions a `pendingReview` proposal; a
+proposal that is already terminal returns `409`. A proposal that targets
+another session returns `403`. `wait proposal` polls `commandProposal.get`
+until the proposal reaches the requested state or the timeout elapses (exit
+`4`), the same bounded-polling model as `wait prompt`.
+
 ## Error handling
 
 | Status | Meaning | Agent behavior |

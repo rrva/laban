@@ -200,8 +200,19 @@ helper source.
       the Decision Log entries dated 2026-07-09 for the multiplexing
       rationale behind deferring `session subscribe` and for why waits use
       polling instead of a new wire primitive.
-- [ ] Milestone 3: Expand command proposals from a one-shot create action into a
-  useful lifecycle with list/status/cancel, audit, and event/wait hooks.
+- [x] (2026-07-10) Milestone 3: Expand command proposals from a one-shot create
+  action into a useful lifecycle with list/status/cancel and waits.
+  `CommandProposalState` gained `cancelledByAgent` and `expired`;
+  `CommandProposalStore` gained session-scoped `list`/`cancel` plus lazy TTL
+  expiry (`CommandProposalLifecycleTests`). Intents `commandProposal.list`/
+  `.get`/`.cancel` on both routers (the gui `.propose` allowlist grew to those
+  three plus `command.propose` in `CatalogParityTests` and invariant I7).
+  CLI `laban proposal list/status/cancel` and `laban wait proposal` are
+  broker-only and mapped through the exhaustive `CLICatalogMapping` switch
+  (`LabanCLITests`, `CLICatalogDriftTests`). Headless emits a
+  `command.proposal.cancelled` event (`EventEntry` carries no command text or
+  tokens by construction). Deferred: a full app-side (GUI) EventLog audit sink
+  and the badge/notify/subscribe hooks (see the Decision Log entry).
 - [ ] Milestone 4: Make diagnostics, redaction, docs, and operator controls
   production-grade.
 - [ ] Milestone 5: Add installed-bundle end-to-end tests and release checks.
@@ -471,6 +482,39 @@ The live probe exposed the concrete production gaps this plan addresses:
   so extending lazy attach to it deserves its own review, not a side effect of
   this milestone.
   Date/Author: 2026-07-09 / Fable (orchestrator).
+
+- Decision: Milestone 3 keeps the shipped proposal-state wire vocabulary
+  (`pendingReview`, `dismissed`, `ran`) and adds `cancelledByAgent` and
+  `expired` rather than renaming to the plan's earlier `acceptedByUser`/
+  `rejectedByUser` names. In agent-facing terms `ran` is "accepted by the user"
+  and `dismissed` is "rejected by the user".
+  Rationale: `dismissed`/`ran` are already serialized wire values with existing
+  tests and a GUI presenter writing them; renaming would be a breaking wire
+  change for no functional gain. Additive states carry the new lifecycle.
+  Date/Author: 2026-07-10 / Fable (orchestrator).
+
+- Decision: The gui `.propose` capability allowlist is deliberately extended
+  from `{command.propose}` to also include `commandProposal.list`/`.get`/
+  `.cancel`. Both allowlist guards (the `CatalogParityTests` gui-propose test
+  and cross-path invariant I7 in `ControlPlaneInvariantTests`) were updated in
+  lockstep; the `.navigate` allowlist and the no-`.input`/no-`.clipboard`
+  assertions were left untouched.
+  Rationale: proposal read/cancel are the same user-mediated, no-PTY-write
+  family as `command.propose`; scoping them under `.propose` keeps the
+  capability model orthogonal without a new tier. The lifecycle intents are
+  session-scoped reads/withdrawals, not actuation.
+  Date/Author: 2026-07-10 / Fable (orchestrator).
+
+- Decision: Milestone 3's audit surface is the deterministic headless event
+  (`command.proposal.cancelled` on the debug runtime, alongside the existing
+  `command.proposed`); a full app-side (GUI) EventLog sink for proposal
+  lifecycle, plus the badge/notify/subscribe hooks, are deferred.
+  Rationale: `EventEntry` structurally carries no command text or tokens, so
+  the deterministic headless event is enough to prove the lifecycle without a
+  content-leak risk; the shared `CommandProposalRouting` handlers are directly
+  tested. Wiring a live EventLog through `LiveIntentRouter` is a larger,
+  lower-value change better made with the Phase 3 event-stream work.
+  Date/Author: 2026-07-10 / Fable (orchestrator).
 
 ## Plan of Work
 
