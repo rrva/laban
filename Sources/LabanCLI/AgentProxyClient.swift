@@ -111,6 +111,28 @@ enum AgentProxyClient {
     return AgentProxyEnvelope(method: "GET", path: path, body: nil)
   }
 
+  static func proposalListRequest() -> AgentProxyEnvelope {
+    AgentProxyEnvelope(
+      method: "POST", path: "/debug/actions", body: #"{"action":"proposalList"}"#)
+  }
+
+  static func proposalGetRequest(proposalID: String) -> AgentProxyEnvelope {
+    proposalRefRequest(action: "proposalGet", proposalID: proposalID)
+  }
+
+  static func proposalCancelRequest(proposalID: String) -> AgentProxyEnvelope {
+    proposalRefRequest(action: "proposalCancel", proposalID: proposalID)
+  }
+
+  private static func proposalRefRequest(action: String, proposalID: String)
+    -> AgentProxyEnvelope
+  {
+    let bodyDict: [String: Any] = ["action": action, "proposalID": proposalID]
+    let bodyData = try! JSONSerialization.data(withJSONObject: bodyDict, options: [.sortedKeys])
+    let body = String(data: bodyData, encoding: .utf8)!
+    return AgentProxyEnvelope(method: "POST", path: "/debug/actions", body: body)
+  }
+
   static func scrollRequest(rows: Int) -> AgentProxyEnvelope {
     let body = #"{"action":"scrollViewport","deltaRows":\#(rows)}"#
     return AgentProxyEnvelope(method: "POST", path: "/debug/actions", body: body)

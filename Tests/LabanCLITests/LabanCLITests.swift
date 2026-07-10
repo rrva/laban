@@ -7,6 +7,41 @@ import XCTest
 final class LabanCLITests: XCTestCase {
   private let sentinel = "SECRET_SENTINEL_DO_NOT_PRINT"
 
+  func testParseProposalListStatusCancel() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["proposal", "list", "--json"]).success,
+      .proposalList(json: true))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["proposal", "status", "abc", "--json"]).success,
+      .proposalStatus(id: "abc", json: true))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["proposal", "cancel", "abc"]).success,
+      .proposalCancel(id: "abc", json: false))
+  }
+
+  func testParseProposalStatusRequiresID() {
+    guard case .failure = LabanArgumentParser.parse(["proposal", "status"]) else {
+      return XCTFail("proposal status without an id must fail to parse")
+    }
+  }
+
+  func testParseWaitProposal() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(
+        ["wait", "proposal", "--id", "abc", "--state", "ran", "--timeout", "5", "--json"]
+      ).success,
+      .waitProposal(id: "abc", state: "ran", timeoutSeconds: 5, json: true))
+  }
+
+  func testParseWaitProposalRequiresIDAndState() {
+    guard case .failure = LabanArgumentParser.parse(["wait", "proposal", "--state", "ran"]) else {
+      return XCTFail("wait proposal without an id must fail")
+    }
+    guard case .failure = LabanArgumentParser.parse(["wait", "proposal", "--id", "abc"]) else {
+      return XCTFail("wait proposal without a state must fail")
+    }
+  }
+
   private func makeTempDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-cli-tests-\(UUID().uuidString)", isDirectory: true)
@@ -367,12 +402,12 @@ final class LabanCLITests: XCTestCase {
 
   func testParseWaitUnknownSubcommand() {
     guard
-      case .failure(let error) = LabanArgumentParser.parse(["wait", "proposal"])
+      case .failure(let error) = LabanArgumentParser.parse(["wait", "nonsense"])
     else {
       XCTFail("expected failure")
       return
     }
-    XCTAssertEqual(error, .unknownCommand("wait proposal"))
+    XCTAssertEqual(error, .unknownCommand("wait nonsense"))
   }
 
   func testParsePropose() {

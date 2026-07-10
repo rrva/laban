@@ -26,6 +26,7 @@ private let zshCompletions = """
       'context:Print a compact bound-session context bundle'
       'wait:Block until a bound-session condition is true'
       'propose:Propose a command for user review'
+      'proposal:List, inspect, or cancel command proposals'
     )
     _describe -t commands 'laban command' commands
   }
@@ -38,7 +39,7 @@ private let bashCompletions = """
     local cur prev words cword
     _init_completion || return
 
-    local commands="discover status health capabilities request completions install-cli session context wait propose"
+    local commands="discover status health capabilities request completions install-cli session context wait propose proposal"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
       COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
@@ -100,6 +101,7 @@ private let fishCompletions = """
   complete -c laban -n '__fish_use_subcommand' -a 'context' -d 'Print a compact bound-session context bundle'
   complete -c laban -n '__fish_use_subcommand' -a 'wait' -d 'Block until a bound-session condition is true'
   complete -c laban -n '__fish_use_subcommand' -a 'propose' -d 'Propose a command for user review'
+  complete -c laban -n '__fish_use_subcommand' -a 'proposal' -d 'List, inspect, or cancel command proposals'
 
   complete -c laban -n '__fish_seen_subcommand_from discover status health capabilities' -l json
   complete -c laban -n '__fish_seen_subcommand_from request' -l body -r

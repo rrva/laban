@@ -38,6 +38,10 @@ enum LabanCLICatalog {
     "wait prompt": .intent("shellIntegration.state"),
     "wait command-finished": .intent("shellIntegration.state"),
     "propose": .intent("command.propose"),
+    "proposal list": .intent("commandProposal.list"),
+    "proposal status": .intent("commandProposal.get"),
+    "proposal cancel": .intent("commandProposal.cancel"),
+    "wait proposal": .intent("commandProposal.get"),
     "help": .clientOnly,
   ]
 
@@ -65,6 +69,10 @@ enum LabanCLICatalog {
     case .waitPrompt: return "wait prompt"
     case .waitCommandFinished: return "wait command-finished"
     case .propose: return "propose"
+    case .proposalList: return "proposal list"
+    case .proposalStatus: return "proposal status"
+    case .proposalCancel: return "proposal cancel"
+    case .waitProposal: return "wait proposal"
     case .help: return "help"
     }
   }
@@ -91,6 +99,10 @@ enum LabanCLICatalog {
     .waitPrompt(timeoutSeconds: 30, json: false),
     .waitCommandFinished(timeoutSeconds: 30, json: false),
     .propose(purpose: "test", command: ["true"]),
+    .proposalList(json: false),
+    .proposalStatus(id: "x", json: false),
+    .proposalCancel(id: "x", json: false),
+    .waitProposal(id: "x", state: "ran", timeoutSeconds: 30, json: false),
     .help,
   ]
 }

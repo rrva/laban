@@ -19,6 +19,10 @@ enum LabanCommand: Equatable {
   case waitPrompt(timeoutSeconds: Double, json: Bool)
   case waitCommandFinished(timeoutSeconds: Double, json: Bool)
   case propose(purpose: String, command: [String])
+  case proposalList(json: Bool)
+  case proposalStatus(id: String, json: Bool)
+  case proposalCancel(id: String, json: Bool)
+  case waitProposal(id: String, state: String, timeoutSeconds: Double, json: Bool)
   case help
 }
 
@@ -119,6 +123,8 @@ struct LabanArgumentParser {
       return parseContext(args: args, json: json)
     case "wait":
       return parseWait(args: args, json: json)
+    case "proposal":
+      return parseProposal(args: args, json: json)
     default:
       return .failure(.unknownCommand(command))
     }
@@ -244,6 +250,18 @@ struct LabanArgumentParser {
       return .failure(.missingArgument("wait subcommand"))
     }
     let rest = Array(args.dropFirst())
+    if subcommand == "proposal" {
+      let (timeoutSeconds, afterTimeout) = extractDoubleOption(named: "--timeout", from: rest)
+      let (id, afterID) = extractStringOption(named: "--id", from: afterTimeout)
+      let (state, remaining) = extractStringOption(named: "--state", from: afterID)
+      guard let id else { return .failure(.missingArgument("--id")) }
+      guard let state else { return .failure(.missingArgument("--state")) }
+      guard remaining.isEmpty else {
+        return .failure(.unknownCommand("wait proposal \(remaining.joined(separator: " "))"))
+      }
+      return .success(
+        .waitProposal(id: id, state: state, timeoutSeconds: timeoutSeconds ?? 30, json: json))
+    }
     let (timeoutSeconds, remaining) = extractDoubleOption(named: "--timeout", from: rest)
     guard remaining.isEmpty else {
       return .failure(.unknownCommand("wait \(subcommand) \(remaining.joined(separator: " "))"))
@@ -255,6 +273,35 @@ struct LabanArgumentParser {
       return .success(.waitCommandFinished(timeoutSeconds: timeoutSeconds ?? 30, json: json))
     default:
       return .failure(.unknownCommand("wait \(subcommand)"))
+    }
+  }
+
+  private static func parseProposal(
+    args: [String],
+    json: Bool
+  ) -> Result<LabanCommand, LabanArgumentError> {
+    guard let subcommand = args.first else {
+      return .failure(.missingArgument("proposal subcommand"))
+    }
+    let rest = Array(args.dropFirst())
+    switch subcommand {
+    case "list":
+      guard rest.isEmpty else {
+        return .failure(.unknownCommand("proposal list \(rest.joined(separator: " "))"))
+      }
+      return .success(.proposalList(json: json))
+    case "status":
+      guard let id = rest.first, !id.hasPrefix("--") else {
+        return .failure(.missingArgument("PROPOSAL_ID"))
+      }
+      return .success(.proposalStatus(id: id, json: json))
+    case "cancel":
+      guard let id = rest.first, !id.hasPrefix("--") else {
+        return .failure(.missingArgument("PROPOSAL_ID"))
+      }
+      return .success(.proposalCancel(id: id, json: json))
+    default:
+      return .failure(.unknownCommand("proposal \(subcommand)"))
     }
   }
 
@@ -333,6 +380,27 @@ struct LabanArgumentParser {
       let raw = String(arg.dropFirst(option.count + 1))
       rest.remove(at: idx)
       return (Double(raw), rest)
+    }
+    return (nil, rest)
+  }
+
+  private static func extractStringOption(
+    named option: String,
+    from args: [String]
+  ) -> (value: String?, remaining: [String]) {
+    var rest = args
+    if let idx = rest.firstIndex(of: option) {
+      rest.remove(at: idx)
+      guard idx < rest.count else { return (nil, rest) }
+      let value = rest[idx]
+      rest.remove(at: idx)
+      return (value, rest)
+    }
+    if let idx = rest.firstIndex(where: { $0.hasPrefix("\(option)=") }) {
+      let arg = rest[idx]
+      let raw = String(arg.dropFirst(option.count + 1))
+      rest.remove(at: idx)
+      return (raw, rest)
     }
     return (nil, rest)
   }

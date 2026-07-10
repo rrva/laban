@@ -348,6 +348,38 @@ enum LabanCLI {
         body: AgentProxyClient.proposeRequest(purpose: purpose, command: command).body,
         json: true)
 
+    case .proposalList(let json):
+      return try performAgentProxyRequest(
+        agentProxyRequest: agentProxyRequest,
+        agentProxyURL: agentProxyURL,
+        envelope: AgentProxyClient.proposalListRequest(),
+        json: json)
+
+    case .proposalStatus(let id, let json):
+      return try performAgentProxyRequest(
+        agentProxyRequest: agentProxyRequest,
+        agentProxyURL: agentProxyURL,
+        envelope: AgentProxyClient.proposalGetRequest(proposalID: id),
+        json: json)
+
+    case .proposalCancel(let id, let json):
+      return try performAgentProxyRequest(
+        agentProxyRequest: agentProxyRequest,
+        agentProxyURL: agentProxyURL,
+        envelope: AgentProxyClient.proposalCancelRequest(proposalID: id),
+        json: json)
+
+    case .waitProposal(let id, let state, let timeoutSeconds, let json):
+      return try waitForProposalState(
+        agentProxyRequest: agentProxyRequest,
+        agentProxyURL: agentProxyURL,
+        proposalID: id,
+        targetState: state,
+        timeoutSeconds: timeoutSeconds,
+        now: now,
+        sleep: sleep,
+        json: json)
+
     case .help:
       return LabanCLIResult(exitCode: 0, stdout: usageText, stderr: "")
     }
@@ -610,6 +642,49 @@ enum LabanCLI {
     }
   }
 
+  /// Broker-side bounded polling of `commandProposal.get` until the proposal
+  /// reaches `targetState`, mirroring the shell-integration waits: each poll is
+  /// a short request that interleaves with other proxy traffic rather than
+  /// holding the single C14 upstream open.
+  private static func waitForProposalState(
+    agentProxyRequest: AgentProxyRequest,
+    agentProxyURL: String?,
+    proposalID: String,
+    targetState: String,
+    timeoutSeconds: Double,
+    now: WaitClock,
+    sleep: WaitSleep,
+    json: Bool
+  ) throws -> LabanCLIResult {
+    let proxyURL = try requireAgentControlURL(override: agentProxyURL)
+    let pollInterval: TimeInterval = 0.2
+    let deadline = now().addingTimeInterval(timeoutSeconds)
+
+    while true {
+      let (status, body) = try agentProxyRequest(
+        proxyURL, AgentProxyClient.proposalGetRequest(proposalID: proposalID))
+      guard (200..<300).contains(status) else {
+        return formatProxyResponse(status: status, body: body, json: json)
+      }
+      guard let object = jsonObject(from: body),
+        let state = object["state"] as? String
+      else {
+        return LabanCLIResult(
+          exitCode: 6, stdout: "", stderr: "laban: malformed commandProposal.get response")
+      }
+      if state == targetState {
+        return formatJSONObject(["ok": true, "proposalID": proposalID, "state": state])
+      }
+      if now() >= deadline {
+        return LabanCLIResult(
+          exitCode: 4, stdout: "",
+          stderr:
+            "laban: timed out after \(timeoutSeconds)s waiting for proposal state \(targetState)")
+      }
+      sleep(pollInterval)
+    }
+  }
+
   private static func jsonObject(from text: String) -> [String: Any]? {
     guard let data = text.data(using: .utf8) else { return nil }
     return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -743,6 +818,11 @@ let usageText = """
                                      Capture bounded plain text from the bound session (requires LABAN_AGENT_CONTROL_URL).
       propose --purpose TEXT -- COMMAND [ARG ...]
                                      Propose a command for user review via agent proxy or lazy attach.
+      proposal list --json           List proposals for the bound session (requires LABAN_AGENT_CONTROL_URL).
+      proposal status PROPOSAL_ID --json
+                                     Show one proposal's state (requires LABAN_AGENT_CONTROL_URL).
+      proposal cancel PROPOSAL_ID --json
+                                     Cancel a pending proposal (requires LABAN_AGENT_CONTROL_URL).
 
     Agent context:
       context --json [--max-lines N] Print bound session identity, shell phase, and a
@@ -755,6 +835,9 @@ let usageText = """
       wait command-finished [--timeout SECONDS]
                                      Block until the bound session's completed-command count
                                      increments (default timeout 30s; requires LABAN_AGENT_CONTROL_URL).
+      wait proposal --id PROPOSAL_ID --state STATE [--timeout SECONDS]
+                                     Block until a proposal reaches STATE (default timeout 30s;
+                                     requires LABAN_AGENT_CONTROL_URL).
 
     Lazy attach fallback:
       When LABAN_AGENT_CONTROL_URL is unset, session-scoped commands discover
