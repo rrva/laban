@@ -301,6 +301,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// trace can tell fresh presents from redundant re-presents of the same
   /// published frame. Guarded by `presentTargetLock`.
   private var publishedFrameVersion: UInt64 = 0
+  /// The `publishedFrameVersion` most recently actually presented by
+  /// `presentLatestTarget(into:)`. Read and written solely from the
+  /// present-link callback thread (`laban.vector.present-link`, the only
+  /// caller of `presentLatestTarget`), so no lock guards this field itself;
+  /// the version it is compared against is still snapshotted under
+  /// `presentTargetLock` (see `presentLatestTarget`). Never reset, including
+  /// at `resize` (which nils `latestPresentedTarget`): `publishedFrameVersion`
+  /// only ever increases for this renderer's lifetime (`&+=1` in
+  /// `publishLatestTarget`, never decremented or rewound), so equality with
+  /// `lastPresentedFrameVersion` can only mean "this exact publish was
+  /// already presented" — a post-resize republish always carries a version
+  /// one greater than anything seen before, so it is never wrongly skipped.
+  private var lastPresentedFrameVersion: UInt64 = 0
   private var presentQueue: MTLCommandQueue?
   /// Serializes render frames so only one is in flight on `queue` at a time.
   /// `MetalRenderer` and `VectorGlyphRenderer` get the same contract through
@@ -744,6 +757,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     presentTargetLock.lock()
     latestPresentedTarget = nil
     presentTargetLock.unlock()
+    // Deliberately NOT resetting `lastPresentedFrameVersion` here: it is a
+    // monotonic-only field (see its declaration) and a post-resize republish
+    // always carries a fresh, never-before-seen version, so it can never be
+    // wrongly skipped even though `latestPresentedTarget` just went nil.
     if scaleChanged {
       colorGlyphAtlas = Self.makeColorGlyphAtlas(
         device: device,
@@ -2138,6 +2155,38 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     blit.endEncoding()
   }
 
+  /// Present-thread-only decision: should `presentLatestTarget` actually
+  /// encode and blit `version`, or was it already presented? Marks `version`
+  /// as presented (mutates `lastPresentedFrameVersion`) exactly when it
+  /// returns `true`, so a repeat call with the same version afterward
+  /// returns `false`. Factored out of `presentLatestTarget` as a small pure
+  /// function (state in, mutation, state out, no Metal types) so it is
+  /// unit-testable without a Metal device, a `CAMetalLayer`, or a
+  /// `CAMetalDrawable` (see `SlugGlyphDamageTests`).
+  ///
+  /// Correctness argument for the M4 redundant-present skip: `publishedFrameVersion`
+  /// only ever increases for this renderer's lifetime (`&+=1` in
+  /// `publishLatestTarget`, never reset or rewound, including across
+  /// `resize` — see `lastPresentedFrameVersion`'s declaration). So a
+  /// freshly published frame always carries a version that has never been
+  /// presented, and this always returns `true` for it: no fresh content can
+  /// ever be skipped. A `false` result can only mean this exact published
+  /// target was already blitted to a previous drawable, so the drawable
+  /// Core Animation now hands back already shows (or will show) that same
+  /// content once presented, and skipping the redundant blit changes nothing
+  /// visible. `VectorPresentDisplayLink.metalDisplayLink(_:needsUpdate:)`
+  /// treats a `false` return from `onPresent` as "not presented" and
+  /// decrements `PresentParkDecision`'s deferred-park budget accordingly, but
+  /// that budget was already cleared to 0 by the present that DID present
+  /// this version (`PresentParkDecision.didCallback(presented: true)`), so a
+  /// later same-version callback decrementing an already-zero budget cannot
+  /// cause a pending, unpresented frame to be dropped.
+  func shouldEncodePresent(version: UInt64) -> Bool {
+    guard version != lastPresentedFrameVersion else { return false }
+    lastPresentedFrameVersion = version
+    return true
+  }
+
   private func presentLatestTarget(into drawable: any CAMetalDrawable) -> Bool {
     presentTargetLock.lock()
     let target = latestPresentedTarget
@@ -2147,10 +2196,23 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       target.width == drawable.texture.width,
       target.height == drawable.texture.height
     else { return false }
+    let signposter = RenderEncodeSignpost.signposter
+    guard version != lastPresentedFrameVersion else {
+      // Already on screen: no fresh content to blit. Emit a countable event
+      // (rather than a span, since nothing is encoded) so traces can tally
+      // skips directly instead of inferring them from repeated `v=` values.
+      signposter.emitEvent("slug.presentSkip", "v=\(version, privacy: .public)")
+      return false
+    }
     guard let presentQueue,
       let commandBuffer = presentQueue.makeCommandBuffer()
     else { return false }
-    let signposter = RenderEncodeSignpost.signposter
+    // Mark presented only once we are committed to actually encoding the
+    // blit below (a valid command buffer in hand): if `makeCommandBuffer()`
+    // above had failed, `shouldEncodePresent` must not have consumed this
+    // version, or this exact frame would never get another chance to reach
+    // the screen.
+    _ = shouldEncodePresent(version: version)
     let spanState = signposter.beginInterval(
       "slug.present", "v=\(version, privacy: .public)")
     defer { signposter.endInterval("slug.present", spanState) }

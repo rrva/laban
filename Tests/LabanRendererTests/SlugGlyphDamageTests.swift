@@ -380,4 +380,39 @@ final class SlugGlyphDamageTests: XCTestCase {
       partialHash, expectedHash,
       "partial renderer must successfully repaint background after clear color changes")
   }
+
+  // MARK: - M4: redundant re-present skip
+
+  /// `shouldEncodePresent(version:)` is the pure version-compare decision
+  /// `presentLatestTarget(into:)` consults before encoding a present blit
+  /// (execplans/active/slug-hot-path-negative-cache-and-present-skip.md M4).
+  /// It is exercised directly here rather than through `presentLatestTarget`
+  /// itself: that method needs a live `CAMetalDrawable` from a real
+  /// `CAMetalLayer` bound to a window, which is not obtainable in a headless
+  /// test. The pure function captures exactly the behavior under test (does
+  /// a repeated published-frame version get skipped, does a fresh one
+  /// always encode) without any Metal-drawable dependency.
+  func testShouldEncodePresentSkipsRepeatsButAlwaysEncodesFreshVersions() throws {
+    try skipIfNoMetal()
+    let renderer = try makeRenderer(layout: .grayscale, cellSize: makeFontAtlas().cellSize)
+
+    XCTAssertTrue(
+      renderer.shouldEncodePresent(version: 1),
+      "a version never presented before must encode")
+    XCTAssertFalse(
+      renderer.shouldEncodePresent(version: 1),
+      "presenting the exact same version again must skip (nothing new reached the screen)")
+    XCTAssertFalse(
+      renderer.shouldEncodePresent(version: 1),
+      "repeated skips of the same stale version must keep skipping")
+    XCTAssertTrue(
+      renderer.shouldEncodePresent(version: 2),
+      "a fresh, larger version must always encode, proving new content is never skipped")
+    XCTAssertFalse(
+      renderer.shouldEncodePresent(version: 2),
+      "the new version now counts as presented and skips on repeat")
+    XCTAssertTrue(
+      renderer.shouldEncodePresent(version: 5),
+      "versions can jump (frames dropped upstream) and still encode once")
+  }
 }
