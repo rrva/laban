@@ -235,8 +235,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// `sidebarReferenceFontAtlas` directly) and in `refreshCJKFontCascade`
   /// (only rebuilds `rasterAtlas`, not the reference atlases, but cleared
   /// too for safety since nothing here is hot enough to matter).
-  private var runFontIdentityCache:
-    [UInt8: (fontID: Int, referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool))] = [:]
+  private typealias RunFontIdentity = (
+    fontID: Int, referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool)
+  )
+  private var runFontIdentityCache: [UInt8: RunFontIdentity] = [:]
   private var lastFrameSolidsCount = 0
   private var lastFrameSlugGlyphsCount = 0
   private var lastFrameRasterGlyphsCount = 0
