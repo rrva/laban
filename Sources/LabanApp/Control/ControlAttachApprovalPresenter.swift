@@ -32,11 +32,16 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     completion: @escaping @Sendable (ControlAttachApprovalDecision) -> Void
   ) {
     let alert = NSAlert()
+    // "Observe", not "control": every capability this dialog can grant is
+    // read-only (read state/session, propose a command for review). It cannot
+    // type, click, paste, or otherwise drive the terminal. Saying "control"
+    // here misrepresents an observe-only permission as actuation.
     if request.principalIsVerified {
-      alert.messageText = "Allow \(request.principalDisplayName) to control Laban?"
-      alert.informativeText = "A verified app is asking for one session-scoped permission."
+      alert.messageText = "Allow \(request.principalDisplayName) to observe this Laban session?"
+      alert.informativeText = "A verified app is asking for one session-scoped read permission."
     } else {
-      alert.messageText = "Allow unverified \(request.principalDisplayName) to control Laban?"
+      alert.messageText =
+        "Allow unverified \(request.principalDisplayName) to observe this Laban session?"
       alert.informativeText =
         "Only allow this if you recognize the app and the path shown below."
     }
