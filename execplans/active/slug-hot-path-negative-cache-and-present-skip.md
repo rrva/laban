@@ -25,8 +25,27 @@ Measured baseline (20 s trace, Claude Code TUI with spinner + light output, ~12 
 - [x] (2026-07-10) M3: Hoist the no-decoration early-out to `appendGlyphRun`'s call site of `appendDecorations`. Commit `b03c9d4`.
 - [x] (2026-07-10) M4: Skip redundant re-present blits when the published frame version is unchanged. Commit `2475666`.
 - [x] (2026-07-10) M5: Damage-aware instance building (only build instances intersecting effective damage bands). Commit `c7437f8`.
-- [ ] Re-measure with the capture recipe below; update `Outcomes & Retrospective`.
-- [ ] Pending user verification: manual alternate-screen TUI flicker regression check for M4 (commit `f371eaa`'s scenario) has not been re-run since M4 landed; needs a visual check after install, per the "known hazards" note under M4 below.
+- [x] (2026-07-10) Re-measure captured and analyzed; see `Outcomes & Retrospective`. Build `8ca61689` installed to `~/Laban.app` and restarted via `scripts/restart-app --scroll-debug`; 20 s CPU-only xctrace capture of a spinner workload driven through `POST /scroll/input`.
+- [ ] Pending user verification: manual alternate-screen TUI flicker regression check for M4 (commit `f371eaa`'s scenario) has not been re-run since M4 landed; needs a visual check with a focused Laban window running a fullscreen TUI.
+- [ ] Pending: focused-window live verification of the M4 skip rate. The re-measure ran with the Laban window unfocused, so the present link was parked/deferred (~10 callbacks/10 s) and `slug.presentSkip` could not be observed at rate; the CPU wins below are unaffected (they are main-thread render-path wins), but the skip-percentage claim should be confirmed with a focused window via `GET /scroll/present-stats` (callbacks vs presented) or a signpost trace recorded from GUI Instruments in Immediate mode.
+
+## Outcomes & Retrospective
+
+Re-measure (2026-07-10, build `8ca61689`, 20 s `xctrace --template 'Metal with laban signposts' --attach`, CPU-only analysis; signpost tables empty as always for CLI captures on this machine, so the comparison is Time Profiler subtree shares of kept sample weight; workload: python spinner + periodic scroll lines via the scroll-debug server, Laban window unfocused):
+
+    subtree / symbol              baseline (Untitled7)   re-measure   change
+    appendGlyphRun subtree                14.64%           1.33%      11x lower
+    ensureGlyph subtree                   12.26%           0.41%      30x lower
+    glyph atlas/font lookup category       2.55%           0.01%      gone
+    CTFontGetGlyphsForCharacters        317 samples        0          gone (M0+M1)
+    CTFontCopyPostScriptName           ~154 samples        0          gone (M2)
+    metal command encode category          5.12%           1.05%      5x lower
+    encodeBlit subtree                     2.85%           0.27%      10x lower
+    appendDecorations subtree              1.12%           0.09%      12x lower
+
+Caveats: the workloads are not identical (baseline drove Claude Code's TUI; re-measure drove a python spinner with similar output shape), so treat ratios as indicative. The structural signals are workload-independent though: both CTFont symbols went to literally zero (they were called unconditionally per run/per access before), and the ensureGlyph subtree collapse matches M0's design (cold path now enters only for genuinely novel clusters). The present-thread numbers (encodeBlit) are deflated by the unfocused window parking the link; the focused-window skip verification remains open above.
+
+What remains for a future plan: the baseline's damage-blind instance counts came from `slug.render` end messages; after M5 those counts shrink on banded frames, and the `slug.presentSkip` event counts skips directly. Both need a GUI-Instruments Immediate-mode capture (see Concrete Steps) to observe, since CLI xctrace cannot record signposts here.
 
 ## Context and Orientation
 
