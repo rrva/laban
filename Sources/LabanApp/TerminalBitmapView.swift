@@ -593,7 +593,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private var windowFocusObservers: [NSObjectProtocol] = []
   private var lastReportedFocusBySession: [Session.ID: Bool] = [:]
-  private var lastAppliedWindowTitle: String?
+  /// Debounces `window?.title` sets to at most one per
+  /// `windowTitleThrottleIntervalNs`, since a TUI with a spinner in its OSC
+  /// title (Claude Code, Codex) can change the title many times a second and
+  /// each AppKit set is real CPU cost. See `WindowTitleThrottle`.
+  private static let windowTitleThrottleIntervalNs: UInt64 = 200_000_000
+  private var windowTitleThrottle = WindowTitleThrottle(
+    minimumIntervalNs: TerminalBitmapView.windowTitleThrottleIntervalNs)
+  /// Guards the trailing-apply timer scheduled by `applyWindowTitleIfNeeded()`
+  /// so only one is ever pending; cleared when it fires.
+  private var pendingTitleApply = false
 
   private var synchronizedOutputHold: TerminalRenderGate.SynchronizedOutputHold?
   var synchronizedOutputHoldForTests: TerminalRenderGate.SynchronizedOutputHold? {
@@ -1543,7 +1552,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    lastAppliedWindowTitle = nil
+    // A new underlying window has no applied title of its own, so the next
+    // title (even if identical to what the old window last showed) must be
+    // set on it; reset the throttle's memory rather than the window's actual
+    // state, which we cannot read back cheaply.
+    windowTitleThrottle = WindowTitleThrottle(
+      minimumIntervalNs: TerminalBitmapView.windowTitleThrottleIntervalNs)
+    pendingTitleApply = false
     removeWindowFocusObservers()
     guard window != nil else {
       syncActiveSessionFocus(windowFocused: false)
@@ -1934,6 +1949,47 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       guard let self else { return }
       self.attentionPingWakeScheduled = false
       self.advanceFrame(wake: .settleWake)
+    }
+  }
+
+  /// Single choke point for setting `window?.title`, consulted from both
+  /// `advanceFrame(wake:)` and `refreshRecordingChrome()` (both main-thread
+  /// only, like this method). Composes the current title from live model
+  /// state, then asks `windowTitleThrottle` whether to apply it now, defer
+  /// it, or do nothing (see `WindowTitleThrottle` for the decision rules).
+  /// On `.defer`, schedules a single trailing apply: `pendingTitleApply`
+  /// guards against a second timer being scheduled while one is already in
+  /// flight, and the timer recomposes the title from current model state
+  /// rather than closing over the string computed here, so it always applies
+  /// whatever the title actually is when it fires, not a stale snapshot.
+  private func applyWindowTitleIfNeeded() {
+    let title =
+      model.windowTitle
+      + TerminalCaptureIndicator.windowTitleSuffix(
+        ptyActive: isCaptureActive, profileActive: isProfileCaptureActive)
+    let nowNs = DispatchTime.now().uptimeNanoseconds
+    switch windowTitleThrottle.decide(title: title, nowNs: nowNs) {
+    case .apply:
+      window?.title = title
+      windowTitleThrottle.markApplied(title: title, nowNs: nowNs)
+    case .defer(let afterNs):
+      guard !pendingTitleApply else { return }
+      pendingTitleApply = true
+      DispatchQueue.main.asyncAfter(
+        deadline: .now() + .nanoseconds(Int(afterNs))
+      ) { [weak self] in
+        guard let self else { return }
+        self.pendingTitleApply = false
+        let currentTitle =
+          self.model.windowTitle
+          + TerminalCaptureIndicator.windowTitleSuffix(
+            ptyActive: self.isCaptureActive, profileActive: self.isProfileCaptureActive)
+        let fireNs = DispatchTime.now().uptimeNanoseconds
+        self.window?.title = currentTitle
+        self.windowTitleThrottle.markApplied(title: currentTitle, nowNs: fireNs)
+      }
+    case .none:
+      break
     }
   }
 
@@ -2472,14 +2528,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     frameMetadataSignature =
       renderJournalEnabled ? renderJournalMetadataSignature(for: activeTab) : nil
 
-    let windowTitle =
-      model.windowTitle
-      + TerminalCaptureIndicator.windowTitleSuffix(
-        ptyActive: isCaptureActive, profileActive: isProfileCaptureActive)
-    if windowTitle != lastAppliedWindowTitle {
-      window?.title = windowTitle
-      lastAppliedWindowTitle = windowTitle
-    }
+    applyWindowTitleIfNeeded()
     updateCaptureIndicator()
 
     let tabChanged = lastRenderedActiveTabId != activeTab.id
@@ -7776,14 +7825,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func refreshRecordingChrome() {
-    let windowTitle =
-      model.windowTitle
-      + TerminalCaptureIndicator.windowTitleSuffix(
-        ptyActive: isCaptureActive, profileActive: isProfileCaptureActive)
-    if windowTitle != lastAppliedWindowTitle {
-      window?.title = windowTitle
-      lastAppliedWindowTitle = windowTitle
-    }
+    applyWindowTitleIfNeeded()
     updateCaptureIndicator()
   }
 
