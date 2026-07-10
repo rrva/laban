@@ -107,6 +107,51 @@ final class LiveControlObserveTests: XCTestCase {
     XCTAssertEqual(json["sessionId"] as? String, sessionID)
   }
 
+  func testScrollViewportScopedCallerNeverUsesActiveTab() throws {
+    let model = try AppModel()
+    _ = try model.createTab()
+    let scopedSessionID = model.tabs[0].sessionId
+    let activeSessionID = model.tabs[1].sessionId
+    model.selectTab(model.tabs[1].id)
+    XCTAssertEqual(model.activeTab?.sessionId, activeSessionID)
+
+    let router = LiveIntentRouter(model: model)
+    let body = Data(#"{"deltaRows":1}"#.utf8)
+    let response = router.route(
+      .legacyDebugAction(
+        LegacyDebugActionInput(
+          intentID: "terminal.scrollViewport",
+          action: "scrollViewport",
+          body: body,
+          scopedSessionID: scopedSessionID)))
+
+    XCTAssertEqual(response.status, 200)
+    let json = try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
+    // A session-scoped caller with an omitted request.sessionId must resolve
+    // to its own scoped session, never the model's active tab (C12).
+    XCTAssertEqual(json["activeSessionId"] as? String, scopedSessionID)
+    XCTAssertNotEqual(json["activeSessionId"] as? String, activeSessionID)
+  }
+
+  func testScrollViewportRejectsMismatchedExplicitTarget() throws {
+    let model = try AppModel()
+    _ = try model.createTab()
+    let scopedSessionID = model.tabs[0].sessionId
+    let otherSessionID = model.tabs[1].sessionId
+
+    let router = LiveIntentRouter(model: model)
+    let body = Data(#"{"sessionId":"\#(otherSessionID)","deltaRows":1}"#.utf8)
+    let response = router.route(
+      .legacyDebugAction(
+        LegacyDebugActionInput(
+          intentID: "terminal.scrollViewport",
+          action: "scrollViewport",
+          body: body,
+          scopedSessionID: scopedSessionID)))
+
+    XCTAssertEqual(response.status, 403)
+  }
+
   func testSessionObserveTerminalModesUsesScopedTabNotActiveTab() throws {
     let model = try AppModel()
     _ = try model.createTab()

@@ -108,6 +108,13 @@ final class LiveIntentRouter: IntentRouter {
     }
   }
 
+  // This structured `Query` overload is not on the live HTTP surface: every
+  // route in ControlRouteCatalog dispatches through
+  // `query(_ query: LegacyDebugQueryInput)`, which threads the caller's
+  // scopedSessionID and readRedaction. This overload is reached only by
+  // headless/test callers, none of which are session-scoped, so the
+  // unredacted/unscoped projection context here is not a live cross-session
+  // leak.
   func query(_ query: Query) -> ControlResponse {
     performOnMain {
       guard let model = model else {
@@ -193,6 +200,10 @@ final class LiveIntentRouter: IntentRouter {
     else {
       return .error(400, "bad request")
     }
+    // C12: a session-scoped caller resolves to its own session and never the
+    // active tab. The active-tab fallback below is reachable only by a
+    // whole-app/fixture caller (scopedSessionID == nil), which has no own
+    // session; that path keeps legacy active-session behavior deliberately.
     let targetSessionID =
       request.sessionId ?? scopedSessionID ?? model.activeTab?.sessionId
     if let scopedSessionID, let requestedSessionID = request.sessionId,
