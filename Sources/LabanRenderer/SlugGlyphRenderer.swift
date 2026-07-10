@@ -275,6 +275,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
   private var latestPresentedTarget: MTLTexture?
   private let presentTargetLock = NSLock()
+  /// Monotonic stamp for each `publishLatestTarget` call, carried by the
+  /// `slug.publish` signpost event and the `slug.present` signpost span so a
+  /// trace can tell fresh presents from redundant re-presents of the same
+  /// published frame. Guarded by `presentTargetLock`.
+  private var publishedFrameVersion: UInt64 = 0
   private var presentQueue: MTLCommandQueue?
   /// Serializes render frames so only one is in flight on `queue` at a time.
   /// `MetalRenderer` and `VectorGlyphRenderer` get the same contract through
@@ -840,6 +845,30 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
+    let signposter = RenderEncodeSignpost.signposter
+    let incomingShape: String
+    if case .partial(let yRanges) = damage {
+      incomingShape = "bands:\(yRanges.count)"
+    } else {
+      incomingShape = "full"
+    }
+    let renderSpan = signposter.beginInterval(
+      "slug.render", "in=\(incomingShape, privacy: .public)")
+    // Effective damage shape and instance counts, filled in as the frame
+    // progresses so the interval's end message describes what was actually
+    // encoded ("skip" when the empty-effective-damage fast path fired).
+    var spanShape = "skip"
+    var spanSolids = 0
+    var spanGlyphs = 0
+    var spanRaster = 0
+    var spanColor = 0
+    defer {
+      signposter.endInterval(
+        "slug.render",
+        renderSpan,
+        "eff=\(spanShape, privacy: .public) solids=\(spanSolids, privacy: .public) glyphs=\(spanGlyphs, privacy: .public) raster=\(spanRaster, privacy: .public) color=\(spanColor, privacy: .public)"
+      )
+    }
     let clearColor = Self.linearizedClearColor(commands)
     let currentCursorRects = cursorRects(in: commands)
     let outcome = resolveEffectiveDamage(
@@ -852,10 +881,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       // fully current (including cursor position). Skip encoding entirely
       // and do not rotate the ring; the last completed handler publication
       // remains visible. Honor the completion contract only.
+      signposter.emitEvent("slug.skipFrame")
       previousCursorRects = currentCursorRects
       snapshotConfigForNextFrame(clearColor: clearColor)
       onFrameCompleted?()
       return true
+    }
+    if case .partial(let effectiveRanges) = effectiveDamage {
+      spanShape = "bands:\(effectiveRanges.count)"
+    } else {
+      spanShape = "full"
     }
     previousCursorRects = currentCursorRects
     snapshotConfigForNextFrame(clearColor: clearColor)
@@ -915,6 +950,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     lastFrameSlugGlyphsCount = slugGlyphs.count
     lastFrameRasterGlyphsCount = rasterGlyphs.count
     lastFrameColorGlyphsCount = colorGlyphs.count
+    spanSolids = solids.count
+    spanGlyphs = slugGlyphs.count
+    spanRaster = rasterGlyphs.count
+    spanColor = colorGlyphs.count
     lastFrameGlyphFontSizes = frameGlyphFontSizes.sorted()
     lastFrameQuadHeights = frameQuadHeights.sorted()
     lastRasterFallbackGlyphs = rasterGlyphs.count + colorGlyphs.count
@@ -1592,6 +1631,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   ) -> SlugGlyphEntry? {
     let resolveKey = SlugGlyphResolveKey(fontID: fontID, cluster: cluster)
     if let cached = entriesByResolveKey[resolveKey] { return cached }
+    // Cold path: CTFont glyph resolution and, for a first-ever glyph, curve
+    // outline extraction plus band building. The message deliberately carries
+    // no cluster text (terminal content); duration and count are the signal.
+    let signposter = RenderEncodeSignpost.signposter
+    let buildSpan = signposter.beginInterval("slug.glyphBuild")
+    defer { signposter.endInterval("slug.glyphBuild", buildSpan) }
     guard
       let resolved = resolveGlyph(
         for: cluster,
@@ -1819,6 +1864,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     guard glyphsNeeded else { return true }
     guard geometryBuffersDirty || curveBuffer == nil else { return true }
     guard !curves.isEmpty, !glyphs.isEmpty else { return false }
+    let signposter = RenderEncodeSignpost.signposter
+    let curveCount = curves.count
+    let glyphCount = glyphs.count
+    let uploadSpan = signposter.beginInterval(
+      "slug.geometryUpload",
+      "curves=\(curveCount, privacy: .public) glyphs=\(glyphCount, privacy: .public)")
+    defer { signposter.endInterval("slug.geometryUpload", uploadSpan) }
     guard
       ensureIncrementalBuffer(
         curves, buffer: &curveBuffer, uploadedCount: &curveBufferUploadedCount),
@@ -2023,6 +2075,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private func presentLatestTarget(into drawable: any CAMetalDrawable) -> Bool {
     presentTargetLock.lock()
     let target = latestPresentedTarget
+    let version = publishedFrameVersion
     presentTargetLock.unlock()
     guard let target,
       target.width == drawable.texture.width,
@@ -2031,6 +2084,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     guard let presentQueue,
       let commandBuffer = presentQueue.makeCommandBuffer()
     else { return false }
+    let signposter = RenderEncodeSignpost.signposter
+    let spanState = signposter.beginInterval(
+      "slug.present", "v=\(version, privacy: .public)")
+    defer { signposter.endInterval("slug.present", spanState) }
     encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
     commandBuffer.present(drawable)
     commandBuffer.commit()
@@ -2040,7 +2097,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private func publishLatestTarget(_ target: MTLTexture) {
     presentTargetLock.lock()
     latestPresentedTarget = target
+    publishedFrameVersion &+= 1
+    let version = publishedFrameVersion
     presentTargetLock.unlock()
+    RenderEncodeSignpost.signposter.emitEvent(
+      "slug.publish", "v=\(version, privacy: .public)")
     if #available(macOS 14.0, *) {
       presentDisplayLink?.notifyContentPublished()
     }
