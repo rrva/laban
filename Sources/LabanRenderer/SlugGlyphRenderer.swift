@@ -1564,6 +1564,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     foreground: UInt32,
     solids: inout [SlugSolidInstance]
   ) {
+    // Mirrors TextDecorationLayout.make's own guard (below): bail before
+    // touching TerminalDisplayWidth.cells(of:) or cellSize for the common
+    // undecorated run, instead of paying that work only for `make` to
+    // return nil right after.
+    guard
+      attributes.contains(.underline) || attributes.contains(.strikethrough)
+        || attributes.contains(.overline) || underlineStyle != .none
+    else { return }
     guard
       let layout = TextDecorationLayout.make(
         origin: origin,
