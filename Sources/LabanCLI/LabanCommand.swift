@@ -16,6 +16,8 @@ enum LabanCommand: Equatable {
   case sessionCurrent(json: Bool)
   case sessionGetText(source: String, startLine: Int?, endLine: Int?, maxLines: Int?, json: Bool)
   case context(json: Bool, maxLines: Int)
+  case waitPrompt(timeoutSeconds: Double, json: Bool)
+  case waitCommandFinished(timeoutSeconds: Double, json: Bool)
   case propose(purpose: String, command: [String])
   case help
 }
@@ -115,6 +117,8 @@ struct LabanArgumentParser {
       return parseSession(args: args, json: json, body: body)
     case "context":
       return parseContext(args: args, json: json)
+    case "wait":
+      return parseWait(args: args, json: json)
     default:
       return .failure(.unknownCommand(command))
     }
@@ -232,6 +236,28 @@ struct LabanArgumentParser {
     return .success(.context(json: json, maxLines: maxLines ?? 40))
   }
 
+  private static func parseWait(
+    args: [String],
+    json: Bool
+  ) -> Result<LabanCommand, LabanArgumentError> {
+    guard let subcommand = args.first else {
+      return .failure(.missingArgument("wait subcommand"))
+    }
+    let rest = Array(args.dropFirst())
+    let (timeoutSeconds, remaining) = extractDoubleOption(named: "--timeout", from: rest)
+    guard remaining.isEmpty else {
+      return .failure(.unknownCommand("wait \(subcommand) \(remaining.joined(separator: " "))"))
+    }
+    switch subcommand {
+    case "prompt":
+      return .success(.waitPrompt(timeoutSeconds: timeoutSeconds ?? 30, json: json))
+    case "command-finished":
+      return .success(.waitCommandFinished(timeoutSeconds: timeoutSeconds ?? 30, json: json))
+    default:
+      return .failure(.unknownCommand("wait \(subcommand)"))
+    }
+  }
+
   private static func parsePropose(
     args: [String]
   ) -> Result<LabanCommand, LabanArgumentError> {
@@ -283,6 +309,30 @@ struct LabanArgumentParser {
       let raw = String(arg.dropFirst(option.count + 1))
       rest.remove(at: idx)
       return (Int(raw), rest)
+    }
+    return (nil, rest)
+  }
+
+  private static func extractDoubleOption(
+    named option: String,
+    from args: [String]
+  ) -> (value: Double?, remaining: [String]) {
+    var rest = args
+    if let idx = rest.firstIndex(of: option) {
+      rest.remove(at: idx)
+      guard idx < rest.count,
+        let value = Double(rest[idx])
+      else {
+        return (nil, rest)
+      }
+      rest.remove(at: idx)
+      return (value, rest)
+    }
+    if let idx = rest.firstIndex(where: { $0.hasPrefix("\(option)=") }) {
+      let arg = rest[idx]
+      let raw = String(arg.dropFirst(option.count + 1))
+      rest.remove(at: idx)
+      return (Double(raw), rest)
     }
     return (nil, rest)
   }

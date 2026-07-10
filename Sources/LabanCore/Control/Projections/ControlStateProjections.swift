@@ -284,7 +284,8 @@ public enum ControlStateProjections {
       ShellIntegrationStateResponse(
         sessionId: sessionId,
         phase: state.phase.rawValue,
-        lastExitCode: state.lastExitCode
+        lastExitCode: state.lastExitCode,
+        completedCommandCount: state.completedCommandCount
       ))
   }
 

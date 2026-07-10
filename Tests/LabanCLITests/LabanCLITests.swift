@@ -340,6 +340,41 @@ final class LabanCLITests: XCTestCase {
       .context(json: true, maxLines: 10))
   }
 
+  func testParseWaitPromptDefaultsToThirtySeconds() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["wait", "prompt", "--json"]).success,
+      .waitPrompt(timeoutSeconds: 30, json: true))
+  }
+
+  func testParseWaitPromptWithTimeout() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["wait", "prompt", "--timeout", "5", "--json"]).success,
+      .waitPrompt(timeoutSeconds: 5, json: true))
+  }
+
+  func testParseWaitCommandFinishedDefaultsToThirtySeconds() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["wait", "command-finished", "--json"]).success,
+      .waitCommandFinished(timeoutSeconds: 30, json: true))
+  }
+
+  func testParseWaitCommandFinishedWithTimeout() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["wait", "command-finished", "--timeout", "2.5", "--json"])
+        .success,
+      .waitCommandFinished(timeoutSeconds: 2.5, json: true))
+  }
+
+  func testParseWaitUnknownSubcommand() {
+    guard
+      case .failure(let error) = LabanArgumentParser.parse(["wait", "proposal"])
+    else {
+      XCTFail("expected failure")
+      return
+    }
+    XCTAssertEqual(error, .unknownCommand("wait proposal"))
+  }
+
   func testParsePropose() {
     XCTAssertEqual(
       LabanArgumentParser.parse([
@@ -576,6 +611,146 @@ final class LabanCLITests: XCTestCase {
 
     XCTAssertEqual(result.exitCode, 5)
     XCTAssertTrue(result.stdout.contains("forbidden"))
+  }
+
+  // MARK: - wait prompt / wait command-finished behavior
+
+  func testWaitPromptSucceedsOnceAtPromptIsObserved() {
+    var phases = ["running", "running", "atPrompt"]
+    var sleeps: [TimeInterval] = []
+    let result = LabanCLI.run(
+      command: .waitPrompt(timeoutSeconds: 30, json: true),
+      agentProxyRequest: { proxyURL, envelope in
+        XCTAssertEqual(proxyURL, "unix:///proxy.sock")
+        XCTAssertEqual(envelope.path, "/debug/shell-integration/state")
+        let phase = phases.removeFirst()
+        return (
+          200,
+          "{\"sessionId\":\"session-a\",\"phase\":\"\(phase)\",\"lastExitCode\":null,"
+            + "\"completedCommandCount\":0}"
+        )
+      },
+      agentProxyURL: "unix:///proxy.sock",
+      now: { Date(timeIntervalSince1970: 0) },
+      sleep: { sleeps.append($0) })
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertTrue(result.stdout.contains("\"phase\":\"atPrompt\""))
+    XCTAssertTrue(phases.isEmpty)
+    XCTAssertEqual(sleeps, [0.2, 0.2])
+  }
+
+  func testWaitPromptTimesOutExitsFour() {
+    var tick = 0.0
+    let result = LabanCLI.run(
+      command: .waitPrompt(timeoutSeconds: 1, json: true),
+      agentProxyRequest: { _, _ in
+        (
+          200,
+          "{\"sessionId\":\"session-a\",\"phase\":\"running\",\"lastExitCode\":null,"
+            + "\"completedCommandCount\":0}"
+        )
+      },
+      agentProxyURL: "unix:///proxy.sock",
+      now: {
+        defer { tick += 0.5 }
+        return Date(timeIntervalSince1970: tick)
+      },
+      sleep: { _ in })
+
+    XCTAssertEqual(result.exitCode, 4)
+    XCTAssertTrue(result.stderr.contains("timed out"))
+  }
+
+  func testWaitPromptMissingProxyEnvExitsThreeWithoutLazyAttach() {
+    let result = LabanCLI.run(
+      command: .waitPrompt(timeoutSeconds: 30, json: true),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, _, _, _ in fatalError("must not fall back to lazy attach") })
+
+    XCTAssertEqual(result.exitCode, 3)
+    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
+  }
+
+  func testWaitPromptMalformedResponseExitsSix() {
+    let result = LabanCLI.run(
+      command: .waitPrompt(timeoutSeconds: 30, json: true),
+      agentProxyRequest: { _, _ in (200, "not json") },
+      agentProxyURL: "unix:///proxy.sock",
+      now: { Date(timeIntervalSince1970: 0) },
+      sleep: { _ in })
+
+    XCTAssertEqual(result.exitCode, 6)
+  }
+
+  func testWaitCommandFinishedSucceedsOnceCountIncrements() {
+    // The first count is the pre-wait baseline fetch; the poll loop then sees
+    // the same count twice (not yet incremented) before observing 3.
+    var counts = [2, 2, 2, 3]
+    var sleeps: [TimeInterval] = []
+    let result = LabanCLI.run(
+      command: .waitCommandFinished(timeoutSeconds: 30, json: true),
+      agentProxyRequest: { proxyURL, envelope in
+        XCTAssertEqual(proxyURL, "unix:///proxy.sock")
+        XCTAssertEqual(envelope.path, "/debug/shell-integration/state")
+        let count = counts.removeFirst()
+        return (
+          200,
+          "{\"sessionId\":\"session-a\",\"phase\":\"finished\",\"lastExitCode\":0,"
+            + "\"completedCommandCount\":\(count)}"
+        )
+      },
+      agentProxyURL: "unix:///proxy.sock",
+      now: { Date(timeIntervalSince1970: 0) },
+      sleep: { sleeps.append($0) })
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertTrue(result.stdout.contains("\"completedCommandCount\":3"))
+    XCTAssertTrue(counts.isEmpty)
+    XCTAssertEqual(sleeps, [0.2, 0.2])
+  }
+
+  func testWaitCommandFinishedTimesOutExitsFour() {
+    var tick = 0.0
+    let result = LabanCLI.run(
+      command: .waitCommandFinished(timeoutSeconds: 1, json: true),
+      agentProxyRequest: { _, _ in
+        (
+          200,
+          "{\"sessionId\":\"session-a\",\"phase\":\"running\",\"lastExitCode\":null,"
+            + "\"completedCommandCount\":0}"
+        )
+      },
+      agentProxyURL: "unix:///proxy.sock",
+      now: {
+        defer { tick += 0.5 }
+        return Date(timeIntervalSince1970: tick)
+      },
+      sleep: { _ in })
+
+    XCTAssertEqual(result.exitCode, 4)
+    XCTAssertTrue(result.stderr.contains("timed out"))
+  }
+
+  func testWaitCommandFinishedMissingProxyEnvExitsThreeWithoutLazyAttach() {
+    let result = LabanCLI.run(
+      command: .waitCommandFinished(timeoutSeconds: 30, json: true),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, _, _, _ in fatalError("must not fall back to lazy attach") })
+
+    XCTAssertEqual(result.exitCode, 3)
+    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
+  }
+
+  func testWaitCommandFinishedMalformedResponseExitsSix() {
+    let result = LabanCLI.run(
+      command: .waitCommandFinished(timeoutSeconds: 30, json: true),
+      agentProxyRequest: { _, _ in (200, "not json") },
+      agentProxyURL: "unix:///proxy.sock",
+      now: { Date(timeIntervalSince1970: 0) },
+      sleep: { _ in })
+
+    XCTAssertEqual(result.exitCode, 6)
   }
 
   func testSessionRequestNon2xxExitsNonzero() {

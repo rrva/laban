@@ -450,11 +450,21 @@ public struct ShellIntegrationStateResponse: Encodable {
   public var sessionId: String
   public var phase: String
   public var lastExitCode: Int?
+  /// Monotonic count of commands that have finished (OSC 133 D) this
+  /// session. `laban wait command-finished` polls this field and exits once
+  /// it increments past the value observed at the start of the wait.
+  public var completedCommandCount: Int
 
-  public init(sessionId: String, phase: String, lastExitCode: Int?) {
+  public init(
+    sessionId: String,
+    phase: String,
+    lastExitCode: Int?,
+    completedCommandCount: Int
+  ) {
     self.sessionId = sessionId
     self.phase = phase
     self.lastExitCode = lastExitCode
+    self.completedCommandCount = completedCommandCount
   }
 }
 

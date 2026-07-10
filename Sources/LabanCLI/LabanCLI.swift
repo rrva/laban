@@ -30,6 +30,13 @@ typealias LazyAttachRequestHandler = (
   _ body: String?
 ) throws -> (status: Int, body: String)
 
+/// Injectable wall clock for `wait` commands' bounded polling loop, so tests
+/// can drive a fake clock instead of sleeping in real time.
+typealias WaitClock = () -> Date
+
+/// Injectable sleep for `wait` commands' bounded polling loop.
+typealias WaitSleep = (TimeInterval) -> Void
+
 enum LabanCLI {
   static func run(
     command: LabanCommand,
@@ -38,7 +45,9 @@ enum LabanCLI {
     agentProxyRequest: @escaping AgentProxyRequest = liveAgentProxyRequest,
     lazyAttachRequest: @escaping LazyAttachRequestHandler = LazyAttachClient.perform,
     agentProxyURL: String? = nil,
-    executablePath: @escaping () -> String = liveExecutablePath
+    executablePath: @escaping () -> String = liveExecutablePath,
+    now: @escaping WaitClock = Date.init,
+    sleep: @escaping WaitSleep = { Thread.sleep(forTimeInterval: $0) }
   ) -> LabanCLIResult {
     do {
       return try runThrowing(
@@ -48,7 +57,9 @@ enum LabanCLI {
         agentProxyRequest: agentProxyRequest,
         lazyAttachRequest: lazyAttachRequest,
         agentProxyURL: agentProxyURL,
-        executablePath: executablePath)
+        executablePath: executablePath,
+        now: now,
+        sleep: sleep)
     } catch let error as ControlDiscoveryError {
       return LabanCLIResult(
         exitCode: 3,
@@ -104,7 +115,9 @@ enum LabanCLI {
     agentProxyRequest: AgentProxyRequest,
     lazyAttachRequest: LazyAttachRequestHandler,
     agentProxyURL: String?,
-    executablePath: () -> String
+    executablePath: () -> String,
+    now: WaitClock,
+    sleep: WaitSleep
   ) throws -> LabanCLIResult {
     switch command {
     case .discover(let json):
@@ -265,6 +278,62 @@ enum LabanCLI {
           "recentText": textObject,
         ]
         return formatJSONObject(bundle)
+      }
+
+    case .waitPrompt(let timeoutSeconds, let json):
+      switch try pollShellIntegrationState(
+        agentProxyRequest: agentProxyRequest,
+        agentProxyURL: agentProxyURL,
+        json: json,
+        timeoutSeconds: timeoutSeconds,
+        now: now,
+        sleep: sleep,
+        until: { $0.phase == "atPrompt" })
+      {
+      case .failure(let result):
+        return result
+      case .timeout:
+        return LabanCLIResult(
+          exitCode: 4, stdout: "",
+          stderr: "laban: timed out after \(timeoutSeconds)s waiting for prompt")
+      case .success(let poll):
+        return formatJSONObject(["ok": true, "phase": poll.phase])
+      }
+
+    case .waitCommandFinished(let timeoutSeconds, let json):
+      let proxyURL = try requireAgentControlURL(override: agentProxyURL)
+      let (initialStatus, initialBody) = try agentProxyRequest(
+        proxyURL, AgentProxyClient.shellIntegrationStateRequest())
+      guard (200..<300).contains(initialStatus) else {
+        return formatProxyResponse(status: initialStatus, body: initialBody, json: json)
+      }
+      guard let initialObject = jsonObject(from: initialBody),
+        let baseline = initialObject["completedCommandCount"] as? Int
+      else {
+        return LabanCLIResult(
+          exitCode: 6, stdout: "", stderr: "laban: malformed shellIntegration.state response")
+      }
+      switch try pollShellIntegrationState(
+        agentProxyRequest: agentProxyRequest,
+        agentProxyURL: agentProxyURL,
+        json: json,
+        timeoutSeconds: timeoutSeconds,
+        now: now,
+        sleep: sleep,
+        until: { $0.completedCommandCount > baseline })
+      {
+      case .failure(let result):
+        return result
+      case .timeout:
+        return LabanCLIResult(
+          exitCode: 4, stdout: "",
+          stderr: "laban: timed out after \(timeoutSeconds)s waiting for command to finish")
+      case .success(let poll):
+        return formatJSONObject([
+          "ok": true,
+          "completedCommandCount": poll.completedCommandCount,
+          "lastExitCode": poll.lastExitCode.map { $0 as Any } ?? NSNull(),
+        ])
       }
 
     case .propose(let purpose, let command):
@@ -479,6 +548,68 @@ enum LabanCLI {
         detail: redactingTokenLikeKeys(detailObject) as? [String: Any] ?? detailObject))
   }
 
+  /// One decoded `shellIntegration.state` poll observed by `wait prompt` and
+  /// `wait command-finished`.
+  private struct ShellIntegrationPoll {
+    var phase: String
+    var lastExitCode: Int?
+    var completedCommandCount: Int
+  }
+
+  private enum ShellIntegrationPollOutcome {
+    case success(ShellIntegrationPoll)
+    case timeout
+    case failure(LabanCLIResult)
+  }
+
+  /// Bounded polling loop shared by `wait prompt` and `wait command-finished`:
+  /// polls `shellIntegration.state` on the bound session every 200ms until
+  /// `until` is satisfied or `timeoutSeconds` elapses. Broker-only; throws
+  /// `.agentControlUnavailable` (exit 3) when `LABAN_AGENT_CONTROL_URL` is
+  /// unset. No new wire primitive: each poll is an ordinary bounded request
+  /// that interleaves with other proxy traffic, per the Milestone 2c decision
+  /// to avoid holding the single C14 upstream connection open indefinitely.
+  private static func pollShellIntegrationState(
+    agentProxyRequest: AgentProxyRequest,
+    agentProxyURL: String?,
+    json: Bool,
+    timeoutSeconds: Double,
+    now: WaitClock,
+    sleep: WaitSleep,
+    until isSatisfied: (ShellIntegrationPoll) -> Bool
+  ) throws -> ShellIntegrationPollOutcome {
+    let proxyURL = try requireAgentControlURL(override: agentProxyURL)
+    let pollInterval: TimeInterval = 0.2
+    let deadline = now().addingTimeInterval(timeoutSeconds)
+
+    while true {
+      let (status, body) = try agentProxyRequest(
+        proxyURL, AgentProxyClient.shellIntegrationStateRequest())
+      guard (200..<300).contains(status) else {
+        return .failure(formatProxyResponse(status: status, body: body, json: json))
+      }
+      guard let object = jsonObject(from: body),
+        let phase = object["phase"] as? String,
+        let completedCommandCount = object["completedCommandCount"] as? Int
+      else {
+        return .failure(
+          LabanCLIResult(
+            exitCode: 6, stdout: "", stderr: "laban: malformed shellIntegration.state response"))
+      }
+      let poll = ShellIntegrationPoll(
+        phase: phase,
+        lastExitCode: object["lastExitCode"] as? Int,
+        completedCommandCount: completedCommandCount)
+      if isSatisfied(poll) {
+        return .success(poll)
+      }
+      if now() >= deadline {
+        return .timeout
+      }
+      sleep(pollInterval)
+    }
+  }
+
   private static func jsonObject(from text: String) -> [String: Any]? {
     guard let data = text.data(using: .utf8) else { return nil }
     return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -617,11 +748,19 @@ let usageText = """
       context --json [--max-lines N] Print bound session identity, shell phase, and a
                                      recent-scrollback tail for prompt context (requires LABAN_AGENT_CONTROL_URL).
 
+    Waits:
+      wait prompt [--timeout SECONDS]
+                                     Block until the bound session's shell reaches atPrompt
+                                     (default timeout 30s; requires LABAN_AGENT_CONTROL_URL).
+      wait command-finished [--timeout SECONDS]
+                                     Block until the bound session's completed-command count
+                                     increments (default timeout 30s; requires LABAN_AGENT_CONTROL_URL).
+
     Lazy attach fallback:
       When LABAN_AGENT_CONTROL_URL is unset, session-scoped commands discover
       control.json and request a live, one-time user approval for the requested
       action. The agent proxy remains available when LABAN_AGENT_CONTROL_URL is set.
-      session current, session get-text, and context are broker-only: they
+      session current, session get-text, context, and wait are broker-only: they
       require LABAN_AGENT_CONTROL_URL and do not fall back to lazy attach.
 
     Global options:

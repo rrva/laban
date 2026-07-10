@@ -24,6 +24,7 @@ private let zshCompletions = """
       'install-cli:Install the laban command shim'
       'session:Session-scoped commands via the agent proxy'
       'context:Print a compact bound-session context bundle'
+      'wait:Block until a bound-session condition is true'
       'propose:Propose a command for user review'
     )
     _describe -t commands 'laban command' commands
@@ -37,7 +38,7 @@ private let bashCompletions = """
     local cur prev words cword
     _init_completion || return
 
-    local commands="discover status health capabilities request completions install-cli session context propose"
+    local commands="discover status health capabilities request completions install-cli session context wait propose"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
       COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
@@ -59,6 +60,13 @@ private let bashCompletions = """
         ;;
       context)
         COMPREPLY=( $(compgen -W "--json --max-lines" -- "$cur") )
+        ;;
+      wait)
+        if [ "$COMP_CWORD" -eq 2 ]; then
+          COMPREPLY=( $(compgen -W "prompt command-finished" -- "$cur") )
+        else
+          COMPREPLY=( $(compgen -W "--timeout --json" -- "$cur") )
+        fi
         ;;
       session)
         if [ "$COMP_CWORD" -eq 2 ]; then
@@ -90,6 +98,7 @@ private let fishCompletions = """
   complete -c laban -n '__fish_use_subcommand' -a 'install-cli' -d 'Install the laban command shim'
   complete -c laban -n '__fish_use_subcommand' -a 'session' -d 'Session-scoped commands via the agent proxy'
   complete -c laban -n '__fish_use_subcommand' -a 'context' -d 'Print a compact bound-session context bundle'
+  complete -c laban -n '__fish_use_subcommand' -a 'wait' -d 'Block until a bound-session condition is true'
   complete -c laban -n '__fish_use_subcommand' -a 'propose' -d 'Propose a command for user review'
 
   complete -c laban -n '__fish_seen_subcommand_from discover status health capabilities' -l json
@@ -100,6 +109,9 @@ private let fishCompletions = """
   complete -c laban -n '__fish_seen_subcommand_from completions' -a 'zsh bash fish'
   complete -c laban -n '__fish_seen_subcommand_from context' -l json
   complete -c laban -n '__fish_seen_subcommand_from context' -l max-lines -r
+  complete -c laban -n '__fish_seen_subcommand_from wait' -a 'prompt command-finished'
+  complete -c laban -n '__fish_seen_subcommand_from wait' -l timeout -r
+  complete -c laban -n '__fish_seen_subcommand_from wait' -l json
   complete -c laban -n '__fish_seen_subcommand_from session' -a 'state request scroll proxy current get-text'
   complete -c laban -n '__fish_seen_subcommand_from session' -l json
   complete -c laban -n '__fish_seen_subcommand_from session' -l screen

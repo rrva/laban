@@ -4,13 +4,14 @@
   "title": "Debug Shell Integration State",
   "type": "object",
   "additionalProperties": false,
-  "required": ["sessionId", "phase"],
+  "required": ["sessionId", "phase", "completedCommandCount"],
   "properties": {
     "sessionId": {"type": "string"},
     "phase": {
       "type": "string",
       "enum": ["idle", "atPrompt", "running", "finished"]
     },
-    "lastExitCode": {"type": ["integer", "null"]}
+    "lastExitCode": {"type": ["integer", "null"]},
+    "completedCommandCount": {"type": "integer"}
   }
 }
