@@ -337,7 +337,13 @@ func runLiveControlAttach(_ args: AgentArgs) -> Never {
     do {
       proxy = try ControlAttachProxyServer(
         upstreamFD: attachment.fd,
-        allowedRootPID: nil)
+        allowedRootPID: nil,
+        // A child command is about to be launched and its pid bound via
+        // setAllowedRootPID once spawned; reject peers until that happens
+        // so the pre-bind window cannot be used by an unrelated same-uid
+        // process. The bare serve-cli-without-run mode has no child to
+        // bind, so it keeps the default allow-all-same-uid behavior.
+        requireBoundRoot: args.controlAttachRunCommand != nil)
     } catch {
       fail("failed to start control-attach CLI proxy: \(error)")
     }

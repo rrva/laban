@@ -131,6 +131,74 @@ final class ControlAttachProxyServerTests: XCTestCase {
     XCTAssertEqual(response.status, 403)
   }
 
+  func testProxyRejectsPeerBeforeRootBoundWhenRequired() throws {
+    let upstream = try FakeUpstreamServer(
+      response: (
+        status: 200,
+        body: Data(#"{"ok":true}"#.utf8)
+      )
+    ).start()
+    defer { upstream.stop() }
+
+    // requireBoundRoot: true with no root bound yet must reject every peer,
+    // closing the window between accept-loop start and a launched child's
+    // pid becoming known via setAllowedRootPID.
+    let proxy = try ControlAttachProxyServer(
+      upstreamFD: upstream.clientFD,
+      allowedRootPID: nil,
+      requireBoundRoot: true)
+    defer { proxy.stop() }
+    Thread.sleep(forTimeInterval: 0.05)
+
+    let clientFD = try connectNoSigPipe(socketPath: proxy.socketPath)
+    defer { Darwin.close(clientFD) }
+
+    let request = Data(#"{"method":"GET","path":"/debug/state"}"#.utf8) + Data([0x0A])
+    try sendAll(fd: clientFD, data: request)
+
+    let response = try readLineJSON(fd: clientFD, timeout: 1.0)
+    XCTAssertEqual(response?.status, 403)
+  }
+
+  func testProxyAcceptsPeerAfterRootBoundWhenRequired() throws {
+    let upstream = try FakeUpstreamServer(
+      response: (
+        status: 200,
+        body: Data(#"{"ok":true}"#.utf8)
+      )
+    ).start()
+    defer { upstream.stop() }
+
+    let proxy = try ControlAttachProxyServer(
+      upstreamFD: upstream.clientFD,
+      allowedRootPID: nil,
+      requireBoundRoot: true)
+    defer { proxy.stop() }
+    Thread.sleep(forTimeInterval: 0.05)
+
+    // Once the root pid is bound, the connecting test process (itself the
+    // peer over the loopback UDS) must be accepted as the root.
+    proxy.setAllowedRootPID(getpid())
+
+    let clientFD = try connectNoSigPipe(socketPath: proxy.socketPath)
+    defer { Darwin.close(clientFD) }
+
+    let request = Data(#"{"method":"GET","path":"/debug/state"}"#.utf8) + Data([0x0A])
+    try sendAll(fd: clientFD, data: request)
+
+    let response = try readLineJSON(fd: clientFD, timeout: 1.0)
+    XCTAssertEqual(response?.status, 200)
+  }
+
+  func testIsDescendantTerminatesOnSyntheticCycle() {
+    // A pathological parent-lookup that cycles (100 -> 200 -> 100 -> ...)
+    // must not spin forever; the depth cap forces termination with `false`.
+    let cyclicParents: [pid_t: pid_t] = [100: 200, 200: 100]
+    let result = ControlAttachProxyServer.isDescendant(
+      pid: 100, of: 999, parentLookup: { cyclicParents[$0] })
+    XCTAssertFalse(result)
+  }
+
   func testAcceptedClientFDIsCloseOnExec() throws {
     let upstream = try FakeUpstreamServer().start()
     defer { upstream.stop() }

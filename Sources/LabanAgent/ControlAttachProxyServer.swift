@@ -60,6 +60,7 @@ final class ControlAttachProxyServer {
 
   private let allowedRootPIDLock = NSLock()
   private var allowedRootPID: pid_t?
+  private let requireBoundRoot: Bool
   private var listenerFD: Int32 = -1
   private var acceptThread: Thread?
 
@@ -92,14 +93,22 @@ final class ControlAttachProxyServer {
 
   // MARK: - Lifecycle
 
+  /// - Parameter requireBoundRoot: When `true`, peers are rejected until
+  ///   `setAllowedRootPID` has bound a root pid, closing the window between
+  ///   the accept loop starting and a launched child's pid becoming known.
+  ///   Callers that run the proxy with no child to bind (e.g. the bare
+  ///   `--control-attach-serve-cli` path) keep the default `false`, which
+  ///   preserves the historical allow-all-same-uid behavior for that mode.
   init(
     upstreamFD: Int32,
     allowedRootPID: pid_t?,
+    requireBoundRoot: Bool = false,
     limits: ProxyLimits = .production
   ) throws {
     self.limits = limits
     self.upstreamFD = upstreamFD
     self.allowedRootPID = allowedRootPID
+    self.requireBoundRoot = requireBoundRoot
 
     let pid = getpid()
     let dirName = "laban-agent-control.\(pid).\(UUID().uuidString.prefix(8))"
@@ -267,6 +276,12 @@ final class ControlAttachProxyServer {
         _ = sendErrorResponse(fd: clientFD, path: "", status: 403, message: "forbidden")
         return
       }
+    } else if requireBoundRoot {
+      // A child WILL be launched for this run but its pid is not bound yet:
+      // reject rather than allow-all so the pre-bind window cannot be used
+      // by an unrelated same-uid process to reach the held control connection.
+      _ = sendErrorResponse(fd: clientFD, path: "", status: 403, message: "forbidden")
+      return
     }
 
     let acceptedClient = stateLock.withLock { () -> Bool in
@@ -531,10 +546,23 @@ final class ControlAttachProxyServer {
 
   // MARK: - Process tree
 
-  static func isDescendant(pid: pid_t, of ancestor: pid_t) -> Bool {
+  // Bounds the parent-pid walk below so a pathological or spoofed parent
+  // chain (e.g. a cycle from a racing pid reuse) cannot spin the accept
+  // thread forever. Real process trees are never this deep.
+  private static let maxAncestryWalkDepth = 64
+
+  // `parentLookup` defaults to the real sysctl-backed lookup; tests inject a
+  // synthetic one to exercise cycle termination without real processes.
+  static func isDescendant(
+    pid: pid_t, of ancestor: pid_t, parentLookup: (pid_t) -> pid_t? = parentPID
+  ) -> Bool {
     var current = pid
+    var visited: Set<pid_t> = []
+    var steps = 0
     while current > 1 {
-      guard let parent = parentPID(of: current) else { return false }
+      guard steps < maxAncestryWalkDepth, visited.insert(current).inserted else { return false }
+      steps += 1
+      guard let parent = parentLookup(current) else { return false }
       if parent == ancestor { return true }
       current = parent
     }
