@@ -58,7 +58,15 @@ final class AppSessionCoordinator {
 
   private static let labptyWakeFallbackPollMilliseconds = 1_000
   private static let labptyActivePollMilliseconds = 8
-  private static let labptyActiveQuietNanoseconds: UInt64 = 50_000_000
+  // 500 ms, not 50 ms: parking and unparking costs a cross-process RPC to the
+  // labpty daemon plus a dispatch-group fan-out over every tab's feed queue
+  // plus a fresh kernel timer create on the next wake. A sub-second output
+  // cadence (spinners, progress bars) resonates with a 50 ms quiet threshold
+  // and drives ~10 park/unpark cycles per second. 500 ms of extra no-op 8 ms
+  // polling (~60 cheap polls, made nearly free by the W3 pre-check in
+  // pollAllLabptyFeeds) is far cheaper than those RPC/fan-out cycles, and true
+  // idle now parks 450 ms later, which is invisible to the user.
+  private static let labptyActiveQuietNanoseconds: UInt64 = 500_000_000
 
   init(
     client: LabandTerminalSessionClient,
