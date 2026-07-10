@@ -210,6 +210,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private let curveStore = GlyphCurveStore()
   private var entriesByKey: [SlugGlyphGeometryKey: SlugGlyphEntry] = [:]
   private var entriesByResolveKey: [SlugGlyphResolveKey: SlugGlyphEntry] = [:]
+  /// Resolve keys whose cold-path resolution previously returned nil (no
+  /// CTFont glyph, or an empty outline such as a space character). Checked
+  /// right after the `entriesByResolveKey` hit check so a cluster that can
+  /// never resolve stops re-running CTFont/outline work every frame it
+  /// appears. Never cleared: like `entriesByResolveKey`, the key embeds the
+  /// interned font identity, so a font change produces new keys naturally.
+  private var failedResolveKeys: Set<SlugGlyphResolveKey> = []
   private var fontIdentityIntern: [SlugFontIdentityKey: Int] = [:]
   private var nextFontIdentityID = 0
   /// Font color-glyph trait, keyed like `VectorGlyphRenderer.fontCache`
@@ -1631,6 +1638,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   ) -> SlugGlyphEntry? {
     let resolveKey = SlugGlyphResolveKey(fontID: fontID, cluster: cluster)
     if let cached = entriesByResolveKey[resolveKey] { return cached }
+    if failedResolveKeys.contains(resolveKey) { return nil }
     // Cold path: CTFont glyph resolution and, for a first-ever glyph, curve
     // outline extraction plus band building. The message deliberately carries
     // no cluster text (terminal content); duration and count are the signal.
@@ -1643,7 +1651,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         referenceAtlas: referenceAtlas,
         referenceVariant: referenceVariant,
         attributes: attributes)
-    else { return nil }
+    else {
+      failedResolveKeys.insert(resolveKey)
+      return nil
+    }
     let key = SlugGlyphGeometryKey(
       postScriptName: FontAtlas.postScriptName(of: resolved.font),
       glyph: resolved.glyph)
@@ -1652,9 +1663,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       return cached
     }
     guard let outline = curveStore.outline(for: resolved.glyph, font: resolved.font) else {
+      failedResolveKeys.insert(resolveKey)
       return nil
     }
-    guard !outline.curves.isEmpty else { return nil }
+    guard !outline.curves.isEmpty else {
+      failedResolveKeys.insert(resolveKey)
+      return nil
+    }
 
     let glyphIndex = glyphs.count
     let curveStart = curves.count
