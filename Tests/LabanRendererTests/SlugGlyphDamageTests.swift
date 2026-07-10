@@ -415,4 +415,43 @@ final class SlugGlyphDamageTests: XCTestCase {
       renderer.shouldEncodePresent(version: 5),
       "versions can jump (frames dropped upstream) and still encode once")
   }
+
+  // MARK: - M5: damage-aware instance building
+
+  /// Damaging exactly one middle row must build strictly fewer glyph
+  /// instances than a full redraw of the same content did, proving
+  /// `buildInstances` actually filters out-of-band glyph runs
+  /// (execplans/active/slug-hot-path-negative-cache-and-present-skip.md M5),
+  /// while the pixel output still matches a fresh full render byte-for-byte
+  /// (proving the filtering stayed correct, not just cheaper).
+  func testPartialDamageOfOneRowBuildsFewerGlyphInstancesThanFullRedraw() throws {
+    try skipIfNoMetal()
+    let cellSize = makeFontAtlas().cellSize
+    let textA = asciiText()
+    var textB = textA
+    let middleRow = rows / 2
+    textB[middleRow] = mutatedLine(textB[middleRow], seed: 3)
+
+    let partial = try makeRenderer(layout: .grayscale, cellSize: cellSize)
+    warmAllRingSlots(partial, commands: frameCommands(text: textA, cellSize: cellSize))
+
+    let full = try makeRenderer(layout: .grayscale, cellSize: cellSize)
+    XCTAssertTrue(full.render(frameCommands(text: textB, cellSize: cellSize), damage: .full))
+    let fullGlyphCount = full.lastFrameSlugGlyphsCountForTesting
+    let fullHash = hash(try XCTUnwrap(full.pngData))
+
+    XCTAssertTrue(
+      partial.render(
+        frameCommands(text: textB, cellSize: cellSize),
+        damage: damageForRow(middleRow, cellSize: cellSize)))
+    let partialGlyphCount = partial.lastFrameSlugGlyphsCountForTesting
+    let partialHash = hash(try XCTUnwrap(partial.pngData))
+
+    XCTAssertLessThan(
+      partialGlyphCount, fullGlyphCount,
+      "damaging one row must build fewer glyph instances than redrawing all \(rows) rows")
+    XCTAssertEqual(
+      partialHash, fullHash,
+      "filtering out-of-band glyph runs must not change the rendered pixels")
+  }
 }

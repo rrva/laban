@@ -976,6 +976,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     let scissorPlan = self.scissorPlan(for: effectiveDamage)
 
+    // nil (i.e. `.full` effective damage) disables buildInstances' filtering
+    // entirely, keeping that path byte-identical to pre-M5 behavior.
+    let damageBands: DirtyYRangeSet?
+    if case .partial(let effectiveRanges) = effectiveDamage {
+      damageBands = DirtyYRangeSet(effectiveRanges)
+    } else {
+      damageBands = nil
+    }
+
     var solids: [SlugSolidInstance] = []
     var slugGlyphs: [SlugGlyphGPUInstance] = []
     var rasterGlyphs: [SlugTextureInstance] = []
@@ -991,7 +1000,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       solids: &solids,
       glyphs: &slugGlyphs,
       rasterGlyphs: &rasterGlyphs,
-      colorGlyphs: &colorGlyphs)
+      colorGlyphs: &colorGlyphs,
+      damageBands: damageBands)
     lastFrameSolidsCount = solids.count
     lastFrameSlugGlyphsCount = slugGlyphs.count
     lastFrameRasterGlyphsCount = rasterGlyphs.count
@@ -1400,12 +1410,45 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     return alpha
   }
 
+  /// Whether a command's y-extent (`minY..<maxY`, the same y-up CG-point
+  /// space `DirtyYRange` itself uses, not the flipped device-pixel space
+  /// `slugScissorRect` converts to) intersects any damage band for this
+  /// frame. `nil` bands means `.full` damage: every command is included,
+  /// unfiltered, so `.full` frames stay byte-identical to pre-M5 behavior.
+  /// Scissors already clip anything over-included to its band, so this only
+  /// needs to avoid under-including (dropping pixels); ties go to inclusion.
+  private func intersectsDamage(minY: CGFloat, maxY: CGFloat, bands: DirtyYRangeSet?) -> Bool {
+    guard let bands else { return true }
+    return bands.overlaps(y: minY, height: maxY - minY)
+  }
+
+  /// Builds the GPU instance lists for this frame, optionally skipping
+  /// commands that fall entirely outside `damageBands` (M5: damage-aware
+  /// instance building, see execplans/active/
+  /// slug-hot-path-negative-cache-and-present-skip.md). `damageBands == nil`
+  /// (i.e. `.full` effective damage) disables filtering entirely so the
+  /// common full-redraw path is untouched.
+  ///
+  /// Solids (`rect`/`cursor`/`selection`/`findMatch`/`findSelected`) filter
+  /// on their exact rect y-extent: no expansion needed since these draw
+  /// exactly the pixels their rect covers.
+  ///
+  /// Glyph runs filter at the command level, before `appendGlyphRun` is
+  /// called, because underline/strikethrough decorations are emitted by
+  /// `appendGlyphRun` as part of the run and must be dropped together with
+  /// it, not kept alive by a per-instance filter. The run's nominal extent
+  /// is `origin.y ..< origin.y + cellSize.height`, but glyph quads can
+  /// overhang that cell box (ascent/descent, dilation padding for bold
+  /// stroke synthesis), so the extent is expanded by one full cell height on
+  /// both sides as a safety margin. Scissors make any resulting
+  /// over-inclusion harmless; only under-inclusion could drop pixels.
   private func buildInstances(
     commands: [FrameCommand],
     solids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
     rasterGlyphs: inout [SlugTextureInstance],
-    colorGlyphs: inout [SlugTextureInstance]
+    colorGlyphs: inout [SlugTextureInstance],
+    damageBands: DirtyYRangeSet?
   ) {
     for command in commands {
       switch command {
@@ -1414,12 +1457,21 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         .selection(let rect, let color),
         .findMatch(let rect, let color),
         .findSelected(let rect, let color):
+        guard intersectsDamage(minY: rect.minY, maxY: rect.maxY, bands: damageBands) else {
+          continue
+        }
         solids.append(solid(rect: rect, color: color))
 
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
         let underlineStyle, let underlineColor, _, _
       ):
+        let activeAtlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
+        let cellHeight = activeAtlas.cellSize.height
+        guard
+          intersectsDamage(
+            minY: origin.y - cellHeight, maxY: origin.y + 2 * cellHeight, bands: damageBands)
+        else { continue }
         appendGlyphRun(
           text,
           origin: origin,
@@ -2239,6 +2291,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// empty-effective-damage frame does not rotate the ring, without
   /// extending the renderer's public contract.
   var targetRingCursorForTesting: Int { targetRingCursor }
+
+  /// Test-only (not `public`): number of slug glyph instances `buildInstances`
+  /// built for the most recently rendered frame. Lets `SlugGlyphDamageTests`
+  /// prove M5's damage-aware filtering actually skips off-band glyph runs
+  /// (execplans/active/slug-hot-path-negative-cache-and-present-skip.md M5)
+  /// instead of only checking pixel output.
+  var lastFrameSlugGlyphsCountForTesting: Int { lastFrameSlugGlyphsCount }
 
   /// Number of ring slots `render()` rotates through. 3 under the
   /// display-link present path (a slot is `ringDepth - 1` frames stale when
