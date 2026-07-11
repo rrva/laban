@@ -415,16 +415,24 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
         detailsStack.addArrangedSubview(row)
       }
 
+      // A borderless "chevron + Details" toggle, not an NSButton with
+      // `bezelStyle = .disclosure`: that bezel is a triangle-only control that
+      // clips a text title to one glyph ("D") and reads as noise, not an
+      // affordance. A leading SF Symbol chevron that flips right/down plus the
+      // word "Details" is an unmistakable, native show-more control.
       let disclosure = DisclosureToggleButton()
       disclosure.title = "Details"
-      disclosure.setButtonType(.onOff)
-      disclosure.bezelStyle = .disclosure
-      disclosure.state = .off
+      disclosure.imagePosition = .imageLeading
+      disclosure.image = Self.chevronImage(expanded: false)
+      disclosure.isBordered = false
       disclosure.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+      disclosure.contentTintColor = .secondaryLabelColor
       disclosure.translatesAutoresizingMaskIntoConstraints = false
-      disclosure.configureToggle { [weak stack, weak detailsStack, weak alert] in
+      disclosure.configureToggle { [weak stack, weak detailsStack, weak alert, weak disclosure] in
         guard let stack, let detailsStack, let alert else { return }
+        let nowExpanded = detailsStack.isHidden
         detailsStack.isHidden.toggle()
+        disclosure?.image = Self.chevronImage(expanded: nowExpanded)
         Self.resizeAccessory(stack, width: detailsWidth, alert: alert)
       }
 
@@ -464,6 +472,20 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     stack.layoutSubtreeIfNeeded()
     stack.setFrameSize(NSSize(width: width, height: ceil(stack.fittingSize.height)))
     alert.layout()
+  }
+
+  /// The disclosure chevron for the "Details" toggle: `chevron.down` when the
+  /// rows are expanded, `chevron.right` when collapsed, matching the native
+  /// show-more idiom. Degrades to no image (text-only "Details") if the symbol
+  /// is unavailable, never crashes.
+  private static func chevronImage(expanded: Bool) -> NSImage? {
+    let name = expanded ? "chevron.down" : "chevron.right"
+    let image = NSImage(
+      systemSymbolName: name,
+      accessibilityDescription: expanded ? "Hide details" : "Show details")
+    let configuration = NSImage.SymbolConfiguration(
+      pointSize: NSFont.smallSystemFontSize, weight: .semibold)
+    return image?.withSymbolConfiguration(configuration)
   }
 
   /// One Can/Cannot line: a leading SF Symbol (aligned to a fixed-width
