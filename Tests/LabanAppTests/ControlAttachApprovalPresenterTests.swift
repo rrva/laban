@@ -117,14 +117,18 @@ final class ControlAttachApprovalPresenterTests: XCTestCase {
 
   // MARK: - dialogContent (dialog-redesign-brief, 2026-07-11: Adaptive Can/Cannot)
 
-  /// A verified family request hides the forensic rows (Requester, Path,
-  /// Chain, Operation) behind the disclosure, because the code signature is
-  /// already the trust anchor; the Can/Cannot lines carry the decision.
+  /// A verified family request hides the forensic rows (Path, Chain,
+  /// Operation) behind the disclosure, because the code signature is already
+  /// the trust anchor; the Can/Cannot lines carry the decision. The redundant
+  /// Requester row is dropped (it duplicated the title).
   func testDialogContentVerifiedFamilyShowsDisclosureAndCanCannot() {
     let request = makeRequest(canPersist: true, grantsSessionReadFamily: true)
     let content = ControlAttachApprovalPresenter.dialogContent(for: request)
 
     XCTAssertFalse(content.subheadIsWarning)
+
+    XCTAssertEqual(content.canLeadIn, "Can")
+    XCTAssertEqual(content.cannotLeadIn, "Cannot")
 
     XCTAssertTrue(content.can.contains("screen"), "can: \(content.can)")
     XCTAssertTrue(content.can.contains("scrollback"), "can: \(content.can)")
@@ -138,6 +142,9 @@ final class ControlAttachApprovalPresenterTests: XCTestCase {
     XCTAssertTrue(content.showsDisclosure)
     XCTAssertTrue(content.detailRows.contains { $0.0 == "Path" })
     XCTAssertTrue(content.detailRows.contains { $0.0 == "Chain" })
+    XCTAssertFalse(
+      content.detailRows.contains { $0.0 == "Requester" },
+      "Requester row duplicates the title and must be dropped")
     XCTAssertFalse(
       content.inlineRows.contains { $0.0 == "Path" },
       "verified principal must hide Path behind disclosure, not show it inline")

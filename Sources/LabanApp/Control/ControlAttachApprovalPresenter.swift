@@ -13,6 +13,11 @@ struct ApprovalDialogContent {
   var subheadIsWarning: Bool
   var can: String
   var cannot: String
+  /// Bold lead-in word before `can`/`cannot` so the exclusion line cannot be
+  /// misread as a grant at a glance (the icon alone is too subtle a signal for
+  /// a consent decision).
+  var canLeadIn: String
+  var cannotLeadIn: String
   var canSymbolName: String
   var cannotSymbolName: String
   var scope: String
@@ -23,11 +28,29 @@ struct ApprovalDialogContent {
   /// verified principal, where the code signature is the trust anchor and
   /// these rows start de-emphasized rather than being the primary read.
   var detailRows: [(String, String)]
-  /// True when `detailRows` is the collapsed-by-default set. Kept in the
-  /// model even though the current renderer shows these rows de-emphasized
-  /// rather than truly collapsed (see `makeAdaptiveDetailsView`), so a later
-  /// pass can wire a real disclosure control without changing this shape.
+  /// True when `detailRows` is the collapsed-by-default set (verified
+  /// principal). The renderer hides those rows behind a real disclosure
+  /// triangle, collapsed by default, so a verified-app user reads only title,
+  /// Can, Cannot, Scope, and buttons unless they choose to expand.
   var showsDisclosure: Bool
+}
+
+/// A disclosure triangle that owns its toggle closure, so the collapse control
+/// needs no presenter state or associated objects: the button lives in the
+/// alert's accessory view hierarchy and retains the closure for as long as the
+/// dialog is on screen.
+private final class DisclosureToggleButton: NSButton {
+  private var onToggle: (() -> Void)?
+
+  func configureToggle(_ onToggle: @escaping () -> Void) {
+    self.onToggle = onToggle
+    target = self
+    action = #selector(handleToggle)
+  }
+
+  @objc private func handleToggle() {
+    onToggle?()
+  }
 }
 
 final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unchecked Sendable {
@@ -68,7 +91,7 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
       // this is the path that matters for cognitive load.
       let content = Self.dialogContent(for: request)
       alert.messageText = content.title
-      alert.accessoryView = makeAdaptiveDetailsView(for: content, request: request)
+      alert.accessoryView = makeAdaptiveDetailsView(for: content, request: request, alert: alert)
     } else {
       // Legacy, request-exact grant: still used by tests and defensively.
       // Keep the pre-redesign single-grant row layout; do not invent
@@ -204,7 +227,9 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
       title = "Allow \(request.principalDisplayName) to read this session?"
       subhead = "Verified app - session \(request.sessionDisplay)"
       subheadIsWarning = false
-      detailRows.append(("Requester", request.principalDisplayName))
+      // No Requester row: it would exactly duplicate the title. The forensic
+      // rows a verified-app user might still want are Path, Chain, and the
+      // triggering Operation.
       if let path { detailRows.append(path) }
       detailRows.append(chain)
       detailRows.append(operation)
@@ -223,6 +248,8 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
       subheadIsWarning: subheadIsWarning,
       can: can,
       cannot: cannot,
+      canLeadIn: "Can",
+      cannotLeadIn: "Cannot",
       canSymbolName: "eye",
       cannotSymbolName: "hand.raised",
       scope: scope,
@@ -311,21 +338,17 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
   /// rows, then the Can/Cannot lines, then (verified only) the de-emphasized
   /// detail rows, then the always-visible Scope row.
   ///
-  /// ACCEPTABLE FALLBACK (dialog-redesign-brief, 2026-07-11): the brief's
-  /// preferred design is a real collapsing disclosure (`NSButton` with
-  /// `bezelStyle = .disclosure` toggling `isHidden`, then relayout and
-  /// `alert.layout()`). That interaction cannot be exercised or measured
-  /// without a GUI to click and screenshot against, so this renders the
-  /// verified principal's forensic rows (Requester, Path, Chain, Operation)
-  /// always visible but de-emphasized (small font, secondaryLabelColor, under
-  /// a thin separator labeled "Details") instead of truly collapsed.
-  /// `content.showsDisclosure` stays on the model so a later pass can wire
-  /// the real toggle without reshaping this function's input. Either way the
-  /// content a verified-app user reads first is just: title, subhead, Can,
-  /// Cannot, Scope, buttons; the de-emphasized rows sit below that.
+  /// A verified principal's forensic rows (Path, Chain, Operation) live behind
+  /// a real disclosure triangle, collapsed by default: the verified-app user
+  /// reads only title, subhead, Can, Cannot, Scope, and buttons unless they
+  /// click "Details" to expand. Toggling flips the sub-stack's `isHidden`,
+  /// relays out, and calls `alert.layout()` so the sheet grows or shrinks to
+  /// fit. An unverified principal has no disclosure: its Path/Chain/Operation
+  /// render inline and prominent (those rows ARE the decision).
   private func makeAdaptiveDetailsView(
     for content: ApprovalDialogContent,
-    request: ControlAttachApprovalRequest
+    request: ControlAttachApprovalRequest,
+    alert: NSAlert
   ) -> NSView {
     let detailsWidth = Self.detailsWidth
     let stack = NSStackView()
@@ -359,11 +382,11 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
 
     stack.addArrangedSubview(
       canCannotRow(
-        symbolName: content.canSymbolName, text: content.can, tint: .controlAccentColor,
-        rowWidth: detailsWidth))
+        symbolName: content.canSymbolName, leadIn: content.canLeadIn, text: content.can,
+        tint: .controlAccentColor, rowWidth: detailsWidth))
     let cannotRow = canCannotRow(
-      symbolName: content.cannotSymbolName, text: content.cannot, tint: .secondaryLabelColor,
-      rowWidth: detailsWidth)
+      symbolName: content.cannotSymbolName, leadIn: content.cannotLeadIn, text: content.cannot,
+      tint: .secondaryLabelColor, rowWidth: detailsWidth)
     stack.addArrangedSubview(cannotRow)
     // Generous rhythm: a little more room after the Can/Cannot block than the
     // uniform 8pt stack spacing elsewhere, whatever follows (Scope directly
@@ -372,17 +395,16 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     stack.setCustomSpacing(16, after: cannotRow)
 
     if !content.detailRows.isEmpty {
-      let separator = NSBox()
-      separator.boxType = .separator
-      separator.translatesAutoresizingMaskIntoConstraints = false
-      separator.widthAnchor.constraint(equalToConstant: detailsWidth).isActive = true
-      stack.addArrangedSubview(separator)
-
-      let detailsLabel = NSTextField(labelWithString: "Details")
-      detailsLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-      detailsLabel.textColor = .secondaryLabelColor
-      stack.addArrangedSubview(detailsLabel)
-
+      // The forensic rows collapse behind a disclosure triangle, hidden by
+      // default. A verified-app user does not need to read them to decide; the
+      // code signature is the trust anchor and the Can/Cannot lines carry the
+      // decision.
+      let detailsStack = NSStackView()
+      detailsStack.orientation = .vertical
+      detailsStack.alignment = .leading
+      detailsStack.spacing = 8
+      detailsStack.translatesAutoresizingMaskIntoConstraints = false
+      detailsStack.isHidden = true
       for (title, value) in content.detailRows {
         let monospaced = title == "Path"
         let row = detailRow(
@@ -390,8 +412,25 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
           tooltip: monospaced ? request.principalPath : nil,
           monospaced: monospaced,
           rowWidth: detailsWidth)
-        stack.addArrangedSubview(row)
+        detailsStack.addArrangedSubview(row)
       }
+
+      let disclosure = DisclosureToggleButton()
+      disclosure.title = "Details"
+      disclosure.setButtonType(.onOff)
+      disclosure.bezelStyle = .disclosure
+      disclosure.state = .off
+      disclosure.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+      disclosure.translatesAutoresizingMaskIntoConstraints = false
+      disclosure.configureToggle { [weak stack, weak detailsStack, weak alert] in
+        guard let stack, let detailsStack, let alert else { return }
+        detailsStack.isHidden.toggle()
+        Self.resizeAccessory(stack, width: detailsWidth, alert: alert)
+      }
+
+      stack.addArrangedSubview(disclosure)
+      stack.addArrangedSubview(detailsStack)
+      detailsStack.widthAnchor.constraint(equalToConstant: detailsWidth).isActive = true
     }
 
     let scopeField = NSTextField(wrappingLabelWithString: content.scope)
@@ -412,14 +451,26 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
       stack.addArrangedSubview(note)
     }
 
-    stack.layoutSubtreeIfNeeded()
-    stack.setFrameSize(NSSize(width: detailsWidth, height: ceil(stack.fittingSize.height)))
+    Self.resizeAccessory(stack, width: detailsWidth, alert: alert)
     return stack
   }
 
+  /// Re-measures `stack` after its contents change (a disclosure toggle shows
+  /// or hides rows) and grows or shrinks the alert to fit. The accessory stack
+  /// manages its own frame (`translatesAutoresizingMaskIntoConstraints`), so
+  /// the height must be recomputed by hand; `alert.layout()` then reflows the
+  /// sheet around the new accessory size.
+  private static func resizeAccessory(_ stack: NSStackView, width: CGFloat, alert: NSAlert) {
+    stack.layoutSubtreeIfNeeded()
+    stack.setFrameSize(NSSize(width: width, height: ceil(stack.fittingSize.height)))
+    alert.layout()
+  }
+
   /// One Can/Cannot line: a leading SF Symbol (aligned to a fixed-width
-  /// column) plus body text. No macOS-26-only symbol or configuration API is
-  /// used here (`NSImage.SymbolConfiguration(pointSize:weight:scale:)` and
+  /// column) plus a bold `leadIn` word ("Can"/"Cannot") and body text. The
+  /// lead-in makes the exclusion line unmistakably negative at a glance, so it
+  /// cannot be misread as a grant. No macOS-26-only symbol or configuration API
+  /// is used here (`NSImage.SymbolConfiguration(pointSize:weight:scale:)` and
   /// `NSImage(systemSymbolName:accessibilityDescription:)` exist since macOS
   /// 11, well under this package's .v13 floor), so no `#available` gate is
   /// needed for this call; if the named symbol is missing on the running OS
@@ -427,6 +478,7 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
   /// crashes.
   private func canCannotRow(
     symbolName: String,
+    leadIn: String,
     text: String,
     tint: NSColor,
     rowWidth: CGFloat
@@ -446,10 +498,25 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
       arranged.append(imageView)
     }
 
-    let textField = NSTextField(wrappingLabelWithString: text)
-    textField.font = .systemFont(ofSize: NSFont.systemFontSize)
-    textField.textColor = .labelColor
+    // Bold "Can: " / "Cannot: " lead-in, then the body at regular weight, in
+    // one attributed string so they wrap as a single paragraph.
+    let bodySize = NSFont.systemFontSize
+    let attributed = NSMutableAttributedString(
+      string: "\(leadIn): ",
+      attributes: [
+        .font: NSFont.boldSystemFont(ofSize: bodySize),
+        .foregroundColor: NSColor.labelColor,
+      ])
+    attributed.append(
+      NSAttributedString(
+        string: text,
+        attributes: [
+          .font: NSFont.systemFont(ofSize: bodySize),
+          .foregroundColor: NSColor.labelColor,
+        ]))
+    let textField = NSTextField(labelWithAttributedString: attributed)
     textField.maximumNumberOfLines = 4
+    textField.lineBreakMode = .byWordWrapping
     textField.translatesAutoresizingMaskIntoConstraints = false
     textField.setContentHuggingPriority(.defaultLow, for: .horizontal)
     textField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
