@@ -115,6 +115,88 @@ final class ControlAttachApprovalPresenterTests: XCTestCase {
     }
   }
 
+  // MARK: - dialogContent (dialog-redesign-brief, 2026-07-11: Adaptive Can/Cannot)
+
+  /// A verified family request hides the forensic rows (Requester, Path,
+  /// Chain, Operation) behind the disclosure, because the code signature is
+  /// already the trust anchor; the Can/Cannot lines carry the decision.
+  func testDialogContentVerifiedFamilyShowsDisclosureAndCanCannot() {
+    let request = makeRequest(canPersist: true, grantsSessionReadFamily: true)
+    let content = ControlAttachApprovalPresenter.dialogContent(for: request)
+
+    XCTAssertFalse(content.subheadIsWarning)
+
+    XCTAssertTrue(content.can.contains("screen"), "can: \(content.can)")
+    XCTAssertTrue(content.can.contains("scrollback"), "can: \(content.can)")
+    XCTAssertTrue(content.can.contains("selection"), "can: \(content.can)")
+    XCTAssertTrue(content.can.contains("suggest commands"), "can: \(content.can)")
+    XCTAssertFalse(content.can.contains("tab"), "can must not mention tabs: \(content.can)")
+
+    XCTAssertTrue(content.cannot.contains("switch tabs"), "cannot: \(content.cannot)")
+    XCTAssertTrue(content.cannot.contains("other sessions"), "cannot: \(content.cannot)")
+
+    XCTAssertTrue(content.showsDisclosure)
+    XCTAssertTrue(content.detailRows.contains { $0.0 == "Path" })
+    XCTAssertTrue(content.detailRows.contains { $0.0 == "Chain" })
+    XCTAssertFalse(
+      content.inlineRows.contains { $0.0 == "Path" },
+      "verified principal must hide Path behind disclosure, not show it inline")
+  }
+
+  /// An unverified family request shows Path/Chain/Operation inline and
+  /// prominent, because there is no signature to anchor trust, so these rows
+  /// ARE the decision. The subhead becomes a warning and there is no
+  /// disclosure to collapse anything behind.
+  func testDialogContentUnverifiedFamilyShowsInlineRowsAndWarning() {
+    let request = makeRequest(
+      canPersist: false,
+      principalIsVerified: false,
+      persistenceDisabledReason: "This app is not a stable signed application.",
+      grantsSessionReadFamily: true)
+    let content = ControlAttachApprovalPresenter.dialogContent(for: request)
+
+    XCTAssertTrue(content.subheadIsWarning)
+
+    XCTAssertTrue(content.inlineRows.contains { $0.0 == "Path" })
+    XCTAssertTrue(content.inlineRows.contains { $0.0 == "Chain" })
+
+    XCTAssertFalse(content.showsDisclosure, "unverified has nothing hidden behind a disclosure")
+    XCTAssertTrue(content.detailRows.isEmpty)
+  }
+
+  /// The tabs contradiction (old Permission row said "Navigate tabs and
+  /// viewport" while the old Not-included row said "No tab switching") is
+  /// gone for both verified and unverified family requests: `can` never
+  /// mentions tabs and `cannot` always says tabs are excluded.
+  func testDialogContentTabsContradictionFixedForBothVerifiedStates() {
+    for isVerified in [true, false] {
+      let reason: String? = isVerified ? nil : "This app is not a stable signed application."
+      let request = makeRequest(
+        canPersist: isVerified,
+        principalIsVerified: isVerified,
+        persistenceDisabledReason: reason,
+        grantsSessionReadFamily: true)
+      let content = ControlAttachApprovalPresenter.dialogContent(for: request)
+      XCTAssertFalse(
+        content.can.contains("tab"), "verified=\(isVerified) can: \(content.can)")
+      XCTAssertTrue(
+        content.cannot.contains("tabs"), "verified=\(isVerified) cannot: \(content.cannot)")
+    }
+  }
+
+  // MARK: - readableCapability (the "navigate" fix)
+
+  /// The family's `.navigate` capability is own-session
+  /// `terminal.scrollViewport` only, never tab navigation (invariant I7). The
+  /// old wording ("Navigate tabs and viewport") contradicted the family
+  /// dialog's own "No tab switching" line; this pins the fix so it cannot
+  /// regress.
+  func testReadableCapabilityNavigateDoesNotMentionTabs() {
+    XCTAssertEqual(
+      ControlAttachApprovalPresenter.readableCapability("navigate"),
+      "Scroll this session's viewport")
+  }
+
   // MARK: - Helpers
 
   private func assertButtonAbsent(principalPath: String, displayName: String) {
