@@ -65,6 +65,20 @@ public struct FrameProducer {
     TerminalDisplayWidth.cells(of: text, graphemeClusterMode: graphemeClusterMode)
   }
 
+  private struct PreeditRowLayout {
+    let row: Int
+    let col: Int
+    let text: String
+    let textCellCount: Int
+    let maskCellCount: Int
+  }
+
+  private struct PreeditLayout {
+    let rowLayouts: [PreeditRowLayout]
+    let caretRow: Int
+    let caretCol: Int
+  }
+
   private var accessibilityOutlineRequired: Bool {
     accessibilityVisualOptions.increaseContrast
       || accessibilityVisualOptions.differentiateWithoutColor
@@ -72,6 +86,114 @@ public struct FrameProducer {
 
   private func terminalBackgroundColor(_ color: UInt32) -> UInt32 {
     accessibilityVisualOptions.terminalBackgroundColor(color)
+  }
+
+  /// A pre-edit rectangle is a mask, not an ordinary terminal background.
+  /// Resolve transparent terminal defaults over the opaque Laban canvas so a
+  /// TUI's placeholder or reverse-video caret cannot remain visible beneath
+  /// macOS marked text.
+  private func preeditBackgroundColor(_ color: UInt32) -> UInt32 {
+    let alpha = color & 0xFF
+    guard alpha < 0xFF else { return color }
+
+    let canvas = Theme.current.bg0
+    let inverseAlpha = 0xFF - alpha
+    func composite(_ source: UInt32, _ destination: UInt32) -> UInt32 {
+      (source * alpha + destination * inverseAlpha + 0x7F) / 0xFF
+    }
+
+    let red = composite((color >> 24) & 0xFF, (canvas >> 24) & 0xFF)
+    let green = composite((color >> 16) & 0xFF, (canvas >> 16) & 0xFF)
+    let blue = composite((color >> 8) & 0xFF, (canvas >> 8) & 0xFF)
+    return (red << 24) | (green << 16) | (blue << 8) | 0xFF
+  }
+
+  /// Lay marked text into terminal rows without splitting a grapheme cluster.
+  /// Rows increase downward in terminal coordinates; render-space conversion
+  /// happens later when commands are emitted.
+  private func preeditLayout(
+    text: String,
+    caretCells: Int,
+    cursorRow: Int,
+    cursorCol: Int,
+    rows: Int,
+    cols: Int,
+    graphemeClusterMode: Bool
+  ) -> PreeditLayout? {
+    guard !text.isEmpty, rows > 0, cols > 0 else { return nil }
+
+    var row = min(max(cursorRow, 0), rows - 1)
+    var startCol = min(max(cursorCol, 0), cols - 1)
+    var lineText = ""
+    var lineCells = 0
+    var consumedCells = 0
+    let targetCaretCells = max(caretCells, 0)
+    var caretPosition: (row: Int, col: Int)?
+    var rowLayouts: [PreeditRowLayout] = []
+    rowLayouts.reserveCapacity(min(rows - row, 4))
+
+    func appendCurrentLine(maskCellCount: Int? = nil) {
+      let resolvedMaskCellCount = maskCellCount ?? lineCells
+      guard !lineText.isEmpty || resolvedMaskCellCount > 0 else { return }
+      if row < rows {
+        rowLayouts.append(
+          PreeditRowLayout(
+            row: row,
+            col: startCol,
+            text: lineText,
+            textCellCount: lineCells,
+            maskCellCount: resolvedMaskCellCount))
+      }
+      lineText = ""
+      lineCells = 0
+    }
+
+    for cluster in text {
+      let clusterText = String(cluster)
+      let clusterCells = TerminalDisplayWidth.cells(
+        of: clusterText, graphemeClusterMode: graphemeClusterMode)
+
+      // A wide cluster with only one cell remaining starts on the next row,
+      // just as it would after entering the terminal grid.
+      if clusterCells > 0,
+        startCol + lineCells + clusterCells > cols,
+        row + 1 < rows
+      {
+        // Mask through the edge, including a one-cell spacer left when a wide
+        // grapheme cannot begin in the final column. Otherwise the TUI's hint
+        // or reverse-video caret remains visible in that skipped cell.
+        appendCurrentLine(maskCellCount: cols - startCol)
+        row += 1
+        startCol = 0
+      }
+
+      if caretPosition == nil,
+        targetCaretCells <= consumedCells + clusterCells
+      {
+        let offset = max(targetCaretCells - consumedCells, 0)
+        caretPosition = (row, startCol + lineCells + offset)
+      }
+
+      lineText.append(cluster)
+      lineCells += clusterCells
+      consumedCells += clusterCells
+    }
+    let endPosition = (row: row, col: startCol + lineCells)
+    appendCurrentLine()
+
+    var caret = caretPosition ?? endPosition
+    if caret.col >= cols {
+      caret.row += caret.col / cols
+      caret.col %= cols
+    }
+    if caret.row >= rows {
+      caret = (rows - 1, cols - 1)
+    }
+
+    return PreeditLayout(
+      rowLayouts: rowLayouts,
+      caretRow: max(caret.row, 0),
+      caretCol: max(caret.col, 0))
   }
 
   private func selectionFillColor() -> UInt32 {
@@ -412,6 +534,26 @@ public struct FrameProducer {
         hyperlinkURIs: hyperlinkURIs)
     }
 
+    let activePreeditLayout = preedit.flatMap {
+      preeditLayout(
+        text: $0,
+        caretCells: preeditCaretCells,
+        cursorRow: Int(snapshot.cursor_row),
+        cursorCol: Int(snapshot.cursor_col),
+        rows: rows,
+        cols: cols,
+        graphemeClusterMode: snapshot.grapheme_cluster_2027 != 0)
+    }
+
+    if let activePreeditLayout {
+      appendPreedit(
+        into: &cmds,
+        layout: activePreeditLayout,
+        rows: rows,
+        foreground: snapshot.default_foreground_rgba,
+        background: defaultBg)
+    }
+
     // Cursor
     let effectiveCursorBlinking =
       resolvedCursor?.blinking ?? (snapshot.cursor_blinking != 0)
@@ -422,27 +564,14 @@ public struct FrameProducer {
       Int(snapshot.cursor_row) < rows,
       Int(snapshot.cursor_col) < cols
     {
-      // Advance the caret past any in-flight composition so it tracks the end
-      // of the preedit as the user dictates/composes, matching native text
-      // fields; with no marked text the offset is 0 and the caret is unmoved.
-      let caretCol = min(Int(snapshot.cursor_col) + preeditCaretCells, cols - 1)
+      // Marked text can wrap onto later terminal rows. Use the same layout as
+      // the pre-edit glyphs so the caret follows the AppKit insertion point.
+      let caretRow = activePreeditLayout?.caretRow ?? Int(snapshot.cursor_row)
+      let caretCol = activePreeditLayout?.caretCol ?? Int(snapshot.cursor_col)
       let cx = originX + CGFloat(caretCol) * cw
-      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
+      let cy = originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
       appendCursorCommands(style: Int(effectiveCursorStyle), cellRect: cellRect, into: &cmds)
-    }
-
-    if let preedit {
-      appendPreedit(
-        into: &cmds,
-        text: preedit,
-        cursorRow: Int(snapshot.cursor_row),
-        cursorCol: Int(snapshot.cursor_col),
-        rows: rows,
-        cols: cols,
-        foreground: snapshot.default_foreground_rgba,
-        background: defaultBg,
-        graphemeClusterMode: snapshot.grapheme_cluster_2027 != 0)
     }
 
     // Exit banner overlays the bottom terminal row after all terminal cells
@@ -521,6 +650,26 @@ public struct FrameProducer {
       }
     }
 
+    let activePreeditLayout = preedit.flatMap {
+      preeditLayout(
+        text: $0,
+        caretCells: preeditCaretCells,
+        cursorRow: Int(snapshot.cursor_row),
+        cursorCol: Int(snapshot.cursor_col),
+        rows: rows,
+        cols: cols,
+        graphemeClusterMode: snapshot.grapheme_cluster_2027 != 0)
+    }
+
+    if let activePreeditLayout {
+      appendPreedit(
+        into: &cmds,
+        layout: activePreeditLayout,
+        rows: rows,
+        foreground: snapshot.default_foreground_rgba,
+        background: terminalBackgroundColor(snapshot.default_background_rgba))
+    }
+
     let overlayEffectiveBlinking =
       resolvedCursor?.blinking ?? (snapshot.cursor_blinking != 0)
     let overlayEffectiveStyle =
@@ -530,79 +679,62 @@ public struct FrameProducer {
       Int(snapshot.cursor_row) < rows,
       Int(snapshot.cursor_col) < cols
     {
-      // Advance the caret past any in-flight composition so it tracks the end
-      // of the preedit as the user dictates/composes, matching native text
-      // fields; with no marked text the offset is 0 and the caret is unmoved.
-      let caretCol = min(Int(snapshot.cursor_col) + preeditCaretCells, cols - 1)
+      let caretRow = activePreeditLayout?.caretRow ?? Int(snapshot.cursor_row)
+      let caretCol = activePreeditLayout?.caretCol ?? Int(snapshot.cursor_col)
       let cx = originX + CGFloat(caretCol) * cw
-      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
+      let cy = originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
       appendCursorCommands(style: Int(overlayEffectiveStyle), cellRect: cellRect, into: &cmds)
-    }
-
-    if let preedit {
-      appendPreedit(
-        into: &cmds,
-        text: preedit,
-        cursorRow: Int(snapshot.cursor_row),
-        cursorCol: Int(snapshot.cursor_col),
-        rows: rows,
-        cols: cols,
-        foreground: snapshot.default_foreground_rgba,
-        background: terminalBackgroundColor(snapshot.default_background_rgba),
-        graphemeClusterMode: snapshot.grapheme_cluster_2027 != 0)
     }
 
     return cmds
   }
 
-  /// Emit IME/dictation composition (preedit) text at the cursor cell. macOS
+  /// Emit IME/dictation composition (preedit) text from the cursor cell. macOS
   /// delivers the live transcript through `setMarkedText` as the user speaks or
-  /// composes; this draws it inline — a background mask + an underlined glyph
-  /// run in the terminal font — using the exact cursor origin (including
-  /// `contentYOffset`) so it tracks the caret and scrolls with the grid, like
-  /// Ghostty/WezTerm "builtin" preedit. The `.preedit` source lets every
-  /// renderer (incl. the GPU-cell path) route it through the terminal atlas.
+  /// composes; this draws it inline as an opaque background mask + underlined
+  /// terminal-font glyph run for each occupied row. The exact cursor origin
+  /// (including `contentYOffset`) keeps the composition and wrapped caret on
+  /// the grid, like Ghostty/WezTerm "builtin" preedit. The `.preedit` source
+  /// lets every renderer (incl. the GPU-cell path) route it through the
+  /// terminal atlas.
   private func appendPreedit(
     into cmds: inout [FrameCommand],
-    text: String,
-    cursorRow: Int,
-    cursorCol: Int,
+    layout: PreeditLayout,
     rows: Int,
-    cols: Int,
     foreground: UInt32,
-    background: UInt32,
-    graphemeClusterMode: Bool
+    background: UInt32
   ) {
-    guard !text.isEmpty, rows > 0, cols > 0 else { return }
-    let row = min(max(cursorRow, 0), rows - 1)
-    let col = min(max(cursorCol, 0), cols - 1)
+    guard rows > 0 else { return }
     let cw = CGFloat(cellWidth)
     let ch = CGFloat(cellHeight)
-    let cx = originX + CGFloat(col) * cw
-    let cy = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
-    let displayCellCount = TerminalDisplayWidth.cells(
-      of: text, graphemeClusterMode: graphemeClusterMode)
-    let runWidth = CGFloat(displayCellCount) * cw
-    cmds.append(
-      .rect(
-        CGRect(x: cx, y: cy, width: runWidth, height: ch),
-        color: background,
-        source: .preedit
-      ))
-    cmds.append(
-      .glyphRun(
-        origin: CGPoint(x: cx, y: cy),
-        text: text,
-        foreground: foreground,
-        background: background,
-        attributes: [.underline],
-        source: .preedit,
-        underlineStyle: .single,
-        underlineColor: nil,
-        hyperlink: nil,
-        displayCellCount: displayCellCount
-      ))
+    let opaqueBackground = preeditBackgroundColor(background)
+    for rowLayout in layout.rowLayouts {
+      let cx = originX + CGFloat(rowLayout.col) * cw
+      let cy = originY + CGFloat(rows - 1 - rowLayout.row) * ch + contentYOffset
+      let runWidth = CGFloat(rowLayout.maskCellCount) * cw
+      cmds.append(
+        .rect(
+          CGRect(x: cx, y: cy, width: runWidth, height: ch),
+          color: opaqueBackground,
+          source: .preedit
+        ))
+      if !rowLayout.text.isEmpty {
+        cmds.append(
+          .glyphRun(
+            origin: CGPoint(x: cx, y: cy),
+            text: rowLayout.text,
+            foreground: foreground,
+            background: opaqueBackground,
+            attributes: [.underline],
+            source: .preedit,
+            underlineStyle: .single,
+            underlineColor: nil,
+            hyperlink: nil,
+            displayCellCount: rowLayout.textCellCount
+          ))
+      }
+    }
   }
 
   public func terminalCellPayload(
@@ -1555,6 +1687,26 @@ public struct FrameProducer {
       flushRun()
     }
 
+    let activePreeditLayout = preedit.flatMap {
+      preeditLayout(
+        text: $0,
+        caretCells: preeditCaretCells,
+        cursorRow: snapshot.cursorRow,
+        cursorCol: snapshot.cursorCol,
+        rows: rows,
+        cols: cols,
+        graphemeClusterMode: false)
+    }
+
+    if let activePreeditLayout {
+      appendPreedit(
+        into: &cmds,
+        layout: activePreeditLayout,
+        rows: rows,
+        foreground: Theme.current.fg0,
+        background: defaultBg)
+    }
+
     if snapshot.cursorVisible,
       cursorBlinkVisible,
       snapshot.cursorRow >= 0,
@@ -1562,12 +1714,11 @@ public struct FrameProducer {
       snapshot.cursorRow < rows,
       snapshot.cursorCol < cols
     {
-      // Advance the caret past any in-flight composition (preedit) so it
-      // tracks the end of the marked text, matching the local snapshot path.
-      let caretCol = min(snapshot.cursorCol + preeditCaretCells, cols - 1)
+      let caretRow = activePreeditLayout?.caretRow ?? snapshot.cursorRow
+      let caretCol = activePreeditLayout?.caretCol ?? snapshot.cursorCol
       let cellRect = CGRect(
         x: originX + CGFloat(caretCol) * cw,
-        y: originY + CGFloat(rows - 1 - snapshot.cursorRow) * ch + contentYOffset,
+        y: originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset,
         width: cw,
         height: ch
       )
@@ -1577,19 +1728,6 @@ public struct FrameProducer {
         style: Int(userCursorStyle.labanStyleValue),
         cellRect: cellRect,
         into: &cmds)
-    }
-
-    if let preedit {
-      appendPreedit(
-        into: &cmds,
-        text: preedit,
-        cursorRow: snapshot.cursorRow,
-        cursorCol: snapshot.cursorCol,
-        rows: rows,
-        cols: cols,
-        foreground: Theme.current.fg0,
-        background: defaultBg,
-        graphemeClusterMode: false)
     }
 
     appendRemoteExitBanner(snapshot, cols: cols, cellHeight: ch, commands: &cmds)

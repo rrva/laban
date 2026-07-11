@@ -3017,9 +3017,34 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     // IME/dictation preedit. Drawn AFTER the payload has filled the cell grid
     // so the composition glyphs overwrite the cells under the caret rather than
-    // being clobbered by them. The background mask was already emitted by the
-    // `.rect` prepass; here we set the terminal-atlas glyphs + underline. Index
-    // math mirrors the payload fill (row/col from the run origin minus
+    // being clobbered by them. Replay every producer mask here, including a
+    // mask-only spacer left when a wide grapheme wraps from the final column;
+    // the earlier rect prepass intentionally skips `.preedit` rectangles.
+    for case .rect(let rect, let color, .preedit) in commands {
+      let bottomRow = Int(
+        ((rect.origin.y - payload.origin.y - payload.contentYOffset) / payload.cellSize.height)
+          .rounded())
+      let startCol = Int(
+        floor((rect.minX - payload.origin.x) / payload.cellSize.width))
+      let endCol = Int(
+        ceil((rect.maxX - payload.origin.x) / payload.cellSize.width))
+      if bottomRow >= 0, bottomRow < geometry.rows {
+        let lower = max(startCol, 0)
+        let upper = min(endCol, geometry.cols)
+        if lower < upper {
+          let startIndex = bottomRow * geometry.cols + lower
+          let endIndex = bottomRow * geometry.cols + upper
+          for index in startIndex..<endIndex where index < cellGlyphs.count {
+            cellGlyphs[index] = Self.emptyCellGlyph
+          }
+          appendCellGlyphUploadRange(startIndex..<min(endIndex, cellGlyphs.count))
+        }
+      }
+      appendSolid(rect: rect, color: color)
+    }
+
+    // Set the terminal-atlas glyphs + underline. Index math mirrors the
+    // payload fill (row/col from the run origin minus
     // `contentYOffset`) so it stays correct mid-smooth-scroll, where
     // `geometry.index`'s integer-alignment check would reject the shifted Y.
     // The `.preedit` source is only produced at the cursor, so ordinary cells
@@ -3027,16 +3052,10 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     for cmd in commands {
       guard
         case .glyphRun(
-          let origin, let text, let fg, let bg, let attrs, let runSource,
+          let origin, let text, let fg, _, let attrs, let runSource,
           let underlineStyle, let underlineColor, _, let displayCellCount
         ) = cmd, runSource == .preedit, !text.isEmpty
       else { continue }
-      // Opaque background over the composition cells, appended AFTER the
-      // payload's own cell backgrounds so an application-rendered caret under
-      // the composition (e.g. Claude Code's reverse-video input caret, which
-      // sits where the terminal cursor is) is masked instead of bleeding
-      // through as a second cursor. The `.rect` mask FrameProducer emits runs
-      // through the earlier prepass and would otherwise be painted over.
       let font = styledFont(for: attrs, in: fontAtlas)
       let traits = CTFontGetSymbolicTraits(font)
       let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
@@ -3058,11 +3077,6 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
             total += 1
           }
         }
-      appendSolid(
-        rect: CGRect(
-          x: origin.x, y: origin.y,
-          width: CGFloat(preeditCellCount) * glyphCellAdvance, height: glyphCellHeight),
-        color: bg)
       let atlasW = Float(glyphAtlas.textureSize)
       let atlasH = Float(glyphAtlas.textureSize)
       let bottomRow = Int(
@@ -3291,6 +3305,10 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     let surfaceH = Float(surfacePxH)
     let scale = Float(layer.contentsScale)
+    let preeditMaskRects = commands.compactMap { command -> CGRect? in
+      if case .rect(let rect, _, .preedit) = command { return rect }
+      return nil
+    }
 
     @inline(__always)
     func appendSolid(rect: CGRect, color: UInt32) {
@@ -3405,6 +3423,14 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
           for (cellIndex, cluster) in text.enumerated() {
             let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
+            let cellRect = CGRect(
+              x: cellX, y: origin.y,
+              width: glyphCellAdvance, height: runHeight)
+            if runSource != .preedit,
+              preeditMaskRects.contains(where: { $0.intersects(cellRect) })
+            {
+              continue
+            }
             if !patchRows.isEmpty,
               let index = geometry.index(cellX: cellX, cellY: origin.y, cellOffset: 0)
             {
@@ -3547,6 +3573,10 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     // measured in *points*. Multiply by scale to get device pixels for the
     // GPU, but keep y-up — Metal NDC matches.
     let scale = Float(layer.contentsScale)
+    let preeditMaskRects = commands.compactMap { command -> CGRect? in
+      if case .rect(let rect, _, .preedit) = command { return rect }
+      return nil
+    }
 
     @inline(__always)
     func appendSolid(rect: CGRect, color: UInt32) {
@@ -3679,6 +3709,13 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
         for (cellIndex, cluster) in text.enumerated() {
           let cellX = origin.x + CGFloat(cellIndex) * activeAdvance
+          let cellRect = CGRect(
+            x: cellX, y: origin.y, width: activeAdvance, height: runHeight)
+          if !isSidebar, runSource != .preedit,
+            preeditMaskRects.contains(where: { $0.intersects(cellRect) })
+          {
+            continue
+          }
           if runWantsColor,
             ColorGlyphSupport.clusterMayBeColor(cluster),
             let entry = colorGlyphAtlas.entry(

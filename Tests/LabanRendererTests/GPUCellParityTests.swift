@@ -308,8 +308,9 @@ final class GPUCellParityTests: XCTestCase {
         payload: pl, commands: [], damage: .full, surfacePxH: surfacePxH))
     XCTAssertNil(renderer.lastGPUCellPayloadBuildFailure)
 
-    // A composition at the cursor cell (payload row 2, col 3), positioned and
-    // shaped exactly as `FrameProducer.appendPreedit` produces it.
+    // A wrapped composition beginning at the cursor cell (payload row 2,
+    // col 3), positioned and shaped exactly as `FrameProducer.appendPreedit`
+    // produces it: one mask + glyph run per occupied terminal row.
     let cursorCol = 3
     let cx = CGFloat(cursorCol) * cellW
     let cy = CGFloat(rows - 1 - 2) * cellH
@@ -320,6 +321,19 @@ final class GPUCellParityTests: XCTestCase {
         color: 0x10_20_30_FF, source: .preedit),
       .glyphRun(
         origin: CGPoint(x: cx, y: cy), text: text,
+        foreground: 0xFF_FF_FF_FF, background: 0x10_20_30_FF,
+        attributes: [.underline], source: .preedit,
+        underlineStyle: .single, underlineColor: nil, hyperlink: nil),
+      // A wide grapheme wrapping from the final column emits a mask-only
+      // spacer before its glyph run begins on the next row.
+      .rect(
+        CGRect(x: CGFloat(cols - 1) * cellW, y: cy, width: cellW, height: cellH),
+        color: 0x10_20_30_FF, source: .preedit),
+      .rect(
+        CGRect(x: 0, y: cy - cellH, width: CGFloat(text.count) * cellW, height: cellH),
+        color: 0x10_20_30_FF, source: .preedit),
+      .glyphRun(
+        origin: CGPoint(x: 0, y: cy - cellH), text: "def",
         foreground: 0xFF_FF_FF_FF, background: 0x10_20_30_FF,
         attributes: [.underline], source: .preedit,
         underlineStyle: .single, underlineColor: nil, hyperlink: nil),
@@ -334,9 +348,47 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(
       composed.cellGlyphs, base.cellGlyphs,
       "preedit overwrites the cells under the caret rather than adding new ones")
-    XCTAssertGreaterThan(
-      composed.solids, base.solids,
-      "the preedit background mask + underline must land as extra solid instances")
+    XCTAssertGreaterThanOrEqual(
+      composed.solids, base.solids + 5,
+      "wrapped row masks, spacer mask, and underlines must land as solid instances")
+    let spacerIndex = (rows - 1 - 2) * cols + (cols - 1)
+    XCTAssertFalse(
+      renderer.activeCellGlyphIndicesForTesting.contains(spacerIndex),
+      "a mask-only wide-wrap spacer must clear the cached application glyph")
+  }
+
+  func testPreeditMaskSuppressesUnderlyingGlyphInClassicAndGPUCommandPaths() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "preedit-mask-glyph-suppression")
+    let commands: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: 3 * cellW, height: cellH),
+        color: 0x10_20_30_FF, source: .terminal),
+      .glyphRun(
+        origin: .zero, text: "abc",
+        foreground: 0xFF_FF_FF_FF, background: 0x10_20_30_FF,
+        attributes: [], source: .terminal),
+      .rect(
+        CGRect(x: cellW, y: 0, width: cellW, height: cellH),
+        color: 0x10_20_30_FF, source: .preedit),
+    ]
+    let surfacePxH = Int(cellH * scale)
+
+    let classic = renderer.classicTerminalGlyphRecordsForTesting(
+      commands: commands, surfacePxH: surfacePxH)
+    let gpu = try XCTUnwrap(
+      renderer.gpuCellGlyphRecordsForTesting(
+        commands: commands, surfacePxH: surfacePxH))
+
+    for records in [classic, gpu] {
+      XCTAssertEqual(records.count, 2)
+      XCTAssertFalse(
+        records.contains { abs(CGFloat($0.originPx.x) - cellW * scale) < 0.5 },
+        "the application glyph beneath an opaque preedit mask must not be emitted")
+    }
   }
 
   func testGPUCellPayloadBuildFailureFailsClosedThenCommandRetryRendersGlyphs() throws {

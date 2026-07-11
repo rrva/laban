@@ -1171,6 +1171,10 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     var sidebarRasterGlyphs: [VectorGlyphInstance] = []
     var colorGlyphs: [VectorGlyphInstance] = []
     var currentClip: CGRect? = nil
+    let preeditMaskRects = commands.compactMap { command -> CGRect? in
+      if case .rect(let rect, _, .preedit) = command { return rect }
+      return nil
+    }
 
     func flush() {
       guard
@@ -1263,6 +1267,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
           underlineColor: underlineColor,
           atlas: atlas,
           source: source,
+          preeditMaskRects: preeditMaskRects,
           solids: &solids,
           glyphs: &glyphs,
           rasterGlyphs: &rasterGlyphs,
@@ -1474,6 +1479,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     underlineColor: UInt32?,
     atlas: FontAtlas,
     source: FrameSource,
+    preeditMaskRects: [CGRect],
     solids: inout [VectorSolidInstance],
     glyphs: inout [VectorGlyphInstance],
     rasterGlyphs: inout [VectorGlyphInstance],
@@ -1497,6 +1503,14 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       let position = CGPoint(
         x: origin.x + CGFloat(cellIndex) * cellAdvance,
         y: baseline)
+      let cellRect = CGRect(
+        x: position.x, y: origin.y,
+        width: cellAdvance, height: atlas.cellSize.height)
+      if source != .sidebar, source != .preedit,
+        preeditMaskRects.contains(where: { $0.intersects(cellRect) })
+      {
+        continue
+      }
       if runWantsColor,
         ColorGlyphSupport.clusterMayBeColor(cluster),
         let colorFallback = colorGlyphInstance(

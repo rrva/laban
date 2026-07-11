@@ -1452,6 +1452,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     colorGlyphs: inout [SlugTextureInstance],
     damageBands: DirtyYRangeSet?
   ) {
+    let preeditMaskRects = commands.compactMap { command -> CGRect? in
+      if case .rect(let rect, _, .preedit) = command { return rect }
+      return nil
+    }
     for command in commands {
       switch command {
       case .rect(let rect, let color, _),
@@ -1483,6 +1487,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           underlineStyle: underlineStyle,
           underlineColor: underlineColor,
           source: source,
+          preeditMaskRects: preeditMaskRects,
           solids: &solids,
           glyphs: &glyphs,
           rasterGlyphs: &rasterGlyphs,
@@ -1503,6 +1508,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     underlineStyle: UnderlineStyle,
     underlineColor: UInt32?,
     source: FrameSource,
+    preeditMaskRects: [CGRect],
     solids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
     rasterGlyphs: inout [SlugTextureInstance],
@@ -1541,6 +1547,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
+      let cellRect = CGRect(
+        x: cellOriginX, y: origin.y,
+        width: cellAdvance, height: activeAtlas.cellSize.height)
+      if source != .sidebar, source != .preedit,
+        preeditMaskRects.contains(where: { $0.intersects(cellRect) })
+      {
+        continue
+      }
       if runWantsColor,
         ColorGlyphSupport.clusterMayBeColor(cluster),
         let colorFallback = colorGlyphInstance(

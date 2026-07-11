@@ -55,6 +55,26 @@ final class FrameProducerPreeditTests: XCTestCase {
     return nil
   }
 
+  private func preeditMaskRects(in cmds: [FrameCommand]) -> [(rect: CGRect, color: UInt32)] {
+    cmds.compactMap { cmd in
+      if case .rect(let rect, let color, .preedit) = cmd { return (rect, color) }
+      return nil
+    }
+  }
+
+  private func preeditGlyphRuns(in cmds: [FrameCommand])
+    -> [(origin: CGPoint, text: String, displayCellCount: Int?)]
+  {
+    cmds.compactMap { cmd in
+      if case .glyphRun(
+        let origin, let text, _, _, _, .preedit, _, _, _, let displayCellCount
+      ) = cmd {
+        return (origin, text, displayCellCount)
+      }
+      return nil
+    }
+  }
+
   private func preeditDisplayCellCount(in cmds: [FrameCommand]) -> Int? {
     for cmd in cmds {
       if case .glyphRun(_, _, _, _, _, .preedit, _, _, _, let count) = cmd { return count }
@@ -101,6 +121,72 @@ final class FrameProducerPreeditTests: XCTestCase {
       return false
     }
     XCTAssertTrue(hasMask, "a `.preedit` background rect must mask the cells under the composition")
+  }
+
+  func testPreeditMaskIsOpaqueWhenTerminalDefaultBackgroundIsTransparent() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+    snap.pointee.default_background_rgba = 0
+
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let commandSets = [
+      producer.commands(
+        from: snap, selection: nil, cursorBlinkVisible: true, preedit: "dictation"),
+      producer.overlayCommands(
+        from: snap, selection: nil, cursorBlinkVisible: true, preedit: "dictation"),
+    ]
+
+    for cmds in commandSets {
+      let mask = try XCTUnwrap(preeditMaskRects(in: cmds).first)
+      XCTAssertEqual(
+        mask.color, Theme.current.bg0,
+        "preedit must resolve transparent defaults over the opaque terminal canvas")
+    }
+  }
+
+  func testPreeditWrapsAcrossTerminalRowsAndMovesCaret() throws {
+    let (session, snap) = try snapshotAfterWriting("\u{1B}[2;7H")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+    snap.pointee.rows = 4
+    snap.pointee.cols = 10
+    snap.pointee.cursor_row = 1
+    snap.pointee.cursor_col = 6
+
+    let cw = 8
+    let ch = 16
+    let composition = "abcdefgh"
+    let cmds = FrameProducer(cellWidth: cw, cellHeight: ch)
+      .commands(
+        from: snap, selection: nil, cursorBlinkVisible: true,
+        preedit: composition, preeditCaretCells: composition.count)
+
+    let runs = preeditGlyphRuns(in: cmds)
+    XCTAssertEqual(runs.map(\.text), ["abcd", "efgh"])
+    XCTAssertEqual(runs.map(\.displayCellCount), [4, 4])
+    XCTAssertEqual(
+      runs.map(\.origin),
+      [
+        CGPoint(x: 6 * cw, y: 2 * ch),
+        CGPoint(x: 0, y: 1 * ch),
+      ])
+
+    let masks = preeditMaskRects(in: cmds)
+    XCTAssertEqual(
+      masks.map(\.rect),
+      [
+        CGRect(x: 6 * cw, y: 2 * ch, width: 4 * cw, height: ch),
+        CGRect(x: 0, y: 1 * ch, width: 4 * cw, height: ch),
+      ])
+    XCTAssertTrue(masks.allSatisfy { ($0.color & 0xFF) == 0xFF })
+
+    let caret = try XCTUnwrap(firstCursorRect(in: cmds))
+    XCTAssertEqual(caret.origin, CGPoint(x: 4 * cw, y: 1 * ch))
   }
 
   func testNoPreeditCommandsWhenCompositionAbsent() throws {
@@ -204,6 +290,22 @@ final class FrameProducerPreeditTests: XCTestCase {
       if case .cursor(let rect, _) = cmd { return rect }
     }
     return nil
+  }
+
+  private func firstCursorIndex(in cmds: [FrameCommand]) -> Int? {
+    cmds.firstIndex {
+      if case .cursor = $0 { return true }
+      return false
+    }
+  }
+
+  private func lastPreeditIndex(in cmds: [FrameCommand]) -> Int? {
+    cmds.lastIndex {
+      switch $0 {
+      case .rect(_, _, .preedit), .glyphRun(_, _, _, _, _, .preedit, _, _, _, _): return true
+      default: return false
+      }
+    }
   }
 
   func testCursorAdvancesToEndOfPreedit() throws {
@@ -375,5 +477,64 @@ final class FrameProducerPreeditTests: XCTestCase {
     XCTAssertEqual(
       midCaret.origin.x - base.origin.x, CGFloat(2) * CGFloat(cw), accuracy: 0.5,
       "the caret must sit at the IME's insertion point (2 cells in), not at the end")
+
+    let midCaretCommands = producer.commands(
+      from: snap, selection: nil, cursorBlinkVisible: true,
+      preedit: "abcde", preeditCaretCells: 2)
+    XCTAssertLessThan(
+      try XCTUnwrap(lastPreeditIndex(in: midCaretCommands)),
+      try XCTUnwrap(firstCursorIndex(in: midCaretCommands)),
+      "the opaque preedit mask must be drawn before Laban's insertion caret")
+  }
+
+  func testWidePreeditWrapMasksSkippedFinalColumnWithoutSplittingCluster() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+    snap.pointee.rows = 4
+    snap.pointee.cols = 10
+    snap.pointee.cursor_row = 1
+    snap.pointee.cursor_col = 9
+
+    let cw = 8
+    let ch = 16
+    let cmds = FrameProducer(cellWidth: cw, cellHeight: ch)
+      .commands(
+        from: snap, selection: nil, cursorBlinkVisible: true,
+        preedit: "中a", preeditCaretCells: 3)
+
+    XCTAssertEqual(
+      preeditMaskRects(in: cmds).map(\.rect),
+      [
+        CGRect(x: 9 * cw, y: 2 * ch, width: cw, height: ch),
+        CGRect(x: 0, y: ch, width: 3 * cw, height: ch),
+      ])
+    let runs = preeditGlyphRuns(in: cmds)
+    XCTAssertEqual(runs.map(\.text), ["中a"])
+    XCTAssertEqual(runs.map(\.displayCellCount), [3])
+    XCTAssertEqual(runs.map(\.origin), [CGPoint(x: 0, y: ch)])
+    XCTAssertEqual(try XCTUnwrap(firstCursorRect(in: cmds)).origin, CGPoint(x: 3 * cw, y: ch))
+  }
+
+  func testWidePreeditAtBottomEdgeRemainsVisibleInsteadOfBeingDropped() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+    snap.pointee.rows = 2
+    snap.pointee.cols = 10
+    snap.pointee.cursor_row = 1
+    snap.pointee.cursor_col = 9
+
+    let cmds = FrameProducer(cellWidth: 8, cellHeight: 16)
+      .commands(
+        from: snap, selection: nil, cursorBlinkVisible: true,
+        preedit: "中", preeditCaretCells: 2)
+
+    XCTAssertEqual(preeditGlyphRuns(in: cmds).map(\.text), ["中"])
+    XCTAssertEqual(preeditMaskRects(in: cmds).count, 1)
   }
 }

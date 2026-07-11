@@ -1601,6 +1601,27 @@ final class LabanDebugSmokeTests: XCTestCase {
         ($0["kind"] as? String) == "glyphRun" && ($0["text"] as? String) == "中👩‍💻a"
       })
 
+    let longText = String(repeating: "dictation ", count: 24)
+    let longBody = try JSONSerialization.data(withJSONObject: [
+      "action": "setPreedit",
+      "text": longText,
+      "caretCells": longText.count,
+    ])
+    XCTAssertEqual(runtime.applyAction(longBody).status, 200)
+    let wrappedResp = runtime.frameCommands(
+      query: ["source": "preedit", "includeText": "true", "limit": "100"])
+    let wrappedObj = try JSONSerialization.jsonObject(with: wrappedResp.body) as! [String: Any]
+    let wrapped = wrappedObj["commands"] as! [[String: Any]]
+    let masks = wrapped.filter { ($0["kind"] as? String) == "rect" }
+    let runs = wrapped.filter { ($0["kind"] as? String) == "glyphRun" }
+    XCTAssertGreaterThan(masks.count, 1, "long preedit must emit one mask per wrapped row")
+    XCTAssertEqual(
+      runs.compactMap { $0["text"] as? String }.joined(), longText,
+      "wrapped frame commands must preserve the full marked text")
+    XCTAssertTrue(
+      masks.allSatisfy { (($0["color"] as? [Int])?.last) == 255 },
+      "every wrapped preedit mask must be opaque")
+
     let clearBody = #"{"action":"setPreedit","text":""}"#.data(using: .utf8)!
     XCTAssertEqual(runtime.applyAction(clearBody).status, 200)
     let clearedResp = runtime.frameCommands(
