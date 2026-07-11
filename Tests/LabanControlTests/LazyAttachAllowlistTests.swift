@@ -14,16 +14,22 @@ final class LazyAttachAllowlistTests: XCTestCase {
     XCTAssertEqual(entry?.persistable, true)
   }
 
-  func testSessionScrollIsAllowlistedNotPersistable() {
+  func testSessionScrollIsInTheDialogFirstFamily() {
+    // session.scroll maps to terminal.scrollViewport, a family member (kept so
+    // own-session scroll keeps working, review NOTE 1). It is reachable through
+    // a family grant; persistability is per-principal, not per-entry.
     let entry = ControlLazyAttachAllowlist.entry(cliCommand: "session.scroll")
     XCTAssertNotNil(entry)
-    XCTAssertEqual(entry?.persistable, false)
+    XCTAssertTrue(ControlSessionObserveFamily.contains("terminal.scrollViewport"))
   }
 
-  func testCommandProposeIsAllowlistedNotPersistable() {
+  func testCommandProposeIsInTheDialogFirstFamily() {
+    // Dialog-first (Milestone 1): persistability is decided per principal via
+    // isPersistable, not per-entry, so the whole family grant persists as one
+    // unit. command.propose is a family member reachable through a family grant.
     let entry = ControlLazyAttachAllowlist.entry(cliCommand: "command.propose")
     XCTAssertNotNil(entry)
-    XCTAssertEqual(entry?.persistable, false)
+    XCTAssertTrue(ControlSessionObserveFamily.contains("command.propose"))
   }
 
   func testSessionRequestIsNotDirectlyAllowlisted() {

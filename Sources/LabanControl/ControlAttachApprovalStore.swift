@@ -143,7 +143,10 @@ public final class ControlAttachApprovalStore: @unchecked Sendable {
 }
 
 extension String {
-  fileprivate func compareSensitivity(to other: String) -> Bool {
+  /// Not `fileprivate`: `ControlSessionObserveFamily.maxDataSensitivity(catalog:)`
+  /// reuses this exact ordering (per review NOTE 3) so the family's stored
+  /// ceiling and `findMatching`'s live comparison never drift apart.
+  func compareSensitivity(to other: String) -> Bool {
     let order: [String] = [
       "none", "nonSensitiveState", "visibleText", "scrollback", "keystrokes",
       "clipboard", "screenshot", "trace", "sensitivePrivate",

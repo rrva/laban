@@ -152,7 +152,8 @@ extension LabanControlServer {
   ) -> LegacyDebugQueryInput {
     let scopedSessionID: String?
     switch tokenTier {
-    case .sessionObserve(let sessionID), .approvedSession(let sessionID, _, _, _):
+    case .sessionObserve(let sessionID), .approvedSession(let sessionID, _, _, _),
+      .approvedSessionFamily(let sessionID, _, _):
       scopedSessionID = sessionID
     case .appObserve, .fixture:
       scopedSessionID = nil
@@ -160,7 +161,7 @@ extension LabanControlServer {
     let readRedaction: ControlReadRedaction =
       switch tokenTier {
       case .appObserve: .appObserveSummary
-      case .sessionObserve, .approvedSession: .sessionObserveSummary
+      case .sessionObserve, .approvedSession, .approvedSessionFamily: .sessionObserveSummary
       case .fixture: .none
       }
     return LegacyDebugQueryInput(
@@ -205,7 +206,8 @@ extension LabanControlServer {
     scopedSessionID: String?
   ) -> ControlResponse {
     switch intentID {
-    case "terminal.scrollViewport", "command.propose":
+    case "terminal.scrollViewport", "command.propose", "commandProposal.list",
+      "commandProposal.get", "commandProposal.cancel":
       guard let envelope = try? JSONDecoder().decode(DebugActionEnvelope.self, from: request.body)
       else {
         return .error(400, "bad request")
@@ -233,7 +235,8 @@ extension LabanControlServer {
   func sessionID(from tokenTier: ControlTokenTier?) -> String? {
     guard let tokenTier else { return nil }
     switch tokenTier {
-    case .sessionObserve(let sessionID), .approvedSession(let sessionID, _, _, _):
+    case .sessionObserve(let sessionID), .approvedSession(let sessionID, _, _, _),
+      .approvedSessionFamily(let sessionID, _, _):
       return sessionID
     case .appObserve, .fixture:
       return nil

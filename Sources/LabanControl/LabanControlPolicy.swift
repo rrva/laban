@@ -12,6 +12,12 @@ public enum ControlTokenTier: Sendable, Equatable {
   case approvedSession(
     sessionID: String, approvalID: String, capabilities: [Capability],
     constraint: ControlTokenConstraint)
+  /// A dialog-first family grant (execplans/active/dialog-first-session-observe.md):
+  /// authorizes any intent in `ControlSessionObserveFamily.intentIDs` for the
+  /// approved session, instead of one exact request. Unlike `.approvedSession`,
+  /// there is no request-exact `ControlTokenConstraint` binding; the grant is
+  /// scoped by family membership plus session match (see `authorize(...)`).
+  case approvedSessionFamily(sessionID: String, approvalID: String, capabilities: [Capability])
   case fixture
 }
 
@@ -49,6 +55,8 @@ public struct LabanControlPolicy: Sendable {
       return [.observe, .observeSensitive, .navigate, .propose]
     case .approvedSession(_, _, let capabilities, _):
       return Set(capabilities)
+    case .approvedSessionFamily(_, _, let capabilities):
+      return Set(capabilities)
     case .fixture:
       return [.fixture, .observe, .observeSensitive, .navigate, .propose, .input]
     }
@@ -58,7 +66,8 @@ public struct LabanControlPolicy: Sendable {
     switch tier {
     case .appObserve, .fixture:
       return .wholeApp
-    case .sessionObserve(let sessionID), .approvedSession(let sessionID, _, _, _):
+    case .sessionObserve(let sessionID), .approvedSession(let sessionID, _, _, _),
+      .approvedSessionFamily(let sessionID, _, _):
       return .session(sessionID)
     }
   }
@@ -97,6 +106,15 @@ public struct LabanControlPolicy: Sendable {
         guard constraint.bodySHA256 == bodySHA256 else { return false }
         guard constraint.resolvedRouteID == "\(method) \(path)" else { return false }
         guard constraint.resolvedIntentID == intentID else { return false }
+        return true
+      }
+      if case .approvedSessionFamily = tokenTier {
+        // Family grant: no request-exact method/path/body binding (that is
+        // the whole point, a family grant is not one request). Authorization
+        // is exactly: (i) intentID is in the family, (ii) effectiveTarget ==
+        // the approved session (checked above, C12), (iii) required
+        // capability is in the granted set (checked above).
+        guard ControlSessionObserveFamily.contains(intentID) else { return false }
         return true
       }
       return true

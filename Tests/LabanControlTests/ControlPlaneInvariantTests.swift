@@ -281,25 +281,44 @@ final class ControlPlaneInvariantTests: XCTestCase {
     XCTAssertFalse(sessionObserveGrants.contains(.fixture))
   }
 
-  // MARK: - I4: The lazy allowlist stays low-sensitivity.
+  // MARK: - I4: The dialog-first family stays within the read/observe ceiling.
 
-  func testLazyAllowlistExcludesHighSensitivityIntents() {
-    let excludedSensitivities: Set<DataSensitivity> = [
-      .scrollback, .keystrokes, .clipboard, .screenshot, .trace,
-    ]
-    for entry in ControlLazyAttachAllowlist.entries {
-      guard let descriptor = IntentCatalog.all.descriptor(id: entry.intentID) else {
-        XCTFail("lazy allowlist entry \(entry.cliCommand) has no catalog descriptor")
+  // Dialog-first (execplans/active/dialog-first-session-observe.md) deliberately
+  // REVERSES the old I4: the lazy-reachable set now MAY include .observeSensitive
+  // content reads (screen text, scrollback, selection). That is the whole point
+  // of the family grant. What must never move is the ceiling: no family intent
+  // writes PTY input, every family intent is a GUI read/observe, and every
+  // requiredCapability stays in {.observe, .observeSensitive, .navigate,
+  // .propose}, never .input, .clipboard, or .fixture. Cross-session denial is a
+  // separate, independently enforced lock (C12) covered in
+  // DialogFirstObserveServerTests.
+  func testDialogFirstFamilyStaysWithinTheObserveCeiling() {
+    let ceiling: Set<Capability> = [.observe, .observeSensitive, .navigate, .propose]
+    for intentID in ControlSessionObserveFamily.intentIDs {
+      guard let descriptor = IntentCatalog.all.descriptor(id: intentID) else {
+        XCTFail("family intent \(intentID) has no catalog descriptor")
         continue
       }
       XCTAssertFalse(
         descriptor.sideEffects.ptyInput,
-        "\(entry.cliCommand) (\(entry.intentID)) writes PTY input; lazy allowlist entries must not")
-      XCTAssertFalse(
-        excludedSensitivities.contains(descriptor.dataSensitivity),
-        "\(entry.cliCommand) (\(entry.intentID)) has dataSensitivity "
-          + "\(descriptor.dataSensitivity), which one-click lazy approval must not reach")
+        "\(intentID) writes PTY input; the family must never reach actuation")
+      XCTAssertTrue(
+        descriptor.availability.gui,
+        "\(intentID) is not a GUI intent; the family is own-session GUI reads only")
+      XCTAssertTrue(
+        ceiling.contains(descriptor.requiredCapability),
+        "\(intentID) requires \(descriptor.requiredCapability), outside the "
+          + "{observe, observeSensitive, navigate, propose} ceiling")
     }
+  }
+
+  // The family's .navigate reach is exactly own-session scrollViewport and
+  // nothing else (review NOTE 1, matching I7's GUI navigate floor).
+  func testDialogFirstFamilyNavigateIsExactlyScrollViewport() {
+    let navigateMembers = ControlSessionObserveFamily.intentIDs.filter { intentID in
+      IntentCatalog.all.descriptor(id: intentID)?.requiredCapability == .navigate
+    }
+    XCTAssertEqual(Set(navigateMembers), ["terminal.scrollViewport"])
   }
 
   // MARK: - I5: A transport helper is never the trusted principal.

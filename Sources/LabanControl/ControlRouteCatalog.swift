@@ -395,7 +395,7 @@ public enum ControlRouteCatalog {
           switch tokenTier {
           case .appObserve:
             return .resolved("app.stateSummary")
-          case .sessionObserve, .fixture, .approvedSession:
+          case .sessionObserve, .fixture, .approvedSession, .approvedSessionFamily:
             return .resolved("app.state")
           }
         },
@@ -404,7 +404,7 @@ public enum ControlRouteCatalog {
           switch tokenTier {
           case .appObserve:
             intentID = "app.stateSummary"
-          case .sessionObserve, .fixture, .approvedSession:
+          case .sessionObserve, .fixture, .approvedSession, .approvedSessionFamily:
             intentID = "app.state"
           }
           return server.router.query(
