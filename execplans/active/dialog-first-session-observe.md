@@ -120,6 +120,22 @@ path, which grants the entire session-observe surface silently the moment
   same-user-readable); authority lives in the live per-request checks
   (code-signing revalidation, session match, family membership), not the record.
 
+**Explicit non-goal here, deliberate follow-on later (2026-07-11 / user).**
+This plan is **own-session only**: lock (b) keeps cross-session at `403`.
+Allowing a principal to read *another* session's content is a wanted future
+capability, and its design already exists and is security-reviewed:
+`execplans/active/cross-session-observe-grant.md` (user-mediated
+"Allow Codex to observe tab 'build'? [Once] [While both sessions live]", with
+both-shell-liveness lifetime and source-plus-target consent). It was
+intentionally gated behind this own-session dialog-first work because the two
+share one consent primitive: prove "the approval dialog is strong enough for
+terminal content" on the own session first, then extend the same dialog to
+cross-session with the extra machinery that plan specifies. When this ships and
+is trusted, the cross-session grant is the natural next milestone; a future plan
+should sequence them as one arc. Nothing in this plan should make that harder:
+keep the family-grant and the dialog wording extensible to a target-session
+dimension.
+
 ## Design
 
 ### Server (Milestone 1)
