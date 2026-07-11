@@ -191,6 +191,27 @@ final class ControlAttachApprovalPresenterTests: XCTestCase {
     }
   }
 
+  func testWindowScreenshotDialogNamesWholeWindowDialogsAndHiddenTabBoundary() {
+    let request = makeRequest(
+      canPersist: true,
+      operationSummary: "Capture the visible Laban window, including open sheets and dialogs.",
+      dataSensitivity: "screenshot")
+
+    let content = ControlAttachApprovalPresenter.windowScreenshotDialogContent(for: request)
+
+    XCTAssertTrue(content.title.contains("capture this Laban window"))
+    XCTAssertTrue(content.can.contains("title bar"))
+    XCTAssertTrue(content.can.contains("sidebar"))
+    XCTAssertTrue(content.can.contains("sheets"))
+    XCTAssertTrue(content.can.contains("dialogs"))
+    XCTAssertTrue(content.cannot.contains("hidden tabs"))
+    XCTAssertTrue(content.cannot.contains("type"))
+    XCTAssertEqual(content.scope, "This app in this Laban session")
+    XCTAssertEqual(
+      ControlAttachApprovalPresenter.buttonTitles(for: request),
+      ["Allow Once", "Always Allow", "Deny"])
+  }
+
   // MARK: - readableCapability (the "navigate" fix)
 
   /// The family's `.navigate` capability is own-session
@@ -223,7 +244,9 @@ final class ControlAttachApprovalPresenterTests: XCTestCase {
     principalPath: String = "/Applications/Codex.app/Contents/MacOS/Codex",
     principalIsVerified: Bool = true,
     persistenceDisabledReason: String? = nil,
-    grantsSessionReadFamily: Bool = false
+    grantsSessionReadFamily: Bool = false,
+    operationSummary: String = "Read app state.",
+    dataSensitivity: String = "nonSensitiveState"
   ) -> ControlAttachApprovalRequest {
     ControlAttachApprovalRequest(
       id: "approval-1",
@@ -232,8 +255,8 @@ final class ControlAttachApprovalPresenterTests: XCTestCase {
       helperChainSummary: "zsh -> \(principalDisplayName)",
       principalPath: principalPath,
       sessionDisplay: "1234",
-      operationSummary: "Read app state.",
-      dataSensitivity: "nonSensitiveState",
+      operationSummary: operationSummary,
+      dataSensitivity: dataSensitivity,
       capabilities: ["observe"],
       canPersist: canPersist,
       persistenceDisabledReason: persistenceDisabledReason,

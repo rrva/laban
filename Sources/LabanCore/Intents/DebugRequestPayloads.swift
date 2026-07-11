@@ -19,6 +19,45 @@ private enum DebugPayloadSchema {
   }
 }
 
+public struct WindowScreenshotResponse: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var ok: Bool
+  public var pngBase64: String
+  public var width: Int
+  public var height: Int
+  public var byteCount: Int
+  public var includesDialogs: Bool
+
+  public init(
+    ok: Bool = true,
+    pngBase64: String,
+    width: Int,
+    height: Int,
+    byteCount: Int,
+    includesDialogs: Bool = true
+  ) {
+    self.ok = ok
+    self.pngBase64 = pngBase64
+    self.width = width
+    self.height = height
+    self.byteCount = byteCount
+    self.includesDialogs = includesDialogs
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "ok": DebugPayloadSchema.boolean,
+        "pngBase64": .string(enumValues: nil, const: nil, format: "byte", pattern: nil),
+        "width": .integer(min: 1, max: nil),
+        "height": .integer(min: 1, max: nil),
+        "byteCount": .integer(min: 1, max: 10 * 1024 * 1024),
+        "includesDialogs": DebugPayloadSchema.boolean,
+      ],
+      required: ["ok", "pngBase64", "width", "height", "byteCount", "includesDialogs"],
+      additionalProperties: false)
+  }
+}
+
 public struct DebugActionEnvelope: Codable, Sendable, Equatable, JSONSchemaProviding {
   public var action: String
 

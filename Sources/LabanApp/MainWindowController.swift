@@ -499,6 +499,10 @@ final class MainWindowController: NSWindowController {
     let controller = MainWindowController(window: window)
     controller.controlSessionLaunchCoordinator = launchCoordinator
     controller.liveControlRouter = liveRouter
+    liveRouter.bindWindowScreenshotProvider { [weak controller] in
+      guard let window = controller?.window else { return nil }
+      return LabanWindowScreenshotCapture.capture(window: window)
+    }
     if let bootstrappedControl {
       controller.controlServer = bootstrappedControl.server
       controller.controlSecurityCoordinator = ControlSecurityCoordinator(indicatorHost: termView)

@@ -1,5 +1,6 @@
 import Foundation
 import LabanControl
+import LabanCore
 import XCTest
 
 @testable import LabanCLI
@@ -363,6 +364,14 @@ final class LabanCLITests: XCTestCase {
     XCTAssertEqual(error, .unknownCommand("session get-text --screen --scrollback"))
   }
 
+  func testParseSessionScreenshotWithOutput() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse([
+        "session", "screenshot", "--output", "/tmp/laban.png", "--json",
+      ]).success,
+      .sessionScreenshot(outputPath: "/tmp/laban.png", json: true))
+  }
+
   func testParseContextDefaultsToFortyMaxLines() {
     XCTAssertEqual(
       LabanArgumentParser.parse(["context", "--json"]).success,
@@ -645,6 +654,85 @@ final class LabanCLITests: XCTestCase {
     XCTAssertEqual(result.exitCode, 5)
     XCTAssertTrue(result.stdout.contains("forbidden"))
     XCTAssertTrue(result.stderr.contains("server returned 403"))
+  }
+
+  func testSessionScreenshotUsesLazyAttachAndWritesPrivatePNG() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-cli-window-screenshot-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let output = directory.appendingPathComponent("nested/window.png")
+    let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3])
+    let payload = WindowScreenshotResponse(
+      pngBase64: png.base64EncodedString(),
+      width: 1200,
+      height: 800,
+      byteCount: png.count,
+      includesDialogs: true)
+    let payloadData = try JSONEncoder().encode(payload)
+    let payloadText = try XCTUnwrap(String(data: payloadData, encoding: .utf8))
+    var seenCliCommand: String?
+
+    let result = LabanCLI.run(
+      command: .sessionScreenshot(outputPath: output.path, json: true),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { cliCommand, method, path, query, body in
+        seenCliCommand = cliCommand
+        XCTAssertEqual(method, "GET")
+        XCTAssertEqual(path, "/debug/window-screenshot")
+        XCTAssertTrue(query.isEmpty)
+        XCTAssertNil(body)
+        return (200, payloadText)
+      })
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(seenCliCommand, "window.screenshot")
+    XCTAssertEqual(try Data(contentsOf: output), png)
+    let attributes = try FileManager.default.attributesOfItem(atPath: output.path)
+    XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    let resultObject = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any])
+    XCTAssertEqual(resultObject["path"] as? String, output.path)
+    XCTAssertEqual(resultObject["includesDialogs"] as? Bool, true)
+    XCTAssertFalse(result.stdout.contains(payload.pngBase64))
+  }
+
+  func testSessionScreenshotRejectsInvalidPayload() {
+    let result = LabanCLI.run(
+      command: .sessionScreenshot(outputPath: nil, json: true),
+      agentProxyRequest: { _, _ in (200, "{\"ok\":true}") },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 2)
+    XCTAssertTrue(result.stderr.contains("window screenshot response is invalid"))
+  }
+
+  func testSessionScreenshotRefusesSymlinkOutput() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-cli-window-screenshot-symlink-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let target = directory.appendingPathComponent("target.png")
+    let output = directory.appendingPathComponent("window.png")
+    try Data("keep".utf8).write(to: target)
+    try FileManager.default.createSymbolicLink(at: output, withDestinationURL: target)
+    let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1])
+    let payload = WindowScreenshotResponse(
+      pngBase64: png.base64EncodedString(),
+      width: 1,
+      height: 1,
+      byteCount: png.count,
+      includesDialogs: true)
+    let payloadText = try XCTUnwrap(
+      String(data: try JSONEncoder().encode(payload), encoding: .utf8))
+
+    let result = LabanCLI.run(
+      command: .sessionScreenshot(outputPath: output.path, json: false),
+      agentProxyRequest: { _, _ in (200, payloadText) },
+      agentProxyURL: "unix:///proxy.sock")
+
+    XCTAssertEqual(result.exitCode, 2)
+    XCTAssertTrue(result.stderr.contains("refusing to replace a screenshot output symlink"))
+    XCTAssertEqual(try Data(contentsOf: target), Data("keep".utf8))
   }
 
   func testContextComposesBundleAndNeverLeaksSentinel() {

@@ -180,6 +180,15 @@ Same capture, but writes into the artifact directory and returns metadata:
 The screenshot hook must capture the app-rendered surface, not the OS desktop.
 This is what makes it usable in headless cloud environments.
 
+The live GUI exposes a separate, request-exact `GET /debug/window-screenshot`
+route through lazy attach. `laban session screenshot` uses it to capture the
+active Laban window together with its visible sheets and child dialogs. It does
+not capture the desktop, other applications, hidden tabs, or unrelated Laban
+windows. This route is outside the session-observation family because window
+pixels can contain more sensitive information than terminal text. The response
+is bounded JSON with base64 PNG data so the local CLI can write a private
+artifact without adding binary framing to the control socket.
+
 ### Full Capture Replay
 
 Screenshots, bounded debug logs, and `/debug/state` are fast diagnostics. Use a

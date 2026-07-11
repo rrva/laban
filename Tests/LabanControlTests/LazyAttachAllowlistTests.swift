@@ -37,6 +37,18 @@ final class LazyAttachAllowlistTests: XCTestCase {
     XCTAssertNil(entry)
   }
 
+  func testWindowScreenshotIsExactPersistableAndOutsideFamily() {
+    let entry = ControlLazyAttachAllowlist.entry(cliCommand: "window.screenshot")
+    XCTAssertEqual(entry?.method, "GET")
+    XCTAssertEqual(entry?.path, "/debug/window-screenshot")
+    XCTAssertEqual(entry?.intentID, "window.screenshot")
+    XCTAssertEqual(entry?.persistable, true)
+    XCTAssertFalse(ControlSessionObserveFamily.contains("window.screenshot"))
+    XCTAssertTrue(
+      ControlLazyAttachAllowlist.isAllowlisted(
+        method: "GET", path: "/debug/window-screenshot", intentID: "window.screenshot"))
+  }
+
   func testRouteAndIntentLookup() {
     XCTAssertTrue(
       ControlLazyAttachAllowlist.isAllowlisted(

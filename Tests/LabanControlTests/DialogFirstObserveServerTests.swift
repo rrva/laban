@@ -72,6 +72,7 @@ final class DialogFirstObserveServerTests: XCTestCase {
       "terminal.sendKey",  // .input actuation
       "clipboard.paste",  // .input actuation on clipboard family
       "clipboard.read",  // .observeSensitive clipboard content
+      "window.screenshot",  // request-exact whole-window screenshot
       "fixture.feedOutput",  // .fixture
     ]
     for intentID in forbidden {

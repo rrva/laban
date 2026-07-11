@@ -322,6 +322,60 @@ final class ControlPlaneInvariantTests: XCTestCase {
     XCTAssertEqual(Set(navigateMembers), ["terminal.scrollViewport"])
   }
 
+  func testWindowScreenshotStaysRequestExactAndOutsideFamily() {
+    let descriptor = IntentCatalog.all.descriptor(id: "window.screenshot")
+    XCTAssertEqual(descriptor?.requiredCapability, .observeSensitive)
+    XCTAssertEqual(descriptor?.dataSensitivity, .screenshot)
+    XCTAssertEqual(descriptor?.availability.gui, true)
+    XCTAssertEqual(descriptor?.sideEffects.ptyInput, false)
+
+    let entry = ControlLazyAttachAllowlist.entry(cliCommand: "window.screenshot")
+    XCTAssertEqual(entry?.routeID, "GET /debug/window-screenshot")
+    XCTAssertEqual(entry?.persistable, true)
+    XCTAssertFalse(ControlSessionObserveFamily.contains("window.screenshot"))
+
+    let familyTier = ControlTokenTier.approvedSessionFamily(
+      sessionID: "s1",
+      approvalID: "family",
+      capabilities: Array(ControlSessionObserveFamily.capabilities))
+    XCTAssertFalse(
+      LabanControlPolicy.authorize(
+        intentID: "window.screenshot",
+        catalog: .all,
+        granted: LabanControlPolicy.grants(for: familyTier),
+        targetSession: "s1",
+        tokenScope: LabanControlPolicy.tokenScope(for: familyTier),
+        tokenTier: familyTier,
+        method: "GET",
+        path: "/debug/window-screenshot",
+        query: "",
+        bodySHA256: nil))
+
+    let exactTier = ControlTokenTier.approvedSession(
+      sessionID: "s1",
+      approvalID: "screenshot",
+      capabilities: [.observeSensitive],
+      constraint: ControlTokenConstraint(
+        method: "GET",
+        path: "/debug/window-screenshot",
+        query: "",
+        bodySHA256: nil,
+        resolvedRouteID: "GET /debug/window-screenshot",
+        resolvedIntentID: "window.screenshot"))
+    XCTAssertTrue(
+      LabanControlPolicy.authorize(
+        intentID: "window.screenshot",
+        catalog: .all,
+        granted: LabanControlPolicy.grants(for: exactTier),
+        targetSession: "s1",
+        tokenScope: LabanControlPolicy.tokenScope(for: exactTier),
+        tokenTier: exactTier,
+        method: "GET",
+        path: "/debug/window-screenshot",
+        query: "",
+        bodySHA256: nil))
+  }
+
   // MARK: - I5: A transport helper is never the trusted principal.
 
   func testHelperNeverSelectedAsPrincipal() {

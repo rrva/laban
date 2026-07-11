@@ -15,6 +15,7 @@ enum LabanCommand: Equatable {
   case sessionProxy
   case sessionCurrent(json: Bool)
   case sessionGetText(source: String, startLine: Int?, endLine: Int?, maxLines: Int?, json: Bool)
+  case sessionScreenshot(outputPath: String?, json: Bool)
   case context(json: Bool, maxLines: Int)
   case waitPrompt(timeoutSeconds: Double, json: Bool)
   case waitCommandFinished(timeoutSeconds: Double, json: Bool)
@@ -185,6 +186,12 @@ struct LabanArgumentParser {
       return .success(.sessionCurrent(json: json))
     case "get-text":
       return parseGetText(args: rest, json: json)
+    case "screenshot":
+      let (outputPath, remaining) = extractStringOption(named: "--output", from: rest)
+      guard remaining.isEmpty else {
+        return .failure(.unknownCommand("session screenshot \(remaining.joined(separator: " "))"))
+      }
+      return .success(.sessionScreenshot(outputPath: outputPath, json: json))
     default:
       return .failure(.unknownCommand("session \(subcommand)"))
     }

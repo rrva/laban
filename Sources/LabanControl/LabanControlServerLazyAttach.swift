@@ -157,6 +157,7 @@ extension LabanControlServer {
     }
 
     let rawSessionRequest = cliCommand == "session.request"
+    let grantsSessionReadFamily = ControlSessionObserveFamily.contains(resolvedIntentID)
     let allowlistMatch = ControlLazyAttachAllowlist.entry(
       method: method, path: path, intentID: resolvedIntentID)
     let isPersistableOperation = allowlistMatch?.persistable == true
@@ -216,18 +217,14 @@ extension LabanControlServer {
       #if DEBUG
         onApprovedTokenMintedForTesting?(approvedToken)
       #endif
-      // Mint a family-scoped tier, not a request-exact one: a persisted
-      // record now auto-approves any family intent for this session (per
-      // Milestone 2), so the token this dispatch actually uses must carry the
-      // family authorization, not just this one route/intent. The token is
-      // still minted, used for exactly this one route() dispatch below, then
-      // discarded; Allow Once/Always both stay one-dispatch-per-request, the
-      // family reach comes from the persisted record being consulted again on
-      // the next request, not from a long-lived token.
-      let approvedTier = ControlTokenTier.approvedSessionFamily(
+      // Family records mint the family tier. Separately persisted exact-route
+      // records, such as window.screenshot, mint a request-constrained tier so
+      // they cannot authorize any sibling intent.
+      let approvedTier = approvedLazyAttachTier(
         sessionID: sessionID,
         approvalID: matchingRecord.id,
-        capabilities: Array(ControlSessionObserveFamily.capabilities))
+        context: context,
+        grantsSessionReadFamily: grantsSessionReadFamily)
       tokenLock.lock()
       tokens[approvedToken] = approvedTier
       tokenLock.unlock()
@@ -290,11 +287,14 @@ extension LabanControlServer {
     } else {
       persistenceDisabledReason = "This operation cannot be remembered for this route."
     }
-    // The dialog describes the whole family, not this one request: the grant
-    // it names, if approved, authorizes any family intent for the session
-    // (Milestone 2). Data/Permission rows reflect the family's ordering-max
-    // sensitivity and full capability set; this is presentation only, it does
-    // not widen or narrow what is actually authorized.
+    let approvalSensitivity =
+      grantsSessionReadFamily
+      ? ControlSessionObserveFamily.maxDataSensitivity(catalog: catalog)
+      : resolvedSensitivity
+    let approvalCapabilities =
+      grantsSessionReadFamily
+      ? ControlSessionObserveFamily.capabilities.map(\Capability.rawValue).sorted()
+      : capabilities.map(\Capability.rawValue).sorted()
     let request = ControlAttachApprovalRequest(
       id: approvalID,
       principalDisplayName: verifiedDisplayName,
@@ -303,11 +303,11 @@ extension LabanControlServer {
       principalPath: principalWithSigning.identity.executablePath,
       sessionDisplay: "\(sessionID.suffix(4))",
       operationSummary: descriptor.summary,
-      dataSensitivity: ControlSessionObserveFamily.maxDataSensitivity(catalog: catalog),
-      capabilities: ControlSessionObserveFamily.capabilities.map(\Capability.rawValue).sorted(),
+      dataSensitivity: approvalSensitivity,
+      capabilities: approvalCapabilities,
       canPersist: canPersist,
       persistenceDisabledReason: persistenceDisabledReason,
-      grantsSessionReadFamily: true)
+      grantsSessionReadFamily: grantsSessionReadFamily)
 
     let semaphore = DispatchSemaphore(value: 0)
     let approvalResult = LazyApprovalResult()
@@ -360,33 +360,38 @@ extension LabanControlServer {
 
     if effectiveDecision == .alwaysAllowSignedIdentity {
       let signingRequirement = principalWithSigning.identity.signing?.designatedRequirement ?? ""
-      // One record persists the whole family, not this one request (Milestone
-      // 2): every field below is the family-wide value, so any later family
-      // read for this (principal, session) auto-approves through
-      // findMatching, not just a repeat of this exact route/intent.
-      //
-      // `session.detail`'s allowlist entry carries the literal template route
-      // `GET /debug/sessions/<id>` (path-parameterized); a real request's
-      // routeID is always the concrete `GET /debug/sessions/<sessionID>`
-      // (resolveRouteAndIntent builds routeID from the raw incoming path, and
-      // C12 guarantees `<id>` equals this approved session for any request
-      // that can legitimately succeed). findMatching does exact string
-      // containment with no wildcard support, so the literal template would
-      // never match a live request and session.detail auto-approval would
-      // silently fail; substitute the concrete sessionID here so the stored
-      // routeID matches what a real dispatch computes.
-      let familyRouteIDs = Array(
-        Set(
-          ControlLazyAttachAllowlist.entries.map {
-            $0.routeID.replacingOccurrences(of: "<id>", with: sessionID)
-          })
-      ).sorted()
-      let familySideEffectClasses = Array(
-        Set(
-          ControlSessionObserveFamily.intentIDs.compactMap { intentID in
-            catalog.descriptor(id: intentID).map { sideEffectClassFor($0.sideEffects) }
-          })
-      ).sorted()
+      let allowedRouteIDs: [String]
+      let allowedIntentIDs: [String]
+      let recordCapabilities: [Capability]
+      let maxDataSensitivity: String
+      let allowedSideEffectClasses: [String]
+      if grantsSessionReadFamily {
+        // `session.detail` uses a route template. Persist the concrete scoped
+        // session route so exact matching succeeds, and exclude request-exact
+        // allowlist entries such as window.screenshot from the family record.
+        allowedRouteIDs = Array(
+          Set(
+            ControlLazyAttachAllowlist.entries
+              .filter { ControlSessionObserveFamily.contains($0.intentID) }
+              .map { $0.routeID.replacingOccurrences(of: "<id>", with: sessionID) }
+          )
+        ).sorted()
+        allowedIntentIDs = Array(ControlSessionObserveFamily.intentIDs)
+        recordCapabilities = Array(ControlSessionObserveFamily.capabilities)
+        maxDataSensitivity = ControlSessionObserveFamily.maxDataSensitivity(catalog: catalog)
+        allowedSideEffectClasses = Array(
+          Set(
+            ControlSessionObserveFamily.intentIDs.compactMap { intentID in
+              catalog.descriptor(id: intentID).map { sideEffectClassFor($0.sideEffects) }
+            })
+        ).sorted()
+      } else {
+        allowedRouteIDs = [routeIDForRecord]
+        allowedIntentIDs = [resolvedIntentID]
+        recordCapabilities = capabilities
+        maxDataSensitivity = resolvedSensitivity
+        allowedSideEffectClasses = [sideEffectClass]
+      }
       let record = ControlAttachApprovalRecord(
         id: approvalID,
         displayName: principalWithSigning.identity.displayName,
@@ -395,11 +400,11 @@ extension LabanControlServer {
         signingRequirement: signingRequirement,
         sessionID: sessionID,
         shellIdentityFingerprint: shellIdentity.fingerprint,
-        allowedRouteIDs: familyRouteIDs,
-        allowedIntentIDs: Array(ControlSessionObserveFamily.intentIDs),
-        capabilities: Array(ControlSessionObserveFamily.capabilities),
-        maxDataSensitivity: ControlSessionObserveFamily.maxDataSensitivity(catalog: catalog),
-        allowedSideEffectClasses: familySideEffectClasses,
+        allowedRouteIDs: allowedRouteIDs,
+        allowedIntentIDs: allowedIntentIDs,
+        capabilities: recordCapabilities,
+        maxDataSensitivity: maxDataSensitivity,
+        allowedSideEffectClasses: allowedSideEffectClasses,
         principalIdentityFingerprint: principalIdentityFingerprint)
       approvalStore.add(record)
     }
@@ -408,17 +413,11 @@ extension LabanControlServer {
     #if DEBUG
       onApprovedTokenMintedForTesting?(approvedToken)
     #endif
-    // Same family-scoped mint as the auto-approve site above: this fresh
-    // approval (Allow Once or Always) grants the whole family for the
-    // session, not just this one route/intent. The token still covers
-    // exactly this one route() dispatch below and is discarded immediately
-    // after; Allow Once does not become long-lived, the family reach for
-    // later requests comes only from the persisted record (Always) being
-    // consulted again, never from this token outliving the dispatch.
-    let approvedTier = ControlTokenTier.approvedSessionFamily(
+    let approvedTier = approvedLazyAttachTier(
       sessionID: sessionID,
       approvalID: approvalID,
-      capabilities: Array(ControlSessionObserveFamily.capabilities))
+      context: context,
+      grantsSessionReadFamily: grantsSessionReadFamily)
     tokenLock.lock()
     tokens[approvedToken] = approvedTier
     tokenLock.unlock()
@@ -438,6 +437,31 @@ extension LabanControlServer {
       sessionID: sessionID,
       approval: effectiveDecision == .alwaysAllowSignedIdentity ? "always" : "once",
       downstream: downstream)
+  }
+
+  func approvedLazyAttachTier(
+    sessionID: String,
+    approvalID: String,
+    context: ControlAttachApprovalContext,
+    grantsSessionReadFamily: Bool
+  ) -> ControlTokenTier {
+    if grantsSessionReadFamily {
+      return .approvedSessionFamily(
+        sessionID: sessionID,
+        approvalID: approvalID,
+        capabilities: Array(ControlSessionObserveFamily.capabilities))
+    }
+    return .approvedSession(
+      sessionID: sessionID,
+      approvalID: approvalID,
+      capabilities: context.capabilities,
+      constraint: ControlTokenConstraint(
+        method: context.method,
+        path: context.path,
+        query: context.query,
+        bodySHA256: context.bodySHA256,
+        resolvedRouteID: context.resolvedRouteID,
+        resolvedIntentID: context.resolvedIntentID))
   }
 
   func validateAppObserveToken(_ token: String) -> Bool {

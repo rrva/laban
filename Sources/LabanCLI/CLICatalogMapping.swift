@@ -34,6 +34,7 @@ enum LabanCLICatalog {
     "session proxy": .rawEscape,
     "session current": .intents(["session.detail", "shellIntegration.state"]),
     "session get-text": .intent("terminal.getText"),
+    "session screenshot": .intent("window.screenshot"),
     "context": .intents(["session.detail", "shellIntegration.state", "terminal.getText"]),
     "wait prompt": .intent("shellIntegration.state"),
     "wait command-finished": .intent("shellIntegration.state"),
@@ -65,6 +66,7 @@ enum LabanCLICatalog {
     case .sessionProxy: return "session proxy"
     case .sessionCurrent: return "session current"
     case .sessionGetText: return "session get-text"
+    case .sessionScreenshot: return "session screenshot"
     case .context: return "context"
     case .waitPrompt: return "wait prompt"
     case .waitCommandFinished: return "wait command-finished"
@@ -95,6 +97,7 @@ enum LabanCLICatalog {
     .sessionProxy,
     .sessionCurrent(json: false),
     .sessionGetText(source: "screen", startLine: nil, endLine: nil, maxLines: nil, json: false),
+    .sessionScreenshot(outputPath: nil, json: false),
     .context(json: false, maxLines: 40),
     .waitPrompt(timeoutSeconds: 30, json: false),
     .waitCommandFinished(timeoutSeconds: 30, json: false),

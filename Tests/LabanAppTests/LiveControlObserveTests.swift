@@ -53,6 +53,67 @@ final class LiveControlObserveTests: XCTestCase {
     XCTAssertEqual(status, 403)
   }
 
+  func testWindowScreenshotReturnsTypedPNGForVisibleScopedSession() throws {
+    let model = try AppModel()
+    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let router = LiveIntentRouter(model: model)
+    let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 4, 2])
+    router.bindWindowScreenshotProvider {
+      LabanWindowScreenshot(pngData: png, width: 1200, height: 800)
+    }
+
+    let response = router.query(
+      LegacyDebugQueryInput(
+        intentID: "window.screenshot",
+        scopedSessionID: sessionID))
+
+    XCTAssertEqual(response.status, 200)
+    let decoded = try JSONDecoder().decode(WindowScreenshotResponse.self, from: response.body)
+    XCTAssertEqual(Data(base64Encoded: decoded.pngBase64), png)
+    XCTAssertEqual(decoded.width, 1200)
+    XCTAssertEqual(decoded.height, 800)
+    XCTAssertEqual(decoded.byteCount, png.count)
+    XCTAssertTrue(decoded.includesDialogs)
+  }
+
+  func testWindowScreenshotRejectsWhenScopedSessionIsNotVisible() throws {
+    let model = try AppModel()
+    _ = try model.createTab()
+    let hiddenSessionID = model.tabs[0].sessionId
+    model.selectTab(model.tabs[1].id)
+    var captureCalled = false
+    let router = LiveIntentRouter(model: model)
+    router.bindWindowScreenshotProvider {
+      captureCalled = true
+      return nil
+    }
+
+    let response = router.query(
+      LegacyDebugQueryInput(
+        intentID: "window.screenshot",
+        scopedSessionID: hiddenSessionID))
+
+    XCTAssertEqual(response.status, 409)
+    XCTAssertFalse(captureCalled)
+    XCTAssertTrue(
+      String(data: response.body, encoding: .utf8)?.contains("sessionNotVisible") == true)
+  }
+
+  func testAppObserveTokenDeniesWindowScreenshot() throws {
+    let model = try AppModel()
+    let router = LiveIntentRouter(model: model)
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let (status, _) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/window-screenshot",
+      token: start.appObserveToken)
+
+    XCTAssertEqual(status, 403)
+  }
+
   func testAppObserveStateRedactsCrossTabFindNeedles() throws {
     let (model, router, ownSessionID, otherSessionID) = try makeModelRouterAndSessions()
     _ = model.startFind(sessionID: otherSessionID, needle: "secret-needle")

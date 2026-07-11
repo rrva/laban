@@ -92,6 +92,10 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
       let content = Self.dialogContent(for: request)
       alert.messageText = content.title
       alert.accessoryView = makeAdaptiveDetailsView(for: content, request: request, alert: alert)
+    } else if request.dataSensitivity == "screenshot" {
+      let content = Self.windowScreenshotDialogContent(for: request)
+      alert.messageText = content.title
+      alert.accessoryView = makeAdaptiveDetailsView(for: content, request: request, alert: alert)
     } else {
       // Legacy, request-exact grant: still used by tests and defensively.
       // Keep the pre-redesign single-grant row layout; do not invent
@@ -251,6 +255,55 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
       canLeadIn: "Can",
       cannotLeadIn: "Cannot",
       canSymbolName: "eye",
+      cannotSymbolName: "hand.raised",
+      scope: scope,
+      inlineRows: inlineRows,
+      detailRows: detailRows,
+      showsDisclosure: !detailRows.isEmpty)
+  }
+
+  static func windowScreenshotDialogContent(
+    for request: ControlAttachApprovalRequest
+  ) -> ApprovalDialogContent {
+    let can =
+      "Capture the visible Laban window, including its title bar, sidebar, sheets, and dialogs."
+    let cannot = "Read hidden tabs, type, paste, or control Laban."
+    let scope = request.canPersist ? "This app in this Laban session" : "This request only"
+    let operation = ("Operation", shortOperationSummary(request.operationSummary))
+    let chain = ("Chain", request.helperChainSummary)
+    let path: (String, String)? =
+      request.principalPath.flatMap { $0.isEmpty ? nil : ("Path", compactPath($0)) }
+
+    var inlineRows: [(String, String)] = []
+    var detailRows: [(String, String)] = []
+    let title: String
+    let subhead: String
+    let subheadIsWarning: Bool
+    if request.principalIsVerified {
+      title = "Allow \(request.principalDisplayName) to capture this Laban window?"
+      subhead = "Verified app - session \(request.sessionDisplay)"
+      subheadIsWarning = false
+      if let path { detailRows.append(path) }
+      detailRows.append(chain)
+      detailRows.append(operation)
+    } else {
+      title = "Allow unverified \(request.principalDisplayName) to capture this Laban window?"
+      subhead = "Not a verified app - check the path and chain below before allowing."
+      subheadIsWarning = true
+      if let path { inlineRows.append(path) }
+      inlineRows.append(chain)
+      inlineRows.append(operation)
+    }
+
+    return ApprovalDialogContent(
+      title: title,
+      subhead: subhead,
+      subheadIsWarning: subheadIsWarning,
+      can: can,
+      cannot: cannot,
+      canLeadIn: "Can",
+      cannotLeadIn: "Cannot",
+      canSymbolName: "camera.viewfinder",
       cannotSymbolName: "hand.raised",
       scope: scope,
       inlineRows: inlineRows,

@@ -18,6 +18,7 @@ final class ControlAvailabilityParityTests: XCTestCase {
     "find.state",
     "shellIntegration.state",
     "terminal.getText",
+    "window.screenshot",
     "scrollIndicator.state",
     "session.list",
     "session.detail",
@@ -36,6 +37,10 @@ final class ControlAvailabilityParityTests: XCTestCase {
     let model = try AppModel()
     _ = try model.createTab()
     let router = LiveIntentRouter(model: model)
+    let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    router.bindWindowScreenshotProvider {
+      LabanWindowScreenshot(pngData: png, width: 1, height: 1)
+    }
 
     let guiIDs = Set(
       IntentCatalog.all.descriptors
@@ -44,6 +49,13 @@ final class ControlAvailabilityParityTests: XCTestCase {
     XCTAssertEqual(guiIDs, Self.liveImplementedIntentIDs)
 
     XCTAssertLessThan(router.query(.state).status, 400)
+
+    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    XCTAssertLessThan(
+      router.query(
+        LegacyDebugQueryInput(intentID: "window.screenshot", scopedSessionID: sessionID)
+      ).status,
+      400)
 
     let scrollBody = Data(
       #"{"action":"scrollViewport","deltaRows":1}"#.utf8)

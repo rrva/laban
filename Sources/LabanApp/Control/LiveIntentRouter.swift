@@ -48,6 +48,7 @@ public protocol CommandProposalReviewPresenting: AnyObject {
 final class LiveIntentRouter: IntentRouter {
   private weak var model: AppModel?
   private var environment: LiveControlEnvironment
+  private var windowScreenshotProvider: (() -> LabanWindowScreenshot?)?
   weak var proposalPresenter: CommandProposalReviewPresenting?
 
   init(
@@ -86,6 +87,10 @@ final class LiveIntentRouter: IntentRouter {
 
   func updateEnvironment(_ environment: LiveControlEnvironment) {
     performOnMain { self.environment = environment }
+  }
+
+  func bindWindowScreenshotProvider(_ provider: @escaping () -> LabanWindowScreenshot?) {
+    performOnMain { self.windowScreenshotProvider = provider }
   }
 
   func route(_ intent: Intent) -> ControlResponse {
@@ -160,6 +165,8 @@ final class LiveIntentRouter: IntentRouter {
           ControlStateProjections.shellIntegrationState(query: query.params, ctx: ctx))
       case "terminal.getText":
         return legacyJSON(ControlStateProjections.getTextResponse(query: query.params, ctx: ctx))
+      case "window.screenshot":
+        return windowScreenshotResponse(query: query, model: model)
       case "scrollIndicator.state":
         return legacyJSON(
           ControlStateProjections.scrollIndicatorState(query: query.params, ctx: ctx))
@@ -198,6 +205,35 @@ final class LiveIntentRouter: IntentRouter {
 
   func artifact(_ request: ArtifactRequest) -> ControlResponse? {
     nil
+  }
+
+  private func windowScreenshotResponse(
+    query: LegacyDebugQueryInput,
+    model: AppModel
+  ) -> ControlResponse {
+    guard let scopedSessionID = query.scopedSessionID else {
+      return .error(403, "session scope required")
+    }
+    guard model.activeTab?.sessionId == scopedSessionID else {
+      return .error(409, "sessionNotVisible")
+    }
+    guard let screenshot = windowScreenshotProvider?() else {
+      return .error(503, "windowScreenshotUnavailable")
+    }
+    guard screenshot.pngData.count <= LabanWindowScreenshotCapture.maxPNGBytes else {
+      return .error(413, "windowScreenshotTooLarge")
+    }
+    let signature = [UInt8](screenshot.pngData.prefix(8))
+    guard signature == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] else {
+      return .error(500, "windowScreenshotEncodingFailed")
+    }
+    return json(
+      WindowScreenshotResponse(
+        pngBase64: screenshot.pngData.base64EncodedString(),
+        width: screenshot.width,
+        height: screenshot.height,
+        byteCount: screenshot.pngData.count,
+        includesDialogs: true))
   }
 
   private func performOnMain<T>(_ work: () -> T) -> T {

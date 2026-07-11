@@ -16,6 +16,7 @@ final class CatalogParityTests: XCTestCase {
     "find.state",
     "shellIntegration.state",
     "terminal.getText",
+    "window.screenshot",
     "scrollIndicator.state",
     "session.list",
     "session.detail",

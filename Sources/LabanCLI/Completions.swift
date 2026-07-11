@@ -71,7 +71,7 @@ private let bashCompletions = """
         ;;
       session)
         if [ "$COMP_CWORD" -eq 2 ]; then
-          COMPREPLY=( $(compgen -W "state request scroll proxy current get-text" -- "$cur") )
+          COMPREPLY=( $(compgen -W "state request scroll proxy current get-text screenshot" -- "$cur") )
         else
           case "${words[2]}" in
             get-text)
@@ -79,6 +79,9 @@ private let bashCompletions = """
               ;;
             current)
               COMPREPLY=( $(compgen -W "--json" -- "$cur") )
+              ;;
+            screenshot)
+              COMPREPLY=( $(compgen -W "--output --json" -- "$cur") )
               ;;
           esac
         fi
@@ -114,11 +117,12 @@ private let fishCompletions = """
   complete -c laban -n '__fish_seen_subcommand_from wait' -a 'prompt command-finished'
   complete -c laban -n '__fish_seen_subcommand_from wait' -l timeout -r
   complete -c laban -n '__fish_seen_subcommand_from wait' -l json
-  complete -c laban -n '__fish_seen_subcommand_from session' -a 'state request scroll proxy current get-text'
+  complete -c laban -n '__fish_seen_subcommand_from session' -a 'state request scroll proxy current get-text screenshot'
   complete -c laban -n '__fish_seen_subcommand_from session' -l json
   complete -c laban -n '__fish_seen_subcommand_from session' -l screen
   complete -c laban -n '__fish_seen_subcommand_from session' -l scrollback
   complete -c laban -n '__fish_seen_subcommand_from session' -l start-line -r
   complete -c laban -n '__fish_seen_subcommand_from session' -l end-line -r
   complete -c laban -n '__fish_seen_subcommand_from session' -l max-lines -r
+  complete -c laban -n '__fish_seen_subcommand_from screenshot' -l output -r
   """

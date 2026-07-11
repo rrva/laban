@@ -67,6 +67,16 @@
   },
   {
     "category" : "artifacts",
+    "method" : "GET",
+    "path" : "\/debug\/window-screenshot",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/window-screenshot.schema.json",
+    "summary" : "Return the visible Laban window, including sheets and dialogs, as base64 PNG JSON."
+  },
+  {
+    "category" : "artifacts",
     "method" : "POST",
     "path" : "\/debug\/screenshot",
     "queryParameters" : [

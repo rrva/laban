@@ -113,6 +113,22 @@ signed principal and session. Tests:
 `testFamilyRecordAutoApprovesEveryFamilyIntentForSameSessionAndPrincipal` and
 the mismatched-session/principal/signing denials (`DialogFirstFamilyRecordTests`).
 
+**I4b: full-window screenshots remain request-exact and visible-session
+bound.** `window.screenshot` is a GUI `observeSensitive` intent with screenshot
+data sensitivity, but it is deliberately outside `ControlSessionObserveFamily`.
+An existing family approval never authorizes it. Lazy access requires a
+separate request-exact record containing only `GET /debug/window-screenshot`
+and `window.screenshot`; the approved token retains the full method/path/query/
+body/route/intent constraint from I3. The GUI router additionally requires the
+credential's scoped session to be the active visible tab before capture, so an
+agent cannot wait for another tab to become active and capture that session.
+The capture includes the Laban window and its attached sheets/child dialogs,
+never the desktop or unrelated application windows. Tests:
+`testWindowScreenshotStaysRequestExactAndOutsideFamily`,
+`testWindowScreenshotPersistsOnlyExactRouteAndAutoApprovesRepeat`,
+`testWindowScreenshotRejectsWhenScopedSessionIsNotVisible`, and
+`testRelatedWindowIDsContainRootAndVisibleChildButNotUnrelatedWindow`.
+
 **I5: A transport helper is never the trusted principal.** Principal
 derivation over any process chain never selects the bundled `laban` or
 `laban-agent` executables, and never persists an always-allow record for a

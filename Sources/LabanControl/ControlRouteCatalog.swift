@@ -91,6 +91,13 @@ public enum ControlRouteCatalog {
       summary: "Return the current rendered surface as PNG bytes.",
       intentID: "artifact.screenshot"),
     endpoint(
+      method: "GET",
+      path: "/debug/window-screenshot",
+      category: "artifacts",
+      summary: "Return the visible Laban window, including sheets and dialogs, as base64 PNG JSON.",
+      responseSchema: "schemas/debug/window-screenshot.schema.json",
+      intentID: "window.screenshot"),
+    endpoint(
       method: "POST",
       path: "/debug/screenshot",
       category: "artifacts",
@@ -453,6 +460,7 @@ public enum ControlRouteCatalog {
     ("GET", "/debug/health"),
     ("GET", "/debug/accessibility"),
     ("GET", "/debug/terminal-modes"),
+    ("GET", "/debug/window-screenshot"),
     ("GET", "/debug/persistence/state"),
     ("GET", "/debug/persistence/restore-picker"),
     ("GET", "/debug/find/state"),

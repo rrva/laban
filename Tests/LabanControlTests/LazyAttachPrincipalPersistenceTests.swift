@@ -218,11 +218,69 @@ final class LazyAttachPrincipalPersistenceTests: XCTestCase {
     }
   }
 
+  func testWindowScreenshotPersistsOnlyExactRouteAndAutoApprovesRepeat() throws {
+    let peerPID = pid_t(ProcessInfo.processInfo.processIdentifier)
+    let shellPID: pid_t = 50
+    let shellIdentity = ControlProcessIdentity(
+      pid: shellPID, startTime: Date(timeIntervalSince1970: 1000), executablePath: "/bin/zsh")
+    let peerIdentity = ControlProcessIdentity(
+      pid: peerPID,
+      startTime: Date(timeIntervalSince1970: 2000),
+      executablePath: "/Applications/Codex.app/Contents/MacOS/Codex")
+    let tree = FakeProcessTreeInspector(tree: [
+      peerPID: (parent: shellPID, identity: peerIdentity),
+      shellPID: (parent: 1, identity: shellIdentity),
+    ])
+    let signing = ControlCodeSigningIdentity(
+      bundleIdentifier: "com.example.codex",
+      designatedRequirement: "anchor apple generic and identifier \"com.example.codex\"",
+      isAdHocOrUnsigned: false)
+    let (server, socketPath, token) = try makeServer(
+      tree: tree,
+      codeSigning: SigningByPIDInspector(signingByPID: [peerPID: signing]),
+      surface: .gui)
+    defer { server.stop() }
+    server.registerAttachShellPID(sessionID: "s1", shellPID: shellPID)
+
+    let delegate = FakeApprovalDelegate(decision: .alwaysAllowSignedIdentity)
+    server.setApprovalDelegate(delegate)
+    let (firstStatus, _) = try lazyAttach(
+      server: server,
+      socketPath: socketPath,
+      appObserveToken: token,
+      cliCommand: "window.screenshot",
+      method: "GET",
+      path: "/debug/window-screenshot")
+    XCTAssertEqual(firstStatus, 200)
+
+    let record = try XCTUnwrap(server.approvalStore.loadAll().first)
+    XCTAssertEqual(record.allowedRouteIDs, ["GET /debug/window-screenshot"])
+    XCTAssertEqual(record.allowedIntentIDs, ["window.screenshot"])
+    XCTAssertEqual(record.capabilities, [.observeSensitive])
+    XCTAssertEqual(record.maxDataSensitivity, "screenshot")
+    XCTAssertFalse(record.allowedIntentIDs.contains("app.state"))
+
+    let failIfPrompted = FailIfPromptedApprovalDelegate()
+    server.setApprovalDelegate(failIfPrompted)
+    let (secondStatus, secondBody) = try lazyAttach(
+      server: server,
+      socketPath: socketPath,
+      appObserveToken: token,
+      cliCommand: "window.screenshot",
+      method: "GET",
+      path: "/debug/window-screenshot")
+    XCTAssertEqual(secondStatus, 200)
+    let response = try JSONSerialization.jsonObject(with: secondBody) as? [String: Any]
+    XCTAssertEqual(response?["approval"] as? String, "always")
+    XCTAssertFalse(failIfPrompted.wasCalled)
+  }
+
   // MARK: - Helpers
 
   private func makeServer(
     tree: FakeProcessTreeInspector,
-    codeSigning: ControlCodeSigningInspecting
+    codeSigning: ControlCodeSigningInspecting,
+    surface: Surface = .headless
   ) throws -> (LabanControlServer, String, String) {
     let router = PrincipalPersistenceSpyRouter()
     let suiteName = "test-laban-principal-persistence-\(UUID().uuidString)"
@@ -234,7 +292,7 @@ final class LazyAttachPrincipalPersistenceTests: XCTestCase {
       signer: ControlAttachApprovalRecordHMACSigner(key: Data("test-approval-key".utf8)))
     let server = LabanControlServer(
       router: router,
-      surface: .headless,
+      surface: surface,
       processTreeInspector: tree,
       codeSigningInspector: codeSigning,
       approvalStore: approvalStore)
@@ -312,6 +370,19 @@ private final class FakeApprovalDelegate: ControlAttachApprovalDelegate, @unchec
     completion: @escaping @Sendable (ControlAttachApprovalDecision) -> Void
   ) {
     completion(decision)
+  }
+}
+
+private final class FailIfPromptedApprovalDelegate: ControlAttachApprovalDelegate,
+  @unchecked Sendable
+{
+  private(set) var wasCalled = false
+  func requestControlAttachApproval(
+    _ request: ControlAttachApprovalRequest,
+    completion: @escaping @Sendable (ControlAttachApprovalDecision) -> Void
+  ) {
+    wasCalled = true
+    completion(.deny)
   }
 }
 

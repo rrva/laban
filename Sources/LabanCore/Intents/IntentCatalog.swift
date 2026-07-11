@@ -710,6 +710,7 @@ public struct IntentCatalog: Sendable {
     cli: false)
 
   private static let guiObserve = IntentDescriptor.Availability(gui: true, headless: true)
+  private static let guiOnly = IntentDescriptor.Availability(gui: true, headless: false)
   private static let headlessOnly = IntentDescriptor.Availability(gui: false, headless: true)
 
   private static let starterDescriptors: [IntentDescriptor] = [
@@ -1067,6 +1068,12 @@ public struct IntentCatalog: Sendable {
       summary: "Return bounded plain-text lines from the visible screen or full scrollback.",
       requiredCapability: .observeSensitive, dataSensitivity: .scrollback,
       availability: guiObserve),
+    descriptor(
+      id: "window.screenshot", kind: .query, category: "artifacts",
+      summary: "Capture the visible Laban window, including open sheets and dialogs.",
+      requiredCapability: .observeSensitive, dataSensitivity: .screenshot,
+      availability: guiOnly,
+      outputSchema: WindowScreenshotResponse.jsonSchema),
     descriptor(
       id: "render.state", kind: .query, category: "rendering",
       summary: "Return renderer state and draw stats.",

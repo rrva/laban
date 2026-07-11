@@ -251,6 +251,40 @@ enum LabanCLI {
           source: source, startLine: startLine, endLine: endLine, maxLines: maxLines))
       return formatProxyResponse(status: status, body: body, json: json)
 
+    case .sessionScreenshot(let outputPath, let json):
+      let (status, body) = try dispatchSessionLeg(
+        agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
+        agentProxyURL: agentProxyURL,
+        cliCommand: "window.screenshot",
+        envelope: AgentProxyEnvelope(
+          method: "GET", path: "/debug/window-screenshot", body: nil))
+      guard (200..<300).contains(status) else {
+        return formatProxyResponse(status: status, body: body, json: json)
+      }
+      guard let data = body.data(using: .utf8),
+        let response = try? JSONDecoder().decode(WindowScreenshotResponse.self, from: data),
+        response.ok,
+        let pngData = Data(base64Encoded: response.pngBase64),
+        pngData.count == response.byteCount,
+        pngData.count <= 10 * 1024 * 1024,
+        [UInt8](pngData.prefix(8)) == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+      else {
+        throw LabanCLIError.invalidWindowScreenshot
+      }
+      let outputURL = try writeWindowScreenshot(pngData, outputPath: outputPath)
+      if json {
+        return formatJSONObject([
+          "ok": true,
+          "path": outputURL.path,
+          "width": response.width,
+          "height": response.height,
+          "byteCount": response.byteCount,
+          "includesDialogs": response.includesDialogs,
+        ])
+      }
+      return LabanCLIResult(exitCode: 0, stdout: outputURL.path, stderr: "")
+
     case .context(let json, let maxLines):
       switch try resolveBoundSessionDetail(
         agentProxyRequest: agentProxyRequest,
@@ -826,6 +860,42 @@ enum LabanCLI {
     return LabanCLIResult(exitCode: exitCode, stdout: bodyText, stderr: stderr)
   }
 
+  private static func writeWindowScreenshot(
+    _ data: Data,
+    outputPath: String?
+  ) throws -> URL {
+    let outputURL: URL
+    if let outputPath, !outputPath.isEmpty {
+      let expanded = NSString(string: outputPath).expandingTildeInPath
+      if expanded.hasPrefix("/") {
+        outputURL = URL(fileURLWithPath: expanded).standardizedFileURL
+      } else {
+        outputURL =
+          URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath
+          )
+          .appendingPathComponent(expanded)
+          .standardizedFileURL
+      }
+      try FileManager.default.createDirectory(
+        at: outputURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    } else {
+      outputURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("laban-window-\(UUID().uuidString).png")
+    }
+
+    if (try? FileManager.default.destinationOfSymbolicLink(atPath: outputURL.path)) != nil {
+      throw LabanCLIError.unsafeScreenshotOutput
+    }
+    try data.write(to: outputURL, options: [.atomic])
+    try FileManager.default.setAttributes(
+      [.posixPermissions: NSNumber(value: 0o600)],
+      ofItemAtPath: outputURL.path)
+    return outputURL
+  }
+
   private static func liveAgentProxyRequest(
     proxyURL: String,
     envelope: AgentProxyEnvelope
@@ -895,6 +965,8 @@ let usageText = """
       session current --json         Show the proxy-bound session identity (agent proxy or lazy attach).
       session get-text --screen|--scrollback [--start-line N] [--end-line N] [--max-lines N] [--json]
                                      Capture bounded plain text from the bound session (agent proxy or lazy attach).
+      session screenshot [--output PATH] [--json]
+                                     Capture the visible Laban window, including sheets and dialogs.
       propose --purpose TEXT -- COMMAND [ARG ...]
                                      Propose a command for user review via agent proxy or lazy attach.
       proposal list --json           List proposals for the bound session (requires LABAN_AGENT_CONTROL_URL).
@@ -937,6 +1009,8 @@ enum LabanCLIError: Error, Equatable {
   case unknownShell(String)
   case agentControlUnavailable
   case sessionProxyRequiresBroker
+  case invalidWindowScreenshot
+  case unsafeScreenshotOutput
 }
 
 extension LabanCLIError: CustomStringConvertible {
@@ -949,6 +1023,10 @@ extension LabanCLIError: CustomStringConvertible {
     case .sessionProxyRequiresBroker:
       return
         "session proxy requires broker mode; restart the agent with `laban agent run -- <agent>` for long-lived session control."
+    case .invalidWindowScreenshot:
+      return "window screenshot response is invalid"
+    case .unsafeScreenshotOutput:
+      return "refusing to replace a screenshot output symlink"
     }
   }
 }

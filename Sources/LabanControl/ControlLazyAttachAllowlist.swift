@@ -64,6 +64,13 @@ public enum ControlLazyAttachAllowlist {
       routeID: "GET /debug/text",
       persistable: true),
     Entry(
+      cliCommand: "window.screenshot",
+      method: "GET",
+      path: "/debug/window-screenshot",
+      intentID: "window.screenshot",
+      routeID: "GET /debug/window-screenshot",
+      persistable: true),
+    Entry(
       cliCommand: "session.detail",
       method: "GET",
       path: "/debug/sessions/<id>",
@@ -136,6 +143,6 @@ public enum ControlLazyAttachAllowlist {
   }
 
   public static func isAllowlisted(method: String, path: String, intentID: String) -> Bool {
-    ControlSessionObserveFamily.contains(intentID)
+    entry(method: method, path: path, intentID: intentID) != nil
   }
 }

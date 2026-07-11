@@ -238,6 +238,36 @@ laban context --json [--max-lines N]
   approval persists the whole-family record and the remaining legs auto-approve
   silently. This per-leg behavior is deliberate, not a batching gap.
 
+For a larger bounded history read, ask for scrollback rather than the visible
+screen. The visible grid only contains the current terminal rows:
+
+```sh
+laban session get-text --scrollback --max-lines 400 --json
+```
+
+### Full-window screenshots
+
+To debug Laban chrome, sheets, and dialogs around the terminal, capture the
+visible window containing the bound session:
+
+```sh
+laban session screenshot --output /tmp/laban-window.png --json
+```
+
+This is a separate `window.screenshot` permission, not part of the normal
+session-read family. The approval dialog states that the image includes the
+title bar, sidebar, sheets, and dialogs. It does not include hidden tabs,
+unrelated Laban windows, the desktop, or other applications. The caller's bound
+session must be the active visible tab; otherwise the command returns HTTP `409`
+with `sessionNotVisible` and writes no image.
+
+For a stable signed principal, Always Allow persists only the exact screenshot
+route and intent. This is useful for dialog debugging: after the exact grant is
+remembered, a later screenshot can capture an already-open dialog without
+putting a new approval sheet in front of it. Unsigned, generic, and helper
+principals remain Allow Once only. The CLI writes PNG files mode `0600`; when
+`--output` is omitted it chooses a unique per-user temporary path.
+
 ### Broker-only commands: waits
 
 The `wait` commands still require `LABAN_AGENT_CONTROL_URL` and never fall back
@@ -284,9 +314,10 @@ Content-Type: application/json
 }
 ```
 
-`cliCommand` is one of `session.state`, `session.scroll`, `command.propose`, or
-`session.request` for advanced use. `bodySHA256` is required when `body` is
-present and must match the SHA-256 of the `body` string.
+`cliCommand` includes `session.state`, `session.scroll`, `command.propose`,
+`terminal.getText`, `window.screenshot`, or `session.request` for advanced use.
+`bodySHA256` is required when `body` is present and must match the SHA-256 of
+the `body` string.
 
 Response shape:
 
@@ -319,7 +350,7 @@ HTTP status mapping:
 | `401` | App-observe token invalid or missing. |
 | `403` | Denied, not a descendant of a registered session, or route not allowed. |
 | `408` | Approval dialog timed out. |
-| `409` | Session or process identity changed during approval. |
+| `409` | Session/process identity changed during approval, or the bound session is not visible for a window screenshot. |
 | `429` | A pending request for this principal/intent is already in flight. |
 
 `session proxy` is not available through lazy attach; it requires the broker
@@ -360,6 +391,7 @@ has many more endpoints than the live app.
 | `/debug/find/state` | `GET` | omit `sessionID` | Current find state for the attached session. |
 | `/debug/shell-integration/state` | `GET` | omit `sessionID` | OSC 133 phase, last command exit code, and completed-command count. |
 | `/debug/text` | `GET` | `source=screen\|scrollback`, `startLine`, `endLine`, `maxLines` optional | Bounded plain-text lines from the visible screen or full scrollback for the attached session. |
+| `/debug/window-screenshot` | `GET` | none | Base64 PNG JSON for the visible Laban window, including attached sheets/dialogs; exact grant and active bound session required. |
 | `/debug/terminal-modes` | `GET` | none | DEC/private mode flags for the attached session. |
 | `/debug/scroll-indicator/state` | `GET` | `hover=true` optional | Scroll-indicator state for the attached session. |
 | `/debug/actions` | `POST` | `{"action":"scrollViewport","deltaRows":N}` | Move scrollback viewport. Positive/negative rows move according to app semantics. |
@@ -378,8 +410,10 @@ them:
 - `typeText`, `key`, mouse actions, paste/copy, clipboard mutation.
 - `newTab`, `closeTab`, `selectTab`, tab movement, window resize.
 - `find.start`, `find.step`, `find.stop` as live control actions.
-- Capture, replay, fixture, render-trace, pixel-probe, and screenshot artifact
-  writes unless running the headless/debug fixture surface.
+- Capture, replay, fixture, render-trace, pixel-probe, and legacy renderer-only
+  screenshot artifact writes unless running the headless/debug fixture surface.
+  The exact-grant `/debug/window-screenshot` route is the sole live full-window
+  screenshot exception.
 
 ## Command proposals
 
