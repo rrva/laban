@@ -283,9 +283,123 @@ still works with no dialog for CI.
 
 ## Review Gate
 
-- [ ] 0. Fresh security reviewer records "threat model ACCEPTED" (or findings),
+- [x] 0. Fresh security reviewer records "threat model ACCEPTED" (or findings),
   explicitly confirming locks (a)-(f) and the two residuals. Implementation
   gated on this.
+
+  threat model ACCEPTED 2026-07-11 (commit ad0a8251, fresh-state security
+  review). Verified against the actual source, not the plan text alone:
+
+  - (a) CONFIRMED. Granted capabilities are server-derived from the catalog
+    (`capabilities = [descriptor.requiredCapability]`,
+    `LabanControlServerLazyAttach.swift:177`); every family intent in
+    `IntentCatalog.swift` is `gui:true` with `requiredCapability` in
+    {observe, observeSensitive, propose} and default `sideEffects`
+    (`ptyInput == false`); every `.input`/`.clipboard`/tab-lifecycle intent
+    (typeText, sendKey, paste, clipboard.read, tab.select) is headless-only
+    and outside the family, and non-family requests are 403
+    `lazyRouteNotAllowed` before any UI.
+  - (b) CONFIRMED. C12 is enforced independently of the constraint mode:
+    `LabanControlPolicy.authorize` denies any `targetSession` differing from
+    the approved session for a `.session` scope (lines 89-91), and
+    `resolveTargetSession` reads exactly the addressing surfaces the family
+    routes use (path `<id>`, sessionID/sessionId query and body keys). The
+    projection layer additionally pins `scopedSessionID` via
+    `legacyQueryInput` with session-observe redaction, so a family constraint
+    cannot widen scope even if the intent-set check were wrong.
+  - (c) CONFIRMED. `ControlAttachPrincipal.isPersistable` requires
+    non-generic, non-bundled-helper, non-ad-hoc/unsigned, and a non-empty
+    designated requirement; the server downgrades a delegate
+    `.alwaysAllowSignedIdentity` for a non-persistable principal to allowOnce
+    (`LabanControlServerLazyAttach.swift:348`) independently of the UI, so
+    Allow-Once-only holds even against a malicious delegate.
+  - (d) CONFIRMED. `ControlAttachApprovalStore.findMatching` requires
+    record.sessionID, shellIdentityFingerprint, and
+    principalIdentityFingerprint to match AND
+    `validatesLivePID(pid, startTime, against: signingRequirement)` on the
+    live process; any mismatch falls through to a fresh prompt. Pre-dispatch
+    `revalidateLazyAttachContext` re-checks peer identity, ancestry, session,
+    and principal fingerprint (409 on change).
+  - (e) CONFIRMED. Chain principal selection skips bundled helpers
+    (`ControlAttachProcessChain.principal` filters `isBundledHelper`),
+    `isPersistable` excludes them independently, and the persisted record is
+    keyed to `stablePrincipalFingerprint` (the designated requirement) of the
+    chain-derived principal, never the laban/laban-agent peer.
+  - (f) CONFIRMED unchanged by this design. Deny and timeout arm
+    `lastLazyDenyByPrincipalFingerprint` (2s cooldown), pending requests are
+    deduped per (peerPID, intentID) and capped at 8 globally with 429, and
+    the design touches none of these paths. A family grant reduces, not
+    increases, prompt volume.
+
+  Residuals: both honestly stated. (1) Descendant sharing is real and
+  slightly broader than the wording suggests: principal selection picks the
+  outermost non-generic non-helper process (nearest the shell), so any
+  process the approved agent spawns, including a different signed app, is
+  attributed to the approved principal and auto-approved for the grant
+  lifetime. This matches the stated "Laban cannot distinguish the agent from
+  code the agent ran" boundary. (2) HMAC-as-tamper-evidence matches the
+  shipped honesty note: the store filters on `signer.isValid` but the key is
+  same-user-readable; authority lives in the live per-request checks
+  (findMatching + validatesLivePID + revalidation), and same-user is the
+  documented trust floor.
+
+  Core question: accepted. The dialog is informed (server-derived signed
+  principal, exact session suffix, operation), revocable, per-principal and
+  per-session, with persistence limited to stable signed principals. That is
+  a stronger consent artifact than the broker path, which grants the entire
+  session-observe surface silently at launch with no per-operation
+  visibility. The I4 reversal is sound provided the new ceiling test lands as
+  specified in Milestone 4: the ceiling that must never move is actuation and
+  cross-session, and both are enforced by mechanisms independent of the
+  family set (capability derivation from the catalog, C12 scope check,
+  headless-only availability of actuation intents). "Read+propose" hides
+  nothing: `command.propose` has `ptyInput == false`, writes no PTY bytes,
+  and every proposal passes through its own user-review dialog before any
+  effect. Making the family lazy-reachable widens no non-content surface:
+  `session.detail` targets one session and C12 blocks a third session's id;
+  `app.state` under an approved-session tier keeps session-observe redaction
+  via `legacyQueryInput` and the scoped projections in
+  `ControlStateProjections` (filteredTabs/resolvedDefaultSessionID pin to the
+  approved session). Family-scoping the constraint does not open a
+  replay/substitution gap: sessionID is bound in the tier itself, checked
+  before the constraint, and the mint sites revalidate ancestry and principal
+  immediately before dispatch, so an approved get-text grant cannot reach a
+  different session's get-text.
+
+  Non-blocking NOTEs for the implementing agent:
+
+  - NOTE 1 (design inconsistency, resolve in Milestone 1):
+    `terminal.scrollViewport` (`.navigate`) is in today's 3-entry allowlist,
+    but the proposed family excludes it and Milestone 1 says granted
+    capabilities are exactly {observe, observeSensitive, propose}. As
+    written, replacing the allowlist makes `laban session scroll` fail 403
+    `lazyRouteNotAllowed`, a shipped-behavior regression Milestone 3
+    ("session state/scroll/propose already do this") does not intend. Either
+    keep scrollViewport as an own-session allowlist entry (I7 already caps
+    gui navigate to exactly this intent) or explicitly accept and document
+    the regression. The phrase "never
+    .input/.clipboard/.navigate-of-another-session" vs "exactly {.observe,
+    .observeSensitive, .propose}" is internally inconsistent and must be
+    reconciled in the rewritten I4.
+  - NOTE 2 (dialog wording): the Milestone 2 Data row names screen text,
+    scrollback, and selection but not command proposals. Proposals leak no
+    content and have their own review gate, but the dialog should name the
+    full grant, for example "may suggest commands for your review".
+  - NOTE 3 (sensitivity ordering trap, fails closed): `app.state` is
+    `.sensitivePrivate`, which ranks ABOVE `.scrollback` in the
+    `compareSensitivity` ordering `findMatching` uses. The plan's "low tier
+    (metadata)" framing for app.state must not become the stored
+    `maxDataSensitivity`: a family record storing `scrollback` as max would
+    reject app.state auto-approval. Store the ordering max of the family
+    (sensitivePrivate) or rework the comparison; keep the tier language for
+    dialog wording only.
+  - NOTE 4 (imprecise equivalence claim): "exactly the set the broker
+    session-observe credential already grants" overstates it. sessionObserve
+    also grants `.navigate` (scrollViewport), commandProposal.list/get/cancel,
+    app.accessibility, terminal.modes, and session.list (redacted). The
+    proposed family is strictly narrower, which is safer, but the Definitions
+    wording should be corrected so the rewritten I4 targets an unambiguous
+    set.
 - [ ] `rg -n "getText|session.detail|selection.read" Sources/LabanControl/ControlLazyAttachAllowlist.swift`
   or its successor shows the family is reachable, and a policy test proves a
   family grant authorizes every family intent for the session.
@@ -301,4 +415,6 @@ still works with no dialog for CI.
 - [ ] `docs/process/control-plane-threat-model.md` amended in the same commits;
   `swift run LabanControlGen --check` + `./scripts/check` green.
 
-Review status: NOT REVIEWED (design complete 2026-07-11; Milestone 0 pending).
+Review status: Milestone 0 threat model ACCEPTED (2026-07-11, commit ad0a8251,
+fresh-state security review; 4 non-blocking NOTEs recorded under gate item 0).
+Implementation gate items remain unchecked pending Milestones 1-4.
