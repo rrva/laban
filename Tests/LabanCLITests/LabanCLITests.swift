@@ -534,15 +534,41 @@ final class LabanCLITests: XCTestCase {
     XCTAssertTrue(result.stderr.isEmpty)
   }
 
-  func testSessionCurrentMissingProxyEnvExitsThreeWithoutLazyAttach() {
+  func testSessionCurrentFallsBackToLazyAttach() {
+    var seenCliCommands: [String] = []
     let result = LabanCLI.run(
       command: .sessionCurrent(json: true),
       agentProxyRequest: { _, _ in fatalError("should not be called") },
-      lazyAttachRequest: { _, _, _, _, _ in fatalError("must not fall back to lazy attach") })
+      lazyAttachRequest: { cliCommand, method, path, _, _ in
+        seenCliCommands.append(cliCommand)
+        switch cliCommand {
+        case "shellIntegration.state":
+          XCTAssertEqual(method, "GET")
+          XCTAssertEqual(path, "/debug/shell-integration/state")
+          return (200, "{\"sessionId\":\"session-a\",\"phase\":\"atPrompt\",\"lastExitCode\":0}")
+        case "session.detail":
+          XCTAssertEqual(method, "GET")
+          XCTAssertEqual(path, "/debug/sessions/session-a")
+          return (200, "{\"id\":\"session-a\",\"tabId\":\"tab-a\"}")
+        default:
+          XCTFail("unexpected cliCommand \(cliCommand)")
+          return (500, "{}")
+        }
+      })
 
-    XCTAssertEqual(result.exitCode, 3)
-    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
-    XCTAssertFalse(result.stdout.contains(sentinel))
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(seenCliCommands, ["shellIntegration.state", "session.detail"])
+    XCTAssertTrue(result.stdout.contains("\"id\":\"session-a\""))
+    XCTAssertTrue(result.stdout.contains("\"tabId\":\"tab-a\""))
+  }
+
+  func testSessionCurrentLazyDenialMapsToExitCode5() {
+    let result = LabanCLI.run(
+      command: .sessionCurrent(json: true),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, _, _, _ in throw LazyAttachClientError.denied("user denied") })
+
+    XCTAssertEqual(result.exitCode, 5)
   }
 
   func testSessionGetTextSendsQueryParametersAndReturnsBody() {
@@ -562,16 +588,51 @@ final class LabanCLITests: XCTestCase {
     XCTAssertTrue(result.stdout.contains("\"lines\":[\"a\",\"b\"]"))
   }
 
-  func testSessionGetTextMissingProxyEnvExitsThreeWithoutLazyAttach() {
+  func testSessionGetTextFallsBackToLazyAttach() {
+    var seenCliCommand: String?
     let result = LabanCLI.run(
       command: .sessionGetText(
         source: "screen", startLine: nil, endLine: nil, maxLines: nil, json: true),
       agentProxyRequest: { _, _ in fatalError("should not be called") },
-      lazyAttachRequest: { _, _, _, _, _ in fatalError("must not fall back to lazy attach") })
+      lazyAttachRequest: { cliCommand, _, _, _, _ in
+        seenCliCommand = cliCommand
+        return (
+          200,
+          "{\"ok\":true,\"sessionID\":\"s1\",\"approval\":\"once\",\"downstreamStatus\":200,\"downstreamBody\":\"{\\\"ok\\\":true}\"}"
+        )
+      })
 
-    XCTAssertEqual(result.exitCode, 3)
-    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(seenCliCommand, "terminal.getText")
     XCTAssertFalse(result.stdout.contains(sentinel))
+  }
+
+  func testSessionGetTextLazyDenialMapsToExitCode5() {
+    let result = LabanCLI.run(
+      command: .sessionGetText(
+        source: "screen", startLine: nil, endLine: nil, maxLines: nil, json: true),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, _, _, _ in throw LazyAttachClientError.denied("user denied") })
+
+    XCTAssertEqual(result.exitCode, 5)
+  }
+
+  func testSessionGetTextLazyLegSendsCleanPathAndQueryDict() {
+    var capturedPath: String?
+    var capturedQuery: [String: String]?
+    let result = LabanCLI.run(
+      command: .sessionGetText(
+        source: "scrollback", startLine: nil, endLine: nil, maxLines: 40, json: true),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, path, query, _ in
+        capturedPath = path
+        capturedQuery = query
+        return (200, "{\"ok\":true}")
+      })
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(capturedPath, "/debug/text")
+    XCTAssertEqual(capturedQuery, ["source": "scrollback", "maxLines": "40"])
   }
 
   func testSessionGetTextNon2xxExitsFive() {
@@ -618,15 +679,41 @@ final class LabanCLITests: XCTestCase {
     XCTAssertFalse(result.stderr.contains(sentinel))
   }
 
-  func testContextMissingProxyEnvExitsThreeWithoutLazyAttach() {
+  func testContextFallsBackToLazyAttach() {
+    var seenCliCommands: [String] = []
     let result = LabanCLI.run(
       command: .context(json: true, maxLines: 40),
       agentProxyRequest: { _, _ in fatalError("should not be called") },
-      lazyAttachRequest: { _, _, _, _, _ in fatalError("must not fall back to lazy attach") })
+      lazyAttachRequest: { cliCommand, _, _, _, _ in
+        seenCliCommands.append(cliCommand)
+        switch cliCommand {
+        case "shellIntegration.state":
+          return (200, "{\"sessionId\":\"session-a\",\"phase\":\"atPrompt\",\"lastExitCode\":0}")
+        case "session.detail":
+          return (200, "{\"id\":\"session-a\",\"tabId\":\"tab-a\"}")
+        case "terminal.getText":
+          return (200, "{\"ok\":true,\"lines\":[\"hello\",\"world\"]}")
+        default:
+          XCTFail("unexpected cliCommand \(cliCommand)")
+          return (500, "{}")
+        }
+      })
 
-    XCTAssertEqual(result.exitCode, 3)
-    XCTAssertTrue(result.stderr.contains("LABAN_AGENT_CONTROL_URL"))
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(
+      seenCliCommands, ["shellIntegration.state", "session.detail", "terminal.getText"])
+    XCTAssertTrue(result.stdout.contains("\"sessionId\":\"session-a\""))
+    XCTAssertTrue(result.stdout.contains("\"hello\""))
     XCTAssertFalse(result.stdout.contains(sentinel))
+  }
+
+  func testContextLazyDenialMapsToExitCode5() {
+    let result = LabanCLI.run(
+      command: .context(json: true, maxLines: 40),
+      agentProxyRequest: { _, _ in fatalError("should not be called") },
+      lazyAttachRequest: { _, _, _, _, _ in throw LazyAttachClientError.denied("user denied") })
+
+    XCTAssertEqual(result.exitCode, 5)
   }
 
   func testContextPropagatesNon2xxFromGetTextLeg() {

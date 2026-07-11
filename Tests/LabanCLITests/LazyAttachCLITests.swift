@@ -116,6 +116,56 @@ final class LazyAttachCLITests: XCTestCase {
     XCTAssertFalse(result.stderr.contains("bootstrap-secret"))
   }
 
+  // MARK: - splitPathAndQuery
+
+  func testSplitPathAndQueryWithNoQuery() {
+    let (path, query) = LabanCLI.splitPathAndQuery("/debug/text")
+    XCTAssertEqual(path, "/debug/text")
+    XCTAssertEqual(query, [:])
+  }
+
+  func testSplitPathAndQueryWithSinglePair() {
+    let (path, query) = LabanCLI.splitPathAndQuery("/debug/text?source=screen")
+    XCTAssertEqual(path, "/debug/text")
+    XCTAssertEqual(query, ["source": "screen"])
+  }
+
+  func testSplitPathAndQueryWithMultiplePairs() {
+    let (path, query) = LabanCLI.splitPathAndQuery(
+      "/debug/text?source=scrollback&startLine=0&endLine=9&maxLines=50")
+    XCTAssertEqual(path, "/debug/text")
+    XCTAssertEqual(
+      query,
+      ["source": "scrollback", "startLine": "0", "endLine": "9", "maxLines": "50"])
+  }
+
+  func testSplitPathAndQueryWithPairMissingEquals() {
+    // Total: a malformed pair with no "=" maps to an empty-string value
+    // rather than crashing or dropping the key.
+    let (path, query) = LabanCLI.splitPathAndQuery("/debug/text?source=screen&malformed")
+    XCTAssertEqual(path, "/debug/text")
+    XCTAssertEqual(query, ["source": "screen", "malformed": ""])
+  }
+
+  func testSessionGetTextLazyLegSplitsQueryFromPath() {
+    var capturedPath: String?
+    var capturedQuery: [String: String]?
+    let result = LabanCLI.run(
+      command: .sessionGetText(
+        source: "scrollback", startLine: 0, endLine: 9, maxLines: 50, json: true),
+      lazyAttachRequest: { _, _, path, query, _ in
+        capturedPath = path
+        capturedQuery = query
+        return (200, "{\"ok\":true}")
+      })
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(capturedPath, "/debug/text")
+    XCTAssertEqual(
+      capturedQuery,
+      ["source": "scrollback", "startLine": "0", "endLine": "9", "maxLines": "50"])
+  }
+
   func testNoTokenInStderr() {
     let lazyAttachRequest:
       (String, String, String, [String: String], String?) throws -> (Int, String) = {

@@ -1,4 +1,5 @@
 import Foundation
+import LabanControl
 import LabanCore
 import XCTest
 
@@ -47,14 +48,21 @@ final class CLICatalogDriftTests: XCTestCase {
     }
   }
 
-  func testTerminalGetTextRemainsBrokerOnlyAndOutOfLazyAttachAllowlist() {
-    // terminal.getText is dataSensitivity .scrollback; the Milestone 2c
-    // decision log requires it stay broker-path only, never reachable
-    // through the one-shot lazy-attach approval path. This mirrors invariant
-    // I4 in ControlPlaneInvariantTests.swift from the CLI side, so a future
-    // CLI change that starts routing session get-text through
-    // performSessionRequest (the dual-path helper with lazy-attach fallback)
-    // fails here instead of silently loosening the sensitivity boundary.
+  func testTerminalGetTextIsInTheDialogFirstFamilyAndStaysScrollbackSensitivity() {
+    // Reversal of the old "stays broker-only" contract, deliberately: per
+    // execplans/active/dialog-first-session-observe.md (Milestone 1, the
+    // I4 rewrite in Milestone 4), terminal.getText is now a lazy-attach
+    // family member so `session get-text` can reach the approval dialog
+    // without a broker. What must never move is the sensitivity
+    // classification and family membership itself: a regression that drops
+    // terminal.getText from the family, or reclassifies its data
+    // sensitivity, would silently widen or narrow the dialog-first surface
+    // without anyone noticing. This test is the CLI-side half of that
+    // ceiling check (the server-side half is
+    // ControlPlaneInvariantTests.swift's rewritten I4).
+    XCTAssertTrue(
+      ControlSessionObserveFamily.contains("terminal.getText"),
+      "terminal.getText must stay a member of the own-session read family")
     guard let descriptor = IntentCatalog.all.descriptor(id: "terminal.getText") else {
       XCTFail("terminal.getText intent is missing from IntentCatalog.all")
       return

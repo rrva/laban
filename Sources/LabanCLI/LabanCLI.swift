@@ -231,6 +231,7 @@ enum LabanCLI {
     case .sessionCurrent(let json):
       switch try resolveBoundSessionDetail(
         agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
         agentProxyURL: agentProxyURL,
         json: json)
       {
@@ -241,25 +242,31 @@ enum LabanCLI {
       }
 
     case .sessionGetText(let source, let startLine, let endLine, let maxLines, let json):
-      return try performAgentProxyRequest(
+      let (status, body) = try dispatchSessionLeg(
         agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
         agentProxyURL: agentProxyURL,
+        cliCommand: "terminal.getText",
         envelope: AgentProxyClient.getTextRequest(
-          source: source, startLine: startLine, endLine: endLine, maxLines: maxLines),
-        json: json)
+          source: source, startLine: startLine, endLine: endLine, maxLines: maxLines))
+      return formatProxyResponse(status: status, body: body, json: json)
 
     case .context(let json, let maxLines):
       switch try resolveBoundSessionDetail(
         agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
         agentProxyURL: agentProxyURL,
         json: json)
       {
       case .failure(let result):
         return result
       case .success(let resolved):
-        let (textStatus, textBody) = try agentProxyRequest(
-          resolved.proxyURL,
-          AgentProxyClient.getTextRequest(source: "scrollback", maxLines: maxLines))
+        let (textStatus, textBody) = try dispatchSessionLeg(
+          agentProxyRequest: agentProxyRequest,
+          lazyAttachRequest: lazyAttachRequest,
+          agentProxyURL: agentProxyURL,
+          cliCommand: "terminal.getText",
+          envelope: AgentProxyClient.getTextRequest(source: "scrollback", maxLines: maxLines))
         guard (200..<300).contains(textStatus) else {
           return formatProxyResponse(status: textStatus, body: textBody, json: json)
         }
@@ -518,9 +525,65 @@ enum LabanCLI {
     return formatProxyResponse(status: status, body: body, json: json)
   }
 
+  /// Dispatches one session-observe leg through the broker when
+  /// `LABAN_AGENT_CONTROL_URL` is present, otherwise through lazy attach. This
+  /// is the single per-leg dispatch point `session get-text`, `session
+  /// current`, and `context` share, so the broker branch always sends
+  /// `envelope` unchanged (byte-identical to the pre-Milestone-3 broker-only
+  /// path) and the lazy branch is chosen uniformly rather than reimplemented
+  /// per call site. `cliCommand` must name a `ControlLazyAttachAllowlist`
+  /// (own-session read family) entry; the server enforces membership
+  /// independently, this is just the client-side label.
+  private static func dispatchSessionLeg(
+    agentProxyRequest: AgentProxyRequest,
+    lazyAttachRequest: LazyAttachRequestHandler,
+    agentProxyURL: String?,
+    cliCommand: String,
+    envelope: AgentProxyEnvelope
+  ) throws -> (status: Int, body: String) {
+    if let proxyURL = agentProxyURLFromEnvironment(override: agentProxyURL) {
+      return try agentProxyRequest(proxyURL, envelope)
+    }
+    let (legPath, legQuery) = splitPathAndQuery(envelope.path)
+    return try lazyAttachRequest(
+      cliCommand, envelope.method ?? "GET", legPath, legQuery, envelope.body)
+  }
+
+  /// Splits a broker-style path (query baked in, e.g.
+  /// `"/debug/text?source=scrollback&maxLines=40"`) into a clean path and a
+  /// query dict, because `ControlRouteCatalog.match` splits on `"/"` and
+  /// requires an exact segment match: a `"?"` left in the lazy leg's path
+  /// would never match a route. Not `private`: unit-tested directly from
+  /// `LazyAttachCLITests` (deviation from the brief, which specified
+  /// `private`; kept internal, matching the existing `formattedOutput`
+  /// precedent, so tests can call it without a same-file restriction).
+  /// Splits on the first `"?"`; pairs split on `"&"` then the first `"="`; a
+  /// pair with no `"="` maps to an empty-string value. Total: never throws or
+  /// traps on malformed input.
+  static func splitPathAndQuery(_ fullPath: String) -> (String, [String: String]) {
+    guard let questionIndex = fullPath.firstIndex(of: "?") else {
+      return (fullPath, [:])
+    }
+    let path = String(fullPath[fullPath.startIndex..<questionIndex])
+    let queryString = fullPath[fullPath.index(after: questionIndex)...]
+    guard !queryString.isEmpty else {
+      return (path, [:])
+    }
+    var query: [String: String] = [:]
+    for pair in queryString.split(separator: "&", omittingEmptySubsequences: true) {
+      if let equalsIndex = pair.firstIndex(of: "=") {
+        let key = String(pair[pair.startIndex..<equalsIndex])
+        let value = String(pair[pair.index(after: equalsIndex)...])
+        query[key] = value
+      } else {
+        query[String(pair)] = ""
+      }
+    }
+    return (path, query)
+  }
+
   /// Resolved identity for `session current` and `context`.
   private struct BoundSessionDetail {
-    var proxyURL: String
     var sessionId: String
     var phase: String
     var lastExitCode: Int?
@@ -535,19 +598,28 @@ enum LabanCLI {
   /// Resolves the bound session's identity for `session current` and
   /// `context`: `shellIntegration.state` (no `sessionId` query) reports the
   /// caller's own scoped session, then `session.detail` fetches its full
-  /// metadata. Broker-only; throws `.agentControlUnavailable` (exit 3) when
-  /// `LABAN_AGENT_CONTROL_URL` is unset, and returns a formatted
+  /// metadata. Each leg dispatches through `dispatchSessionLeg`: broker when
+  /// `LABAN_AGENT_CONTROL_URL` is set, otherwise lazy attach (Milestone 3;
+  /// this used to require the broker and throw `.agentControlUnavailable`
+  /// with no session set). With no broker, each leg is an independent lazy
+  /// dispatch: under "Allow Once" the user sees one dialog per leg, under
+  /// "Always Allow" the first leg persists the family record and the second
+  /// leg auto-approves silently. This is the accepted per-leg behavior, not a
+  /// bug to "fix" with batching or a pre-warmed grant. Returns a formatted
   /// `LabanCLIResult` failure for a non-2xx or malformed leg so callers do not
   /// need their own status-code plumbing.
   private static func resolveBoundSessionDetail(
     agentProxyRequest: AgentProxyRequest,
+    lazyAttachRequest: LazyAttachRequestHandler,
     agentProxyURL: String?,
     json: Bool
   ) throws -> BoundSessionDetailOutcome {
-    let proxyURL = try requireAgentControlURL(override: agentProxyURL)
-
-    let (shellStatus, shellBody) = try agentProxyRequest(
-      proxyURL, AgentProxyClient.shellIntegrationStateRequest())
+    let (shellStatus, shellBody) = try dispatchSessionLeg(
+      agentProxyRequest: agentProxyRequest,
+      lazyAttachRequest: lazyAttachRequest,
+      agentProxyURL: agentProxyURL,
+      cliCommand: "shellIntegration.state",
+      envelope: AgentProxyClient.shellIntegrationStateRequest())
     guard (200..<300).contains(shellStatus) else {
       return .failure(formatProxyResponse(status: shellStatus, body: shellBody, json: json))
     }
@@ -561,8 +633,12 @@ enum LabanCLI {
     let phase = shellObject["phase"] as? String ?? "unknown"
     let lastExitCode = shellObject["lastExitCode"] as? Int
 
-    let (detailStatus, detailBody) = try agentProxyRequest(
-      proxyURL, AgentProxyClient.sessionDetailRequest(sessionID: sessionId))
+    let (detailStatus, detailBody) = try dispatchSessionLeg(
+      agentProxyRequest: agentProxyRequest,
+      lazyAttachRequest: lazyAttachRequest,
+      agentProxyURL: agentProxyURL,
+      cliCommand: "session.detail",
+      envelope: AgentProxyClient.sessionDetailRequest(sessionID: sessionId))
     guard (200..<300).contains(detailStatus) else {
       return .failure(formatProxyResponse(status: detailStatus, body: detailBody, json: json))
     }
@@ -573,7 +649,6 @@ enum LabanCLI {
 
     return .success(
       BoundSessionDetail(
-        proxyURL: proxyURL,
         sessionId: sessionId,
         phase: phase,
         lastExitCode: lastExitCode,
@@ -806,16 +881,20 @@ let usageText = """
     Agent launch:
       agent run -- COMMAND [ARG ...] Process-replace into the bundled laban-agent
                                      broker and run COMMAND with LABAN_AGENT_CONTROL_URL.
+                                     Optional: an approval dialog now covers reads without
+                                     it, so this is a dialogless path for CI and scripts,
+                                     not a prerequisite for interactive use.
 
     Session-scoped commands:
       session state --json           GET /debug/state via agent proxy or lazy attach.
       session request METHOD PATH [--body JSON] [--json]
                                      Send a raw request via agent proxy or lazy attach.
       session scroll --rows N --json Scroll the bound session viewport via agent proxy or lazy attach.
-      session proxy                  Forward JSONL stdin/stdout through the agent proxy (requires LABAN_AGENT_CONTROL_URL).
-      session current --json         Show the proxy-bound session identity (requires LABAN_AGENT_CONTROL_URL).
+      session proxy                  Forward JSONL stdin/stdout through the agent proxy (requires LABAN_AGENT_CONTROL_URL;
+                                     an optional CI/no-dialog path, no lazy-attach equivalent).
+      session current --json         Show the proxy-bound session identity (agent proxy or lazy attach).
       session get-text --screen|--scrollback [--start-line N] [--end-line N] [--max-lines N] [--json]
-                                     Capture bounded plain text from the bound session (requires LABAN_AGENT_CONTROL_URL).
+                                     Capture bounded plain text from the bound session (agent proxy or lazy attach).
       propose --purpose TEXT -- COMMAND [ARG ...]
                                      Propose a command for user review via agent proxy or lazy attach.
       proposal list --json           List proposals for the bound session (requires LABAN_AGENT_CONTROL_URL).
@@ -826,7 +905,7 @@ let usageText = """
 
     Agent context:
       context --json [--max-lines N] Print bound session identity, shell phase, and a
-                                     recent-scrollback tail for prompt context (requires LABAN_AGENT_CONTROL_URL).
+                                     recent-scrollback tail for prompt context (agent proxy or lazy attach).
 
     Waits:
       wait prompt [--timeout SECONDS]
@@ -842,9 +921,12 @@ let usageText = """
     Lazy attach fallback:
       When LABAN_AGENT_CONTROL_URL is unset, session-scoped commands discover
       control.json and request a live, one-time user approval for the requested
-      action. The agent proxy remains available when LABAN_AGENT_CONTROL_URL is set.
-      session current, session get-text, context, and wait are broker-only: they
-      require LABAN_AGENT_CONTROL_URL and do not fall back to lazy attach.
+      action. The agent proxy remains available when LABAN_AGENT_CONTROL_URL is set,
+      and is now an optional CI/no-dialog path for reads rather than a prerequisite.
+      session proxy, agent run, and wait are still broker-only: they require
+      LABAN_AGENT_CONTROL_URL and do not fall back to lazy attach. session current,
+      session get-text, and context now fall back to lazy attach, like session
+      state/scroll/propose.
 
     Global options:
       --json                         Write machine-readable JSON to stdout.
