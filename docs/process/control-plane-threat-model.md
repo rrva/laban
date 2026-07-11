@@ -69,16 +69,49 @@ body hash, resolved route, or resolved intent differs from the approved
 constraint, and its capability set never exceeds what session-observe grants.
 The user approves one operation; the authority is that operation. Test:
 `testApprovedSessionConstraintBindsEveryRequestField`,
-`testApprovedSessionCapabilitiesAreSubsetOfSessionObserve`.
+`testApprovedSessionCapabilitiesAreSubsetOfSessionObserve`. The request-exact
+`.approvedSession` tier is retained for one-shot callers; the dialog-first path
+mints the deliberately broader `.approvedSessionFamily` tier instead (I4a),
+which is scoped to the own-session read family rather than one request, and is
+still a strict subset of session-observe (review NOTE 4).
 
-**I4: The lazy allowlist stays low-sensitivity.** Every entry in
-`ControlLazyAttachAllowlist` resolves to a catalog descriptor with
-`sideEffects.ptyInput == false` and a `dataSensitivity` outside
-`{scrollback, keystrokes, clipboard, screenshot, trace}`. Full terminal text
-capture (`terminal.getText` and successors) is broker-path only; extending
-one-click approval to scrollback text requires its own security review and a
-deliberate edit to this invariant's test. Test:
-`testLazyAllowlistExcludesHighSensitivityIntents`.
+**I4: The dialog-first family stays within the read/observe ceiling.** This
+invariant was deliberately reversed by the dialog-first design
+(`execplans/active/dialog-first-session-observe.md`, security-ACCEPTED
+2026-07-11): a one-click approval now MAY reach `.observeSensitive` terminal
+content (screen text, scrollback, selection), because the dialog is accepted as
+strong enough consent for own-session content. What replaces the old
+low-sensitivity ceiling is a read/observe ceiling that must never move: every
+member of the own-session read family (`ControlSessionObserveFamily`) resolves
+to a catalog descriptor with `sideEffects.ptyInput == false`, `gui == true`, and
+a `requiredCapability` in `{observe, observeSensitive, navigate, propose}`,
+never `.input`, `.clipboard`, or `.fixture`. The family's `.navigate` reach is
+exactly `{terminal.scrollViewport}` (own-session view scroll, review NOTE 1),
+matching I7. The boundaries that stay locked, cross-session and actuation, are
+enforced independently of the family set (C12 scope check, capability derivation
+from the catalog), not by this sensitivity list. A change that drops a family
+member, adds one outside the ceiling, or moves the `.navigate` set fails the
+test. Tests: `testDialogFirstFamilyStaysWithinTheObserveCeiling`,
+`testDialogFirstFamilyNavigateIsExactlyScrollViewport` (server side);
+`testTerminalGetTextIsInTheDialogFirstFamilyAndStaysScrollbackSensitivity`
+(CLI side).
+
+**I4a (positive family invariant): a family grant authorizes exactly the
+family.** A `.approvedSessionFamily` grant for a session authorizes every
+own-session read-family intent for that session with no request-exact binding,
+and denies any non-family intent, any cross-session target, and any
+`.input`/`.clipboard`/`.fixture` intent even for the approved principal and
+session. One approval persists as one family record (full family intent set,
+`{observe, observeSensitive, navigate, propose}` capabilities, and the
+ordering-maximum `dataSensitivity` across the family, `sensitivePrivate`, so a
+later scrollback read is not rejected by a lower stored ceiling), keyed to the
+signed principal and session. Tests:
+`testFamilyGrantAuthorizesEveryFamilyIntentForItsSession`,
+`testFamilyGrantDeniesEveryFamilyIntentForAnotherSession`,
+`testFamilyGrantDeniesActuationClipboardAndFixtureIntents`
+(`DialogFirstObserveServerTests`);
+`testFamilyRecordAutoApprovesEveryFamilyIntentForSameSessionAndPrincipal` and
+the mismatched-session/principal/signing denials (`DialogFirstFamilyRecordTests`).
 
 **I5: A transport helper is never the trusted principal.** Principal
 derivation over any process chain never selects the bundled `laban` or
@@ -129,15 +162,24 @@ does defend against, deliberately, is ambient and accidental authority:
 web pages (no TCP listener), other users (peer uid), environment inheritance
 into arbitrary child processes (one-shot bootstrap, no bearer in env),
 cross-session reads (scope), quiet actuation (no live `.input` grant), and
-quiet escalation of a one-click approval (request-bound constraint,
-allowlist sensitivity ceiling).
+quiet escalation of a one-click approval. That last defense changed shape with
+the dialog-first design: an approval no longer binds to one exact request, it
+grants the whole own-session read family for the session (I4a). The escalation
+that stays blocked is escalation *out of the family*, to actuation, clipboard,
+fixture, or another session, none of which any dialog can grant. The dialog
+states the family's content-inclusive scope and its exclusions plainly so the
+consent matches the grant.
 
 ## Rules for changes
 
-- Adding a route, intent, capability, token tier, or allowlist entry: run
-  `swift test --filter ControlPlaneInvariantTests` and keep it green. If a
-  change requires editing an invariant test, the edit is a security decision;
-  record it in the relevant ExecPlan Decision Log and name the reviewer.
+- Adding a route, intent, capability, token tier, or a member to the
+  own-session read family (`ControlSessionObserveFamily`): run
+  `swift test --filter ControlPlaneInvariantTests` and keep it green. Adding a
+  family member is a security decision (it widens what one dialog approval
+  grants); it must resolve to a descriptor inside the I4 read/observe ceiling,
+  and the decision is recorded in the relevant ExecPlan Decision Log with a
+  named reviewer. If a change requires editing an invariant test, that edit is
+  itself a security decision under the same rule.
 - Adding a fourth trust derivation (for example a cross-session observe
   grant): add its invariants here and to the suite in the same change that
   lands the mechanism.

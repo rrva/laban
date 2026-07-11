@@ -204,19 +204,20 @@ running in a registered session without having been started through `laban
 agent run`. It is not a replacement for the broker path: prefer `laban agent
 run` whenever you are the one starting the agent.
 
-### Broker-only commands: identity, text capture, context, and waits
+### Session reads: identity, text capture, context
 
-These commands require `LABAN_AGENT_CONTROL_URL` and never fall back to lazy
-attach, because they read data more sensitive than the lazy-attach allowlist
-grants with a one-shot approval:
+These commands read the bound session and, since the dialog-first design
+(`execplans/active/dialog-first-session-observe.md`), fall back to lazy attach
+when `LABAN_AGENT_CONTROL_URL` is unset, exactly like `session
+state`/`scroll`/`propose`. The approval dialog is accepted as strong enough
+consent to release own-session content; the broker path stays available and
+byte-identical when the env var is set, as an optional CI/no-dialog route:
 
 ```sh
 laban session current --json
 laban session get-text --screen [--start-line N] [--end-line N] [--max-lines N] --json
 laban session get-text --scrollback [--start-line N] [--end-line N] [--max-lines N] --json
 laban context --json [--max-lines N]
-laban wait prompt [--timeout SECONDS]
-laban wait command-finished [--timeout SECONDS]
 ```
 
 - `session current --json` returns the proxy-bound session's identity, shell
@@ -225,13 +226,28 @@ laban wait command-finished [--timeout SECONDS]
   before printing.
 - `session get-text` returns bounded plain-text lines from the visible screen
   (`--screen`) or full scrollback (`--scrollback`), addressed by line range,
-  capped by `--max-lines`. It calls the `terminal.getText` intent, which is
-  classified `dataSensitivity: .scrollback` and is deliberately excluded from
-  the lazy-attach allowlist.
+  capped by `--max-lines`. It calls the `terminal.getText` intent
+  (`dataSensitivity: .scrollback`), now a member of the own-session read family
+  a dialog approval grants.
 - `context --json` prints a compact bundle for agent prompts: bound session
   identity, shell phase, `session.detail` metadata, and a bounded scrollback
   tail. It is CLI-side composition over `session.detail`,
   `shellIntegration.state`, and `terminal.getText`, not a new server endpoint.
+- With no broker, each composed leg is an independent lazy dispatch: under
+  "Allow Once" the user sees one dialog per leg; under "Always Allow" the first
+  approval persists the whole-family record and the remaining legs auto-approve
+  silently. This per-leg behavior is deliberate, not a batching gap.
+
+### Broker-only commands: waits
+
+The `wait` commands still require `LABAN_AGENT_CONTROL_URL` and never fall back
+to lazy attach:
+
+```sh
+laban wait prompt [--timeout SECONDS]
+laban wait command-finished [--timeout SECONDS]
+```
+
 - `wait prompt` blocks until the bound session's shell integration phase
   reaches `atPrompt`; `wait command-finished` blocks until the shell's
   completed-command count increments. Both poll `shellIntegration.state` on
@@ -284,8 +300,12 @@ Response shape:
 }
 ```
 
-The user is shown the requesting principal, operation, and data sensitivity. They
-can choose **Allow Once**, **Always Allow This App for This Session**, or **Deny**.
+The user is shown the requesting principal, operation, and data sensitivity. For
+a session-read-family request the dialog states the family scope plainly (this
+session's screen text, scrollback, and selection, and that the app may suggest
+commands for review) and its exclusions (no keyboard input, clipboard, tab
+switching, or other sessions). They can choose **Allow Once**, **Always Allow
+This App for This Session**, or **Deny**.
 Always Allow is only offered for stable, signed, non-generic principals (not
 shells, interpreters, or package runners). Approval records are stored in
 UserDefaults under `LabanControlAttachApprovalRecordsV1` and can be revoked in
@@ -303,10 +323,11 @@ HTTP status mapping:
 | `429` | A pending request for this principal/intent is already in flight. |
 
 `session proxy` is not available through lazy attach; it requires the broker
-path with `LABAN_AGENT_CONTROL_URL`. `session current`, `session get-text`,
-`context`, and `wait` are also broker-only for the same reason: they read
-data (bound-session identity, scrollback text) more sensitive than the
-lazy-attach allowlist grants with a one-shot approval.
+path with `LABAN_AGENT_CONTROL_URL`, and so do the `wait` commands and `agent
+run`. `session current`, `session get-text`, and `context` now fall back to
+lazy attach: the approval dialog grants the own-session read family (screen
+text, scrollback, selection, session detail, proposals), so those reads no
+longer require the broker.
 
 ### Revoking approvals
 

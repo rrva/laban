@@ -6,7 +6,8 @@ import XCTest
 @testable import LabanControl
 
 /// One suite a security reviewer checks: each test proves an invariant from
-/// `docs/process/control-plane-threat-model.md` (I1-I7) that must hold across
+/// `docs/process/control-plane-threat-model.md` (I1-I7, plus the dialog-first
+/// I4/I4a family ceiling) that must hold across
 /// all three control-plane trust derivations (C14 direct attach, broker
 /// process tree, lazy approval principal) at once. A change that adds a
 /// route, token tier, capability, or allowlist entry must keep this suite

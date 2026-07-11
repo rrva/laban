@@ -50,11 +50,15 @@ another session's content.
   (`performSessionRequest` = lazy fallback vs `performAgentProxyRequest` =
   broker-only).
 - [x] (2026-07-11) Wrote this design (Milestone 0 deliverable).
-- [ ] Milestone 0: fresh-eyes security review of the Threat Model passes.
-- [ ] Milestone 1: server, family-scoped lazy grant + constraint. NOT STARTED.
-- [ ] Milestone 2: dialog sensitivity wording + persisted-record scope. NOT STARTED.
-- [ ] Milestone 3: CLI, session reads use lazy fallback; broker demoted to CI. NOT STARTED.
-- [ ] Milestone 4: invariant + parity updates, docs, installed verification. NOT STARTED.
+- [x] Milestone 0: fresh-eyes security review of the Threat Model passes.
+- [x] (2026-07-11) Milestone 1: server family-scoped grant + `.approvedSessionFamily`
+  tier + I4 rewrite. Commit 58fd24f2.
+- [x] (2026-07-11) Milestone 2: dialog family wording + whole-family persisted
+  record + ordering-max sensitivity. Commit a37d9538.
+- [x] (2026-07-11) Milestone 3: CLI `session current`/`get-text`/`context` use
+  lazy fallback; broker demoted to optional CI path. Commit 34f45268.
+- [~] Milestone 4: threat-model + operator docs amended (this change); installed
+  two-approval smoke pending a live run.
 - [ ] Implementation Review Gate passed.
 
 ## Definitions
@@ -243,7 +247,7 @@ A fresh security reviewer reads the Threat Model and either records
 "threat model ACCEPTED" with the (a)-(f) locks and the two residuals explicitly
 confirmed, or records blocking findings. No implementation starts until (a).
 
-### Milestone 1: family-scoped server grant. Status: NOT STARTED
+### Milestone 1: family-scoped server grant. Status: DONE (58fd24f2)
 Family allowlist + family-grant authorization + policy check + sensitivity
 carry. Tests (`DialogFirstObserveServerTests`): a family intent (get-text) is
 eligible and, once approved, authorizes get-text AND session.detail AND
@@ -252,24 +256,45 @@ is `403 lazyRouteNotAllowed` before UI; cross-session family intent `403`; a
 family grant never authorizes `.input`/`.clipboard`; `409 sessionChanged` on
 identity change still fires.
 
-### Milestone 2: dialog wording + persistence. Status: NOT STARTED
+### Milestone 2: dialog wording + persistence. Status: DONE (a37d9538)
 Sensitivity-scaled Data row; family record persisted for signed principals
 only. Tests: presenter shows the content-inclusive Data row for a high-tier
 grant and the metadata row for low-tier; an unsigned principal gets no
 Always-Allow; a persisted family record auto-approves later family reads for the
 same (principal, session) and re-prompts for a different principal/session.
 
-### Milestone 3: CLI dialog-first. Status: NOT STARTED
+### Milestone 3: CLI dialog-first. Status: DONE (34f45268)
 get-text/context/current/detail use lazy fallback. Tests: with no
 `LABAN_AGENT_CONTROL_URL`, `laban session get-text` reaches lazy approved
 dispatch (not an exit-3 broker error); broker-present behavior unchanged;
 `laban agent run`/`session proxy` still broker-only; no token in stdout/stderr.
 
-### Milestone 4: invariants, docs, installed proof. Status: NOT STARTED
-Rewrite I4 to the new ceiling + positive family invariant; threat-model doc
-amended same-commit; operator guide updated (dialog-first primary, broker = CI
-option); an installed smoke drives the two-approval get-text flow. `scripts/check`
-green.
+### Milestone 4: invariants, docs, installed proof. Status: IN PROGRESS
+I4 rewritten to the new ceiling + positive family invariant (I4a) landed with
+Milestone 1 (test) and this change (`docs/process/control-plane-threat-model.md`,
+same commit as the doc updates); operator guide
+(`docs/process/controlling-agent-control-plane.md`) updated: session
+reads fall back to lazy attach, broker is the optional CI/no-dialog path, only
+`session proxy`/`agent run`/`wait` stay broker-only. Remaining: the installed
+two-approval smoke below, run against a freshly installed build.
+
+Installed smoke (run by the user, the shell cannot launch Laban.app):
+1. `./scripts/build-app && ./scripts/install-app` (or the dedicated debug path),
+   then launch Laban and open a normal shell tab (no `agent run`, no
+   `LABAN_AGENT_CONTROL_URL` in the tab's env, confirm with `env | grep LABAN`).
+2. In that tab run `laban session get-text --screen --json`. Expect ONE approval
+   dialog naming the requesting principal and the content-inclusive family
+   scope; choose Allow Once; expect a real grid JSON on stdout, exit 0.
+3. Re-run the same command and choose "Always Allow This App for This Session".
+   Then run `laban context --json`: expect its `session.detail` and
+   `terminal.getText` legs to auto-approve silently (Always persisted the whole
+   family), producing the bundle with no further dialog.
+4. Negative checks: `laban session get-text` from a DIFFERENT signed app (or a
+   second session) re-prompts; there is no path to input/clipboard/tab-switch
+   through the dialog (not offered); `laban agent run -- <cmd>` still works with
+   no dialog when you want the CI path.
+Record the outcome (dialog screenshots or the JSON transcript) back in this
+plan, then check the Implementation Review Gate.
 
 ## Validation and Acceptance
 
