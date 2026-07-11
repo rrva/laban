@@ -294,6 +294,28 @@ unset (dialog path, not broker):
   `DialogFirstObserveServerTests` and the dialog visibly never offering input or
   clipboard.
 
+### Follow-on: dialog cognitive-load redesign (2026-07-11, screenshot-verified)
+
+After the smoke, the dialog was redesigned for lower cognitive load and native
+macOS look-and-feel (commits f07bfd1c, 724f4f7e, d94671f3). Final form, verified
+by installed screenshots against build `d94671f3`:
+- Adaptive to `principalIsVerified`. Verified apps get a glanceable card: title,
+  "Verified app - session <id>" subhead, one bold "Can:" line (eye symbol) and
+  one bold "Cannot:" line (hand.raised symbol), a collapsed "> Details"
+  disclosure (chevron flips to down on expand, revealing Path/Chain/Operation
+  with the alert resizing to fit), then Scope and the buttons. Unverified apps
+  keep Path/Chain/Operation inline and prominent with an orange warning subhead.
+- Fixed a real bug the redesign exposed: the old Permission row said "Navigate
+  tabs and viewport" while Not-included said "No tab switching". The family's
+  `.navigate` is own-session `terminal.scrollViewport` only (I7), so
+  `readableCapability("navigate")` now returns "Scroll this session's viewport"
+  and the family dialog's Cannot line owns "switch tabs".
+- The dialog stays a system NSAlert (not app-skinned) so it reads as
+  system-owned; harmonized only through SF Symbols + semantic system colors.
+  This is presentation only; authorization, tiers, record, and server are
+  untouched. Tests: `ControlAttachApprovalPresenterTests` (13, driving the pure
+  `dialogContent(for:)` + `readableCapability`).
+
 Prior status (IN PROGRESS):
 I4 rewritten to the new ceiling + positive family invariant (I4a) landed with
 Milestone 1 (test) and this change (`docs/process/control-plane-threat-model.md`,
