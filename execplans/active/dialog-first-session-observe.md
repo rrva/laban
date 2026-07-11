@@ -269,7 +269,32 @@ get-text/context/current/detail use lazy fallback. Tests: with no
 dispatch (not an exit-3 broker error); broker-present behavior unchanged;
 `laban agent run`/`session proxy` still broker-only; no token in stdout/stderr.
 
-### Milestone 4: invariants, docs, installed proof. Status: IN PROGRESS
+### Milestone 4: invariants, docs, installed proof. Status: DONE
+
+Installed smoke run 2026-07-11 against build `eee34fdc` (verified stamp),
+principal `com.anthropic.claude-code`, session `BC2CF90E`, `LABAN_AGENT_CONTROL_URL`
+unset (dialog path, not broker):
+- `laban session get-text --screen --json` with no broker showed ONE approval
+  dialog and returned the real grid on Allow Once (exit 0). On the pre-M1 build
+  this same command exited 3. The dialog rendered every M2 element: title
+  "observe this Laban session" (not "control"); Data row "This session's screen
+  text, scrollback, and selection, and may suggest commands for your review";
+  Permission "Navigate tabs and viewport, Read app state, Read private session
+  state, Propose commands"; "Not included: No keyboard input, clipboard, tab
+  switching, or other sessions"; server-derived Requester/Path/Chain.
+- After "Always Allow", `laban context --json` returned in ~1s with NO further
+  dialog (all three legs shellIntegration.state, session.detail, terminal.getText
+  auto-approved), exit 0, real bundle.
+- The persisted record (`LabanControlAttachApprovalRecordsV1`) for BC2CF90E is
+  the whole-family record: 12 family intents, capabilities
+  `{navigate, observe, observeSensitive, propose}`, `maxDataSensitivity =
+  sensitivePrivate` (the NOTE 3 ordering-max), and `allowedRouteIDs` carrying the
+  concrete `GET /debug/sessions/BC2CF90E-...` (the `<id>` substitution) plus
+  `GET /debug/text`. Cross-session and actuation denials are covered by
+  `DialogFirstObserveServerTests` and the dialog visibly never offering input or
+  clipboard.
+
+Prior status (IN PROGRESS):
 I4 rewritten to the new ceiling + positive family invariant (I4a) landed with
 Milestone 1 (test) and this change (`docs/process/control-plane-threat-model.md`,
 same commit as the doc updates); operator guide
