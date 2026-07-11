@@ -119,6 +119,14 @@ public struct ControlAttachApprovalRequest: Sendable {
   public let capabilities: [String]
   public let canPersist: Bool
   public let persistenceDisabledReason: String?
+  /// True when this request represents the dialog-first own-session read
+  /// family grant (`ControlSessionObserveFamily`), not one exact request
+  /// (execplans/active/dialog-first-session-observe.md, Milestone 2). Purely
+  /// presentational: it tells the presenter to describe the whole family
+  /// (content-inclusive Data row, the propose grant, the "Not included" row)
+  /// rather than one intent's sensitivity. Defaults to `false` so existing
+  /// non-family construction sites (tests) are unaffected.
+  public let grantsSessionReadFamily: Bool
 
   public init(
     id: String,
@@ -131,7 +139,8 @@ public struct ControlAttachApprovalRequest: Sendable {
     dataSensitivity: String,
     capabilities: [String],
     canPersist: Bool,
-    persistenceDisabledReason: String?
+    persistenceDisabledReason: String?,
+    grantsSessionReadFamily: Bool = false
   ) {
     self.id = id
     self.principalDisplayName = principalDisplayName
@@ -144,6 +153,7 @@ public struct ControlAttachApprovalRequest: Sendable {
     self.capabilities = capabilities
     self.canPersist = canPersist
     self.persistenceDisabledReason = persistenceDisabledReason
+    self.grantsSessionReadFamily = grantsSessionReadFamily
   }
 }
 

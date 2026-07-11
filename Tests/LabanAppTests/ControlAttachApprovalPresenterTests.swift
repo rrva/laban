@@ -55,6 +55,66 @@ final class ControlAttachApprovalPresenterTests: XCTestCase {
     XCTAssertNotNil(request.persistenceDisabledReason)
   }
 
+  // MARK: - detailRows (Milestone 2: dialog-first family wording)
+
+  /// A family grant (`grantsSessionReadFamily: true`) must describe the whole
+  /// own-session read family: content-inclusive Data row, the propose grant
+  /// named per review NOTE 2, and a "Not included" row (execplans/active/
+  /// dialog-first-session-observe.md, Milestone 2).
+  func testFamilyRequestDetailRowsDescribeWholeFamily() {
+    let request = makeRequest(canPersist: true, grantsSessionReadFamily: true)
+    let rows = ControlAttachApprovalPresenter.detailRows(for: request)
+
+    guard let dataRow = rows.first(where: { $0.0 == "Data" }) else {
+      return XCTFail("expected a Data row")
+    }
+    XCTAssertTrue(
+      dataRow.1.contains("screen text, scrollback, and selection"),
+      "Data row must name terminal content, got: \(dataRow.1)")
+
+    XCTAssertTrue(
+      rows.contains { $0.1.contains("suggest commands") },
+      "a row must name the propose grant (review NOTE 2)")
+
+    guard let notIncludedRow = rows.first(where: { $0.0 == "Not included" }) else {
+      return XCTFail("expected a Not included row for a family grant")
+    }
+    XCTAssertTrue(
+      notIncludedRow.1.contains("No keyboard input"),
+      "Not included row must name excluded input, got: \(notIncludedRow.1)")
+  }
+
+  /// A non-family (legacy, request-exact) grant keeps the existing
+  /// single-sensitivity Data row and has no "Not included" row: unchanged
+  /// behavior for callers that never set `grantsSessionReadFamily`.
+  func testNonFamilyRequestDetailRowsUnchanged() {
+    let request = makeRequest(canPersist: true, grantsSessionReadFamily: false)
+    let rows = ControlAttachApprovalPresenter.detailRows(for: request)
+
+    guard let dataRow = rows.first(where: { $0.0 == "Data" }) else {
+      return XCTFail("expected a Data row")
+    }
+    XCTAssertEqual(dataRow.1, "Basic app state")
+
+    XCTAssertFalse(
+      rows.contains { $0.0 == "Not included" },
+      "a non-family grant must not add a Not included row")
+  }
+
+  func testDetailRowsKeepCoreRowsForBothBranches() {
+    for grantsFamily in [true, false] {
+      let request = makeRequest(canPersist: true, grantsSessionReadFamily: grantsFamily)
+      let titles = ControlAttachApprovalPresenter.detailRows(for: request).map(\.0)
+      XCTAssertTrue(titles.contains("Operation"))
+      XCTAssertTrue(titles.contains("Session"))
+      XCTAssertTrue(titles.contains("Requester"))
+      XCTAssertTrue(titles.contains("Path"))
+      XCTAssertTrue(titles.contains("Chain"))
+      XCTAssertTrue(titles.contains("Permission"))
+      XCTAssertTrue(titles.contains("Scope"))
+    }
+  }
+
   // MARK: - Helpers
 
   private func assertButtonAbsent(principalPath: String, displayName: String) {
@@ -73,7 +133,8 @@ final class ControlAttachApprovalPresenterTests: XCTestCase {
     principalDisplayName: String = "Codex",
     principalPath: String = "/Applications/Codex.app/Contents/MacOS/Codex",
     principalIsVerified: Bool = true,
-    persistenceDisabledReason: String? = nil
+    persistenceDisabledReason: String? = nil,
+    grantsSessionReadFamily: Bool = false
   ) -> ControlAttachApprovalRequest {
     ControlAttachApprovalRequest(
       id: "approval-1",
@@ -86,6 +147,7 @@ final class ControlAttachApprovalPresenterTests: XCTestCase {
       dataSensitivity: "nonSensitiveState",
       capabilities: ["observe"],
       canPersist: canPersist,
-      persistenceDisabledReason: persistenceDisabledReason)
+      persistenceDisabledReason: persistenceDisabledReason,
+      grantsSessionReadFamily: grantsSessionReadFamily)
   }
 }

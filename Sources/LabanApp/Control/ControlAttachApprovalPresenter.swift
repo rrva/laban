@@ -77,6 +77,52 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     }
   }
 
+  /// The wording this alert's fixed-title rows a name (before Scope's dynamic
+  /// suffix and the optional persistence-disabled note) render for `request`,
+  /// in the order `makeDetailsView` arranges them. Factored out so the
+  /// Data/Proposes/Not-included wording is unit-testable without driving
+  /// `NSStackView`/`NSAlert` (mirrors `buttonTitles(for:)`).
+  ///
+  /// A family grant (`request.grantsSessionReadFamily`) describes the whole
+  /// own-session read family, content-inclusive, names the propose grant
+  /// (review NOTE 2), and adds a "Not included" row. A non-family (legacy,
+  /// request-exact) grant keeps the single-sensitivity Data row unchanged and
+  /// has no "Not included" row.
+  static func detailRows(for request: ControlAttachApprovalRequest) -> [(String, String)] {
+    var rows: [(String, String)] = [
+      ("Operation", shortOperationSummary(request.operationSummary)),
+      ("Session", request.sessionDisplay),
+      ("Requester", request.principalDisplayName),
+    ]
+    if let path = request.principalPath, !path.isEmpty {
+      rows.append(("Path", compactPath(path)))
+    }
+    rows.append(("Chain", request.helperChainSummary))
+    if request.grantsSessionReadFamily {
+      rows.append(
+        (
+          "Data",
+          "This session's screen text, scrollback, and selection, "
+            + "and may suggest commands for your review"
+        ))
+    } else {
+      rows.append(("Data", readableDataSensitivity(request.dataSensitivity)))
+    }
+    if !request.capabilities.isEmpty {
+      rows.append(("Permission", readableCapabilities(request.capabilities)))
+    }
+    rows.append(
+      (
+        "Scope",
+        request.canPersist ? "This app in this Laban session" : "This request only"
+      ))
+    if request.grantsSessionReadFamily {
+      rows.append(
+        ("Not included", "No keyboard input, clipboard, tab switching, or other sessions."))
+    }
+    return rows
+  }
+
   private func makeDetailsView(for request: ControlAttachApprovalRequest) -> NSView {
     let detailsWidth: CGFloat = 360
     let stack = NSStackView()
@@ -86,35 +132,15 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     stack.translatesAutoresizingMaskIntoConstraints = true
     stack.setFrameSize(NSSize(width: detailsWidth, height: 1))
 
-    stack.addArrangedSubview(
-      detailRow(
-        "Operation", shortOperationSummary(request.operationSummary), rowWidth: detailsWidth)
-    )
-    stack.addArrangedSubview(detailRow("Session", request.sessionDisplay, rowWidth: detailsWidth))
-    stack.addArrangedSubview(
-      detailRow("Requester", request.principalDisplayName, rowWidth: detailsWidth))
-    if let path = request.principalPath, !path.isEmpty {
+    for (title, value) in Self.detailRows(for: request) {
+      let monospaced = title == "Path"
       stack.addArrangedSubview(
         detailRow(
-          "Path", compactPath(path), tooltip: path, monospaced: true, rowWidth: detailsWidth)
-      )
+          title, value,
+          tooltip: monospaced ? request.principalPath : nil,
+          monospaced: monospaced,
+          rowWidth: detailsWidth))
     }
-    stack.addArrangedSubview(detailRow("Chain", request.helperChainSummary, rowWidth: detailsWidth))
-    stack.addArrangedSubview(
-      detailRow("Data", readableDataSensitivity(request.dataSensitivity), rowWidth: detailsWidth)
-    )
-    if !request.capabilities.isEmpty {
-      stack.addArrangedSubview(
-        detailRow("Permission", readableCapabilities(request.capabilities), rowWidth: detailsWidth)
-      )
-    }
-    stack.addArrangedSubview(
-      detailRow(
-        "Scope",
-        request.canPersist ? "This app in this Laban session" : "This request only",
-        rowWidth: detailsWidth
-      )
-    )
     if !request.canPersist, let reason = request.persistenceDisabledReason {
       let note = NSTextField(wrappingLabelWithString: "Always Allow is unavailable: \(reason)")
       note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -172,7 +198,7 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     return row
   }
 
-  private func shortOperationSummary(_ summary: String) -> String {
+  private static func shortOperationSummary(_ summary: String) -> String {
     let withoutParenthetical = summary.replacingOccurrences(
       of: #"\s*\([^)]*\)"#,
       with: "",
@@ -180,7 +206,7 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     return withoutParenthetical.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
   }
 
-  private func compactPath(_ path: String) -> String {
+  private static func compactPath(_ path: String) -> String {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     if path == home {
       return "~"
@@ -191,7 +217,7 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     return path
   }
 
-  private func readableDataSensitivity(_ raw: String) -> String {
+  private static func readableDataSensitivity(_ raw: String) -> String {
     switch raw {
     case "none": return "None"
     case "nonSensitiveState": return "Basic app state"
@@ -206,11 +232,11 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     }
   }
 
-  private func readableCapabilities(_ capabilities: [String]) -> String {
+  private static func readableCapabilities(_ capabilities: [String]) -> String {
     capabilities.map(readableCapability).joined(separator: ", ")
   }
 
-  private func readableCapability(_ raw: String) -> String {
+  private static func readableCapability(_ raw: String) -> String {
     switch raw {
     case "observe": return "Read app state"
     case "observeSensitive": return "Read private session state"

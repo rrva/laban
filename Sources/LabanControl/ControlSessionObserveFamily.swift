@@ -38,4 +38,25 @@ public enum ControlSessionObserveFamily {
   public static func contains(_ intentID: String) -> Bool {
     intentIDs.contains(intentID)
   }
+
+  /// The ordering-maximum data sensitivity across the family (review NOTE 3):
+  /// `app.state` is `.sensitivePrivate`, which ranks ABOVE `.scrollback` in
+  /// `compareSensitivity`, so a persisted family record must store this
+  /// ordering max as its `maxDataSensitivity` ceiling, never a single family
+  /// member's own sensitivity and never the "tier" label used for dialog
+  /// wording only. Uses the exact ordering
+  /// `String.compareSensitivity(to:)` uses (`ControlAttachApprovalStore.swift`)
+  /// so the family's stored ceiling and `findMatching`'s live comparison never
+  /// drift apart.
+  public static func maxDataSensitivity(catalog: IntentCatalog) -> String {
+    var maxRaw = "none"
+    for intentID in intentIDs {
+      guard let descriptor = catalog.descriptor(id: intentID) else { continue }
+      let raw = descriptor.dataSensitivity.rawValue
+      // compareSensitivity(to:) is true when maxRaw is <= raw, i.e. raw is at
+      // least as sensitive as the running max, so adopt it.
+      if maxRaw.compareSensitivity(to: raw) { maxRaw = raw }
+    }
+    return maxRaw
+  }
 }
