@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Live repro for the broker terminal-foreground handoff.
+#
+# `laban agent run -- <agent>` spawns the agent into its own process group. If
+# the broker does not hand the controlling terminal's foreground to that group,
+# an interactive agent stops on SIGTTIN (process state 'T') the moment it reads
+# input: the tab shows the agent pill but the agent produces no output and takes
+# no input. This test allocates a real pty (BSD `script`), launches an
+# interactive probe under the broker, and asserts the probe reaches the
+# foreground and actually reads a line, rather than stopping.
+#
+# It exercises the raw laban-agent broker path directly (no GUI needed): it
+# stands up nothing, it just needs a real pty and the built laban-agent. Run
+# from the repo root; uses the freshly built .build binary by default.
+
+AGENT="${1:-$PWD/.build/debug/laban-agent}"
+if [[ ! -x "$AGENT" ]]; then
+  echo "BROKER_PTY_SMOKE_SKIP: laban-agent not found at $AGENT (build it first)" >&2
+  exit 0
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+marker="$work/marker"
+typescript="$work/typescript"
+
+# The interactive probe: prints a prompt, blocks on a read from the tty (this is
+# the read that triggers SIGTTIN if the probe is a background group), then on
+# receiving a line writes a marker file and echoes. If the broker never hands us
+# the foreground, the read stops the process and the marker is never written.
+probe="$work/probe.sh"
+cat >"$probe" <<PROBE
+#!/bin/sh
+printf 'PROBE_READY\n'
+IFS= read line
+printf '%s' "\$line" > "$marker"
+printf 'PROBE_GOT:%s\n' "\$line"
+PROBE
+chmod +x "$probe"
+
+# NOTE: this raw --control-attach path needs a redeemable C14 bootstrap to fully
+# attach; when run outside an agent-attached Laban session it will exit before
+# launching the child. In that case we skip rather than fail, and rely on the
+# in-app installed smoke for the full path. The value here is the pty/foreground
+# mechanics, which we can still assert when the child does launch.
+#
+# Drive it under a real pty via BSD `script`, feeding one line of input after a
+# short delay so the probe's `read` has something to consume once it is in the
+# foreground.
+(
+  sleep 1
+  printf 'hello-from-tty\n'
+  sleep 1
+) | script -q "$typescript" \
+  "$AGENT" --control-attach --control-attach-serve-cli --control-attach-run -- "$probe" \
+  >/dev/null 2>&1 || true
+
+if [[ ! -f "$marker" ]]; then
+  if grep -q "PROBE_READY" "$typescript" 2>/dev/null; then
+    echo "BROKER_PTY_SMOKE_FAIL: probe reached the tty but never read input (SIGTTIN stop?)" >&2
+    exit 1
+  fi
+  echo "BROKER_PTY_SMOKE_SKIP: broker did not launch the child (no C14 attach outside an agent-attached session)" >&2
+  exit 0
+fi
+
+got="$(cat "$marker")"
+if [[ "$got" != "hello-from-tty" ]]; then
+  echo "BROKER_PTY_SMOKE_FAIL: probe read '$got', expected 'hello-from-tty'" >&2
+  exit 1
+fi
+
+echo "BROKER_PTY_SMOKE_OK: interactive child took the terminal foreground and read stdin"

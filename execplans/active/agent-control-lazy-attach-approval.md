@@ -167,6 +167,30 @@ identity persisted by "Always Allow".
 
 ## Decision Log
 
+- Open direction (NOT yet decided; recorded 2026-07-11 / user, do not build
+  without a dedicated security-design pass): **make the approval dialog the
+  primary path and let it grant the full read surface; demote `laban agent run`
+  to a CI-only convenience.** The shipped split gates low-sensitivity reads
+  behind the one-click dialog and reserves screen/scrollback text for the
+  broker (C14) path, on the theory that a stronger auth proof should unlock
+  more. The UX flaw the user identified: the broker requires foresight nobody
+  has ("I should launch this agent through `laban agent run` because it will
+  later want control"), while the real need is reactive and only surfaces when
+  the agent tries. The dialog is actually a *strong* consent (code-signed
+  principal, exact session, exact operation, revocable per-principal
+  "Always Allow"), arguably stronger than a bootstrap in an inherited env var,
+  which grants the whole session surface silently on launch. Direction:
+  collapse to one path; choose the capability tier from *what the dialog
+  grants* (a distinct, more-prominent "read this session's screen text"
+  consent vs "read metadata"), not from which launch command was remembered.
+  `laban agent run` then stops being a capability gate and becomes an optional
+  no-dialog path for CI. This is the same user-mediated, per-capability consent
+  model the cross-session observe grant design
+  (`execplans/active/cross-session-observe-grant.md`) reaches toward; a future
+  plan should unify them. Requires careful design of the escalation surface
+  (per-intent/per-tier approval, sensitivity-scaled dialog wording, revocation)
+  before any implementation.
+
 - Decision: Keep `laban agent run -- <agent>` as the preferred launch path and
   add lazy attach as an additional path.
   Rationale: The broker-first path is deterministic, avoids dialogs in CI, and
@@ -174,6 +198,10 @@ identity persisted by "Always Allow".
   common "I already started Codex directly" workflow without weakening the
   broker path.
   Date/Author: 2026-07-08 / Codex.
+  Amendment (2026-07-11 / user): the "broker-first preferred" framing is
+  challenged by the open direction recorded above; the broker's launch-time
+  foresight requirement is poor UX for interactive humans. Revisit when the
+  unified-consent design is written.
 
 - Decision: Lazy attach eligibility is "same uid and descendant of the
   registered session shell", not "any process with the environment variable".

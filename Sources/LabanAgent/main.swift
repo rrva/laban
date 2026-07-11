@@ -422,7 +422,12 @@ func runAttachedChild(command: [String], proxy: ControlAttachProxyServer) -> Nev
   proxy.setAllowedRootPID(childPID)
 
   // The child was spawned with POSIX_SPAWN_SETPGROUP into its own process
-  // group, so signals can target the whole tree.
+  // group, so signals can target the whole tree. That new group is a
+  // background group for the controlling terminal, so hand the terminal's
+  // foreground to it; otherwise an interactive child stops on SIGTTIN the
+  // moment it reads input (no-op when stdin is not a tty).
+  BrokerTerminalControl.takeForeground(pgid: childPID)
+
   proxy.onUpstreamLost = {
     terminateChildOrGroup(pid: childPID)
   }
@@ -435,6 +440,9 @@ func runAttachedChild(command: [String], proxy: ControlAttachProxyServer) -> Nev
     } while result == -1 && errno == EINTR
 
     let exitStatus = ChildLauncher.exitStatus(waitResult: result, status: status)
+    // Return the terminal's foreground to the broker's own group so the
+    // launching shell inherits a clean tty (no-op off a tty).
+    BrokerTerminalControl.reclaimForeground()
     proxy.stop()
     exit(exitStatus)
   }
