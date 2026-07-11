@@ -60,14 +60,23 @@ another session's content.
 ## Definitions
 
 - **Own-session read family** (the exact set this plan makes dialog-grantable):
-  the `gui:true`, session-scoped, read-only intents an agent already gets for
-  its own session over the broker path:
+  the `gui:true`, session-scoped, non-actuating intents an agent needs to
+  observe and assist its own session:
   `terminal.getText`, `session.detail`, `selection.read`, `find.state`,
   `shellIntegration.state`, `scrollIndicator.state`, `app.state` (redacted to
-  the owning session), plus `command.propose` (a user-reviewed suggestion, not
-  a read but same observe-only family). This is exactly the set the broker
-  session-observe credential already grants; nothing new is exposed, only the
-  path to it changes.
+  the owning session), `terminal.scrollViewport` (own-session view scroll,
+  `.navigate`, kept so `laban session scroll` keeps working, per review NOTE 1),
+  `command.propose`, and `commandProposal.list`/`.get`/`.cancel` (the proposal
+  lifecycle, `.propose`). This is a **strict subset** of what the broker
+  session-observe credential grants (review NOTE 4: sessionObserve also grants
+  `app.accessibility`, `terminal.modes`, and `session.list`, which this family
+  deliberately omits); nothing new is exposed, only the path to a narrower set
+  changes.
+  The family's capability set is therefore `{.observe, .observeSensitive,
+  .navigate, .propose}`, exactly the shipped sessionObserve grant minus none of
+  the observe capabilities, and NEVER `.input`, `.clipboard`, or `.fixture`.
+  `.navigate` here means only own-session `scrollViewport`; it never navigates
+  another session (C12) and is not actuation of the child shell.
 - **Family grant**: an approved-session authorization whose constraint is "any
   intent in the own-session read family, for this session", rather than the
   current one-exact-request binding.
@@ -158,9 +167,18 @@ and on approval mints `.approvedSession` with a request-exact
    session (C12 unchanged, omitted target resolves to own session), and (for
    persisted/Always) the live principal still validates the stored signing
    requirement. Capabilities granted are exactly `{.observe, .observeSensitive,
-   .propose}` (never `.input`/`.clipboard`/`.navigate`-of-another-session).
-3. Carry the highest data-sensitivity the grant covers into the approval
-   request so the dialog can scale wording (Milestone 2).
+   .navigate, .propose}` (per review NOTE 1, `.navigate` is included so
+   own-session `scrollViewport` keeps working; the grant is never `.input`,
+   `.clipboard`, `.fixture`, nor navigation of another session).
+3. Carry the **ordering-maximum** data-sensitivity of the family into the
+   approval request and the persisted record's `maxDataSensitivity` (per review
+   NOTE 3: `app.state` is `.sensitivePrivate`, which ranks ABOVE `.scrollback`
+   in `compareSensitivity`; storing `scrollback` as the max would make
+   `findMatching` reject later `app.state` auto-approval). Compute the stored
+   max as the highest-ranked sensitivity across the family via the same
+   `compareSensitivity` ordering `findMatching` uses. The high/low "tier"
+   language elsewhere in this plan is for dialog wording only, never for the
+   stored ceiling.
 
 Keep: peer-cred/uid guard, ancestry/principal derivation, one-shot vs Always
 distinction, `409 sessionChanged` pre-dispatch revalidation, all rate limits.
@@ -172,12 +190,15 @@ observe this Laban session?" (already fixed off "control"). Add a **Data** row
 that scales to the grant's sensitivity: high tier reads
 "This session's screen text, scrollback, and selection" (make it unmistakable
 that terminal *content* is included); low tier keeps "Private session
-metadata". "Not included" row stays: "No keyboard input, clipboard, tab
-switching, or other sessions." `ControlAttachApprovalRecord` already has
+metadata". The Data row also names the propose grant (per review NOTE 2), e.g.
+"...and may suggest commands for your review". "Not included" row stays:
+"No keyboard input, clipboard, tab switching, or other sessions."
+`ControlAttachApprovalRecord` already has
 `allowedIntentIDs`/`capabilities`/`maxDataSensitivity`; a family grant stores
-the full family set + `.observeSensitive` cap + the high sensitivity, keyed to
-(principal signing identity, session). Persistence gated by the existing
-`isPersistable`.
+the full family set + `{.observe, .observeSensitive, .navigate, .propose}` caps
++ the ordering-max sensitivity (NOTE 3, computed via `compareSensitivity`, not
+the "high tier" label), keyed to (principal signing identity, session).
+Persistence gated by the existing `isPersistable`.
 
 ### CLI (Milestone 3)
 
@@ -200,8 +221,15 @@ review sign it: the lazy-reachable set now MAY include `.observeSensitive`
 content reads (the whole point), but the test must now assert the *new* ceiling:
 every family-allowlisted intent has `sideEffects.ptyInput == false`, is
 `gui:true` and session-scoped, and its `requiredCapability` is in
-`{.observe, .observeSensitive, .propose}` (never `.input`, `.clipboard`,
-`.fixture`, `.navigate`). Add a positive invariant: a family grant authorizes
+`{.observe, .observeSensitive, .navigate, .propose}` (never `.input`,
+`.clipboard`, `.fixture`). Per review NOTE 1 this includes `.navigate` for
+own-session `scrollViewport`; the ceiling that must never move is actuation
+(`.input`/`.clipboard`) and cross-session, both enforced independently of the
+family set (capability derivation from the catalog, C12 scope check,
+headless-only availability of actuation intents). The family's `.navigate`
+membership must additionally be constrained to own-session `scrollViewport`
+only (assert the gui `.navigate` set stays exactly `{terminal.scrollViewport}`,
+matching I7). Add a positive invariant: a family grant authorizes
 exactly the family set and denies any non-family intent, cross-session, and any
 `.input`/`.clipboard` intent even for the approved principal/session. Update the
 `.propose` gui-allowlist parity if `command.propose` classification is touched
