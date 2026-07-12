@@ -79,8 +79,15 @@ app_bundle=".build/laban/Laban.app"
 bundle_dir="${app_bundle}/Contents"
 mkdir -p "${bundle_dir}/MacOS" "${bundle_dir}/Resources"
 
-# shellcheck disable=SC2086
-bin=$(swift build -c "$build_config" --disable-index-store --product LabanApp --show-bin-path $prefix_map_flags)
+# The build above already leaves `.build/<config>` pointing at the bin dir
+# SwiftPM would report via `--show-bin-path`; reuse it instead of paying for a
+# second full planner invocation just to read back a path.
+if [ -d ".build/$build_config" ]; then
+  bin=".build/$build_config"
+else
+  # shellcheck disable=SC2086
+  bin=$(swift build -c "$build_config" --disable-index-store --product LabanApp --show-bin-path $prefix_map_flags)
+fi
 
 # Assert every bundled product actually built. `swift build` has at times exited
 # 0 while leaving one product unlinked (partial cache hits, planner races,
@@ -212,11 +219,30 @@ ${update_manifest_plist}
 EOF
 
 if [ "$profile_build" = 1 ]; then
-  # Emit a dSYM from the per-object .o files referenced by N_OSO entries
-  # so Instruments can resolve line numbers and inline frames. The dSYM
-  # lives next to the .app; Spotlight indexes it and Instruments finds it
-  # by UUID. Must run before any post-link byte mutation.
-  dsymutil -o "${app_bundle}.dSYM" "${bundle_dir}/MacOS/LabanApp"
+  # SwiftPM already runs dsymutil for us at build time ($bin/LabanApp.dSYM);
+  # the bundled binary is a straight `cp -f` of $bin/LabanApp with no
+  # intervening mutation, so that dSYM's UUID should already match it.
+  # Reuse it instead of re-running dsymutil over every .o file, but verify
+  # the UUID first: if a future change makes the bundled binary diverge from
+  # $bin/LabanApp, a copied-but-mismatched dSYM would silently mis-symbolicate
+  # by UUID, so fall back to a fresh dsymutil run whenever they disagree.
+  reused_dsym=0
+  if [ -d "$bin/LabanApp.dSYM" ]; then
+    bin_uuid=$(dwarfdump --uuid "${bundle_dir}/MacOS/LabanApp" 2>/dev/null | awk '{print $2; exit}')
+    dsym_uuid=$(dwarfdump --uuid "$bin/LabanApp.dSYM" 2>/dev/null | awk '{print $2; exit}')
+    if [ -n "$bin_uuid" ] && [ "$bin_uuid" = "$dsym_uuid" ]; then
+      rm -rf "${app_bundle}.dSYM"
+      ditto "$bin/LabanApp.dSYM" "${app_bundle}.dSYM"
+      reused_dsym=1
+    fi
+  fi
+  if [ "$reused_dsym" = 0 ]; then
+    # Emit a dSYM from the per-object .o files referenced by N_OSO entries
+    # so Instruments can resolve line numbers and inline frames. The dSYM
+    # lives next to the .app; Spotlight indexes it and Instruments finds it
+    # by UUID. Must run before any post-link byte mutation.
+    dsymutil -o "${app_bundle}.dSYM" "${bundle_dir}/MacOS/LabanApp"
+  fi
 else
   # Strip DWARF debug sections and STAB symbols (N_OSO entries that point
   # at the per-object .o files under /Users/<name>/.../.build/...). Function

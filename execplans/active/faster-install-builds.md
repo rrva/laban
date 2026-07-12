@@ -22,8 +22,22 @@ profile bundle and dSYM, and take measurably less wall-clock time.
   unqualified package build, retaining the existing required-product verifier.
 - [x] Disable SwiftPM index-store generation for this non-IDE packaging path.
 - [x] Verify warm install speed, bundle contents, signature, and dSYM UUID.
-- [ ] Run the repository-wide check (blocked by unrelated existing SwiftLint
-  failures in `Sources/LabanApp/LabanWindowScreenshotCapture.swift`).
+- [x] Run the repository-wide check (the blocking SwiftLint failures in
+  `Sources/LabanApp/LabanWindowScreenshotCapture.swift` were fixed separately
+  and merged; see `git log` for that commit).
+- [x] Add an opt-in `LABAN_FAST_PROFILE=1` batch-mode compile flag for
+  `--profile` builds, so a single-file edit does not force a whole-module
+  recompile.
+- [x] Reuse the `.build/<config>` symlink SwiftPM already creates instead of a
+  second `swift build --show-bin-path` planner invocation in `build-app`.
+- [x] Reuse SwiftPM's own emitted `$bin/LabanApp.dSYM` (verified same UUID as
+  the linked binary) instead of re-running `dsymutil` in `--profile` mode,
+  with a UUID-equality guard and dsymutil fallback if they ever diverge.
+- [x] Seed a brand-new git worktree's empty `.build` by cloning
+  `.build/checkouts`, `.build/repositories`, and `workspace-state.json` from
+  the main checkout via `cp -c` (APFS clonefile) before the first
+  `scripts/install-app` build, so the first build in a fresh worktree does not
+  pay to re-resolve and re-fetch every pinned dependency.
 
 ## Context and Orientation
 
@@ -58,6 +72,80 @@ nothing needs recompiling.
   The option changes only generated IDE index data, not the linked products or
   their debug information.
   Date/Author: 2026-07-12 / Codex.
+
+- Decision: Make whole-module-optimization-vs-batch-mode an opt-in env var
+  (`LABAN_FAST_PROFILE=1`) rather than switching `--profile`'s default.
+  Rationale: whole-module optimization (WMO) recompiles an entire Swift module
+  from scratch whenever any one file in it changes; this is the dominant cost
+  of a warm, single-file-edit `--profile` build (measured: 16.6s-17.9s for a
+  one-line comment appended to a 50-line leaf file, `LabanApp` being the
+  largest affected module). Swift's incremental "batch mode"
+  (`-no-whole-module-optimization -enable-batch-mode`) compiles per file
+  instead, recompiling only what changed; it still runs at `-O` (unlike a
+  debug `-Onone` build), so it is still meaningfully more representative for
+  profiling than a debug build. Measured with the flag on: the same one-line
+  edit rebuilt in 6.5s-7.5s end to end, roughly a 60% reduction. It is opt-in,
+  not the default, because batch mode can make different cross-file inlining
+  decisions than WMO, so a profile captured under it is not guaranteed
+  byte-identical in code shape to one from a default `--profile` build; the
+  user chose opt-in specifically to preserve exact-shape profiling as the
+  default and offer speed as a deliberate trade a developer opts into for fast
+  iteration. Flipping the flag forces one full rebuild (SwiftPM replans on any
+  compiler-flag change); this is a one-time cost paid once per session per
+  worktree, not on every subsequent incremental build.
+  Date/Author: 2026-07-12 / Claude (Sonnet 5), following a research pass by a
+  Fable-model subagent that proposed and independently measured this option
+  before implementation.
+
+- Decision: Reuse the `.build/<config>` symlink instead of a second
+  `swift build --show-bin-path` call in `build-app`.
+  Rationale: SwiftPM creates a `.build/debug` or `.build/release` symlink
+  pointing at the same directory `--show-bin-path` would print (verified via
+  `-ef` inode comparison after both a debug and a release build). Reading that
+  symlink avoids a second full SwiftPM planner invocation just to recover a
+  path already known on disk. Falls back to the original `--show-bin-path`
+  call if the symlink is somehow missing.
+  Date/Author: 2026-07-12 / Claude (Sonnet 5).
+
+- Decision: In `--profile` mode, reuse SwiftPM's own `$bin/LabanApp.dSYM`
+  instead of re-running `dsymutil` over the linked binary's `.o` files.
+  Rationale: SwiftPM's release build already runs `dsymutil` itself and leaves
+  a `$bin/LabanApp.dSYM` next to the binary; verified with `dwarfdump --uuid`
+  that its UUID matches `$bin/LabanApp` (the same file `cp -f`'d into the
+  bundle with no intervening mutation). Copying that existing dSYM with
+  `ditto` is materially cheaper than a second full `dsymutil` invocation. A
+  UUID-equality check runs first every time, comparing the bundled binary's
+  UUID against the candidate dSYM's UUID; only on a match is the dSYM copied,
+  otherwise `build-app` falls back to running `dsymutil` fresh, so a future
+  change that makes the bundle binary diverge from `$bin/LabanApp` cannot
+  silently ship a UUID-mismatched (and therefore useless-for-symbolication)
+  dSYM.
+  Date/Author: 2026-07-12 / Claude (Sonnet 5).
+
+- Decision: Seed a new git worktree's empty `.build` from the main checkout's
+  `.build/checkouts`, `.build/repositories`, and `workspace-state.json` using
+  `cp -c` (APFS clonefile, copy-on-write and near-instant on the same volume)
+  before the very first `scripts/install-app` build in that worktree.
+  Rationale: this repo's contributors work from many parallel git worktrees
+  (`docs/process/worktree-isolation.md`), each starting with a completely
+  empty `.build`. `.build/checkouts` and `.build/repositories` hold only
+  fetched dependency source trees and git metadata for the ~21 pinned
+  SwiftPM dependencies (swift-nio, swift-crypto, swift-algorithms, etc.), not
+  this worktree's own compiled object files or module cache, so they carry no
+  worktree-specific absolute paths and are safe to clone verbatim: SwiftPM
+  re-validates whatever is in `.build/checkouts` against `Package.resolved`
+  on every build and re-fetches anything that does not match, so a stale,
+  partial, or unrelated clone degrades to normal (slower) resolution rather
+  than producing a wrong build. Measured: `cp -c -R` of the main checkout's
+  230MB `.build/checkouts` completed in ~1.8s. Only compiled build output
+  (`.build/arm64-apple-macosx`, `.build/laban`, module caches) is intentionally
+  left out of this seeding: those directories are known to embed
+  worktree-specific absolute paths (via the existing `-debug-prefix-map`/
+  `-file-prefix-map` flags keyed on `repo_root`) and are exactly the class of
+  state the prior `terminalBackendMenu` stale-cache incident (see
+  `scripts/build-app`'s required-executable guard) warns against sharing
+  across checkouts.
+  Date/Author: 2026-07-12 / Claude (Sonnet 5).
 
 ## Plan of Work
 
@@ -97,6 +185,28 @@ boundary, documentation, debug-contract, model, CBMC, trace, coverage, and
 fuzz checks, then failed on pre-existing formatting errors in the unrelated
 `Sources/LabanApp/LabanWindowScreenshotCapture.swift` (lines 44 and 88 too
 long; line 92 missing a trailing comma).
+
+On 2026-07-12, a second pass (this worktree, `linked-wandering-bird`) measured
+the warm single-file-edit case directly: appending one comment line to
+`Sources/LabanApp/TerminalQuickLook.swift` (a 50-line leaf file) and running
+`./scripts/build-app --profile` took ~17.9s under the existing default
+(whole-module optimization) settings after this round's mechanical fixes
+(`.build/<config>` symlink reuse, dSYM reuse), down modestly from ~20.5s
+before them. With `LABAN_FAST_PROFILE=1` set, the identical edit rebuilt in
+~7.5s, about a 58% reduction versus the ~17.9s default-settings figure and
+roughly 63% versus the original ~20.5s baseline. A fully warm, no-source-
+change `scripts/install-app` run (nothing to rebuild) dropped from ~2.7s to
+~1.2s from the `.build/<config>`-symlink and dSYM-reuse changes alone. In both
+the WMO and batch-mode configurations, `dwarfdump --uuid` confirmed the
+installed binary and its adjacent `.dSYM` shared the same UUID, and
+`codesign --verify --verbose=4` passed on the installed bundle. The cold-
+worktree `.build/checkouts` seeding step was exercised implicitly (its guard
+condition, `.build/checkouts` already present, was true throughout this
+session's testing since the worktree's `.build` was not empty); the
+underlying `cp -c -R` of the main checkout's 230MB `.build/checkouts` was
+timed standalone at ~1.8s, confirming the mechanism is cheap, but the full
+"very first build in a brand-new empty-`.build` worktree" path was not
+re-verified end-to-end in this pass.
 
 ## Idempotence and Recovery
 
