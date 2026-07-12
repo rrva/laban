@@ -11,7 +11,13 @@ fail() {
 
 command -v jq >/dev/null 2>&1 || fail "jq is required to validate JSON"
 
-find schemas fixtures -name '*.json' -print0 | xargs -0 -n1 jq empty
+# One batched jq invocation is far cheaper than one process per file. On
+# failure, fall back to a per-file pass so the error output still names
+# every invalid file instead of just the first one jq stopped at.
+if ! find schemas fixtures -name '*.json' -print0 | xargs -0 jq empty; then
+  find schemas fixtures -name '*.json' -print0 | xargs -0 -n1 jq empty
+  fail "invalid JSON found"
+fi
 
 agents_lines=$(wc -l < AGENTS.md | tr -d ' ')
 if [ "$agents_lines" -gt 150 ]; then
