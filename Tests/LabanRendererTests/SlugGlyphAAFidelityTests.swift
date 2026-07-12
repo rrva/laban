@@ -19,6 +19,17 @@ final class SlugGlyphAAFidelityTests: XCTestCase {
     "x/mcp/rpg/node_modules 501 10227",
   ]
 
+  override func setUp() {
+    super.setUp()
+    // A crashed weight probe elsewhere can leave this persisted non-default.
+    UserDefaults.standard.removeObject(forKey: VectorTextWeightSettings.defaultsKey)
+  }
+
+  override func tearDown() {
+    UserDefaults.standard.removeObject(forKey: VectorTextWeightSettings.defaultsKey)
+    super.tearDown()
+  }
+
   // MARK: - Grayscale envelope vs Software/CoreText
 
   func testSlugGrayscaleTracksSoftwareEnvelopeOnNeutralProbe() throws {

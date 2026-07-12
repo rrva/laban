@@ -15,6 +15,13 @@ final class VectorGlyphParityTests: XCTestCase {
   override func setUp() {
     super.setUp()
     try? FileManager.default.removeItem(at: artifactRoot)
+    // A crashed weight probe elsewhere can leave this persisted non-default.
+    UserDefaults.standard.removeObject(forKey: VectorTextWeightSettings.defaultsKey)
+  }
+
+  override func tearDown() {
+    UserDefaults.standard.removeObject(forKey: VectorTextWeightSettings.defaultsKey)
+    super.tearDown()
   }
 
   func testLargeGlyphMasksGetStableFirstResidencySampleBudget() {
