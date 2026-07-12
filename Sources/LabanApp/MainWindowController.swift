@@ -38,6 +38,7 @@ final class MainWindowController: NSWindowController {
   private lazy var vectorTextRasterizer: VectorTextRasterizer? = VectorTextRasterizer()
   /// Env-gated Phase 0 loopback control server for live GUI state/actions.
   private(set) var controlServer: LabanControlServer?
+  private var windowScreenshotAuxiliaryWindowsProvider: () -> [NSWindow] = { [] }
   private(set) var controlSecurityCoordinator: ControlSecurityCoordinator?
   private(set) var controlSessionLaunchCoordinator = ControlSessionLaunchCoordinator()
   private var liveControlRouter: LiveIntentRouter?
@@ -502,7 +503,9 @@ final class MainWindowController: NSWindowController {
     liveRouter.bindWindowScreenshotProvider {
       [weak controller] () -> Result<LabanWindowScreenshot, LabanWindowScreenshotFailure> in
       guard let window = controller?.window else { return .failure(.captureFailed) }
-      return LabanWindowScreenshotCapture.capture(window: window)
+      return LabanWindowScreenshotCapture.capture(
+        window: window,
+        including: controller?.windowScreenshotAuxiliaryWindowsProvider() ?? [])
     }
     if let bootstrappedControl {
       controller.controlServer = bootstrappedControl.server
@@ -819,6 +822,13 @@ final class MainWindowController: NSWindowController {
     } else {
       stopControlServer()
     }
+  }
+
+  /// Supplies explicitly approved auxiliary Laban windows for the exact
+  /// whole-window screenshot route. The provider runs only on the main thread
+  /// immediately before capture, so hidden windows are never retained or read.
+  func setWindowScreenshotAuxiliaryWindowsProvider(_ provider: @escaping () -> [NSWindow]) {
+    windowScreenshotAuxiliaryWindowsProvider = provider
   }
 
   var currentRendererSelection: RendererSelection {

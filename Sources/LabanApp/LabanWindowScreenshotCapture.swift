@@ -41,8 +41,11 @@ enum LabanWindowScreenshotCapture {
   /// which enumerates only this process's own windows without requiring Screen
   /// Recording consent at all (Laban only ever screenshots its own window),
   /// removing the TCC/ad-hoc-signing fragility entirely for the common case.
-  static func capture(window: NSWindow) -> Result<LabanWindowScreenshot, LabanWindowScreenshotFailure> {
-    let windowIDs = relatedWindowIDs(for: window)
+  static func capture(
+    window: NSWindow,
+    including auxiliaryWindows: [NSWindow] = []
+  ) -> Result<LabanWindowScreenshot, LabanWindowScreenshotFailure> {
+    let windowIDs = relatedWindowIDs(for: window, including: auxiliaryWindows)
     guard !windowIDs.isEmpty else {
       EventLog.shared.log("screenshot.capture.failed", ["reason": "noRelatedWindowIDs"])
       return .failure(.captureFailed)
@@ -85,7 +88,10 @@ enum LabanWindowScreenshotCapture {
     guard let firstWindow = matchedWindows.first else {
       EventLog.shared.log(
         "screenshot.capture.failed",
-        ["reason": "noShareableWindows", "windowIDs": windowIDs.map(String.init).joined(separator: ",")])
+        [
+          "reason": "noShareableWindows",
+          "windowIDs": windowIDs.map(String.init).joined(separator: ","),
+        ])
       return .failure(.captureFailed)
     }
     guard let display = content.displays.first else {
@@ -188,7 +194,10 @@ enum LabanWindowScreenshotCapture {
         height: image.height))
   }
 
-  static func relatedWindowIDs(for root: NSWindow) -> [CGWindowID] {
+  static func relatedWindowIDs(
+    for root: NSWindow,
+    including auxiliaryWindows: [NSWindow] = []
+  ) -> [CGWindowID] {
     var candidates: [NSWindow] = []
     var seen: Set<ObjectIdentifier> = []
 
@@ -204,7 +213,10 @@ enum LabanWindowScreenshotCapture {
       }
     }
 
-    collect(root)
+    let roots = [root] + auxiliaryWindows.filter(\.isVisible)
+    for window in roots {
+      collect(window)
+    }
 
     // Some AppKit panels are associated by sheetParent/parent but are not in
     // the immediate child list during transition frames. Include only visible
@@ -228,7 +240,7 @@ enum LabanWindowScreenshotCapture {
     let windowsByID = Dictionary(
       uniqueKeysWithValues: candidates.map { (ObjectIdentifier($0), $0) })
 
-    return relatedIDs(rootID: ObjectIdentifier(root), nodes: nodes)
+    return relatedIDs(rootIDs: Set(roots.map(ObjectIdentifier.init)), nodes: nodes)
       .compactMap { identity in
         guard let window = windowsByID[identity] else { return nil }
         guard window.windowNumber > 0 else { return nil }
@@ -240,14 +252,22 @@ enum LabanWindowScreenshotCapture {
     rootID: ID,
     nodes: [RelatedNode<ID>]
   ) -> [ID] {
+    relatedIDs(rootIDs: [rootID], nodes: nodes)
+  }
+
+  static func relatedIDs<ID: Hashable>(
+    rootIDs: Set<ID>,
+    nodes: [RelatedNode<ID>]
+  ) -> [ID] {
     let nodesByID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
 
     func descendsFromRoot(_ node: RelatedNode<ID>) -> Bool {
-      guard node.id != rootID, node.isVisible else { return node.id == rootID }
+      if rootIDs.contains(node.id) { return true }
+      guard node.isVisible else { return false }
       var ancestorID = node.parentID
       var visited: Set<ID> = [node.id]
       while let currentID = ancestorID, visited.insert(currentID).inserted {
-        if currentID == rootID { return true }
+        if rootIDs.contains(currentID) { return true }
         ancestorID = nodesByID[currentID]?.parentID
       }
       return false

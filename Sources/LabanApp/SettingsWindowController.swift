@@ -9,6 +9,7 @@ import LabanRenderer
 /// the same menu-controller apply path, so there is a single source of truth
 /// and flipping a setting here behaves exactly as the old menu item did.
 final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
+  static let windowIdentifier = NSUserInterfaceItemIdentifier("LabanSettings")
   private let themeController: ThemeMenuController
   private let rendererController: RendererModeMenuController
   private let backendController: TerminalBackendMenuController
@@ -120,6 +121,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       styleMask: [.titled, .closable],
       backing: .buffered,
       defer: false)
+    window.identifier = Self.windowIdentifier
     window.title = L10n.tr("Laban Settings")
     // Reused across openings; without this AppKit frees it on close and the
     // next ⌘, would message a dead window.

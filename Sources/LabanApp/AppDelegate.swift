@@ -126,6 +126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
         return
       }
     }
+    windowController?.setWindowScreenshotAuxiliaryWindowsProvider {
+      NSApp.windows.filter {
+        $0.identifier == SettingsWindowController.windowIdentifier && $0.isVisible
+      }
+    }
     NSApp.activate(ignoringOtherApps: true)
 
     // System appearance binding. The initial value was applied before window

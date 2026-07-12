@@ -60,8 +60,42 @@ screenshot command.
 - [x] (2026-07-12) Restarted Laban and verified a live lazy screenshot artifact
   visually: `laban session screenshot` returned a real 2400x1576 PNG of the full
   window (title bar, sidebar, terminal content) with no permission dialog.
+- [x] (2026-07-12) Reproduced that a separate visible Settings window is omitted
+  even when it is key, because it is not an AppKit child of the terminal window.
+- [x] Extend the exact screenshot capture with the visible, explicitly identified
+  Settings window and its attached dialogs; retain the exclusion of arbitrary
+  top-level Laban windows and other applications.
+- [x] Add focused capture-selection regression coverage and run focused tests.
+- [x] Build and install the release app at `~/Laban.app`.
+- [ ] Restart the installed app and verify the live Settings capture through
+  `laban session screenshot`.
+- [x] (2026-07-12) Diagnosed recurring lazy-attach `ENOENT` as a concurrent
+  XCTest server displacing the live app's shared Unix socket, not an approval
+  timeout.
+- [x] Prevent live-socket displacement and isolate XCTest's default control
+  directory; the second-server regression test proves the first listener stays
+  reachable.
+- [x] Build and install the control-socket fix at `~/Laban.app`.
+- [ ] Restart the installed app and verify repeated lazy screenshots while a
+  parallel XCTest worktree is active do not lose the control socket.
 
 ## Discoveries and Surprises
+
+- Observation: A test process from another worktree could orphan the live app's
+  listener without stopping it. `prepareSocketPath` unlinked any existing socket
+  before binding; a test then bound the same pathname and removed it at teardown.
+  Evidence: live `lsof -U` showed LabanApp PID 81924 and a faster-checks
+  `LabanPackageTests.xctest` process owning the shared
+  `~/Library/Application Support/Laban/control.sock` pathname at different
+  points in the collision. The live app retained its listener FD after the test
+  teardown, but the pathname was gone and lazy attach returned `ENOENT`.
+
+- Observation: The repository-wide `./scripts/check` reached the broad XCTest
+  stage and remained active for more than four minutes without printing a
+  failure, so its process was stopped to release the shared SwiftPM build lock.
+  Evidence: Focused `LabanWindowScreenshotCaptureTests`, `LiveControlObserveTests`,
+  `ControlAvailabilityParityTests`, `./scripts/format`, and `./scripts/lint`
+  completed successfully before the release install.
 
 - Observation: The macOS 26 SDK removes the old
   `CGWindowListCreateImageFromArray` Swift spelling in favor of the
@@ -123,6 +157,16 @@ screenshot command.
   recording permission.
   Date/Author: 2026-07-11 / Codex.
 
+- Decision: Treat only the visible `LabanSettings` window as an auxiliary root
+  for `window.screenshot`.
+  Rationale: Settings is a separate top-level AppKit window and therefore is not
+  reachable through the terminal window's sheet/child hierarchy. Including all
+  frontmost or all same-process windows would weaken the documented boundary by
+  exposing unrelated future Laban windows. A stable AppKit window identifier
+  lets the app inject Settings only when it is already visible; its own sheets
+  and child dialogs remain included through the existing recursive selection.
+  Date/Author: 2026-07-12 / Codex.
+
 ## Context and Orientation
 
 Laban's live control plane is HTTP over a same-user Unix domain socket. A normal
@@ -147,6 +191,14 @@ renderer pixels, not AppKit window chrome or dialogs. The new route is
 JSON containing base64 PNG data and pixel dimensions. `LiveIntentRouter` runs on
 the main thread and will receive a capture provider bound by
 `MainWindowController` after the real `NSWindow` exists.
+
+`SettingsWindowController` owns a separate top-level `NSWindow`; it is neither a
+sheet nor a child window of `MainWindowController.window`. The capture helper's
+current related-window graph intentionally filters it out. Give the Settings
+window a stable `NSUserInterfaceItemIdentifier`, and have `AppDelegate` provide
+that window to `MainWindowController` only while it is visible. The helper must
+accept explicit auxiliary roots and recurse through their sheets/children just
+as it does for the main window.
 
 `Sources/LabanApp/AppKitTerminalProbes.swift` proves that this application can
 capture its own `NSWindow` through CoreGraphics. The new production helper will
@@ -279,6 +331,7 @@ terminal would terminate this agent session.
 - `LiveIntentRouter.bindWindowScreenshotProvider(...)`: main-thread provider
   returning PNG data and pixel dimensions.
 - `LabanWindowScreenshotCapture.capture(window:)`: AppKit/CoreGraphics helper
-  capturing the main window plus visible attached sheets/children.
+  capturing the main window plus visible attached sheets/children and explicitly
+  supplied visible Settings roots.
 - `laban session screenshot [--output PATH] [--json]`: broker-or-lazy CLI that
   writes a private PNG and returns path/size metadata.
