@@ -11,9 +11,21 @@ public enum ControlAdvertisement {
     }
     // XCTest targets run in separate worktrees and can run while a user's
     // Laban.app is live. They must never bind the shared production socket.
-    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-      return FileManager.default.temporaryDirectory
-        .appendingPathComponent("laban-xctest-control-\(getpid())", isDirectory: true)
+    // `swift test` on the command line does not set `XCTestConfigurationFilePath`,
+    // but the runner is the `xctest` executable and receives `-XCTest` arguments.
+    let isXCTest =
+      ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+      || ProcessInfo.processInfo.processName == "xctest"
+      || ProcessInfo.processInfo.arguments.contains("-XCTest")
+    if isXCTest {
+      // Use /tmp so the path stays short enough to fit in an 80-column test
+      // terminal without wrapping and breaking string assertions.
+      let url = URL(fileURLWithPath: "/tmp/laban-xctest-\(getuid())-\(getpid())")
+      try? FileManager.default.createDirectory(
+        at: url,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+      return url
     }
     let base =
       FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first

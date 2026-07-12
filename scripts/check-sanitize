@@ -6,4 +6,4 @@ cd "$repo_root"
 # One sanitizer build and test-run invocation covers both suites. Separate
 # invocations rebuild sanitizer artifacts and re-launch the test runner even
 # though the targets share the same package graph.
-swift test --sanitize address --filter 'LabanTerminalCoreTests|LabptyTests'
+swift test --sanitize address --scratch-path .build-asan --filter 'LabanTerminalCoreTests|LabptyTests'

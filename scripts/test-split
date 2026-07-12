@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+# Split the full XCTest suite into a parallel-safe group (no UserDefaults.standard
+# or NSApplication.shared mutation) and a sequential group (the rest).
+# See execplans/active/faster-check-heavy-stages.md Milestone 4.
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+# Five targets that only touch per-test mutable state (UUID-scoped temp dirs,
+# env vars in separate worker processes, or per-test UserDefaults suites). Safe
+# to run concurrently as separate worker processes under `swift test --parallel`.
+parallel_safe='LabandTests|LabptyTests|LabanAgentTests|LabanCLITests|LabanTerminalCoreTests'
+
+# Five targets that either write overlapping UserDefaults.standard keys, touch
+# NSApplication.shared, or bind a fixed control socket path. Keep them in one
+# sequential, non-parallel invocation so cross-test contamination stays
+# reproducible and debuggable.
+sequential='LabanCoreTests|LabanRendererTests|LabanDebugTests|LabanAppTests|LabanControlTests'
+
+swift test --parallel --filter "$parallel_safe"
+swift test --filter "$sequential"

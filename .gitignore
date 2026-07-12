@@ -1,4 +1,6 @@
 .build/
+.build-asan/
+.build-smoke/
 .swiftpm/
 .external
 .external/

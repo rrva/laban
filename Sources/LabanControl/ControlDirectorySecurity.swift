@@ -58,6 +58,9 @@ public enum ControlDirectorySecurity {
   public static func prepareSocketPath(_ path: String) throws {
     let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
     if isEphemeralSocketDirectory(parent) {
+      // /tmp and /var/folders are typically symlinks on macOS. The security
+      // checks below intentionally reject symlinked directories, so skip them
+      // for the well-known ephemeral roots used by tests.
       try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
     } else {
       try rejectSymlinkDirectory(at: parent)
@@ -106,7 +109,6 @@ public enum ControlDirectorySecurity {
 
   private static func isEphemeralSocketDirectory(_ url: URL) -> Bool {
     let path = url.path
-    if path.hasPrefix(FileManager.default.temporaryDirectory.path) { return true }
     if path == "/tmp" || path.hasPrefix("/tmp/") { return true }
     if path.hasPrefix("/var/folders/") { return true }
     return false

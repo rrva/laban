@@ -11,15 +11,14 @@ fail() {
   exit 1
 }
 
-swift build --product LabanApp --product laban-agent
-# build-app mutates the SwiftPM-built executable after linking, so ad-hoc
-# signing is required for launch on Apple Silicon. Ad-hoc signing does not
-# prompt for keychain access.
-./scripts/build-app
+# build-app produces every product `smoke-runtime` needs in its own
+# SwiftPM scratch directory so it does not evict the plain debug build cache.
+BUILD_ROOT=".build-smoke"
+./scripts/build-app --scratch-path="$BUILD_ROOT"
 
-AGENT_BIN=".build/debug/laban-agent"
-APP_BIN=".build/laban/Laban.app/Contents/MacOS/LabanApp"
-PLIST=".build/laban/Laban.app/Contents/Info.plist"
+AGENT_BIN="$BUILD_ROOT/debug/laban-agent"
+APP_BIN="$BUILD_ROOT/laban/Laban.app/Contents/MacOS/LabanApp"
+PLIST="$BUILD_ROOT/laban/Laban.app/Contents/Info.plist"
 EXPECTED_APP="laban-app: smoke ok"
 RUN_ID="${LABAN_RUN_ID:-smoke-runtime-$(date +%Y%m%d-%H%M%S)-$$}"
 AGENT_ARTIFACTS="${LABAN_ARTIFACTS:-.artifacts/runs/$RUN_ID}"
@@ -44,15 +43,15 @@ plutil -lint "$PLIST" || fail "Info.plist lint failed"
 # 2b. Renderer resource bundle is reachable via Bundle.main.resourceURL.
 # Catches the regression where the .app launches but FontAtlas crashes
 # because the LabanRenderer resource bundle was not copied in.
-RES_BUNDLE=".build/laban/Laban.app/Contents/Resources/Laban_LabanRenderer.bundle"
+RES_BUNDLE="$BUILD_ROOT/laban/Laban.app/Contents/Resources/Laban_LabanRenderer.bundle"
 [ -d "$RES_BUNDLE" ] || fail "$RES_BUNDLE missing from .app"
 [ -f "$RES_BUNDLE/JetBrainsMono-Regular.ttf" ] || fail "JetBrainsMono-Regular.ttf missing from $RES_BUNDLE"
 [ -f "$RES_BUNDLE/Shaders.metal" ] || fail "Shaders.metal missing from $RES_BUNDLE"
 
 # 3. Binary executable bit (belt-and-suspenders)
 [ -x "$APP_BIN" ] || fail "$APP_BIN is not executable"
-codesign --verify --verbose=4 ".build/laban/Laban.app" >/dev/null 2>&1 \
-  || fail ".build/laban/Laban.app code signature is invalid"
+codesign --verify --verbose=4 "$BUILD_ROOT/laban/Laban.app" >/dev/null 2>&1 \
+  || fail "$BUILD_ROOT/laban/Laban.app code signature is invalid"
 
 # 4. AppKit smoke startup: print stable line and exit 0 without entering run loop.
 # Background watchdog kills the process after 10s to guard against hang regression.

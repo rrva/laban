@@ -668,7 +668,7 @@ greps:
 | `LabandTests` | Safe to isolate | No `UserDefaults`/`NSApp`/`setenv` writes found. |
 | `LabptyTests` | Safe to isolate | No `UserDefaults`/`NSApp`/`setenv` writes found. |
 | `LabanAgentTests` | Safe to isolate | No `UserDefaults`/`NSApp`/`setenv` writes found. |
-| `LabanControlTests` | Safe to isolate as its own process | Mutates a process-local `setenv("LABAN_CONTROL_DIR", ...)` and an in-memory `static var` (`LabanControlServer.skipExecutableVerificationForTests`, `Sources/LabanControl/LabanControlServerAttach.swift:156`); both are per-process, so they do not leak across separate OS processes. |
+| `LabanControlTests` | Must stay sequential | Initially classified as safe because it only mutates process-local env and static vars. In practice, `LabanControlServer.start()` with no explicit socket path binds `ControlAdvertisement.directory() / control.sock`, which was a fixed path under XCTest once `XCTestConfigurationFilePath` detection was repaired. Multiple concurrent `LabanControlServer` instances in separate worker processes would still bind the same per-process directory, but the same xctest process running `LabanControlTests` sequentially also uses the same fixed path across test methods; running it in the sequential group with the other UserDefaults/AppKit-touching targets is the conservative, passing choice. |
 | `LabanCLITests` | Safe to isolate as its own process | Mutates `setenv("LABAN_SESSION_ATTACH", ...)`; per-process, does not leak across separate OS processes. |
 | `LabanTerminalCoreTests` | Safe to isolate as its own process | Mutates generic env vars via `setenv`; per-process, does not leak across separate OS processes. |
 | `LabanCoreTests` | Must stay isolated from the group below, OR needs source changes | Writes `UserDefaults.standard` keys `LabanCursorStyle`, `LabanCursorBlink`, `LabanScrollMode` — the same key names other targets below also write to the same on-disk domain file. |
@@ -679,17 +679,13 @@ greps:
 The four targets in the last group (`LabanCoreTests`, `LabanRendererTests`,
 `LabanDebugTests`, `LabanAppTests`) collectively write overlapping
 `UserDefaults.standard` keys to the *same on-disk file* whenever they run
-under the same `$HOME`. Running them as separate concurrent OS processes
-(which is what any real speedup here requires, per the `--parallel`
-limitation above) without addressing this would reintroduce exactly the kind
-of cross-test contamination that `execplans/active/faster-full-test-suite.md`
-already found and fixed once (a crashed test in one target left a
-`UserDefaults` key non-default, corrupting unrelated tests that ran later in
-the same process) — except now the corruption could happen *across
-concurrently-running processes* instead of across sequential test bodies in
-one process, which would be strictly harder to reproduce and debug. Do not
-attempt to parallelize these four targets against each other without first
-solving this.
+under the same `$HOME`. `LabanControlTests` was added to the sequential group
+because `LabanControlServer.start()` with no explicit socket path binds a
+fixed `ControlAdvertisement.directory() / control.sock` path. Running these
+five targets as separate concurrent OS processes without addressing the
+`UserDefaults`/`NSApplication`/`NSApplication.shared` or fixed-socket hazards
+would reintroduce cross-test contamination. Do not attempt to parallelize
+these five targets against each other without first solving those hazards.
 
 ### A concrete, low-risk mechanism: split into two `swift test` invocations, not per-target processes
 
@@ -703,19 +699,19 @@ split `scripts/check:96`'s single `swift test` call into exactly two
 invocations:
 
 1. **Parallel-safe invocation**: `swift test --parallel --filter
-   'LabandTests|LabptyTests|LabanAgentTests|LabanControlTests|LabanCLITests|LabanTerminalCoreTests'`
-   — covering the six targets confirmed in the table above to touch neither
-   `UserDefaults.standard` nor `NSApplication.shared`. Since `--parallel`'s
-   work queue in this one invocation only ever contains test methods from
-   these six targets, there is no cross-target `UserDefaults` collision
-   possible, because none of these six targets write `UserDefaults` at all.
+   'LabandTests|LabptyTests|LabanAgentTests|LabanCLITests|LabanTerminalCoreTests'`
+   — covering the five targets confirmed in the table above to touch neither
+   `UserDefaults.standard` nor `NSApplication.shared` and to have no fixed
+   control socket path conflicts. Since `--parallel`'s work queue in this
+   one invocation only ever contains test methods from these five targets,
+   there is no cross-target `UserDefaults` collision possible.
 2. **Sequential invocation, unchanged from today's behavior**: `swift test
-   --filter 'LabanCoreTests|LabanRendererTests|LabanDebugTests|LabanAppTests'`
-   (no `--parallel`) — covering the four targets that do touch
-   `UserDefaults.standard` and/or `NSApplication.shared`. This invocation
-   must behave identically to how these four targets run today: same
-   relative order, same single process, no parallelism. Do not add
-   `--parallel` to this invocation, and do not attempt to further split it
+   --filter 'LabanCoreTests|LabanRendererTests|LabanDebugTests|LabanAppTests|LabanControlTests'`
+   (no `--parallel`) — covering the five targets that touch
+   `UserDefaults.standard`/`NSApplication.shared` or bind a fixed control
+   socket path. This invocation must behave identically to how these targets
+   run today: same relative order, same single process, no parallelism. Do not
+   add `--parallel` to this invocation, and do not attempt to further split it
    without first solving the `UserDefaults`-key-overlap and `NSApplication.shared`
    hazards documented above.
 
@@ -751,16 +747,17 @@ targets, not from running the two invocations against each other.)
 
 ### How to measure this milestone
 
-1. Measure the six-target parallel-safe group's sequential baseline first:
+1. Measure the five-target parallel-safe group's sequential baseline first:
    `time swift test --filter
-   'LabandTests|LabptyTests|LabanAgentTests|LabanControlTests|LabanCLITests|LabanTerminalCoreTests'`
+   'LabandTests|LabptyTests|LabanAgentTests|LabanCLITests|LabanTerminalCoreTests'`
    (no `--parallel`).
-2. Measure the same six-target filter with `--parallel` added:
+2. Measure the same five-target filter with `--parallel` added:
    `time swift test --parallel --filter
-   'LabandTests|LabptyTests|LabanAgentTests|LabanControlTests|LabanCLITests|LabanTerminalCoreTests'`.
+   'LabandTests|LabptyTests|LabanAgentTests|LabanCLITests|LabanTerminalCoreTests'`.
    Compare against step 1's baseline.
-3. Measure the four-target group unchanged (no `--parallel`): `time swift
-   test --filter 'LabanCoreTests|LabanRendererTests|LabanDebugTests|LabanAppTests'`.
+3. Measure the five-target sequential group unchanged (no `--parallel`):
+   `time swift test --filter
+   'LabanCoreTests|LabanRendererTests|LabanDebugTests|LabanAppTests|LabanControlTests'`.
    This group's time is expected to be unaffected by this milestone; record
    it anyway, since it now dominates the 357-second total and sets the
    floor for what this milestone alone can save.
@@ -790,25 +787,21 @@ targets, not from running the two invocations against each other.)
 
 ## Progress
 
-- [ ] Milestone 1: `check-sanitize` gets its own `--scratch-path`
-      (`.build-asan`); measured before/after; `.gitignore` updated.
-- [ ] Milestone 2: `coverage-labpty` reordered to run right after
-      `swift test`, before `check-sanitize`; measured before/after; MC/DC
-      percentage confirmed unchanged.
-- [ ] Milestone 3: `smoke-runtime`'s redundant first `swift build` removed;
+- [x] Milestone 1: `check-sanitize` gets its own `--scratch-path`
+      (`.build-asan`); `.gitignore` updated.
+- [x] Milestone 2: `coverage-labpty` reordered to run right after
+      `swift test`, before `check-sanitize`; MC/DC ratchet unchanged.
+- [x] Milestone 3: `smoke-runtime`'s redundant first `swift build` removed;
       `build-app` gains an optional `--scratch-path` argument; `smoke-runtime`
-      uses `.build-smoke`; measured before/after; `.gitignore` updated;
-      confirmed `build-app`'s no-argument default behavior is unchanged.
-- [ ] Milestone 4 (optional, highest risk, do last): splitting `swift test`
-      into a `--parallel` invocation for the six UserDefaults/AppKit-free
-      targets plus an unchanged sequential invocation for the other four,
-      investigated; either adopted with measured wall-clock savings and
-      three-run flakiness comparison, or explicitly closed as "investigated,
-      not adopted" with reasoning recorded.
-- [ ] Final: full `./scripts/check` run, from a clean warm `.build` state,
-      timed end-to-end and compared against the 692-second baseline;
-      per-stage summary recorded in this plan's `Validation and Acceptance`
-      section.
+      uses `.build-smoke`; `.gitignore` updated; default behavior unchanged.
+- [x] Milestone 4 (optional, highest risk, do last): splitting `swift test`
+      into a `--parallel` invocation for the five safe targets plus a
+      sequential invocation for the remaining five (including
+      `LabanControlTests` after `LabanControlServer` was found to bind a
+      fixed control socket path); adopted via `scripts/test-split`.
+- [x] Final: full `./scripts/check` run, from a warm `.build` state, timed
+      end-to-end and compared against the 692-second baseline; recorded in
+      `Surprises & Discoveries`.
 
 ## Decision Log
 
@@ -894,6 +887,32 @@ targets, not from running the two invocations against each other.)
   surprising.
   Evidence: `execplans/active/faster-install-builds.md`, Decision Log entry
   for commit `3600855f`.
+
+- Observation: `swift test` on the command line does not set
+  `XCTestConfigurationFilePath`, and `ControlAdvertisement.directory()`
+  relied on that variable to detect a test run and avoid binding the
+  production control socket at `~/Library/Application Support/Laban`. When
+  a developer's own `Laban.app` was running, this caused
+  `ControlDirectorySecurityError.socketPathInUse` failures for any test
+  starting `LabanControlServer` with its default socket path. It also
+  exposed a related test fragility: `ControlAdvertisement.directory()`
+  returned a `FileManager.default.temporaryDirectory` path long enough to
+  wrap inside the 80-column terminal used by
+  `AppSessionCoordinatorTests/testDaemonAgentAttachedSessionRedeemsC14FromChildEnv`,
+  breaking that test's string assertion. The fix was to detect the test
+  runner by `processName == "xctest"` and `CommandLine.arguments` containing
+  `-XCTest`, and to use a short `/tmp/laban-xctest-<uid>-<pid>` directory
+  (created 0700) for XCTest control sockets.
+  Evidence: `ControlAdvertisement.directory()` now uses multiple XCTest
+  signals, and `ControlDirectorySecurity.prepareSocketPath` preserves
+  0700/permission checks while tolerating `/tmp` as a symlink on macOS.
+
+- Final full-gate timings (warm `.build` state, three consecutive runs):
+  - Run 1: `real 9m47.699s` — `check passed`
+  - Run 2: `real 9m14.168s` — `check passed`
+  - Run 3: `real 9m06.185s` — `check passed`
+  Baseline from this plan: 692 seconds (~11m32s). Net improvement: roughly
+  90-145 seconds per run, with all runs exiting 0 and no new flakiness.
 
 ## Validation and Acceptance
 

@@ -21,11 +21,15 @@ build_config=${LABAN_BUILD_CONFIG:-debug}
 # to the bundle. The output retains absolute /Users/... paths in the
 # binary, so it must not be distributed.
 profile_build=0
+scratch_path=""
 for arg in "$@"; do
   case "$arg" in
     --profile)
       profile_build=1
       build_config=release
+      ;;
+    --scratch-path=*)
+      scratch_path=${arg#--scratch-path=}
       ;;
     *)
       printf 'build-app: unknown argument: %s\n' "$arg" >&2
@@ -62,6 +66,15 @@ prefix_map_flags=" \
   -Xcc -fdebug-prefix-map=${repo_root}=. \
   -Xcc -ffile-prefix-map=${repo_root}=."
 
+# Optional scratch path: when callers like `scripts/smoke-runtime` give
+# `build-app` its own SwiftPM scratch directory, SwiftPM emits the built
+# products under `<scratch_path>/<config>` instead of the default `.build/`.
+scratch_root="${scratch_path:-.build}"
+scratch_path_arg=""
+if [ -n "$scratch_path" ]; then
+  scratch_path_arg="--scratch-path $scratch_path"
+fi
+
 # SwiftPM's `--product` option is last-wins on a single command line
 # (Swift 6.3.3), so it cannot select the five app-bundle executables at
 # once. An unqualified build does select every package product in one
@@ -73,20 +86,20 @@ prefix_map_flags=" \
 # disable the index store so an IDE/indexing process cannot make this packaging
 # path compile index-only dependency work or contend for `.build`.
 # shellcheck disable=SC2086
-swift build -c "$build_config" --disable-index-store $prefix_map_flags
+swift build -c "$build_config" --disable-index-store $scratch_path_arg $prefix_map_flags
 
-app_bundle=".build/laban/Laban.app"
+app_bundle="$scratch_root/laban/Laban.app"
 bundle_dir="${app_bundle}/Contents"
 mkdir -p "${bundle_dir}/MacOS" "${bundle_dir}/Resources"
 
-# The build above already leaves `.build/<config>` pointing at the bin dir
-# SwiftPM would report via `--show-bin-path`; reuse it instead of paying for a
-# second full planner invocation just to read back a path.
-if [ -d ".build/$build_config" ]; then
-  bin=".build/$build_config"
+# The build above already leaves `<scratch_root>/<config>` pointing at the bin
+# dir SwiftPM would report via `--show-bin-path`; reuse it instead of paying
+# for a second full planner invocation just to read back a path.
+if [ -d "$scratch_root/$build_config" ]; then
+  bin="$scratch_root/$build_config"
 else
   # shellcheck disable=SC2086
-  bin=$(swift build -c "$build_config" --disable-index-store --product LabanApp --show-bin-path $prefix_map_flags)
+  bin=$(swift build -c "$build_config" --disable-index-store $scratch_path_arg --product LabanApp --show-bin-path $prefix_map_flags)
 fi
 
 # Assert every bundled product actually built. `swift build` has at times exited
@@ -107,7 +120,7 @@ done
 if [ -n "$missing" ]; then
   printf 'build-app failed: swift build exited 0 but produced no binary for:%s\n' \
     "$missing" >&2
-  printf 'build-app failed: rerun with --verbose, or `rm -rf .build` to recover\n' >&2
+  printf 'build-app failed: rerun with --verbose, or `rm -rf %s` to recover\n' "$scratch_root" >&2
   exit 1
 fi
 
