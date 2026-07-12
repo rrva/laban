@@ -33,9 +33,16 @@ AppKit state, and user defaults.
   253.306s in this worktree.
 - [x] (2026-07-12) Fix the route-catalog count assertion drift (46 → 47 after
   the window-screenshot route landed in e305a5aa).
-- [ ] Resolve the pre-existing renderer-fidelity failure
-  (`testDefaultVectorTextFidelityStaysNearMetalOnLightBackground`), then run
-  the full check gate.
+- [x] (2026-07-12) Resolve the pre-existing renderer-fidelity failures
+  (`VectorGlyphParityTests.testDefaultVectorTextFidelityStaysNearMetalOnLightBackground`
+  and 3 `SlugGlyphAAFidelityTests` cases). Root cause: `swift test`'s
+  `UserDefaults.standard` resolves to the on-disk `com.apple.dt.xctest.tool`
+  preference domain, not a per-run sandbox; a crashed weight-probe test
+  elsewhere (`SlugGlyphRendererTests.testSlugTextWeightThickensRenderedInk`)
+  can leave `LabanVectorTextWeight` persisted non-default, contaminating
+  later renderer fidelity tests. Fix: reset the key in `setUp`/`tearDown` of
+  both affected test files. The leak's source point in
+  `SlugGlyphRendererTests` was not hardened, only its victims.
 - [ ] Continue optimizing the rest of `scripts/check` beyond `swift test`
   (boundaries/docs/anchors/specs/cbmc/trace/fuzz/e2e stages), guided by a
   per-stage timing baseline.
