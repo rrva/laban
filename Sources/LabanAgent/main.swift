@@ -226,6 +226,22 @@ func resolveURL(_ path: String) -> URL {
   return cwd.appendingPathComponent(path)
 }
 
+/// sockaddr_un.sun_path is ~104 bytes on Darwin. A repo-relative artifacts or
+/// temp path can overflow it inside a deeply nested worktree checkout, so
+/// fall back to a short per-process system-temp directory the same way
+/// ControlAttachProxyServer does.
+func debugServerSocketPath(preferring candidate: URL) -> String {
+  let candidatePath = candidate.appendingPathComponent("control.sock").path
+  let addr = sockaddr_un()
+  if candidatePath.utf8CString.count <= MemoryLayout.size(ofValue: addr.sun_path) {
+    return candidatePath
+  }
+  let shortDir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("laban-debug-server-\(getpid())", isDirectory: true)
+  try? FileManager.default.createDirectory(at: shortDir, withIntermediateDirectories: true)
+  return shortDir.appendingPathComponent("control.sock").path
+}
+
 func defaultDebugArtifactsPath() -> String {
   let pid = ProcessInfo.processInfo.processIdentifier
   let suffix = UUID().uuidString.prefix(8)
@@ -607,12 +623,7 @@ if let debugAddr = args.debugServerAddress {
   }
   _ = serverAddress
 
-  let socketPath: String
-  if let tempURL {
-    socketPath = tempURL.appendingPathComponent("control.sock").path
-  } else {
-    socketPath = artifactsURL.appendingPathComponent("control.sock").path
-  }
+  let socketPath = debugServerSocketPath(preferring: tempURL ?? artifactsURL)
 
   let runtime: HeadlessDebugRuntime
   do {
