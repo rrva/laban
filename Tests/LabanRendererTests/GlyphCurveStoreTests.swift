@@ -128,54 +128,80 @@ final class GlyphCurveStoreTests: XCTestCase {
       ("Menlo", CTFontCreateWithName("Menlo" as CFString, 24, nil)),
     ]
 
-    for fontCase in fontCases {
-      for value in 0x20...0x7E {
+    let inputs = try fontCases.flatMap { fontCase in
+      try (0x20...0x7E).map { value in
         let scalar = try XCTUnwrap(Unicode.Scalar(value))
         let glyph = try glyph(for: scalar, font: fontCase.font)
-        let outline = store.outline(for: glyph, font: fontCase.font)
-        let comparison = renderComparison(font: fontCase.font, glyph: glyph, outline: outline)
-
-        if outline == nil {
-          XCTAssertEqual(
-            comparison.coreTextInkPixels,
-            0,
-            "\(fontCase.label) U+\(String(format: "%04X", value)) should not have visible ink")
-          continue
-        }
-
-        guard comparison.inkPixels > 0 else {
-          XCTFail("\(fontCase.label) U+\(String(format: "%04X", value)) produced no ink")
-          continue
-        }
-
-        if comparison.meanAbsoluteDifference > 16.0
-          || comparison.percentWithinSixtyFour < 0.98
-          || abs(comparison.coverageRatio - 1) > 0.20
-        {
-          writeArtifacts(
-            fontLabel: fontCase.label,
-            scalarValue: value,
-            width: comparison.width,
-            height: comparison.height,
-            expected: comparison.expected,
-            actual: comparison.actual,
-            diff: comparison.diff)
-        }
-
-        XCTAssertLessThanOrEqual(
-          comparison.meanAbsoluteDifference,
-          16.0,
-          "\(fontCase.label) U+\(String(format: "%04X", value)) mean abs")
-        XCTAssertGreaterThanOrEqual(
-          comparison.percentWithinSixtyFour,
-          0.98,
-          "\(fontCase.label) U+\(String(format: "%04X", value)) within ±64/255")
-        XCTAssertEqual(
-          comparison.coverageRatio,
-          1,
-          accuracy: 0.20,
-          "\(fontCase.label) U+\(String(format: "%04X", value)) total coverage ratio")
+        return (
+          label: fontCase.label,
+          value: value,
+          font: fontCase.font,
+          glyph: glyph,
+          outline: store.outline(for: glyph, font: fontCase.font)
+        )
       }
+    }
+    let resultsLock = NSLock()
+    var results: [(String, Int, GlyphCurveOutline?, RenderComparison)] = []
+    DispatchQueue.concurrentPerform(iterations: inputs.count) { index in
+      let input = inputs[index]
+      let comparison = Self.renderComparison(
+        font: input.font,
+        glyph: input.glyph,
+        outline: input.outline)
+      resultsLock.lock()
+      results.append((input.label, input.value, input.outline, comparison))
+      resultsLock.unlock()
+    }
+
+    for result in results.sorted(by: {
+      $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0
+    }) {
+      let fontLabel = result.0
+      let value = result.1
+      let outline = result.2
+      let comparison = result.3
+
+      if outline == nil {
+        XCTAssertEqual(
+          comparison.coreTextInkPixels,
+          0,
+          "\(fontLabel) U+\(String(format: "%04X", value)) should not have visible ink")
+        continue
+      }
+
+      guard comparison.inkPixels > 0 else {
+        XCTFail("\(fontLabel) U+\(String(format: "%04X", value)) produced no ink")
+        continue
+      }
+
+      if comparison.meanAbsoluteDifference > 16.0
+        || comparison.percentWithinSixtyFour < 0.98
+        || abs(comparison.coverageRatio - 1) > 0.20
+      {
+        writeArtifacts(
+          fontLabel: fontLabel,
+          scalarValue: value,
+          width: comparison.width,
+          height: comparison.height,
+          expected: comparison.expected,
+          actual: comparison.actual,
+          diff: comparison.diff)
+      }
+
+      XCTAssertLessThanOrEqual(
+        comparison.meanAbsoluteDifference,
+        16.0,
+        "\(fontLabel) U+\(String(format: "%04X", value)) mean abs")
+      XCTAssertGreaterThanOrEqual(
+        comparison.percentWithinSixtyFour,
+        0.98,
+        "\(fontLabel) U+\(String(format: "%04X", value)) within ±64/255")
+      XCTAssertEqual(
+        comparison.coverageRatio,
+        1,
+        accuracy: 0.20,
+        "\(fontLabel) U+\(String(format: "%04X", value)) total coverage ratio")
     }
   }
 
@@ -303,7 +329,7 @@ final class GlyphCurveStoreTests: XCTestCase {
     let coverageRatio: Double
   }
 
-  private func renderComparison(
+  private static func renderComparison(
     font: CTFont,
     glyph: CGGlyph,
     outline: GlyphCurveOutline?
@@ -382,7 +408,7 @@ final class GlyphCurveStoreTests: XCTestCase {
         : Double(actualCoverageTotal) / Double(expectedCoverageTotal))
   }
 
-  private func renderCoreTextAlpha(
+  private static func renderCoreTextAlpha(
     font: CTFont,
     glyph: CGGlyph,
     width: Int,
@@ -418,7 +444,7 @@ final class GlyphCurveStoreTests: XCTestCase {
     return bytes
   }
 
-  private func renderVectorAlpha(
+  private static func renderVectorAlpha(
     outline: GlyphCurveOutline,
     width: Int,
     height: Int,
