@@ -63,24 +63,26 @@ prefix_map_flags=" \
   -Xcc -ffile-prefix-map=${repo_root}=."
 
 # SwiftPM's `--product` option is last-wins on a single command line
-# (Swift 6.3.2): `--product LabanApp --product laband --product labpty`
-# only builds labpty and silently skips the other two, which then trips
-# the bin-path existence check below with a confusing "produced no
-# binary" message. Three separate invocations share the incremental
-# cache, so the only cost is running the planner three times.
-for product in LabanApp laban-agent laband labpty laban; do
-  # shellcheck disable=SC2086
-  swift build -c "$build_config" --product "$product" $prefix_map_flags
-done
+# (Swift 6.3.3), so it cannot select the five app-bundle executables at
+# once. An unqualified build does select every package product in one
+# planner invocation. That avoids reparsing and replanning the package
+# five times on every local install; the required-product check below
+# remains the guard against a future manifest/toolchain change silently
+# omitting an app helper.
+# Building an installable bundle never needs editor index data. Explicitly
+# disable the index store so an IDE/indexing process cannot make this packaging
+# path compile index-only dependency work or contend for `.build`.
+# shellcheck disable=SC2086
+swift build -c "$build_config" --disable-index-store $prefix_map_flags
 
 app_bundle=".build/laban/Laban.app"
 bundle_dir="${app_bundle}/Contents"
 mkdir -p "${bundle_dir}/MacOS" "${bundle_dir}/Resources"
 
 # shellcheck disable=SC2086
-bin=$(swift build -c "$build_config" --product LabanApp --show-bin-path $prefix_map_flags)
+bin=$(swift build -c "$build_config" --disable-index-store --product LabanApp --show-bin-path $prefix_map_flags)
 
-# Assert both products actually built. `swift build` has at times exited
+# Assert every bundled product actually built. `swift build` has at times exited
 # 0 while leaving one product unlinked (partial cache hits, planner races,
 # stale incremental state inheriting an older module signature). Without
 # this guard the next `cp` would print a one-line "No such file or
