@@ -39,17 +39,18 @@ covdir=$(mktemp -d)
 trap 'rm -rf "$covdir"' EXIT
 
 printf 'coverage-labpty: building test binary + MC/DC-instrumented daemon\n'
-swift build --build-tests >/dev/null 2>&1
+swift build --build-tests --scratch-path .build-coverage >/dev/null 2>&1
 # Instrument the daemon LAST so --skip-build runs the tests against it. The
 # next ordinary build restores an un-instrumented binary, so the normal build
 # is never contaminated.
-swift build --product labpty \
+swift build --product labpty --scratch-path .build-coverage \
   -Xcc -fprofile-instr-generate -Xcc -fcoverage-mapping -Xcc -fcoverage-mcdc \
   -Xcc -fprofile-continuous -Xlinker "$prof" >/dev/null 2>&1
 
 printf 'coverage-labpty: running LabptyTests against the instrumented daemon\n'
 LLVM_PROFILE_FILE="$covdir/labpty-%p.profraw" \
-  swift test --skip-build --filter LabptyTests >/dev/null 2>&1 || true
+  LABPTY_DAEMON_PATH=".build-coverage/debug/labpty" \
+  swift test --skip-build --filter LabptyTests --scratch-path .build-coverage >/dev/null 2>&1 || true
 n=$(ls "$covdir"/labpty-*.profraw 2>/dev/null | wc -l | tr -d ' ')
 if [ "$n" = 0 ]; then
   printf 'coverage-labpty: no profile data collected (daemon not instrumented?)\n' >&2
@@ -102,12 +103,12 @@ daemon="Sources/Labpty/main.c Sources/Labpty/labpty_registry.c"
 objects="-object $covdir/registry_cov -object $covdir/main_cov -object $covdir/signal_cov -object $covdir/poll_cov"
 printf 'coverage-labpty: MC/DC over the un-proven daemon code (%s integration profiles + harnesses)\n' "$n"
 # shellcheck disable=SC2086
-xcrun llvm-cov report .build/debug/labpty $objects -instr-profile="$covdir/labpty.profdata" \
+xcrun llvm-cov report .build-coverage/debug/labpty $objects -instr-profile="$covdir/labpty.profdata" \
   --show-mcdc-summary $daemon
 
 # The last column of the TOTAL row is the MC/DC percentage.
 # shellcheck disable=SC2086
-mcdc=$(xcrun llvm-cov report .build/debug/labpty $objects -instr-profile="$covdir/labpty.profdata" \
+mcdc=$(xcrun llvm-cov report .build-coverage/debug/labpty $objects -instr-profile="$covdir/labpty.profdata" \
   --show-mcdc-summary $daemon | awk '/^TOTAL/ {gsub(/%/,"",$NF); print $NF}')
 printf 'coverage-labpty: daemon MC/DC = %s%%\n' "$mcdc"
 

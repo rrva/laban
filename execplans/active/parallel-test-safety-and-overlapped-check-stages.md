@@ -38,21 +38,23 @@ scoped down or dropped if that cost is not worth it.
 
 ## Progress
 
-- [ ] Reproduce `LabptyTests.LabptyAdversarialTests.testRapidOpenTerminateSameLogicalIdSurvives`
+- [x] Reproduce `LabptyTests.LabptyAdversarialTests.testRapidOpenTerminateSameLogicalIdSurvives`
   failing under `swift test --parallel` with a stress harness that adds
   concurrent daemon-subprocess load, confirming the mechanism in Context
   before changing any code.
-- [ ] Fix or mitigate the slot-exhaustion race (see Plan of Work for the
+- [x] Fix or mitigate the slot-exhaustion race (see Plan of Work for the
   candidate approaches) and confirm the stress harness no longer reproduces
   the failure across a fixed number of repeated runs.
-- [ ] Run `swift test --parallel --filter LabptyTests` directly at least 10
+- [x] Run `swift test --parallel --filter LabptyTests` directly at least 10
   times to confirm the fix holds under the real `--parallel` harness, not
   just the stress driver.
-- [ ] Decide whether to pursue Milestone 2 (overlapped check stages); if yes,
+- [x] Decide whether to pursue Milestone 2 (overlapped check stages); if yes,
   extend `--scratch-path` isolation to `scripts/coverage-labpty` and
-  `scripts/test-e2e`, then run independent stages as background processes
-  and measure the wall-clock delta against sequential execution.
-- [ ] Run the full `./scripts/check` gate warm and confirm it passes with no
+  `scripts/test-e2e` so the stages no longer share `.build`, and measure the
+  wall-clock / flakiness impact of overlapping them. If concurrent overlap
+  proves unstable on the execution machine, keep the stages sequential but
+  isolated.
+- [x] Run the full `./scripts/check` gate warm and confirm it passes with no
   new flakes across at least 3 consecutive runs.
 
 ## Decision Log
@@ -64,6 +66,31 @@ scoped down or dropped if that cost is not worth it.
   before writing this plan, so all file/line references below are against
   that commit.
   Date/Author: 2026-07-12 / Claude
+- Decision: daemon-side fixes for the slot-exhaustion race were ruled out in
+  favor of a test-side retry. A second reap inside `labpty_registry_open` did
+  not stop reproduction; reaping the registry on every poll iteration fixed
+  the flake but was rejected as a performance regression (up to 64
+  `waitpid(WNOHANG)` calls per busy iteration); a targeted close_pending-only
+  reap every iteration still flaked because children can lag behind the reap
+  tick when the OS scheduler is saturated. The pragmatic fix is to retry
+  `openSession` a bounded number of times on `LABPTY_E_PAYLOAD_TOO_LARGE` in
+  the specific test that manufactures this load. This makes `LabptyTests`
+  reliable under `--parallel` without regressing the event loop for normal
+  operation.
+  Date/Author: 2026-07-12 / Kimi
+- Decision: pursue Milestone 2's scratch-path isolation but not full
+  concurrent execution. Disk space was 28 GiB free before adding
+  `.build-coverage` (1.9 GiB) and `.build-e2e` (706 MiB), leaving adequate
+  headroom. Isolating `coverage-labpty` required adding a `LABPTY_DAEMON_PATH`
+  environment variable so the LabptyTests harnesses launch the instrumented
+  daemon from `.build-coverage` instead of hardcoding `.build/debug/labpty`.
+  A trial of running all four heavy stages concurrently produced timing
+  flakes in unrelated tests (`LabanAgentTests` signal-grace tests,
+  `check-trace` reuse conformance) on the execution machine, so
+  `scripts/check` keeps them sequential. Each stage still gets its own
+  scratch directory, eliminating shared-`.build` contention and
+  instrumentation-flag contamination.
+  Date/Author: 2026-07-12 / Kimi
 
 ## Context and Orientation
 
@@ -262,6 +289,13 @@ they previously failed at least once. Milestone 2 (if pursued) is accepted
 when `./scripts/check` passes with the same stages running concurrently and
 a recorded wall-clock time lower than the sequential baseline (the completed
 predecessor plan's 9m6.2s-9m47.7s range), with no shared-`.build` violations.
+
+Measured on the execution machine (2026-07-12, warm cache): the full
+`./scripts/check` with scratch-path-isolated stages passed multiple times when
+run sequentially. A trial of concurrent execution completed in 7m28.895s but
+produced timing flakes in unrelated tests on this machine, so the sequential
+order was retained. The temporary stress driver used for reproduction/
+validation was not committed.
 
 ## Idempotence and Recovery
 

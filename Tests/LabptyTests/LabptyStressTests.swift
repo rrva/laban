@@ -376,7 +376,17 @@ final class LabptyStressTests: XCTestCase {
       at: root.appendingPathComponent(shmDir),
       withIntermediateDirectories: true)
     let socketPath = "\(tempRoot)/s.sock"
-    let executable = root.appendingPathComponent(".build/debug/labpty")
+    let executable: URL
+    if let override = ProcessInfo.processInfo.environment["LABPTY_DAEMON_PATH"],
+      !override.isEmpty
+    {
+      executable =
+        override.hasPrefix("/")
+        ? URL(fileURLWithPath: override)
+        : root.appendingPathComponent(override)
+    } else {
+      executable = root.appendingPathComponent(".build/debug/labpty")
+    }
     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
       throw XCTSkip("build labpty first: swift build --product labpty")
     }

@@ -27,10 +27,12 @@ require_json_field() {
   printf '%s' "$val"
 }
 
-# 1. Build
-swift build --product laban-agent 2>&1 | tail -5
+# 1. Build in an isolated scratch directory so this stage can overlap with
+# other scripts/check stages without contending on the shared .build graph.
+SCRATCH_PATH="${LABAN_E2E_SCRATCH_PATH:-.build-e2e}"
+swift build --product laban-agent --scratch-path "$SCRATCH_PATH" 2>&1 | tail -5
 
-AGENT_BIN=".build/debug/laban-agent"
+AGENT_BIN="$SCRATCH_PATH/debug/laban-agent"
 [ -x "$AGENT_BIN" ] || fail "laban-agent binary not found"
 
 HELP_OUTPUT=$("$AGENT_BIN" --help)

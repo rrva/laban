@@ -610,7 +610,7 @@ final class LabptyDaemonTests: XCTestCase {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     let process = Process()
     process.currentDirectoryURL = root
-    process.executableURL = root.appendingPathComponent(".build/debug/labpty")
+    process.executableURL = labptyExecutablePath(root: root)
     process.arguments = ["--socket", harness.socketPath, "--shm-dir", harness.shmDir]
     process.standardOutput = Pipe()
     process.standardError = Pipe()
@@ -1428,13 +1428,25 @@ final class LabptyDaemonTests: XCTestCase {
     return Harness(socketPath: socketPath, shmDir: shmDir, process: process)
   }
 
+  private func labptyExecutablePath(root: URL) -> URL {
+    if let override = ProcessInfo.processInfo.environment["LABPTY_DAEMON_PATH"],
+      !override.isEmpty
+    {
+      if override.hasPrefix("/") {
+        return URL(fileURLWithPath: override)
+      }
+      return root.appendingPathComponent(override)
+    }
+    return root.appendingPathComponent(".build/debug/labpty")
+  }
+
   private func launchHarnessProcess(
     root: URL,
     socketPath: String,
     shmDir: String,
     inheritHighFileDescriptors: Bool
   ) throws -> Process {
-    let executable = root.appendingPathComponent(".build/debug/labpty")
+    let executable = labptyExecutablePath(root: root)
     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
       throw XCTSkip("build labpty first: swift build --product labpty")
     }

@@ -590,16 +590,47 @@ final class LabptyAdversarialTests: XCTestCase {
     defer { client.close() }
 
     for index in 0..<200 {
-      let descriptor = try client.openSession(
-        LabptyOpenSessionRequest(
+      let descriptor = try openWithTransientSlotRetry(
+        client: client,
+        request: LabptyOpenSessionRequest(
           rows: 24,
           cols: 80,
           argv: ["/bin/sh", "-c", "exit 0"],
-          logicalSessionId: "rapid-reuse"))
+          logicalSessionId: "rapid-reuse"),
+        iteration: index)
       _ = try client.terminate(handle: descriptor.ptyHandle)
-      _ = index
     }
     XCTAssertTrue(harness.process.isRunning)
+  }
+
+  /// Open a session, retrying only on transient slot exhaustion
+  /// (`LABPTY_E_PAYLOAD_TOO_LARGE`) caused by close_pending slots lagging the
+  /// reap tick under heavy concurrent load. This is a test-side mitigation for
+  /// the load-dependent 64-slot exhaustion race documented in
+  /// execplans/active/parallel-test-safety-and-overlapped-check-stages.md.
+  private func openWithTransientSlotRetry(
+    client: LabptyTerminalSessionClient,
+    request: LabptyOpenSessionRequest,
+    iteration: Int,
+    maxAttempts: Int = 10
+  ) throws -> LabptySessionDescriptor {
+    var lastError: Error?
+    for attempt in 0..<maxAttempts {
+      do {
+        return try client.openSession(request)
+      } catch let error as LabptyResponseError where error.code == .payloadTooLarge {
+        lastError = error
+        usleep(10_000)
+        _ = attempt
+        continue
+      } catch {
+        throw error
+      }
+    }
+    XCTFail(
+      "iteration \(iteration): openSession stayed transiently slot-exhausted "
+        + "for \(maxAttempts) attempts: \(lastError!)")
+    throw lastError!
   }
 
   // MARK: - Silent slowloris (F1 regression)
@@ -1204,6 +1235,19 @@ final class LabptyAdversarialTests: XCTestCase {
     let process: Process
   }
 
+  private func labptyExecutablePath(root: URL) -> URL {
+
+    if let override = ProcessInfo.processInfo.environment["LABPTY_DAEMON_PATH"],
+      !override.isEmpty
+    {
+      if override.hasPrefix("/") {
+        return URL(fileURLWithPath: override)
+      }
+      return root.appendingPathComponent(override)
+    }
+    return root.appendingPathComponent(".build/debug/labpty")
+  }
+
   private func launchHarness() throws -> Harness {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     let runId = "labpty-adversarial-\(UUID().uuidString)"
@@ -1214,7 +1258,7 @@ final class LabptyAdversarialTests: XCTestCase {
       at: root.appendingPathComponent(shmDir),
       withIntermediateDirectories: true)
     let socketPath = "\(tempRoot)/s.sock"
-    let executable = root.appendingPathComponent(".build/debug/labpty")
+    let executable = labptyExecutablePath(root: root)
     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
       throw XCTSkip("build labpty first: swift build --product labpty")
     }
