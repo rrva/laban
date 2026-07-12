@@ -41,7 +41,9 @@ enum LabanWindowScreenshotCapture {
   /// which enumerates only this process's own windows without requiring Screen
   /// Recording consent at all (Laban only ever screenshots its own window),
   /// removing the TCC/ad-hoc-signing fragility entirely for the common case.
-  static func capture(window: NSWindow) -> Result<LabanWindowScreenshot, LabanWindowScreenshotFailure> {
+  static func capture(window: NSWindow) -> Result<
+    LabanWindowScreenshot, LabanWindowScreenshotFailure
+  > {
     let windowIDs = relatedWindowIDs(for: window)
     guard !windowIDs.isEmpty else {
       EventLog.shared.log("screenshot.capture.failed", ["reason": "noRelatedWindowIDs"])
@@ -85,7 +87,10 @@ enum LabanWindowScreenshotCapture {
     guard let firstWindow = matchedWindows.first else {
       EventLog.shared.log(
         "screenshot.capture.failed",
-        ["reason": "noShareableWindows", "windowIDs": windowIDs.map(String.init).joined(separator: ",")])
+        [
+          "reason": "noShareableWindows",
+          "windowIDs": windowIDs.map(String.init).joined(separator: ","),
+        ])
       return .failure(.captureFailed)
     }
     guard let display = content.displays.first else {
