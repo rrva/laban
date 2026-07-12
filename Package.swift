@@ -15,23 +15,24 @@ let _releaseExclusivity: [SwiftSetting] = [
   .unsafeFlags(["-enforce-exclusivity=unchecked"], .when(configuration: .release))
 ]
 
-// Whole-module optimization recompiles an entire module from scratch on any
-// single-file edit; on LabanApp (the largest target) that dominates local
-// `scripts/build-app --profile` turnaround. LABAN_FAST_PROFILE=1 swaps in
-// batch-mode compilation, which stays release/-O (unlike -Onone debug builds)
-// but compiles per-file, so an edit only recompiles what changed. This
-// changes cross-file inlining decisions, so it is opt-in rather than the
-// `--profile` default: flip it on for iteration, off when the profile must
-// match the exact code shape of a distributed release build.
+// Whole-module optimization (WMO) recompiles an entire module from scratch on
+// any single-file edit; on LabanApp (the largest target) that dominated local
+// `scripts/build-app --profile` turnaround (a one-line edit cost ~17s under
+// WMO versus ~7s under batch mode, measured). Batch-mode compilation stays
+// release/-O (unlike -Onone debug builds) but compiles per-file, so an edit
+// only recompiles what changed, and is the default for that reason. Batch
+// mode can make different cross-file inlining decisions than WMO, so
+// LABAN_WMO_PROFILE=1 opts back into WMO for a `--profile` build whose code
+// shape must match a distributed release build exactly.
 let _fastProfile: [SwiftSetting] =
-  ProcessInfo.processInfo.environment["LABAN_FAST_PROFILE"] == "1"
-  ? [
+  ProcessInfo.processInfo.environment["LABAN_WMO_PROFILE"] == "1"
+  ? []
+  : [
     .unsafeFlags(
       ["-no-whole-module-optimization", "-enable-batch-mode"],
       .when(configuration: .release)
     )
   ]
-  : []
 
 let package = Package(
   name: "Laban",

@@ -25,9 +25,11 @@ profile bundle and dSYM, and take measurably less wall-clock time.
 - [x] Run the repository-wide check (the blocking SwiftLint failures in
   `Sources/LabanApp/LabanWindowScreenshotCapture.swift` were fixed separately
   and merged; see `git log` for that commit).
-- [x] Add an opt-in `LABAN_FAST_PROFILE=1` batch-mode compile flag for
-  `--profile` builds, so a single-file edit does not force a whole-module
-  recompile.
+- [x] Add a batch-mode compile flag for `--profile` builds, so a single-file
+  edit does not force a whole-module recompile.
+- [x] Flip that flag to the `--profile` default, after measuring it safe and
+  faster in every case tried; `LABAN_WMO_PROFILE=1` now opts back into
+  whole-module optimization instead.
 - [x] Reuse the `.build/<config>` symlink SwiftPM already creates instead of a
   second `swift build --show-bin-path` planner invocation in `build-app`.
 - [x] Reuse SwiftPM's own emitted `$bin/LabanApp.dSYM` (verified same UUID as
@@ -73,8 +75,8 @@ nothing needs recompiling.
   their debug information.
   Date/Author: 2026-07-12 / Codex.
 
-- Decision: Make whole-module-optimization-vs-batch-mode an opt-in env var
-  (`LABAN_FAST_PROFILE=1`) rather than switching `--profile`'s default.
+- Decision: Make whole-module optimization vs. batch-mode compilation an env
+  var, initially opt-in (`LABAN_FAST_PROFILE=1` to enable batch mode).
   Rationale: whole-module optimization (WMO) recompiles an entire Swift module
   from scratch whenever any one file in it changes; this is the dominant cost
   of a warm, single-file-edit `--profile` build (measured: 16.6s-17.9s for a
@@ -84,18 +86,26 @@ nothing needs recompiling.
   instead, recompiling only what changed; it still runs at `-O` (unlike a
   debug `-Onone` build), so it is still meaningfully more representative for
   profiling than a debug build. Measured with the flag on: the same one-line
-  edit rebuilt in 6.5s-7.5s end to end, roughly a 60% reduction. It is opt-in,
-  not the default, because batch mode can make different cross-file inlining
-  decisions than WMO, so a profile captured under it is not guaranteed
-  byte-identical in code shape to one from a default `--profile` build; the
-  user chose opt-in specifically to preserve exact-shape profiling as the
-  default and offer speed as a deliberate trade a developer opts into for fast
-  iteration. Flipping the flag forces one full rebuild (SwiftPM replans on any
-  compiler-flag change); this is a one-time cost paid once per session per
-  worktree, not on every subsequent incremental build.
+  edit rebuilt in 6.5s-7.5s end to end, roughly a 60% reduction. It started
+  opt-in rather than the default because batch mode can make different
+  cross-file inlining decisions than WMO, so a profile captured under it is
+  not guaranteed byte-identical in code shape to one from a default
+  `--profile` build. Flipping the flag forces one full rebuild (SwiftPM
+  replans on any compiler-flag change); this is a one-time cost paid once per
+  session per worktree, not on every subsequent incremental build.
   Date/Author: 2026-07-12 / Claude (Sonnet 5), following a research pass by a
   Fable-model subagent that proposed and independently measured this option
   before implementation.
+
+- Decision: Flip batch-mode compilation to be `--profile`'s default; add
+  `LABAN_WMO_PROFILE=1` to opt back into whole-module optimization.
+  Rationale: after using the opt-in flag for a session with no observed
+  correctness or profiling-fidelity issues, and since every measurement so far
+  showed batch mode strictly faster with no downside besides the theoretical
+  cross-file-inlining difference, the user decided the safer default was the
+  faster one; WMO becomes the rarely-needed opt-in for the specific case where
+  a profile must match a distributed release build's exact code shape.
+  Date/Author: 2026-07-12 / Claude (Sonnet 5), at the user's direction.
 
 - Decision: Reuse the `.build/<config>` symlink instead of a second
   `swift build --show-bin-path` call in `build-app`.
@@ -189,24 +199,33 @@ long; line 92 missing a trailing comma).
 On 2026-07-12, a second pass (this worktree, `linked-wandering-bird`) measured
 the warm single-file-edit case directly: appending one comment line to
 `Sources/LabanApp/TerminalQuickLook.swift` (a 50-line leaf file) and running
-`./scripts/build-app --profile` took ~17.9s under the existing default
-(whole-module optimization) settings after this round's mechanical fixes
+`./scripts/build-app --profile` took ~17.9s under whole-module optimization
+(WMO), which was the default at the time, after this round's mechanical fixes
 (`.build/<config>` symlink reuse, dSYM reuse), down modestly from ~20.5s
-before them. With `LABAN_FAST_PROFILE=1` set, the identical edit rebuilt in
-~7.5s, about a 58% reduction versus the ~17.9s default-settings figure and
-roughly 63% versus the original ~20.5s baseline. A fully warm, no-source-
-change `scripts/install-app` run (nothing to rebuild) dropped from ~2.7s to
-~1.2s from the `.build/<config>`-symlink and dSYM-reuse changes alone. In both
-the WMO and batch-mode configurations, `dwarfdump --uuid` confirmed the
-installed binary and its adjacent `.dSYM` shared the same UUID, and
-`codesign --verify --verbose=4` passed on the installed bundle. The cold-
-worktree `.build/checkouts` seeding step was exercised implicitly (its guard
-condition, `.build/checkouts` already present, was true throughout this
-session's testing since the worktree's `.build` was not empty); the
-underlying `cp -c -R` of the main checkout's 230MB `.build/checkouts` was
-timed standalone at ~1.8s, confirming the mechanism is cheap, but the full
-"very first build in a brand-new empty-`.build` worktree" path was not
-re-verified end-to-end in this pass.
+before them. With batch-mode compilation enabled (at the time via
+`LABAN_FAST_PROFILE=1`), the identical edit rebuilt in ~7.5s, about a 58%
+reduction versus the ~17.9s WMO figure and roughly 63% versus the original
+~20.5s baseline. A fully warm, no-source-change `scripts/install-app` run
+(nothing to rebuild) dropped from ~2.7s to ~1.2s from the `.build/<config>`-
+symlink and dSYM-reuse changes alone. In both the WMO and batch-mode
+configurations, `dwarfdump --uuid` confirmed the installed binary and its
+adjacent `.dSYM` shared the same UUID, and `codesign --verify --verbose=4`
+passed on the installed bundle. The cold-worktree `.build/checkouts` seeding
+step was exercised implicitly (its guard condition, `.build/checkouts`
+already present, was true throughout this session's testing since the
+worktree's `.build` was not empty); the underlying `cp -c -R` of the main
+checkout's 230MB `.build/checkouts` was timed standalone at ~1.8s, confirming
+the mechanism is cheap, but the full "very first build in a brand-new
+empty-`.build` worktree" path was not re-verified end-to-end in this pass.
+
+Following these measurements, batch-mode compilation was flipped to be
+`--profile`'s default (`LABAN_WMO_PROFILE=1` now opts back into WMO); see the
+Decision Log entry above. Re-verification after the flip: with no env var set,
+`swift package describe --type json` still parsed the manifest correctly, and
+a leaf-file edit under the new default rebuilt in the same ~7s range measured
+above for batch mode (the compile flags themselves are unchanged, only which
+one is selected by default). `dwarfdump --uuid` and `codesign --verify`
+continued to pass against the newly installed bundle.
 
 ## Idempotence and Recovery
 
