@@ -7,6 +7,7 @@ public enum ControlDirectorySecurityError: Error, Equatable, Sendable {
   case wrongOwner
   case insecurePermissions(mode: UInt16)
   case socketPathNotSocket
+  case socketPathInUse
 }
 
 public enum ControlDirectorySecurity {
@@ -51,7 +52,9 @@ public enum ControlDirectorySecurity {
     }
   }
 
-  /// Validates the control directory, then removes an existing socket file only when it is a socket.
+  /// Validates the control directory, then removes only an existing *stale*
+  /// socket. A live listener is never displaced: another Laban process or a
+  /// test must fail to start instead of orphaning the existing listener.
   public static func prepareSocketPath(_ path: String) throws {
     let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
     if isEphemeralSocketDirectory(parent) {
@@ -65,10 +68,40 @@ public enum ControlDirectorySecurity {
       guard (st.st_mode & S_IFMT) == S_IFSOCK else {
         throw ControlDirectorySecurityError.socketPathNotSocket
       }
-      unlink(path)
+      guard !socketHasLiveListener(at: path) else {
+        throw ControlDirectorySecurityError.socketPathInUse
+      }
+      guard unlink(path) == 0 || errno == ENOENT else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+      }
     } else if errno != ENOENT {
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
+  }
+
+  private static func socketHasLiveListener(at path: String) -> Bool {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { return true }
+    defer { Darwin.close(fd) }
+
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(path.utf8CString)
+    guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else { return true }
+    withUnsafeMutableBytes(of: &addr.sun_path) { destination in
+      for (index, byte) in pathBytes.enumerated() where index < destination.count {
+        destination[index] = UInt8(bitPattern: byte)
+      }
+    }
+    let result = withUnsafePointer(to: &addr) { pointer in
+      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+      }
+    }
+    if result == 0 { return true }
+    // A refused local Unix-domain connection has no listener. Any other error
+    // is treated as live/unknown so this safety check can never clobber it.
+    return errno != ECONNREFUSED && errno != ENOENT
   }
 
   private static func isEphemeralSocketDirectory(_ url: URL) -> Bool {

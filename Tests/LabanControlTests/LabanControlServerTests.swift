@@ -80,6 +80,25 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertFalse(readiness.runId.isEmpty)
   }
 
+  func testSecondServerCannotDisplaceLiveSocketListener() throws {
+    let socketPath = try makeTempSocketPath()
+    let first = LabanControlServer(router: SpyIntentRouter(), surface: .headless)
+    let second = LabanControlServer(router: SpyIntentRouter(), surface: .headless)
+    _ = try first.start(socketPath: socketPath)
+    defer {
+      first.stop()
+      second.stop()
+    }
+
+    XCTAssertThrowsError(try second.start(socketPath: socketPath)) { error in
+      XCTAssertEqual(error as? ControlDirectorySecurityError, .socketPathInUse)
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+
+    let clientFD = try ControlUDSClient.connect(socketPath: socketPath)
+    Darwin.close(clientFD)
+  }
+
   func testAcceptedSocketConfigurationSetsNoSigPipe() throws {
     var fds: [Int32] = [-1, -1]
     let pairResult = fds.withUnsafeMutableBufferPointer { buffer -> Int32 in

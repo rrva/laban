@@ -9,6 +9,12 @@ public enum ControlAdvertisement {
     {
       return URL(fileURLWithPath: dir, isDirectory: true)
     }
+    // XCTest targets run in separate worktrees and can run while a user's
+    // Laban.app is live. They must never bind the shared production socket.
+    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+      return FileManager.default.temporaryDirectory
+        .appendingPathComponent("laban-xctest-control-\(getpid())", isDirectory: true)
+    }
     let base =
       FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
       ?? URL(fileURLWithPath: NSHomeDirectory())
