@@ -511,8 +511,8 @@ final class LabanControlServerTests: XCTestCase {
 
   func testRouteCatalogCoversLegacyDebugSurfaceAndDescriptors() throws {
     let endpoints = ControlRouteCatalog.endpoints
-    XCTAssertEqual(endpoints.count, 46)
-    XCTAssertEqual(Set(endpoints.map { "\($0.binding.method) \($0.binding.path)" }).count, 46)
+    XCTAssertEqual(endpoints.count, 47)
+    XCTAssertEqual(Set(endpoints.map { "\($0.binding.method) \($0.binding.path)" }).count, 47)
     XCTAssertNotNil(
       endpoints.first { $0.binding.method == "GET" && $0.binding.path == "/debug/sessions/<id>" })
 
