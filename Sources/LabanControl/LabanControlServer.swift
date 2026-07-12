@@ -29,7 +29,7 @@ public struct GUIControlStartResult: Sendable, Equatable {
 }
 
 public final class LabanControlServer {
-  static let requestReadTimeout: TimeInterval = 5
+  static let defaultRequestReadTimeout: TimeInterval = 5
   static let attachedConnectionReadTimeout: TimeInterval = 0
   static let maxHeaderBytes = 64 * 1024
   static let maxBodyBytes = 4 * 1024 * 1024
@@ -44,6 +44,7 @@ public final class LabanControlServer {
   private let readinessRunID: String?
   let expectedAgentExecutablePath: String?
   let allowDevAgentExecutablePath: Bool
+  let requestReadTimeout: TimeInterval
   weak var securityObserver: (any ControlSecurityObserver)?
   private let connectionQueue = DispatchQueue(
     label: "com.laban.control.conn", attributes: .concurrent)
@@ -97,7 +98,8 @@ public final class LabanControlServer {
     processTreeInspector: (any ControlProcessTreeInspecting)? = nil,
     codeSigningInspector: (any ControlCodeSigningInspecting)? = nil,
     approvalStore: ControlAttachApprovalStore? = nil,
-    lazyAttachApprovalTimeout: TimeInterval = 30
+    lazyAttachApprovalTimeout: TimeInterval = 30,
+    requestReadTimeout: TimeInterval = 5
   ) {
     self.router = router
     self.surface = surface
@@ -105,6 +107,7 @@ public final class LabanControlServer {
     self.readinessRunID = readinessRunID
     self.expectedAgentExecutablePath = expectedAgentExecutablePath
     self.allowDevAgentExecutablePath = allowDevAgentExecutablePath
+    self.requestReadTimeout = requestReadTimeout
     self.securityObserver = securityObserver
     self.lazyAttachApprovalTimeout = lazyAttachApprovalTimeout
     if let processTreeInspector {
@@ -380,12 +383,12 @@ public final class LabanControlServer {
       send(clientFD, .error(403, "forbidden"), persistSession: false)
       return
     }
-    setReceiveTimeout(clientFD)
+    setReceiveTimeout(clientFD, timeout: requestReadTimeout)
     var connectionTier: ControlTokenTier?
 
     requestLoop: while true {
       let incoming: IncomingHTTPRequest
-      switch readHTTPRequest(clientFD) {
+      switch readHTTPRequest(clientFD, timeout: requestReadTimeout) {
       case .ok(let request):
         incoming = request
       case .badRequest:

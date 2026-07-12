@@ -165,7 +165,10 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }
 
     let coordinator = ControlSessionLaunchCoordinator()
-    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let server = LabanControlServer(
+      router: SpyDefaultOnRouter(),
+      surface: .gui,
+      requestReadTimeout: 0.2)
     let start = try server.start()
     defer { server.stop() }
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
@@ -180,9 +183,11 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { Darwin.close(fd) }
     XCTAssertEqual(redeemedSessionID, context.sessionID)
 
-    // Wait longer than the normal request-read timeout; the authenticated
-    // connection must stay open for interactive agent usage.
-    Thread.sleep(forTimeInterval: 6)
+    // Wait longer than the ordinary request-read timeout; the authenticated
+    // connection must stay open for interactive agent usage. The injected
+    // duration makes this regression deterministic without paying the
+    // production five-second timeout in every full-suite run.
+    Thread.sleep(forTimeInterval: 0.5)
 
     let (status, _) = try ControlUDSClient.request(
       fd: fd,

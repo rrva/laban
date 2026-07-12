@@ -39,7 +39,7 @@ extension LabanControlServer {
 
   func readHTTPRequest(
     _ clientFD: Int32,
-    timeout: TimeInterval = LabanControlServer.requestReadTimeout
+    timeout: TimeInterval = LabanControlServer.defaultRequestReadTimeout
   ) -> ParseResult {
     var raw = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
@@ -225,9 +225,13 @@ extension LabanControlServer {
 
   func setReceiveTimeout(
     _ clientFD: Int32,
-    timeout: TimeInterval = LabanControlServer.requestReadTimeout
+    timeout: TimeInterval = LabanControlServer.defaultRequestReadTimeout
   ) {
-    var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
+    let boundedTimeout = max(0, timeout)
+    let seconds = Int(boundedTimeout)
+    var tv = timeval(
+      tv_sec: seconds,
+      tv_usec: Int32((boundedTimeout - TimeInterval(seconds)) * 1_000_000))
     setsockopt(
       clientFD, SOL_SOCKET, SO_RCVTIMEO, &tv,
       socklen_t(MemoryLayout<timeval>.size))
