@@ -15,6 +15,24 @@ let _releaseExclusivity: [SwiftSetting] = [
   .unsafeFlags(["-enforce-exclusivity=unchecked"], .when(configuration: .release))
 ]
 
+// Whole-module optimization recompiles an entire module from scratch on any
+// single-file edit; on LabanApp (the largest target) that dominates local
+// `scripts/build-app --profile` turnaround. LABAN_FAST_PROFILE=1 swaps in
+// batch-mode compilation, which stays release/-O (unlike -Onone debug builds)
+// but compiles per-file, so an edit only recompiles what changed. This
+// changes cross-file inlining decisions, so it is opt-in rather than the
+// `--profile` default: flip it on for iteration, off when the profile must
+// match the exact code shape of a distributed release build.
+let _fastProfile: [SwiftSetting] =
+  ProcessInfo.processInfo.environment["LABAN_FAST_PROFILE"] == "1"
+  ? [
+    .unsafeFlags(
+      ["-no-whole-module-optimization", "-enable-batch-mode"],
+      .when(configuration: .release)
+    )
+  ]
+  : []
+
 let package = Package(
   name: "Laban",
   platforms: [.macOS(.v13)],
@@ -59,12 +77,12 @@ let package = Package(
         .process("Shaders.metal"),
         .process("VectorGlyphShaders.metal"),
       ],
-      swiftSettings: _releaseExclusivity
+      swiftSettings: _releaseExclusivity + _fastProfile
     ),
     .target(
       name: "LabanCore",
       dependencies: ["LabanTerminalCore", "LabanRenderer"],
-      swiftSettings: _releaseExclusivity
+      swiftSettings: _releaseExclusivity + _fastProfile
     ),
     .target(
       name: "LabanDebug",
@@ -93,7 +111,7 @@ let package = Package(
         .copy("Resources/AppIcon.icns"),
         .process("Resources/Localizable.xcstrings"),
       ],
-      swiftSettings: _releaseExclusivity
+      swiftSettings: _releaseExclusivity + _fastProfile
     ),
     .executableTarget(
       name: "LabanAgent",

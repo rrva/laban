@@ -24,6 +24,33 @@ install_dir="${LABAN_INSTALL_DIR:-$HOME}"
 dest="${install_dir%/}/Laban.app"
 src=".build/laban/Laban.app"
 
+# A brand-new worktree's `.build` starts empty, so the first `swift build`
+# pays to re-resolve and re-fetch every pinned dependency (swift-nio,
+# swift-crypto, ...) even though the main checkout already has them on disk.
+# `.build/checkouts` and `.build/repositories` hold only fetched dependency
+# sources and git metadata, not this worktree's compiled output, so they are
+# safe to clone from the main checkout: SwiftPM re-validates them against
+# Package.resolved and re-fetches on any mismatch, so a stale or unrelated
+# clone just falls back to normal resolution instead of misbuilding.
+if [ ! -d ".build/checkouts" ]; then
+  main_git_dir=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+  case "$main_git_dir" in
+    /*) : ;;
+    "") main_git_dir="" ;;
+    *) main_git_dir="$repo_root/$main_git_dir" ;;
+  esac
+  if [ -n "$main_git_dir" ]; then
+    main_root=$(CDPATH= cd -- "$(dirname -- "$main_git_dir")" && pwd)
+    if [ "$main_root" != "$repo_root" ] && [ -d "$main_root/.build/checkouts" ]; then
+      printf 'install-app: seeding .build from %s (first build in this worktree)\n' "$main_root"
+      mkdir -p .build
+      cp -c -R "$main_root/.build/checkouts" .build/checkouts
+      [ -d "$main_root/.build/repositories" ] && cp -c -R "$main_root/.build/repositories" .build/repositories
+      [ -f "$main_root/.build/workspace-state.json" ] && cp -c "$main_root/.build/workspace-state.json" .build/workspace-state.json
+    fi
+  fi
+fi
+
 # Profilable release build: -c release + dSYM emitted next to the bundle, no
 # strip and no path scrub (so Instruments keeps the debug map).
 ./scripts/build-app --profile

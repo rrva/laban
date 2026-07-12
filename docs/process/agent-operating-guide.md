@@ -74,6 +74,13 @@ style, workflow, or verification rules.
   `build-app --profile` and replaces `~/Laban.app` plus `~/Laban.app.dSYM` in
   lockstep. Set `LABAN_INSTALL_DIR=/Applications` only when targeting another
   install location.
+- Set `LABAN_FAST_PROFILE=1` to swap `--profile`'s release compile from
+  whole-module optimization to incremental batch-mode: a single-file edit
+  rebuilds in seconds instead of recompiling the whole module. It stays a real
+  `-O` release build, so it is still the right choice over a debug `-Onone`
+  build for profiling hot paths, but cross-file inlining can differ slightly
+  from a default `--profile` build. Leave it unset when a profile must match
+  the exact code shape of a distributed release build.
 - `build-app` and `install-app` stamp `Info.plist:LABANBuildCommit` with
   `<short-sha>[+dirty]`. A dirty tracked tree, including `.rpg/graph.json`,
   adds `+dirty`; if a just-shipped fix appears missing, verify the running
