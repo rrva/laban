@@ -59,7 +59,7 @@ final class LiveControlObserveTests: XCTestCase {
     let router = LiveIntentRouter(model: model)
     let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 4, 2])
     router.bindWindowScreenshotProvider {
-      LabanWindowScreenshot(pngData: png, width: 1200, height: 800)
+      .success(LabanWindowScreenshot(pngData: png, width: 1200, height: 800))
     }
 
     let response = router.query(
@@ -76,6 +76,25 @@ final class LiveControlObserveTests: XCTestCase {
     XCTAssertTrue(decoded.includesDialogs)
   }
 
+  func testWindowScreenshotReturns403WhenScreenRecordingPermissionDenied() throws {
+    let model = try AppModel()
+    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let router = LiveIntentRouter(model: model)
+    router.bindWindowScreenshotProvider {
+      .failure(.permissionDenied)
+    }
+
+    let response = router.query(
+      LegacyDebugQueryInput(
+        intentID: "window.screenshot",
+        scopedSessionID: sessionID))
+
+    XCTAssertEqual(response.status, 403)
+    XCTAssertTrue(
+      String(data: response.body, encoding: .utf8)?.contains("screenRecordingPermissionDenied")
+        == true)
+  }
+
   func testWindowScreenshotRejectsWhenScopedSessionIsNotVisible() throws {
     let model = try AppModel()
     _ = try model.createTab()
@@ -85,7 +104,7 @@ final class LiveControlObserveTests: XCTestCase {
     let router = LiveIntentRouter(model: model)
     router.bindWindowScreenshotProvider {
       captureCalled = true
-      return nil
+      return .failure(.captureFailed)
     }
 
     let response = router.query(

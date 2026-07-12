@@ -53,8 +53,13 @@ screenshot command.
   Codex/Claude skill.
 - [x] (2026-07-11) Run focused tests, generated-contract checks, skill validation,
   and install the profilable release bundle without interrupting the active app.
-- [ ] Restart Laban and verify a live lazy screenshot artifact visually with a
-  separate dialog already open.
+- [x] (2026-07-12) Diagnosed why live capture never produced a PNG: several
+  compounding permission/registration issues plus one root cause.
+- [x] (2026-07-12) Migrated `LabanWindowScreenshotCapture.capture(window:)` to
+  ScreenCaptureKit for macOS 14+, keeping the legacy `CGImage` path for <14.
+- [x] (2026-07-12) Restarted Laban and verified a live lazy screenshot artifact
+  visually: `laban session screenshot` returned a real 2400x1576 PNG of the full
+  window (title bar, sidebar, terminal content) with no permission dialog.
 
 ## Discoveries and Surprises
 

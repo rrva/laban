@@ -48,7 +48,8 @@ public protocol CommandProposalReviewPresenting: AnyObject {
 final class LiveIntentRouter: IntentRouter {
   private weak var model: AppModel?
   private var environment: LiveControlEnvironment
-  private var windowScreenshotProvider: (() -> LabanWindowScreenshot?)?
+  private var windowScreenshotProvider:
+    (() -> Result<LabanWindowScreenshot, LabanWindowScreenshotFailure>)?
   weak var proposalPresenter: CommandProposalReviewPresenting?
 
   init(
@@ -89,7 +90,9 @@ final class LiveIntentRouter: IntentRouter {
     performOnMain { self.environment = environment }
   }
 
-  func bindWindowScreenshotProvider(_ provider: @escaping () -> LabanWindowScreenshot?) {
+  func bindWindowScreenshotProvider(
+    _ provider: @escaping () -> Result<LabanWindowScreenshot, LabanWindowScreenshotFailure>
+  ) {
     performOnMain { self.windowScreenshotProvider = provider }
   }
 
@@ -217,7 +220,16 @@ final class LiveIntentRouter: IntentRouter {
     guard model.activeTab?.sessionId == scopedSessionID else {
       return .error(409, "sessionNotVisible")
     }
-    guard let screenshot = windowScreenshotProvider?() else {
+    guard let provider = windowScreenshotProvider else {
+      return .error(503, "windowScreenshotUnavailable")
+    }
+    let screenshot: LabanWindowScreenshot
+    switch provider() {
+    case .success(let captured):
+      screenshot = captured
+    case .failure(.permissionDenied):
+      return .error(403, "screenRecordingPermissionDenied")
+    case .failure(.captureFailed):
       return .error(503, "windowScreenshotUnavailable")
     }
     guard screenshot.pngData.count <= LabanWindowScreenshotCapture.maxPNGBytes else {
