@@ -43,6 +43,17 @@ AppKit state, and user defaults.
   later renderer fidelity tests. Fix: reset the key in `setUp`/`tearDown` of
   both affected test files. The leak's source point in
   `SlugGlyphRendererTests` was not hardened, only its victims.
+- [x] (2026-07-12) Resolve a pre-existing `test-e2e` failure
+  (`socketPathTooLong`). Root cause: the bare `laban-agent --debug-server`
+  invocation builds its control socket path from the artifacts/temp-dir path
+  resolved against the process cwd; inside a deeply nested git-worktree
+  checkout that path overflows Darwin's ~104-byte `sockaddr_un.sun_path`
+  limit, so `LabanControlServer.bindListener` throws before the agent ever
+  prints its readiness JSON. Fix: `debugServerSocketPath(preferring:)` in
+  `Sources/LabanAgent/main.swift` falls back to a short per-process directory
+  under the system temp dir when the natural candidate would overflow,
+  mirroring the pattern `ControlAttachProxyServer` already uses. Covered by
+  `Tests/LabanAgentTests/DebugServerSocketPathTests.swift`.
 - [ ] Continue optimizing the rest of `scripts/check` beyond `swift test`
   (boundaries/docs/anchors/specs/cbmc/trace/fuzz/e2e stages), guided by a
   per-stage timing baseline.
@@ -117,3 +128,9 @@ avoid a test race.
   sample count, thresholds, and failure artifacts are unchanged.
 - Both normal full-suite runs have unrelated route-catalog and renderer-fidelity
   failures. Neither modified test failed.
+- A per-stage `scripts/check` timing baseline surfaced `test-e2e` failing with
+  `socketPathTooLong` even in a clean, isolated re-run, proving it was a real
+  bug rather than collateral damage from an earlier concurrent-build mistake.
+  The failure only reproduces from a deeply nested worktree path; the
+  already-working `--temp-dir`-supplied short-path case was unaffected by the
+  fix (confirmed it still uses its natural path, not the fallback).
