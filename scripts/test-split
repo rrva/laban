@@ -18,5 +18,21 @@ parallel_safe='LabandTests|LabptyTests|LabanAgentTests|LabanCLITests|LabanTermin
 # reproducible and debuggable.
 sequential='LabanCoreTests|LabanRendererTests|LabanDebugTests|LabanAppTests|LabanControlTests'
 
-swift test --parallel --filter "$parallel_safe"
-swift test --filter "$sequential"
+run_shard() {
+  label=$1
+  shift
+  if swift test "$@"; then
+    printf 'test-split: %s shard passed\n' "$label"
+  else
+    status=$?
+    printf 'test-split: %s shard failed (exit %s): swift test' "$label" "$status" >&2
+    for argument in "$@"; do
+      printf ' %s' "$argument" >&2
+    done
+    printf '\n' >&2
+    return "$status"
+  fi
+}
+
+run_shard parallel-safe --parallel --filter "$parallel_safe"
+run_shard sequential --filter "$sequential"
