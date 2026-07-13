@@ -43,6 +43,37 @@ final class HeadlessIntentRouterTests: XCTestCase {
     XCTAssertEqual(body["next"] as? Int, since + 1)
   }
 
+  func testNotificationStateReportsNativeUnavailable() throws {
+    let (runtime, artifacts) = try makeRuntime("router-notifications-state")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let router = HeadlessIntentRouter(runtime: runtime)
+
+    let response = router.query(
+      LegacyDebugQueryInput(intentID: "notifications.state"))
+
+    XCTAssertEqual(response.status, 200)
+    let snapshot = try JSONDecoder().decode(
+      NativeNotificationDiagnosticsSnapshot.self, from: response.body)
+    XCTAssertFalse(snapshot.nativeAvailable)
+    XCTAssertNil(snapshot.identity)
+    XCTAssertTrue(snapshot.events.isEmpty)
+  }
+
+  func testNotificationTestReturnsUnavailable() throws {
+    let (runtime, artifacts) = try makeRuntime("router-notifications-test")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let router = HeadlessIntentRouter(runtime: runtime)
+
+    let response = router.control(
+      LegacyDebugControlInput(
+        intentID: "notifications.test",
+        body: Data("{}".utf8)))
+
+    XCTAssertEqual(response.status, 409)
+    let body = try json(response)
+    XCTAssertEqual(body["error"] as? String, "native notifications unavailable in headless mode")
+  }
+
   func testScreenshotArtifactReturnsPNGHeaders() throws {
     let (runtime, artifacts) = try makeRuntime("router-screenshot")
     defer { try? FileManager.default.removeItem(at: artifacts) }

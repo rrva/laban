@@ -275,6 +275,46 @@ final class LazyAttachPrincipalPersistenceTests: XCTestCase {
     XCTAssertFalse(failIfPrompted.wasCalled)
   }
 
+  func testNotificationTestAllowsOnceButCannotPersist() throws {
+    let peerPID = pid_t(ProcessInfo.processInfo.processIdentifier)
+    let shellPID: pid_t = 50
+    let shellIdentity = ControlProcessIdentity(
+      pid: shellPID, startTime: Date(timeIntervalSince1970: 1000), executablePath: "/bin/zsh")
+    let peerIdentity = ControlProcessIdentity(
+      pid: peerPID,
+      startTime: Date(timeIntervalSince1970: 2000),
+      executablePath: "/Applications/Codex.app/Contents/MacOS/Codex")
+    let tree = FakeProcessTreeInspector(tree: [
+      peerPID: (parent: shellPID, identity: peerIdentity),
+      shellPID: (parent: 1, identity: shellIdentity),
+    ])
+    let signing = ControlCodeSigningIdentity(
+      bundleIdentifier: "com.example.codex",
+      designatedRequirement: "anchor apple generic and identifier \"com.example.codex\"",
+      isAdHocOrUnsigned: false)
+    let (server, socketPath, token) = try makeServer(
+      tree: tree,
+      codeSigning: SigningByPIDInspector(signingByPID: [peerPID: signing]),
+      surface: .gui)
+    defer { server.stop() }
+    server.registerAttachShellPID(sessionID: "s1", shellPID: shellPID)
+    let delegate = FakeApprovalDelegate(decision: .alwaysAllowSignedIdentity)
+    server.setApprovalDelegate(delegate)
+
+    let (status, body) = try lazyAttach(
+      server: server,
+      socketPath: socketPath,
+      appObserveToken: token,
+      cliCommand: "session.request",
+      method: "POST",
+      path: "/debug/notifications/test")
+
+    XCTAssertEqual(status, 200)
+    let response = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+    XCTAssertEqual(response?["approval"] as? String, "once")
+    XCTAssertTrue(server.approvalStore.loadAll().isEmpty)
+  }
+
   // MARK: - Helpers
 
   private func makeServer(

@@ -71,6 +71,13 @@ public enum ControlLazyAttachAllowlist {
       routeID: "GET /debug/window-screenshot",
       persistable: true),
     Entry(
+      cliCommand: "notifications.test",
+      method: "POST",
+      path: "/debug/notifications/test",
+      intentID: "notifications.test",
+      routeID: "POST /debug/notifications/test",
+      persistable: false),
+    Entry(
       cliCommand: "session.detail",
       method: "GET",
       path: "/debug/sessions/<id>",

@@ -14,7 +14,9 @@ fail() {
 # build-app produces every product `smoke-runtime` needs in its own
 # SwiftPM scratch directory so it does not evict the plain debug build cache.
 BUILD_ROOT=".build-smoke"
-./scripts/build-app --scratch-path="$BUILD_ROOT"
+SMOKE_BUNDLE_IDENTIFIER="com.laban.LabanApp.smoke"
+LABAN_BUNDLE_IDENTIFIER="$SMOKE_BUNDLE_IDENTIFIER" \
+  ./scripts/build-app --scratch-path="$BUILD_ROOT"
 
 AGENT_BIN="$BUILD_ROOT/debug/laban-agent"
 APP_BIN="$BUILD_ROOT/laban/Laban.app/Contents/MacOS/LabanApp"
@@ -39,6 +41,9 @@ rm -rf "$AGENT_ARTIFACTS" "$AGENT_TMP"
 
 # 2. Info.plist validity
 plutil -lint "$PLIST" || fail "Info.plist lint failed"
+actual_bundle_identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")
+[ "$actual_bundle_identifier" = "$SMOKE_BUNDLE_IDENTIFIER" ] \
+  || fail "smoke bundle identifier is $actual_bundle_identifier"
 
 # 2b. Renderer resource bundle is reachable via Bundle.main.resourceURL.
 # Catches the regression where the .app launches but FontAtlas crashes

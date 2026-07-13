@@ -534,7 +534,16 @@ final class MainWindowController: NSWindowController {
     // explicit OSC/BEL events and derived attention-state transitions share
     // settings, focus suppression, journal notes, debug decisions, and native
     // delivery.
-    let agentNotificationPoster = AgentNotificationPoster()
+    let agentNotificationPoster = AgentNotificationPoster(
+      onNativeStateChanged: {
+        NativeNotificationStateRefresher.shared.refresh()
+      })
+    liveRouter.bindNotificationStateRefresh {
+      NativeNotificationStateRefresher.shared.refresh()
+    }
+    liveRouter.bindNotificationTestHandler { event, soundEnabled in
+      agentNotificationPoster.post(event: event, soundEnabled: soundEnabled) { _ in }
+    }
     let isTabFrontmost: (Tab.ID) -> Bool = { [weak model] tabId in
       guard NSApplication.shared.isActive, let model else { return false }
       return model.tabs.first(where: { $0.isActive })?.id == tabId

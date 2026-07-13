@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/notifications-test-result.schema.json",
+  "title": "Native Notification Test Accepted Response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["accepted", "eventId"],
+  "properties": {
+    "accepted": {"const": true},
+    "eventId": {"type": "string", "minLength": 1}
+  }
+}

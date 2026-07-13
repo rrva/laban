@@ -9,10 +9,14 @@ final class AgentNotificationPosterTests: XCTestCase {
     let center = FakeAttentionNotificationCenter(status: .notDetermined)
     center.authorizationGrant = true
     let explainer = FakePermissionExplainer()
+    let diagnostics = NativeNotificationDiagnosticsStore(capacity: 8, nativeAvailable: true)
+    var refreshCount = 0
     let poster = AgentNotificationPoster(
       center: center,
       permissionExplainer: explainer,
-      requiresBundleIdentifier: false)
+      requiresBundleIdentifier: false,
+      diagnosticsStore: diagnostics,
+      onNativeStateChanged: { refreshCount += 1 })
     let exp = expectation(description: "decision")
 
     poster.post(event: makeEvent(), soundEnabled: true) { decision in
@@ -28,6 +32,10 @@ final class AgentNotificationPosterTests: XCTestCase {
     XCTAssertEqual(center.addedRequests[0].content.threadIdentifier, "tab-tab-1")
     XCTAssertNotNil(center.addedRequests[0].content.sound)
     XCTAssertEqual(explainer.showCount, 0)
+    XCTAssertEqual(refreshCount, 1)
+    XCTAssertEqual(
+      diagnostics.snapshot().events.map(\.stage),
+      [.settings, .settings, .submit, .added, .decision])
   }
 
   func testDeniedAuthorizationSuppressesAndExplainsHowToEnableNotifications() {
@@ -74,10 +82,14 @@ final class AgentNotificationPosterTests: XCTestCase {
   func testNotificationAddErrorRecordsDeliveryFailure() {
     let center = FakeAttentionNotificationCenter(status: .authorized)
     center.addError = TestError()
+    let diagnostics = NativeNotificationDiagnosticsStore(capacity: 8, nativeAvailable: true)
+    var refreshCount = 0
     let poster = AgentNotificationPoster(
       center: center,
       permissionExplainer: FakePermissionExplainer(),
-      requiresBundleIdentifier: false)
+      requiresBundleIdentifier: false,
+      diagnosticsStore: diagnostics,
+      onNativeStateChanged: { refreshCount += 1 })
     let exp = expectation(description: "decision")
 
     poster.post(event: makeEvent(), soundEnabled: false) { decision in
@@ -88,6 +100,11 @@ final class AgentNotificationPosterTests: XCTestCase {
 
     wait(for: [exp], timeout: 1.0)
     XCTAssertEqual(center.addedRequests.count, 1)
+    XCTAssertEqual(refreshCount, 1)
+    XCTAssertEqual(
+      diagnostics.snapshot().events.map(\.stage),
+      [.settings, .submit, .addFailed, .decision])
+    XCTAssertNotNil(diagnostics.snapshot().events[2].errorDomain)
   }
 
   private func makeEvent() -> AttentionNotificationEvent {

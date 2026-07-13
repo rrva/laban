@@ -41,6 +41,27 @@
   {
     "category" : "state",
     "method" : "GET",
+    "path" : "\/debug\/notifications\/state",
+    "queryParameters" : [
+      "since"
+    ],
+    "responseSchema" : "schemas\/debug\/notifications-state.schema.json",
+    "summary" : "Return native notification settings, counts, identity, and bounded diagnostics."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/notifications\/test",
+    "queryParameters" : [
+
+    ],
+    "requestSchema" : "schemas\/debug\/notifications-test.schema.json",
+    "responseSchema" : "schemas\/debug\/notifications-test-result.schema.json",
+    "summary" : "Request a native test notification and return its event identifier."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
     "path" : "\/debug\/accessibility",
     "queryParameters" : [
 

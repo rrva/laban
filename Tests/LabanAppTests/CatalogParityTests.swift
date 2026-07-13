@@ -11,6 +11,8 @@ final class CatalogParityTests: XCTestCase {
   private static let liveImplementedIntentIDs: Set<String> = [
     "app.state",
     "app.stateSummary",
+    "notifications.state",
+    "notifications.test",
     "app.accessibility",
     "terminal.modes",
     "find.state",
@@ -125,12 +127,12 @@ final class CatalogParityTests: XCTestCase {
       "gui:true catalog ids must match LiveIntentRouter implementation")
   }
 
-  func testGuiNavigateAllowlistIsExactlyScrollViewport() {
+  func testGuiNavigateAllowlistContainsOnlyExplicitVisibleActions() {
     let guiNavigateIDs = Set(
       IntentCatalog.shared.descriptors.filter {
         $0.availability.gui && $0.requiredCapability == .navigate
       }.map(\.id))
-    XCTAssertEqual(guiNavigateIDs, ["terminal.scrollViewport"])
+    XCTAssertEqual(guiNavigateIDs, ["notifications.test", "terminal.scrollViewport"])
   }
 
   func testGuiProposeAllowlistIsExactlyProposeAndLifecycle() {
@@ -189,6 +191,10 @@ final class CatalogParityTests: XCTestCase {
       ParityCase(
         intentID: "app.state", method: "GET", headlessPath: "/debug/state",
         guiPath: "/debug/state", body: nil, compareShape: true),
+      ParityCase(
+        intentID: "notifications.state", method: "GET",
+        headlessPath: "/debug/notifications/state", guiPath: "/debug/notifications/state",
+        body: nil, compareShape: false),
       ParityCase(
         intentID: "app.accessibility", method: "GET",
         headlessPath: "/debug/accessibility", guiPath: "/debug/accessibility", body: nil,

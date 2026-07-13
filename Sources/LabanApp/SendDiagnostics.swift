@@ -84,7 +84,8 @@ enum SendDiagnostics {
 
     // 1b. App preferences (theme picks, follows-system flag, …) so we
     //     can reproduce the user's configured state.
-    if let plist = UserDefaults.standard.persistentDomain(forName: "com.laban.LabanApp"),
+    let defaultsDomain = Bundle.main.bundleIdentifier ?? "com.laban.LabanApp"
+    if let plist = UserDefaults.standard.persistentDomain(forName: defaultsDomain),
       let data = try? PropertyListSerialization.data(
         fromPropertyList: plist, format: .xml, options: 0)
     {

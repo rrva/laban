@@ -39,6 +39,7 @@ git diff --check
 ./scripts/check-boundaries
 ./scripts/check-docs
 ./scripts/check-debug-contract
+./scripts/test-build-app-bundle-identifier
 # Regenerate the /debug discovery doc from the shared catalogs and gate it:
 # fails on a drifted committed doc, a route referencing a missing schema, or an
 # ill-formed IntentCatalog (duplicate ids, fixture op gui-available, route-aware

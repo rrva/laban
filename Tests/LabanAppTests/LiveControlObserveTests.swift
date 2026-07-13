@@ -8,6 +8,7 @@ import XCTest
 final class LiveControlObserveTests: XCTestCase {
   func testSessionObserveTokenReadsOwnSessionDetail200() throws {
     let (model, router, ownSessionID, _) = try makeModelRouterAndSessions()
+    _ = model
     let server = LabanControlServer(router: router, surface: .gui)
     let socketPath = try makeTempSocketPath()
     _ = try server.start(socketPath: socketPath)
@@ -24,6 +25,7 @@ final class LiveControlObserveTests: XCTestCase {
 
   func testSessionObserveTokenDeniesOtherSessionDetail403() throws {
     let (model, router, ownSessionID, otherSessionID) = try makeModelRouterAndSessions()
+    _ = model
     let server = LabanControlServer(router: router, surface: .gui)
     let socketPath = try makeTempSocketPath()
     _ = try server.start(socketPath: socketPath)
@@ -51,6 +53,107 @@ final class LiveControlObserveTests: XCTestCase {
       token: start.appObserveToken)
 
     XCTAssertEqual(status, 403)
+  }
+
+  func testAppObserveTokenReadsNotificationStateWithoutContent() throws {
+    let model = try AppModel()
+    let store = NativeNotificationDiagnosticsStore(capacity: 4, nativeAvailable: true)
+    _ = store.record(
+      eventId: "event-1",
+      tabId: "tab-1",
+      source: "osc",
+      category: "needsAction",
+      stage: .added,
+      outcome: "added")
+    let identity = NativeNotificationRuntimeIdentity(
+      bundleIdentifier: "com.laban.LabanApp",
+      bundlePath: "/Users/test/Laban.app",
+      buildCommit: "abc123",
+      buildDate: "2026-07-13T00:00:00Z",
+      signingMode: "adHoc",
+      teamIdentifier: nil,
+      cdHash: "deadbeef")
+    let router = LiveIntentRouter(
+      model: model,
+      notificationDiagnosticsStore: store,
+      notificationIdentityProvider: { identity })
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let (status, data) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/notifications/state",
+      token: start.appObserveToken)
+
+    XCTAssertEqual(status, 200)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(NativeNotificationDiagnosticsSnapshot.self, from: data)
+    XCTAssertEqual(decoded.identity, identity)
+    XCTAssertEqual(decoded.events.map(\.eventId), ["event-1"])
+    let raw = String(data: data, encoding: .utf8) ?? ""
+    XCTAssertFalse(raw.contains("\"title\""))
+    XCTAssertFalse(raw.contains("\"body\""))
+  }
+
+  func testAppObserveTokenCannotPostNotificationTest() throws {
+    let model = try AppModel()
+    let router = LiveIntentRouter(model: model)
+    var handlerCalled = false
+    router.bindNotificationTestHandler { _, _ in handlerCalled = true }
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+
+    let (status, _) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/notifications/test",
+      method: "POST",
+      token: start.appObserveToken,
+      body: Data("{}".utf8))
+
+    XCTAssertEqual(status, 403)
+    XCTAssertFalse(handlerCalled)
+  }
+
+  func testSessionObserveTokenCanRequestNotificationTest() throws {
+    let model = try AppModel()
+    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let store = NativeNotificationDiagnosticsStore(capacity: 4, nativeAvailable: true)
+    let router = LiveIntentRouter(model: model, notificationDiagnosticsStore: store)
+    var postedEvent: AttentionNotificationEvent?
+    var postedSound = false
+    router.bindNotificationTestHandler { event, soundEnabled in
+      postedEvent = event
+      postedSound = soundEnabled
+    }
+    let server = LabanControlServer(router: router, surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    let token = server.mintSessionObserveToken(sessionID: sessionID)
+
+    let (status, data) = try request(
+      socketPath: start.socketPath,
+      path: "/debug/notifications/test",
+      method: "POST",
+      token: token,
+      body: Data(
+        #"{"title":"Private title","body":"Private body","soundEnabled":true}"#.utf8))
+
+    XCTAssertEqual(status, 202)
+    let accepted = try JSONDecoder().decode(
+      NativeNotificationTestAcceptedResponse.self, from: data)
+    XCTAssertTrue(accepted.accepted)
+    XCTAssertEqual(postedEvent?.id, accepted.eventId)
+    XCTAssertEqual(postedEvent?.title, "Private title")
+    XCTAssertEqual(postedEvent?.body, "Private body")
+    XCTAssertTrue(postedSound)
+    XCTAssertEqual(store.snapshot().events.map(\.stage), [.testRequested])
+    let stateData = try JSONEncoder().encode(store.snapshot())
+    let rawState = String(data: stateData, encoding: .utf8) ?? ""
+    XCTAssertFalse(rawState.contains("Private title"))
+    XCTAssertFalse(rawState.contains("Private body"))
   }
 
   func testWindowScreenshotReturnsTypedPNGForVisibleScopedSession() throws {
@@ -428,6 +531,11 @@ final class LiveControlObserveTests: XCTestCase {
     XCTAssertEqual(discoveryJSON?["name"] as? String, "laban-debug")
     let appObserveActions = discoveryJSON?["actions"] as? [[String: Any]]
     XCTAssertEqual(appObserveActions?.compactMap { $0["name"] as? String } ?? [], [])
+    let appObserveEndpoints = try XCTUnwrap(
+      discoveryJSON?["endpoints"] as? [[String: Any]])
+    let appObservePaths = Set(appObserveEndpoints.compactMap { $0["path"] as? String })
+    XCTAssertTrue(appObservePaths.contains("/debug/notifications/state"))
+    XCTAssertFalse(appObservePaths.contains("/debug/notifications/test"))
 
     let (capabilitiesStatus, _) = try request(
       socketPath: start.socketPath,
@@ -446,6 +554,11 @@ final class LiveControlObserveTests: XCTestCase {
     let actions = try XCTUnwrap(sessionDiscoveryJSON?["actions"] as? [[String: Any]])
     let actionNames = Set(actions.compactMap { $0["name"] as? String })
     XCTAssertEqual(actionNames, ["propose", "scrollViewport"])
+    let sessionEndpoints = try XCTUnwrap(
+      sessionDiscoveryJSON?["endpoints"] as? [[String: Any]])
+    let sessionPaths = Set(sessionEndpoints.compactMap { $0["path"] as? String })
+    XCTAssertTrue(sessionPaths.contains("/debug/notifications/state"))
+    XCTAssertTrue(sessionPaths.contains("/debug/notifications/test"))
     XCTAssertFalse(actionNames.contains("typeText"))
     XCTAssertFalse(actionNames.contains("key"))
     XCTAssertFalse(actionNames.contains("paste"))

@@ -303,6 +303,50 @@ Returns a stable, implementation-neutral snapshot of app state:
 This endpoint should be safe for frequent polling. It should not include large
 buffers by default.
 
+### Native Notification Diagnostics
+
+`GET /debug/notifications/state?since=<sequence>`
+
+Returns the running bundle/build/signing identity, cached native notification
+settings, pending and delivered counts, and a bounded metadata-only delivery
+ring. The ring records settings, authorization failure, test request, submit,
+added/add-failed, final decision, and foreground `willPresent` stages. It does
+not return notification title or body text.
+
+The endpoint is available to the low-privilege app-observe token. Each query
+requests an asynchronous refresh from `UNUserNotificationCenter`; callers use
+`refreshInFlight` and `lastRefreshedAt` to distinguish cached from refreshed
+values. `nextSequence` can be passed back as `since` to fetch only newer ring
+entries.
+
+```sh
+laban request GET /debug/notifications/state --json
+```
+
+`POST /debug/notifications/test`
+
+Requests one notification through the same `AgentNotificationPoster` native
+sink used by tab attention. This is an action, not observation: an app-observe
+token receives `403`, while an explicitly approved session-control scope can
+invoke it. The response is immediate `202` JSON containing an event ID; poll the
+state endpoint until that ID reaches `added`, `addFailed`, and `decision` (plus
+`willPresent` when Laban is foreground).
+
+```sh
+laban session request POST /debug/notifications/test \
+  --body '{"soundEnabled":false}' --json
+```
+
+Headless discovery exposes both paths for contract parity. Headless state sets
+`nativeAvailable` to false, and the test action returns `409` because a headless
+process must not claim it exercised macOS notification delivery.
+
+Schemas:
+
+- `schemas/debug/notifications-state.schema.json`
+- `schemas/debug/notifications-test.schema.json`
+- `schemas/debug/notifications-test-result.schema.json`
+
 ### Session Introspection
 
 `GET /debug/sessions`

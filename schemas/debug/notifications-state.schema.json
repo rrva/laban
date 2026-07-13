@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/notifications-state.schema.json",
+  "title": "Native Notification Diagnostics State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "nativeAvailable",
+    "refreshInFlight",
+    "lastRefreshedAt",
+    "settings",
+    "pendingCount",
+    "deliveredCount",
+    "identity",
+    "events",
+    "nextSequence"
+  ],
+  "properties": {
+    "nativeAvailable": {"type": "boolean"},
+    "refreshInFlight": {"type": "boolean"},
+    "lastRefreshedAt": {"type": ["string", "null"], "format": "date-time"},
+    "settings": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "authorizationStatus",
+        "alertSetting",
+        "notificationCenterSetting",
+        "soundSetting",
+        "alertStyle",
+        "canShowAlert"
+      ],
+      "properties": {
+        "authorizationStatus": {"type": "string"},
+        "alertSetting": {"type": "string"},
+        "notificationCenterSetting": {"type": "string"},
+        "soundSetting": {"type": "string"},
+        "alertStyle": {"type": "string"},
+        "canShowAlert": {"type": "boolean"}
+      }
+    },
+    "pendingCount": {"type": ["integer", "null"], "minimum": 0},
+    "deliveredCount": {"type": ["integer", "null"], "minimum": 0},
+    "identity": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "bundleIdentifier",
+        "bundlePath",
+        "buildCommit",
+        "buildDate",
+        "signingMode",
+        "teamIdentifier",
+        "cdHash"
+      ],
+      "properties": {
+        "bundleIdentifier": {"type": ["string", "null"]},
+        "bundlePath": {"type": "string"},
+        "buildCommit": {"type": "string"},
+        "buildDate": {"type": "string"},
+        "signingMode": {"type": "string"},
+        "teamIdentifier": {"type": ["string", "null"]},
+        "cdHash": {"type": ["string", "null"]}
+      }
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "timestamp",
+          "eventId",
+          "stage"
+        ],
+        "properties": {
+          "sequence": {"type": "integer", "minimum": 1},
+          "timestamp": {"type": "string", "format": "date-time"},
+          "eventId": {"type": "string"},
+          "tabId": {"type": ["string", "null"]},
+          "source": {"type": ["string", "null"]},
+          "category": {"type": ["string", "null"]},
+          "stage": {
+            "type": "string",
+            "enum": [
+              "settings",
+              "authorizationRequestFailed",
+              "testRequested",
+              "submit",
+              "added",
+              "addFailed",
+              "decision",
+              "willPresent"
+            ]
+          },
+          "outcome": {"type": ["string", "null"]},
+          "suppressionReason": {"type": ["string", "null"]},
+          "errorDomain": {"type": ["string", "null"]},
+          "errorCode": {"type": ["integer", "null"]},
+          "presentationOptions": {
+            "type": ["array", "null"],
+            "items": {"type": "string"},
+            "maxItems": 4
+          }
+        }
+      }
+    },
+    "nextSequence": {"type": "integer", "minimum": 1}
+  }
+}

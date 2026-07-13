@@ -91,6 +91,22 @@ ln -s "$LABAN_MAIN_REPO/.external" .external
 
 `.external/` holds shared vendored libraries.
 
+`scripts/build-app` keeps `com.laban.LabanApp` only in the primary checkout. In
+a linked git worktree it derives a stable
+`com.laban.LabanApp.worktree.<path-hash>` identifier so LaunchServices,
+UserDefaults, and notification authorization do not confuse independently built
+apps with the canonical install. `scripts/smoke-runtime` uses
+`com.laban.LabanApp.smoke`. Set `LABAN_BUNDLE_IDENTIFIER` to a valid reverse-DNS
+identifier when a task needs another explicit identity, and inspect the result
+without building via:
+
+```sh
+./scripts/build-app --print-bundle-identifier
+```
+
+Do not override a linked worktree back to `com.laban.LabanApp` unless the task
+explicitly intends to replace the canonical install.
+
 `.rpg/graph.json` is a committed generated artifact. The pre-commit hook keeps
 its structure current on every branch, and `main` owns semantic refreshes
 (lifting). Do not strip those hunks from commits and do not set

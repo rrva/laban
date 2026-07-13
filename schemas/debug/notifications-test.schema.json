@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/notifications-test.schema.json",
+  "title": "Native Notification Test Request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": {"type": "string", "maxLength": 128},
+    "body": {"type": "string", "maxLength": 512},
+    "soundEnabled": {"type": "boolean"}
+  }
+}

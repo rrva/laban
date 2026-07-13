@@ -22,6 +22,7 @@ build_config=${LABAN_BUILD_CONFIG:-debug}
 # binary, so it must not be distributed.
 profile_build=0
 scratch_path=""
+print_bundle_identifier=0
 for arg in "$@"; do
   case "$arg" in
     --profile)
@@ -31,12 +32,21 @@ for arg in "$@"; do
     --scratch-path=*)
       scratch_path=${arg#--scratch-path=}
       ;;
+    --print-bundle-identifier)
+      print_bundle_identifier=1
+      ;;
     *)
       printf 'build-app: unknown argument: %s\n' "$arg" >&2
       exit 2
       ;;
   esac
 done
+
+bundle_identifier=$("$repo_root/scripts/resolve-bundle-identifier" "$repo_root")
+if [ "$print_bundle_identifier" = 1 ]; then
+  printf '%s\n' "$bundle_identifier"
+  exit 0
+fi
 
 xml_escape() {
   printf '%s' "$1" |
@@ -166,7 +176,7 @@ cat > "${bundle_dir}/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.laban.LabanApp</string>
+    <string>${bundle_identifier}</string>
     <key>CFBundleExecutable</key>
     <string>LabanApp</string>
     <key>CFBundleName</key>
@@ -216,7 +226,7 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>com.laban.LabanApp.remote-shell</string>
+            <string>${bundle_identifier}.remote-shell</string>
             <key>CFBundleTypeRole</key>
             <string>Viewer</string>
             <key>CFBundleURLSchemes</key>

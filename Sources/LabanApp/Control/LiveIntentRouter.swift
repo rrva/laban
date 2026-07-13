@@ -50,15 +50,26 @@ final class LiveIntentRouter: IntentRouter {
   private var environment: LiveControlEnvironment
   private var windowScreenshotProvider:
     (() -> Result<LabanWindowScreenshot, LabanWindowScreenshotFailure>)?
+  private let notificationDiagnosticsStore: NativeNotificationDiagnosticsStore
+  private let notificationIdentityProvider: () -> NativeNotificationRuntimeIdentity
+  private var notificationStateRefresh: () -> Void
+  private var notificationTestHandler: ((AttentionNotificationEvent, Bool) -> Void)?
   weak var proposalPresenter: CommandProposalReviewPresenting?
 
   init(
     model: AppModel?,
     environment: LiveControlEnvironment? = nil,
-    proposalPresenter: CommandProposalReviewPresenting? = nil
+    proposalPresenter: CommandProposalReviewPresenting? = nil,
+    notificationDiagnosticsStore: NativeNotificationDiagnosticsStore = .shared,
+    notificationIdentityProvider: @escaping () -> NativeNotificationRuntimeIdentity = {
+      NativeNotificationRuntimeIdentityProvider.snapshot()
+    }
   ) {
     self.model = model
     self.proposalPresenter = proposalPresenter
+    self.notificationDiagnosticsStore = notificationDiagnosticsStore
+    self.notificationIdentityProvider = notificationIdentityProvider
+    self.notificationStateRefresh = {}
     if let environment {
       self.environment = environment
     } else if let model {
@@ -94,6 +105,16 @@ final class LiveIntentRouter: IntentRouter {
     _ provider: @escaping () -> Result<LabanWindowScreenshot, LabanWindowScreenshotFailure>
   ) {
     performOnMain { self.windowScreenshotProvider = provider }
+  }
+
+  func bindNotificationStateRefresh(_ refresh: @escaping () -> Void) {
+    performOnMain { self.notificationStateRefresh = refresh }
+  }
+
+  func bindNotificationTestHandler(
+    _ handler: @escaping (AttentionNotificationEvent, Bool) -> Void
+  ) {
+    performOnMain { self.notificationTestHandler = handler }
   }
 
   func route(_ intent: Intent) -> ControlResponse {
@@ -157,6 +178,13 @@ final class LiveIntentRouter: IntentRouter {
         return json(guiHealthResponse())
       case "app.state", "app.stateSummary":
         return json(ControlStateProjections.stateResponse(ctx))
+      case "notifications.state":
+        notificationStateRefresh()
+        let since = query.params["since"].flatMap(Int.init)
+        return json(
+          notificationDiagnosticsStore.snapshot(
+            since: since,
+            identity: notificationIdentityProvider()))
       case "app.accessibility":
         return json(ControlStateProjections.accessibilityResponse(ctx))
       case "terminal.modes":
@@ -190,6 +218,8 @@ final class LiveIntentRouter: IntentRouter {
   func control(_ input: LegacyDebugControlInput) -> ControlResponse {
     performOnMain {
       switch input.intentID {
+      case "notifications.test":
+        return notificationTestAction(body: input.body)
       case "terminal.scrollViewport":
         return scrollViewportAction(body: input.body, scopedSessionID: input.scopedSessionID)
       case "command.propose":
@@ -208,6 +238,52 @@ final class LiveIntentRouter: IntentRouter {
 
   func artifact(_ request: ArtifactRequest) -> ControlResponse? {
     nil
+  }
+
+  private func notificationTestAction(body: Data) -> ControlResponse {
+    guard let handler = notificationTestHandler else {
+      return .error(503, "notification test unavailable")
+    }
+    let request: NativeNotificationTestRequest
+    if body.isEmpty {
+      request = NativeNotificationTestRequest()
+    } else {
+      guard let decoded = try? JSONDecoder().decode(NativeNotificationTestRequest.self, from: body)
+      else {
+        return .error(400, "invalid notification test request")
+      }
+      request = decoded
+    }
+
+    let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Laban"
+    let message =
+      request.body?.trimmingCharacters(in: .whitespacesAndNewlines)
+      ?? "Native notification test"
+    guard !title.isEmpty, title.unicodeScalars.count <= 128 else {
+      return .error(400, "notification title must contain 1...128 Unicode scalars")
+    }
+    guard !message.isEmpty, message.unicodeScalars.count <= 512 else {
+      return .error(400, "notification body must contain 1...512 Unicode scalars")
+    }
+
+    let event = AttentionNotificationEvent(
+      tabId: "settings",
+      source: .osc,
+      category: .needsAction,
+      title: title,
+      body: message,
+      dedupeKey: "debug-notification-test")
+    notificationDiagnosticsStore.record(
+      eventId: event.id,
+      tabId: event.tabId,
+      source: event.source.rawValue,
+      category: event.category.rawValue,
+      stage: .testRequested,
+      outcome: "accepted")
+    handler(event, request.soundEnabled ?? AttentionNotificationSettings.soundEnabled)
+    return json(
+      NativeNotificationTestAcceptedResponse(accepted: true, eventId: event.id),
+      status: 202)
   }
 
   private func windowScreenshotResponse(

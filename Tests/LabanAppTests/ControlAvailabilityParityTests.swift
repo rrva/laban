@@ -13,6 +13,8 @@ final class ControlAvailabilityParityTests: XCTestCase {
   private static let liveImplementedIntentIDs: Set<String> = [
     "app.state",
     "app.stateSummary",
+    "notifications.state",
+    "notifications.test",
     "app.accessibility",
     "terminal.modes",
     "find.state",
@@ -41,6 +43,10 @@ final class ControlAvailabilityParityTests: XCTestCase {
     router.bindWindowScreenshotProvider {
       .success(LabanWindowScreenshot(pngData: png, width: 1, height: 1))
     }
+    var notificationTestCalled = false
+    router.bindNotificationTestHandler { _, _ in
+      notificationTestCalled = true
+    }
 
     let guiIDs = Set(
       IntentCatalog.all.descriptors
@@ -49,6 +55,15 @@ final class ControlAvailabilityParityTests: XCTestCase {
     XCTAssertEqual(guiIDs, Self.liveImplementedIntentIDs)
 
     XCTAssertLessThan(router.query(.state).status, 400)
+    XCTAssertLessThan(
+      router.query(LegacyDebugQueryInput(intentID: "notifications.state")).status,
+      400)
+    let notificationTest = router.control(
+      LegacyDebugControlInput(
+        intentID: "notifications.test",
+        body: Data("{}".utf8)))
+    XCTAssertEqual(notificationTest.status, 202)
+    XCTAssertTrue(notificationTestCalled)
 
     let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
     XCTAssertLessThan(

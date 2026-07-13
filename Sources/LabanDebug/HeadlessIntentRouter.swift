@@ -3,9 +3,15 @@ import LabanCore
 
 public final class HeadlessIntentRouter: IntentRouter {
   private let runtime: HeadlessDebugRuntime
+  private let notificationDiagnosticsStore: NativeNotificationDiagnosticsStore
 
-  public init(runtime: HeadlessDebugRuntime) {
+  public init(
+    runtime: HeadlessDebugRuntime,
+    notificationDiagnosticsStore: NativeNotificationDiagnosticsStore =
+      NativeNotificationDiagnosticsStore(nativeAvailable: false)
+  ) {
     self.runtime = runtime
+    self.notificationDiagnosticsStore = notificationDiagnosticsStore
   }
 
   public func route(_ intent: Intent) -> ControlResponse {
@@ -34,6 +40,10 @@ public final class HeadlessIntentRouter: IntentRouter {
       return json(runtime.health())
     case "app.state", "app.stateSummary":
       return json(runtime.state())
+    case "notifications.state":
+      return ControlResponse.json(
+        notificationDiagnosticsStore.snapshot(
+          since: query.params["since"].flatMap(Int.init)))
     case "app.accessibility":
       return json(runtime.accessibility())
     case "terminal.modes":
@@ -92,6 +102,8 @@ public final class HeadlessIntentRouter: IntentRouter {
 
   public func control(_ input: LegacyDebugControlInput) -> ControlResponse {
     switch input.intentID {
+    case "notifications.test":
+      return .error(409, "native notifications unavailable in headless mode")
     case "artifact.screenshot.write":
       return json(runtime.writeScreenshotArtifact())
     case "persistence.flush":

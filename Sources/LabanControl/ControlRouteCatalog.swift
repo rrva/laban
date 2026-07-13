@@ -73,6 +73,22 @@ public enum ControlRouteCatalog {
       intentID: "app.state"),
     endpoint(
       method: "GET",
+      path: "/debug/notifications/state",
+      category: "state",
+      summary: "Return native notification settings, counts, identity, and bounded diagnostics.",
+      queryParameters: ["since"],
+      responseSchema: "schemas/debug/notifications-state.schema.json",
+      intentID: "notifications.state"),
+    endpoint(
+      method: "POST",
+      path: "/debug/notifications/test",
+      category: "control",
+      summary: "Request a native test notification and return its event identifier.",
+      requestSchema: "schemas/debug/notifications-test.schema.json",
+      responseSchema: "schemas/debug/notifications-test-result.schema.json",
+      intentID: "notifications.test"),
+    endpoint(
+      method: "GET",
       path: "/debug/accessibility",
       category: "state",
       summary: "Return terminal accessibility role, label, value, focus ring, and display flags.",
@@ -458,6 +474,7 @@ public enum ControlRouteCatalog {
     ("GET", "/debug"),
     ("GET", "/debug/capabilities"),
     ("GET", "/debug/health"),
+    ("GET", "/debug/notifications/state"),
     ("GET", "/debug/accessibility"),
     ("GET", "/debug/terminal-modes"),
     ("GET", "/debug/window-screenshot"),
@@ -507,6 +524,7 @@ public enum ControlRouteCatalog {
   }
 
   private static let legacyJSONControlRoutePaths: [(method: String, path: String)] = [
+    ("POST", "/debug/notifications/test"),
     ("POST", "/debug/screenshot"),
     ("POST", "/debug/persistence/flush"),
     ("POST", "/debug/persistence/relaunch"),

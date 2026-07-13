@@ -37,6 +37,20 @@ final class LazyAttachAllowlistTests: XCTestCase {
     XCTAssertNil(entry)
   }
 
+  func testNotificationTestIsExactAndNeverPersistable() {
+    let entry = ControlLazyAttachAllowlist.entry(cliCommand: "notifications.test")
+    XCTAssertEqual(entry?.method, "POST")
+    XCTAssertEqual(entry?.path, "/debug/notifications/test")
+    XCTAssertEqual(entry?.intentID, "notifications.test")
+    XCTAssertEqual(entry?.persistable, false)
+    XCTAssertFalse(ControlSessionObserveFamily.contains("notifications.test"))
+    XCTAssertTrue(
+      ControlLazyAttachAllowlist.isAllowlisted(
+        method: "POST",
+        path: "/debug/notifications/test",
+        intentID: "notifications.test"))
+  }
+
   func testWindowScreenshotIsExactPersistableAndOutsideFamily() {
     let entry = ControlLazyAttachAllowlist.entry(cliCommand: "window.screenshot")
     XCTAssertEqual(entry?.method, "GET")

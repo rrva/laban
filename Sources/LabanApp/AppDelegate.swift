@@ -14,7 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   private var appearanceObservation: NSKeyValueObservation?
   private let themeMenuController = ThemeMenuController()
   private let terminalBackendMenuController = TerminalBackendMenuController()
-  private let settingsNotificationPoster = AgentNotificationPoster()
+  private let notificationStateRefresher = NativeNotificationStateRefresher.shared
+  private lazy var settingsNotificationPoster = AgentNotificationPoster(
+    onNativeStateChanged: { [weak self] in
+      self?.notificationStateRefresher.refresh()
+    })
   private lazy var rendererModeMenuController = RendererModeMenuController {
     [weak self] selection in
     self?.windowController?.applyRendererSelection(selection)
@@ -46,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     UNUserNotificationCenter.current().delegate = self
+    notificationStateRefresher.refresh()
     AppLog.app.notice("launch \(BuildInfo.summary)")
     LogFile.shared.pruneOldFiles()
     EventLog.shared.pruneOldFiles()
@@ -166,17 +171,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     if notification.request.content.sound != nil {
       options.insert(.sound)
     }
+    let optionNames = presentationOptionsDescription(options)
+    let userInfo = notification.request.content.userInfo
+    NativeNotificationDiagnosticsStore.shared.record(
+      eventId: notification.request.identifier,
+      tabId: userInfo["tabId"] as? String,
+      source: userInfo["source"] as? String,
+      category: userInfo["category"] as? String,
+      stage: .willPresent,
+      outcome: "presented",
+      presentationOptions: optionNames)
     EventLog.shared.log(
       "attention.notification.willPresent",
       [
         "identifier": notification.request.identifier,
         "title": notification.request.content.title,
         "body": notification.request.content.body,
-        "tabId": notification.request.content.userInfo["tabId"] as? String ?? "",
-        "source": notification.request.content.userInfo["source"] as? String ?? "",
-        "category": notification.request.content.userInfo["category"] as? String ?? "",
-        "options": presentationOptionsDescription(options),
+        "tabId": userInfo["tabId"] as? String ?? "",
+        "source": userInfo["source"] as? String ?? "",
+        "category": userInfo["category"] as? String ?? "",
+        "options": optionNames,
       ])
+    notificationStateRefresher.refresh()
     completionHandler(options)
   }
 

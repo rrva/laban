@@ -101,6 +101,8 @@ final class AgentNotificationPoster {
   private let center: AttentionNotificationCenterPosting
   private let permissionExplainer: AttentionNotificationPermissionExplaining
   private let requiresBundleIdentifier: Bool
+  private let diagnosticsStore: NativeNotificationDiagnosticsStore
+  private let onNativeStateChanged: () -> Void
   private var authorizationRequestInFlight = false
   private var authorizationWaiters: [(Bool, Error?) -> Void] = []
 
@@ -108,11 +110,15 @@ final class AgentNotificationPoster {
     center: AttentionNotificationCenterPosting = SystemAttentionNotificationCenter(),
     permissionExplainer: AttentionNotificationPermissionExplaining =
       AttentionNotificationPermissionExplainer(),
-    requiresBundleIdentifier: Bool = true
+    requiresBundleIdentifier: Bool = true,
+    diagnosticsStore: NativeNotificationDiagnosticsStore = .shared,
+    onNativeStateChanged: @escaping () -> Void = {}
   ) {
     self.center = center
     self.permissionExplainer = permissionExplainer
     self.requiresBundleIdentifier = requiresBundleIdentifier
+    self.diagnosticsStore = diagnosticsStore
+    self.onNativeStateChanged = onNativeStateChanged
   }
 
   func post(
@@ -291,6 +297,14 @@ final class AgentNotificationPoster {
           "action": decision.action.rawValue,
           "reason": decision.suppressionReason?.rawValue ?? "",
         ])
+      self.diagnosticsStore.record(
+        eventId: decision.event.id,
+        tabId: decision.event.tabId,
+        source: decision.event.source.rawValue,
+        category: decision.event.category.rawValue,
+        stage: .decision,
+        outcome: decision.action.rawValue,
+        suppressionReason: decision.suppressionReason?.rawValue)
       completion(decision)
     }
   }
@@ -299,18 +313,36 @@ final class AgentNotificationPoster {
     _ settings: AttentionNotificationSystemSettings,
     event: AttentionNotificationEvent
   ) {
+    let snapshot = NativeNotificationSettingsSnapshot(
+      authorizationStatus: NativeNotificationStateRefresher.authorizationStatusName(
+        settings.authorizationStatus),
+      alertSetting: NativeNotificationStateRefresher.notificationSettingName(
+        settings.alertSetting),
+      notificationCenterSetting: NativeNotificationStateRefresher.notificationSettingName(
+        settings.notificationCenterSetting),
+      soundSetting: NativeNotificationStateRefresher.notificationSettingName(
+        settings.soundSetting),
+      alertStyle: NativeNotificationStateRefresher.alertStyleName(settings.alertStyle),
+      canShowAlert: settings.canShowAlert)
+    diagnosticsStore.updateSettings(snapshot)
+    diagnosticsStore.record(
+      eventId: event.id,
+      tabId: event.tabId,
+      source: event.source.rawValue,
+      category: event.category.rawValue,
+      stage: .settings,
+      outcome: settings.canShowAlert ? "canShowAlert" : "cannotShowAlert")
     EventLog.shared.log(
       "attention.notification.settings",
       [
         "eventId": event.id,
         "tabId": event.tabId,
-        "authorizationStatus": authorizationStatusName(settings.authorizationStatus),
-        "alertSetting": notificationSettingName(settings.alertSetting),
-        "notificationCenterSetting": notificationSettingName(
-          settings.notificationCenterSetting),
-        "soundSetting": notificationSettingName(settings.soundSetting),
-        "alertStyle": alertStyleName(settings.alertStyle),
-        "canShowAlert": settings.canShowAlert,
+        "authorizationStatus": snapshot.authorizationStatus,
+        "alertSetting": snapshot.alertSetting,
+        "notificationCenterSetting": snapshot.notificationCenterSetting,
+        "soundSetting": snapshot.soundSetting,
+        "alertStyle": snapshot.alertStyle,
+        "canShowAlert": snapshot.canShowAlert,
       ])
   }
 
@@ -326,40 +358,32 @@ final class AgentNotificationPoster {
       "source": event.source.rawValue,
       "outcome": outcome,
     ]
-    if let error {
-      let nsError = error as NSError
+    let nsError = error as NSError?
+    if let nsError {
       payload["errorDomain"] = nsError.domain
       payload["errorCode"] = nsError.code
       payload["errorDescription"] = nsError.localizedDescription
     }
+    let stage: NativeNotificationDiagnosticStage
+    switch outcome {
+    case "authorizationRequestFailed": stage = .authorizationRequestFailed
+    case "submit": stage = .submit
+    case "added": stage = .added
+    case "addFailed": stage = .addFailed
+    default: stage = .submit
+    }
+    diagnosticsStore.record(
+      eventId: event.id,
+      tabId: event.tabId,
+      source: event.source.rawValue,
+      category: event.category.rawValue,
+      stage: stage,
+      outcome: outcome,
+      errorDomain: nsError?.domain,
+      errorCode: nsError?.code)
     EventLog.shared.log("attention.notification.delivery", payload)
-  }
-
-  private func authorizationStatusName(_ status: UNAuthorizationStatus) -> String {
-    switch status {
-    case .notDetermined: return "notDetermined"
-    case .denied: return "denied"
-    case .authorized: return "authorized"
-    case .provisional: return "provisional"
-    @unknown default: return "unknown"
-    }
-  }
-
-  private func notificationSettingName(_ setting: UNNotificationSetting) -> String {
-    switch setting {
-    case .notSupported: return "notSupported"
-    case .disabled: return "disabled"
-    case .enabled: return "enabled"
-    @unknown default: return "unknown"
-    }
-  }
-
-  private func alertStyleName(_ style: UNAlertStyle) -> String {
-    switch style {
-    case .none: return "none"
-    case .banner: return "banner"
-    case .alert: return "alert"
-    @unknown default: return "unknown"
+    if outcome == "added" || outcome == "addFailed" {
+      onNativeStateChanged()
     }
   }
 }

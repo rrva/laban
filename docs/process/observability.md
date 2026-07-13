@@ -42,6 +42,19 @@ dumpable from the app's Debug menu. This is the primary signal for
 attention-timing bugs: it answers "when did Laban change what this tab
 showed" without a human watching the sidebar.
 
+### Native Notification Diagnostics
+
+The live app keeps a separate fixed-capacity in-memory ring for the native
+macOS notification boundary. `GET /debug/notifications/state` exposes sequence,
+timestamp, event/tab/source/category identity, stage, outcome, suppression
+reason, bounded error identity, and foreground presentation options. It also
+reports cached native settings and pending/delivered counts.
+
+This ring deliberately excludes notification title and body. Those strings may
+contain private terminal or agent output and remain only in the existing local
+application event log. Headless mode returns the same response shape with
+`nativeAvailable: false` rather than fabricating native delivery.
+
 ### Structured Logs
 
 Logs should be structured records, not only prose strings. A future

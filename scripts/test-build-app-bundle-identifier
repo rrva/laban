@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+resolver="$repo_root/scripts/resolve-bundle-identifier"
+canonical='com.laban.LabanApp'
+common_dir="$repo_root/.git"
+
+fail() {
+  printf 'test-build-app-bundle-identifier failed: %s\n' "$1" >&2
+  exit 1
+}
+
+actual=$(env -u LABAN_BUNDLE_IDENTIFIER "$resolver" "$repo_root" "$common_dir" "$common_dir")
+[ "$actual" = "$canonical" ] || fail "primary checkout resolved $actual"
+
+explicit='com.laban.LabanApp.manual'
+actual=$(LABAN_BUNDLE_IDENTIFIER=$explicit "$resolver" "$repo_root" "$common_dir" "$common_dir")
+[ "$actual" = "$explicit" ] || fail "explicit override resolved $actual"
+
+if LABAN_BUNDLE_IDENTIFIER='com_laban_invalid' \
+  "$resolver" "$repo_root" "$common_dir" "$common_dir" >/dev/null 2>&1
+then
+  fail 'invalid override was accepted'
+fi
+
+worktree_a='/tmp/laban-worktree-a'
+worktree_b='/tmp/laban-worktree-b'
+git_dir_a="$common_dir/worktrees/a"
+git_dir_b="$common_dir/worktrees/b"
+first_a=$(env -u LABAN_BUNDLE_IDENTIFIER "$resolver" "$worktree_a" "$git_dir_a" "$common_dir")
+second_a=$(env -u LABAN_BUNDLE_IDENTIFIER "$resolver" "$worktree_a" "$git_dir_a" "$common_dir")
+value_b=$(env -u LABAN_BUNDLE_IDENTIFIER "$resolver" "$worktree_b" "$git_dir_b" "$common_dir")
+
+[ "$first_a" = "$second_a" ] || fail 'worktree identifier was not stable'
+[ "$first_a" != "$value_b" ] || fail 'distinct worktrees shared an identifier'
+case "$first_a" in
+  "$canonical".worktree.*) ;;
+  *) fail "unexpected worktree identifier: $first_a" ;;
+esac
+
+smoke='com.laban.LabanApp.smoke'
+actual=$(LABAN_BUNDLE_IDENTIFIER=$smoke "$resolver" "$repo_root" "$common_dir" "$common_dir")
+[ "$actual" = "$smoke" ] || fail "smoke override resolved $actual"
+
+printf 'test-build-app-bundle-identifier passed\n'

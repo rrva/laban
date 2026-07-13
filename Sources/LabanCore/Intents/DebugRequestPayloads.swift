@@ -1144,3 +1144,45 @@ public struct AgentRestoreSelectionRequest: Codable, Sendable, Equatable, JSONSc
     ])
   }
 }
+
+public struct NativeNotificationTestRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var title: String?
+  public var body: String?
+  public var soundEnabled: Bool?
+
+  public init(title: String? = nil, body: String? = nil, soundEnabled: Bool? = nil) {
+    self.title = title
+    self.body = body
+    self.soundEnabled = soundEnabled
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object([
+      "body": DebugPayloadSchema.string,
+      "soundEnabled": DebugPayloadSchema.boolean,
+      "title": DebugPayloadSchema.string,
+    ])
+  }
+}
+
+public struct NativeNotificationTestAcceptedResponse: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var accepted: Bool
+  public var eventId: String
+
+  public init(accepted: Bool, eventId: String) {
+    self.accepted = accepted
+    self.eventId = eventId
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "accepted": DebugPayloadSchema.boolean,
+        "eventId": DebugPayloadSchema.string,
+      ], required: ["accepted", "eventId"])
+  }
+}

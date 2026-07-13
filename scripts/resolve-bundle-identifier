@@ -1,0 +1,43 @@
+#!/usr/bin/env sh
+set -eu
+
+canonical_identifier='com.laban.LabanApp'
+repo_root=${1:-}
+git_dir=${2:-}
+git_common_dir=${3:-}
+
+if [ -z "$repo_root" ]; then
+  printf 'resolve-bundle-identifier: missing repository root\n' >&2
+  exit 2
+fi
+
+validate_identifier() {
+  printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9-]*(\.[A-Za-z0-9][A-Za-z0-9-]*)+$'
+}
+
+if [ -n "${LABAN_BUNDLE_IDENTIFIER:-}" ]; then
+  identifier=$LABAN_BUNDLE_IDENTIFIER
+else
+  if [ -z "$git_dir" ]; then
+    git_dir=$(git -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null || true)
+  fi
+  if [ -z "$git_common_dir" ]; then
+    git_common_dir=$(
+      git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true
+    )
+  fi
+
+  if [ -n "$git_dir" ] && [ -n "$git_common_dir" ] && [ "$git_dir" != "$git_common_dir" ]; then
+    path_hash=$(printf '%s' "$repo_root" | shasum -a 256 | cut -c1-12)
+    identifier="${canonical_identifier}.worktree.${path_hash}"
+  else
+    identifier=$canonical_identifier
+  fi
+fi
+
+if ! validate_identifier "$identifier"; then
+  printf 'resolve-bundle-identifier: invalid bundle identifier: %s\n' "$identifier" >&2
+  exit 2
+fi
+
+printf '%s\n' "$identifier"

@@ -522,7 +522,10 @@ final class ControlPlaneInvariantTests: XCTestCase {
 
     let guiNavigateIDs = Set(
       guiDescriptors.filter { $0.requiredCapability == .navigate }.map(\.id))
-    XCTAssertEqual(guiNavigateIDs, ["terminal.scrollViewport"])
+    XCTAssertEqual(
+      guiNavigateIDs,
+      ["notifications.test", "terminal.scrollViewport"],
+      "gui .navigate is limited to scrolling and an explicit notification test")
 
     let guiProposeIDs = Set(
       guiDescriptors.filter { $0.requiredCapability == .propose }.map(\.id))
