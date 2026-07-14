@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import argparse
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -18,6 +19,11 @@ _supplement_mod = SourceFileLoader(
     str(REPO / "scripts/localizable-supplement-de-pt-it.py"),
 ).load_module()
 SUPPLEMENT_DE_PT_IT: dict[str, dict[str, str]] = _supplement_mod.SUPPLEMENT_DE_PT_IT
+
+FOCUS_STATUS_USAGE_DESCRIPTION = (
+    "Laban checks whether an active Focus is silencing terminal-attention notifications "
+    "when you explicitly run Focus troubleshooting."
+)
 
 # English source -> per-locale translations. Keep keys identical to Swift L10n.tr("…") calls.
 TRANSLATIONS: dict[str, dict[str, str]] = {
@@ -1708,6 +1714,211 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
 }
 
+# Explicit Focus troubleshooting. These strings are deliberately historical:
+# Focus is read only when the user presses the troubleshooting button, so a
+# cached result must never read like continuously monitored current state.
+TRANSLATIONS.update({
+    "Focus troubleshooting:": {
+        "zh-Hans": "专注模式故障排查：", "zh-Hant": "專注模式疑難排解：",
+        "ja": "集中モードのトラブルシューティング：", "ko": "집중 모드 문제 해결:",
+        "fr": "Dépannage de Concentration :", "es": "Diagnóstico de Concentración:",
+        "hi": "फ़ोकस समस्या निवारण:", "ru": "Диагностика фокусирования:",
+        "de": "Fokus-Fehlerbehebung:", "pt-BR": "Solução de problemas do Foco:",
+        "it": "Risoluzione problemi Full immersion:",
+    },
+    "Check Focus Blocking…": {
+        "zh-Hans": "检查专注模式阻止…", "zh-Hant": "檢查專注模式阻擋…",
+        "ja": "集中モードのブロックを確認…", "ko": "집중 모드 차단 확인…",
+        "fr": "Vérifier le blocage par Concentration…", "es": "Comprobar bloqueo de Concentración…",
+        "hi": "फ़ोकस अवरोध जाँचें…", "ru": "Проверить блокировку фокусированием…",
+        "de": "Fokus-Blockierung prüfen…", "pt-BR": "Verificar bloqueio pelo Foco…",
+        "it": "Verifica blocco di Full immersion…",
+    },
+    "Check Again…": {
+        "zh-Hans": "再次检查…", "zh-Hant": "再次檢查…", "ja": "もう一度確認…",
+        "ko": "다시 확인…", "fr": "Vérifier à nouveau…", "es": "Comprobar de nuevo…",
+        "hi": "फिर से जाँचें…", "ru": "Проверить снова…", "de": "Erneut prüfen…",
+        "pt-BR": "Verificar novamente…", "it": "Verifica di nuovo…",
+    },
+    "Checking Focus…": {
+        "zh-Hans": "正在检查专注模式…", "zh-Hant": "正在檢查專注模式…",
+        "ja": "集中モードを確認中…", "ko": "집중 모드 확인 중…",
+        "fr": "Vérification de Concentration…", "es": "Comprobando Concentración…",
+        "hi": "फ़ोकस की जाँच हो रही है…", "ru": "Проверка фокусирования…",
+        "de": "Fokus wird geprüft…", "pt-BR": "Verificando Foco…",
+        "it": "Verifica di Full immersion…",
+    },
+    "Focus is checked only when you press the troubleshooting button. Laban never reads or requests Focus Status during launch or normal notification delivery.": {
+        "zh-Hans": "仅在您按下故障排查按钮时检查专注模式。Laban 在启动或正常发送通知期间绝不会读取或请求专注模式状态。",
+        "zh-Hant": "僅在您按下疑難排解按鈕時檢查專注模式。Laban 在啟動或正常傳送通知期間絕不會讀取或要求專注模式狀態。",
+        "ja": "集中モードは、トラブルシューティングボタンを押したときだけ確認されます。Laban は起動時や通常の通知配信時に集中モード状況を読み取ったり要求したりしません。",
+        "ko": "집중 모드는 문제 해결 버튼을 누를 때만 확인됩니다. Laban은 실행 또는 일반 알림 전달 중에 집중 모드 상태를 읽거나 요청하지 않습니다.",
+        "fr": "Concentration n’est vérifiée que lorsque vous appuyez sur le bouton de dépannage. Laban ne lit ni ne demande jamais l’état de Concentration au lancement ou lors de l’envoi normal des notifications.",
+        "es": "Concentración solo se comprueba al pulsar el botón de diagnóstico. Laban nunca lee ni solicita el estado de Concentración durante el inicio o la entrega normal de notificaciones.",
+        "hi": "फ़ोकस केवल समस्या निवारण बटन दबाने पर जाँचा जाता है। Laban लॉन्च या सामान्य सूचना वितरण के दौरान फ़ोकस स्थिति को कभी पढ़ता या माँगता नहीं है।",
+        "ru": "Фокусирование проверяется только после нажатия кнопки диагностики. Laban никогда не читает и не запрашивает статус фокусирования при запуске или обычной доставке уведомлений.",
+        "de": "Der Fokus wird nur geprüft, wenn Sie die Fehlerbehebungstaste drücken. Laban liest oder fordert den Fokusstatus weder beim Start noch bei der normalen Benachrichtigungszustellung an.",
+        "pt-BR": "O Foco só é verificado quando você pressiona o botão de solução de problemas. O Laban nunca lê nem solicita o Estado de Foco durante a inicialização ou a entrega normal de notificações.",
+        "it": "Full immersion viene controllata solo quando premi il pulsante di risoluzione dei problemi. Laban non legge né richiede mai lo stato di Full immersion all’avvio o durante il normale recapito delle notifiche.",
+    },
+    "Checks whether the current Focus is silencing Laban. The first check may ask for Focus Status permission.": {
+        "zh-Hans": "检查当前专注模式是否将 Laban 静音。首次检查可能会请求专注模式状态权限。",
+        "zh-Hant": "檢查目前專注模式是否將 Laban 靜音。首次檢查可能會要求專注模式狀態權限。",
+        "ja": "現在の集中モードが Laban を通知オフにしているか確認します。初回の確認では集中モード状況の許可を求める場合があります。",
+        "ko": "현재 집중 모드가 Laban 알림을 끄고 있는지 확인합니다. 첫 확인 시 집중 모드 상태 권한을 요청할 수 있습니다.",
+        "fr": "Vérifie si le mode Concentration actuel réduit Laban au silence. La première vérification peut demander l’autorisation d’accéder à l’état de Concentration.",
+        "es": "Comprueba si el modo Concentración actual silencia Laban. La primera comprobación puede solicitar permiso para el estado de Concentración.",
+        "hi": "जाँचता है कि वर्तमान फ़ोकस Laban को शांत कर रहा है या नहीं। पहली जाँच फ़ोकस स्थिति की अनुमति माँग सकती है।",
+        "ru": "Проверяет, заглушает ли текущий режим фокусирования Laban. При первой проверке может потребоваться разрешение на статус фокусирования.",
+        "de": "Prüft, ob der aktuelle Fokus Laban stummschaltet. Bei der ersten Prüfung kann die Berechtigung für den Fokusstatus angefordert werden.",
+        "pt-BR": "Verifica se o Foco atual está silenciando o Laban. A primeira verificação pode solicitar permissão para o Estado de Foco.",
+        "it": "Controlla se Full immersion sta silenziando Laban. Il primo controllo potrebbe richiedere l’autorizzazione per lo stato di Full immersion.",
+    },
+    "Troubleshooting only: check whether the current Focus is silencing Laban. This may ask for Focus Status permission.": {
+        "zh-Hans": "仅用于故障排查：检查当前专注模式是否将 Laban 静音。这可能会请求专注模式状态权限。",
+        "zh-Hant": "僅用於疑難排解：檢查目前專注模式是否將 Laban 靜音。這可能會要求專注模式狀態權限。",
+        "ja": "トラブルシューティング専用：現在の集中モードが Laban を通知オフにしているか確認します。集中モード状況の許可を求める場合があります。",
+        "ko": "문제 해결 전용: 현재 집중 모드가 Laban 알림을 끄고 있는지 확인합니다. 집중 모드 상태 권한을 요청할 수 있습니다.",
+        "fr": "Dépannage uniquement : vérifiez si le mode Concentration actuel réduit Laban au silence. Une autorisation d’accès à l’état de Concentration peut être demandée.",
+        "es": "Solo para diagnóstico: comprueba si el modo Concentración actual silencia Laban. Puede solicitar permiso para el estado de Concentración.",
+        "hi": "केवल समस्या निवारण: जाँचें कि वर्तमान फ़ोकस Laban को शांत कर रहा है या नहीं। यह फ़ोकस स्थिति की अनुमति माँग सकता है।",
+        "ru": "Только для диагностики: проверьте, заглушает ли текущий режим фокусирования Laban. Может потребоваться разрешение на статус фокусирования.",
+        "de": "Nur zur Fehlerbehebung: Prüfen Sie, ob der aktuelle Fokus Laban stummschaltet. Dabei kann die Berechtigung für den Fokusstatus angefordert werden.",
+        "pt-BR": "Somente para solução de problemas: verifique se o Foco atual está silenciando o Laban. Isso pode solicitar permissão para o Estado de Foco.",
+        "it": "Solo per la risoluzione dei problemi: controlla se Full immersion sta silenziando Laban. Potrebbe essere richiesta l’autorizzazione per lo stato di Full immersion.",
+    },
+    "Focus Status permission was not decided, so Laban could not tell whether Focus was silencing notifications.": {
+        "zh-Hans": "尚未决定专注模式状态权限，因此 Laban 无法判断专注模式是否将通知静音。",
+        "zh-Hant": "尚未決定專注模式狀態權限，因此 Laban 無法判斷專注模式是否將通知靜音。",
+        "ja": "集中モード状況の許可が決定されていなかったため、Laban は集中モードが通知をオフにしていたか判断できませんでした。",
+        "ko": "집중 모드 상태 권한이 결정되지 않아 Laban은 집중 모드가 알림을 끄고 있었는지 확인할 수 없었습니다.",
+        "fr": "L’autorisation d’accès à l’état de Concentration n’était pas définie ; Laban n’a donc pas pu déterminer si Concentration désactivait les notifications.",
+        "es": "No se había decidido el permiso para el estado de Concentración, por lo que Laban no pudo determinar si Concentración silenciaba las notificaciones.",
+        "hi": "फ़ोकस स्थिति की अनुमति तय नहीं थी, इसलिए Laban यह नहीं बता सका कि फ़ोकस सूचनाओं को शांत कर रहा था या नहीं।",
+        "ru": "Разрешение на статус фокусирования не было определено, поэтому Laban не смог установить, заглушало ли фокусирование уведомления.",
+        "de": "Die Berechtigung für den Fokusstatus war nicht festgelegt. Daher konnte Laban nicht erkennen, ob der Fokus Benachrichtigungen stummschaltete.",
+        "pt-BR": "A permissão para o Estado de Foco não estava definida, então o Laban não pôde saber se o Foco estava silenciando as notificações.",
+        "it": "L’autorizzazione per lo stato di Full immersion non era stata decisa, quindi Laban non ha potuto stabilire se le notifiche venivano silenziate.",
+    },
+    "Focus Status access was restricted, so Laban could not tell whether Focus was silencing notifications.": {
+        "zh-Hans": "专注模式状态访问受限，因此 Laban 无法判断专注模式是否将通知静音。",
+        "zh-Hant": "專注模式狀態存取受限，因此 Laban 無法判斷專注模式是否將通知靜音。",
+        "ja": "集中モード状況へのアクセスが制限されていたため、Laban は集中モードが通知をオフにしていたか判断できませんでした。",
+        "ko": "집중 모드 상태 접근이 제한되어 Laban은 집중 모드가 알림을 끄고 있었는지 확인할 수 없었습니다.",
+        "fr": "L’accès à l’état de Concentration était restreint ; Laban n’a donc pas pu déterminer si Concentration désactivait les notifications.",
+        "es": "El acceso al estado de Concentración estaba restringido, por lo que Laban no pudo determinar si Concentración silenciaba las notificaciones.",
+        "hi": "फ़ोकस स्थिति की पहुँच प्रतिबंधित थी, इसलिए Laban यह नहीं बता सका कि फ़ोकस सूचनाओं को शांत कर रहा था या नहीं।",
+        "ru": "Доступ к статусу фокусирования был ограничен, поэтому Laban не смог установить, заглушало ли фокусирование уведомления.",
+        "de": "Der Zugriff auf den Fokusstatus war eingeschränkt. Daher konnte Laban nicht erkennen, ob der Fokus Benachrichtigungen stummschaltete.",
+        "pt-BR": "O acesso ao Estado de Foco estava restrito, então o Laban não pôde saber se o Foco estava silenciando as notificações.",
+        "it": "L’accesso allo stato di Full immersion era limitato, quindi Laban non ha potuto stabilire se le notifiche venivano silenziate.",
+    },
+    "Focus Status access was denied. Enable it in Privacy & Security to let Laban diagnose Focus blocking.": {
+        "zh-Hans": "专注模式状态访问被拒绝。请在“隐私与安全性”中启用，以便 Laban 诊断专注模式阻止。",
+        "zh-Hant": "專注模式狀態存取遭拒絕。請在「隱私權與安全性」中啟用，以便 Laban 診斷專注模式阻擋。",
+        "ja": "集中モード状況へのアクセスが拒否されました。Laban が集中モードによるブロックを診断できるよう、「プライバシーとセキュリティ」で有効にしてください。",
+        "ko": "집중 모드 상태 접근이 거부되었습니다. Laban이 집중 모드 차단을 진단할 수 있도록 개인정보 보호 및 보안에서 허용하십시오.",
+        "fr": "L’accès à l’état de Concentration a été refusé. Activez-le dans Confidentialité et sécurité pour permettre à Laban de diagnostiquer le blocage.",
+        "es": "Se denegó el acceso al estado de Concentración. Actívalo en Privacidad y seguridad para que Laban pueda diagnosticar el bloqueo.",
+        "hi": "फ़ोकस स्थिति की पहुँच अस्वीकृत थी। Laban को फ़ोकस अवरोध जाँचने देने के लिए इसे गोपनीयता और सुरक्षा में सक्षम करें।",
+        "ru": "Доступ к статусу фокусирования был запрещён. Разрешите его в разделе «Конфиденциальность и безопасность», чтобы Laban мог диагностировать блокировку.",
+        "de": "Der Zugriff auf den Fokusstatus wurde verweigert. Aktivieren Sie ihn unter Datenschutz & Sicherheit, damit Laban Fokus-Blockierungen diagnostizieren kann.",
+        "pt-BR": "O acesso ao Estado de Foco foi negado. Ative-o em Privacidade e Segurança para o Laban diagnosticar o bloqueio pelo Foco.",
+        "it": "L’accesso allo stato di Full immersion è stato negato. Abilitalo in Privacy e sicurezza per consentire a Laban di diagnosticare il blocco.",
+    },
+    "Focus was silencing Laban notifications. Add Laban to the active Focus's Allowed Apps.": {
+        "zh-Hans": "专注模式正在将 Laban 通知静音。请将 Laban 添加到当前专注模式的允许 App。",
+        "zh-Hant": "專注模式正在將 Laban 通知靜音。請將 Laban 加入目前專注模式的允許 App。",
+        "ja": "集中モードが Laban の通知をオフにしていました。Laban を有効な集中モードの許可されたアプリに追加してください。",
+        "ko": "집중 모드가 Laban 알림을 끄고 있었습니다. Laban을 활성 집중 모드의 허용된 앱에 추가하십시오.",
+        "fr": "Concentration désactivait les notifications de Laban. Ajoutez Laban aux apps autorisées du mode actif.",
+        "es": "Concentración silenciaba las notificaciones de Laban. Añade Laban a las apps permitidas del modo activo.",
+        "hi": "फ़ोकस Laban की सूचनाओं को शांत कर रहा था। Laban को सक्रिय फ़ोकस के अनुमत ऐप्स में जोड़ें।",
+        "ru": "Фокусирование заглушало уведомления Laban. Добавьте Laban в разрешённые приложения активного режима.",
+        "de": "Der Fokus schaltete Laban-Benachrichtigungen stumm. Fügen Sie Laban den erlaubten Apps des aktiven Fokus hinzu.",
+        "pt-BR": "O Foco estava silenciando as notificações do Laban. Adicione o Laban aos apps permitidos do Foco ativo.",
+        "it": "Full immersion silenziava le notifiche di Laban. Aggiungi Laban alle app consentite della modalità attiva.",
+    },
+    "Focus was not silencing Laban notifications.": {
+        "zh-Hans": "专注模式未将 Laban 通知静音。", "zh-Hant": "專注模式未將 Laban 通知靜音。",
+        "ja": "集中モードは Laban の通知をオフにしていませんでした。", "ko": "집중 모드가 Laban 알림을 끄고 있지 않았습니다.",
+        "fr": "Concentration ne désactivait pas les notifications de Laban.", "es": "Concentración no silenciaba las notificaciones de Laban.",
+        "hi": "फ़ोकस Laban की सूचनाओं को शांत नहीं कर रहा था।", "ru": "Фокусирование не заглушало уведомления Laban.",
+        "de": "Der Fokus schaltete Laban-Benachrichtigungen nicht stumm.", "pt-BR": "O Foco não estava silenciando as notificações do Laban.",
+        "it": "Full immersion non silenziava le notifiche di Laban.",
+    },
+    "Focus Status access was authorized, but macOS did not provide a result for this build.": {
+        "zh-Hans": "已授权专注模式状态访问，但 macOS 未为此构建提供结果。", "zh-Hant": "已授權專注模式狀態存取，但 macOS 未為此版本提供結果。",
+        "ja": "集中モード状況へのアクセスは許可されていましたが、macOS はこのビルドの結果を返しませんでした。", "ko": "집중 모드 상태 접근은 승인되었지만 macOS가 이 빌드에 대한 결과를 제공하지 않았습니다.",
+        "fr": "L’accès à l’état de Concentration était autorisé, mais macOS n’a fourni aucun résultat pour cette version.", "es": "El acceso al estado de Concentración estaba autorizado, pero macOS no proporcionó un resultado para esta compilación.",
+        "hi": "फ़ोकस स्थिति की पहुँच अधिकृत थी, लेकिन macOS ने इस बिल्ड के लिए परिणाम नहीं दिया।", "ru": "Доступ к статусу фокусирования был разрешён, но macOS не предоставила результат для этой сборки.",
+        "de": "Der Zugriff auf den Fokusstatus war autorisiert, aber macOS lieferte für diesen Build kein Ergebnis.", "pt-BR": "O acesso ao Estado de Foco estava autorizado, mas o macOS não forneceu um resultado para esta versão.",
+        "it": "L’accesso allo stato di Full immersion era autorizzato, ma macOS non ha fornito un risultato per questa build.",
+    },
+    "Focus troubleshooting was unavailable in this build.": {
+        "zh-Hans": "此构建中无法使用专注模式故障排查。", "zh-Hant": "此版本中無法使用專注模式疑難排解。",
+        "ja": "このビルドでは集中モードのトラブルシューティングを利用できませんでした。", "ko": "이 빌드에서는 집중 모드 문제 해결을 사용할 수 없었습니다.",
+        "fr": "Le dépannage de Concentration n’était pas disponible dans cette version.", "es": "El diagnóstico de Concentración no estaba disponible en esta compilación.",
+        "hi": "इस बिल्ड में फ़ोकस समस्या निवारण उपलब्ध नहीं था।", "ru": "Диагностика фокусирования была недоступна в этой сборке.",
+        "de": "Die Fokus-Fehlerbehebung war in diesem Build nicht verfügbar.", "pt-BR": "A solução de problemas do Foco não estava disponível nesta versão.",
+        "it": "La risoluzione dei problemi di Full immersion non era disponibile in questa build.",
+    },
+    "macOS returned an unknown Focus Status authorization state, so Laban could not diagnose Focus blocking.": {
+        "zh-Hans": "macOS 返回了未知的专注模式状态授权状态，因此 Laban 无法诊断专注模式阻止。", "zh-Hant": "macOS 傳回未知的專注模式狀態授權狀態，因此 Laban 無法診斷專注模式阻擋。",
+        "ja": "macOS が不明な集中モード状況の許可状態を返したため、Laban は集中モードによるブロックを診断できませんでした。", "ko": "macOS가 알 수 없는 집중 모드 상태 권한 상태를 반환하여 Laban이 집중 모드 차단을 진단할 수 없었습니다.",
+        "fr": "macOS a renvoyé un état d’autorisation de Concentration inconnu ; Laban n’a donc pas pu diagnostiquer le blocage.", "es": "macOS devolvió un estado de autorización de Concentración desconocido, por lo que Laban no pudo diagnosticar el bloqueo.",
+        "hi": "macOS ने अज्ञात फ़ोकस स्थिति अनुमति लौटाई, इसलिए Laban फ़ोकस अवरोध का निदान नहीं कर सका।", "ru": "macOS вернула неизвестное состояние разрешения на статус фокусирования, поэтому Laban не смог диагностировать блокировку.",
+        "de": "macOS lieferte einen unbekannten Berechtigungsstatus. Daher konnte Laban die Fokus-Blockierung nicht diagnostizieren.", "pt-BR": "O macOS retornou um estado de autorização desconhecido, então o Laban não pôde diagnosticar o bloqueio pelo Foco.",
+        "it": "macOS ha restituito uno stato di autorizzazione sconosciuto, quindi Laban non ha potuto diagnosticare il blocco.",
+    },
+    "At the last check (%@): %@": {
+        "zh-Hans": "上次检查时（%@）：%@", "zh-Hant": "上次檢查時（%@）：%@",
+        "ja": "前回の確認時（%@）：%@", "ko": "마지막 확인 시(%@): %@",
+        "fr": "Lors de la dernière vérification (%@) : %@", "es": "En la última comprobación (%@): %@",
+        "hi": "पिछली जाँच (%@) में: %@", "ru": "При последней проверке (%@): %@",
+        "de": "Bei der letzten Prüfung (%@): %@", "pt-BR": "Na última verificação (%@): %@",
+        "it": "All’ultimo controllo (%@): %@",
+    },
+    "Open Focus Status Privacy": {
+        "zh-Hans": "打开专注模式状态隐私设置", "zh-Hant": "開啟專注模式狀態隱私權設定",
+        "ja": "集中モード状況のプライバシーを開く", "ko": "집중 모드 상태 개인정보 보호 열기",
+        "fr": "Ouvrir la confidentialité de Concentration", "es": "Abrir privacidad del estado de Concentración",
+        "hi": "फ़ोकस स्थिति गोपनीयता खोलें", "ru": "Открыть конфиденциальность статуса фокусирования",
+        "de": "Datenschutz für Fokusstatus öffnen", "pt-BR": "Abrir privacidade do Estado de Foco",
+        "it": "Apri privacy stato Full immersion",
+    },
+    "Open Focus Settings": {
+        "zh-Hans": "打开专注模式设置", "zh-Hant": "開啟專注模式設定", "ja": "集中モード設定を開く",
+        "ko": "집중 모드 설정 열기", "fr": "Ouvrir les réglages de Concentration", "es": "Abrir ajustes de Concentración",
+        "hi": "फ़ोकस सेटिंग्स खोलें", "ru": "Открыть настройки фокусирования", "de": "Fokus-Einstellungen öffnen",
+        "pt-BR": "Abrir ajustes de Foco", "it": "Apri impostazioni Full immersion",
+    },
+    "Open Privacy & Security > Focus to grant Laban Focus Status access.": {
+        "zh-Hans": "打开“隐私与安全性”>“专注模式”，向 Laban 授予专注模式状态访问权限。", "zh-Hant": "開啟「隱私權與安全性」>「專注模式」，授予 Laban 專注模式狀態存取權。",
+        "ja": "「プライバシーとセキュリティ」>「集中モード」を開き、Laban に集中モード状況へのアクセスを許可します。", "ko": "개인정보 보호 및 보안 > 집중 모드를 열어 Laban에 집중 모드 상태 접근을 허용합니다.",
+        "fr": "Ouvrez Confidentialité et sécurité > Concentration pour accorder à Laban l’accès à l’état de Concentration.", "es": "Abre Privacidad y seguridad > Concentración para conceder a Laban acceso al estado de Concentración.",
+        "hi": "Laban को फ़ोकस स्थिति की पहुँच देने के लिए गोपनीयता और सुरक्षा > फ़ोकस खोलें।", "ru": "Откройте «Конфиденциальность и безопасность» > «Фокусирование», чтобы предоставить Laban доступ к статусу.",
+        "de": "Öffnen Sie Datenschutz & Sicherheit > Fokus, um Laban Zugriff auf den Fokusstatus zu gewähren.", "pt-BR": "Abra Privacidade e Segurança > Foco para conceder ao Laban acesso ao Estado de Foco.",
+        "it": "Apri Privacy e sicurezza > Full immersion per consentire a Laban di accedere allo stato.",
+    },
+    "Open Focus settings to add Laban to the active Focus's Allowed Apps.": {
+        "zh-Hans": "打开专注模式设置，将 Laban 添加到当前专注模式的允许 App。", "zh-Hant": "開啟專注模式設定，將 Laban 加入目前專注模式的允許 App。",
+        "ja": "集中モード設定を開き、Laban を有効な集中モードの許可されたアプリに追加します。", "ko": "집중 모드 설정을 열어 Laban을 활성 집중 모드의 허용된 앱에 추가합니다.",
+        "fr": "Ouvrez les réglages de Concentration pour ajouter Laban aux apps autorisées du mode actif.", "es": "Abre los ajustes de Concentración para añadir Laban a las apps permitidas del modo activo.",
+        "hi": "Laban को सक्रिय फ़ोकस के अनुमत ऐप्स में जोड़ने के लिए फ़ोकस सेटिंग्स खोलें।", "ru": "Откройте настройки фокусирования, чтобы добавить Laban в разрешённые приложения активного режима.",
+        "de": "Öffnen Sie die Fokus-Einstellungen, um Laban den erlaubten Apps des aktiven Fokus hinzuzufügen.", "pt-BR": "Abra os ajustes de Foco para adicionar o Laban aos apps permitidos do Foco ativo.",
+        "it": "Apri le impostazioni di Full immersion per aggiungere Laban alle app consentite della modalità attiva.",
+    },
+    FOCUS_STATUS_USAGE_DESCRIPTION: {
+        "zh-Hans": "当您明确运行专注模式故障排查时，Laban 会检查当前专注模式是否将终端提醒通知静音。", "zh-Hant": "當您明確執行專注模式疑難排解時，Laban 會檢查啟用中的專注模式是否將終端機提醒通知靜音。",
+        "ja": "集中モードのトラブルシューティングを明示的に実行したとき、Laban は有効な集中モードがターミナルの注意通知をオフにしているか確認します。", "ko": "집중 모드 문제 해결을 명시적으로 실행하면 Laban은 활성 집중 모드가 터미널 주의 알림을 끄고 있는지 확인합니다.",
+        "fr": "Lorsque vous lancez explicitement le dépannage de Concentration, Laban vérifie si un mode actif réduit au silence les notifications d’attention du terminal.", "es": "Cuando ejecutas explícitamente el diagnóstico de Concentración, Laban comprueba si un modo activo silencia las notificaciones de atención del terminal.",
+        "hi": "जब आप स्पष्ट रूप से फ़ोकस समस्या निवारण चलाते हैं, तो Laban जाँचता है कि सक्रिय फ़ोकस टर्मिनल ध्यान सूचनाओं को शांत कर रहा है या नहीं।", "ru": "Когда вы явно запускаете диагностику фокусирования, Laban проверяет, заглушает ли активный режим уведомления терминала.",
+        "de": "Wenn Sie die Fokus-Fehlerbehebung ausdrücklich ausführen, prüft Laban, ob ein aktiver Fokus Terminal-Benachrichtigungen stummschaltet.", "pt-BR": "Quando você executa explicitamente a solução de problemas do Foco, o Laban verifica se um Foco ativo está silenciando as notificações de atenção do terminal.",
+        "it": "Quando avvii esplicitamente la risoluzione dei problemi di Full immersion, Laban controlla se una modalità attiva silenzia le notifiche di attenzione del terminale.",
+    },
+})
+
 
 def build_xcstrings() -> dict:
     strings: dict = {}
@@ -1729,7 +1940,41 @@ def build_xcstrings() -> dict:
     }
 
 
+def localized_value(source: str, locale: str) -> str:
+    if locale == "en":
+        return source
+    locales = {
+        **TRANSLATIONS.get(source, {}),
+        **SUPPLEMENT_DE_PT_IT.get(source, {}),
+    }
+    return locales.get(locale, source)
+
+
+def write_focus_info_plist_strings(resources: Path) -> None:
+    for locale in ("en", *LOCALES):
+        value = localized_value(FOCUS_STATUS_USAGE_DESCRIPTION, locale)
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        destination = resources / f"{locale}.lproj" / "InfoPlist.strings"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            f'"NSFocusStatusUsageDescription" = "{escaped}";\n',
+            encoding="utf-8",
+        )
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--focus-usage-description", metavar="LOCALE")
+    parser.add_argument("--write-focus-info-plist-strings", type=Path, metavar="RESOURCES")
+    args = parser.parse_args()
+
+    if args.focus_usage_description:
+        print(localized_value(FOCUS_STATUS_USAGE_DESCRIPTION, args.focus_usage_description))
+        return
+    if args.write_focus_info_plist_strings:
+        write_focus_info_plist_strings(args.write_focus_info_plist_strings)
+        return
+
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(build_xcstrings(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {OUT} ({len(TRANSLATIONS)} strings)")

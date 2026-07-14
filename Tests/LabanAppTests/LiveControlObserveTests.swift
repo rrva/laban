@@ -65,6 +65,12 @@ final class LiveControlObserveTests: XCTestCase {
       category: "needsAction",
       stage: .added,
       outcome: "added")
+    let focusCheckedAt = Date(timeIntervalSince1970: 42)
+    store.updateFocusStatus(
+      NativeNotificationFocusSnapshot(
+        authorizationStatus: .authorized,
+        suppressesNotifications: true,
+        checkedAt: focusCheckedAt))
     let identity = NativeNotificationRuntimeIdentity(
       bundleIdentifier: "com.laban.LabanApp",
       bundlePath: "/Users/test/Laban.app",
@@ -92,6 +98,9 @@ final class LiveControlObserveTests: XCTestCase {
     let decoded = try decoder.decode(NativeNotificationDiagnosticsSnapshot.self, from: data)
     XCTAssertEqual(decoded.identity, identity)
     XCTAssertEqual(decoded.events.map(\.eventId), ["event-1"])
+    XCTAssertEqual(decoded.focusAuthorizationStatus, .authorized)
+    XCTAssertEqual(decoded.focusSuppressesNotifications, true)
+    XCTAssertEqual(decoded.focusCheckedAt, focusCheckedAt)
     let raw = String(data: data, encoding: .utf8) ?? ""
     XCTAssertFalse(raw.contains("\"title\""))
     XCTAssertFalse(raw.contains("\"body\""))

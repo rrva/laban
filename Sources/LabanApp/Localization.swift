@@ -14,6 +14,7 @@ enum L10n {
   /// Deterministic English lookup for tests and diagnostics.
   static func trEn(_ key: String.LocalizationValue) -> String {
     String(
-      localized: key, bundle: LabanAppResources.bundle, locale: Locale(identifier: "en"))
+      localized: key, bundle: LabanAppResources.bundle,
+      locale: Locale(identifier: "en"))
   }
 }

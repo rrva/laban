@@ -57,6 +57,9 @@ final class HeadlessIntentRouterTests: XCTestCase {
     XCTAssertFalse(snapshot.nativeAvailable)
     XCTAssertNil(snapshot.identity)
     XCTAssertTrue(snapshot.events.isEmpty)
+    XCTAssertEqual(snapshot.focusAuthorizationStatus, .unavailable)
+    XCTAssertNil(snapshot.focusSuppressesNotifications)
+    XCTAssertNil(snapshot.focusCheckedAt)
   }
 
   func testNotificationTestReturnsUnavailable() throws {

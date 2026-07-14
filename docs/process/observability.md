@@ -50,6 +50,17 @@ timestamp, event/tab/source/category identity, stage, outcome, suppression
 reason, bounded error identity, and foreground presentation options. It also
 reports cached native settings and pending/delivered counts.
 
+Focus diagnostics are cached alongside this state but are never collected
+automatically. `focusAuthorizationStatus` is `notChecked` until the user presses
+**Check Focus Blocking…** in Settings > Notifications, and
+`focusSuppressesNotifications` stays null until that explicit check produces a
+definitive authorized value. `focusCheckedAt` records when the user-triggered
+read completed and stays null before any check (including headless mode).
+Endpoint polling must not read Focus Status or trigger its permission prompt.
+UI copy describes cached values as results “At the last check”; denied,
+restricted, unavailable, unknown, and authorized-with-null results remain
+explicitly inconclusive.
+
 This ring deliberately excludes notification title and body. Those strings may
 contain private terminal or agent output and remain only in the existing local
 application event log. Headless mode returns the same response shape with

@@ -169,6 +169,11 @@ for b in "$bin"/*.bundle; do
   cp -R "$b" "${bundle_dir}/Resources/"
 done
 
+focus_usage_description=$(python3 scripts/gen-localizable-xcstrings.py \
+  --focus-usage-description en)
+python3 scripts/gen-localizable-xcstrings.py \
+  --write-focus-info-plist-strings "${bundle_dir}/Resources"
+
 cat > "${bundle_dir}/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -220,6 +225,8 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <false/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSFocusStatusUsageDescription</key>
+    <string>$(xml_escape "$focus_usage_description")</string>
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 Ragnar Rova</string>
     <key>CFBundleURLTypes</key>

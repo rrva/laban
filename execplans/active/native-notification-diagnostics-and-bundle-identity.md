@@ -8,6 +8,10 @@ Laban can currently decide to post a macOS notification, submit it to `UNUserNot
 
 After this work, an agent can query native notification state through a bounded debug endpoint, request an explicitly authorized native test notification, and poll a privacy-preserving diagnostic event ring through the running app. Headless mode exposes the same endpoint contract while stating that native delivery is unavailable. Development worktrees and smoke builds receive isolated bundle identifiers so their app registrations do not pollute the canonical `/Users/rrj/Laban.app` identity. The app reports factual signing identity fields but does not warn merely because a bundle is ad hoc signed.
 
+The Notifications Settings tab also offers an explicit Focus troubleshooting check. Laban does not inspect Focus at launch, while posting notifications, during background refresh, or when an agent polls notification state. Only pressing the troubleshooting button may request Focus Status permission and read `INFocusStatusCenter`. The result is cached in the same privacy-preserving diagnostic state so the user and an observing agent can see whether macOS reports that the current Focus silences Laban.
+
+Clicking a delivered Laban notification also returns the user to its originating tab. The ordinary notification tap is the action; no redundant custom action is registered. If the tab was closed or its metadata is absent or malformed, Laban still activates without changing the current tab or crashing.
+
 ## Progress
 
 - [x] (2026-07-13) Reproduced the current failure boundary: recent live events report authorized banner settings, `UNUserNotificationCenter.add` success, and foreground `willPresent` with banner/list/sound options.
@@ -24,6 +28,12 @@ After this work, an agent can query native notification state through a bounded 
 - [x] (2026-07-13) Run focused tests, the full `./scripts/check`, and a canonical bundled build; verify lazy attach against the currently running installed app.
 - [ ] Launch the newly built app and verify the new live notification endpoints end to end.
 - [x] (2026-07-13) Complete the Review Gate with a fresh agent.
+- [x] (2026-07-13) Add an explicit, user-triggered Focus troubleshooting check to Notifications Settings without automatic Focus reads or permission prompts.
+- [x] (2026-07-13) Cache Focus authorization and nullable app-perspective suppression in native notification diagnostics, schemas, live/headless parity, and focused tests.
+- [x] (2026-07-13) Add the Focus Status usage description, update operational documentation, and validate the locally signed bundle as far as possible without launching it.
+- [x] (2026-07-13) Route default notification taps to the originating live tab with a safe activate-only fallback and focused tests.
+- [x] (2026-07-13) Address review findings: reuse the terminal view's state-safe external tab-selection path, distinguish Focus privacy from Allowed Apps settings, timestamp cached checks, and localize the complete Focus troubleshooting surface.
+- [ ] (2026-07-13) Re-run the Focus-specific Review Gate with a fresh reviewer.
 
 ## Decision Log
 
@@ -51,6 +61,26 @@ After this work, an agent can query native notification state through a bounded 
   Rationale: canonical installs must keep `com.laban.LabanApp`. Worktree builds need stable, distinct identities without requiring every agent to remember an environment variable. Smoke builds should use an explicit smoke identifier.
   Date/Author: 2026-07-13 / Claude
 
+- Decision: Read Focus Status only after the user presses a troubleshooting control in Notifications Settings.
+  Rationale: Focus Status is privacy-protected and checking it is diagnostic, not part of ordinary notification delivery. Launch, notification submission, endpoint polling, and background refresh must neither read Focus nor surprise-prompt for permission. The explicit action may request authorization, read the app-perspective result, and cache it for later UI and endpoint observation.
+  Date/Author: 2026-07-13 / Codex implementer
+
+- Decision: Represent an authorized but absent `isFocused` value as unknown rather than false.
+  Rationale: Apple documents `INFocusStatus.isFocused` as nullable and its sample requires the Communication Notifications capability. A nil value cannot prove that Focus permits Laban, especially for an ad hoc-signed local build without that capability.
+  Date/Author: 2026-07-13 / Codex implementer
+
+- Decision: Treat the system default notification action as “open the originating tab” and do not register a custom action.
+  Rationale: A banner tap is the platform-standard navigation gesture. `AgentNotificationPoster` already embeds the tab ID, so the delegate can select that tab and raise its window. Stale or malformed IDs must degrade to application activation without guessing another tab.
+  Date/Author: 2026-07-13 / Codex implementer
+
+- Decision: Timestamp every explicit Focus result and describe it as historical rather than continuously current.
+  Rationale: Focus remains strictly user-triggered, so cached state can become stale immediately after the check. `focusCheckedAt` exposes that boundary to the UI and debug endpoint without adding polling or background API access.
+  Date/Author: 2026-07-13 / Codex implementer
+
+- Decision: Keep notification-originated tab selection at `TerminalBitmapView`'s ownership boundary.
+  Rationale: direct model selection bypasses marked-text teardown, per-tab selection persistence, sidebar visibility, and render invalidation. The external wrapper calls the existing `selectTabPreservingSelection` sequence rather than duplicating it.
+  Date/Author: 2026-07-13 / Codex implementer
+
 ## Surprises & Discoveries
 
 - Observation: The running bundle was not signed by a Personal Team certificate. It was ad hoc signed and had a CDHash-only designated requirement.
@@ -71,6 +101,12 @@ After this work, an agent can query native notification state through a bounded 
 - Observation: An explicitly visible notification test needs lazy attach without gaining reusable authority.
   Evidence: `notifications.test` is now request-exact, outside `ControlSessionObserveFamily`, and non-persistable. An end-to-end server test proves an Always Allow decision degrades to one-time approval and stores no grant.
 
+- Observation: Personal Focus, not notification submission or signing, was the live suppressing boundary.
+  Evidence: after the user added Laban to Personal Focus's Allowed Apps, the existing notification test endpoint produced a visible notification without a code or signing change.
+
+- Observation: Apple documents a capability limitation beyond the Focus Status privacy prompt.
+  Evidence: `INFocusStatusCenter` compiles and links in the ad hoc local bundle and the generated Info.plist carries `NSFocusStatusUsageDescription`, but Apple's sample requires the Communication Notifications capability for a non-nil current Focus value. The current ad hoc signature has no entitlements, so runtime code treats authorized nil as inconclusive.
+
 ## Review Gate
 
 A separate fresh agent must verify the following before this ExecPlan is complete:
@@ -82,12 +118,23 @@ A separate fresh agent must verify the following before this ExecPlan is complet
 - [x] Confirm the test action cannot be called with an ordinary app-observe read token but is available through an explicitly approved, request-exact, non-persistable GUI action scope.
 - [x] Confirm no code path emits an ad hoc-signing warning.
 - [x] Run `./scripts/check`; exit 0, including 2,029 sequential tests, smoke runtime, and E2E.
+- [ ] Search `Sources/LabanApp` for `INFocusStatusCenter`; every read/request is reachable only from the Notifications Settings troubleshooting action, and normal notification refresh has no Focus dependency.
+- [ ] Run Focus diagnostics model, monitor, UI-presentation, live-control, headless-router, catalog parity, and schema tests; expect exit 0.
+- [ ] Build the app bundle, verify `NSFocusStatusUsageDescription` is present, and inspect the code signature without launching the app.
+- [ ] Inspect default notification-response routing; confirm a valid tab is selected and raised, stale or malformed IDs preserve the current selection, non-default actions do not navigate, and every path calls the completion handler once.
+- [ ] Confirm notification response selection uses `TerminalBitmapView.selectTabFromExternalNavigation`, with an integration regression for marked text and cached selection restoration; no direct `AppModel.selectTab` call may be added to `MainWindowController`.
+- [ ] Confirm Focus results expose `focusCheckedAt`, UI copy says “At the last check,” denied access opens Privacy & Security > Focus, active suppression opens general Focus settings, and neither path reads Focus automatically.
+- [ ] Confirm all new Focus labels, buttons, status/progress copy, tooltips, and `NSFocusStatusUsageDescription` are present in every supported localization resource.
 
-Review status: APPROVED (2026-07-13). The fresh reviewer found two blockers (lazy-attach admission and cursor semantics); both were fixed with regressions and the re-review reported no remaining ship-blocking finding.
+Review status: FOCUS EXTENSION NOT REVIEWED. The original notification diagnostics work was approved on 2026-07-13 after fixing lazy-attach admission and cursor semantics; the new Focus-specific gate items above still require the requested fresh reviewer.
 
 ## Context and Orientation
 
 `Sources/LabanCore/AppModel.swift` creates `AttentionNotificationEvent` values from OSC terminal notifications, BEL, and tab-attention transitions. `Sources/LabanApp/MainWindowController.swift` applies frontmost-tab and user-setting policy, then forwards eligible events to `AgentNotificationPoster`. `Sources/LabanApp/AgentNotificationPoster.swift` calls `UNUserNotificationCenter`, lazily requests authorization, submits immediate requests, and writes structured events to `EventLog`. `Sources/LabanApp/AppDelegate.swift` installs the notification-center delegate and selects foreground presentation options.
+
+`INFocusStatusCenter` is the public macOS API that reports Focus from the calling application's perspective: when authorized, `focusStatus.isFocused == true` means a Focus is active and this app is not allowed through it. Its value is nullable. Focus authorization is separate from notification authorization, and reading it is not part of the normal notification refresher. `SettingsWindowController` owns the only user gesture that invokes the Focus check; the shared diagnostics store only caches and returns the result.
+
+`AgentNotificationPoster` stores the originating `tabId` in each notification's `userInfo`. `AppDelegate.userNotificationCenter(_:didReceive:withCompletionHandler:)` delegates default-action routing to a testable handler. `MainWindowController.focusTabFromNotification(_:)` asks `TerminalBitmapView.selectTabFromExternalNavigation(_:)` to validate and select through the same marked-text, selection-cache, sidebar, and render-invalidating path as other UI selection, then raises the window. A stale ID returns false so the handler retains the activate-only fallback.
 
 The live GUI control surface is routed by `Sources/LabanApp/Control/LiveIntentRouter.swift`. HTTP path and intent mappings live in `Sources/LabanControl/ControlRouteCatalog.swift`. Capability, sensitivity, availability, and schema metadata live in `Sources/LabanCore/Intents/IntentCatalog.swift`. The headless implementation lives under `Sources/LabanDebug` and must retain endpoint contract parity even when a native facility is unavailable. JSON schemas live under `schemas/debug`.
 
@@ -159,6 +206,18 @@ After the user is running the new build, verify:
 4. Polling notification state shows submit, added or addFailed, decision, and willPresent when foreground.
 5. LaunchServices still reports only the canonical installed registration unless a deliberately isolated worktree app has been registered under its distinct identifier.
 
+### Milestone 5: Explicit Focus troubleshooting
+
+Extend `NativeNotificationDiagnosticsSnapshot` with a Focus authorization status, nullable `focusSuppressesNotifications` value, and nullable `focusCheckedAt` timestamp. A live store begins in `notChecked`; headless state reports `unavailable`. The state endpoint only returns the cached value and must not itself touch `INFocusStatusCenter`.
+
+Add a small app-only Focus monitor around `INFocusStatusCenter`. Its `check` method is called only by a new Notifications Settings troubleshooting button. On that click, it reads the current authorization state, requests authorization only when it is not determined, then reads `focusStatus.isFocused` only when authorized. Cache the timestamped result and update a nearby status label phrased as “At the last check.” Authorized `true` is a factual historical warning that Focus was silencing Laban; authorized `false` says it was not silencing Laban then; authorized `nil`, denied, restricted, not determined, unknown, and unavailable all remain explicit inconclusive states. Denied authorization routes to Privacy & Security > Focus, while detected suppression routes to general Focus settings for Allowed Apps.
+
+Add `NSFocusStatusUsageDescription` to the generated Info.plist. Do not add an ad hoc-signing warning. Apple documents the Communication Notifications capability as a requirement for obtaining a non-nil current Focus value; validate compilation, the generated plist, and the locally signed bundle, but do not claim local runtime support until the user launches and explicitly runs the check.
+
+### Milestone 6: Notification tap routing
+
+Implement the notification-center response delegate for `UNNotificationDefaultActionIdentifier`. Pass the existing `tabId` metadata through a small testable handler, validate that the tab still exists in `MainWindowController`, select and raise it when valid, then activate Laban. Missing, malformed, or stale IDs activate Laban without changing the current selection. Other action identifiers perform no navigation, and every response path invokes Apple's completion handler exactly once. Do not register an “Open Tab” notification action because the default tap already carries that meaning.
+
 ## Concrete Steps
 
 Work from `/Users/rrj/wrk/laban`.
@@ -173,6 +232,18 @@ Run focused Swift tests while iterating:
 
 ```sh
 swift test --filter 'AgentNotificationPosterTests|AttentionNotification|LiveControlObserveTests|CatalogParityTests|ControlAvailabilityParityTests'
+```
+
+For the Focus extension, include:
+
+```sh
+swift test --filter 'NativeNotificationDiagnosticsTests|NativeFocusStatusMonitorTests|NativeFocusTroubleshootingPresentationTests|LiveControlObserveTests|HeadlessIntentRouterTests|CatalogParityTests|ControlAvailabilityParityTests'
+```
+
+For notification response routing, include:
+
+```sh
+swift test --filter 'NativeNotificationResponseHandlerTests'
 ```
 
 Run the bundle identity script test once added:
@@ -221,6 +292,11 @@ The work is complete when all of these are demonstrably true:
 - Headless test requests do not claim success and never call `UNUserNotificationCenter`.
 - Ring capacity is mechanically tested and old records are evicted.
 - No code path warns merely because signing is ad hoc.
+- Focus authorization and app-perspective suppression are never read automatically; only the explicit Notifications Settings troubleshooting action can invoke `INFocusStatusCenter`.
+- Before that action, live diagnostics report `focusAuthorizationStatus: "notChecked"`, `focusSuppressesNotifications: null`, and `focusCheckedAt: null`; headless reports `unavailable` with both nullable fields null.
+- After an explicit check, the Settings UI and state endpoint share the cached result and never turn denied, restricted, unavailable, unknown, or an authorized nil value into a false "Focus is off" claim.
+- The generated Info.plist includes a user-understandable `NSFocusStatusUsageDescription`.
+- A default notification tap selects and raises the originating live tab; stale, missing, or malformed tab metadata activates Laban without selecting another tab, and all paths complete the system callback exactly once.
 - The primary checkout resolves `com.laban.LabanApp`; linked worktrees resolve stable distinct suffixes; smoke builds use a separate identifier; explicit valid overrides work; invalid identifiers fail before building.
 - `./scripts/check` passes.
 - The fresh Review Gate passes.
@@ -246,6 +322,34 @@ build commit: 4747bcf1
 signing: ad hoc, no Team ID, CDHash-only designated requirement
 LaunchServices registrations after cleanup: 1
 native runtime evidence: authorized, alert style banner, add succeeded, willPresent requested banner/list/sound
+```
+
+Focus extension verification on 2026-07-13:
+
+```text
+focused tests after review-finding remediation: 94 passed, 0 failed
+covered: explicit-only Focus reads, checkedAt caching and historical UI copy, distinct permission/allowlist settings destinations, localized Focus resources, live/headless contracts, safe notification-tap tab routing
+lint: passed
+check-docs: passed
+check-debug-contract: passed
+LabanControlGen --check: passed
+git diff --check: passed
+notification-state schema JSON: valid
+Focus localization catalog: all 189 entries have all 11 supported non-English locales; the 21 Focus keys have translated, non-empty values
+build-app: passed; ad hoc signature valid on disk and satisfies its Designated Requirement
+Info.plist NSFocusStatusUsageDescription: present and non-empty
+localized InfoPlist.strings: generated for English plus all 11 supported non-English locales; French and Japanese values parsed and verified
+linked frameworks: Intents.framework and libswiftIntents.dylib present
+runtime Focus check: intentionally not run; only the user may press the troubleshooting button
+full ./scripts/check: intentionally not run because its smoke stage launches Laban and this review pass may not launch or restart the app
+```
+
+Notification response routing verification on 2026-07-13:
+
+```text
+focused tests: 5 passed, 0 failed
+covered: valid tab, stale tab, missing/malformed tabId, non-default action, deferred completion
+runtime notification tap: not run; requires the user-launched updated bundle and a delivered notification
 ```
 
 ## Interfaces and Dependencies

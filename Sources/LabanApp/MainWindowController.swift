@@ -55,6 +55,17 @@ final class MainWindowController: NSWindowController {
     terminalView?.debugTerminalModesState()
   }
 
+  /// Select and raise the tab named by a native notification. A stale tab ID
+  /// is a no-op so notification taps can safely fall back to activating the
+  /// application without changing the user's current selection.
+  @discardableResult
+  func focusTabFromNotification(_ tabId: Tab.ID) -> Bool {
+    guard terminalView?.selectTabFromExternalNavigation(tabId) == true else { return false }
+    window?.deminiaturize(nil)
+    window?.makeKeyAndOrderFront(nil)
+    return true
+  }
+
   static func makeAndShow(
     restoring restoredState: WorkspaceState? = nil,
     persistenceSyncEnabled: Bool = true,

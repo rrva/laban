@@ -44,6 +44,15 @@ plutil -lint "$PLIST" || fail "Info.plist lint failed"
 actual_bundle_identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")
 [ "$actual_bundle_identifier" = "$SMOKE_BUNDLE_IDENTIFIER" ] \
   || fail "smoke bundle identifier is $actual_bundle_identifier"
+focus_usage_description=$(
+  /usr/libexec/PlistBuddy -c 'Print :NSFocusStatusUsageDescription' "$PLIST")
+[ -n "$focus_usage_description" ] \
+  || fail "NSFocusStatusUsageDescription is missing or empty"
+for locale in en zh-Hans zh-Hant ja ko fr es hi ru de pt-BR it; do
+  info_plist_strings="$BUILD_ROOT/laban/Laban.app/Contents/Resources/$locale.lproj/InfoPlist.strings"
+  [ -s "$info_plist_strings" ] \
+    || fail "localized NSFocusStatusUsageDescription missing for $locale"
+done
 
 # 2b. Renderer resource bundle is reachable via Bundle.main.resourceURL.
 # Catches the regression where the .app launches but FontAtlas crashes

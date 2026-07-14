@@ -11,6 +11,9 @@
     "settings",
     "pendingCount",
     "deliveredCount",
+    "focusAuthorizationStatus",
+    "focusSuppressesNotifications",
+    "focusCheckedAt",
     "identity",
     "events",
     "nextSequence"
@@ -41,6 +44,20 @@
     },
     "pendingCount": {"type": ["integer", "null"], "minimum": 0},
     "deliveredCount": {"type": ["integer", "null"], "minimum": 0},
+    "focusAuthorizationStatus": {
+      "type": "string",
+      "enum": [
+        "notChecked",
+        "notDetermined",
+        "restricted",
+        "denied",
+        "authorized",
+        "unavailable",
+        "unknown"
+      ]
+    },
+    "focusSuppressesNotifications": {"type": ["boolean", "null"]},
+    "focusCheckedAt": {"type": ["string", "null"], "format": "date-time"},
     "identity": {
       "type": ["object", "null"],
       "additionalProperties": false,

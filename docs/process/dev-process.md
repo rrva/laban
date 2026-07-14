@@ -313,6 +313,27 @@ ring. The ring records settings, authorization failure, test request, submit,
 added/add-failed, final decision, and foreground `willPresent` stages. It does
 not return notification title or body text.
 
+The response also includes cached `focusAuthorizationStatus`, nullable
+`focusSuppressesNotifications`, and nullable `focusCheckedAt`. Focus is strictly opt-in troubleshooting:
+launch, notification submission, native notification refresh, background work,
+and this endpoint never read or request Focus Status. A live process starts at
+`notChecked`; headless reports `unavailable`. Only the **Check Focus Blocking…**
+button in Settings > Notifications may call `INFocusStatusCenter`, request its
+separate privacy permission when needed, and cache a timestamped result. The UI
+phrases that result as historical (“At the last check”) because Laban does not
+monitor Focus after the button action. An authorized `true` means Focus was
+silencing Laban from the app's perspective at `focusCheckedAt`; an authorized
+`false` means it was not silencing Laban then. A null value is inconclusive and
+must never be presented as Focus being off. Denied authorization links to
+Privacy & Security > Focus; a detected active-Focus block links to the general
+Focus settings where Allowed Apps are configured.
+
+Apple documents the Communication Notifications capability as a requirement
+for obtaining the current Focus value. Local ad hoc builds can compile the API
+and carry `NSFocusStatusUsageDescription`, but may still return an authorized
+null result without an appropriately provisioned capability. Diagnostics must
+state that limitation rather than warning about ad hoc signing.
+
 The endpoint is available to the low-privilege app-observe token. Each query
 requests an asynchronous refresh from `UNUserNotificationCenter`; callers use
 `refreshInFlight` and `lastRefreshedAt` to distinguish cached from refreshed

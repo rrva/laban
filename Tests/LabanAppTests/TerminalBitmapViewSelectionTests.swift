@@ -89,6 +89,34 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     XCTAssertFalse(harness.view.hasMarkedText(), "tab switch must discard marked IME text")
   }
 
+  func testExternalNavigationUsesStateSafeTabSelectionPath() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let first = try XCTUnwrap(harness.model.activeTab)
+    let firstSession = try XCTUnwrap(harness.model.session(forTab: first.id))
+    firstSession.write(Array("ONE first\r\n".utf8))
+    firstSession.poll()
+    harness.view.advanceFrame()
+    selectCells(row: 0, startCol: 0, endCol: 2, in: harness)
+
+    harness.view.newTab(nil)
+    harness.view.advanceFrame()
+    harness.view.setMarkedText(
+      "か",
+      selectedRange: NSRange(location: 1, length: 0),
+      replacementRange: NSRange(location: NSNotFound, length: 0))
+
+    XCTAssertTrue(harness.view.selectTabFromExternalNavigation(first.id))
+
+    XCTAssertEqual(harness.model.activeTab?.id, first.id)
+    XCTAssertFalse(harness.view.hasMarkedText(), "external selection must discard marked IME text")
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "ONE",
+      "external selection must restore the destination tab's cached selection")
+  }
+
   func testSelectedRangeReportsValidInsertionPointForDictation() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }

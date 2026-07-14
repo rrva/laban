@@ -16,6 +16,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let onChangeFont: () -> Void
   private let onChangeCJKFont: () -> Void
   private let onTestNotification: () -> Void
+  private let focusStatusSnapshot: () -> NativeNotificationFocusSnapshot
+  private let onCheckFocusStatus: (@escaping (NativeNotificationFocusSnapshot) -> Void) -> Void
   private let onControlServerEnabledChanged: (Bool) -> Void
 
   private let themePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -72,6 +74,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     checkboxWithTitle: L10n.tr("Play notification sound"), target: nil, action: nil)
   private let testNotificationButton = NSButton(
     title: L10n.tr("Test Native Notification"), target: nil, action: nil)
+  private let focusTroubleshootingStatusLabel = NSTextField(wrappingLabelWithString: "")
+  private let focusTroubleshootingButton = NSButton(
+    title: L10n.tr("Check Focus Blocking…"), target: nil, action: nil)
+  private let openFocusSettingsButton = NSButton(
+    title: L10n.tr("Open Settings"), target: nil, action: nil)
+  private var focusCheckInFlight = false
+  private var focusSettingsDestination: NativeFocusSettingsDestination?
   private let blinkCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Blink cursor"), target: nil, action: nil)
   private let profileRecorderCheckbox = NSButton(
@@ -107,6 +116,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     onChangeFont: @escaping () -> Void,
     onChangeCJKFont: @escaping () -> Void,
     onTestNotification: @escaping () -> Void,
+    focusStatusSnapshot: @escaping () -> NativeNotificationFocusSnapshot,
+    onCheckFocusStatus:
+      @escaping (@escaping (NativeNotificationFocusSnapshot) -> Void) -> Void,
     onControlServerEnabledChanged: @escaping (Bool) -> Void = { _ in }
   ) {
     self.themeController = theme
@@ -115,6 +127,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     self.onChangeFont = onChangeFont
     self.onChangeCJKFont = onChangeCJKFont
     self.onTestNotification = onTestNotification
+    self.focusStatusSnapshot = focusStatusSnapshot
+    self.onCheckFocusStatus = onCheckFocusStatus
     self.onControlServerEnabledChanged = onControlServerEnabledChanged
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 460, height: 10),
@@ -369,6 +383,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     testNotificationButton.toolTip =
       "Sends one native macOS notification through the same path as tab attention."
 
+    focusTroubleshootingStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    focusTroubleshootingStatusLabel.preferredMaxLayoutWidth = 360
+    focusTroubleshootingStatusLabel.toolTip = L10n.tr(
+      "Focus is checked only when you press the troubleshooting button. Laban never reads or requests Focus Status during launch or normal notification delivery."
+    )
+
+    focusTroubleshootingButton.target = self
+    focusTroubleshootingButton.action = #selector(checkFocusStatusClicked(_:))
+    focusTroubleshootingButton.bezelStyle = .rounded
+    focusTroubleshootingButton.toolTip = L10n.tr(
+      "Checks whether the current Focus is silencing Laban. The first check may ask for Focus Status permission."
+    )
+
+    openFocusSettingsButton.target = self
+    openFocusSettingsButton.action = #selector(openFocusSettingsClicked(_:))
+    openFocusSettingsButton.bezelStyle = .rounded
+
     approvalsRefreshButton.target = self
     approvalsRefreshButton.action = #selector(approvalsRefreshClicked(_:))
     approvalsRefreshButton.bezelStyle = .rounded
@@ -414,6 +445,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [NSGridCell.emptyContentView, passiveNotificationsCheckbox],
       [NSGridCell.emptyContentView, notificationSoundCheckbox],
       [NSGridCell.emptyContentView, testNotificationButton],
+      [makeLabel(L10n.tr("Focus troubleshooting:")), makeFocusTroubleshootingButtonColumn()],
+      [NSGridCell.emptyContentView, focusTroubleshootingStatusLabel],
     ])
 
     let approvalsGrid = makeSettingsGrid([
@@ -436,7 +469,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       content.bottomAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 20),
     ])
     window.layoutIfNeeded()
-    window.setContentSize(NSSize(width: 560, height: 300))
+    window.setContentSize(NSSize(width: 560, height: 360))
   }
 
   private func populateThemePopUp() {
@@ -488,6 +521,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let label = NSTextField(labelWithString: text)
     label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
     return label
+  }
+
+  private func makeFocusTroubleshootingButtonColumn() -> NSStackView {
+    Self.makeFocusTroubleshootingButtonColumn(
+      checkButton: focusTroubleshootingButton,
+      settingsButton: openFocusSettingsButton)
+  }
+
+  static func makeFocusTroubleshootingButtonColumn(
+    checkButton: NSButton,
+    settingsButton: NSButton
+  ) -> NSStackView {
+    let column = NSStackView(views: [checkButton, settingsButton])
+    column.orientation = .vertical
+    column.spacing = 8
+    column.alignment = .leading
+    return column
   }
 
   private func makeVectorTextWeightRow() -> NSStackView {
@@ -660,6 +710,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       AttentionNotificationSettings.passiveEnabled ? .on : .off
     notificationSoundCheckbox.state =
       AttentionNotificationSettings.soundEnabled ? .on : .off
+    refreshFocusTroubleshootingControls()
   }
 
   // MARK: Actions
@@ -811,6 +862,43 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   @objc private func testNotificationClicked(_ sender: NSButton) {
     onTestNotification()
+  }
+
+  @objc private func checkFocusStatusClicked(_ sender: NSButton) {
+    guard !focusCheckInFlight else { return }
+    focusCheckInFlight = true
+    focusTroubleshootingButton.isEnabled = false
+    focusTroubleshootingStatusLabel.stringValue = L10n.tr("Checking Focus…")
+    focusTroubleshootingStatusLabel.textColor = .secondaryLabelColor
+
+    onCheckFocusStatus { [weak self] _ in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.focusCheckInFlight = false
+        self.refreshFocusTroubleshootingControls()
+      }
+    }
+  }
+
+  @objc private func openFocusSettingsClicked(_ sender: NSButton) {
+    guard let destination = focusSettingsDestination else { return }
+    for url in destination.urls where NSWorkspace.shared.open(url) {
+      return
+    }
+  }
+
+  private func refreshFocusTroubleshootingControls() {
+    guard !focusCheckInFlight else { return }
+    let presentation = NativeFocusTroubleshootingPresentation(focusStatusSnapshot())
+    focusTroubleshootingStatusLabel.stringValue = presentation.message
+    focusTroubleshootingStatusLabel.textColor =
+      presentation.tone == .warning ? .systemOrange : .secondaryLabelColor
+    focusTroubleshootingButton.title = presentation.buttonTitle
+    focusTroubleshootingButton.isEnabled = true
+    focusSettingsDestination = presentation.settingsDestination
+    openFocusSettingsButton.title = presentation.settingsButtonTitle ?? L10n.tr("Open Settings")
+    openFocusSettingsButton.toolTip = presentation.settingsToolTip
+    openFocusSettingsButton.isHidden = !presentation.showsOpenSettings
   }
 
   @objc private func blinkChanged(_ sender: NSButton) {

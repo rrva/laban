@@ -4067,6 +4067,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     restoreSelectionState(for: model.activeTab?.id)
   }
 
+  /// Select a tab requested by an external AppKit event, such as a native
+  /// notification response. Keep this at the view ownership boundary so every
+  /// non-pointer route shares the same IME, selection, sidebar, and render
+  /// invalidation sequence as menu and keyboard selection.
+  @discardableResult
+  func selectTabFromExternalNavigation(_ tabId: Tab.ID) -> Bool {
+    guard model.tabs.contains(where: { $0.id == tabId }) else { return false }
+    selectTabPreservingSelection(tabId)
+    invalidateRenderAndWake()
+    return true
+  }
+
   private func selectTab(at index: Int) {
     guard index >= 0, index < model.tabs.count else { return }
     selectTabPreservingSelection(model.tabs[index].id)

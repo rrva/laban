@@ -84,6 +84,33 @@ final class NativeNotificationDiagnosticsTests: XCTestCase {
     XCTAssertNil(store.snapshot().lastRefreshedAt)
   }
 
+  func testLiveFocusStateStartsUncheckedAndChangesOnlyWhenExplicitlyUpdated() {
+    let store = NativeNotificationDiagnosticsStore(capacity: 4, nativeAvailable: true)
+
+    XCTAssertEqual(store.snapshot().focusAuthorizationStatus, .notChecked)
+    XCTAssertNil(store.snapshot().focusSuppressesNotifications)
+    XCTAssertNil(store.snapshot().focusCheckedAt)
+
+    let checkedAt = Date(timeIntervalSince1970: 42)
+    store.updateFocusStatus(
+      NativeNotificationFocusSnapshot(
+        authorizationStatus: .authorized,
+        suppressesNotifications: true,
+        checkedAt: checkedAt))
+
+    XCTAssertEqual(store.snapshot().focusAuthorizationStatus, .authorized)
+    XCTAssertEqual(store.snapshot().focusSuppressesNotifications, true)
+    XCTAssertEqual(store.snapshot().focusCheckedAt, checkedAt)
+  }
+
+  func testHeadlessFocusStateIsUnavailable() {
+    let store = NativeNotificationDiagnosticsStore(capacity: 4, nativeAvailable: false)
+
+    XCTAssertEqual(store.snapshot().focusAuthorizationStatus, .unavailable)
+    XCTAssertNil(store.snapshot().focusSuppressesNotifications)
+    XCTAssertNil(store.snapshot().focusCheckedAt)
+  }
+
   func testStaleRefreshCannotOverwriteNewerRefresh() throws {
     let store = NativeNotificationDiagnosticsStore(capacity: 4, nativeAvailable: true)
     let first = try XCTUnwrap(store.beginRefresh())
@@ -134,10 +161,12 @@ final class NativeNotificationDiagnosticsTests: XCTestCase {
       JSONSerialization.jsonObject(with: data) as? [String: Any])
 
     for key in [
-      "lastRefreshedAt", "settings", "pendingCount", "deliveredCount", "identity",
+      "lastRefreshedAt", "settings", "pendingCount", "deliveredCount",
+      "focusSuppressesNotifications", "focusCheckedAt", "identity",
     ] {
       XCTAssertTrue(object.keys.contains(key), "missing required schema field \(key)")
       XCTAssertTrue(object[key] is NSNull)
     }
+    XCTAssertEqual(object["focusAuthorizationStatus"] as? String, "unavailable")
   }
 }

@@ -19,6 +19,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     onNativeStateChanged: { [weak self] in
       self?.notificationStateRefresher.refresh()
     })
+  private lazy var notificationResponseHandler = NativeNotificationResponseHandler(
+    activateApplication: {
+      NSApp.activate(ignoringOtherApps: true)
+    },
+    focusTab: { [weak self] tabId in
+      self?.windowController?.focusTabFromNotification(tabId) ?? false
+    })
   private lazy var rendererModeMenuController = RendererModeMenuController {
     [weak self] selection in
     self?.windowController?.applyRendererSelection(selection)
@@ -31,6 +38,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     onChangeFont: { [weak self] in self?.showFontPicker(nil) },
     onChangeCJKFont: { [weak self] in self?.showCJKFontPicker(nil) },
     onTestNotification: { [weak self] in self?.postSettingsTestNotification() },
+    focusStatusSnapshot: {
+      NativeNotificationDiagnosticsStore.shared.focusSnapshot()
+    },
+    onCheckFocusStatus: { completion in
+      NativeFocusStatusMonitor.shared.check { snapshot in
+        NativeNotificationDiagnosticsStore.shared.updateFocusStatus(snapshot)
+        completion(snapshot)
+      }
+    },
     onControlServerEnabledChanged: { [weak self] enabled in
       self?.windowController?.applyControlServerEnabled(enabled)
     }
@@ -194,6 +210,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
       ])
     notificationStateRefresher.refresh()
     completionHandler(options)
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    notificationResponseHandler.handle(
+      actionIdentifier: response.actionIdentifier,
+      userInfo: response.notification.request.content.userInfo,
+      completion: completionHandler)
   }
 
   private func presentationOptionsDescription(

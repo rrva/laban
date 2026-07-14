@@ -64,6 +64,41 @@ public struct NativeNotificationRuntimeIdentity: Codable, Equatable, Sendable {
   }
 }
 
+public enum NativeNotificationFocusAuthorizationStatus: String, Codable, Sendable {
+  /// The user has not run the explicit Focus troubleshooting check in this process.
+  case notChecked
+  case notDetermined
+  case restricted
+  case denied
+  case authorized
+  case unavailable
+  case unknown
+}
+
+public struct NativeNotificationFocusSnapshot: Codable, Equatable, Sendable {
+  public var authorizationStatus: NativeNotificationFocusAuthorizationStatus
+  public var suppressesNotifications: Bool?
+  public var checkedAt: Date?
+
+  public init(
+    authorizationStatus: NativeNotificationFocusAuthorizationStatus,
+    suppressesNotifications: Bool?,
+    checkedAt: Date? = nil
+  ) {
+    self.authorizationStatus = authorizationStatus
+    self.suppressesNotifications = suppressesNotifications
+    self.checkedAt = checkedAt
+  }
+
+  public static let notChecked = NativeNotificationFocusSnapshot(
+    authorizationStatus: .notChecked,
+    suppressesNotifications: nil)
+
+  public static let unavailable = NativeNotificationFocusSnapshot(
+    authorizationStatus: .unavailable,
+    suppressesNotifications: nil)
+}
+
 public struct NativeNotificationDiagnosticEvent: Codable, Equatable, Sendable {
   public var sequence: Int
   public var timestamp: Date
@@ -114,6 +149,9 @@ public struct NativeNotificationDiagnosticsSnapshot: Codable, Equatable, Sendabl
   public var settings: NativeNotificationSettingsSnapshot?
   public var pendingCount: Int?
   public var deliveredCount: Int?
+  public var focusAuthorizationStatus: NativeNotificationFocusAuthorizationStatus
+  public var focusSuppressesNotifications: Bool?
+  public var focusCheckedAt: Date?
   public var identity: NativeNotificationRuntimeIdentity?
   public var events: [NativeNotificationDiagnosticEvent]
   public var nextSequence: Int
@@ -125,6 +163,9 @@ public struct NativeNotificationDiagnosticsSnapshot: Codable, Equatable, Sendabl
     settings: NativeNotificationSettingsSnapshot?,
     pendingCount: Int?,
     deliveredCount: Int?,
+    focusAuthorizationStatus: NativeNotificationFocusAuthorizationStatus,
+    focusSuppressesNotifications: Bool?,
+    focusCheckedAt: Date?,
     identity: NativeNotificationRuntimeIdentity?,
     events: [NativeNotificationDiagnosticEvent],
     nextSequence: Int
@@ -135,6 +176,9 @@ public struct NativeNotificationDiagnosticsSnapshot: Codable, Equatable, Sendabl
     self.settings = settings
     self.pendingCount = pendingCount
     self.deliveredCount = deliveredCount
+    self.focusAuthorizationStatus = focusAuthorizationStatus
+    self.focusSuppressesNotifications = focusSuppressesNotifications
+    self.focusCheckedAt = focusCheckedAt
     self.identity = identity
     self.events = events
     self.nextSequence = nextSequence
@@ -147,6 +191,9 @@ public struct NativeNotificationDiagnosticsSnapshot: Codable, Equatable, Sendabl
     case settings
     case pendingCount
     case deliveredCount
+    case focusAuthorizationStatus
+    case focusSuppressesNotifications
+    case focusCheckedAt
     case identity
     case events
     case nextSequence
@@ -160,6 +207,9 @@ public struct NativeNotificationDiagnosticsSnapshot: Codable, Equatable, Sendabl
     try container.encode(settings, forKey: .settings)
     try container.encode(pendingCount, forKey: .pendingCount)
     try container.encode(deliveredCount, forKey: .deliveredCount)
+    try container.encode(focusAuthorizationStatus, forKey: .focusAuthorizationStatus)
+    try container.encode(focusSuppressesNotifications, forKey: .focusSuppressesNotifications)
+    try container.encode(focusCheckedAt, forKey: .focusCheckedAt)
     try container.encode(identity, forKey: .identity)
     try container.encode(events, forKey: .events)
     try container.encode(nextSequence, forKey: .nextSequence)
@@ -178,12 +228,14 @@ public final class NativeNotificationDiagnosticsStore: @unchecked Sendable {
   private var settings: NativeNotificationSettingsSnapshot?
   private var pendingCount: Int?
   private var deliveredCount: Int?
+  private var focusStatus: NativeNotificationFocusSnapshot
   private var events: [NativeNotificationDiagnosticEvent] = []
   private var nextSequence = 1
 
   public init(capacity: Int = 64, nativeAvailable: Bool = true) {
     self.capacity = max(1, capacity)
     self.nativeAvailable = nativeAvailable
+    self.focusStatus = nativeAvailable ? .notChecked : .unavailable
   }
 
   public func setNativeAvailable(_ available: Bool) {
@@ -229,6 +281,18 @@ public final class NativeNotificationDiagnosticsStore: @unchecked Sendable {
     withLock {
       self.settings = settings
     }
+  }
+
+  /// Cache the result of the user-triggered Focus troubleshooting check.
+  /// This store never reads Focus itself; callers must update it explicitly.
+  public func updateFocusStatus(_ status: NativeNotificationFocusSnapshot) {
+    withLock {
+      focusStatus = status
+    }
+  }
+
+  public func focusSnapshot() -> NativeNotificationFocusSnapshot {
+    withLock { focusStatus }
   }
 
   @discardableResult
@@ -281,6 +345,9 @@ public final class NativeNotificationDiagnosticsStore: @unchecked Sendable {
         settings: settings,
         pendingCount: pendingCount,
         deliveredCount: deliveredCount,
+        focusAuthorizationStatus: focusStatus.authorizationStatus,
+        focusSuppressesNotifications: focusStatus.suppressesNotifications,
+        focusCheckedAt: focusStatus.checkedAt,
         identity: identity,
         events: events.filter { event in
           guard let since else { return true }
