@@ -1,0 +1,664 @@
+# Enable terminal background transparency across every renderer
+
+This ExecPlan is a living document maintained in accordance with `PLANS.md`. Keep `Progress`, `Decision Log`, and `Validation and Acceptance` current as implementation proceeds. A fresh contributor must be able to resume from this file and the repository alone.
+
+## Purpose / Big Picture
+
+Laban should let a user make the terminal canvas translucent without making text, the cursor, selection, input-method preedit, or application-selected cell backgrounds hard to read. The first visible implementation may use the Slug glyph renderer, but the feature is complete only when software, classic Metal, GPU-driven Metal, vector glyph, and Slug glyph rendering all obey one renderer-neutral contract and produce equivalent alpha output.
+
+After this work, the Appearance settings will offer a background-opacity slider and an opt-in control for applying opacity to explicitly colored terminal cells. A user can see the desktop or a window behind Laban through the default terminal background, can switch renderers without an opaque flash or semantic change, and can rely on Laban becoming fully opaque when macOS Reduce Transparency or native full-screen mode requires it. A system backdrop-blur choice and a localized, theme-neutral `Frosted` preset (the moderate translucency common in Chinese-facing terminal customization) are researched and specified but deliberately deferred out of this plan; see `Deferred Follow-Up: System Blur and Frosted Preset`. Headless screenshots and debug state make the same behavior autonomously verifiable.
+
+The shipped default remains exactly as it is today: 100% opacity, no background effect, and no visual or performance change. This preserves `docs/product/mvp.md` as the regression contract while adding the new behavior to `docs/product/spec.md`.
+
+## Progress
+
+- [x] (2026-07-14) Read `PLANS.md`, the product contracts, renderer ADRs, renderer process rules, and the existing renderer-parity plans.
+- [x] (2026-07-14) Map the window, settings, snapshot, shared frame producer, debug harness, and all five renderer paths.
+- [x] (2026-07-14) Research current Apple APIs and mature terminal transparency behavior, including macOS 26/27 Liquid Glass changes available in July 2026.
+- [x] (2026-07-14) Research Chinese desktop/terminal transparency conventions and audit Laban's live CJK fonts, localization, fixtures, IME path, and renderer tests.
+- [x] (2026-07-14) Record the renderer-neutral design, rollout order, and measurable acceptance criteria in this ExecPlan.
+- [x] (2026-07-14) Address the independent fresh-context plan review: idempotent alpha, real backend proof, frame/cache routing, mixed-version `laband`, generated localization, observer ownership, mechanical performance gates, and theme-neutral preset semantics.
+- [x] (2026-07-14) Descope `System Blur` and the `Frosted` preset to a documented follow-up; this plan ships direct opacity only (see `Deferred Follow-Up: System Blur and Frosted Preset`).
+- [ ] Add the product-spec entry and ADR before implementation changes.
+- [ ] Implement the shared settings, effective-policy resolver, and explicit-background snapshot bit with unit tests.
+- [ ] Deliver the first end-to-end Slug implementation, including AppKit window transparency and the grayscale antialiasing fallback.
+- [ ] Add equivalent software, classic Metal, GPU-driven Metal, and vector glyph support.
+- [ ] Add live settings UI, full-screen and accessibility policy, debug/headless control, screenshots, alpha probes, and performance evidence.
+- [ ] Run the full repository gates, install and exercise `~/Laban.app`, and pass the fresh-agent Review Gate.
+
+## Surprises & Discoveries
+
+- Observation: The older Chinese-support inventory understates the current app. The live string catalog has 189 entries and zero missing `zh-Hans` or `zh-Hant` values, and focused CJK font, Chinese trust-gate, and preedit suites currently pass 30 tests with zero failures.
+  Evidence: `rtk jq` over `Sources/LabanApp/Resources/Localizable.xcstrings`, followed by `rtk swift test --filter CJKFont`, `rtk swift test --filter ChineseTrustGate`, and `rtk swift test --filter FrameProducerPreedit` on 2026-07-14.
+
+- Observation: The July 2026 native-looking answer for a terminal content canvas is not Liquid Glass. Apple's material guidance reserves Liquid Glass for navigation and controls and directs content backgrounds to standard materials.
+  Evidence: Apple Human Interface Guidelines, Materials, researched 2026-07-14.
+
+- Observation: Alpha-capable pixel formats were not enough for the current retained renderers. Their themed full clears and source-over solid pipelines would apply a translucent base more than once, while partial loads and the reusable software bitmap could accumulate alpha toward opaque.
+  Evidence: Independent review of `Shaders.metal`, `MetalRenderer`, `VectorGlyphRenderer`, `SlugGlyphRenderer`, and `SoftwareRenderer` on 2026-07-14. The plan now requires non-blended full/damage resets plus replace background writes.
+
+## Research Snapshot: July 2026 State of the Art
+
+This section embeds the conclusions needed to implement the feature; external pages are evidence, not required reading.
+
+Apple's public contract is straightforward. An `NSWindow` that shows content behind it must not claim to be opaque, and a `CALayer` whose pixels can contain alpha must have `isOpaque == false`. Metal's existing `bgra8Unorm` and `bgra8Unorm_srgb` formats carry alpha, so Laban does not need a new pixel format. Its Metal shaders already emit premultiplied color; keep source-over for glyphs/overlays, but use overwrite clears and replace blending for background-establishing pixels so retained redraws are idempotent. Sources: [`NSWindow.backgroundColor`](https://developer.apple.com/documentation/appkit/nswindow/backgroundcolor), [`CALayer.isOpaque`](https://developer.apple.com/documentation/quartzcore/calayer/isopaque), and [`CAMetalLayer.pixelFormat`](https://developer.apple.com/documentation/quartzcore/cametallayer/pixelformat).
+
+Use public semantic system effects instead of a private Core Animation filter, ScreenCaptureKit feedback loop, or hand-written blur shader. `NSVisualEffectView` with behind-window blending is available on Laban's macOS 13 minimum, adapts to system appearance, and leaves blur/compositing in AppKit and WindowServer rather than the terminal render loop. Do not put Liquid Glass behind the terminal canvas: Apple's current guidance assigns Liquid Glass to navigation and controls and says not to use it in the content layer, while standard materials remain the appropriate macOS background/content treatment. Keep the AppKit host replaceable so a future sidebar or control-plane treatment can adopt a newer semantic effect without changing frame commands or any renderer. Sources: [`NSVisualEffectView`](https://developer.apple.com/documentation/appkit/nsvisualeffectview), [`behindWindow`](https://developer.apple.com/documentation/appkit/nsvisualeffectview/blendingmode-swift.enum/behindwindow), [`underWindowBackground`](https://developer.apple.com/documentation/appkit/nsvisualeffectview/material-swift.enum/underwindowbackground), and [Human Interface Guidelines: Materials](https://developer.apple.com/design/human-interface-guidelines/materials).
+
+Accessibility overrides aesthetics. When `NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency` is true, Laban must render an opaque background and remove the backdrop view while preserving the user's requested settings for later restoration. Observe `NSWorkspace.accessibilityDisplayOptionsDidChangeNotification` so this changes live. Source: [`accessibilityDisplayShouldReduceTransparency`](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayshouldreducetransparency).
+
+Current terminal implementations converge on three useful semantics:
+
+1. Opacity applies to the default terminal background, while explicitly colored cell backgrounds stay opaque unless the user opts in.
+2. Text and overlays do not inherit the background opacity.
+3. Blur/material is a separate choice from opacity, and native full screen may force opacity where macOS composition otherwise produces artifacts.
+
+Ghostty's current configuration documents default-background opacity, separate cell-background opacity, blur, and macOS 26 `macos-glass-regular` / `macos-glass-clear` modes. Its current AppKit implementation places `NSGlassEffectView` below the terminal surface and disables transparency in native full screen. Stable source snapshots used for this plan are [`TerminalViewContainer.swift`](https://github.com/ghostty-org/ghostty/blob/cf60af281bd7559a819aa25372cef01d623b8c5a/macos/Sources/Features/Terminal/TerminalViewContainer.swift) and [`TerminalWindow.swift`](https://github.com/ghostty-org/ghostty/blob/cf60af281bd7559a819aa25372cef01d623b8c5a/macos/Sources/Features/Terminal/Window%20Styles/TerminalWindow.swift); the user-facing reference is [Ghostty configuration](https://ghostty.org/docs/config/reference). WezTerm exposes separate window and text/background opacity plus a macOS blur control in [Appearance](https://wezterm.org/config/appearance.html) and [`macos_window_background_blur`](https://wezterm.org/config/lua/config/macos_window_background_blur.html). Kitty likewise applies opacity to the default background by default and treats blur as optional in [its configuration reference](https://sw.kovidgoyal.net/kitty/conf/).
+
+Chinese products and Chinese-language configurations point to a compatible, not separate, design. Deepin Terminal exposes background transparency as a basic appearance setting; Deepin's current desktop work treats blur as a first-class compositor feature with explicit performance engineering; and WindTerm advertises window transparency. Chinese-language WezTerm and Kitty examples commonly pair a dark background with moderate opacity and frosted blur. These examples are evidence of a recurring customization pattern, not a claim that China has one universal style. Laban will therefore offer a discoverable, theme-neutral `Frosted` preset at 90% opacity with system blur and opaque explicit cell backgrounds, localized in every supported locale, with the global default kept opaque instead of silently selecting a style from the user's locale; that preset ships in the deferred follow-up, not in this plan. The preset preserves the active theme, so it appears dark only when the user has selected or inherited a dark theme. Sources: [Deepin Terminal](https://wiki.deepin.org/en/Software/Offical_Project/Deepin_Terminal), [Deepin 25 Treeland blur work](https://www.deepin.org/en/deepin-25-pre-treeland/), [DTK `InWindowBlur`](https://docs.deepin.org/linuxdeepin/master/dtkdeclarative/classInWindowBlur.html), [WindTerm](https://github.com/kingToolbox/WindTerm), [Chinese WezTerm configuration discussion](https://github.com/wezterm/wezterm/discussions/628), and [Chinese macOS Kitty configuration](https://www.zhuangsanmeng.xyz/posts/terminal-configuration/).
+
+Laban already has substantial Chinese support that this feature must preserve. The accepted CJK font policy offers PingFang SC, Noto Sans Mono CJK SC, Sarasa Term/Mono/Gothic SC, and custom choices with live renderer refresh; CJK cells remain exactly two terminal cells wide and oversized glyphs may only scale down. The committed trust-gate fixture covers mixed Chinese prompts, dense Hanzi, ambiguous-width characters, emoji/ZWJ/flags, Powerline, and box drawing. The current localization catalog contains 189 strings with no missing `zh-Hans` or `zh-Hant` values. Transparency acceptance must reuse those assets, preserve opaque IME preedit backing, and explicitly guard Slug's adjacent-Hanzi raster fallback. The remaining manual claim gate is a real Rime/Squirrel IME pass; Apple Pinyin coverage alone is not enough to advertise broad Chinese IME compatibility.
+
+Laban has one additional correctness constraint. `Sources/LabanRenderer/VectorGlyphShaders.metal` states that its RGB subpixel path preserves destination alpha and assumes an opaque destination; it is therefore unsuitable for a translucent render target. Both vector and Slug renderers must resolve their effective antialiasing mode to grayscale whenever effective opacity is below 1.0 or system blur is active. Preserve the user's configured subpixel choice and restore it immediately when the surface returns to opaque.
+
+## Decision Log
+
+- Decision: Store one requested transparency configuration and derive an effective configuration from accessibility, full-screen state, OS capability, active snapshot-writer capability, and headless state.
+  Rationale: User intent must survive temporary system overrides. A pure resolver makes the same behavior testable in AppKit, headless, and every renderer without reading `UserDefaults` on a render thread.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Apply opacity to the default terminal canvas and base sidebar canvas; keep explicit cell backgrounds and foreground overlays opaque by default.
+  Rationale: This matches mature terminals and preserves legibility. Selection, find highlights, cursor, image content, preedit, selected-tab cards, attention chrome, and explicit terminal backgrounds carry meaning beyond decoration. The separate opt-in changes only explicit terminal cell backgrounds.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Add `LABAN_CELL_FLAG_EXPLICIT_BACKGROUND` at bit 9 and set it when Ghostty reports an explicit background or inverse video is active.
+  Rationale: Comparing a cell color with the current theme cannot distinguish an explicit color equal to the default and fails across theme changes. Inverse video visually promotes the foreground to a background and must remain opaque under the default policy. The existing local and laband snapshot layouts already transport a `UInt16` flags field, but old writers require the negotiated `snapshotCellExplicitBackgroundV1` capability; without it the app forces opacity rather than assuming the absent bit means inherited background.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Reset full/damaged targets without blending and render every background-establishing primitive with replace compositing; reserve source-over for glyph coverage and semantic overlays.
+  Rationale: The retained Metal targets and reusable software bitmap otherwise draw translucent backgrounds over prior translucent backgrounds, causing alpha to accumulate toward opaque. A full reset may overwrite with the resolved canvas RGBA to preserve zoom margins; partial damage erases to transparent before replay. Replace is renderer-neutral, idempotent, and preserves scroll-blitted premultiplied pixels.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Ship direct opacity plus one `NSVisualEffectView` system-blur mode behind the terminal canvas; do not use Liquid Glass for terminal content and do not implement configurable blur radius or private filters.
+  Rationale: This is the native, power-aware content-background treatment in Apple's July 2026 guidance. Keeping the backdrop host in AppKit and the alpha contract renderer-neutral preserves the option to add future effects to navigation or chrome without coupling any renderer to an OS visual style.
+  Date/Author: 2026-07-14 / Codex
+  Amended 2026-07-14: the system-blur mode itself is deferred to the follow-up recorded in `Deferred Follow-Up: System Blur and Frosted Preset`. The no-Liquid-Glass, no-private-filter, and AppKit-host constraints are unchanged and bind that follow-up.
+
+- Decision: Add a localized, theme-neutral `Frosted` preset with opacity 0.90, system blur, and explicit cell backgrounds kept opaque; do not auto-select it by locale and do not change the active theme.
+  Rationale: Moderate frosted transparency recurs in Deepin, WindTerm, and Chinese-language terminal configurations. A named preset makes that convention easy to reach while preserving the user's theme, keeping the opaque global default, and avoiding stereotyping users by language or region.
+  Date/Author: 2026-07-14 / Codex
+  Amended 2026-07-14: the preset is deferred to the same follow-up as system blur; the definition above is preserved in `Deferred Follow-Up: System Blur and Frosted Preset` as the follow-up's contract.
+
+- Decision: Make the existing Chinese trust gate, all 11 generated localizations, CJK font cascade, adjacent-Hanzi Slug fallback, and real IME composition part of transparency acceptance.
+  Rationale: Transparency is only successful for Chinese users if fine strokes, double-width placement, fallback glyphs, and preedit remain readable across every renderer. A generic Latin alpha probe cannot establish that.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Force effective grayscale antialiasing in vector and Slug renderers for every translucent/material surface.
+  Rationale: RGB subpixel coverage depends on a known opaque destination. Compositing those channels over an unknown desktop color creates color fringes and violates the existing shader's alpha assumption.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Native full-screen and Reduce Transparency force effective opacity to 1.0 and backdrop style to none, then restore the requested configuration on exit.
+  Rationale: Reduce Transparency is an explicit accessibility contract. Native full-screen opacity avoids AppKit/WindowServer artifacts such as gray fill or other-space content showing through and follows the current Ghostty macOS policy.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Keep `TerminalBitmapView` as the sole workspace accessibility observer and feed its cached Reduce Transparency value into the coordinator.
+  Rationale: The view already owns the complete accessibility projection. A second coordinator observer would duplicate invalidation/presentation and violate the one-wake idle-performance contract.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Prove renderer parity through the authenticated debug-server path and assert configured/effective renderer identity before accepting a screenshot.
+  Rationale: The legacy one-shot fixture path constructs `SoftwareRenderer` unconditionally. Debug-server startup already creates the selected production backend and exposes `/debug/render`, `/debug/frame-commands`, and `/debug/screenshot`.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Slug is the first implementation milestone, but no Slug-only setting or command is allowed.
+  Rationale: Slug provides the fastest visible path requested by the user, while defining settings, frame semantics, debug projection, and backend hooks in shared modules prevents a renderer-specific dead end.
+  Date/Author: 2026-07-14 / Codex
+
+- Decision: Keep every Review Gate item mechanical and runnable by a fresh agent on the implementation host. Judgment "inspect" items were replaced with greps and existing test runs, the manual Apple Pinyin flow moved to the executing agent's Milestone 3 responsibility with the gate checking only recorded evidence artifacts, and lane-pinned `profile-transparency-compositor` runs are executed by the executing agent on matching machines while the gate verifies their JSON through `verify-transparency-performance` and pinned identity fields (`lane`, `osBuild`, `hardwareModel`, `displayHz`).
+  Rationale: `PLANS.md` requires gate items a script could check, and the compositor script refuses a mismatched host, so a gate that ordered the reviewer to run lane-pinned commands would deadlock the review-fix loop on any single machine.
+  Date/Author: 2026-07-14 / Devin (plan review)
+
+- Decision: Ship direct opacity only (the slider plus the explicit-cell opt-in); defer `System Blur`, the `Frosted` preset, the effect host, the `--background-effect` agent flag, and the 120 Hz macOS 27 seed compositor lane to a follow-up ExecPlan seeded by `Deferred Follow-Up: System Blur and Frosted Preset`.
+  Rationale: The deferral removes the two riskiest external dependencies, WindowServer material-cost budgets and beta-OS compositor behavior, from the critical path of an otherwise renderer-internal change. `TerminalBackdropStyle`, the resolver inputs, and the debug vocabulary are retained so the follow-up is purely additive and cannot change resolver semantics.
+  Date/Author: 2026-07-14 / Devin (plan review)
+
+## Context and Orientation
+
+Laban turns a terminal snapshot into a renderer-neutral list of `FrameCommand` values, then one of five backends draws those commands. A frame command is a rectangle, glyph run, image, or other drawing operation with a source category such as terminal, sidebar, cursor, or selection. The relevant paths are:
+
+- `Sources/LabanTerminalCore/include/LabanTerminalCore.h` defines `LabanCell`, including the `UInt16` flags copied from Ghostty.
+- `Sources/LabanTerminalCore/snapshot.c` reads Ghostty's terminal render state and fills each `LabanCell`. It already detects whether a background-color query succeeds and already performs inverse-color swapping.
+- `Sources/LabanCore/LabandProtocol.swift` and `Sources/LabanCore/LabandSnapshotRingLayout.swift` serialize and read the same flags for daemon-backed sessions. No structure size change is planned, but hello capability negotiation distinguishes new semantic writers from ABI-1 legacy writers.
+- `Sources/LabanCore/FrameProducer.swift` is the central conversion seam for both local and remote snapshots. It creates the terminal base rectangle, background runs, glyph runs, cursor, selection, find, image, and preedit commands.
+- `Sources/LabanCore/SidebarProducer.swift` emits the sidebar base canvas and its more meaningful cards and overlays.
+- `Sources/LabanRenderer/FrameCommand.swift` defines the shared drawing input.
+- `Sources/LabanRenderer/RendererBackend.swift` defines the backend interface used by the app and headless runtime.
+- `Sources/LabanRenderer/SoftwareBackend.swift` draws into a premultiplied BGRA Core Graphics bitmap.
+- `Sources/LabanRenderer/MetalRenderer.swift`, `VectorGlyphRenderer.swift`, and `SlugGlyphRenderer.swift` own alpha-capable `CAMetalLayer` surfaces. Classic and GPU-driven modes are both implemented by `MetalRenderer` and selected by `Sources/LabanRenderer/RendererSelection.swift`.
+- `Sources/LabanRenderer/VectorGlyphShaders.metal` contains the RGB-subpixel and grayscale compositing paths shared by the vector-family renderers.
+- `Sources/LabanRenderer/MetalReadback.swift` and `PNGEncoder.swift` turn GPU targets into PNG evidence. They must preserve alpha.
+- `Sources/LabanApp/TerminalBitmapView.swift` owns the active backend or software image and swaps the backend's presentation layer into the AppKit view.
+- `Sources/LabanApp/MainWindowController.swift` creates the `NSWindow`, container, terminal view, and overlays. Today only the titlebar is transparent; the content window and renderer layers are opaque.
+- `Sources/LabanApp/SettingsWindowController.swift` builds the Appearance and Rendering settings UI.
+- `Sources/LabanCore/FrameProducer.swift` also defines `TerminalAccessibilityVisualOptions`, the accessibility display choices used during frame production. `TerminalBitmapView` already observes the workspace accessibility-change notification.
+- `Sources/LabanDebug/HeadlessDebugRuntime.swift`, `Sources/LabanApp/ScrollDebugServer.swift`, and the intent/projection types under `Sources/LabanCore/Intents` and `Sources/LabanCore/Control` provide deterministic headless actions and debug state.
+- `Sources/LabanControl/ControlRouteCatalog.swift` declares every loopback `/debug` route with its method, schema references, and token tier; `scripts/check-debug-contract` cross-checks that catalog against the endpoints and schemas documented in `docs/process/dev-process.md`. Any new debug endpoint must be registered there or the contract check fails.
+
+“Requested configuration” below means values persisted from the user's settings. “Effective configuration” means the values actually applied after system policy. “Premultiplied alpha” means final render-target red, green, and blue have been multiplied by alpha; `FrameCommand` colors remain in the repository's existing straight-RGBA representation and each renderer performs that multiplication exactly once. “Explicit background” means a terminal application emitted a background color for a cell, including inverse video, rather than the cell merely inheriting the terminal's default canvas.
+
+The five renderer names used by settings and tests are `software`, `classic`, `gpuDriven`, `vectorGlyph`, and `slugGlyph`. All acceptance scenarios must cover all five unless a milestone is explicitly Slug-only.
+
+## User-visible Contract
+
+Add these controls to the Appearance tab in `SettingsWindowController`:
+
+- **Background opacity**, a 0–100% slider with a numeric percentage label. Default: 100%. Persist the unit interval as a `Double`, clamp invalid stored values to 0...1, and coalesce slider updates so dragging does not enqueue redundant full redraws.
+- **Apply opacity to colored cell backgrounds**, a checkbox. Default: off. It affects only terminal cells marked with the new explicit-background flag, including inverse-video cells.
+
+No backdrop-effect popup and no preset control ship in this plan; both are specified in `Deferred Follow-Up: System Blur and Frosted Preset`. An opacity of 1.0 resolves to a fully opaque surface with zero added cost; an opacity below 1.0 shows the real windows or desktop behind Laban directly.
+
+Add every new label, help string, accessibility description, and debug-facing user message to the localization generator's translation tables for all 11 supported locales, then regenerate `Localizable.xcstrings`; never hand-edit only the generated catalog.
+
+Apply the effective opacity to:
+
+- the terminal's default base canvas;
+- cells inheriting that default background;
+- the sidebar's base canvas, so the window reads as one surface.
+
+Do not apply it to text, glyph coverage, cursor, selection, find highlights, images, preedit, explicitly colored cell backgrounds by default, selected-tab cards, tab-attention states, or other semantic chrome. When the explicit-cell checkbox is enabled, apply it to explicit and inverse terminal cell backgrounds only; do not change the other exclusions.
+
+When Reduce Transparency is active, the window is in native full screen, or the active remote session comes from a legacy snapshot writer that cannot identify explicit backgrounds, report an effective opacity of 1.0 and effective backdrop style `none`, keep the requested values persisted, and restore them without restarting when the override ends. The deterministic reason priority is `reduceTransparency`, then `nativeFullscreen`, then `legacySnapshotWriter`. Switching renderer, resizing, live font zooming, rebuilding the view, selecting a local/new-helper session, opening/restoring a session, and entering/exiting full screen must not produce an opaque, white, or uninitialized flash.
+
+## Deferred Follow-Up: System Blur and Frosted Preset
+
+This plan ships direct background opacity only. The system-blur backdrop and the `Frosted` preset are approved direction (recorded as such in `docs/product/spec.md` by Milestone 0) but are deliberately deferred to a separate follow-up ExecPlan, to keep WindowServer material-cost budgets and beta-OS compositor behavior off this plan's critical path. Everything needed to write that follow-up without repeating the research is recorded here and in `Research Snapshot: July 2026 State of the Art`.
+
+Deferred deliverables:
+
+- The **Background effect** popup (`None` / `System Blur`) and the **Preset** control (`Opaque` / `Frosted`) in the Appearance tab. `System Blur` means a behind-window standard macOS material, not Liquid Glass and not a renderer shader. Backdrop style and opacity multiply rather than replace each other: the system material supplies the backdrop and the themed Laban canvas tints it with the chosen opacity; `None` means direct window transparency.
+- `Sources/LabanApp/TerminalBackgroundEffectHost.swift`, owning at most one child `NSVisualEffectView` with `.behindWindow` blending, active state, and a semantic material chosen by visual comparison (`.underWindowBackground` is the starting candidate). It sits below `TerminalBitmapView` and below cursors/overlays in `MainWindowController`, never over glyphs. Its interface stays style-oriented; `NSVisualEffectView` never leaks into `LabanCore` or `LabanRenderer`. Before replacing an effect child, remove the previous child and its constraints. At effective opacity 1.0 the host is hidden/absent so an invisible effect costs nothing.
+- The `Frosted` preset: atomically selects 90% opacity, system blur, and leaves `Apply opacity to colored cell backgrounds` off. Theme-neutral (never changes `Theme.current`, `Theme.followsSystemAppearance`, or the user's dark/light variants), localized in all 11 locales, and never auto-selected from region, language, input source, or CJK font. Changing an individual control after applying a preset produces a custom state rather than mutating the preset definition.
+- `laban-agent --background-effect=<none|system-blur>` in the deterministic equals-form flag style.
+- Blur compositor scenarios and budgets: `Frosted` static WindowServer CPU median at most 8.0 percentage points above opaque static; `Frosted` animated at most 15.0 points above opaque animated. Plus installed-app blur screenshots and `Frosted` light/dark visual evidence, including the CJK trust gate over blurred backdrops.
+- The second compositor hardware lane: one 120 Hz Apple-silicon machine on the then-current macOS release or developer seed. New-OS material behavior is exactly the risk the follow-up owns; do not call beta-seed numbers representative of a final release.
+- Constraints that bind the follow-up unchanged: no Liquid Glass behind terminal content, no private filters, no configurable blur radius, and blur/compositing stays in AppKit/WindowServer rather than the terminal render loop (see `Research Snapshot`).
+
+Retained in this plan specifically so the follow-up is purely additive: the `TerminalBackdropStyle.systemBlur` case, the resolver's `supportsBehindWindowBlur` and `headless` inputs with their resolve-to-`none` behavior, the requested/effective backdrop fields in `/debug/transparency`, the `backdropSubviewCount` diagnostic (asserted 0 in this plan), and the grayscale-AA rule, which is stated for any translucent or material-backed surface.
+
+Pick-up criteria: this plan's Review Gate has passed and the direct-opacity behavior has shipped. The follow-up must be its own self-contained ExecPlan per `PLANS.md`, incorporating this section by reference.
+
+## Interfaces and Dependencies
+
+Do not add a third-party dependency. AppKit, QuartzCore, CoreGraphics, and Metal already provide everything needed.
+
+Keep renderer responsibilities smaller than window-style responsibilities. Create `Sources/LabanRenderer/RendererSurfaceTransparency.swift` with only the renderer-facing state:
+
+```swift
+public struct RendererSurfaceTransparency: Equatable, Sendable {
+  public var isOpaque: Bool
+}
+```
+
+Extend `FrameCommand.rect` with an explicit renderer-neutral compositing semantic in `Sources/LabanRenderer/FrameCommand.swift`:
+
+```swift
+public enum FrameCompositingMode: UInt8, Equatable, Sendable {
+  case sourceOver
+  case replace
+}
+
+case rect(
+  CGRect,
+  color: UInt32,
+  source: FrameSource,
+  compositing: FrameCompositingMode = .sourceOver
+)
+```
+
+`replace` means that the command establishes the final premultiplied RGBA value for every covered pixel; drawing it twice must produce the same bytes as drawing it once. Terminal/sidebar base canvases, inherited/default cell backgrounds, and explicit/inverse cell backgrounds use `replace`. Glyph coverage, cursor, selection, find, preedit foreground, images, and semantic overlays remain `sourceOver`. The GPU-cell background phase is semantically `replace` even though it is generated from `TerminalCellPayload` rather than `FrameCommand.rect`; its solid instances must use the same replace pipeline.
+
+Create `Sources/LabanCore/TerminalTransparency.swift` with the pure cross-process/requested and effective policy types. Exact spelling can change only if all uses and this plan are updated together:
+
+```swift
+public enum TerminalBackdropStyle: String, CaseIterable, Codable, Sendable {
+  case none
+  case systemBlur
+}
+
+public struct TerminalTransparencyConfiguration: Equatable, Sendable {
+  public var backgroundOpacity: Double       // always clamped to 0...1
+  public var applyToExplicitCellBackgrounds: Bool
+  public var backdropStyle: TerminalBackdropStyle
+}
+
+public enum TerminalSnapshotBackgroundCapability: String, Codable, Sendable {
+  case inProcess
+  case supported
+  case legacy
+}
+
+public enum TerminalTransparencyForceOpaqueReason: String, Codable, Sendable {
+  case reduceTransparency
+  case nativeFullscreen
+  case legacySnapshotWriter
+}
+
+public struct EffectiveTerminalTransparency: Equatable, Sendable {
+  public var backgroundOpacity: Double
+  public var applyToExplicitCellBackgrounds: Bool
+  public var backdropStyle: TerminalBackdropStyle
+  public var forceOpaqueReason: TerminalTransparencyForceOpaqueReason?
+  public var isSurfaceOpaque: Bool
+}
+
+public enum TerminalTransparencyPolicy {
+  public static func resolve(
+    requested: TerminalTransparencyConfiguration,
+    reduceTransparency: Bool,
+    nativeFullscreen: Bool,
+    supportsBehindWindowBlur: Bool,
+    snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability,
+    headless: Bool
+  ) -> EffectiveTerminalTransparency
+}
+```
+
+The resolver must be pure and deterministic. An unavailable or headless system-blur request resolves to `backdropStyle == .none` while preserving the requested configuration in settings. A legacy snapshot capability forces opacity with the priority documented above. An opacity of exactly 1 resolves to an opaque surface and no effective backdrop. Use a small epsilon only at the UI parsing boundary; rendering should receive a stable clamped value.
+
+`TerminalBackdropStyle` keeps its `systemBlur` case and the resolver keeps its `supportsBehindWindowBlur` input even though no shipped UI can request blur in this plan. The visible app always passes `supportsBehindWindowBlur: false` until the deferred follow-up ships the effect host, and `TerminalTransparencyPolicyTests` covers the systemBlur-requested paths now so the follow-up cannot change resolver semantics.
+
+Extend `RendererBackend` with a live method such as:
+
+```swift
+func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency)
+```
+
+Every backend must implement it. For each Metal backend, it updates `CAMetalLayer.isOpaque`, invalidates any persistent full-frame target, and guarantees the next presented drawable was entirely initialized with the new alpha policy. For software it records the state needed for presentation and invalidates the bitmap. A newly created backend must receive the current state before its presentation layer becomes visible.
+
+All backends must also implement the same damage-reset contract. A full frame resets the whole target with blending disabled to the resolved terminal canvas RGBA, including its effective alpha; this preserves intentional empty/zoom margins without compositing a second tint. If no terminal canvas command exists, reset to transparent black. Every subsequently replayed base/background command uses replace, so drawing the canvas after the clear leaves identical bytes. A partial frame first erases every damaged band/rectangle to transparent black with blending disabled, then replays intersecting commands. Background-establishing commands use a no-blend `source = one, destination = zero` pipeline in Metal and `CGBlendMode.copy` in Core Graphics; source-over commands keep the existing premultiplied-alpha pipeline. Scroll blits copy existing premultiplied pixels unchanged and erase/replay every newly exposed or invalidated region. `NSWindow.backgroundColor` and permanent terminal view/layer backgrounds remain clear, so AppKit never adds another tint. Rename/adapt the current `fullRedrawClearColor` helper to return the effective-alpha canvas clear and prohibit using it through a blending draw.
+
+Create `Sources/LabanCore/TerminalBackgroundCompositingOptions.swift`:
+
+```swift
+public struct TerminalBackgroundCompositingOptions: Equatable, Sendable {
+  public var opacity: UInt8
+  public var applyToExplicitCellBackgrounds: Bool
+
+  public static let opaque = TerminalBackgroundCompositingOptions(
+    opacity: 255,
+    applyToExplicitCellBackgrounds: false
+  )
+}
+```
+
+Add `backgroundCompositingOptions: TerminalBackgroundCompositingOptions` and `snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability` to `TerminalSurfaceFrameRequest`; this is the sole per-frame transport into `TerminalSurfaceController`. Thread them through both local and remote `makeFrame` paths, every request constructor in the visible app and `HeadlessDebugRuntime`, capture/replay request construction, backend prewarming, and renderer switching. Pass the compositing value into `FrameProducer` and `SidebarProducer`; default only test/helper initializers to `.opaque`/`.inProcess` where source compatibility is useful. Add compositing options to `SidebarCacheSignature`, so an opacity or explicit-cell-policy change rebuilds the memoized sidebar on the first frame. Do not let either producer read settings.
+
+Resolve colors to the existing straight-RGBA command representation during command production and premultiply exactly once in each renderer's shader/Core Graphics boundary. Opacity changes alpha only; do not premultiply on both sides of that boundary. The ADR and tests must name the actual representation. The key invariants are one premultiplication and one themed-background application, not merely that alpha is present.
+
+Create `Sources/LabanApp/TerminalTransparencySettings.swift` following the notification-backed pattern of nearby settings types. It owns persisted requested values and a `didChangeNotification`, but it does not inspect windows or accessibility. Create `Sources/LabanApp/TerminalWindowTransparencyCoordinator.swift` as the one MainActor owner that:
+
+- observes requested-setting changes and the target window's enter/exit-full-screen notifications;
+- receives Reduce Transparency as an input from `TerminalBitmapView`, which remains the sole owner of the existing workspace accessibility observer for Reduce Motion, Increase Contrast, Differentiate Without Color, and Reduce Transparency;
+- receives the active session's snapshot-background capability from `TerminalBitmapView`/session coordination before that session's first frame or tab-selection frame is built;
+- resolves effective state with `TerminalTransparencyPolicy`;
+- configures `NSWindow.isOpaque` and keeps `NSWindow.backgroundColor == .clear` whenever the surface is nonopaque;
+- sends the effective configuration to `TerminalBitmapView`;
+- exposes a read-only requested/effective status projection for debug output;
+- removes notification tokens on teardown.
+
+Refactor the existing `TerminalBitmapView` accessibility callback rather than adding another observer. It refreshes the cached `TerminalAccessibilityDisplayOptions` once, forwards `reduceTransparency` to the coordinator, applies all changed visual/transparency state, and coalesces that notification into one frame invalidation/wake. The coordinator's call back into the view must support `wake: false` for this path so the view performs the single wake after all accessibility fields are current. Unit tests compare counter deltas before and after one notification and require one accessibility callback, at most one effective transparency application, and one render wake.
+
+No background-effect host is created in this plan. The layering slot it will occupy and its design are recorded in `Deferred Follow-Up: System Blur and Frosted Preset`.
+
+Add a MainActor method on `TerminalBitmapView`, for example:
+
+```swift
+func applyTransparency(
+  requested: TerminalTransparencyConfiguration,
+  effective: EffectiveTerminalTransparency,
+  wake: Bool = true
+)
+```
+
+It caches effective background-compositing options, updates the active backend surface, invalidates one full frame, and wakes rendering once unless the caller is the coalescing accessibility path described above. Backend creation, prewarming, and renderer switching must copy this value into `TerminalSurfaceFrameRequest` before rendering and before installing the new `presentationLayer`. The no-image software fallback and transient-resize layer may show one themed alpha tint before the first renderer frame, but must be a distinct removable layer: remove/hide it before presenting renderer pixels so it can never double-composite with the frame. The `NSWindow`, `TerminalBitmapView`, and permanent backing layers remain clear whenever nonopaque.
+
+Add `LABAN_CELL_FLAG_EXPLICIT_BACKGROUND = 1u << 9` to `LabanTerminalCore.h`. In `snapshot.c`, retain whether the background-color query succeeded before falling back to the default. Set the bit when it succeeded or when inverse video is active. Preserve the bit through `LabandSnapshotCell`, `LabandSnapshotRingCellRead`, and every local/remote conversion. If any `TextAttributes` or style cache compares flags, mask the new non-glyph bit out so it cannot split glyph batches or alter font selection.
+
+The unchanged `UInt16` field makes the layout additive but does not make old writers semantically compatible. Add the hello capability string `snapshotCellExplicitBackgroundV1` to new `laband` builds and carry the negotiated capability through `LabandLifecycleDecision`, session coordination, and the active frame request. Direct/in-process snapshots are capability-known because they use the app's own terminal core. When the active session is remote and the connected helper did not advertise this capability, resolve the whole terminal window to opacity 1.0 and backdrop style none with `forceOpaqueReason == legacySnapshotWriter`; preserve the requested setting and restore it immediately when the user selects a capability-aware session or the helper is safely upgraded. Do not guess from colors, because an explicit color equal to the theme default is otherwise indistinguishable.
+
+Keep protocol and ring ABI version 1 only if the capability is present in hello and mechanically gates all old-writer paths. Tests must decode old JSON snapshots and ABI-1 rings with an old hello lacking the capability, prove the forced-opaque downgrade, and cover explicit-theme-equal and inverse cells. Complement them with new-writer/new-reader tests proving bit 9 survives JSON and ring transport. If implementation cannot propagate the negotiated capability unambiguously to every session, bump the relevant protocol/ring ABI instead of shipping an unsafe heuristic.
+
+Add debug state and action contracts. Use a response model with at least:
+
+```json
+{
+  "requestedOpacity": 0.70,
+  "effectiveOpacity": 1.0,
+  "requestedBackdropStyle": "none",
+  "effectiveBackdropStyle": "none",
+  "applyToExplicitCellBackgrounds": false,
+  "forceOpaqueReason": "reduceTransparency",
+  "surfaceOpaque": true,
+  "effectiveGlyphAntialiasing": "grayscale",
+  "snapshotExplicitBackgroundCapability": "supported",
+  "configuredRenderer": "slugGlyph",
+  "effectiveRenderer": "slugGlyph",
+  "backdropSubviewCount": 0,
+  "accessibilityNotificationCount": 4,
+  "effectiveTransparencyApplyCount": 7,
+  "transparencyRenderWakeCount": 7,
+  "rendererPresentCount": 42
+}
+```
+
+Expose it at `GET /debug/transparency` and add typed debug actions `setBackgroundTransparency` and `resetTransparencyDiagnostics`. Reset affects diagnostic counters only, never requested/effective state. Counter deltas make one-observer, one-wake, and one-present requirements mechanical; `backdropSubviewCount` is an instantaneous count and must always be 0 in this plan (no effect host ships); the field exists so the deferred follow-up can assert 0...1 without a schema change. Include the active snapshot-writer capability state (`inProcess`, `supported`, or `legacy`) and the effective renderer identity in the projection.
+
+Extend `laban-agent` with deterministic equals-form flags `--background-opacity=<0...1>` and `--background-opacity-cells`. Headless mode applies alpha to PNG output; the resolver reports headless native-effect resolution as `none` because no WindowServer backdrop exists.
+
+## Plan of Work
+
+### Milestone 0: Specify the contract and preserve explicit-background identity
+
+First update `docs/product/spec.md` with the user-visible contract above. State that default opacity remains 1.0, every renderer must be equivalent, foreground content remains legible, accessibility and full screen can force opacity, and headless PNG alpha is part of the behavior. Record `System Blur` and the `Frosted` preset as approved follow-up direction, not shipped behavior, referencing this plan's deferred section. Do not edit the historical milestones/non-goals in `docs/product/mvp.md`.
+
+Add `docs/adr/0028-terminal-background-transparency.md` and index it from `docs/adr/README.md`. The ADR must record ownership across the window, the deferred effect host, frame request/producer, and renderer; replace-versus-source-over command semantics; transparent full/partial damage erasure; the one-premultiplication/one-themed-tint invariant; explicit-background flag and mixed-version capability semantics; forced grayscale AA; the single accessibility-observer owner; system overrides; why public native materials replace configurable private blur; and the deferral of `System Blur`/`Frosted` to a follow-up. Mark it accepted before later milestones.
+
+Then add the shared value types and tests for `TerminalTransparencyPolicy`. Add settings persistence tests for defaults, clamping, notification coalescing, old installations with missing keys, unavailable/unrequestable system blur (persisted-but-unsupported backdrop values resolve to `none`), legacy snapshot writers, and requested-versus-effective restoration.
+
+Before changing a renderer, add the harness-only baseline phase of `scripts/benchmark-transparency-renderers` and capture `.artifacts/transparency/opaque-baseline.json` from the current opaque Slug/vector paths. The baseline phase must not depend on the new renderer behavior; it wraps the existing release benchmark conventions with the fixed 40-warmup/240-frame/five-process JSON contract. Record the implementation commit and hardware/OS identity in the baseline so the compare phase can reject a mismatched host/build configuration.
+
+Add the cell flag in `LabanTerminalCore.h` and `snapshot.c`. Extend existing snapshot fixture tests so these cases are distinguished:
+
+- a default-background cell does not carry the bit;
+- `SGR 41m` or another explicit background does carry it;
+- an explicit color equal to the theme default still carries it;
+- inverse video carries it;
+- local, laband protocol, and snapshot-ring paths preserve it;
+- an old helper without `snapshotCellExplicitBackgroundV1` forces opacity with `legacySnapshotWriter`, while a new helper advertises and preserves the bit;
+- it does not affect glyph style/batch keys.
+
+At the end of this milestone, the feature is not visible yet, but tests can prove that shared policy and cell semantics are stable. Run the focused commands in `Concrete Steps` and commit this milestone independently.
+
+### Milestone 1: Deliver Slug transparency end to end
+
+Wire `TerminalBackgroundCompositingOptions` through `TerminalSurfaceFrameRequest`, every visible/headless/prewarm request constructor, both local and remote `makeFrame` paths, and the sidebar cache signature before passing it into `FrameProducer` and `SidebarProducer`. Apply opacity to the terminal base rectangle and default-background runs and mark those commands `replace`. Keep explicit-background runs opaque unless opted in and mark them `replace` as well. Preserve preedit and all foreground overlays as `sourceOver`. Apply opacity and `replace` only to the base rectangle emitted by `SidebarProducer`, not its selected or attention cards. Tests must show the first frame after a settings change, backend prewarm, renderer swap, and sidebar memo rebuild already carries the requested alpha.
+
+Implement `RendererBackend.setSurfaceTransparency` first in `SlugGlyphRenderer`. Change its `CAMetalLayer.isOpaque` live, rebuild or invalidate retained full-frame resources, and reset every full target by overwriting it with the resolved effective-alpha canvas clear. For partial bands, add an explicit transparent erase pass with blending disabled before replay; render replace solids through a no-blend pipeline and source-over content through the existing pipeline. Do not solve transparency by reordering frame commands: retained batching can reorder equivalent primitives, so compositing mode must be carried into the instance split. Add repeated full-frame, repeated identical partial-band, zoom-margin, and scroll-blit tests that render the same 70% base at least 100 times and assert alpha remains 179 rather than approaching 255.
+
+Extend the existing subpixel-policy resolver used by vector/Slug rendering so any nonopaque effective surface returns grayscale. Include the exact machine-readable reason string `transparentSurface` in renderer/debug status; the Review Gate greps for that literal. Do not overwrite the persisted RGB-subpixel setting. Add shader/render tests that demonstrate there is no RGB fringe and that returning to opacity 1 restores the configured mode.
+
+Build the AppKit settings and coordinator. Make the window and Slug layer nonopaque only when effective transparency requires it, with a clear permanent AppKit background. If cold launch needs a tint before the first frame, use a distinct temporary fallback layer and remove it before installing the renderer presentation layer; never tint both the AppKit background and renderer target. Update cold-launch activation, transient resize, renderer swap, and full-screen transitions so the effective state is applied before presentation.
+
+At the end of this milestone, launch the installed app with Slug selected, set opacity to 70%, and observe a real window behind Laban through the default background. Explicit red and inverse backgrounds remain opaque, glyphs and preedit remain legible, and toggling the setting does not restart the session.
+
+### Milestone 2: Bring every renderer to parity
+
+Implement the same surface hook in classic and GPU-driven `MetalRenderer`, `VectorGlyphRenderer`, and `SoftwareBackend`. Do not fork the semantic decisions into five renderers: each receives already resolved frame colors plus the one `isOpaque` surface property.
+
+For Metal paths, audit full redraw overwrite clears, retained backing textures, partial-damage transparent erase passes, replace/source-over pipeline splits, scroll blits, and drawable-to-readback copies. Alpha outside damage must never contain stale data. The first frame after opacity/backdrop changes must be a full redraw. Preserve existing present-link and idle-parking behavior from ADR 0026: a settings change may wake and present once, but a translucent idle window must not cause continuous app-side rendering.
+
+For the software backend, overwrite the bitmap with the resolved effective-alpha canvas clear at the start of every currently-full render, use `CGBlendMode.copy` for replace rectangles, restore `.normal` for source-over content, and ensure `TerminalBitmapView.draw(_:)` does not paint a fallback beneath the completed image. If software later honors partial damage, it must use the same transparent erase-and-replay contract. For classic/GPU-driven Metal and vector rendering, add the same replace pipeline and damage reset used by Slug. Vector uses the same grayscale-on-transparency rule as Slug. Classic and GPU-driven renderers do not gain a separate AA setting.
+
+Add a shared renderer parity fixture with default canvas, explicit colored and inverse cells, normal and faint glyphs, cursor, selection, find highlight, image, preedit, sidebar base, selected tab, and attention state. Render at opacity 0.70 in all five modes, read back PNG pixels, and compare semantic probes rather than requiring identical glyph rasterization. For every backend, capture after one full frame, after 100 identical full frames, after 100 identical partial-damage frames, and after a scroll blit plus exposed-row replay; the default alpha must be 179 in every capture and opaque semantic regions must remain 255.
+
+At the end of this milestone, switching among all five renderers preserves background alpha and exclusions. Default opacity 1.0 produces the same opaque images as the pre-feature baselines.
+
+### Milestone 3: Prove China-facing CJK and IME quality
+
+Reuse `fixtures/cjk/trust-gate.fixture.json` rather than inventing a transparency-only approximation. Extend its debug run so opaque, 85%, 90%, and 95% direct transparency can be selected without changing the fixture text.
+
+Run the fixture through software, classic, GPU-driven, vector glyph, and Slug with PingFang SC. If Noto Sans Mono CJK SC or a Sarasa SC preset is installed, repeat visible spot checks with it and record the exact font/version; absence of optional fonts is not a failure. Probes and screenshots must cover the mixed Chinese prompt, dense Hanzi, ambiguous-width characters, emoji/ZWJ/flag clusters, Powerline and box drawing, and adjacent `中文` in Slug. Confirm every CJK glyph occupies the same two-cell geometry as the opaque run and that fine horizontal/vertical strokes remain distinguishable over both light and dark high-contrast backdrops.
+
+Exercise live Apple Pinyin composition and selection with the window transparent. The preedit mask, caret, candidate-window anchor, marked-text replacement, wide-glyph wrap, and mode-2027 cluster widths must match the opaque path. Before claiming broad Chinese IME support in release notes, repeat the same acceptance flow with a current Rime/Squirrel installation; if that manual pass has not happened, document Apple Pinyin as tested and leave Rime/Squirrel unclaimed.
+
+Add every transparency source string to `TRANSLATIONS` in `scripts/gen-localizable-xcstrings.py` and, where that generator expects it, `scripts/localizable-supplement-de-pt-it.py`. Supply nonempty, non-English-fallback translations for all 11 declared locales (`zh-Hans`, `zh-Hant`, `ja`, `ko`, `fr`, `es`, `hi`, `ru`, `de`, `pt-BR`, and `it`), then run the generator to replace `Sources/LabanApp/Resources/Localizable.xcstrings`. Do not translate renderer identifiers or debug enum values, but localize their user-facing labels and accessibility descriptions. Add `TransparencyLocalizationTests` following `NativeFocusStatusMonitorTests`' catalog-validation pattern; it enumerates every new English key and asserts `state == translated`, nonempty value, and `value != key` for all 11 locales. Add `ChineseTransparencyTrustGateTests` to assert renderer parity, opaque preedit/explicit backgrounds, the adjacent-Hanzi Slug regression, and stable two-cell placement at 85%, 90%, and 95%.
+
+### Milestone 4: Finish debug proof, accessibility, performance, and documentation
+
+Add the typed debug action, `/debug/transparency` projection, and `laban-agent` flags. Register the new `GET /debug/transparency` route and the typed actions in `Sources/LabanControl/ControlRouteCatalog.swift` with their schema references, exactly as the existing `/debug/render` and `/debug/accessibility` entries do; `rtk ./scripts/check-debug-contract` must pass with the new endpoint documented. Update schemas and `docs/process/dev-process.md` with request/response examples, the deterministic transparency fixture, and commands for PNG alpha inspection. Keep `HeadlessDebugRuntime` in semantic parity: it ignores only native backdrop effects, which do not exist headlessly, and reports that resolution explicitly.
+
+Exercise Reduce Transparency using the existing `/debug/accessibility` machinery and a unit-testable coordinator input. Exercise repeated native full-screen enter/exit cycles through coordinator tests and a visible installed-app check. Requested values must survive both overrides.
+
+Add `RendererTransparencyPerformanceTests` and `scripts/benchmark-transparency-renderers`. The benchmark uses the CJK trust-gate at a 160x48 grid and scale 2, warms 40 frames, accepts 240 measured frames, and repeats each process five times for Slug and vector at opaque 1.0 and direct 0.90. It writes one versioned JSON document containing hardware/OS/build identity plus per-run and median-of-five p50/p95/p99 CPU-encode and wall time. Milestone 0 captures the opaque baseline before renderer changes. The script exits nonzero unless post-change opaque p50 and p99 are each no more than 5% above baseline, direct p50 and p99 are each no more than 10% above post-change opaque, and every p99 is at most 8.33 ms. There is no reviewer-exception escape hatch; a threshold change requires an explicit plan/ADR amendment with new evidence.
+
+Add `scripts/profile-transparency-compositor` for the installed app. It runs opaque and direct 0.90 over identical static and animated high-contrast backdrops, allows a 2-second settling interval, resets transparency/present diagnostics, then records 60 seconds per scenario. Repeat the four-scenario matrix five times and write a versioned JSON summary whose identity block uses the top-level fields `lane`, `osBuild`, `hardwareModel`, and `displayHz`, plus app CPU median/p95, WindowServer CPU median/p95, renderer-present delta, accessibility/effective-apply/wake deltas, present-interval deadline misses, and trace paths. It exits nonzero unless every static run has renderer-present delta 0 and app CPU median below 1.0%; every run has zero display-deadline misses; and direct static WindowServer CPU median is no more than 2.0 percentage points above opaque static. Capture/analyze traces using the repository's `scripts/capture-profile`, `scripts/analyze-metal-trace`, and `docs/process/profiling-hiccups.md` conventions; missing required CPU or deadline fields is a failure, not an inferred pass.
+
+Run the compositor gate on one required lane: a base M1 with 8 GB RAM at 60 Hz, or an older supported Apple-silicon machine, using the latest stable macOS 26.x build. Record the exact OS build and hardware identity in JSON. If that lane is unavailable, the performance milestone remains incomplete. The 120 Hz macOS 27 seed lane moves to the deferred blur follow-up, which owns new-OS material behavior; renderer-side 120 Hz timing remains gated here by the 8.33 ms p99 budget in the renderer benchmark. Do not weaken the numeric budgets.
+
+Run the full gates, build/install `~/Laban.app` with `./scripts/install-app`, collect the artifacts named below, update this plan's progress and retrospective, and submit the final commit to the Review Gate.
+
+## Concrete Steps
+
+Run all commands from `/Users/rrj/wrk/laban`. Follow the repository's machine-local command wrapper rule by prefixing shell commands with `rtk`.
+
+Before editing and before each commit:
+
+```sh
+rtk git status --short --branch
+```
+
+Expect existing unrelated dirt to remain untouched. At plan creation time it includes `.rpg/graph.json`, `.serena/project.yml`, `.cachebro/`, and `.continues-handoff.md`; re-check rather than assuming that list is permanent.
+
+Milestone 0 focused tests:
+
+```sh
+rtk swift test --filter TerminalTransparencyPolicyTests
+rtk swift test --filter TerminalTransparencySettingsTests
+rtk swift test --filter SnapshotExplicitBackgroundTests
+rtk swift test --filter LabandSnapshotSyncOutputRingTests
+rtk swift test --filter LabandExplicitBackgroundCapabilityTests
+rtk swift test --filter FrameProducerTransparencyTests
+rtk ./scripts/benchmark-transparency-renderers --phase=baseline --fixture=fixtures/cjk/trust-gate.fixture.json --warmup=40 --frames=240 --runs=5 --output=.artifacts/transparency/opaque-baseline.json
+```
+
+The new test cases should fail before their production changes and pass afterward; `LabandSnapshotSyncOutputRingTests` is an existing suite that only gains new cases, so run it before editing to confirm the baseline is green. A failure showing that an explicit background lacks bit 9, a legacy helper did not force opacity, or unavailable system blur overwrote the requested value is a real contract failure, not a baseline to update. Preserve `opaque-baseline.json` unchanged through closeout; the benchmark command records five independent processes for both Slug and vector and exits 0 only when all required samples were accepted.
+
+Milestone 1 Slug checks:
+
+```sh
+rtk swift test --filter SlugGlyphTransparencyTests
+rtk swift test --filter RendererTransparencyIdempotenceTests
+rtk swift test --filter VectorSubpixelPolicyTests
+rtk swift test --filter VectorSubpixelLayoutTests
+rtk swift test --filter TerminalWindowTransparencyCoordinatorTests
+rtk swift test --filter TerminalTransparencySettingsUITests
+rtk ./scripts/build-app
+```
+
+Start the debug app with the repository's documented isolated run command from `docs/process/agent-operating-guide.md`; do not invent a parallel artifact directory or socket. Select Slug, set opacity to 70%, and capture both a window screenshot and a renderer PNG. Store generated evidence under the worktree-specific debug artifact directory documented by the process guide, not in the source tree.
+
+Milestone 2 parity checks:
+
+```sh
+rtk swift test --filter RendererTransparencyParityTests
+rtk swift test --filter MetalRendererTransparencyTests
+rtk swift test --filter VectorGlyphTransparencyTests
+rtk swift test --filter SoftwareBackendTransparencyTests
+rtk swift test --filter RendererSelectionRoutingTests
+rtk swift test --filter RendererTransparencyIdempotenceTests
+```
+
+Add `scripts/transparency-renderer-parity-matrix` using the proven readiness/authentication/capture structure in `scripts/vector-glyph-parity-matrix`. For each of `software`, `classic`, `gpuDriven`, `vectorGlyph`, and `slugGlyph`, it must launch the debug-server path with the exact argument forms `--headless --debug-server=127.0.0.1:0 --fixture=... --artifacts=... --renderer=... --deterministic --background-opacity=0.70`; it must not use the one-shot renderer, which currently hard-codes `SoftwareRenderer`. Before accepting `/debug/screenshot?target=active`, the script saves `/debug/render` and fails unless both `configuredRenderer` and `effectiveRenderer` equal the requested selector and `fallbackReason` is null. Run it with:
+
+```sh
+rtk ./scripts/transparency-renderer-parity-matrix --fixture=fixtures/transparency-parity.fixture.json --opacity=0.70 --artifacts=.artifacts/transparency/parity
+```
+
+The matrix exits 0 only after all five renderer-identity assertions, alpha probes, idempotence captures, and PNG nonemptiness checks pass. It writes one subdirectory per renderer containing `render.json`, `transparency.json`, `frame-commands.json`, and `screenshot.png`.
+
+Milestone 3 China-facing CJK checks:
+
+```sh
+rtk swift test --filter CJKFont
+rtk swift test --filter ChineseTrustGate
+rtk swift test --filter FrameProducerPreedit
+rtk swift test --filter ChineseTransparencyTrustGateTests
+rtk python3 scripts/gen-localizable-xcstrings.py
+rtk python3 scripts/gen-localizable-xcstrings.py --check
+rtk swift test --filter TransparencyLocalizationTests
+```
+
+Extend the generator with `--check`; it performs no write and exits nonzero if the committed catalog differs from generated output. `TransparencyLocalizationTests` validates every new key across all 11 locales. Preserve the pre-feature focused baseline recorded in `Surprises & Discoveries`: 30 existing CJK/preedit tests pass before the new transparency tests are added.
+
+Milestone 4 and closeout:
+
+```sh
+rtk swift test --filter TransparencyHeadlessTests
+rtk swift test --filter RendererTransparencyPerformanceTests
+rtk swift test --filter TransparencyDiagnosticsTests
+rtk ./scripts/benchmark-transparency-renderers --phase=compare --fixture=fixtures/cjk/trust-gate.fixture.json --warmup=40 --frames=240 --runs=5 --baseline=.artifacts/transparency/opaque-baseline.json --output=.artifacts/transparency/renderer-comparison.json
+rtk ./scripts/check
+rtk ./scripts/install-app
+rtk ./scripts/transparency-transition-smoke --app=$HOME/Laban.app --cycles=5 --artifacts=.artifacts/transparency/transitions
+rtk ./scripts/profile-transparency-compositor --app=$HOME/Laban.app --lane=stable-m1-60hz --duration=60 --runs=5 --artifacts=.artifacts/transparency/compositor/stable-m1-60hz
+rtk ./scripts/verify-transparency-performance --renderer=.artifacts/transparency/renderer-comparison.json --compositor=.artifacts/transparency/compositor/stable-m1-60hz/summary.json
+```
+
+Every command in this Milestone 4 block must exit 0. Run the compositor command on the machine matching its `--lane`; the script validates the declared hardware/OS/display identity and refuses a mismatch. Transfer only the resulting artifact directory back into the worktree's documented artifact root if it was captured on another machine, then run the final verifier over the summary. If `./scripts/check` is not the current full gate when implementation begins, read `docs/process/agent-operating-guide.md`, replace it here with the canonical command, and record the change in `Decision Log`. `./scripts/build-app` proves only `.build/laban/Laban.app`; `./scripts/install-app` is required to update and validate `~/Laban.app`. The transition smoke resets diagnostics before each operation and fails unless one settings/accessibility transition changes `effectiveTransparencyApplyCount` by 1, `transparencyRenderWakeCount` by 1, `rendererPresentCount` by 1 after settling, and `backdropSubviewCount` remains 0; its five full-screen and Reduce Transparency cycles must restore the exact requested state each time.
+
+For debug-state proof, use the actual loopback/unix-socket command documented by the implementation in `docs/process/dev-process.md`. The transcript must show requested and effective values separately. A representative forced-opaque response is:
+
+```json
+{
+  "requestedOpacity": 0.7,
+  "effectiveOpacity": 1,
+  "requestedBackdropStyle": "none",
+  "effectiveBackdropStyle": "none",
+  "forceOpaqueReason": "reduceTransparency",
+  "surfaceOpaque": true,
+  "effectiveGlyphAntialiasing": "grayscale"
+}
+```
+
+The antialiasing field may report the configured mode when the renderer has no RGB-subpixel mode; document that vocabulary in the schema and keep it stable.
+
+## Validation and Acceptance
+
+The feature is accepted only when all of the following are demonstrated, not merely when the code compiles.
+
+### Default regression
+
+- With no new preference keys, all five renderers resolve opacity to 1.0, backdrop style to none, and an opaque presentation surface.
+- Existing opaque screenshot baselines remain pixel-identical outside any intentional metadata-only difference. Do not regenerate baselines merely to hide an alpha or color change.
+- Idle renderer telemetry remains parked; no new settings or accessibility observer performs per-frame work or reads `UserDefaults` inside a render loop.
+
+### Alpha semantics
+
+At effective opacity 0.70, a deterministic readback must show, allowing one 8-bit rounding unit:
+
+- default canvas alpha: 179 (`round(255 * 0.70)`);
+- default/inherited cell background alpha: 179;
+- explicit red background alpha with opt-in off: 255;
+- inverse cell background alpha with opt-in off: 255;
+- explicit and inverse background alpha with opt-in on: 179;
+- glyph interior, cursor, selection emphasis, image content, and preedit backing: their existing semantic alpha, not blindly 179;
+- pixels outside every initialized region: deterministic transparent/tinted output, never stale texture contents.
+
+These probes must pass for software, classic, GPU-driven, vector, and Slug. Glyph shape pixels may differ among renderers; probe areas chosen by the fixture must not depend on identical font rasterization.
+
+- Full-target reset overwrites the resolved canvas RGBA once (alpha 179 at 70%) and a following replace canvas command leaves the same bytes; partial-damage erases write transparent black before replay.
+- Replaying the same full frame 100 times leaves default alpha at 179, not 255.
+- Replaying the same partial damage 100 times leaves every damaged default-background pixel at 179 and every undamaged pixel byte-identical.
+- A scroll blit preserves source alpha exactly; newly exposed rows are erased to transparent and replayed to alpha 179.
+- `NSWindow` and permanent AppKit backing layers contribute no second tint. Full renderer clears are overwrite operations, not blended tints, and a temporary launch fallback is absent before the first renderer frame is presented.
+
+### Live window behavior
+
+- With another high-contrast window behind Laban, Slug at 70% shows that backdrop through the terminal and sidebar base while text and semantic overlays remain legible.
+- Switching through every renderer leaves the apparent tint and transparency unchanged and does not flash opaque white, black, or a prior frame.
+- Changing opacity updates the existing window and session without restart.
+- Resizing, live font zoom, tab selection, view reconstruction, cold launch, session restore, and renderer switching keep session identity and never reveal an opaque transient-resize fill.
+- No backdrop-effect view exists anywhere in the hierarchy; `backdropSubviewCount` is always 0, and at opacity 1.0 the window and renderer layer report opaque with zero added cost.
+
+### Accessibility and full screen
+
+- Toggling Reduce Transparency while the app is running immediately makes the window opaque and reports `forceOpaqueReason == reduceTransparency`; toggling it back restores the requested opacity.
+- Entering native full screen does the same with `nativeFullscreen`; exiting restores the request. Five consecutive enter/exit cycles produce the same result and do not accumulate notification observers.
+- If both overrides apply, the status uses a deterministic priority documented in `TerminalTransparencyPolicyTests`; removing one while the other remains cannot restore transparency.
+- `TerminalBitmapView` is the only workspace accessibility observer. After resetting diagnostics, one accessibility change increments `accessibilityNotificationCount` by 1, `effectiveTransparencyApplyCount` by at most 1, `transparencyRenderWakeCount` by 1, and settled `rendererPresentCount` by 1.
+- Selecting a remote session whose helper lacks `snapshotCellExplicitBackgroundV1` forces opacity with `legacySnapshotWriter`; selecting an in-process or capability-aware session restores the unchanged request. Old JSON and ABI-1 ring fixtures cannot produce a translucent explicit or inverse background.
+
+### Glyph correctness
+
+- Slug and vector report effective grayscale AA whenever the surface is translucent.
+- No colored fringe appears on vertical glyph stems over a high-contrast checkerboard backdrop.
+- Returning to an opaque surface restores the user's configured RGB-subpixel mode without changing its persisted setting.
+
+### China-facing CJK and IME quality
+
+- `fixtures/cjk/trust-gate.fixture.json` passes through software, classic, GPU-driven, vector glyph, and Slug at opaque, 85%, 90%, and 95% direct transparency; mixed Chinese/English, dense Hanzi, ambiguous widths, emoji clusters, Powerline, and box drawing retain their opaque-run cell geometry.
+- Fine Hanzi strokes remain distinguishable over light and dark high-contrast backdrops. Slug renders adjacent `中文` without a blank glyph, bad raster stride, overlap, or one-cell shift.
+- PingFang SC, Noto Sans Mono CJK SC, Sarasa Term/Mono/Gothic SC, and custom CJK choices continue to refresh live. Optional fonts are visually checked when installed; automated policy tests cover the entire explicit cascade regardless of installation.
+- Preedit backing remains opaque, glyphs and caret remain full-strength, and Apple Pinyin marked-text replacement, candidate anchoring, double-width wrapping, ZWJ clusters, and mode 2027 behave exactly as in the opaque path. Rime/Squirrel is either manually passed on the implementation build or explicitly omitted from compatibility claims.
+- Every new user-facing string originates in the localization generator and has translated, nonempty, non-English-fallback values for all 11 supported locales. A generator `--check` run proves the committed catalog is current.
+
+### Headless and debug parity
+
+- The typed action changes opacity deterministically in `HeadlessDebugRuntime`; its PNG contains the expected alpha probes for all five renderer selectors. Each artifact's `/debug/render` proves `configuredRenderer` and `effectiveRenderer` equal the requested backend before the PNG is accepted.
+- `/debug/transparency` distinguishes requested from effective state and explains forced opacity/unavailable native effects.
+- The same fixture and state projection are available in the visible app path; no debug-only frame-production fork implements the semantics.
+
+### Performance and power
+
+- After diagnostics reset, one settings change increments effective-apply, render-wake, and settled renderer-present counts by exactly 1, after which the idle window parks.
+- The five-process renderer JSON passes these fixed gates: post-change opaque p50 and p99 no more than 5% above baseline; direct p50 and p99 no more than 10% above post-change opaque; all p99 values at most 8.33 ms.
+- No renderer recreates a pipeline, atlas, or font/glyph cache solely because the opacity slider changed. Only the full-frame target/damage state may be invalidated.
+- The five-run compositor JSON passes these fixed gates: every 60-second static run has renderer-present delta 0 and app CPU median below 1.0%; every run has zero deadline misses; and direct static WindowServer CPU median is at most 2.0 percentage points above opaque.
+- The required hardware/OS lane passes: base M1-class 8 GB/60 Hz (or an older supported Apple-silicon machine) on the latest stable macOS 26.x. Missing metrics or a missing lane is not a pass.
+
+### Repository closeout
+
+- Focused tests, the full current gate, `./scripts/install-app`, and the Review Gate pass.
+- `docs/product/spec.md`, ADR 0028, schemas, and `docs/process/dev-process.md` describe the final behavior and actual commands.
+- Generated screenshots, traces, and PNGs stay in documented artifact directories and are not accidentally committed.
+- Unrelated pre-existing worktree changes remain untouched.
+
+## Review Gate
+
+A separate fresh-state agent must verify every item against the final implementation commit. The executing agent must not mark this ExecPlan complete until the gate passes. On a failure, record file-and-line findings here, fix them, and have another fresh reviewer rerun the entire gate. Stop and surface to a human after three failures of the same item, as required by `PLANS.md`.
+
+- [ ] Run every command in the `Milestone 4 and closeout` code block under `Concrete Steps` except the `profile-transparency-compositor --lane=...` command; expect exit 0 from each and preserve every referenced JSON/artifact directory. The lane-pinned compositor run is the executing agent's responsibility on a machine matching the lane (the script refuses a mismatched host); this gate verifies its recorded artifacts in the performance-evidence item below.
+- [ ] Run `rtk rg -n 'isOpaque = true' Sources/LabanRenderer`; every hit that configures a presentation layer must be replaced by or demonstrably updated from live effective transparency. Record the inspected hits and expect no unconditional presentation-layer assignment.
+- [ ] Run `rtk rg -n 'UserDefaults' Sources/LabanRenderer`; expect zero new renderer-side settings reads. Existing unrelated hits, if any, must be enumerated and unchanged from the merge base.
+- [ ] Run `rtk swift test --filter RendererTransparencyParityTests` and `rtk swift test --filter RendererTransparencyIdempotenceTests`; expect alpha 179/255 assertions plus 100x full, 100x partial, and scroll-blit stability to pass for all five renderers.
+- [ ] Run `rtk rg -l 'FrameCompositingMode' Sources/LabanRenderer`; expect the file list to include `SoftwareBackend.swift`, `MetalRenderer.swift`, `VectorGlyphRenderer.swift`, and `SlugGlyphRenderer.swift`. Run `rtk rg -n 'CGBlendMode\.copy' Sources/LabanRenderer/SoftwareBackend.swift`; expect at least one hit. The reset/replace behavior itself is proven by the `RendererTransparencyIdempotenceTests` run above, not by code inspection.
+- [ ] Run `rtk swift test --filter TerminalTransparencyPolicyTests`; expect cases for Reduce Transparency, native full screen, both overrides, opacity 1, unavailable/headless system blur, `legacySnapshotWriter`, and restoration to pass.
+- [ ] Run `rtk swift test --filter SnapshotExplicitBackgroundTests` and `rtk swift test --filter LabandExplicitBackgroundCapabilityTests`; expect default, explicit, theme-equal explicit, inverse, old/new JSON, old/new ring, hello capability, and forced-opaque downgrade cases to pass.
+- [ ] Run `rtk rg -l 'backgroundCompositingOptions' Sources/LabanCore Sources/LabanApp Sources/LabanDebug`; expect the file list to include `Sources/LabanCore/TerminalSurfaceController.swift` and `Sources/LabanDebug/HeadlessDebugRuntime.swift`. Run `rtk rg -A8 'struct SidebarCacheSignature' Sources/LabanCore/TerminalSurfaceController.swift | rg -c 'ompositing'`; expect at least 1. Run `rtk swift test --filter FrameProducerTransparencyTests`; expect the first settings-change/swap frame plus sidebar memo rebuild assertions to pass (those tests, not inspection, prove every request seam carries the value).
+- [ ] Run `rtk swift test --filter VectorSubpixelPolicyTests`; expect passing cases where a translucent surface resolves to grayscale with the machine-readable reason `transparentSurface`, and where returning to opacity 1 restores the configured mode without changing its persisted setting. Run `rtk rg -n 'transparentSurface' Sources`; expect at least one production hit in the AA resolver or debug projection.
+- [ ] Run `rtk ./scripts/transparency-renderer-parity-matrix --fixture=fixtures/transparency-parity.fixture.json --opacity=0.70 --artifacts=.artifacts/transparency/review-parity`; expect exit 0, five backend-identity assertions, five nonempty PNGs, and alpha/idempotence probes.
+- [ ] Run `rtk swift test --filter CJKFont`, `ChineseTrustGate`, `FrameProducerPreedit`, and `ChineseTransparencyTrustGateTests`; expect all to pass, including adjacent `中文`, two-cell geometry, opaque preedit, and all five renderer selectors.
+- [ ] Run `rtk python3 scripts/gen-localizable-xcstrings.py --check` and `rtk swift test --filter TransparencyLocalizationTests`; expect exit 0 and all new keys translated across all 11 locales.
+- [ ] Verify recorded CJK/IME evidence instead of performing manual flows: in the documented worktree artifact directory, expect `transparency-cjk-{software,classic,gpuDriven,vectorGlyph,slugGlyph}.png` to exist and be nonempty, and expect `transparency-cjk-ime-apple-pinyin.*` evidence to exist. If no `transparency-cjk-ime-rime-squirrel.*` evidence exists, run `rtk rg -in 'rime|squirrel' docs/product/spec.md`; expect zero hits claiming tested compatibility. Performing the live Apple Pinyin (and optional Rime/Squirrel) flow and capturing that evidence is the executing agent's Milestone 3 responsibility, not this gate's.
+- [ ] Run `rtk ./scripts/transparency-transition-smoke --app=$HOME/Laban.app --cycles=5 --artifacts=.artifacts/transparency/review-transitions`; expect exit 0, backdrop subview count always 0, exact 1/1/1 effective-apply/wake/present deltas per transition, one accessibility notification delta, and exact requested-setting restoration.
+- [ ] Verify performance evidence mechanically. Run `rtk ./scripts/verify-transparency-performance --renderer=.artifacts/transparency/renderer-comparison.json --compositor=.artifacts/transparency/compositor/stable-m1-60hz/summary.json`; expect exit 0. That verifier is the sole gate authority for the 5% opaque, 10% translucent, and 8.33 ms renderer thresholds and for every fixed CPU, present, deadline, and WindowServer compositor threshold. Then run `rtk rg -n '"lane"|"osBuild"|"hardwareModel"|"displayHz"' .artifacts/transparency/compositor/stable-m1-60hz/summary.json`; expect the summary to declare `stable-m1-60hz` with `displayHz` 60 and a stable macOS 26.x `osBuild`. A missing summary, missing identity field, or verifier failure fails this item; do not substitute manual threshold arithmetic.
+- [ ] Run `rtk git diff --check` and `rtk git status --short`; expect no whitespace errors, no generated artifacts, and only feature/plan files intentionally included in the final commits.
+
+Review status: NOT REVIEWED
+
+## Idempotence and Recovery
+
+All settings are additive and default to the current opaque behavior, so old preference domains and clean installs are safe. Clamp malformed opacity values on read and write. If a persisted backdrop style is unavailable or the process is headless, retain it as requested but resolve the effective style to none; a later capable visible run then activates the original choice without a migration. If the active remote helper lacks `snapshotCellExplicitBackgroundV1`, preserve the request but force opacity until a capability-aware session is active; never reinterpret legacy cell colors heuristically.
+
+Renderer and window-state changes must be safe to repeat. Store notification tokens and unregister them exactly once. Applying an equal effective state must be a no-op so repeated accessibility/full-screen notifications cannot trigger redraw storms. Background rendering is idempotent by construction: a non-blended full reset or transparent partial erase followed by `replace` yields the same premultiplied bytes no matter how often a region is replayed. Permanent AppKit surfaces remain clear, so renderer output is never tinted twice.
+
+If a renderer fails during the rollout, keep opacity 1.0 as that renderer's temporary safe behavior only on the implementation branch; do not ship or mark the milestone complete with a renderer-specific semantic gap. Slug-first commits may be merged only if the user-visible setting remains gated to Slug or hidden until Milestone 2; the preferred route is to keep milestone commits on one feature branch and expose settings only when parity lands.
+
+If a Metal readback shows stale or accumulating alpha, first confirm the damaged region was erased to transparent and the background instance used the replace pipeline; a forced full redraw is a diagnostic, not an acceptable fix for repeated partial-frame accumulation. If AppKit produces a launch flash, ensure the clear window background, temporary fallback layer, terminal view, and backend `isOpaque` state are all configured before `makeKeyAndOrderFront`, and remove the fallback before renderer presentation; do not hide the problem with a delay or permanent tint.
+
+Tests and artifact generation are repeatable. The localization catalog is regenerated from its Python source tables and `--check` is read-only. Benchmark comparison always reuses the immutable Milestone 0 baseline JSON. Delete only feature-created files under `.build/` or the documented worktree artifact directory when retrying. Never clean or reset unrelated user changes, and never use `git reset --hard` or `git checkout --` as recovery.
+
+## Artifacts and Notes
+
+Keep these artifacts for final review in the worktree-specific runtime artifact location documented by `docs/process/dev-process.md`:
+
+- `transparency-requested.json`, `transparency-reduce-transparency.json`, `transparency-fullscreen.json`, and `transparency-restored.json`;
+- `transparency-software.png`, `transparency-classic.png`, `transparency-gpuDriven.png`, `transparency-vectorGlyph.png`, and `transparency-slugGlyph.png` with alpha preserved;
+- labeled visible-window screenshots for opaque and 90% direct transparency in both a light and dark theme;
+- `transparency-cjk-{software,classic,gpuDriven,vectorGlyph,slugGlyph}.png` plus labeled installed-window CJK screenshots over light and dark backdrops;
+- `transparency-cjk-ime-apple-pinyin.*` and, only when actually exercised, `transparency-cjk-ime-rime-squirrel.*`;
+- immutable `opaque-baseline.json` plus `renderer-comparison.json`, each containing five-run p50/p95/p99 data, renderer, scale, AA mode, CJK font, thresholds, and OS/build/hardware identity;
+- `compositor/summary.json` and trace paths for five 60-second runs of each opaque and direct static and animated scenario on the required hardware/OS lane, reporting app and WindowServer cost separately;
+- `transitions/` requested/effective/counter snapshots proving exact observer, apply, wake, and present deltas plus a constant-zero effect-subview count;
+- an idle telemetry excerpt showing a one-time wake followed by the parked state.
+
+When implementation reveals a non-obvious compositing, AppKit, shader, or WindowServer behavior, add a short `Surprises & Discoveries` entry with the smallest evidence excerpt that proves it. At the end of each milestone, update `Progress` and add an `Outcomes & Retrospective` entry if the result or remaining risk differs materially from this plan.
