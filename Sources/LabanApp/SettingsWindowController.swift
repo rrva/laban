@@ -2,6 +2,7 @@ import AppKit
 import LabanControl
 import LabanCore
 import LabanRenderer
+import UniformTypeIdentifiers
 
 /// The native Settings (⌘,) window. It surfaces the choices that used to live
 /// in the View and Workspace menus — theme, font, renderer, session backend,
@@ -9,6 +10,11 @@ import LabanRenderer
 /// the same menu-controller apply path, so there is a single source of truth
 /// and flipping a setting here behaves exactly as the old menu item did.
 final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
+  typealias BackgroundImagePicker =
+    (NSWindow?, @escaping (URL?) -> Void) -> Void
+  typealias BackgroundImageErrorPresenter =
+    (NSWindow?, String, String) -> Void
+
   static let windowIdentifier = NSUserInterfaceItemIdentifier("LabanSettings")
   private let themeController: ThemeMenuController
   private let rendererController: RendererModeMenuController
@@ -19,10 +25,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let focusStatusSnapshot: () -> NativeNotificationFocusSnapshot
   private let onCheckFocusStatus: (@escaping (NativeNotificationFocusSnapshot) -> Void) -> Void
   private let onControlServerEnabledChanged: (Bool) -> Void
+  private let transparencyDefaults: UserDefaults
+  private let transparencyNotificationCenter: NotificationCenter
+  private let transparencyPersistence: TerminalTransparencyLivePersistence
+  private let backgroundImageStore: TerminalBackgroundImageStore
+  private let backgroundImagePicker: BackgroundImagePicker
+  private let backgroundImageErrorPresenter: BackgroundImageErrorPresenter
 
   private let themePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let followSystemCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Follow system appearance"), target: nil, action: nil)
+  private let backgroundPresetPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let backgroundSourcePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let backgroundImageStatusLabel = NSTextField(labelWithString: "")
+  private let backgroundImageChooseButton = NSButton(
+    title: L10n.tr("Choose…"), target: nil, action: nil)
+  private let backgroundImageRemoveButton = NSButton(
+    title: L10n.tr("Remove Image"), target: nil, action: nil)
+  private let backgroundImageScalingPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let backgroundOpacitySlider = NSSlider(
     value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
   private let backgroundOpacityValueLabel = NSTextField(labelWithString: "100%")
@@ -30,7 +50,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     checkboxWithTitle: L10n.tr("Apply opacity to colored cell backgrounds"),
     target: nil,
     action: nil)
-  private let transparencyPersistence = TerminalTransparencyLivePersistence()
   private let fontLabel = NSTextField(labelWithString: "")
   private let cjkFontPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let cjkFontStatusLabel = NSTextField(labelWithString: "")
@@ -116,6 +135,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     VectorSubpixelLayoutPreset.settingsCases
   private let vectorSmoothScrollOptions: [VectorSmoothScrollMode] =
     VectorSmoothScrollMode.allCases
+  private let backgroundPresetOptions: [TerminalTransparencyPreset] =
+    TerminalTransparencyPreset.allCases
+  private let backgroundSourceOptions: [TerminalBackdropStyle] =
+    TerminalBackdropStyle.allCases
+  private let backgroundImageScalingOptions: [TerminalBackgroundImageScaling] =
+    TerminalBackgroundImageScaling.allCases
 
   init(
     theme: ThemeMenuController,
@@ -127,7 +152,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     focusStatusSnapshot: @escaping () -> NativeNotificationFocusSnapshot,
     onCheckFocusStatus:
       @escaping (@escaping (NativeNotificationFocusSnapshot) -> Void) -> Void,
-    onControlServerEnabledChanged: @escaping (Bool) -> Void = { _ in }
+    onControlServerEnabledChanged: @escaping (Bool) -> Void = { _ in },
+    transparencyDefaults: UserDefaults = .standard,
+    transparencyNotificationCenter: NotificationCenter = .default,
+    backgroundImageStore: TerminalBackgroundImageStore? = nil,
+    backgroundImagePicker: BackgroundImagePicker? = nil,
+    backgroundImageErrorPresenter: BackgroundImageErrorPresenter? = nil
   ) {
     self.themeController = theme
     self.rendererController = renderer
@@ -138,6 +168,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     self.focusStatusSnapshot = focusStatusSnapshot
     self.onCheckFocusStatus = onCheckFocusStatus
     self.onControlServerEnabledChanged = onControlServerEnabledChanged
+    self.transparencyDefaults = transparencyDefaults
+    self.transparencyNotificationCenter = transparencyNotificationCenter
+    self.transparencyPersistence = TerminalTransparencyLivePersistence(
+      defaults: transparencyDefaults,
+      notificationCenter: transparencyNotificationCenter)
+    self.backgroundImageStore =
+      backgroundImageStore
+      ?? TerminalBackgroundImageStore(
+        defaults: transparencyDefaults,
+        notificationCenter: transparencyNotificationCenter)
+    self.backgroundImagePicker = backgroundImagePicker ?? Self.presentBackgroundImagePicker
+    self.backgroundImageErrorPresenter =
+      backgroundImageErrorPresenter ?? Self.presentBackgroundImageImportError
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 460, height: 10),
       styleMask: [.titled, .closable],
@@ -159,7 +202,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       selector: #selector(cjkFontSettingsDidChange(_:)),
       name: CJKFontSettings.didChangeNotification,
       object: nil)
-    NotificationCenter.default.addObserver(
+    transparencyNotificationCenter.addObserver(
       self,
       selector: #selector(transparencySettingsDidChange(_:)),
       name: TerminalTransparencySettings.didChangeNotification,
@@ -206,13 +249,71 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     followSystemCheckbox.target = self
     followSystemCheckbox.action = #selector(followSystemChanged(_:))
 
+    backgroundPresetPopUp.target = self
+    backgroundPresetPopUp.action = #selector(backgroundPresetChanged(_:))
+    for preset in backgroundPresetOptions {
+      backgroundPresetPopUp.addItem(withTitle: backgroundPresetTitle(preset))
+    }
+    backgroundPresetPopUp.toolTip = L10n.tr(
+      "Choose an exact background preset. Changing an individual background control shows Custom."
+    )
+    backgroundPresetPopUp.setAccessibilityLabel(L10n.tr("Preset:"))
+
+    backgroundSourcePopUp.target = self
+    backgroundSourcePopUp.action = #selector(backgroundSourceChanged(_:))
+    for source in backgroundSourceOptions {
+      backgroundSourcePopUp.addItem(withTitle: backgroundSourceTitle(source))
+    }
+    backgroundSourcePopUp.toolTip = L10n.tr(
+      "Choose direct transparency, a blurred system backdrop, or a managed local image behind the terminal."
+    )
+    backgroundSourcePopUp.setAccessibilityLabel(L10n.tr("Background source:"))
+
+    backgroundImageStatusLabel.lineBreakMode = .byTruncatingMiddle
+    backgroundImageStatusLabel.usesSingleLineMode = true
+    backgroundImageStatusLabel.setAccessibilityLabel(L10n.tr("Image"))
+
+    backgroundImageChooseButton.target = self
+    backgroundImageChooseButton.action = #selector(chooseBackgroundImageClicked(_:))
+    backgroundImageChooseButton.bezelStyle = .rounded
+    backgroundImageChooseButton.toolTip = L10n.tr(
+      "Import a still image into Laban’s private background-image storage."
+    )
+    backgroundImageChooseButton.setAccessibilityLabel(L10n.tr("Choose Image"))
+
+    backgroundImageRemoveButton.target = self
+    backgroundImageRemoveButton.action = #selector(removeBackgroundImageClicked(_:))
+    backgroundImageRemoveButton.bezelStyle = .rounded
+    backgroundImageRemoveButton.toolTip = L10n.tr(
+      "Delete the managed background image and select None."
+    )
+    backgroundImageRemoveButton.setAccessibilityLabel(L10n.tr("Remove Image"))
+
+    backgroundImageScalingPopUp.target = self
+    backgroundImageScalingPopUp.action = #selector(backgroundImageScalingChanged(_:))
+    for scaling in backgroundImageScalingOptions {
+      backgroundImageScalingPopUp.addItem(withTitle: backgroundImageScalingTitle(scaling))
+    }
+    backgroundImageScalingPopUp.toolTip = L10n.tr(
+      "Choose how the managed image fills the terminal area."
+    )
+    backgroundImageScalingPopUp.setAccessibilityLabel(L10n.tr("Image scaling:"))
+
+    let backgroundImageActionsRow = NSStackView(views: [
+      backgroundImageChooseButton,
+      backgroundImageRemoveButton,
+    ])
+    backgroundImageActionsRow.orientation = .horizontal
+    backgroundImageActionsRow.spacing = 8
+    backgroundImageActionsRow.alignment = .firstBaseline
+
     backgroundOpacitySlider.isContinuous = true
     backgroundOpacitySlider.numberOfTickMarks = 11
     backgroundOpacitySlider.allowsTickMarkValuesOnly = false
     backgroundOpacitySlider.target = self
     backgroundOpacitySlider.action = #selector(backgroundOpacityChanged(_:))
     backgroundOpacitySlider.toolTip = L10n.tr(
-      "Choose how much of the default terminal background is visible. The sidebar remains opaque; text, the cursor, selections, and images remain fully visible. 100% is fully opaque."
+      "Choose how much of the themed terminal background covers the selected source. The entire sidebar remains opaque; text, the cursor, and selections remain fully visible. 100% is fully opaque."
     )
     backgroundOpacitySlider.setAccessibilityLabel(L10n.tr("Background opacity"))
     backgroundOpacitySlider.widthAnchor.constraint(equalToConstant: 190).isActive = true
@@ -460,6 +561,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let appearanceGrid = makeSettingsGrid([
       [makeLabel(L10n.tr("Theme:")), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
+      [makeLabel(L10n.tr("Preset:")), backgroundPresetPopUp],
+      [makeLabel(L10n.tr("Background source:")), backgroundSourcePopUp],
+      [NSGridCell.emptyContentView, backgroundImageStatusLabel],
+      [NSGridCell.emptyContentView, backgroundImageActionsRow],
+      [makeLabel(L10n.tr("Image scaling:")), backgroundImageScalingPopUp],
       [makeLabel(L10n.tr("Background opacity:")), backgroundOpacityRow],
       [NSGridCell.emptyContentView, explicitCellBackgroundOpacityCheckbox],
       [makeLabel(L10n.tr("Font:")), fontRow],
@@ -519,7 +625,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       content.bottomAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 20),
     ])
     window.layoutIfNeeded()
-    window.setContentSize(NSSize(width: 580, height: 410))
+    window.setContentSize(NSSize(width: 620, height: 520))
   }
 
   private func populateThemePopUp() {
@@ -781,18 +887,83 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     refresh()
   }
 
+  @objc private func backgroundPresetChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < backgroundPresetOptions.count else {
+      refreshTransparencyControls()
+      return
+    }
+    let preset = backgroundPresetOptions[row]
+    guard preset != .custom else {
+      refreshTransparencyControls()
+      return
+    }
+    transparencyPersistence.applyPreset(preset)
+    refreshTransparencyControls()
+  }
+
+  @objc private func backgroundSourceChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < backgroundSourceOptions.count else {
+      refreshTransparencyControls()
+      return
+    }
+    let source = backgroundSourceOptions[row]
+    if source == .image {
+      // The picker is transactional. Do not publish Image until a usable
+      // managed asset exists, so cancellation is an exact settings no-op.
+      transparencyPersistence.flush()
+      let previous = TerminalTransparencySettings.requestedSettings(
+        defaults: transparencyDefaults)
+      let resolution = backgroundImageStore.resolveManagedImage(
+        previous.managedBackgroundImage)
+      guard resolution.availability == .available else {
+        chooseBackgroundImage(previousSettings: previous)
+        return
+      }
+    }
+    transparencyPersistence.updateRequestedConfiguration { configuration in
+      configuration.backdropStyle = source
+    }
+  }
+
+  @objc private func chooseBackgroundImageClicked(_ sender: Any?) {
+    transparencyPersistence.flush()
+    chooseBackgroundImage(
+      previousSettings: TerminalTransparencySettings.requestedSettings(
+        defaults: transparencyDefaults))
+  }
+
+  @objc private func removeBackgroundImageClicked(_ sender: Any?) {
+    transparencyPersistence.flush()
+    backgroundImageStore.removeManagedImage()
+    refreshTransparencyControls()
+  }
+
+  @objc private func backgroundImageScalingChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < backgroundImageScalingOptions.count else {
+      refreshTransparencyControls()
+      return
+    }
+    let scaling = backgroundImageScalingOptions[row]
+    transparencyPersistence.updateRequestedConfiguration { configuration in
+      configuration.backgroundImageScaling = scaling
+    }
+  }
+
   @objc private func backgroundOpacityChanged(_ sender: NSSlider) {
     let percent = min(100, max(0, Int(sender.doubleValue.rounded())))
     sender.doubleValue = Double(percent)
     updateBackgroundOpacityValueLabel(percent: percent)
     transparencyPersistence.scheduleBackgroundOpacity(Double(percent) / 100)
+    selectBackgroundPreset(.custom)
   }
 
   @objc private func explicitCellBackgroundOpacityChanged(_ sender: NSButton) {
-    // Preserve the final slider position when the checkbox is clicked before
-    // the trailing coalescer fires.
-    transparencyPersistence.flush()
-    TerminalTransparencySettings.setApplyToExplicitCellBackgrounds(sender.state == .on)
+    transparencyPersistence.updateRequestedConfiguration { configuration in
+      configuration.applyToExplicitCellBackgrounds = sender.state == .on
+    }
   }
 
   @objc private func changeFontClicked(_ sender: Any?) {
@@ -816,12 +987,92 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   }
 
   private func refreshTransparencyControls() {
-    let requested = TerminalTransparencySettings.requestedConfiguration
-    let percent = min(100, max(0, Int((requested.backgroundOpacity * 100).rounded())))
+    let requested = TerminalTransparencySettings.requestedSettings(
+      defaults: transparencyDefaults)
+    let configuration = requested.configuration
+    let percent = min(100, max(0, Int((configuration.backgroundOpacity * 100).rounded())))
     backgroundOpacitySlider.doubleValue = Double(percent)
     explicitCellBackgroundOpacityCheckbox.state =
-      requested.applyToExplicitCellBackgrounds ? .on : .off
+      configuration.applyToExplicitCellBackgrounds ? .on : .off
     updateBackgroundOpacityValueLabel(percent: percent)
+
+    selectBackgroundPreset(TerminalTransparencyPreset.derive(from: configuration))
+    if let row = backgroundSourceOptions.firstIndex(of: configuration.backdropStyle) {
+      backgroundSourcePopUp.selectItem(at: row)
+    }
+    if let row = backgroundImageScalingOptions.firstIndex(
+      of: configuration.backgroundImageScaling)
+    {
+      backgroundImageScalingPopUp.selectItem(at: row)
+    }
+    backgroundImageScalingPopUp.isEnabled = configuration.backdropStyle == .image
+
+    let resolution = backgroundImageStore.resolveManagedImage(requested.managedBackgroundImage)
+    refreshBackgroundImageControls(
+      managedImage: requested.managedBackgroundImage,
+      availability: resolution.availability)
+  }
+
+  private func selectBackgroundPreset(_ preset: TerminalTransparencyPreset) {
+    if let row = backgroundPresetOptions.firstIndex(of: preset) {
+      backgroundPresetPopUp.selectItem(at: row)
+    }
+  }
+
+  private func refreshBackgroundImageControls(
+    managedImage: TerminalManagedBackgroundImage?,
+    availability: TerminalBackgroundImageAvailability
+  ) {
+    let displayName = managedImage?.displayName ?? ""
+    switch availability {
+    case .none:
+      backgroundImageStatusLabel.stringValue = L10n.tr("No image selected.")
+      backgroundImageStatusLabel.textColor = .secondaryLabelColor
+    case .available:
+      backgroundImageStatusLabel.stringValue = String(
+        format: L10n.tr("Image: %@"), displayName)
+      backgroundImageStatusLabel.textColor = .secondaryLabelColor
+    case .missing:
+      backgroundImageStatusLabel.stringValue = String(
+        format: L10n.tr("Image file is missing: %@"), displayName)
+      backgroundImageStatusLabel.textColor = .systemOrange
+    case .invalid, .headlessUnsupported:
+      backgroundImageStatusLabel.stringValue = String(
+        format: L10n.tr("Image could not be loaded: %@"), displayName)
+      backgroundImageStatusLabel.textColor = .systemOrange
+    }
+    let hasManagedImage = managedImage != nil
+    backgroundImageChooseButton.title =
+      hasManagedImage
+      ? L10n.tr("Choose Again…") : L10n.tr("Choose…")
+    backgroundImageRemoveButton.isEnabled = hasManagedImage
+  }
+
+  private func chooseBackgroundImage(
+    previousSettings: TerminalTransparencyRequestedSettings
+  ) {
+    backgroundImagePicker(window) { [weak self] selectedURL in
+      guard let self else { return }
+      guard let selectedURL else {
+        // Only the popup's temporary visual selection changed. Re-derive all
+        // controls from the untouched requested configuration.
+        self.refreshTransparencyControls()
+        return
+      }
+      do {
+        try self.backgroundImageStore.importImage(
+          from: selectedURL,
+          scaling: previousSettings.configuration.backgroundImageScaling)
+      } catch {
+        self.backgroundImageErrorPresenter(
+          self.window,
+          L10n.tr("Couldn’t Import Background Image"),
+          L10n.tr(
+            "The selected file could not be imported as a background image. Choose a valid still image and try again."
+          ))
+      }
+      self.refreshTransparencyControls()
+    }
   }
 
   private func updateBackgroundOpacityValueLabel(percent: Int) {
@@ -840,6 +1091,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     )
   {
     (backgroundOpacitySlider, backgroundOpacityValueLabel, explicitCellBackgroundOpacityCheckbox)
+  }
+
+  var backgroundSourceControlsForTesting:
+    (
+      preset: NSPopUpButton,
+      source: NSPopUpButton,
+      status: NSTextField,
+      choose: NSButton,
+      remove: NSButton,
+      scaling: NSPopUpButton
+    )
+  {
+    (
+      backgroundPresetPopUp,
+      backgroundSourcePopUp,
+      backgroundImageStatusLabel,
+      backgroundImageChooseButton,
+      backgroundImageRemoveButton,
+      backgroundImageScalingPopUp
+    )
   }
 
   func flushPendingTransparencyPersistenceForTesting() {
@@ -1122,7 +1393,85 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     security.didAttachRevoke(context)
   }
 
+  static func configureBackgroundImageOpenPanel(_ panel: NSOpenPanel) {
+    panel.allowsMultipleSelection = false
+    panel.canChooseDirectories = false
+    panel.canChooseFiles = true
+    panel.resolvesAliases = true
+    panel.allowedContentTypes = [.image]
+    panel.title = L10n.tr("Choose a Background Image")
+    panel.prompt = L10n.tr("Choose Image")
+  }
+
+  private static func presentBackgroundImagePicker(
+    _ window: NSWindow?,
+    completion: @escaping (URL?) -> Void
+  ) {
+    let panel = NSOpenPanel()
+    configureBackgroundImageOpenPanel(panel)
+    let finish: (NSApplication.ModalResponse) -> Void = { response in
+      completion(response == .OK ? panel.url : nil)
+    }
+    if let window {
+      panel.beginSheetModal(for: window, completionHandler: finish)
+    } else {
+      panel.begin(completionHandler: finish)
+    }
+  }
+
+  private static func presentBackgroundImageImportError(
+    _ window: NSWindow?,
+    title: String,
+    message: String
+  ) {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = title
+    alert.informativeText = message
+    alert.addButton(withTitle: L10n.tr("OK"))
+    if let window {
+      alert.beginSheetModal(for: window)
+    } else {
+      alert.runModal()
+    }
+  }
+
   // MARK: Titles
+
+  private func backgroundPresetTitle(_ preset: TerminalTransparencyPreset) -> String {
+    switch preset {
+    case .opaque:
+      return L10n.tr("Opaque")
+    case .frosted:
+      return L10n.tr("Frosted")
+    case .custom:
+      return L10n.tr("Custom")
+    }
+  }
+
+  private func backgroundSourceTitle(_ source: TerminalBackdropStyle) -> String {
+    switch source {
+    case .none:
+      return L10n.tr("None")
+    case .systemBlur:
+      return L10n.tr("System Blur")
+    case .image:
+      return L10n.tr("Image")
+    }
+  }
+
+  private func backgroundImageScalingTitle(
+    _ scaling: TerminalBackgroundImageScaling
+  ) -> String {
+    switch scaling {
+    case .fill:
+      return L10n.tr("Fill")
+    case .fit:
+      return L10n.tr("Fit")
+    case .stretch:
+      return L10n.tr("Stretch")
+    }
+  }
 
   private func rendererTitle(_ selection: RendererSelection) -> String {
     switch selection {

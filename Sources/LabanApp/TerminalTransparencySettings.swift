@@ -40,6 +40,33 @@ struct TerminalTransparencyRequestedSettings: Equatable, Sendable {
   var managedBackgroundImage: TerminalManagedBackgroundImage?
 }
 
+/// Derived presentation state for the Appearance preset popup. `custom` is
+/// deliberately not persisted: it follows from the exact requested controls,
+/// so future controls cannot leave a stale preset name behind.
+enum TerminalTransparencyPreset: CaseIterable, Equatable, Sendable {
+  case opaque
+  case frosted
+  case custom
+
+  static func derive(
+    from configuration: TerminalTransparencyConfiguration
+  ) -> TerminalTransparencyPreset {
+    if configuration.backgroundOpacity == 1,
+      configuration.backdropStyle == .none,
+      !configuration.applyToExplicitCellBackgrounds
+    {
+      return .opaque
+    }
+    if configuration.backgroundOpacity == 0.90,
+      configuration.backdropStyle == .systemBlur,
+      !configuration.applyToExplicitCellBackgrounds
+    {
+      return .frosted
+    }
+    return .custom
+  }
+}
+
 /// Persists the user's requested transparency configuration. Temporary
 /// accessibility, full-screen, renderer, and session constraints belong in
 /// `TerminalTransparencyPolicy` and must not overwrite these values.
@@ -57,6 +84,40 @@ enum TerminalTransparencySettings {
 
   static var requestedConfiguration: TerminalTransparencyConfiguration {
     requestedConfiguration(defaults: .standard)
+  }
+
+  static func preset(
+    defaults: UserDefaults = .standard
+  ) -> TerminalTransparencyPreset {
+    TerminalTransparencyPreset.derive(from: requestedConfiguration(defaults: defaults))
+  }
+
+  /// Applies a named preset as one requested-settings publication. Imported
+  /// image metadata and scaling remain untouched so the user can switch back
+  /// to Image without reimporting or reconfiguring it.
+  static func applyPreset(
+    _ preset: TerminalTransparencyPreset,
+    defaults: UserDefaults = .standard,
+    notificationCenter: NotificationCenter = .default
+  ) {
+    guard preset != .custom else { return }
+    var requested = requestedSettings(defaults: defaults)
+    switch preset {
+    case .opaque:
+      requested.configuration.backgroundOpacity = 1
+      requested.configuration.backdropStyle = .none
+      requested.configuration.applyToExplicitCellBackgrounds = false
+    case .frosted:
+      requested.configuration.backgroundOpacity = 0.90
+      requested.configuration.backdropStyle = .systemBlur
+      requested.configuration.applyToExplicitCellBackgrounds = false
+    case .custom:
+      return
+    }
+    setRequestedSettings(
+      requested,
+      defaults: defaults,
+      notificationCenter: notificationCenter)
   }
 
   static func requestedConfiguration(
@@ -273,14 +334,46 @@ final class TerminalTransparencyLivePersistence {
   }
 
   func flush() {
-    generation &+= 1
-    pendingWork?.cancel()
-    pendingWork = nil
-    guard let pendingOpacity else { return }
-    self.pendingOpacity = nil
+    guard let pendingOpacity = takePendingOpacity() else { return }
     TerminalTransparencySettings.setBackgroundOpacity(
       pendingOpacity,
       defaults: defaults,
       notificationCenter: notificationCenter)
+  }
+
+  /// Folds an in-flight slider value into another control edit and publishes
+  /// the resulting configuration once.
+  func updateRequestedConfiguration(
+    _ update: (inout TerminalTransparencyConfiguration) -> Void
+  ) {
+    let pendingOpacity = takePendingOpacity()
+    var requested = TerminalTransparencySettings.requestedSettings(defaults: defaults)
+    if let pendingOpacity {
+      requested.configuration.backgroundOpacity = pendingOpacity
+    }
+    update(&requested.configuration)
+    TerminalTransparencySettings.setRequestedSettings(
+      requested,
+      defaults: defaults,
+      notificationCenter: notificationCenter)
+  }
+
+  /// Named presets replace a pending slider value instead of first publishing
+  /// it, keeping the preset selection to one atomic notification.
+  func applyPreset(_ preset: TerminalTransparencyPreset) {
+    _ = takePendingOpacity()
+    TerminalTransparencySettings.applyPreset(
+      preset,
+      defaults: defaults,
+      notificationCenter: notificationCenter)
+  }
+
+  private func takePendingOpacity() -> Double? {
+    generation &+= 1
+    pendingWork?.cancel()
+    pendingWork = nil
+    let value = pendingOpacity
+    pendingOpacity = nil
+    return value
   }
 }

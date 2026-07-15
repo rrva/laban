@@ -1981,6 +1981,173 @@ TRANSLATIONS.update({
     },
 })
 
+# Terminal background sources, image management, and derived presets. This
+# table intentionally includes every supported locale directly so the newest
+# Appearance controls can never fall back based on language or input source.
+TRANSLATIONS.update({
+    "Remove Image": {
+        "zh-Hans": "移除图像", "zh-Hant": "移除影像", "ja": "画像を削除", "ko": "이미지 제거",
+        "fr": "Supprimer l’image", "es": "Eliminar imagen", "hi": "छवि हटाएँ", "ru": "Удалить изображение",
+        "de": "Bild entfernen", "pt-BR": "Remover imagem", "it": "Rimuovi immagine",
+    },
+    "Choose an exact background preset. Changing an individual background control shows Custom.": {
+        "zh-Hans": "选择精确的背景预设。更改单个背景控件后会显示“自定义”。", "zh-Hant": "選擇精確的背景預設。更改個別背景控制項後會顯示「自訂」。",
+        "ja": "正確な背景プリセットを選択します。個別の背景設定を変更すると「カスタム」と表示されます。", "ko": "정확한 배경 프리셋을 선택합니다. 개별 배경 설정을 변경하면 사용자 지정으로 표시됩니다.",
+        "fr": "Choisissez un préréglage d’arrière-plan exact. La modification d’un réglage affiche Personnalisé.", "es": "Elige un preajuste de fondo exacto. Al cambiar un control individual se muestra Personalizado.",
+        "hi": "सटीक पृष्ठभूमि प्रीसेट चुनें। किसी एक पृष्ठभूमि नियंत्रण को बदलने पर कस्टम दिखता है।", "ru": "Выберите точный пресет фона. После изменения отдельного параметра отображается «Пользовательский».",
+        "de": "Wählen Sie eine genaue Hintergrundvorgabe. Nach einer einzelnen Änderung wird „Benutzerdefiniert“ angezeigt.", "pt-BR": "Escolha uma predefinição exata de fundo. Alterar um controle individual mostra Personalizado.",
+        "it": "Scegli una configurazione sfondo esatta. Modificando un singolo controllo viene mostrato Personalizzato.",
+    },
+    "Choose direct transparency, a blurred system backdrop, or a managed local image behind the terminal.": {
+        "zh-Hans": "选择直接透明、系统模糊背景，或终端后方的托管本地图像。", "zh-Hant": "選擇直接透明、系統模糊背景，或終端機後方的受管理本機影像。",
+        "ja": "直接透過、ぼかしたシステム背景、またはターミナル背面の管理されたローカル画像を選択します。", "ko": "직접 투명도, 흐린 시스템 배경 또는 터미널 뒤의 관리되는 로컬 이미지를 선택합니다.",
+        "fr": "Choisissez la transparence directe, un arrière-plan système flouté ou une image locale gérée derrière le terminal.", "es": "Elige transparencia directa, un fondo del sistema desenfocado o una imagen local gestionada detrás del terminal.",
+        "hi": "सीधी पारदर्शिता, धुँधली सिस्टम पृष्ठभूमि या टर्मिनल के पीछे प्रबंधित स्थानीय छवि चुनें।", "ru": "Выберите прямую прозрачность, размытый системный фон или управляемое локальное изображение за терминалом.",
+        "de": "Wählen Sie direkte Transparenz, einen unscharfen Systemhintergrund oder ein verwaltetes lokales Bild hinter dem Terminal.", "pt-BR": "Escolha transparência direta, um fundo desfocado do sistema ou uma imagem local gerenciada atrás do terminal.",
+        "it": "Scegli la trasparenza diretta, uno sfondo di sistema sfocato o un’immagine locale gestita dietro il terminale.",
+    },
+    "Import a still image into Laban’s private background-image storage.": {
+        "zh-Hans": "将静态图像导入 Laban 的私有背景图像存储。", "zh-Hant": "將靜態影像匯入 Laban 的私人背景影像儲存空間。",
+        "ja": "静止画像を Laban のプライベートな背景画像ストレージに読み込みます。", "ko": "정지 이미지를 Laban의 비공개 배경 이미지 저장소로 가져옵니다.",
+        "fr": "Importez une image fixe dans le stockage privé d’images d’arrière-plan de Laban.", "es": "Importa una imagen fija al almacenamiento privado de fondos de Laban.",
+        "hi": "स्थिर छवि को Laban के निजी पृष्ठभूमि-छवि स्टोरेज में आयात करें।", "ru": "Импортируйте неподвижное изображение в закрытое хранилище фонов Laban.",
+        "de": "Importieren Sie ein Standbild in Labans privaten Hintergrundbildspeicher.", "pt-BR": "Importe uma imagem estática para o armazenamento privado de fundos do Laban.",
+        "it": "Importa un’immagine statica nell’archivio privato degli sfondi di Laban.",
+    },
+    "Delete the managed background image and select None.": {
+        "zh-Hans": "删除托管的背景图像并选择“无”。", "zh-Hant": "刪除受管理的背景影像並選擇「無」。",
+        "ja": "管理された背景画像を削除して「なし」を選択します。", "ko": "관리되는 배경 이미지를 삭제하고 없음을 선택합니다.",
+        "fr": "Supprimez l’image d’arrière-plan gérée et sélectionnez Aucun.", "es": "Elimina la imagen de fondo gestionada y selecciona Ninguno.",
+        "hi": "प्रबंधित पृष्ठभूमि छवि मिटाएँ और कोई नहीं चुनें।", "ru": "Удалите управляемое фоновое изображение и выберите «Нет».",
+        "de": "Löschen Sie das verwaltete Hintergrundbild und wählen Sie „Keines“.", "pt-BR": "Exclua a imagem de fundo gerenciada e selecione Nenhum.",
+        "it": "Elimina l’immagine di sfondo gestita e seleziona Nessuno.",
+    },
+    "Choose how the managed image fills the terminal area.": {
+        "zh-Hans": "选择托管图像如何填充终端区域。", "zh-Hant": "選擇受管理影像如何填滿終端機區域。",
+        "ja": "管理された画像をターミナル領域にどのように配置するか選択します。", "ko": "관리되는 이미지가 터미널 영역을 채우는 방식을 선택합니다.",
+        "fr": "Choisissez comment l’image gérée remplit la zone du terminal.", "es": "Elige cómo ocupa la imagen gestionada el área del terminal.",
+        "hi": "चुनें कि प्रबंधित छवि टर्मिनल क्षेत्र को कैसे भरे।", "ru": "Выберите, как управляемое изображение заполняет область терминала.",
+        "de": "Wählen Sie, wie das verwaltete Bild den Terminalbereich ausfüllt.", "pt-BR": "Escolha como a imagem gerenciada preenche a área do terminal.",
+        "it": "Scegli come l’immagine gestita riempie l’area del terminale.",
+    },
+    "Choose how much of the themed terminal background covers the selected source. The entire sidebar remains opaque; text, the cursor, and selections remain fully visible. 100% is fully opaque.": {
+        "zh-Hans": "选择主题终端背景覆盖所选来源的程度。整个侧边栏保持不透明；文本、光标和选择内容始终完全可见。100% 为完全不透明。", "zh-Hant": "選擇主題終端機背景覆蓋所選來源的程度。整個側邊欄保持不透明；文字、游標和所選內容始終完全可見。100% 為完全不透明。",
+        "ja": "テーマ付きターミナル背景が選択したソースを覆う割合を選びます。サイドバー全体は不透明のままで、テキスト、カーソル、選択範囲は完全に表示されます。100% は完全に不透明です。", "ko": "테마 터미널 배경이 선택한 소스를 덮는 정도를 선택합니다. 전체 사이드바는 불투명하게 유지되며 텍스트, 커서, 선택 영역은 완전히 보입니다. 100%는 완전 불투명입니다.",
+        "fr": "Choisissez la part de l’arrière-plan du terminal qui couvre la source sélectionnée. Toute la barre latérale reste opaque ; le texte, le curseur et les sélections restent entièrement visibles. 100 % est totalement opaque.", "es": "Elige cuánto cubre el fondo temático del terminal la fuente seleccionada. Toda la barra lateral permanece opaca; el texto, el cursor y las selecciones siguen totalmente visibles. 100 % es totalmente opaco.",
+        "hi": "चुनें कि थीम वाला टर्मिनल पृष्ठभूमि चयनित स्रोत को कितना ढके। पूरी साइडबार अपारदर्शी रहती है; पाठ, कर्सर और चयन पूरी तरह दिखते हैं। 100% पूरी तरह अपारदर्शी है।", "ru": "Выберите, насколько тематический фон терминала закрывает выбранный источник. Вся боковая панель остаётся непрозрачной; текст, курсор и выделения полностью видимы. 100% — полная непрозрачность.",
+        "de": "Wählen Sie, wie stark der Terminalhintergrund die ausgewählte Quelle überdeckt. Die gesamte Seitenleiste bleibt deckend; Text, Cursor und Auswahl bleiben vollständig sichtbar. 100 % ist vollständig deckend.", "pt-BR": "Escolha quanto o fundo temático do terminal cobre a fonte selecionada. Toda a barra lateral permanece opaca; texto, cursor e seleções continuam totalmente visíveis. 100% é totalmente opaco.",
+        "it": "Scegli quanto lo sfondo tematico del terminale copre la sorgente selezionata. L’intera barra laterale resta opaca; testo, cursore e selezioni rimangono pienamente visibili. 100% è completamente opaco.",
+    },
+    "Preset:": {
+        "zh-Hans": "预设：", "zh-Hant": "預設：", "ja": "プリセット：", "ko": "프리셋:",
+        "fr": "Préréglage :", "es": "Preajuste:", "hi": "प्रीसेट:", "ru": "Пресет:",
+        "de": "Vorgabe:", "pt-BR": "Predefinição:", "it": "Configurazione:",
+    },
+    "Background source:": {
+        "zh-Hans": "背景来源：", "zh-Hant": "背景來源：", "ja": "背景ソース：", "ko": "배경 소스:",
+        "fr": "Source d’arrière-plan :", "es": "Fuente de fondo:", "hi": "पृष्ठभूमि स्रोत:", "ru": "Источник фона:",
+        "de": "Hintergrundquelle:", "pt-BR": "Fonte do fundo:", "it": "Sorgente sfondo:",
+    },
+    "Image scaling:": {
+        "zh-Hans": "图像缩放：", "zh-Hant": "影像縮放：", "ja": "画像の拡大縮小：", "ko": "이미지 크기 조절:",
+        "fr": "Mise à l’échelle :", "es": "Escala de imagen:", "hi": "छवि स्केलिंग:", "ru": "Масштаб изображения:",
+        "de": "Bildskalierung:", "pt-BR": "Escala da imagem:", "it": "Ridimensionamento:",
+    },
+    "No image selected.": {
+        "zh-Hans": "未选择图像。", "zh-Hant": "未選擇影像。", "ja": "画像が選択されていません。", "ko": "선택한 이미지가 없습니다.",
+        "fr": "Aucune image sélectionnée.", "es": "No hay ninguna imagen seleccionada.", "hi": "कोई छवि चयनित नहीं है।", "ru": "Изображение не выбрано.",
+        "de": "Kein Bild ausgewählt.", "pt-BR": "Nenhuma imagem selecionada.", "it": "Nessuna immagine selezionata.",
+    },
+    "Image: %@": {
+        "zh-Hans": "图像：%@", "zh-Hant": "影像：%@", "ja": "画像：%@", "ko": "이미지: %@",
+        "fr": "Image d’arrière-plan : %@", "es": "Imagen: %@", "hi": "छवि: %@", "ru": "Изображение: %@",
+        "de": "Bild: %@", "pt-BR": "Imagem: %@", "it": "Immagine: %@",
+    },
+    "Image file is missing: %@": {
+        "zh-Hans": "图像文件缺失：%@", "zh-Hant": "影像檔案遺失：%@", "ja": "画像ファイルがありません：%@", "ko": "이미지 파일이 없음: %@",
+        "fr": "Fichier image introuvable : %@", "es": "Falta el archivo de imagen: %@", "hi": "छवि फ़ाइल गुम है: %@", "ru": "Файл изображения отсутствует: %@",
+        "de": "Bilddatei fehlt: %@", "pt-BR": "Arquivo de imagem ausente: %@", "it": "File immagine mancante: %@",
+    },
+    "Image could not be loaded: %@": {
+        "zh-Hans": "无法载入图像：%@", "zh-Hant": "無法載入影像：%@", "ja": "画像を読み込めませんでした：%@", "ko": "이미지를 불러올 수 없음: %@",
+        "fr": "Impossible de charger l’image : %@", "es": "No se pudo cargar la imagen: %@", "hi": "छवि लोड नहीं की जा सकी: %@", "ru": "Не удалось загрузить изображение: %@",
+        "de": "Bild konnte nicht geladen werden: %@", "pt-BR": "Não foi possível carregar a imagem: %@", "it": "Impossibile caricare l’immagine: %@",
+    },
+    "Choose Again…": {
+        "zh-Hans": "重新选择…", "zh-Hant": "重新選擇…", "ja": "選び直す…", "ko": "다시 선택…",
+        "fr": "Choisir à nouveau…", "es": "Elegir de nuevo…", "hi": "फिर से चुनें…", "ru": "Выбрать снова…",
+        "de": "Erneut wählen…", "pt-BR": "Escolher novamente…", "it": "Scegli di nuovo…",
+    },
+    "Couldn’t Import Background Image": {
+        "zh-Hans": "无法导入背景图像", "zh-Hant": "無法匯入背景影像", "ja": "背景画像を読み込めませんでした", "ko": "배경 이미지를 가져올 수 없음",
+        "fr": "Impossible d’importer l’image d’arrière-plan", "es": "No se pudo importar la imagen de fondo", "hi": "पृष्ठभूमि छवि आयात नहीं हुई", "ru": "Не удалось импортировать фоновое изображение",
+        "de": "Hintergrundbild konnte nicht importiert werden", "pt-BR": "Não foi possível importar a imagem de fundo", "it": "Impossibile importare l’immagine di sfondo",
+    },
+    "The selected file could not be imported as a background image. Choose a valid still image and try again.": {
+        "zh-Hans": "无法将所选文件导入为背景图像。请选择有效的静态图像并重试。", "zh-Hant": "無法將所選檔案匯入為背景影像。請選擇有效的靜態影像並再試一次。",
+        "ja": "選択したファイルを背景画像として読み込めませんでした。有効な静止画像を選んでもう一度お試しください。", "ko": "선택한 파일을 배경 이미지로 가져올 수 없습니다. 유효한 정지 이미지를 선택하고 다시 시도하십시오.",
+        "fr": "Le fichier sélectionné n’a pas pu être importé comme image d’arrière-plan. Choisissez une image fixe valide et réessayez.", "es": "No se pudo importar el archivo seleccionado como imagen de fondo. Elige una imagen fija válida e inténtalo de nuevo.",
+        "hi": "चयनित फ़ाइल को पृष्ठभूमि छवि के रूप में आयात नहीं किया जा सका। मान्य स्थिर छवि चुनकर फिर कोशिश करें।", "ru": "Не удалось импортировать выбранный файл как фон. Выберите допустимое неподвижное изображение и повторите попытку.",
+        "de": "Die ausgewählte Datei konnte nicht als Hintergrundbild importiert werden. Wählen Sie ein gültiges Standbild und versuchen Sie es erneut.", "pt-BR": "O arquivo selecionado não pôde ser importado como imagem de fundo. Escolha uma imagem estática válida e tente novamente.",
+        "it": "Impossibile importare il file selezionato come immagine di sfondo. Scegli un’immagine statica valida e riprova.",
+    },
+    "Choose a Background Image": {
+        "zh-Hans": "选择背景图像", "zh-Hant": "選擇背景影像", "ja": "背景画像を選択", "ko": "배경 이미지 선택",
+        "fr": "Choisir une image d’arrière-plan", "es": "Elegir una imagen de fondo", "hi": "पृष्ठभूमि छवि चुनें", "ru": "Выберите фоновое изображение",
+        "de": "Hintergrundbild auswählen", "pt-BR": "Escolher uma imagem de fundo", "it": "Scegli un’immagine di sfondo",
+    },
+    "Choose Image": {
+        "zh-Hans": "选择图像", "zh-Hant": "選擇影像", "ja": "画像を選択", "ko": "이미지 선택",
+        "fr": "Choisir l’image", "es": "Elegir imagen", "hi": "छवि चुनें", "ru": "Выбрать изображение",
+        "de": "Bild auswählen", "pt-BR": "Escolher imagem", "it": "Scegli immagine",
+    },
+    "Opaque": {
+        "zh-Hans": "不透明", "zh-Hant": "不透明", "ja": "不透明", "ko": "불투명",
+        "fr": "Opaque intégral", "es": "Opaco", "hi": "अपारदर्शी", "ru": "Непрозрачный",
+        "de": "Deckend", "pt-BR": "Opaco", "it": "Opaco",
+    },
+    "Frosted": {
+        "zh-Hans": "磨砂", "zh-Hant": "霧面", "ja": "すりガラス", "ko": "반투명 유리",
+        "fr": "Verre dépoli", "es": "Vidrio esmerilado", "hi": "धुँधला काँच", "ru": "Матовое стекло",
+        "de": "Milchglas", "pt-BR": "Vidro fosco", "it": "Vetro satinato",
+    },
+    "Custom": {
+        "zh-Hans": "自定义", "zh-Hant": "自訂", "ja": "カスタム", "ko": "사용자 지정",
+        "fr": "Personnalisé", "es": "Personalizado", "hi": "कस्टम", "ru": "Пользовательский",
+        "de": "Benutzerdefiniert", "pt-BR": "Personalizado", "it": "Personalizzato",
+    },
+    "None": {
+        "zh-Hans": "无背景源", "zh-Hant": "無背景來源", "ja": "ソースなし", "ko": "소스 없음",
+        "fr": "Aucune source", "es": "Sin fuente", "hi": "कोई स्रोत नहीं", "ru": "Без источника",
+        "de": "Keine Quelle", "pt-BR": "Sem fonte", "it": "Nessuna sorgente",
+    },
+    "System Blur": {
+        "zh-Hans": "系统模糊", "zh-Hant": "系統模糊", "ja": "システムぼかし", "ko": "시스템 흐림",
+        "fr": "Flou du système", "es": "Desenfoque del sistema", "hi": "सिस्टम धुँधलापन", "ru": "Системное размытие",
+        "de": "Systemunschärfe", "pt-BR": "Desfoque do sistema", "it": "Sfocatura di sistema",
+    },
+    "Image": {
+        "zh-Hans": "背景图像", "zh-Hant": "背景影像", "ja": "背景画像", "ko": "배경 이미지",
+        "fr": "Image d’arrière-plan", "es": "Imagen de fondo", "hi": "पृष्ठभूमि छवि", "ru": "Фоновое изображение",
+        "de": "Hintergrundbild", "pt-BR": "Imagem de fundo", "it": "Immagine di sfondo",
+    },
+    "Fill": {
+        "zh-Hans": "填充", "zh-Hant": "填滿", "ja": "塗りつぶし", "ko": "채우기",
+        "fr": "Remplir", "es": "Rellenar", "hi": "भरें", "ru": "Заполнить",
+        "de": "Ausfüllen", "pt-BR": "Preencher", "it": "Riempi",
+    },
+    "Fit": {
+        "zh-Hans": "适合", "zh-Hant": "符合", "ja": "全体表示", "ko": "맞추기",
+        "fr": "Ajuster", "es": "Ajustar", "hi": "समायोजित", "ru": "Вписать",
+        "de": "Einpassen", "pt-BR": "Ajustar", "it": "Adatta",
+    },
+    "Stretch": {
+        "zh-Hans": "拉伸", "zh-Hant": "延展", "ja": "引き伸ばし", "ko": "늘이기",
+        "fr": "Étirer", "es": "Estirar", "hi": "खींचें", "ru": "Растянуть",
+        "de": "Strecken", "pt-BR": "Esticar", "it": "Estendi",
+    },
+})
+
 
 def build_xcstrings() -> dict:
     strings: dict = {}
