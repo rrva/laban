@@ -338,8 +338,15 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     let sourceURL = context.externalURL.appendingPathComponent("active.png")
     try writeImage(makeImage(width: 2, height: 2, color: .red), to: sourceURL, type: .png)
     let result = try XCTUnwrap(try context.store.importImage(from: sourceURL))
-    let view = try makeView()
+    let (view, model) = try makeView()
+    let tabIdentity = model.tabs.map(\.id)
+    let sessionIdentity = model.tabs.map(\.sessionId)
     let window = NSWindow()
+    let backdropContainer = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
+    let backgroundHost = TerminalBackgroundEffectHost(frame: .zero)
+    backgroundHost.install(
+      in: backdropContainer,
+      terminalLeadingInset: SidebarLayout.defaultWidth)
     let coordinator = TerminalWindowTransparencyCoordinator(
       window: window,
       terminalView: view,
@@ -347,10 +354,48 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
       notificationCenter: context.notifications,
       reduceTransparency: false,
       snapshotBackgroundCapability: .supported,
-      backgroundImageStore: context.store)
+      backgroundImageStore: context.store,
+      backgroundEffectHost: backgroundHost)
 
     XCTAssertEqual(coordinator.status.backgroundImageAvailability, .available)
     XCTAssertEqual(coordinator.status.effective.backdropStyle, .image)
+    XCTAssertEqual(coordinator.status.backdropSubviewCount, 1)
+    XCTAssertEqual(coordinator.status.backdropSubviewKind, .image)
+    let imageView = try XCTUnwrap(backgroundHost.imageView)
+
+    TerminalTransparencySettings.setBackgroundImageScaling(
+      .stretch,
+      defaults: context.defaults,
+      notificationCenter: context.notifications)
+    XCTAssertTrue(backgroundHost.imageView === imageView)
+    XCTAssertEqual(imageView.scaling, .stretch)
+    XCTAssertEqual(imageView.configurationApplyCount, 2)
+
+    TerminalTransparencySettings.setBackgroundOpacity(
+      1,
+      defaults: context.defaults,
+      notificationCenter: context.notifications)
+    assertInactiveImage(coordinator: coordinator, host: backgroundHost)
+    TerminalTransparencySettings.setBackgroundOpacity(
+      0.7,
+      defaults: context.defaults,
+      notificationCenter: context.notifications)
+    assertActiveImage(coordinator: coordinator, host: backgroundHost)
+
+    coordinator.updateReduceTransparency(true)
+    assertInactiveImage(coordinator: coordinator, host: backgroundHost)
+    coordinator.updateReduceTransparency(false)
+    assertActiveImage(coordinator: coordinator, host: backgroundHost)
+
+    context.notifications.post(name: NSWindow.didEnterFullScreenNotification, object: window)
+    assertInactiveImage(coordinator: coordinator, host: backgroundHost)
+    context.notifications.post(name: NSWindow.didExitFullScreenNotification, object: window)
+    assertActiveImage(coordinator: coordinator, host: backgroundHost)
+
+    coordinator.updateSnapshotBackgroundCapability(.legacy)
+    assertInactiveImage(coordinator: coordinator, host: backgroundHost)
+    coordinator.updateSnapshotBackgroundCapability(.supported)
+    assertActiveImage(coordinator: coordinator, host: backgroundHost)
 
     let managedURL = context.store.directoryURL.appendingPathComponent(
       result.managedImage.identifier)
@@ -361,6 +406,12 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     XCTAssertEqual(
       coordinator.status.effective.forceOpaqueReason,
       .backgroundImageUnavailable)
+    assertInactiveImage(coordinator: coordinator, host: backgroundHost)
+
+    _ = try context.store.importImage(from: sourceURL)
+    assertActiveImage(coordinator: coordinator, host: backgroundHost)
+    XCTAssertEqual(model.tabs.map(\.id), tabIdentity)
+    XCTAssertEqual(model.tabs.map(\.sessionId), sessionIdentity)
   }
 
   private struct Context {
@@ -470,7 +521,34 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     return (bytes[0], bytes[1], bytes[2], bytes[3])
   }
 
-  private func makeView() throws -> TerminalBitmapView {
+  private func assertActiveImage(
+    coordinator: TerminalWindowTransparencyCoordinator,
+    host: TerminalBackgroundEffectHost,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    XCTAssertEqual(coordinator.status.effective.backdropStyle, .image, file: file, line: line)
+    XCTAssertNil(coordinator.status.effective.forceOpaqueReason, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewCount, 1, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewKind, .image, file: file, line: line)
+    XCTAssertEqual(host.backdropSubviewCount, 1, file: file, line: line)
+    XCTAssertEqual(host.backdropSubviewKind, .image, file: file, line: line)
+  }
+
+  private func assertInactiveImage(
+    coordinator: TerminalWindowTransparencyCoordinator,
+    host: TerminalBackgroundEffectHost,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    XCTAssertEqual(coordinator.status.effective.backdropStyle, .none, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewCount, 0, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewKind, .none, file: file, line: line)
+    XCTAssertEqual(host.backdropSubviewCount, 0, file: file, line: line)
+    XCTAssertEqual(host.backdropSubviewKind, .none, file: file, line: line)
+  }
+
+  private func makeView() throws -> (TerminalBitmapView, AppModel) {
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 20
@@ -484,6 +562,6 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
       cellWidth: Int(fontAtlas.cellSize.width),
       cellHeight: Int(fontAtlas.cellSize.height))
     view.frame = NSRect(x: 0, y: 0, width: 640, height: 360)
-    return view
+    return (view, model)
   }
 }

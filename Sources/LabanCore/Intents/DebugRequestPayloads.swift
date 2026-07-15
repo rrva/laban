@@ -281,6 +281,7 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
   public var configuredRenderer: String
   public var effectiveRenderer: String
   public var backdropSubviewCount: Int
+  public var backdropSubviewKind: String
   public var systemReduceTransparency: Bool
   public var reduceTransparencyOverride: Bool?
   public var effectiveReduceTransparency: Bool
@@ -307,6 +308,7 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     configuredRenderer: String,
     effectiveRenderer: String,
     backdropSubviewCount: Int,
+    backdropSubviewKind: String,
     systemReduceTransparency: Bool,
     reduceTransparencyOverride: Bool?,
     effectiveReduceTransparency: Bool,
@@ -332,6 +334,7 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     self.configuredRenderer = configuredRenderer
     self.effectiveRenderer = effectiveRenderer
     self.backdropSubviewCount = backdropSubviewCount
+    self.backdropSubviewKind = backdropSubviewKind
     self.systemReduceTransparency = systemReduceTransparency
     self.reduceTransparencyOverride = reduceTransparencyOverride
     self.effectiveReduceTransparency = effectiveReduceTransparency
@@ -380,6 +383,9 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
         "configuredRenderer": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
         "effectiveRenderer": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
         "backdropSubviewCount": .integer(min: 0, max: 1),
+        "backdropSubviewKind": .string(
+          enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
+          pattern: nil),
         "systemReduceTransparency": .boolean,
         "reduceTransparencyOverride": .optional(.boolean),
         "effectiveReduceTransparency": .boolean,
@@ -396,6 +402,7 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
         "applyToExplicitCellBackgrounds", "surfaceOpaque",
         "effectiveGlyphAntialiasing", "snapshotExplicitBackgroundCapability",
         "configuredRenderer", "effectiveRenderer", "backdropSubviewCount",
+        "backdropSubviewKind",
         "systemReduceTransparency", "effectiveReduceTransparency", "nativeFullscreen",
         "accessibilityRefreshCount", "effectiveTransparencyApplyCount",
         "transparencyRenderWakeCount", "rendererPresentCount",

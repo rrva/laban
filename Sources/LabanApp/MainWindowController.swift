@@ -80,6 +80,7 @@ final class MainWindowController: NSWindowController {
       configuredRenderer: rendererStatus.configuredRenderer,
       effectiveRenderer: rendererStatus.effectiveRenderer,
       backdropSubviewCount: status.backdropSubviewCount,
+      backdropSubviewKind: status.backdropSubviewKind.rawValue,
       systemReduceTransparency:
         NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
       reduceTransparencyOverride: debugReduceTransparencyOverride,

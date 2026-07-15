@@ -33,6 +33,7 @@ extension HeadlessDebugRuntime {
       configuredRenderer: status.configuredRenderer,
       effectiveRenderer: status.effectiveRenderer,
       backdropSubviewCount: 0,
+      backdropSubviewKind: TerminalBackdropStyle.none.rawValue,
       systemReduceTransparency: false,
       reduceTransparencyOverride: reduceTransparencyOverride,
       effectiveReduceTransparency: accessibilityDisplayFlags.reduceTransparency,

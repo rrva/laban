@@ -356,6 +356,7 @@ final class TerminalWindowTransparencyCoordinatorTests: XCTestCase {
       coordinator.status.effective.backdropStyle, .systemBlur, file: file, line: line)
     XCTAssertNil(coordinator.status.effective.forceOpaqueReason, file: file, line: line)
     XCTAssertEqual(coordinator.status.backdropSubviewCount, 1, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewKind, .systemBlur, file: file, line: line)
     XCTAssertEqual(host.backdropSubviewCount, 1, file: file, line: line)
     XCTAssertEqual(host.subviews.count, 1, file: file, line: line)
   }
@@ -371,6 +372,7 @@ final class TerminalWindowTransparencyCoordinatorTests: XCTestCase {
     XCTAssertEqual(
       coordinator.status.effective.forceOpaqueReason, forceOpaqueReason, file: file, line: line)
     XCTAssertEqual(coordinator.status.backdropSubviewCount, 0, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewKind, .none, file: file, line: line)
     XCTAssertEqual(host.backdropSubviewCount, 0, file: file, line: line)
     XCTAssertTrue(host.subviews.isEmpty, file: file, line: line)
   }

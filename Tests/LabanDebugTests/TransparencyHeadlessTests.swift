@@ -15,6 +15,7 @@ final class TransparencyHeadlessTests: XCTestCase {
     XCTAssertEqual(state.effectiveBackdropStyle, "none")
     XCTAssertEqual(state.snapshotExplicitBackgroundCapability, "inProcess")
     XCTAssertEqual(state.backdropSubviewCount, 0)
+    XCTAssertEqual(state.backdropSubviewKind, "none")
 
     let (terminalAlpha, sidebarAlpha) = runtime.withRuntimeLock {
       let terminal = runtime.lastFrameCommands.compactMap { command -> UInt8? in

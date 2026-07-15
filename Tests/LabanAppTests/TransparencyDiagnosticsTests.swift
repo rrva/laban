@@ -109,6 +109,7 @@ final class TransparencyDiagnosticsTests: XCTestCase {
       configuredRenderer: "slugGlyph",
       effectiveRenderer: "slugGlyph",
       backdropSubviewCount: 0,
+      backdropSubviewKind: TerminalBackdropStyle.none.rawValue,
       systemReduceTransparency: false,
       reduceTransparencyOverride: nil,
       effectiveReduceTransparency: false,

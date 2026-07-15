@@ -13,6 +13,7 @@ struct TerminalWindowTransparencyStatus: Equatable, Sendable {
   var nativeFullscreen: Bool
   var backgroundImageAvailability: TerminalBackgroundImageAvailability
   var backdropSubviewCount: Int
+  var backdropSubviewKind: TerminalBackdropStyle
 }
 
 struct TerminalTransparencyDiagnostics: Equatable, Sendable {
@@ -43,6 +44,7 @@ final class TerminalWindowTransparencyCoordinator {
   private var reduceTransparency: Bool
   private var nativeFullscreen: Bool
   private var backgroundImageAvailability: TerminalBackgroundImageAvailability
+  private var backgroundImageAsset: TerminalResolvedBackgroundImage?
   private var snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
 
   init(
@@ -67,13 +69,14 @@ final class TerminalWindowTransparencyCoordinator {
     self.reduceTransparency = reduceTransparency
     self.nativeFullscreen = window.styleMask.contains(.fullScreen)
     if let backgroundImageStore {
-      self.backgroundImageAvailability =
-        backgroundImageStore.resolveManagedImage(
-          requestedSettings.managedBackgroundImage
-        ).availability
+      let resolution = backgroundImageStore.resolveManagedImage(
+        requestedSettings.managedBackgroundImage)
+      self.backgroundImageAvailability = resolution.availability
+      self.backgroundImageAsset = resolution.asset
       try? backgroundImageStore.cleanupOrphans(keeping: requestedSettings.managedBackgroundImage)
     } else {
       self.backgroundImageAvailability = backgroundImageAvailability
+      self.backgroundImageAsset = nil
     }
     self.snapshotBackgroundCapability = snapshotBackgroundCapability
     self.effective = TerminalTransparencyPolicy.resolve(
@@ -104,7 +107,8 @@ final class TerminalWindowTransparencyCoordinator {
       reduceTransparency: reduceTransparency,
       nativeFullscreen: nativeFullscreen,
       backgroundImageAvailability: backgroundImageAvailability,
-      backdropSubviewCount: backgroundEffectHost?.backdropSubviewCount ?? 0)
+      backdropSubviewCount: backgroundEffectHost?.backdropSubviewCount ?? 0,
+      backdropSubviewKind: backgroundEffectHost?.backdropSubviewKind ?? .none)
   }
 
   /// Cached accessibility input from TerminalBitmapView's sole workspace
@@ -134,7 +138,11 @@ final class TerminalWindowTransparencyCoordinator {
     _ availability: TerminalBackgroundImageAvailability,
     wake: Bool = true
   ) {
-    guard backgroundImageAvailability != availability else { return }
+    let removedAsset = availability != .available && backgroundImageAsset != nil
+    if availability != .available {
+      backgroundImageAsset = nil
+    }
+    guard backgroundImageAvailability != availability || removedAsset else { return }
     backgroundImageAvailability = availability
     resolveAndApply(wake: wake)
   }
@@ -177,9 +185,10 @@ final class TerminalWindowTransparencyCoordinator {
           let managedImage = TerminalTransparencySettings.requestedSettings(
             defaults: self.defaults
           ).managedBackgroundImage
-          let availability = backgroundImageStore.resolveManagedImage(managedImage).availability
-          guard availability != self.backgroundImageAvailability else { return }
-          self.backgroundImageAvailability = availability
+          let resolution = backgroundImageStore.resolveManagedImage(managedImage)
+          guard self.backgroundImageResolutionChanged(resolution) else { return }
+          self.backgroundImageAvailability = resolution.availability
+          self.backgroundImageAsset = resolution.asset
           self.resolveAndApply(wake: true)
         }
       })
@@ -216,10 +225,26 @@ final class TerminalWindowTransparencyCoordinator {
     cleanupOrphans: Bool
   ) {
     guard let backgroundImageStore else { return }
-    backgroundImageAvailability =
-      backgroundImageStore.resolveManagedImage(managedImage).availability
+    let resolution = backgroundImageStore.resolveManagedImage(managedImage)
+    backgroundImageAvailability = resolution.availability
+    backgroundImageAsset = resolution.asset
     if cleanupOrphans {
       try? backgroundImageStore.cleanupOrphans(keeping: managedImage)
+    }
+  }
+
+  private func backgroundImageResolutionChanged(
+    _ resolution: TerminalBackgroundImageResolution
+  ) -> Bool {
+    guard resolution.availability == backgroundImageAvailability else { return true }
+    switch (resolution.asset, backgroundImageAsset) {
+    case (nil, nil):
+      return false
+    case (let next?, let current?):
+      return next.managedImage.identifier != current.managedImage.identifier
+        || next.image !== current.image
+    case (.some, nil), (nil, .some):
+      return true
     }
   }
 
@@ -235,6 +260,7 @@ final class TerminalWindowTransparencyCoordinator {
     guard resolved != effective else {
       // Requested state is still significant to read-only status even when a
       // temporary force-opaque policy leaves effective rendering unchanged.
+      applyResolvedBackdrop()
       return
     }
     effective = resolved
@@ -247,11 +273,18 @@ final class TerminalWindowTransparencyCoordinator {
     // of the themed tint in both opaque and translucent modes.
     window.backgroundColor = .clear
     window.isOpaque = effective.isSurfaceOpaque
-    backgroundEffectHost?.apply(effective.backdropStyle)
+    applyResolvedBackdrop()
     terminalView.applyTransparency(
       requested: requested,
       effective: effective,
       wake: wake,
       force: force)
+  }
+
+  private func applyResolvedBackdrop() {
+    backgroundEffectHost?.apply(
+      effective.backdropStyle,
+      imageAsset: effective.backdropStyle == .image ? backgroundImageAsset : nil,
+      imageScaling: requested.backgroundImageScaling)
   }
 }
