@@ -349,6 +349,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var pixelWidth: Int
   private var pixelHeight: Int
   private var scale: CGFloat
+  public private(set) var surfaceTransparency: RendererSurfaceTransparency
   public private(set) var gestureZoom: CGFloat = 1
   public private(set) var gestureZoomAnchor: CGPoint = .zero
   public private(set) var subpixelLayout: VectorSubpixelLayout = .grayscale
@@ -405,6 +406,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     pixelWidth: Int = 1,
     pixelHeight: Int = 1,
     scale: CGFloat = 1,
+    surfaceTransparency: RendererSurfaceTransparency = RendererSurfaceTransparency(
+      isOpaque: true),
     prebuiltRasterAtlas: MetalGlyphAtlas? = nil
   ) {
     guard let device = MTLCreateSystemDefaultDevice(),
@@ -445,7 +448,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     layer.framebufferOnly = false
     layer.contentsScale = max(scale, 1)
     layer.drawableSize = CGSize(width: max(1, pixelWidth), height: max(1, pixelHeight))
-    layer.isOpaque = true
+    layer.isOpaque = surfaceTransparency.isOpaque
     layer.maximumDrawableCount = 3
     layer.allowsNextDrawableTimeout = true
     layer.contentsGravity = .topLeft
@@ -572,6 +575,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     self.pixelWidth = max(1, pixelWidth)
     self.pixelHeight = max(1, pixelHeight)
     self.scale = max(scale, 1)
+    self.surfaceTransparency = surfaceTransparency
     self.colorGlyphAtlas = Self.makeColorGlyphAtlas(
       device: device,
       fontAtlas: fontAtlas,
@@ -631,6 +635,27 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     if #available(macOS 14.0, *) {
       presentDisplayLink?.setRunning(running)
     }
+  }
+
+  public func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency) {
+    guard transparency != surfaceTransparency else { return }
+    // Retire the publish handler before removing the current target; otherwise
+    // an old-policy frame could be republished after this method returns.
+    lastCommandBuffer?.waitUntilCompleted()
+    surfaceTransparency = transparency
+    layer.isOpaque = transparency.isOpaque
+    targetTexture = nil
+    targetRing.removeAll(keepingCapacity: true)
+    targetRingCursor = 0
+    subpixelCoverageAccum = nil
+    subpixelColorAccum = nil
+    presentTargetLock.lock()
+    latestPresentedTarget = nil
+    presentTargetLock.unlock()
+    // A rebuilt target ring is initialized through the existing per-slot
+    // force-full path on the next render.
+    slotDamageAccumulators.removeAll(keepingCapacity: true)
+    slotNeedsForceFull.removeAll(keepingCapacity: true)
   }
 
   public func presentDisplayLinkStats(reset: Bool) -> [String: Double]? {
@@ -1453,12 +1478,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     damageBands: DirtyYRangeSet?
   ) {
     let preeditMaskRects = commands.compactMap { command -> CGRect? in
-      if case .rect(let rect, _, .preedit) = command { return rect }
+      if case .rect(let rect, _, .preedit, _) = command { return rect }
       return nil
     }
     for command in commands {
       switch command {
-      case .rect(let rect, let color, _),
+      case .rect(let rect, let color, _, _),
         .cursor(let rect, let color),
         .selection(let rect, let color),
         .findMatch(let rect, let color),

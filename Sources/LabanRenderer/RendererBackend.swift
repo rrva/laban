@@ -121,6 +121,12 @@ public protocol DisplayLinkPresentingRenderer: AnyObject {
 /// - `MetalRenderer` self-presents into a `CAMetalLayer` it owns. The host
 ///   view installs `presentationLayer` and never paints in `draw(_:)`.
 public protocol RendererBackend: AnyObject {
+  /// Applies whether the backend's presentation surface may contain alpha.
+  /// Implementations must invalidate retained presentation content when this
+  /// value changes so the next presented frame is fully initialized under the
+  /// new policy. Reapplying an equal value is a no-op.
+  func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency)
+
   /// Render one frame from the given command list. The backend either
   /// snapshots the result for later blit (software) or presents it directly
   /// to its layer (Metal). The `damage` hint lets backends with a persistent

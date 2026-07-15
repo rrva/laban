@@ -142,6 +142,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   private var pixelWidth: Int
   private var pixelHeight: Int
   private var scale: CGFloat
+  public private(set) var surfaceTransparency: RendererSurfaceTransparency
   private var targetTexture: MTLTexture?
   private var atlasTexture: MTLTexture?
   private var accumTexture: MTLTexture?
@@ -260,6 +261,8 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     pixelWidth: Int = 1,
     pixelHeight: Int = 1,
     scale: CGFloat = 1,
+    surfaceTransparency: RendererSurfaceTransparency = RendererSurfaceTransparency(
+      isOpaque: true),
     prebuiltRasterAtlas: MetalGlyphAtlas? = nil,
     prebuiltSidebarRasterAtlas: MetalGlyphAtlas? = nil
   ) {
@@ -278,7 +281,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     layer.framebufferOnly = false
     layer.contentsScale = max(scale, 1)
     layer.drawableSize = CGSize(width: max(1, pixelWidth), height: max(1, pixelHeight))
-    layer.isOpaque = true
+    layer.isOpaque = surfaceTransparency.isOpaque
     layer.maximumDrawableCount = 3
     layer.allowsNextDrawableTimeout = true
     layer.contentsGravity = .topLeft
@@ -332,6 +335,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     self.pixelWidth = max(1, pixelWidth)
     self.pixelHeight = max(1, pixelHeight)
     self.scale = max(scale, 1)
+    self.surfaceTransparency = surfaceTransparency
     self.prewarmedRasterAtlas = prebuiltRasterAtlas
     self.prewarmedSidebarRasterAtlas = prebuiltSidebarRasterAtlas
     let sidebarSource = sidebarFontAtlas ?? fontAtlas
@@ -411,6 +415,22 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     if #available(macOS 14.0, *) {
       presentDisplayLink?.setRunning(running)
     }
+  }
+
+  public func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency) {
+    guard transparency != surfaceTransparency else { return }
+    // The completion handler publishes retained targets to the present link;
+    // retire it before clearing publication state so an old-policy target
+    // cannot become visible after this transition returns.
+    lastCommandBuffer?.waitUntilCompleted()
+    surfaceTransparency = transparency
+    layer.isOpaque = transparency.isOpaque
+    targetTexture = nil
+    targetRing.removeAll(keepingCapacity: true)
+    targetRingCursor = 0
+    presentTargetLock.lock()
+    latestPresentedTarget = nil
+    presentTargetLock.unlock()
   }
 
   /// Present-side cadence stats from the display-link path (the actual
@@ -1172,7 +1192,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     var colorGlyphs: [VectorGlyphInstance] = []
     var currentClip: CGRect? = nil
     let preeditMaskRects = commands.compactMap { command -> CGRect? in
-      if case .rect(let rect, _, .preedit) = command { return rect }
+      if case .rect(let rect, _, .preedit, _) = command { return rect }
       return nil
     }
 
@@ -1245,7 +1265,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         flush()
         currentClip = rect
 
-      case .rect(let rect, let color, _),
+      case .rect(let rect, let color, _, _),
         .cursor(let rect, let color),
         .selection(let rect, let color),
         .findMatch(let rect, let color),

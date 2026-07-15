@@ -472,8 +472,12 @@ final class GPUCellParityTests: XCTestCase {
   private func shiftCommandsX(_ commands: [FrameCommand], by dx: CGFloat) -> [FrameCommand] {
     commands.map { command in
       switch command {
-      case .rect(let rect, let color, let source):
-        return .rect(rect.offsetBy(dx: dx, dy: 0), color: color, source: source)
+      case .rect(let rect, let color, let source, let compositing):
+        return .rect(
+          rect.offsetBy(dx: dx, dy: 0),
+          color: color,
+          source: source,
+          compositing: compositing)
       case .glyphRun(
         let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link,
         let displayCellCount):

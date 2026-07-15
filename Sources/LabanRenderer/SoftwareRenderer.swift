@@ -61,7 +61,7 @@ public final class SoftwareRenderer {
     ctx.scaleBy(x: surface.scale, y: surface.scale)
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let colorValue, _):
+      case .rect(let rect, let colorValue, _, _):
         ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 

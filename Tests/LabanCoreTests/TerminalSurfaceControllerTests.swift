@@ -58,8 +58,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       String(format: "%.4f,%.4f", point.x, point.y)
     }
     switch command {
-    case .rect(let rect, let color, let source):
-      return "rect|\(rectKey(rect))|\(color)|\(source.rawValue)"
+    case .rect(let rect, let color, let source, let compositing):
+      return "rect|\(rectKey(rect))|\(color)|\(source.rawValue)|\(compositing.rawValue)"
     case .glyphRun(
       let origin, let text, let foreground, let background, let attributes, let source,
       let underlineStyle, let underlineColor, let hyperlink, _):
@@ -128,7 +128,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertEqual(frame.rows, 4)
     XCTAssertEqual(frame.cols, 20)
     let hasSidebarRect = frame.commands.contains { command in
-      if case .rect(_, _, let source) = command { return source == .sidebar }
+      if case .rect(_, _, let source, _) = command { return source == .sidebar }
       return false
     }
     XCTAssertTrue(hasSidebarRect)
@@ -142,6 +142,82 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       return nil
     }.joined()
     XCTAssertTrue(terminalText.contains("hello"), "got terminal text \(terminalText)")
+  }
+
+  func testFirstFrameCarriesBackgroundCompositingOptionsToTerminalAndSidebar() throws {
+    var size = LabanTerminalSize()
+    size.rows = 2
+    size.cols = 10
+    let model = try AppModel(initialSize: size)
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let options = TerminalBackgroundCompositingOptions(
+      opacity: 91,
+      applyToExplicitCellBackgrounds: false)
+
+    let frame = try XCTUnwrap(controller.makeFrame(
+      TerminalSurfaceFrameRequest(
+        frame: 1,
+        viewportWidth: 360,
+        viewportHeight: 64,
+        backgroundCompositingOptions: options,
+        snapshotBackgroundCapability: .supported,
+        includeTerminalAreaBackground: true,
+        requireActiveSnapshot: true,
+        surfaceWidth: 360,
+        surfaceHeight: 64,
+        surfaceScale: 1)))
+
+    let baseRects = frame.commands.compactMap { command -> (FrameSource, UInt32)? in
+      guard case .rect(_, let color, let source, .replace) = command else { return nil }
+      return (source, color)
+    }
+    XCTAssertTrue(baseRects.contains { $0.0 == .sidebar && ($0.1 & 0xFF) == 91 })
+    XCTAssertTrue(baseRects.contains { $0.0 == .terminal && ($0.1 & 0xFF) == 91 })
+  }
+
+  func testSidebarMemoRebuildsOnFirstCompositingChange() throws {
+    var size = LabanTerminalSize()
+    size.rows = 2
+    size.cols = 10
+    let model = try AppModel(initialSize: size)
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let activeTabId = try XCTUnwrap(model.activeTab?.id)
+
+    _ = controller.sidebarCommands(
+      activeTabId: activeTabId,
+      viewportHeight: 100,
+      backgroundCompositingOptions: .opaque)
+    let opaqueBuildCount = controller.sidebarRebuildCountForTesting
+    let translucent = TerminalBackgroundCompositingOptions(
+      opacity: 123,
+      applyToExplicitCellBackgrounds: false)
+    let changed = controller.sidebarCommands(
+      activeTabId: activeTabId,
+      viewportHeight: 100,
+      backgroundCompositingOptions: translucent)
+
+    XCTAssertEqual(controller.sidebarRebuildCountForTesting, opaqueBuildCount + 1)
+    guard case .rect(_, let color, .sidebar, .replace)? = changed.first else {
+      return XCTFail("expected replace-composited sidebar base")
+    }
+    XCTAssertEqual(color & 0xFF, 123)
+
+    _ = controller.sidebarCommands(
+      activeTabId: activeTabId,
+      viewportHeight: 100,
+      backgroundCompositingOptions: translucent)
+    XCTAssertEqual(
+      controller.sidebarRebuildCountForTesting,
+      opaqueBuildCount + 1,
+      "equal compositing options should hit the sidebar memo")
   }
 
   func testSidebarCommandsMemoizesAndInvalidates() throws {
@@ -563,7 +639,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertFalse(payload.proceduralCells.isEmpty)
     let terminalCommands = frame.commands.filter { command in
       switch command {
-      case .rect(_, _, let source),
+      case .rect(_, _, let source, _),
         .glyphRun(_, _, _, _, _, let source, _, _, _, _):
         return source == .terminal
       default:
@@ -861,7 +937,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       })
     let terminalCommands = frame.commands.filter { command in
       switch command {
-      case .rect(_, _, let source),
+      case .rect(_, _, let source, _),
         .glyphRun(_, _, _, _, _, let source, _, _, _, _):
         return source == .terminal
       default:

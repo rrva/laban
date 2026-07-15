@@ -40,7 +40,7 @@ final class FrameProducerRemoteDefaultBackgroundTests: XCTestCase {
 
   private func firstTerminalRectColor(_ cmds: [FrameCommand]) -> UInt32? {
     for cmd in cmds {
-      if case .rect(_, let color, let src) = cmd, src == .terminal {
+      if case .rect(_, let color, let src, _) = cmd, src == .terminal {
         return color
       }
     }

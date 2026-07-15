@@ -13,7 +13,7 @@ struct DebugFrameCommandSerializer {
   ) -> FrameCommandResponse {
     let id = "cmd-\(index)"
     switch command {
-    case .rect(let rect, let color, let source):
+    case .rect(let rect, let color, let source, _):
       return FrameCommandResponse(
         id: id, index: index, kind: "rect", source: source.rawValue,
         rect: Self.rectResponse(rect), color: Self.rgbaArray(color))
@@ -68,7 +68,7 @@ struct DebugFrameCommandSerializer {
   func traceCommand(_ command: FrameCommand, index: Int) -> TraceCommand {
     let id = "cmd-\(index)"
     switch command {
-    case .rect(let rect, _, let source):
+    case .rect(let rect, _, let source, _):
       return TraceCommand(
         id: id, index: index, kind: "rect",
         source: source.rawValue, rect: Self.rectResponse(rect))

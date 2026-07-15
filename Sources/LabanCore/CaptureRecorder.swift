@@ -641,6 +641,10 @@ public struct CapturedFrameCommand: Codable, Equatable, Sendable {
   public var underlineColor: UInt32?
   public var hyperlink: String?
   public var displayCellCount: Int?
+  /// Optional for backwards compatibility with captures written before
+  /// renderer-neutral rectangle compositing was recorded. Missing means the
+  /// historical source-over behavior.
+  public var compositing: UInt8? = nil
 }
 
 public struct CapturedRect: Codable, Equatable, Sendable {
@@ -671,10 +675,11 @@ public enum FrameCommandCaptureCodec {
   public static func serialized(_ commands: [FrameCommand]) -> [CapturedFrameCommand] {
     commands.enumerated().map { index, command in
       switch command {
-      case .rect(let rect, let color, let source):
+      case .rect(let rect, let color, let source, let compositing):
         return CapturedFrameCommand(
           index: index, kind: "rect", source: source.rawValue,
-          rect: CapturedRect(rect), color: color)
+          rect: CapturedRect(rect), color: color,
+          compositing: compositing == .sourceOver ? nil : compositing.rawValue)
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
         let underlineStyle, let underlineColor, let hyperlink, let displayCellCount
@@ -722,7 +727,12 @@ public enum FrameCommandCaptureCodec {
       switch item.kind {
       case "rect":
         guard let rect = item.rect, let color = item.color else { return nil }
-        return .rect(rect.cgRect, color: color, source: source)
+        return .rect(
+          rect.cgRect,
+          color: color,
+          source: source,
+          compositing: item.compositing.flatMap(FrameCompositingMode.init(rawValue:))
+            ?? .sourceOver)
       case "glyphRun":
         guard let rect = item.rect, let text = item.text,
           let foreground = item.foreground, let background = item.background

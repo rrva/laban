@@ -424,6 +424,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   private var presentationTargetRing: [MTLTexture] = []
   private var presentationTargetRingCursor = 0
   private static let presentationTargetRingDepth = 3
+  public private(set) var surfaceTransparency: RendererSurfaceTransparency
   private var targetNeedsFullRedraw: Bool = true
   private var lastRenderedThemeRevision: UInt64 = Theme.revision
   /// Set by the command-fed GPU-cell build when a partial update arrives after
@@ -687,7 +688,9 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     sidebarFontAtlas: FontAtlas? = nil,
     scale: CGFloat = 1,
     glyphAtlasTextureSize: Int = 2048,
-    rendererMode: RendererMode = .classic
+    rendererMode: RendererMode = .classic,
+    surfaceTransparency: RendererSurfaceTransparency = RendererSurfaceTransparency(
+      isOpaque: true)
   ) {
     guard let device = MTLCreateSystemDefaultDevice() else { return nil }
     guard let queue = device.makeCommandQueue() else { return nil }
@@ -717,7 +720,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     layer.pixelFormat = .bgra8Unorm
     layer.framebufferOnly = false  // need readable color for capture readback
     layer.contentsScale = scale
-    layer.isOpaque = true
+    layer.isOpaque = surfaceTransparency.isOpaque
     layer.maximumDrawableCount = 3
     layer.allowsNextDrawableTimeout = true
     // Keep native-size Metal drawables pinned to the window's top-left
@@ -848,6 +851,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarAtlas
     self.configuredRendererMode = rendererMode.isAvailableOnCurrentOS ? rendererMode : .classic
+    self.surfaceTransparency = surfaceTransparency
     self.solidPipeline = solidPipeline
     self.glyphPipeline = glyphPipeline
     self.colorGlyphPipeline = colorGlyphPipeline
@@ -902,6 +906,19 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     if #available(macOS 14.0, *) {
       presentDisplayLink?.setRunning(running)
     }
+  }
+
+  public func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency) {
+    guard transparency != surfaceTransparency else { return }
+    // Do not allow a completion handler from the old policy to republish a
+    // retained presentation target after the transition invalidates it.
+    lastCmdBuf?.waitUntilCompleted()
+    surfaceTransparency = transparency
+    layer.isOpaque = transparency.isOpaque
+    readback.invalidate()
+    targetTexture = nil
+    clearPresentationTargets()
+    targetNeedsFullRedraw = true
   }
 
   public func presentDisplayLinkStats(reset: Bool) -> [String: Double]? {
@@ -1668,12 +1685,12 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   /// first rect's colour, then to black.
   static func fullRedrawClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
     var rgba: UInt32?
-    for case .rect(_, let color, let source) in commands where source == .terminal {
+    for case .rect(_, let color, let source, _) in commands where source == .terminal {
       rgba = color
       break
     }
     if rgba == nil {
-      for case .rect(_, let color, _) in commands {
+      for case .rect(_, let color, _, _) in commands {
         rgba = color
         break
       }
@@ -2044,7 +2061,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   private static func sidebarStripWidthPx(commands: [FrameCommand], scale: CGFloat) -> Int {
     var maxX: CGFloat = 0
     for cmd in commands {
-      if case .rect(let rect, _, .sidebar) = cmd {
+      if case .rect(let rect, _, .sidebar, _) = cmd {
         maxX = max(maxX, rect.maxX)
       }
     }
@@ -2155,7 +2172,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let color, .sidebar):
+      case .rect(let rect, let color, .sidebar, _):
         appendSolid(rect: rect, color: color)
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, .sidebar,
@@ -2335,7 +2352,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, _, let source) where source == .terminal:
+      case .rect(let rect, _, let source, _) where source == .terminal:
         include(rect)
       case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _)
       where source == .terminal:
@@ -2615,7 +2632,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       // preedit pass below — AFTER the payload's own cell backgrounds — so it
       // covers an app-rendered caret under the composition instead of being
       // painted over by those backgrounds.
-      guard case .rect(let rect, let color, let source) = cmd, source != .preedit
+      guard case .rect(let rect, let color, let source, _) = cmd, source != .preedit
       else { continue }
       // On a partial payload frame the per-dirty-row background below repaints
       // exactly the dirty rows; the full-viewport terminal-area background rect
@@ -3020,7 +3037,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     // being clobbered by them. Replay every producer mask here, including a
     // mask-only spacer left when a wide grapheme wraps from the final column;
     // the earlier rect prepass intentionally skips `.preedit` rectangles.
-    for case .rect(let rect, let color, .preedit) in commands {
+    for case .rect(let rect, let color, .preedit, _) in commands {
       let bottomRow = Int(
         ((rect.origin.y - payload.origin.y - payload.contentYOffset) / payload.cellSize.height)
           .rounded())
@@ -3306,7 +3323,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     let surfaceH = Float(surfacePxH)
     let scale = Float(layer.contentsScale)
     let preeditMaskRects = commands.compactMap { command -> CGRect? in
-      if case .rect(let rect, _, .preedit) = command { return rect }
+      if case .rect(let rect, _, .preedit, _) = command { return rect }
       return nil
     }
 
@@ -3377,7 +3394,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let color, _):
+      case .rect(let rect, let color, _, _):
         appendSolid(rect: rect, color: color)
 
       case .cursor(let rect, let color):
@@ -3574,7 +3591,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     // GPU, but keep y-up — Metal NDC matches.
     let scale = Float(layer.contentsScale)
     let preeditMaskRects = commands.compactMap { command -> CGRect? in
-      if case .rect(let rect, _, .preedit) = command { return rect }
+      if case .rect(let rect, _, .preedit, _) = command { return rect }
       return nil
     }
 
@@ -3647,7 +3664,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let color, _):
+      case .rect(let rect, let color, _, _):
         if let damageBounds, !damageBounds.overlaps(y: rect.origin.y, height: rect.height) {
           continue
         }

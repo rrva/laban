@@ -22,8 +22,8 @@ final class FrameProducerSpanParityTests: XCTestCase {
     }
     func p(_ pt: CGPoint) -> String { String(format: "%.4f,%.4f", pt.x, pt.y) }
     switch cmd {
-    case .rect(let rect, let color, let source):
-      return "rect|\(r(rect))|\(color)|\(source.rawValue)"
+    case .rect(let rect, let color, let source, let compositing):
+      return "rect|\(r(rect))|\(color)|\(source.rawValue)|\(compositing.rawValue)"
     case .glyphRun(
       let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link, _):
       // Encode text by scalar so any decode discrepancy surfaces, and pin the

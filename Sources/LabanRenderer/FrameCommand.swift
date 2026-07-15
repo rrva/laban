@@ -15,6 +15,15 @@ public enum FrameSource: String, Sendable {
   case preedit
 }
 
+/// How a solid rectangle combines with pixels already present in the target.
+/// Background-establishing rectangles use `replace` so repeated retained-frame
+/// replay cannot accumulate translucent alpha; semantic overlays retain the
+/// shipped source-over behavior.
+public enum FrameCompositingMode: UInt8, Equatable, Sendable {
+  case sourceOver
+  case replace
+}
+
 public enum UnderlineStyle: UInt8, Sendable, Codable, Equatable {
   case none = 0
   case single = 1
@@ -122,7 +131,12 @@ public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
 }
 
 public enum FrameCommand: Sendable {
-  case rect(CGRect, color: UInt32, source: FrameSource)
+  case rect(
+    CGRect,
+    color: UInt32,
+    source: FrameSource,
+    compositing: FrameCompositingMode = .sourceOver
+  )
   case glyphRun(
     origin: CGPoint,
     text: String,

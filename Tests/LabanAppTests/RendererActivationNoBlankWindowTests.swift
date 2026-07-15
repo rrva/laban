@@ -175,10 +175,16 @@ private final class ControlledBackend: RendererBackend {
   var renderedDamages: [RenderDamage] = []
   var onFrameCompleted: (() -> Void)?
   var waitForFrameCompletion = false
+  private(set) var surfaceTransparency = RendererSurfaceTransparency(isOpaque: true)
 
   init(selection: RendererSelection, renderResult: Bool = true) {
     self.selection = selection
     self.renderResult = renderResult
+  }
+
+  func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency) {
+    surfaceTransparency = transparency
+    layer.isOpaque = transparency.isOpaque
   }
 
   @discardableResult

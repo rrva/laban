@@ -44,6 +44,7 @@ public struct FrameProducer {
   /// the canvas under the sliding cells.
   public let contentYOffset: CGFloat
   public let accessibilityVisualOptions: TerminalAccessibilityVisualOptions
+  public let backgroundCompositingOptions: TerminalBackgroundCompositingOptions
 
   public init(
     cellWidth: Int = 8,
@@ -51,7 +52,8 @@ public struct FrameProducer {
     originX: CGFloat = 0,
     originY: CGFloat = 0,
     contentYOffset: CGFloat = 0,
-    accessibilityVisualOptions: TerminalAccessibilityVisualOptions = .standard
+    accessibilityVisualOptions: TerminalAccessibilityVisualOptions = .standard,
+    backgroundCompositingOptions: TerminalBackgroundCompositingOptions = .opaque
   ) {
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
@@ -59,6 +61,7 @@ public struct FrameProducer {
     self.originY = originY
     self.contentYOffset = contentYOffset
     self.accessibilityVisualOptions = accessibilityVisualOptions
+    self.backgroundCompositingOptions = backgroundCompositingOptions
   }
 
   public static func preeditCaretCells(for text: String, graphemeClusterMode: Bool = false) -> Int {
@@ -86,6 +89,20 @@ public struct FrameProducer {
 
   private func terminalBackgroundColor(_ color: UInt32) -> UInt32 {
     accessibilityVisualOptions.terminalBackgroundColor(color)
+  }
+
+  @inline(__always)
+  private func compositedBackgroundColor(_ color: UInt32, explicit: Bool) -> UInt32 {
+    let alpha: UInt8 =
+      explicit && !backgroundCompositingOptions.applyToExplicitCellBackgrounds
+      ? 0xFF
+      : backgroundCompositingOptions.opacity
+    return terminalBackgroundColor(Self.withAlpha(color, alpha))
+  }
+
+  @inline(__always)
+  private func isExplicitBackground(flags: UInt16) -> Bool {
+    (flags & UInt16(LABAN_CELL_FLAG_EXPLICIT_BACKGROUND)) != 0
   }
 
   /// A pre-edit rectangle is a mask, not an ordinary terminal background.
@@ -266,6 +283,11 @@ public struct FrameProducer {
     return (color & 0xFFFF_FF00) | max(currentAlpha, alpha)
   }
 
+  @inline(__always)
+  private static func withAlpha(_ color: UInt32, _ alpha: UInt8) -> UInt32 {
+    (color & 0xFFFF_FF00) | UInt32(alpha)
+  }
+
   private static func contrastColor(against color: UInt32) -> UInt32 {
     let red = Double((color >> 24) & 0xFF)
     let green = Double((color >> 16) & 0xFF)
@@ -320,7 +342,9 @@ public struct FrameProducer {
     hyperlinkURIs: UnsafeBufferPointer<String>
   ) -> ResolvedCellVisuals {
     var attrsRaw = (cell.flags & renderableMaskRaw) & ~inverseRaw
-    let background = terminalBackgroundColor(cell.background_rgba)
+    let background = compositedBackgroundColor(
+      cell.background_rgba,
+      explicit: isExplicitBackground(flags: cell.flags))
     let foreground =
       (attrsRaw & faintRaw) != 0
       ? Self.blend(cell.foreground_rgba, toward: background, foregroundWeight: 0.50)
@@ -385,7 +409,10 @@ public struct FrameProducer {
     let cols = Int(snapshot.cols)
     let cw = CGFloat(cellWidth)
     let ch = CGFloat(cellHeight)
-    let defaultBg = terminalBackgroundColor(snapshot.default_background_rgba)
+    let preeditBg = terminalBackgroundColor(snapshot.default_background_rgba)
+    let defaultBg = compositedBackgroundColor(
+      snapshot.default_background_rgba,
+      explicit: false)
 
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(rows * 2 + 4)
@@ -395,7 +422,8 @@ public struct FrameProducer {
       .rect(
         CGRect(x: originX, y: originY, width: CGFloat(cols) * cw, height: CGFloat(rows) * ch),
         color: defaultBg,
-        source: .terminal
+        source: .terminal,
+        compositing: .replace
       ))
 
     func appendExitBanner() {
@@ -441,7 +469,9 @@ public struct FrameProducer {
 
       for col in 0..<cols {
         let cell = cells[rowStart + col]
-        let cellBg = terminalBackgroundColor(cell.background_rgba)
+        let cellBg = compositedBackgroundColor(
+          cell.background_rgba,
+          explicit: isExplicitBackground(flags: cell.flags))
 
         if bgStart == nil {
           if cellBg != defaultBg {
@@ -455,7 +485,8 @@ public struct FrameProducer {
             .rect(
               CGRect(x: cellX, y: cellY, width: CGFloat(runCols) * cw, height: ch),
               color: bgColor,
-              source: .terminal
+              source: .terminal,
+              compositing: .replace
             ))
           bgStart = cellBg != defaultBg ? col : nil
           bgColor = cellBg
@@ -468,7 +499,8 @@ public struct FrameProducer {
           .rect(
             CGRect(x: cellX, y: cellY, width: CGFloat(runCols) * cw, height: ch),
             color: bgColor,
-            source: .terminal
+            source: .terminal,
+            compositing: .replace
           ))
       }
     }
@@ -551,7 +583,7 @@ public struct FrameProducer {
         layout: activePreeditLayout,
         rows: rows,
         foreground: snapshot.default_foreground_rgba,
-        background: defaultBg)
+        background: preeditBg)
     }
 
     // Cursor
@@ -877,7 +909,9 @@ public struct FrameProducer {
     let cols = Int(snapshot.cols)
     let cw = CGFloat(cellWidth)
     let ch = CGFloat(cellHeight)
-    let defaultBg = terminalBackgroundColor(snapshot.default_background_rgba)
+    let defaultBg = compositedBackgroundColor(
+      snapshot.default_background_rgba,
+      explicit: false)
     payload.reset(
       rows: rows,
       cols: cols,
@@ -989,7 +1023,9 @@ public struct FrameProducer {
 
         for col in 0..<cols {
           let cell = cells[rowStart + col]
-          let cellBg = terminalBackgroundColor(cell.background_rgba)
+          let cellBg = compositedBackgroundColor(
+            cell.background_rgba,
+            explicit: isExplicitBackground(flags: cell.flags))
           if bgStart == nil {
             if cellBg != defaultBg {
               bgStart = col
@@ -1513,11 +1549,12 @@ public struct FrameProducer {
     // `cells.first?.backgroundRGBA` here — it can be 0 (transparent black) on
     // an unstyled first cell and used to leak the underlying view color
     // through as a black border between the sidebar and the terminal area.
-    let defaultBg: UInt32 = terminalBackgroundColor(
-      {
-        if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
-        return Theme.current.bg0
-      }())
+    let rawDefaultBg: UInt32 = {
+      if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
+      return Theme.current.bg0
+    }()
+    let preeditBg = terminalBackgroundColor(rawDefaultBg)
+    let defaultBg = compositedBackgroundColor(rawDefaultBg, explicit: false)
 
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(rows * 2 + 4)
@@ -1525,7 +1562,8 @@ public struct FrameProducer {
       .rect(
         CGRect(x: originX, y: originY, width: CGFloat(cols) * cw, height: CGFloat(rows) * ch),
         color: defaultBg,
-        source: .terminal
+        source: .terminal,
+        compositing: .replace
       ))
 
     guard rows > 0, cols > 0 else {
@@ -1550,9 +1588,11 @@ public struct FrameProducer {
       var bgColor: UInt32 = 0
 
       for col in 0..<cols {
-        let cellBg =
-          cellAt(row: row, col: col).map { terminalBackgroundColor($0.backgroundRGBA) }
-          ?? defaultBg
+        let cellBg = cellAt(row: row, col: col).map {
+          compositedBackgroundColor(
+            $0.backgroundRGBA,
+            explicit: isExplicitBackground(flags: $0.flags))
+        } ?? defaultBg
         if bgStart == nil {
           if cellBg != defaultBg {
             bgStart = col
@@ -1568,7 +1608,8 @@ public struct FrameProducer {
                 width: CGFloat(runCols) * cw,
                 height: ch),
               color: bgColor,
-              source: .terminal
+              source: .terminal,
+              compositing: .replace
             ))
           bgStart = cellBg != defaultBg ? col : nil
           bgColor = cellBg
@@ -1583,7 +1624,8 @@ public struct FrameProducer {
               width: CGFloat(cols - start) * cw,
               height: ch),
             color: bgColor,
-            source: .terminal
+            source: .terminal,
+            compositing: .replace
           ))
       }
     }
@@ -1668,18 +1710,24 @@ public struct FrameProducer {
         if runStart == nil {
           runStart = col
           runFg = cell.foregroundRGBA
-          runBg = terminalBackgroundColor(cell.backgroundRGBA)
+          runBg = compositedBackgroundColor(
+            cell.backgroundRGBA,
+            explicit: isExplicitBackground(flags: cell.flags))
           runAttrs = attrs
           runText = cell.text
         } else if cell.foregroundRGBA == runFg
-          && terminalBackgroundColor(cell.backgroundRGBA) == runBg && attrs == runAttrs
+          && compositedBackgroundColor(
+            cell.backgroundRGBA,
+            explicit: isExplicitBackground(flags: cell.flags)) == runBg && attrs == runAttrs
         {
           runText += cell.text
         } else {
           flushRun()
           runStart = col
           runFg = cell.foregroundRGBA
-          runBg = terminalBackgroundColor(cell.backgroundRGBA)
+          runBg = compositedBackgroundColor(
+            cell.backgroundRGBA,
+            explicit: isExplicitBackground(flags: cell.flags))
           runAttrs = attrs
           runText = cell.text
         }
@@ -1704,7 +1752,7 @@ public struct FrameProducer {
         layout: activePreeditLayout,
         rows: rows,
         foreground: Theme.current.fg0,
-        background: defaultBg)
+        background: preeditBg)
     }
 
     if snapshot.cursorVisible,

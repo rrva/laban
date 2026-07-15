@@ -11,6 +11,7 @@ public final class SoftwareBackend: RendererBackend {
   public private(set) var renderer: SoftwareRenderer
   public let fontAtlas: FontAtlas
   public let sidebarFontAtlas: FontAtlas
+  public private(set) var surfaceTransparency: RendererSurfaceTransparency
   private var lastImage: CGImage?
   public var onFrameCompleted: (() -> Void)?
   public var rendererStatus: RendererStatus
@@ -21,6 +22,8 @@ public final class SoftwareBackend: RendererBackend {
     pixelWidth: Int = 1,
     pixelHeight: Int = 1,
     scale: CGFloat = 1,
+    surfaceTransparency: RendererSurfaceTransparency = RendererSurfaceTransparency(
+      isOpaque: true),
     rendererStatus: RendererStatus = RendererStatus(
       configuredRenderer: RendererSelection.software.rawValue,
       effectiveRenderer: RendererSelection.software.rawValue,
@@ -28,11 +31,25 @@ public final class SoftwareBackend: RendererBackend {
   ) {
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
+    self.surfaceTransparency = surfaceTransparency
     self.rendererStatus = rendererStatus
     let s = BitmapSurface(width: max(1, pixelWidth), height: max(1, pixelHeight), scale: scale)
     self.surface = s
     self.renderer = SoftwareRenderer(
       surface: s, fontAtlas: fontAtlas, sidebarFontAtlas: self.sidebarFontAtlas)
+  }
+
+  public func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency) {
+    guard transparency != surfaceTransparency else { return }
+    surfaceTransparency = transparency
+    // The software presentation image is backed by this reusable bitmap. A
+    // surface-policy transition must not expose pixels rendered under the old
+    // alpha contract, so replace the bitmap just as a resize does and withhold
+    // presentation until the next complete synchronous render.
+    surface = BitmapSurface(width: surface.width, height: surface.height, scale: surface.scale)
+    renderer = SoftwareRenderer(
+      surface: surface, fontAtlas: fontAtlas, sidebarFontAtlas: sidebarFontAtlas)
+    lastImage = nil
   }
 
   /// Reallocate the surface if the requested dimensions or scale differ.

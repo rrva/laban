@@ -786,6 +786,8 @@ public final class HeadlessDebugRuntime {
           increaseContrast: accessibilityDisplayFlags.increaseContrast,
           differentiateWithoutColor: accessibilityDisplayFlags.differentiateWithoutColor,
           reduceTransparency: accessibilityDisplayFlags.reduceTransparency),
+        backgroundCompositingOptions: .opaque,
+        snapshotBackgroundCapability: .inProcess,
         selection: activeSelection,
         includeTerminalAreaBackground: false,
         requireActiveSnapshot: false,
@@ -852,7 +854,7 @@ public final class HeadlessDebugRuntime {
     var s = DrawStats()
     for cmd in cmds {
       switch cmd {
-      case .rect(_, _, let src):
+      case .rect(_, _, let src, _):
         s.backgroundRects += 1
         if src == .terminal { s.cells += 1 }
       case .glyphRun:

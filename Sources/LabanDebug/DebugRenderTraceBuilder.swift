@@ -178,10 +178,10 @@ struct DebugRenderTraceBuilder {
 
     for (index, command) in commands.enumerated() {
       switch command {
-      case .rect(_, _, let source) where source == .sidebar:
+      case .rect(_, _, let source, _) where source == .sidebar:
         summary.sidebarFirst = summary.sidebarFirst ?? index
         summary.sidebarLast = index
-      case .rect(_, _, let source) where source == .terminal:
+      case .rect(_, _, let source, _) where source == .terminal:
         summary.terminalBackgroundRects += 1
         summary.terminalFirst = summary.terminalFirst ?? index
         summary.terminalLast = index

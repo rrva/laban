@@ -73,7 +73,7 @@ final class FrameProducerRemoteBlockElementTests: XCTestCase {
       switch cmd {
       case .glyphRun(_, let text, _, _, _, let src, _, _, _, _) where src == .terminal:
         if text.contains("\u{2588}") { glyphsContainBlock = true }
-      case .rect(let rect, _, let src) where src == .terminal:
+      case .rect(let rect, _, let src, _) where src == .terminal:
         // The default-background rect spans cols*cw wide; ignore it.
         if rect.size.width == CGFloat(cellW * 2) { continue }
         if rect.origin.x == 0 { rectAtCol0 = true }
@@ -105,7 +105,7 @@ final class FrameProducerRemoteBlockElementTests: XCTestCase {
       .commands(from: snapshot)
 
     let blockRects: [CGRect] = cmds.compactMap { cmd in
-      guard case .rect(let rect, _, let src) = cmd, src == .terminal,
+      guard case .rect(let rect, _, let src, _) = cmd, src == .terminal,
         rect.size.width == CGFloat(cellW)  // exclude the wide bg rect
       else { return nil }
       return rect

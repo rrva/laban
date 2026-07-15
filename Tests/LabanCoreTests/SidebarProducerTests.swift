@@ -32,7 +32,7 @@ final class SidebarProducerTests: XCTestCase {
     let cmds = p.commands(tabs: tabs, activeTabId: tabs[1].id, height: 600)
     for cmd in cmds {
       switch cmd {
-      case .rect(_, _, let src):
+      case .rect(_, _, let src, _):
         XCTAssertEqual(src, .sidebar, "rect must have sidebar source")
       case .glyphRun(_, _, _, _, _, let src, _, _, _, _):
         XCTAssertEqual(src, .sidebar, "glyphRun must have sidebar source")
@@ -46,7 +46,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [], activeTabId: nil, height: 800)
     let bgRect = cmds.compactMap { cmd -> CGRect? in
-      if case .rect(let r, _, _) = cmd { return r }
+      if case .rect(let r, _, _, _) = cmd { return r }
       return nil
     }.first
     XCTAssertNotNil(bgRect)
@@ -317,7 +317,7 @@ final class SidebarProducerTests: XCTestCase {
         height: height,
         topInset: topInset)
       let tabRect = cmds.compactMap { cmd -> CGRect? in
-        guard case .rect(let rect, _, let source) = cmd,
+        guard case .rect(let rect, _, let source, _) = cmd,
           source == .sidebar,
           rect.width == p.sidebarWidth,
           rect.height == p.rowHeight
@@ -631,7 +631,7 @@ final class SidebarProducerTests: XCTestCase {
     // The full-width row rect is washed toward the attention accent — neither
     // the plain inactive bg nor the active-tab bg.
     let rowColors = cmds.compactMap { cmd -> UInt32? in
-      if case .rect(let r, let c, _) = cmd, r.width == p.sidebarWidth, r.height == p.rowHeight {
+      if case .rect(let r, let c, _, _) = cmd, r.width == p.sidebarWidth, r.height == p.rowHeight {
         return c
       }
       return nil
@@ -654,7 +654,7 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertEqual(marker, Theme.current.cursor, "done marker uses the accent colour")
 
     let rowTinted = cmds.contains { cmd in
-      if case .rect(let r, let c, _) = cmd, r.width == p.sidebarWidth, r.height == p.rowHeight {
+      if case .rect(let r, let c, _, _) = cmd, r.width == p.sidebarWidth, r.height == p.rowHeight {
         return c != Theme.current.bg1
       }
       return false
@@ -890,7 +890,7 @@ final class SidebarProducerTests: XCTestCase {
       tabs: tabs, activeTabId: tabs[0].id, height: h,
       dragIndicator: SidebarProducer.DragIndicator(slot: 2, draggingTabId: tabs[0].id))
     let accent = cmds.compactMap { cmd -> CGRect? in
-      if case .rect(let r, let c, _) = cmd, c == Theme.current.blue, r.height < 4 {
+      if case .rect(let r, let c, _, _) = cmd, c == Theme.current.blue, r.height < 4 {
         return r
       }
       return nil
@@ -910,7 +910,7 @@ final class SidebarProducerTests: XCTestCase {
         tabs: tabs, activeTabId: tabs[0].id, height: h,
         dragIndicator: SidebarProducer.DragIndicator(slot: slot, draggingTabId: tabs[1].id))
       let accent = cmds.contains { cmd in
-        if case .rect(let r, let c, _) = cmd, c == Theme.current.blue, r.height < 4 {
+        if case .rect(let r, let c, _, _) = cmd, c == Theme.current.blue, r.height < 4 {
           return true
         }
         return false
@@ -927,7 +927,7 @@ final class SidebarProducerTests: XCTestCase {
       tabs: tabs, activeTabId: tabs[0].id, height: h,
       dragIndicator: SidebarProducer.DragIndicator(slot: 2, draggingTabId: tabs[0].id))
     let overlay = cmds.contains { cmd in
-      if case .rect(let r, let c, _) = cmd,
+      if case .rect(let r, let c, _, _) = cmd,
         (c & 0xFF) > 0, (c & 0xFF) < 0xFF,
         r.width == p.sidebarWidth, r.height == p.rowHeight
       {

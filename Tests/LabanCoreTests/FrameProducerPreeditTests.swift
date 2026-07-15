@@ -50,14 +50,14 @@ final class FrameProducerPreeditTests: XCTestCase {
 
   private func preeditMaskRect(in cmds: [FrameCommand]) -> CGRect? {
     for cmd in cmds {
-      if case .rect(let rect, _, .preedit) = cmd { return rect }
+      if case .rect(let rect, _, .preedit, _) = cmd { return rect }
     }
     return nil
   }
 
   private func preeditMaskRects(in cmds: [FrameCommand]) -> [(rect: CGRect, color: UInt32)] {
     cmds.compactMap { cmd in
-      if case .rect(let rect, let color, .preedit) = cmd { return (rect, color) }
+      if case .rect(let rect, let color, .preedit, _) = cmd { return (rect, color) }
       return nil
     }
   }
@@ -117,7 +117,7 @@ final class FrameProducerPreeditTests: XCTestCase {
     // A background mask is emitted in the same source so underlying cells do
     // not bleed through the composition.
     let hasMask = cmds.contains {
-      if case .rect(_, _, .preedit) = $0 { return true }
+      if case .rect(_, _, .preedit, _) = $0 { return true }
       return false
     }
     XCTAssertTrue(hasMask, "a `.preedit` background rect must mask the cells under the composition")
@@ -203,7 +203,7 @@ final class FrameProducerPreeditTests: XCTestCase {
       preeditGlyphRun(in: cmds), "no marked text means no preedit run on screen")
     XCTAssertFalse(
       cmds.contains {
-        if case .rect(_, _, .preedit) = $0 { return true }
+        if case .rect(_, _, .preedit, _) = $0 { return true }
         return false
       }, "no marked text means no preedit mask either")
   }
@@ -302,7 +302,7 @@ final class FrameProducerPreeditTests: XCTestCase {
   private func lastPreeditIndex(in cmds: [FrameCommand]) -> Int? {
     cmds.lastIndex {
       switch $0 {
-      case .rect(_, _, .preedit), .glyphRun(_, _, _, _, _, .preedit, _, _, _, _): return true
+      case .rect(_, _, .preedit, _), .glyphRun(_, _, _, _, _, .preedit, _, _, _, _): return true
       default: return false
       }
     }

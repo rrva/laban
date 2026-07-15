@@ -85,7 +85,7 @@ final class AppKitFrameProbe {
       case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _)
       where source == .sidebar:
         sidebarGlyphs.append(ProbeGlyph(x: Double(origin.x), y: Double(origin.y), text: text))
-      case .rect(let rect, _, let source) where source == .sidebar:
+      case .rect(let rect, _, let source, _) where source == .sidebar:
         sidebarRects.append(ProbeRect(rect))
       case .cursor(let rect, _):
         cursors.append(

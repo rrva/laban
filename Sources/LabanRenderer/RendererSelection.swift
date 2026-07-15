@@ -63,6 +63,8 @@ public func makeRendererBackend(
   pixelWidth: Int = 1,
   pixelHeight: Int = 1,
   scale: CGFloat = 1,
+  surfaceTransparency: RendererSurfaceTransparency = RendererSurfaceTransparency(
+    isOpaque: true),
   prebuiltRasterAtlas: MetalGlyphAtlas? = nil,
   prebuiltSidebarRasterAtlas: MetalGlyphAtlas? = nil
 ) -> RendererBackend {
@@ -76,7 +78,8 @@ public func makeRendererBackend(
       sidebarFontAtlas: sidebar,
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
-      scale: scale)
+      scale: scale,
+      surfaceTransparency: surfaceTransparency)
 
   case .classic, .gpuDriven:
     guard MTLCreateSystemDefaultDevice() != nil else {
@@ -86,6 +89,7 @@ public func makeRendererBackend(
         pixelWidth: pixelWidth,
         pixelHeight: pixelHeight,
         scale: scale,
+        surfaceTransparency: surfaceTransparency,
         rendererStatus: RendererStatus(
           configuredRenderer: resolved.rawValue,
           effectiveRenderer: RendererSelection.software.rawValue,
@@ -97,7 +101,8 @@ public func makeRendererBackend(
         fontAtlas: fontAtlas,
         sidebarFontAtlas: sidebar,
         scale: scale,
-        rendererMode: metalMode)
+        rendererMode: metalMode,
+        surfaceTransparency: surfaceTransparency)
     {
       metal.resize(pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale)
       return metal
@@ -108,6 +113,7 @@ public func makeRendererBackend(
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
       scale: scale,
+      surfaceTransparency: surfaceTransparency,
       rendererStatus: RendererStatus(
         configuredRenderer: resolved.rawValue,
         effectiveRenderer: RendererSelection.software.rawValue,
@@ -122,6 +128,7 @@ public func makeRendererBackend(
         pixelWidth: pixelWidth,
         pixelHeight: pixelHeight,
         scale: scale,
+        surfaceTransparency: surfaceTransparency,
         rendererStatus: RendererStatus(
           configuredRenderer: RendererSelection.vectorGlyph.rawValue,
           effectiveRenderer: RendererSelection.software.rawValue,
@@ -134,6 +141,7 @@ public func makeRendererBackend(
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
       scale: scale,
+      surfaceTransparency: surfaceTransparency,
       prebuiltRasterAtlas: prebuiltRasterAtlas,
       prebuiltSidebarRasterAtlas: prebuiltSidebarRasterAtlas)
     {
@@ -144,7 +152,8 @@ public func makeRendererBackend(
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebar,
       scale: scale,
-      rendererMode: .classic)
+      rendererMode: .classic,
+      surfaceTransparency: surfaceTransparency)
     {
       classic.resize(pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale)
       classic.overrideRendererStatus(
@@ -161,6 +170,7 @@ public func makeRendererBackend(
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
       scale: scale,
+      surfaceTransparency: surfaceTransparency,
       rendererStatus: RendererStatus(
         configuredRenderer: RendererSelection.vectorGlyph.rawValue,
         effectiveRenderer: RendererSelection.software.rawValue,
@@ -175,6 +185,7 @@ public func makeRendererBackend(
         pixelWidth: pixelWidth,
         pixelHeight: pixelHeight,
         scale: scale,
+        surfaceTransparency: surfaceTransparency,
         rendererStatus: RendererStatus(
           configuredRenderer: RendererSelection.slugGlyph.rawValue,
           effectiveRenderer: RendererSelection.software.rawValue,
@@ -187,6 +198,7 @@ public func makeRendererBackend(
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
       scale: scale,
+      surfaceTransparency: surfaceTransparency,
       prebuiltRasterAtlas: prebuiltRasterAtlas)
     {
       slug.setSubpixelLayout(VectorSubpixelLayout.persisted())
@@ -196,7 +208,8 @@ public func makeRendererBackend(
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebar,
       scale: scale,
-      rendererMode: .classic)
+      rendererMode: .classic,
+      surfaceTransparency: surfaceTransparency)
     {
       classic.resize(pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale)
       classic.overrideRendererStatus(
@@ -213,6 +226,7 @@ public func makeRendererBackend(
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
       scale: scale,
+      surfaceTransparency: surfaceTransparency,
       rendererStatus: RendererStatus(
         configuredRenderer: RendererSelection.slugGlyph.rawValue,
         effectiveRenderer: RendererSelection.software.rawValue,

@@ -531,7 +531,7 @@ final class TerminalSelectionTests: XCTestCase {
 
     for (i, cmd) in cmds.enumerated() {
       switch cmd {
-      case .rect(_, _, let src) where src == .terminal:
+      case .rect(_, _, let src, _) where src == .terminal:
         lastBgIndex = i
       case .selection:
         firstSelIndex = min(firstSelIndex, i)

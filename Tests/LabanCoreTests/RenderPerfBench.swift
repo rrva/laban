@@ -175,7 +175,7 @@ final class RenderPerfBench: XCTestCase {
       var lastRectColor: UInt32? = nil
       for cmd in cmds {
         switch cmd {
-        case .rect(_, let c, _):
+        case .rect(_, let c, _, _):
           rectCount += 1
           rectColors.insert(c)
           if c != lastRectColor { rectRunBoundaries += 1 }

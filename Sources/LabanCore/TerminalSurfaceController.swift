@@ -93,6 +93,13 @@ public struct TerminalSurfaceFrameRequest {
   public var reduceMotion: Bool
   /// System display-accessibility settings that affect terminal visuals.
   public var accessibilityVisualOptions: TerminalAccessibilityVisualOptions
+  /// Effective, already-resolved alpha policy for this frame. Producers consume
+  /// this value directly and never read settings or window state.
+  public var backgroundCompositingOptions: TerminalBackgroundCompositingOptions
+  /// Capability of the snapshot writer selected for this frame. Keeping it on
+  /// the request prevents local, remote, prewarm, and replay seams from losing
+  /// the policy input before the first frame is built.
+  public var snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
   public var selection: TerminalSelection?
   public var includeTerminalAreaBackground: Bool
   public var requireActiveSnapshot: Bool
@@ -131,6 +138,8 @@ public struct TerminalSurfaceFrameRequest {
     now: Date = Date(),
     reduceMotion: Bool = false,
     accessibilityVisualOptions: TerminalAccessibilityVisualOptions = .standard,
+    backgroundCompositingOptions: TerminalBackgroundCompositingOptions = .opaque,
+    snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability = .inProcess,
     selection: TerminalSelection? = nil,
     includeTerminalAreaBackground: Bool = false,
     requireActiveSnapshot: Bool = false,
@@ -158,6 +167,8 @@ public struct TerminalSurfaceFrameRequest {
     self.now = now
     self.reduceMotion = reduceMotion
     self.accessibilityVisualOptions = accessibilityVisualOptions
+    self.backgroundCompositingOptions = backgroundCompositingOptions
+    self.snapshotBackgroundCapability = snapshotBackgroundCapability
     self.selection = selection
     self.includeTerminalAreaBackground = includeTerminalAreaBackground
     self.requireActiveSnapshot = requireActiveSnapshot
@@ -339,6 +350,7 @@ private struct SidebarCacheSignature: Equatable {
   var hoveredTabId: Tab.ID?
   var dragIndicator: SidebarProducer.DragIndicator?
   var reduceMotion: Bool
+  var backgroundCompositingOptions: TerminalBackgroundCompositingOptions
   var sidebarWidth: CGFloat
   var cellWidth: CGFloat
   var cellHeight: CGFloat
@@ -571,7 +583,8 @@ public final class TerminalSurfaceController {
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
-      reduceMotion: request.reduceMotion
+      reduceMotion: request.reduceMotion,
+      backgroundCompositingOptions: request.backgroundCompositingOptions
     )
 
     guard let session = model.session(forTab: activeTab.id) else {
@@ -641,8 +654,11 @@ public final class TerminalSurfaceController {
         .rect(
           CGRect(x: sidebarWidth, y: 0, width: terminalAreaWidth, height: request.viewportHeight),
           color: request.accessibilityVisualOptions.terminalBackgroundColor(
-            snapshot.default_background_rgba),
-          source: .terminal
+            Self.withAlpha(
+              snapshot.default_background_rgba,
+              request.backgroundCompositingOptions.opacity)),
+          source: .terminal,
+          compositing: .replace
         ))
     }
 
@@ -652,7 +668,8 @@ public final class TerminalSurfaceController {
       originX: sidebarWidth + request.insets.left,
       originY: gridOriginY,
       contentYOffset: request.contentYOffset,
-      accessibilityVisualOptions: request.accessibilityVisualOptions
+      accessibilityVisualOptions: request.accessibilityVisualOptions,
+      backgroundCompositingOptions: request.backgroundCompositingOptions
     )
     let damage = Self.damage(
       snapshot: UnsafePointer(snap),
@@ -769,7 +786,8 @@ public final class TerminalSurfaceController {
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
-      reduceMotion: request.reduceMotion
+      reduceMotion: request.reduceMotion,
+      backgroundCompositingOptions: request.backgroundCompositingOptions
     )
 
     let rows = max(snapshot.rows, 1)
@@ -784,19 +802,20 @@ public final class TerminalSurfaceController {
     // Treat nil and 0 as "unknown" and fall back to the theme — `cells.first
     // ?.backgroundRGBA` can be 0 (transparent black) and would leak the
     // layer-backed view's underlying color through as a black border.
-    let defaultBg: UInt32 = request.accessibilityVisualOptions.terminalBackgroundColor(
-      {
-        if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
-        return Theme.current.bg0
-      }())
+    let rawDefaultBg: UInt32 = {
+      if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
+      return Theme.current.bg0
+    }()
 
     if request.includeTerminalAreaBackground {
       let terminalAreaWidth = max(0, request.viewportWidth - sidebarWidth)
       commands.append(
         .rect(
           CGRect(x: sidebarWidth, y: 0, width: terminalAreaWidth, height: request.viewportHeight),
-          color: defaultBg,
-          source: .terminal
+          color: request.accessibilityVisualOptions.terminalBackgroundColor(
+            Self.withAlpha(rawDefaultBg, request.backgroundCompositingOptions.opacity)),
+          source: .terminal,
+          compositing: .replace
         ))
     }
 
@@ -806,7 +825,8 @@ public final class TerminalSurfaceController {
       originX: sidebarWidth + request.insets.left,
       originY: gridOriginY,
       contentYOffset: request.contentYOffset,
-      accessibilityVisualOptions: request.accessibilityVisualOptions
+      accessibilityVisualOptions: request.accessibilityVisualOptions,
+      backgroundCompositingOptions: request.backgroundCompositingOptions
     )
     commands += producer.commands(
       from: snapshot,
@@ -848,13 +868,15 @@ public final class TerminalSurfaceController {
     hoveredTabId: Tab.ID? = nil,
     dragIndicator: SidebarProducer.DragIndicator? = nil,
     now: Date = Date(),
-    reduceMotion: Bool = false
+    reduceMotion: Bool = false,
+    backgroundCompositingOptions: TerminalBackgroundCompositingOptions = .opaque
   ) -> [FrameCommand] {
     let tabs = model.tabs
     let producer = SidebarProducer(
       sidebarWidth: sidebarWidth,
       cellWidth: sidebarCellWidth,
-      cellHeight: sidebarCellHeight)
+      cellHeight: sidebarCellHeight,
+      backgroundCompositingOptions: backgroundCompositingOptions)
     func build() -> SidebarProducer.Output {
       sidebarRebuildCountForTesting += 1
       return producer.output(
@@ -889,6 +911,7 @@ public final class TerminalSurfaceController {
       hoveredTabId: hoveredTabId,
       dragIndicator: dragIndicator,
       reduceMotion: reduceMotion,
+      backgroundCompositingOptions: backgroundCompositingOptions,
       sidebarWidth: sidebarWidth,
       cellWidth: sidebarCellWidth,
       cellHeight: sidebarCellHeight,
@@ -924,6 +947,10 @@ public final class TerminalSurfaceController {
         cellWidth: sidebarCellWidth,
         cellHeight: sidebarCellHeight,
         maxX: sidebarWidth)
+  }
+
+  private static func withAlpha(_ color: UInt32, _ alpha: UInt8) -> UInt32 {
+    (color & 0xFFFF_FF00) | UInt32(alpha)
   }
 
   public static func terminalGridOriginY(

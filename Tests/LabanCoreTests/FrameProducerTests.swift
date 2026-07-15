@@ -103,7 +103,7 @@ final class FrameProducerTests: XCTestCase {
 
     let cmds = FrameProducer().commands(from: UnsafePointer(snap))
     let terminalCmds = cmds.filter {
-      if case .rect(_, _, let src) = $0 { return src == .terminal }
+      if case .rect(_, _, let src, _) = $0 { return src == .terminal }
       if case .glyphRun(_, _, _, _, _, let src, _, _, _, _) = $0 { return src == .terminal }
       return false
     }
@@ -244,7 +244,7 @@ final class FrameProducerTests: XCTestCase {
     let cmds = producer.commands(from: UnsafePointer(snap))
 
     let hasTerminalRect = cmds.contains {
-      if case .rect(_, _, let src) = $0 { return src == .terminal }
+      if case .rect(_, _, let src, _) = $0 { return src == .terminal }
       return false
     }
     XCTAssertTrue(hasTerminalRect, "must contain at least one terminal rect command")
@@ -370,7 +370,7 @@ final class FrameProducerTests: XCTestCase {
 
     let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
 
-    guard case .rect(_, let color, let source)? = cmds.first else {
+    guard case .rect(_, let color, let source, _)? = cmds.first else {
       XCTFail("first command must be the terminal background")
       return
     }
@@ -538,7 +538,7 @@ final class FrameProducerTests: XCTestCase {
     let producer = FrameProducer(cellWidth: 8, cellHeight: 16, originX: 0, originY: 10)
     let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
     let bannerRects = cmds.compactMap { cmd -> CGRect? in
-      if case .rect(let r, _, _) = cmd, abs(r.origin.y - 10) < 1 { return r }
+      if case .rect(let r, _, _, _) = cmd, abs(r.origin.y - 10) < 1 { return r }
       return nil
     }
     XCTAssertFalse(bannerRects.isEmpty, "exited snapshot must produce a banner rect at originY")
@@ -583,7 +583,7 @@ final class FrameProducerTests: XCTestCase {
       return false
     }
     let bannerRectIndex = cmds.firstIndex { cmd in
-      if case .rect(let rect, let color, _) = cmd {
+      if case .rect(let rect, let color, _, _) = cmd {
         return rect.origin.y == 0 && color == Theme.current.bg1
       }
       return false
