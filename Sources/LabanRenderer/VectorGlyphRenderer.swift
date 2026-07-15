@@ -1209,6 +1209,10 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     var sidebarRasterGlyphs: [VectorGlyphInstance] = []
     var colorGlyphs: [VectorGlyphInstance] = []
     var currentClip: CGRect? = nil
+    // Surface policy cannot change while this frame is encoded. Hoist the
+    // opaque/transparent split out of the per-rectangle property lookup so the
+    // shipped opaque path retains its original hot-loop cost.
+    let needsReplaceCompositing = !surfaceTransparency.isOpaque
     let preeditMaskRects = commands.compactMap { command -> CGRect? in
       if case .rect(let rect, _, .preedit, _) = command { return rect }
       return nil
@@ -1299,7 +1303,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
 
       case .rect(let rect, let color, _, let compositing):
         let instance = solid(rect: rect, color: color)
-        if !surfaceTransparency.isOpaque
+        if needsReplaceCompositing
           && replacesDestination(compositing, color: color)
         {
           replaceSolids.append(instance)
