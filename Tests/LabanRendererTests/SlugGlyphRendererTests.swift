@@ -334,7 +334,11 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     XCTAssertTrue(
       renderer.render(
         [
-          .rect(CGRect(x: 24, y: 16, width: 16, height: 16), color: cream, source: .terminal)
+          .rect(
+            CGRect(x: 24, y: 16, width: 16, height: 16),
+            color: cream,
+            source: .terminal,
+            compositing: .replace)
         ],
         damage: .full))
     let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
@@ -358,7 +362,11 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     renderer.presentsToLayer = false
     let cream: UInt32 = 0xFBF3_DBFF
     let full: [FrameCommand] = [
-      .rect(CGRect(x: 0, y: 0, width: 300, height: 300), color: cream, source: .terminal)
+      .rect(
+        CGRect(x: 0, y: 0, width: 300, height: 300),
+        color: cream,
+        source: .terminal,
+        compositing: .replace)
     ]
 
     XCTAssertTrue(renderer.render(full, damage: .full))

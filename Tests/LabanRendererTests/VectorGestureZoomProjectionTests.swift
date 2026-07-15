@@ -55,7 +55,11 @@ final class VectorGestureZoomProjectionTests: XCTestCase {
     // fullRedrawClearColor — the FIRST terminal rect), then a centered red marker
     // rect whose covered area we measure as it scales.
     let commands: [FrameCommand] = [
-      .rect(CGRect(x: 0, y: 0, width: 400, height: 400), color: 0x00_00_00_FF, source: .terminal),
+      .rect(
+        CGRect(x: 0, y: 0, width: 400, height: 400),
+        color: 0x00_00_00_FF,
+        source: .terminal,
+        compositing: .replace),
       .rect(
         CGRect(x: 150, y: 150, width: 100, height: 100), color: 0xFF_00_00_FF, source: .terminal),
     ]
@@ -99,7 +103,11 @@ final class VectorGestureZoomProjectionTests: XCTestCase {
     // Full-surface bg rect (covers everything at zoom 1) so a corner pixel is the
     // rendered background; the clear color must produce the SAME corner pixel.
     let full: [FrameCommand] = [
-      .rect(CGRect(x: 0, y: 0, width: 300, height: 300), color: bg, source: .terminal)
+      .rect(
+        CGRect(x: 0, y: 0, width: 300, height: 300),
+        color: bg,
+        source: .terminal,
+        compositing: .replace)
     ]
     XCTAssertTrue(renderer.render(full, damage: .full))
     let rendered = try cornerPixel(renderer)

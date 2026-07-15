@@ -95,7 +95,8 @@ final class SlugGlyphDamageTests: XCTestCase {
           x: 0, y: 0, width: CGFloat(cols) * cellSize.width, height: CGFloat(rows) * cellSize.height
         ),
         color: bgColor,
-        source: .terminal)
+        source: .terminal,
+        compositing: .replace)
     ]
     commands.reserveCapacity(text.count + 1)
     for (row, line) in text.enumerated() {
