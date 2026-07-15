@@ -275,19 +275,50 @@ included in compatibility claims.
 | Apple Pinyin | not tested - compatibility unclaimed |
 | Rime/Squirrel | not tested - compatibility unclaimed |
 
-The Appearance settings also expose **Background effect** (`None` / `System
-Blur`) and **Preset** (`Opaque` / `Frosted`). `System Blur` uses one public
-behind-window AppKit material beneath the terminal content plane only; the
-sidebar stays opaque. It never uses Liquid Glass behind terminal content,
-private filters, screen capture, or a renderer blur shader. `Frosted` atomically
-selects 90% terminal background opacity, System Blur, and opaque explicit cell
-backgrounds. It is theme-neutral, does not change the active theme, and is never
-selected from locale, language, input source, or CJK font. Reduce Transparency,
-native full screen, and legacy snapshot writers continue to force the effective
-surface opaque without discarding the requested preset. The implementation and
-compositor evidence requirements are tracked in
+The Appearance settings also expose **Background source** (`None` / `System
+Blur` / `Image`) and **Preset** (`Opaque` / `Frosted`). The three sources are
+mutually exclusive. `None` means direct window transparency. `System Blur`
+uses one public behind-window AppKit material beneath the terminal content
+plane only. `Image` uses one user-imported local still image beneath that same
+plane. Neither source extends under the opaque sidebar, and neither creates a
+renderer-specific image or blur path. System Blur never uses Liquid Glass
+behind terminal content, private filters, screen capture, or a renderer shader.
+
+The shipped request remains exactly 100% opacity, source `None`, no imported
+image, opaque explicitly colored cells, and an opaque sidebar. Blur, image, and
+transparency are opt-in customization. Laban never selects them or any preset
+from locale, preferred language, region, input source, or CJK font. CJK and IME
+flows are compatibility coverage for user-visible behavior, not inputs to
+appearance defaults.
+
+Image selection imports a private managed copy into Laban's Application Support
+directory rather than persisting an external absolute path. The original path
+is not stored or exposed through debug state. Image scaling is persisted and
+live-applied with exactly three choices: `Fill` (the default, proportional
+aspect-fill with a centered crop), `Fit` (proportional aspect-fit with opaque
+black letterbox bars), and `Stretch` (independent horizontal and vertical
+scaling to the complete terminal rectangle). Transparent source-image pixels
+are composed over the same opaque black backing. The existing terminal
+background-opacity slider is the sole tint control: the themed terminal canvas
+composites over the image, so lower opacity reveals more of the image. There is
+no separate image-opacity slider. At 100% opacity no background host is active
+and it has zero steady-state cost.
+
+`Frosted` atomically selects 90% terminal background opacity, System Blur, and
+opaque explicit cell backgrounds. It is theme-neutral and preserves any
+imported image and its scaling choice for a later switch back to Image. Choosing
+Image or changing an individual control produces custom preset state; Frosted
+never combines blur and Image. A missing or corrupt managed image preserves the
+requested Image choice but resolves the visible window fully opaque with
+`backgroundImageUnavailable`, never silently falling through to direct desktop
+transparency.
+
+Reduce Transparency, native full screen, and legacy snapshot writers continue
+to force the effective surface opaque without discarding the requested source,
+image, scaling mode, or preset. The implementation and compositor evidence
+requirements are tracked in
 `execplans/active/terminal-background-transparency.md`, under “Active Work:
-System Blur and Frosted Preset.”
+Background Sources and Frosted Preset.”
 
 ---
 

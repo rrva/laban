@@ -4,8 +4,9 @@ Date: 2026-07-15
 
 ## Status
 
-Accepted; amended 2026-07-15 after installed-app validation. Implementation is
-tracked in `execplans/active/terminal-background-transparency.md`.
+Accepted; amended 2026-07-15 after installed-app validation and again for
+user-imported background images. Implementation is tracked in
+`execplans/active/terminal-background-transparency.md`.
 
 ## Context
 
@@ -34,13 +35,21 @@ promotes a system material plus the theme-neutral `Frosted` preset into the
 active implementation. Their WindowServer behavior and performance evidence
 remain mandatory rather than being waived by the scope amendment.
 
+The same terminal-only host also needs to support a user-imported still image.
+That image is another backdrop source, not terminal image content and not a new
+renderer feature. Treating it as an AppKit sibling below the terminal canvas
+lets the existing themed canvas alpha remain the only tint control and keeps
+software, classic Metal, GPU-driven Metal, vector glyph, and Slug identical.
+
 ## Decision
 
 ### Ownership is split at existing boundaries
 
 - `TerminalTransparencySettings` owns the persisted **requested** opacity,
-  explicit-cell opt-in, and backdrop-style value. It publishes changes but does
-  not inspect windows, accessibility state, sessions, or renderers.
+  explicit-cell opt-in, mutually exclusive backdrop source, imported-image
+  identifier, and image-scaling mode. It publishes changes but does not inspect
+  windows, accessibility state, sessions, or renderers. It never derives a
+  request from locale, language, region, input source, or CJK font.
 - `TerminalWindowTransparencyCoordinator` is the single MainActor owner of the
   **effective** policy for a window. It combines the requested configuration
   with native-full-screen state, the cached Reduce Transparency input, active
@@ -66,10 +75,11 @@ remain mandatory rather than being waived by the scope amendment.
   system policy. Software, classic, GPU-driven, vector, and Slug must implement
   the same output contract.
 - `TerminalBackgroundEffectHost` is the AppKit-only owner of at most one
-  behind-window material view below the terminal surface and every overlay. It
-  is active only for effective System Blur, never extends under the opaque
-  sidebar, and neither `LabanCore` nor `LabanRenderer` may depend on
-  `NSVisualEffectView`.
+  backdrop child below the terminal surface and every overlay: either one
+  behind-window material view for effective System Blur or one cached still-
+  image view for effective Image, never both. It never extends under the opaque
+  sidebar. Neither `LabanCore` nor `LabanRenderer` may depend on
+  `NSVisualEffectView`, `NSImage`, ImageIO, or image-scaling geometry.
 
 Requested values survive every temporary override. The effective resolver is
 pure and deterministic. Reduce Transparency forces an opaque surface first,
@@ -79,6 +89,14 @@ active overrides cannot restore transparency. An unavailable or headless
 system-material request resolves its effective backdrop to `none` without
 discarding the requested value. An opacity of exactly `1.0` resolves to an
 opaque surface and no active backdrop.
+
+Image is available only when its managed copy exists and decodes. A missing or
+corrupt managed image adds the lowest-priority visible-window force-opaque
+reason `backgroundImageUnavailable`: Reduce Transparency, native full screen,
+and legacy snapshot-writer policy retain their existing order ahead of it. The
+request and scaling mode survive the failure, but the app never falls through
+to direct desktop transparency. Headless mode preserves an Image request while
+resolving its AppKit-only effective backdrop to `none`.
 
 ### Background pixels replace; semantic content composites source-over
 
@@ -141,13 +159,43 @@ effective rendering choice only: the configured RGB-subpixel preference stays
 persisted and is restored as soon as the effective surface is opaque. Renderers
 without an RGB-subpixel mode keep their existing antialiasing behavior.
 
-### Native materials remain an AppKit concern
+### Native backdrops remain an AppKit concern
+
+`None`, `System Blur`, and `Image` are mutually exclusive background sources.
+`None` preserves direct window transparency. `System Blur` and Image occupy the
+same terminal-only AppKit host below the terminal canvas. The renderer's
+existing background opacity remains the sole tint control for every source;
+there is no independent image-opacity control. At opacity 1.0 the host owns no
+active child and contributes no steady-state cost.
+
+Image selection is a managed import, not a durable reference to the original
+file. After an `NSOpenPanel` selection decodes successfully, Laban copies the
+still image through a staging file into a private `background-images`
+subdirectory of `PersistenceStore.defaultBaseURL()`, commits only a generated
+relative identifier and display name, and then retires the previous managed
+copy. It persists neither the original absolute path nor a path in debug state.
+This avoids long-lived security-scoped-bookmark ownership while remaining
+compatible with a future sandbox: the picker grants the one read needed to
+copy into app-owned Application Support. Cancel, decode failure, or copy
+failure leaves the prior request and managed image unchanged.
+
+Image scaling is a persisted, live setting with exactly three cases. `Fill` is
+the default and uses the larger proportional scale, centering and cropping the
+overflow. `Fit` uses the smaller proportional scale, centers the result, and
+fills uncovered letterbox bands with opaque black. `Stretch` maps the source to
+the full terminal rectangle independently on each axis. Transparent pixels in
+the source image composite over the same opaque black backing. Image decoding
+is cached and never occurs in a renderer path or per-frame loop; selection,
+scaling changes, and resize may invalidate the host once.
 
 `System Blur` and the localized, theme-neutral `Frosted` preset are active work
 in the same ExecPlan. `Frosted` is fixed at 90% terminal background opacity
-with System Blur and opaque explicit cell backgrounds; it never changes the
-active theme and is never selected from locale, language, input source, or CJK
-font. The opaque sidebar remains outside the material-backed content plane.
+with System Blur and opaque explicit cell backgrounds. Applying it preserves an
+imported image and scaling mode for a later switch back to Image. Selecting
+Image or changing an individual control produces custom preset state; Frosted
+never combines System Blur and Image. It never changes the active theme and is
+never selected from locale, language, region, input source, or CJK font. The
+opaque sidebar remains outside every backdrop-backed content plane.
 
 The effect host must use a public semantic behind-window AppKit material hosted
 below terminal content. It must not put Liquid Glass behind terminal content,
@@ -159,8 +207,9 @@ contracts unchanged.
 
 ## Consequences
 
-- The default request remains opacity `1.0`, explicit-cell opacity off, and no
-  backdrop, preserving existing opaque rendering and idle behavior.
+- The default request remains opacity `1.0`, explicit-cell opacity off, source
+  `none`, no imported image, and an opaque sidebar, preserving existing opaque
+  rendering and idle behavior in every locale and input configuration.
 - Direct transparency can be implemented once in frame semantics and then
   proven equivalent across all five backends instead of becoming a Slug-only
   feature.
@@ -178,6 +227,9 @@ contracts unchanged.
   identity.
 - Headless PNGs preserve alpha and use the same producers and backend contract,
   making alpha, override, and mixed-version behavior autonomously verifiable.
+- Image backgrounds remain outside frame production. A private managed import
+  survives relaunch without retaining an external path, and Fill, Fit, and
+  Stretch can change live without changing terminal session identity.
 - A settings or accessibility change may invalidate, wake, and present once;
   translucency does not create a periodic render source and preserves ADR
   0018/0026 idle and presenter invariants.
@@ -195,7 +247,9 @@ contracts unchanged.
   and negotiate writer capability; color equality is never a substitute.
 - Any new RGB-subpixel path must resolve to grayscale when its destination is
   not known opaque.
-- Any background effect remains outside frame production and renderer code.
-  Changing the native-material constraints, `Frosted` definition, or the
-  direct-opacity exclusions requires an ADR amendment and corresponding product
+- Any background source remains outside frame production and renderer code.
+  New backdrop sources must not add renderer textures, renderer settings reads,
+  or per-frame decoding. Changing the native-material constraints, managed-
+  image ownership, scaling definitions, `Frosted` definition, or the direct-
+  opacity exclusions requires an ADR amendment and corresponding product
   contract update.
