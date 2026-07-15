@@ -2743,7 +2743,7 @@ final class GPUCellParityTests: XCTestCase {
   }
 
   private func makeRenderer(label: String) throws -> MetalRenderer {
-    let fontAtlas = FontAtlas(pointSize: 14)
+    let fontAtlas = FontAtlas(pointSize: 14, fontName: nil)
     guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale) else {
       XCTFail("\(label): MetalRenderer.init returned nil")
       throw TestFailure()

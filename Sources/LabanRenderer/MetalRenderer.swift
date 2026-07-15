@@ -3212,11 +3212,11 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
             cells[index] = Self.emptyCellGlyph
             continue
           }
-          guard entry.logicalWidth <= maxLogicalWidth else {
+          guard entry.admissionWidth <= maxLogicalWidth else {
             recordPayloadFailure(
               "logicalWidthTooWide",
               glyph: glyph.pointee,
-              logicalWidth: entry.logicalWidth,
+              logicalWidth: entry.admissionWidth,
               maxLogicalWidth: maxLogicalWidth)
             payloadGlyphLoopFailed = true
             return
@@ -3305,7 +3305,10 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
             character: cluster, font: font,
             boldFallback: needsBoldFallback,
             italicFallback: needsItalicFallback
-          ), entry.logicalWidth <= payload.cellSize.width * Self.maxNarrowGlyphLogicalWidthCells {
+          ),
+            entry.admissionWidth
+              <= payload.cellSize.width * Self.maxNarrowGlyphLogicalWidthCells
+          {
             total += max(
               1,
               Int(
@@ -3332,7 +3335,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           character: cluster, font: font,
           boldFallback: needsBoldFallback,
           italicFallback: needsItalicFallback
-        ), entry.logicalWidth <= payload.cellSize.width * Self.maxNarrowGlyphLogicalWidthCells {
+        ), entry.admissionWidth <= payload.cellSize.width * Self.maxNarrowGlyphLogicalWidthCells {
           if isCellInBounds, index >= 0, index < cellGlyphs.count {
             let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
             cellGlyphs[index] = CellGlyph(
@@ -3602,7 +3605,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       color: UInt32
     ) -> Bool {
       guard index >= 0, index < cellGlyphs.count else { return false }
-      guard entry.logicalWidth <= glyphCellAdvance * Self.maxNarrowGlyphLogicalWidthCells else {
+      guard entry.admissionWidth <= glyphCellAdvance * Self.maxNarrowGlyphLogicalWidthCells else {
         return false
       }
       if !patchRows.isEmpty {

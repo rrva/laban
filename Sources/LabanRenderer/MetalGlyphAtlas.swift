@@ -29,6 +29,10 @@ public final class MetalGlyphAtlas {
     /// so wide CJK glyphs occupy two cells and italic-shifted glyphs reserve
     /// ink slop on either side.
     public let logicalWidth: CGFloat
+    /// Logical width used for narrow-cell admission. Synthetic bold and italic
+    /// raster slop is excluded: it keeps the styled ink from clipping but does
+    /// not make the terminal glyph semantically wider.
+    public let admissionWidth: CGFloat
   }
 
   private struct Key: Hashable {
@@ -288,11 +292,13 @@ public final class MetalGlyphAtlas {
 
     let leftSlop: CGFloat
     let rightSlop: CGFloat
+    let admissionWidth: CGFloat
     let logicalOriginX: CGFloat
     let drawOriginX: CGFloat
     if cjkMetricPlan != nil {
       leftSlop = 0
       rightSlop = 0
+      admissionWidth = baseTileCellWidth
       logicalOriginX = 0
       drawOriginX = max(0, ceil(-inkBounds.minX * horizontalScale))
     } else {
@@ -301,6 +307,7 @@ public final class MetalGlyphAtlas {
       let italicSlop: CGFloat = italicFallback ? ceil(cellHeight * abs(Self.italicShear)) : 0
       let boldSlop: CGFloat = boldFallback ? max(1.0 / scale, 0.5) : 0
       rightSlop = rightInkSlop + italicSlop + boldSlop
+      admissionWidth = baseTileCellWidth + leftSlop + rightInkSlop
       logicalOriginX = -leftSlop
       drawOriginX = leftSlop
     }
@@ -401,7 +408,8 @@ public final class MetalGlyphAtlas {
       pixelWidth: pixelW, pixelHeight: pixelH,
       originX: originX, originY: originY,
       logicalOriginX: logicalOriginX,
-      logicalWidth: logicalTileWidth)
+      logicalWidth: logicalTileWidth,
+      admissionWidth: admissionWidth)
   }
 
   private func normalizedInkBounds(_ bounds: CGRect, fallbackWidth: CGFloat) -> CGRect {
