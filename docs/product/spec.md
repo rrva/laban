@@ -237,12 +237,14 @@ decision if system fonts prove insufficient.
 The Appearance settings expose terminal background opacity and a separate
 opt-in for applying that opacity to explicitly colored terminal cell
 backgrounds. Opacity defaults to `1.0`, so existing installations and fresh
-installs remain fully opaque. The default terminal canvas and the sidebar base
-use the selected opacity; foreground glyphs, the cursor, selection, find
-highlights, images, input-method preedit, selected-tab cards, attention chrome,
-and explicitly colored or inverse-video cell backgrounds remain at their
-existing semantic strength. Enabling the explicit-cell option makes only those
-explicit and inverse terminal backgrounds follow the selected opacity.
+installs remain fully opaque. The default terminal canvas uses the selected
+opacity. The entire sidebar remains one fully opaque navigation surface,
+including its base, tab selectors, selected-tab card, status cues, and attention
+chrome. Foreground glyphs, the cursor, selection, find highlights, images,
+input-method preedit, and explicitly colored or inverse-video cell backgrounds
+remain at their existing semantic strength. Enabling the explicit-cell option
+makes only those explicit and inverse terminal backgrounds follow the selected
+opacity.
 
 Software, classic Metal, GPU-driven Metal, vector glyph, and Slug glyph are
 equivalent implementations of one renderer-neutral alpha and compositing
@@ -273,15 +275,19 @@ included in compatibility claims.
 | Apple Pinyin | not tested - compatibility unclaimed |
 | Rime/Squirrel | not tested - compatibility unclaimed |
 
-`System Blur` and a theme-neutral `Frosted` preset are approved follow-up
-direction, not shipped behavior in the direct-opacity feature. The follow-up
-uses a public behind-window AppKit material, never Liquid Glass behind terminal
-content, private filters, or a renderer blur shader. `Frosted` means 90%
-background opacity with System Blur and opaque explicit cell backgrounds; it
-does not change the active theme or auto-select itself from locale. The complete
-deferred contract and compositor evidence requirements are recorded in
-`execplans/active/terminal-background-transparency.md`, under “Deferred
-Follow-Up: System Blur and Frosted Preset.”
+The Appearance settings also expose **Background effect** (`None` / `System
+Blur`) and **Preset** (`Opaque` / `Frosted`). `System Blur` uses one public
+behind-window AppKit material beneath the terminal content plane only; the
+sidebar stays opaque. It never uses Liquid Glass behind terminal content,
+private filters, screen capture, or a renderer blur shader. `Frosted` atomically
+selects 90% terminal background opacity, System Blur, and opaque explicit cell
+backgrounds. It is theme-neutral, does not change the active theme, and is never
+selected from locale, language, input source, or CJK font. Reduce Transparency,
+native full screen, and legacy snapshot writers continue to force the effective
+surface opaque without discarding the requested preset. The implementation and
+compositor evidence requirements are tracked in
+`execplans/active/terminal-background-transparency.md`, under “Active Work:
+System Blur and Frosted Preset.”
 
 ---
 

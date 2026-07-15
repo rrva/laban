@@ -4,8 +4,8 @@ Date: 2026-07-15
 
 ## Status
 
-Accepted. Implementation is tracked in
-`execplans/active/terminal-background-transparency.md`.
+Accepted; amended 2026-07-15 after installed-app validation. Implementation is
+tracked in `execplans/active/terminal-background-transparency.md`.
 
 ## Context
 
@@ -26,10 +26,13 @@ of `UserDefaults`, AppKit material views, and policy decisions. RGB-subpixel
 glyph coverage additionally assumes a known opaque destination and is invalid
 when the desktop or another window can show through the target.
 
-The product contract in `docs/product/spec.md` ships direct background opacity
-first. A system material and the theme-neutral `Frosted` preset are approved
-direction, but their WindowServer behavior and performance evidence belong to a
-separate follow-up.
+Installed-app validation showed that applying opacity to the sidebar base while
+leaving tab cards opaque fragmented one navigation surface into mismatched
+layers, and that direct transparency without backdrop blur was not useful
+enough. The product contract therefore keeps the entire sidebar opaque and
+promotes a system material plus the theme-neutral `Frosted` preset into the
+active implementation. Their WindowServer behavior and performance evidence
+remain mandatory rather than being waived by the scope amendment.
 
 ## Decision
 
@@ -54,17 +57,19 @@ separate follow-up.
 - `TerminalSurfaceFrameRequest` carries already-resolved background-compositing
   options and the snapshot-background capability through local, remote,
   prewarm, switch, capture/replay, visible-app, and headless paths.
-  `FrameProducer` and `SidebarProducer` consume those values without reading
-  settings or AppKit state. The sidebar cache signature includes the
-  compositing options.
+  `FrameProducer` consumes those values without reading settings or AppKit
+  state. `SidebarProducer` deliberately does not consume terminal opacity, and
+  its cache signature excludes terminal compositing options so a terminal-only
+  opacity change can reuse the fully opaque navigation commands.
 - Each `RendererBackend` owns only presentation-surface opacity and the
   mechanics needed to honor compositing and damage. It does not resolve user or
   system policy. Software, classic, GPU-driven, vector, and Slug must implement
   the same output contract.
-- A future `TerminalBackgroundEffectHost` is an AppKit-only owner of at most one
+- `TerminalBackgroundEffectHost` is the AppKit-only owner of at most one
   behind-window material view below the terminal surface and every overlay. It
-  does not exist in the direct-opacity delivery, and neither `LabanCore` nor
-  `LabanRenderer` may depend on `NSVisualEffectView`.
+  is active only for effective System Blur, never extends under the opaque
+  sidebar, and neither `LabanCore` nor `LabanRenderer` may depend on
+  `NSVisualEffectView`.
 
 Requested values survive every temporary override. The effective resolver is
 pure and deterministic. Reduce Transparency forces an opaque surface first,
@@ -81,10 +86,11 @@ Frame-command colors remain in Laban's existing straight-RGBA representation.
 Each renderer converts them to premultiplied RGBA exactly once at its existing
 Core Graphics or shader boundary. Producers do not premultiply colors.
 
-Background-establishing primitives use `replace` compositing: terminal and
-sidebar base canvases, inherited/default cell backgrounds, and explicit or
-inverse cell backgrounds. `replace` means a primitive writes the final
-premultiplied RGBA bytes for its covered pixels, so replaying it is idempotent.
+Background-establishing primitives use `replace` compositing: the translucent
+terminal base canvas, the fully opaque sidebar base canvas, inherited/default
+cell backgrounds, and explicit or inverse cell backgrounds. `replace` means a
+primitive writes the final premultiplied RGBA bytes for its covered pixels, so
+replaying it is idempotent.
 The GPU-cell solid-background phase has the same semantics even when its input
 is `TerminalCellPayload` rather than a rectangle command. Glyph coverage,
 cursor, selection, find highlights, preedit content, images, selected-tab and
@@ -135,16 +141,15 @@ effective rendering choice only: the configured RGB-subpixel preference stays
 persisted and is restored as soon as the effective surface is opaque. Renderers
 without an RGB-subpixel mode keep their existing antialiasing behavior.
 
-### Native materials are deferred and remain an AppKit concern
+### Native materials remain an AppKit concern
 
-The direct-opacity feature creates no backdrop-effect view. `System Blur` and
-the localized, theme-neutral `Frosted` preset are deferred to a separate
-ExecPlan after direct opacity ships and passes review. `Frosted` is fixed at
-90% background opacity with System Blur and opaque explicit cell backgrounds;
-it never changes the active theme and is never selected from locale, language,
-input source, or CJK font.
+`System Blur` and the localized, theme-neutral `Frosted` preset are active work
+in the same ExecPlan. `Frosted` is fixed at 90% terminal background opacity
+with System Blur and opaque explicit cell backgrounds; it never changes the
+active theme and is never selected from locale, language, input source, or CJK
+font. The opaque sidebar remains outside the material-backed content plane.
 
-That follow-up must use a public semantic behind-window AppKit material hosted
+The effect host must use a public semantic behind-window AppKit material hosted
 below terminal content. It must not put Liquid Glass behind terminal content,
 use private Core Animation filters, capture the screen as a feedback loop,
 implement blur in a renderer shader, or expose a configurable blur radius.
@@ -164,6 +169,9 @@ contracts unchanged.
 - Semantic foreground and application-selected background content remains
   legible by default. Users can separately opt explicit and inverse cell
   backgrounds into opacity.
+- The sidebar remains one cohesive opaque navigation surface at every terminal
+  opacity and backdrop setting; terminal-only opacity changes do not rebuild its
+  memoized frame commands.
 - Renderer switching, prewarming, resizing, view reconstruction, session
   selection, accessibility changes, and full-screen transitions must apply the
   current effective state before presentation without changing terminal session
@@ -176,8 +184,10 @@ contracts unchanged.
 
 ## Applies To New Code
 
-- New producers must receive background-compositing policy through their frame
-  request. They must not read `UserDefaults`, AppKit state, or renderer type.
+- New terminal-content producers must receive background-compositing policy
+  through their frame request. Sidebar/navigation producers remain opaque and
+  must not consume terminal opacity. No producer reads `UserDefaults`, AppKit
+  state, or renderer type.
 - New renderers and renderer fast paths must support both replace and
   source-over semantics, full overwrite reset, partial transparent erasure,
   alpha-preserving scroll blits/readback, and live surface-opacity changes.
@@ -185,7 +195,7 @@ contracts unchanged.
   and negotiate writer capability; color equality is never a substitute.
 - Any new RGB-subpixel path must resolve to grayscale when its destination is
   not known opaque.
-- Any future background effect remains outside frame production and renderer
-  code. Changing the native-material constraints, `Frosted` definition, or the
+- Any background effect remains outside frame production and renderer code.
+  Changing the native-material constraints, `Frosted` definition, or the
   direct-opacity exclusions requires an ADR amendment and corresponding product
   contract update.
