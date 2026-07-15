@@ -19,6 +19,15 @@ final class TerminalTransparencySettingsTests: XCTestCase {
     let defaults = try makeDefaults()
 
     XCTAssertEqual(
+      TerminalTransparencySettings.requestedSettings(defaults: defaults),
+      TerminalTransparencyRequestedSettings(
+        configuration: TerminalTransparencyConfiguration(
+          backgroundOpacity: 1,
+          applyToExplicitCellBackgrounds: false,
+          backdropStyle: .none,
+          backgroundImageScaling: .fill),
+        managedBackgroundImage: nil))
+    XCTAssertEqual(
       TerminalTransparencySettings.requestedConfiguration(defaults: defaults),
       TerminalTransparencyConfiguration(
         backgroundOpacity: 1,
@@ -36,13 +45,16 @@ final class TerminalTransparencySettingsTests: XCTestCase {
       true, defaults: defaults, notificationCenter: notifications)
     TerminalTransparencySettings.setBackdropStyle(
       .systemBlur, defaults: defaults, notificationCenter: notifications)
+    TerminalTransparencySettings.setBackgroundImageScaling(
+      .stretch, defaults: defaults, notificationCenter: notifications)
 
     XCTAssertEqual(
       TerminalTransparencySettings.requestedConfiguration(defaults: defaults),
       TerminalTransparencyConfiguration(
         backgroundOpacity: 0.7,
         applyToExplicitCellBackgrounds: true,
-        backdropStyle: .systemBlur))
+        backdropStyle: .systemBlur,
+        backgroundImageScaling: .stretch))
     XCTAssertEqual(
       defaults.double(forKey: TerminalTransparencySettings.backgroundOpacityKey), 0.7)
     XCTAssertEqual(
@@ -52,6 +64,139 @@ final class TerminalTransparencySettingsTests: XCTestCase {
     XCTAssertEqual(
       defaults.string(forKey: TerminalTransparencySettings.backdropStyleKey),
       TerminalBackdropStyle.systemBlur.rawValue)
+    XCTAssertEqual(
+      defaults.string(forKey: TerminalTransparencySettings.backgroundImageScalingKey),
+      TerminalBackgroundImageScaling.stretch.rawValue)
+  }
+
+  func testImageSourceScalingAndManagedMetadataRoundTripAtomically() throws {
+    let defaults = try makeDefaults()
+    let notifications = NotificationCenter()
+    var count = 0
+    let token = notifications.addObserver(
+      forName: TerminalTransparencySettings.didChangeNotification,
+      object: nil,
+      queue: nil
+    ) { _ in count += 1 }
+    defer { notifications.removeObserver(token) }
+    let image = try XCTUnwrap(
+      TerminalManagedBackgroundImage(
+        identifier: "asset-4A9F.png",
+        displayName: "Mountains.png"))
+    let requested = TerminalTransparencyRequestedSettings(
+      configuration: TerminalTransparencyConfiguration(
+        backgroundOpacity: 0.61,
+        applyToExplicitCellBackgrounds: true,
+        backdropStyle: .image,
+        backgroundImageScaling: .fit),
+      managedBackgroundImage: image)
+
+    TerminalTransparencySettings.setRequestedSettings(
+      requested,
+      defaults: defaults,
+      notificationCenter: notifications)
+
+    XCTAssertEqual(TerminalTransparencySettings.requestedSettings(defaults: defaults), requested)
+    XCTAssertEqual(count, 1)
+    XCTAssertEqual(
+      defaults.string(forKey: TerminalTransparencySettings.backgroundImageIdentifierKey),
+      "asset-4A9F.png")
+    XCTAssertEqual(
+      defaults.string(forKey: TerminalTransparencySettings.backgroundImageDisplayNameKey),
+      "Mountains.png")
+  }
+
+  func testImageRequestPersistsWithoutManagedAssetReference() throws {
+    let defaults = try makeDefaults()
+    let notifications = NotificationCenter()
+    TerminalTransparencySettings.setRequestedConfiguration(
+      TerminalTransparencyConfiguration(
+        backgroundOpacity: 0.7,
+        applyToExplicitCellBackgrounds: false,
+        backdropStyle: .image,
+        backgroundImageScaling: .fill),
+      defaults: defaults,
+      notificationCenter: notifications)
+
+    let requested = TerminalTransparencySettings.requestedSettings(defaults: defaults)
+    XCTAssertEqual(requested.configuration.backdropStyle, .image)
+    XCTAssertEqual(requested.configuration.backgroundImageScaling, .fill)
+    XCTAssertNil(requested.managedBackgroundImage)
+  }
+
+  func testMalformedScalingFallsBackToFill() throws {
+    let defaults = try makeDefaults()
+    defaults.set(
+      "tile",
+      forKey: TerminalTransparencySettings.backgroundImageScalingKey)
+
+    XCTAssertEqual(
+      TerminalTransparencySettings.requestedConfiguration(defaults: defaults)
+        .backgroundImageScaling,
+      .fill)
+  }
+
+  func testManagedImageMetadataRejectsPathsAndMalformedStorage() throws {
+    XCTAssertNil(
+      TerminalManagedBackgroundImage(
+        identifier: "/tmp/wallpaper.png",
+        displayName: "wallpaper.png"))
+    XCTAssertNil(
+      TerminalManagedBackgroundImage(
+        identifier: "asset.png",
+        displayName: "/tmp/wallpaper.png"))
+    XCTAssertNil(
+      TerminalManagedBackgroundImage(
+        identifier: "../wallpaper.png",
+        displayName: "wallpaper.png"))
+
+    let defaults = try makeDefaults()
+    defaults.set(
+      "/Users/example/Desktop/wallpaper.png",
+      forKey: TerminalTransparencySettings.backgroundImageIdentifierKey)
+    defaults.set(
+      "wallpaper.png",
+      forKey: TerminalTransparencySettings.backgroundImageDisplayNameKey)
+    XCTAssertNil(
+      TerminalTransparencySettings.requestedSettings(defaults: defaults).managedBackgroundImage)
+
+    let notifications = NotificationCenter()
+    var count = 0
+    let token = notifications.addObserver(
+      forName: TerminalTransparencySettings.didChangeNotification,
+      object: nil,
+      queue: nil
+    ) { _ in count += 1 }
+    defer { notifications.removeObserver(token) }
+    TerminalTransparencySettings.setRequestedSettings(
+      TerminalTransparencySettings.requestedSettings(defaults: defaults),
+      defaults: defaults,
+      notificationCenter: notifications)
+
+    XCTAssertNil(
+      defaults.object(forKey: TerminalTransparencySettings.backgroundImageIdentifierKey))
+    XCTAssertNil(
+      defaults.object(forKey: TerminalTransparencySettings.backgroundImageDisplayNameKey))
+    XCTAssertEqual(count, 0)
+  }
+
+  func testDefaultsDoNotDependOnLocaleLanguageRegionOrInputSourceKeys() throws {
+    let defaults = try makeDefaults()
+    defaults.set(["zh-Hans", "sv-SE"], forKey: "AppleLanguages")
+    defaults.set("zh_CN", forKey: "AppleLocale")
+    defaults.set("SE", forKey: "AppleRegion")
+    defaults.set(
+      "com.apple.inputmethod.SCIM.ITABC", forKey: "AppleCurrentKeyboardLayoutInputSourceID")
+
+    XCTAssertEqual(
+      TerminalTransparencySettings.requestedSettings(defaults: defaults),
+      TerminalTransparencyRequestedSettings(
+        configuration: TerminalTransparencyConfiguration(
+          backgroundOpacity: 1,
+          applyToExplicitCellBackgrounds: false,
+          backdropStyle: .none,
+          backgroundImageScaling: .fill),
+        managedBackgroundImage: nil))
   }
 
   func testStoredOpacityIsClampedOnRead() throws {

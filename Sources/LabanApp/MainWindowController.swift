@@ -69,6 +69,8 @@ final class MainWindowController: NSWindowController {
       effectiveOpacity: status.effective.backgroundOpacity,
       requestedBackdropStyle: status.requested.backdropStyle.rawValue,
       effectiveBackdropStyle: status.effective.backdropStyle.rawValue,
+      backgroundImageScaling: status.requested.backgroundImageScaling.rawValue,
+      backgroundImageState: status.backgroundImageAvailability.rawValue,
       applyToExplicitCellBackgrounds: status.requested.applyToExplicitCellBackgrounds,
       forceOpaqueReason: status.effective.forceOpaqueReason?.rawValue,
       surfaceOpaque: status.effective.isSurfaceOpaque,

@@ -87,6 +87,15 @@ final class DebugActionDecodingTests: XCTestCase {
     XCTAssertEqual(request.backdropStyle, .systemBlur)
 
     guard
+      case .setBackgroundTransparency(let imageRequest) = try decode(
+        #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false,"backdropStyle":"image"}"#
+      )
+    else {
+      return XCTFail("Expected image setBackgroundTransparency action")
+    }
+    XCTAssertEqual(imageRequest.backdropStyle, .image)
+
+    guard
       case .setBackgroundTransparency(let legacyRequest) = try decode(
         #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false}"#
       )
@@ -104,7 +113,7 @@ final class DebugActionDecodingTests: XCTestCase {
     let schema = SetBackgroundTransparencyActionRequest.jsonSchema.toJSONSchema()
     let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
     let backdropStyle = try XCTUnwrap(properties["backdropStyle"] as? [String: Any])
-    XCTAssertEqual(backdropStyle["enum"] as? [String], ["none", "systemBlur"])
+    XCTAssertEqual(backdropStyle["enum"] as? [String], ["none", "systemBlur", "image"])
     let required = try XCTUnwrap(schema["required"] as? [String])
     XCTAssertFalse(required.contains("backdropStyle"))
   }

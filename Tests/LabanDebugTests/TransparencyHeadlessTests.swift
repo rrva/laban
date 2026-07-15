@@ -99,10 +99,42 @@ final class TransparencyHeadlessTests: XCTestCase {
     XCTAssertEqual(state.backdropSubviewCount, 0)
   }
 
+  func testHeadlessPreservesRequestedImageAndScalingWithoutNativeSource() throws {
+    let runtime = try makeRuntime(
+      opacity: 0.43,
+      cells: true,
+      effect: .image,
+      scaling: .stretch)
+    var state = try decode(runtime.transparencyState())
+
+    XCTAssertEqual(state.requestedOpacity, 0.43, accuracy: 0.0001)
+    XCTAssertEqual(state.effectiveOpacity, 0.43, accuracy: 0.0001)
+    XCTAssertEqual(state.requestedBackdropStyle, "image")
+    XCTAssertEqual(state.effectiveBackdropStyle, "none")
+    XCTAssertEqual(state.backgroundImageScaling, "stretch")
+    XCTAssertEqual(state.backgroundImageState, "headlessUnsupported")
+    XCTAssertNil(state.forceOpaqueReason)
+    XCTAssertFalse(state.surfaceOpaque)
+    XCTAssertEqual(state.backdropSubviewCount, 0)
+
+    let legacyResponse = runtime.applyAction(
+      Data(
+        #"{"action":"setBackgroundTransparency","opacity":0.5,"applyToExplicitCellBackgrounds":false}"#
+          .utf8))
+    XCTAssertEqual(legacyResponse.status, 200)
+    state = try decode(runtime.transparencyState())
+    XCTAssertEqual(state.requestedBackdropStyle, "image")
+    XCTAssertEqual(state.backgroundImageScaling, "stretch")
+    XCTAssertEqual(state.backgroundImageState, "headlessUnsupported")
+    XCTAssertEqual(state.effectiveBackdropStyle, "none")
+    XCTAssertEqual(state.backdropSubviewCount, 0)
+  }
+
   private func makeRuntime(
     opacity: Double,
     cells: Bool,
-    effect: TerminalBackdropStyle = .none
+    effect: TerminalBackdropStyle = .none,
+    scaling: TerminalBackgroundImageScaling = .default
   ) throws -> HeadlessDebugRuntime {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-transparency-headless-\(UUID().uuidString)")
@@ -116,6 +148,7 @@ final class TransparencyHeadlessTests: XCTestCase {
       rendererSelection: .software,
       backgroundOpacity: opacity,
       backgroundEffect: effect,
+      backgroundImageScaling: scaling,
       applyTransparencyToExplicitCellBackgrounds: cells,
       restorePersistedState: false)
   }

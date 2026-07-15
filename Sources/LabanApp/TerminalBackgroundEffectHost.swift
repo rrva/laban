@@ -47,7 +47,10 @@ final class TerminalBackgroundEffectHost: NSView {
 
   func apply(_ style: TerminalBackdropStyle) {
     switch style {
-    case .none:
+    case .none, .image:
+      // Image drawing belongs to the managed image-host implementation. Pure
+      // policy never resolves `.image` without an explicit available input,
+      // and this host must remain safe until that implementation lands.
       effectView?.removeFromSuperview()
       effectView = nil
       isHidden = true

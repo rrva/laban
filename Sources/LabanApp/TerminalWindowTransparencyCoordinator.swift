@@ -11,6 +11,7 @@ struct TerminalWindowTransparencyStatus: Equatable, Sendable {
   var snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
   var reduceTransparency: Bool
   var nativeFullscreen: Bool
+  var backgroundImageAvailability: TerminalBackgroundImageAvailability
   var backdropSubviewCount: Int
 }
 
@@ -40,6 +41,7 @@ final class TerminalWindowTransparencyCoordinator {
   private var effective: EffectiveTerminalTransparency
   private var reduceTransparency: Bool
   private var nativeFullscreen: Bool
+  private var backgroundImageAvailability: TerminalBackgroundImageAvailability
   private var snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
 
   init(
@@ -49,6 +51,7 @@ final class TerminalWindowTransparencyCoordinator {
     notificationCenter: NotificationCenter = .default,
     reduceTransparency: Bool,
     snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability,
+    backgroundImageAvailability: TerminalBackgroundImageAvailability = .none,
     backgroundEffectHost: TerminalBackgroundEffectHost? = nil
   ) {
     self.window = window
@@ -59,12 +62,14 @@ final class TerminalWindowTransparencyCoordinator {
     self.requested = TerminalTransparencySettings.requestedConfiguration(defaults: defaults)
     self.reduceTransparency = reduceTransparency
     self.nativeFullscreen = window.styleMask.contains(.fullScreen)
+    self.backgroundImageAvailability = backgroundImageAvailability
     self.snapshotBackgroundCapability = snapshotBackgroundCapability
     self.effective = TerminalTransparencyPolicy.resolve(
       requested: requested,
       reduceTransparency: reduceTransparency,
       nativeFullscreen: nativeFullscreen,
       supportsBehindWindowBlur: backgroundEffectHost?.supportsBehindWindowBlur == true,
+      backgroundImageAvailability: backgroundImageAvailability,
       snapshotBackgroundCapability: snapshotBackgroundCapability,
       headless: false)
 
@@ -86,6 +91,7 @@ final class TerminalWindowTransparencyCoordinator {
       snapshotBackgroundCapability: snapshotBackgroundCapability,
       reduceTransparency: reduceTransparency,
       nativeFullscreen: nativeFullscreen,
+      backgroundImageAvailability: backgroundImageAvailability,
       backdropSubviewCount: backgroundEffectHost?.backdropSubviewCount ?? 0)
   }
 
@@ -106,6 +112,18 @@ final class TerminalWindowTransparencyCoordinator {
   ) {
     guard snapshotBackgroundCapability != capability else { return }
     snapshotBackgroundCapability = capability
+    resolveAndApply(wake: wake)
+  }
+
+  /// URL-free availability supplied by the future managed image store. A
+  /// missing or invalid image fails closed through pure policy without
+  /// exposing a filesystem location to this coordinator or debug state.
+  func updateBackgroundImageAvailability(
+    _ availability: TerminalBackgroundImageAvailability,
+    wake: Bool = true
+  ) {
+    guard backgroundImageAvailability != availability else { return }
+    backgroundImageAvailability = availability
     resolveAndApply(wake: wake)
   }
 
@@ -166,6 +184,7 @@ final class TerminalWindowTransparencyCoordinator {
       reduceTransparency: reduceTransparency,
       nativeFullscreen: nativeFullscreen,
       supportsBehindWindowBlur: backgroundEffectHost?.supportsBehindWindowBlur == true,
+      backgroundImageAvailability: backgroundImageAvailability,
       snapshotBackgroundCapability: snapshotBackgroundCapability,
       headless: false)
     guard resolved != effective else {

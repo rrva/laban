@@ -270,6 +270,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
   public var effectiveOpacity: Double
   public var requestedBackdropStyle: String
   public var effectiveBackdropStyle: String
+  public var backgroundImageScaling: String
+  public var backgroundImageState: String
   public var applyToExplicitCellBackgrounds: Bool
   public var forceOpaqueReason: String?
   public var surfaceOpaque: Bool
@@ -294,6 +296,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     effectiveOpacity: Double,
     requestedBackdropStyle: String,
     effectiveBackdropStyle: String,
+    backgroundImageScaling: String,
+    backgroundImageState: String,
     applyToExplicitCellBackgrounds: Bool,
     forceOpaqueReason: String?,
     surfaceOpaque: Bool,
@@ -317,6 +321,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     self.effectiveOpacity = effectiveOpacity
     self.requestedBackdropStyle = requestedBackdropStyle
     self.effectiveBackdropStyle = effectiveBackdropStyle
+    self.backgroundImageScaling = backgroundImageScaling
+    self.backgroundImageState = backgroundImageState
     self.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
     self.forceOpaqueReason = forceOpaqueReason
     self.surfaceOpaque = surfaceOpaque
@@ -348,6 +354,12 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
         "effectiveBackdropStyle": .string(
           enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
           pattern: nil),
+        "backgroundImageScaling": .string(
+          enumValues: TerminalBackgroundImageScaling.allCases.map(\.rawValue), const: nil,
+          format: nil, pattern: nil),
+        "backgroundImageState": .string(
+          enumValues: TerminalBackgroundImageAvailability.allCases.map(\.rawValue), const: nil,
+          format: nil, pattern: nil),
         "applyToExplicitCellBackgrounds": .boolean,
         "forceOpaqueReason": .optional(
           .string(
@@ -355,6 +367,7 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
               TerminalTransparencyForceOpaqueReason.reduceTransparency.rawValue,
               TerminalTransparencyForceOpaqueReason.nativeFullscreen.rawValue,
               TerminalTransparencyForceOpaqueReason.legacySnapshotWriter.rawValue,
+              TerminalTransparencyForceOpaqueReason.backgroundImageUnavailable.rawValue,
             ], const: nil, format: nil, pattern: nil)),
         "surfaceOpaque": .boolean,
         "effectiveGlyphAntialiasing": .string(
@@ -379,7 +392,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
       ],
       required: [
         "requestedOpacity", "effectiveOpacity", "requestedBackdropStyle",
-        "effectiveBackdropStyle", "applyToExplicitCellBackgrounds", "surfaceOpaque",
+        "effectiveBackdropStyle", "backgroundImageScaling", "backgroundImageState",
+        "applyToExplicitCellBackgrounds", "surfaceOpaque",
         "effectiveGlyphAntialiasing", "snapshotExplicitBackgroundCapability",
         "configuredRenderer", "effectiveRenderer", "backdropSubviewCount",
         "systemReduceTransparency", "effectiveReduceTransparency", "nativeFullscreen",

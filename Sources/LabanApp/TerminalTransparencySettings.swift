@@ -1,6 +1,45 @@
 import Foundation
 import LabanCore
 
+/// URL-free reference to a private, app-managed image asset. The later image
+/// store resolves `identifier` only inside Laban's Application Support child.
+struct TerminalManagedBackgroundImage: Equatable, Sendable {
+  let identifier: String
+  let displayName: String
+
+  init?(identifier: String, displayName: String) {
+    guard Self.isSafeIdentifier(identifier), Self.isSafeDisplayName(displayName) else {
+      return nil
+    }
+    self.identifier = identifier
+    self.displayName = displayName
+  }
+
+  private static func isSafeIdentifier(_ value: String) -> Bool {
+    guard !value.isEmpty, value.count <= 255, value != ".", value != ".." else {
+      return false
+    }
+    return value.utf8.allSatisfy { byte in
+      (byte >= 48 && byte <= 57)
+        || (byte >= 65 && byte <= 90)
+        || (byte >= 97 && byte <= 122)
+        || byte == 45 || byte == 46 || byte == 95
+    }
+  }
+
+  private static func isSafeDisplayName(_ value: String) -> Bool {
+    guard !value.isEmpty, value.count <= 255, value != ".", value != ".." else {
+      return false
+    }
+    return !value.contains("/") && !value.contains("\\") && !value.contains("\0")
+  }
+}
+
+struct TerminalTransparencyRequestedSettings: Equatable, Sendable {
+  var configuration: TerminalTransparencyConfiguration
+  var managedBackgroundImage: TerminalManagedBackgroundImage?
+}
+
 /// Persists the user's requested transparency configuration. Temporary
 /// accessibility, full-screen, renderer, and session constraints belong in
 /// `TerminalTransparencyPolicy` and must not overwrite these values.
@@ -9,6 +48,9 @@ enum TerminalTransparencySettings {
   static let applyToExplicitCellBackgroundsKey =
     "LabanTerminalApplyOpacityToExplicitCellBackgrounds"
   static let backdropStyleKey = "LabanTerminalBackdropStyle"
+  static let backgroundImageScalingKey = "LabanTerminalBackgroundImageScaling"
+  static let backgroundImageIdentifierKey = "LabanTerminalBackgroundImageIdentifier"
+  static let backgroundImageDisplayNameKey = "LabanTerminalBackgroundImageDisplayName"
 
   static let didChangeNotification = Notification.Name(
     "LabanTerminalTransparencySettingsDidChange")
@@ -20,17 +62,39 @@ enum TerminalTransparencySettings {
   static func requestedConfiguration(
     defaults: UserDefaults = .standard
   ) -> TerminalTransparencyConfiguration {
+    requestedSettings(defaults: defaults).configuration
+  }
+
+  static func requestedSettings(
+    defaults: UserDefaults = .standard
+  ) -> TerminalTransparencyRequestedSettings {
     let opacity = (defaults.object(forKey: backgroundOpacityKey) as? NSNumber)?.doubleValue ?? 1
     let applyToExplicitCellBackgrounds =
       (defaults.object(forKey: applyToExplicitCellBackgroundsKey) as? Bool) ?? false
     let backdropStyle =
       defaults.string(forKey: backdropStyleKey)
       .flatMap(TerminalBackdropStyle.init(rawValue:)) ?? .none
+    let imageScaling =
+      defaults.string(forKey: backgroundImageScalingKey)
+      .flatMap(TerminalBackgroundImageScaling.init(rawValue:)) ?? .default
+    let managedBackgroundImage: TerminalManagedBackgroundImage?
+    if let identifier = defaults.string(forKey: backgroundImageIdentifierKey),
+      let displayName = defaults.string(forKey: backgroundImageDisplayNameKey)
+    {
+      managedBackgroundImage = TerminalManagedBackgroundImage(
+        identifier: identifier,
+        displayName: displayName)
+    } else {
+      managedBackgroundImage = nil
+    }
 
-    return TerminalTransparencyConfiguration(
-      backgroundOpacity: opacity,
-      applyToExplicitCellBackgrounds: applyToExplicitCellBackgrounds,
-      backdropStyle: backdropStyle)
+    return TerminalTransparencyRequestedSettings(
+      configuration: TerminalTransparencyConfiguration(
+        backgroundOpacity: opacity,
+        applyToExplicitCellBackgrounds: applyToExplicitCellBackgrounds,
+        backdropStyle: backdropStyle,
+        backgroundImageScaling: imageScaling),
+      managedBackgroundImage: managedBackgroundImage)
   }
 
   static func setBackgroundOpacity(
@@ -66,6 +130,28 @@ enum TerminalTransparencySettings {
       requested, defaults: defaults, notificationCenter: notificationCenter)
   }
 
+  static func setBackgroundImageScaling(
+    _ scaling: TerminalBackgroundImageScaling,
+    defaults: UserDefaults = .standard,
+    notificationCenter: NotificationCenter = .default
+  ) {
+    var requested = requestedConfiguration(defaults: defaults)
+    requested.backgroundImageScaling = scaling
+    setRequestedConfiguration(
+      requested, defaults: defaults, notificationCenter: notificationCenter)
+  }
+
+  static func setManagedBackgroundImage(
+    _ image: TerminalManagedBackgroundImage?,
+    defaults: UserDefaults = .standard,
+    notificationCenter: NotificationCenter = .default
+  ) {
+    var requested = requestedSettings(defaults: defaults)
+    requested.managedBackgroundImage = image
+    setRequestedSettings(
+      requested, defaults: defaults, notificationCenter: notificationCenter)
+  }
+
   /// Writes all requested fields as one logical change and posts at most one
   /// notification. Equal, already-clamped slider updates are no-ops, which
   /// prevents redundant full redraws during live UI input.
@@ -74,27 +160,64 @@ enum TerminalTransparencySettings {
     defaults: UserDefaults = .standard,
     notificationCenter: NotificationCenter = .default
   ) {
-    let previous = requestedConfiguration(defaults: defaults)
-    let normalized = TerminalTransparencyConfiguration(
-      backgroundOpacity: requested.backgroundOpacity,
-      applyToExplicitCellBackgrounds: requested.applyToExplicitCellBackgrounds,
-      backdropStyle: requested.backdropStyle)
+    var state = requestedSettings(defaults: defaults)
+    state.configuration = requested
+    setRequestedSettings(state, defaults: defaults, notificationCenter: notificationCenter)
+  }
+
+  /// Atomically persists configuration plus the URL-free managed image
+  /// reference. The image store uses this after a replacement is validated so
+  /// observers never see half of a source transition.
+  static func setRequestedSettings(
+    _ requested: TerminalTransparencyRequestedSettings,
+    defaults: UserDefaults = .standard,
+    notificationCenter: NotificationCenter = .default
+  ) {
+    let previous = requestedSettings(defaults: defaults)
+    let normalized = TerminalTransparencyRequestedSettings(
+      configuration: TerminalTransparencyConfiguration(
+        backgroundOpacity: requested.configuration.backgroundOpacity,
+        applyToExplicitCellBackgrounds:
+          requested.configuration.applyToExplicitCellBackgrounds,
+        backdropStyle: requested.configuration.backdropStyle,
+        backgroundImageScaling: requested.configuration.backgroundImageScaling),
+      managedBackgroundImage: requested.managedBackgroundImage)
 
     // Normalize missing or malformed persisted values even when their resolved
     // meaning matches the requested configuration. Such normalization is not a
     // user-visible change and therefore does not emit a redraw notification.
-    if persistedOpacity(defaults: defaults) != normalized.backgroundOpacity {
-      defaults.set(normalized.backgroundOpacity, forKey: backgroundOpacityKey)
+    if persistedOpacity(defaults: defaults) != normalized.configuration.backgroundOpacity {
+      defaults.set(normalized.configuration.backgroundOpacity, forKey: backgroundOpacityKey)
     }
     if persistedExplicitCellSetting(defaults: defaults)
-      != normalized.applyToExplicitCellBackgrounds
+      != normalized.configuration.applyToExplicitCellBackgrounds
     {
       defaults.set(
-        normalized.applyToExplicitCellBackgrounds,
+        normalized.configuration.applyToExplicitCellBackgrounds,
         forKey: applyToExplicitCellBackgroundsKey)
     }
-    if defaults.string(forKey: backdropStyleKey) != normalized.backdropStyle.rawValue {
-      defaults.set(normalized.backdropStyle.rawValue, forKey: backdropStyleKey)
+    if defaults.string(forKey: backdropStyleKey)
+      != normalized.configuration.backdropStyle.rawValue
+    {
+      defaults.set(normalized.configuration.backdropStyle.rawValue, forKey: backdropStyleKey)
+    }
+    if defaults.string(forKey: backgroundImageScalingKey)
+      != normalized.configuration.backgroundImageScaling.rawValue
+    {
+      defaults.set(
+        normalized.configuration.backgroundImageScaling.rawValue,
+        forKey: backgroundImageScalingKey)
+    }
+    if let image = normalized.managedBackgroundImage {
+      if defaults.string(forKey: backgroundImageIdentifierKey) != image.identifier {
+        defaults.set(image.identifier, forKey: backgroundImageIdentifierKey)
+      }
+      if defaults.string(forKey: backgroundImageDisplayNameKey) != image.displayName {
+        defaults.set(image.displayName, forKey: backgroundImageDisplayNameKey)
+      }
+    } else {
+      defaults.removeObject(forKey: backgroundImageIdentifierKey)
+      defaults.removeObject(forKey: backgroundImageDisplayNameKey)
     }
 
     guard normalized != previous else { return }

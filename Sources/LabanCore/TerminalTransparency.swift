@@ -3,6 +3,27 @@ import Foundation
 public enum TerminalBackdropStyle: String, CaseIterable, Codable, Sendable {
   case none
   case systemBlur
+  case image
+}
+
+/// Geometry requested for a managed terminal background image. The value is
+/// pure policy state: AppKit owns the eventual drawing implementation.
+public enum TerminalBackgroundImageScaling: String, CaseIterable, Codable, Sendable {
+  case fill
+  case fit
+  case stretch
+
+  public static let `default`: Self = .fill
+}
+
+/// URL-free availability input for resolving an Image backdrop. File lookup
+/// and decoding belong to the later AppKit image-store boundary.
+public enum TerminalBackgroundImageAvailability: String, CaseIterable, Codable, Sendable {
+  case none
+  case available
+  case missing
+  case invalid
+  case headlessUnsupported
 }
 
 /// The transparency values requested by the user. System and session policy
@@ -20,15 +41,18 @@ public struct TerminalTransparencyConfiguration: Equatable, Sendable {
 
   public var applyToExplicitCellBackgrounds: Bool
   public var backdropStyle: TerminalBackdropStyle
+  public var backgroundImageScaling: TerminalBackgroundImageScaling
 
   public init(
     backgroundOpacity: Double,
     applyToExplicitCellBackgrounds: Bool,
-    backdropStyle: TerminalBackdropStyle
+    backdropStyle: TerminalBackdropStyle,
+    backgroundImageScaling: TerminalBackgroundImageScaling = .default
   ) {
     self.storedBackgroundOpacity = Self.clamp(backgroundOpacity)
     self.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
     self.backdropStyle = backdropStyle
+    self.backgroundImageScaling = backgroundImageScaling
   }
 
   private static func clamp(_ opacity: Double) -> Double {
@@ -43,6 +67,7 @@ public enum TerminalTransparencyForceOpaqueReason: String, Codable, Sendable {
   case reduceTransparency
   case nativeFullscreen
   case legacySnapshotWriter
+  case backgroundImageUnavailable
 }
 
 public struct EffectiveTerminalTransparency: Equatable, Sendable {
@@ -76,6 +101,7 @@ public enum TerminalTransparencyPolicy {
     reduceTransparency: Bool,
     nativeFullscreen: Bool,
     supportsBehindWindowBlur: Bool,
+    backgroundImageAvailability: TerminalBackgroundImageAvailability = .none,
     snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability,
     headless: Bool
   ) -> EffectiveTerminalTransparency {
@@ -86,6 +112,12 @@ public enum TerminalTransparencyPolicy {
       forceOpaqueReason = .nativeFullscreen
     } else if snapshotBackgroundCapability == .legacy {
       forceOpaqueReason = .legacySnapshotWriter
+    } else if requested.backgroundOpacity < 1,
+      requested.backdropStyle == .image,
+      !headless,
+      backgroundImageAvailability != .available
+    {
+      forceOpaqueReason = .backgroundImageUnavailable
     } else {
       forceOpaqueReason = nil
     }
@@ -109,6 +141,8 @@ public enum TerminalTransparencyPolicy {
         backdropStyle = .none
       case .systemBlur:
         backdropStyle = supportsBehindWindowBlur && !headless ? .systemBlur : .none
+      case .image:
+        backdropStyle = !headless && backgroundImageAvailability == .available ? .image : .none
       }
     }
 

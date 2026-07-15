@@ -8,6 +8,8 @@
     "effectiveOpacity",
     "requestedBackdropStyle",
     "effectiveBackdropStyle",
+    "backgroundImageScaling",
+    "backgroundImageState",
     "applyToExplicitCellBackgrounds",
     "surfaceOpaque",
     "effectiveGlyphAntialiasing",
@@ -27,12 +29,22 @@
   "properties": {
     "requestedOpacity": {"type": "number", "minimum": 0, "maximum": 1},
     "effectiveOpacity": {"type": "number", "minimum": 0, "maximum": 1},
-    "requestedBackdropStyle": {"enum": ["none", "systemBlur"]},
-    "effectiveBackdropStyle": {"enum": ["none", "systemBlur"]},
+    "requestedBackdropStyle": {"enum": ["none", "systemBlur", "image"]},
+    "effectiveBackdropStyle": {"enum": ["none", "systemBlur", "image"]},
+    "backgroundImageScaling": {"enum": ["fill", "fit", "stretch"]},
+    "backgroundImageState": {
+      "enum": ["none", "available", "missing", "invalid", "headlessUnsupported"]
+    },
     "applyToExplicitCellBackgrounds": {"type": "boolean"},
     "forceOpaqueReason": {
       "type": ["string", "null"],
-      "enum": ["reduceTransparency", "nativeFullscreen", "legacySnapshotWriter", null]
+      "enum": [
+        "reduceTransparency",
+        "nativeFullscreen",
+        "legacySnapshotWriter",
+        "backgroundImageUnavailable",
+        null
+      ]
     },
     "surfaceOpaque": {"type": "boolean"},
     "effectiveGlyphAntialiasing": {"type": "string"},

@@ -98,6 +98,8 @@ final class TransparencyDiagnosticsTests: XCTestCase {
       effectiveOpacity: 0.7,
       requestedBackdropStyle: "none",
       effectiveBackdropStyle: "none",
+      backgroundImageScaling: "fill",
+      backgroundImageState: "none",
       applyToExplicitCellBackgrounds: false,
       forceOpaqueReason: nil,
       surfaceOpaque: false,

@@ -17,6 +17,11 @@ extension HeadlessDebugRuntime {
       effectiveOpacity: effectiveTransparency.backgroundOpacity,
       requestedBackdropStyle: requestedTransparency.backdropStyle.rawValue,
       effectiveBackdropStyle: effectiveTransparency.backdropStyle.rawValue,
+      backgroundImageScaling: requestedTransparency.backgroundImageScaling.rawValue,
+      backgroundImageState:
+        requestedTransparency.backdropStyle == .image
+        ? TerminalBackgroundImageAvailability.headlessUnsupported.rawValue
+        : TerminalBackgroundImageAvailability.none.rawValue,
       applyToExplicitCellBackgrounds:
         requestedTransparency.applyToExplicitCellBackgrounds,
       forceOpaqueReason: effectiveTransparency.forceOpaqueReason?.rawValue,
@@ -48,7 +53,8 @@ extension HeadlessDebugRuntime {
     let next = TerminalTransparencyConfiguration(
       backgroundOpacity: request.opacity,
       applyToExplicitCellBackgrounds: request.applyToExplicitCellBackgrounds,
-      backdropStyle: request.backdropStyle ?? requestedTransparency.backdropStyle)
+      backdropStyle: request.backdropStyle ?? requestedTransparency.backdropStyle,
+      backgroundImageScaling: requestedTransparency.backgroundImageScaling)
     guard next != requestedTransparency else { return actionResult(ok: true) }
     requestedTransparency = next
     resolveTransparencyAndRenderUnlocked()
@@ -101,6 +107,8 @@ extension HeadlessDebugRuntime {
       reduceTransparency: accessibilityDisplayFlags.reduceTransparency,
       nativeFullscreen: false,
       supportsBehindWindowBlur: false,
+      backgroundImageAvailability:
+        requestedTransparency.backdropStyle == .image ? .headlessUnsupported : .none,
       snapshotBackgroundCapability: .inProcess,
       headless: true)
   }

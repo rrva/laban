@@ -192,6 +192,7 @@ public final class HeadlessDebugRuntime {
     persistenceBaseURL: URL? = nil,
     backgroundOpacity: Double = 1,
     backgroundEffect: TerminalBackdropStyle = .none,
+    backgroundImageScaling: TerminalBackgroundImageScaling = .default,
     applyTransparencyToExplicitCellBackgrounds: Bool = false,
     restorePersistedState: Bool = true,
     restoreOnLaunchEnabled: @escaping () -> Bool = { true }
@@ -212,12 +213,15 @@ public final class HeadlessDebugRuntime {
     self.requestedTransparency = TerminalTransparencyConfiguration(
       backgroundOpacity: backgroundOpacity,
       applyToExplicitCellBackgrounds: applyTransparencyToExplicitCellBackgrounds,
-      backdropStyle: backgroundEffect)
+      backdropStyle: backgroundEffect,
+      backgroundImageScaling: backgroundImageScaling)
     self.effectiveTransparency = TerminalTransparencyPolicy.resolve(
       requested: self.requestedTransparency,
       reduceTransparency: false,
       nativeFullscreen: false,
       supportsBehindWindowBlur: false,
+      backgroundImageAvailability:
+        backgroundEffect == .image ? .headlessUnsupported : .none,
       snapshotBackgroundCapability: .inProcess,
       headless: true)
     let configuredBackend = try TerminalSessionBackend.configured()

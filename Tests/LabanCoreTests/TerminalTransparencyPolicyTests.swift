@@ -18,8 +18,10 @@ final class TerminalTransparencyPolicyTests: XCTestCase {
   }
 
   func testDefaultOpaqueRequestResolvesToOpaqueSurface() {
-    let effective = resolve(configuration(opacity: 1))
+    let requested = configuration(opacity: 1)
+    let effective = resolve(requested)
 
+    XCTAssertEqual(requested.backgroundImageScaling, .fill)
     XCTAssertEqual(effective.backgroundOpacity, 1)
     XCTAssertFalse(effective.applyToExplicitCellBackgrounds)
     XCTAssertEqual(effective.backdropStyle, .none)
@@ -81,6 +83,94 @@ final class TerminalTransparencyPolicyTests: XCTestCase {
     XCTAssertTrue(effective.isSurfaceOpaque)
   }
 
+  func testAvailableImageBackdropPreservesRequestedScaling() {
+    let requested = configuration(
+      opacity: 0.64,
+      backdropStyle: .image,
+      backgroundImageScaling: .fit)
+    let effective = resolve(requested, backgroundImageAvailability: .available)
+
+    XCTAssertEqual(requested.backdropStyle, .image)
+    XCTAssertEqual(requested.backgroundImageScaling, .fit)
+    XCTAssertEqual(effective.backgroundOpacity, 0.64)
+    XCTAssertEqual(effective.backdropStyle, .image)
+    XCTAssertNil(effective.forceOpaqueReason)
+    XCTAssertFalse(effective.isSurfaceOpaque)
+  }
+
+  func testUnavailableImageBackdropFailsClosedForEveryVisibleUnavailableState() {
+    let requested = configuration(
+      opacity: 0.64,
+      applyToExplicitCellBackgrounds: true,
+      backdropStyle: .image,
+      backgroundImageScaling: .stretch)
+
+    for availability in [
+      TerminalBackgroundImageAvailability.none,
+      .missing,
+      .invalid,
+      .headlessUnsupported,
+    ] {
+      let effective = resolve(
+        requested,
+        backgroundImageAvailability: availability)
+      XCTAssertEqual(effective.backgroundOpacity, 1, availability.rawValue)
+      XCTAssertTrue(effective.applyToExplicitCellBackgrounds, availability.rawValue)
+      XCTAssertEqual(effective.backdropStyle, .none, availability.rawValue)
+      XCTAssertEqual(
+        effective.forceOpaqueReason, .backgroundImageUnavailable, availability.rawValue)
+      XCTAssertTrue(effective.isSurfaceOpaque, availability.rawValue)
+    }
+
+    XCTAssertEqual(requested.backdropStyle, .image)
+    XCTAssertEqual(requested.backgroundImageScaling, .stretch)
+  }
+
+  func testOpaqueImageRequestDoesNotReportUnavailableInvisibleBackdrop() {
+    let effective = resolve(
+      configuration(opacity: 1, backdropStyle: .image),
+      backgroundImageAvailability: .missing)
+
+    XCTAssertEqual(effective.backgroundOpacity, 1)
+    XCTAssertEqual(effective.backdropStyle, .none)
+    XCTAssertNil(effective.forceOpaqueReason)
+    XCTAssertTrue(effective.isSurfaceOpaque)
+  }
+
+  func testHeadlessImageRequestPreservesOpacityAndRequestWithoutNativeBackdrop() {
+    let requested = configuration(
+      opacity: 0.42,
+      backdropStyle: .image,
+      backgroundImageScaling: .stretch)
+    let effective = resolve(
+      requested,
+      backgroundImageAvailability: .headlessUnsupported,
+      headless: true)
+
+    XCTAssertEqual(requested.backdropStyle, .image)
+    XCTAssertEqual(requested.backgroundImageScaling, .stretch)
+    XCTAssertEqual(effective.backgroundOpacity, 0.42)
+    XCTAssertEqual(effective.backdropStyle, .none)
+    XCTAssertNil(effective.forceOpaqueReason)
+    XCTAssertFalse(effective.isSurfaceOpaque)
+  }
+
+  func testImageAvailabilityRestoresRequestedBackdrop() {
+    let requested = configuration(
+      opacity: 0.58,
+      backdropStyle: .image,
+      backgroundImageScaling: .fit)
+    let missing = resolve(requested, backgroundImageAvailability: .missing)
+    let restored = resolve(requested, backgroundImageAvailability: .available)
+
+    XCTAssertEqual(missing.forceOpaqueReason, .backgroundImageUnavailable)
+    XCTAssertEqual(missing.backgroundOpacity, 1)
+    XCTAssertNil(restored.forceOpaqueReason)
+    XCTAssertEqual(restored.backgroundOpacity, 0.58)
+    XCTAssertEqual(restored.backdropStyle, .image)
+    XCTAssertEqual(requested.backgroundImageScaling, .fit)
+  }
+
   func testReduceTransparencyForcesOpaqueAndPreservesRequestedCellChoice() {
     let effective = resolve(
       configuration(
@@ -135,13 +225,14 @@ final class TerminalTransparencyPolicyTests: XCTestCase {
   }
 
   func testForceOpaqueReasonPriorityIsDeterministic() {
-    let requested = configuration(opacity: 0.7)
+    let requested = configuration(opacity: 0.7, backdropStyle: .image)
 
     XCTAssertEqual(
       resolve(
         requested,
         reduceTransparency: true,
         nativeFullscreen: true,
+        backgroundImageAvailability: .missing,
         snapshotBackgroundCapability: .legacy
       ).forceOpaqueReason,
       .reduceTransparency)
@@ -149,15 +240,23 @@ final class TerminalTransparencyPolicyTests: XCTestCase {
       resolve(
         requested,
         nativeFullscreen: true,
+        backgroundImageAvailability: .missing,
         snapshotBackgroundCapability: .legacy
       ).forceOpaqueReason,
       .nativeFullscreen)
     XCTAssertEqual(
       resolve(
         requested,
+        backgroundImageAvailability: .missing,
         snapshotBackgroundCapability: .legacy
       ).forceOpaqueReason,
       .legacySnapshotWriter)
+    XCTAssertEqual(
+      resolve(
+        requested,
+        backgroundImageAvailability: .missing
+      ).forceOpaqueReason,
+      .backgroundImageUnavailable)
   }
 
   func testRemovingOneOverrideDoesNotRestoreWhileAnotherRemains() {
@@ -218,12 +317,14 @@ final class TerminalTransparencyPolicyTests: XCTestCase {
   private func configuration(
     opacity: Double,
     applyToExplicitCellBackgrounds: Bool = false,
-    backdropStyle: TerminalBackdropStyle = .none
+    backdropStyle: TerminalBackdropStyle = .none,
+    backgroundImageScaling: TerminalBackgroundImageScaling = .default
   ) -> TerminalTransparencyConfiguration {
     TerminalTransparencyConfiguration(
       backgroundOpacity: opacity,
       applyToExplicitCellBackgrounds: applyToExplicitCellBackgrounds,
-      backdropStyle: backdropStyle)
+      backdropStyle: backdropStyle,
+      backgroundImageScaling: backgroundImageScaling)
   }
 
   private func resolve(
@@ -231,6 +332,7 @@ final class TerminalTransparencyPolicyTests: XCTestCase {
     reduceTransparency: Bool = false,
     nativeFullscreen: Bool = false,
     supportsBehindWindowBlur: Bool = false,
+    backgroundImageAvailability: TerminalBackgroundImageAvailability = .none,
     snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability = .inProcess,
     headless: Bool = false
   ) -> EffectiveTerminalTransparency {
@@ -239,6 +341,7 @@ final class TerminalTransparencyPolicyTests: XCTestCase {
       reduceTransparency: reduceTransparency,
       nativeFullscreen: nativeFullscreen,
       supportsBehindWindowBlur: supportsBehindWindowBlur,
+      backgroundImageAvailability: backgroundImageAvailability,
       snapshotBackgroundCapability: snapshotBackgroundCapability,
       headless: headless)
   }

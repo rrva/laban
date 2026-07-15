@@ -113,6 +113,44 @@ final class TerminalWindowTransparencyCoordinatorTests: XCTestCase {
     XCTAssertEqual(coordinator.status.backdropSubviewCount, 0)
   }
 
+  func testImageAvailabilityFailsClosedThenRestoresWithoutChangingRequest() throws {
+    let defaults = try makeDefaults()
+    let notifications = NotificationCenter()
+    let requested = TerminalTransparencyConfiguration(
+      backgroundOpacity: 0.67,
+      applyToExplicitCellBackgrounds: false,
+      backdropStyle: .image,
+      backgroundImageScaling: .fit)
+    TerminalTransparencySettings.setRequestedConfiguration(
+      requested,
+      defaults: defaults,
+      notificationCenter: notifications)
+    let view = try makeView()
+    let window = NSWindow()
+    let coordinator = TerminalWindowTransparencyCoordinator(
+      window: window,
+      terminalView: view,
+      defaults: defaults,
+      notificationCenter: notifications,
+      reduceTransparency: false,
+      snapshotBackgroundCapability: .supported,
+      backgroundImageAvailability: .missing)
+
+    XCTAssertEqual(coordinator.status.requested, requested)
+    XCTAssertEqual(coordinator.status.backgroundImageAvailability, .missing)
+    XCTAssertEqual(
+      coordinator.status.effective.forceOpaqueReason, .backgroundImageUnavailable)
+    XCTAssertTrue(window.isOpaque)
+
+    coordinator.updateBackgroundImageAvailability(.available)
+    XCTAssertEqual(coordinator.status.requested, requested)
+    XCTAssertEqual(coordinator.status.backgroundImageAvailability, .available)
+    XCTAssertEqual(coordinator.status.effective.backgroundOpacity, 0.67)
+    XCTAssertEqual(coordinator.status.effective.backdropStyle, .image)
+    XCTAssertNil(coordinator.status.effective.forceOpaqueReason)
+    XCTAssertFalse(window.isOpaque)
+  }
+
   func testSystemBlurChildFollowsAllTemporaryForceOpaqueTransitions() throws {
     let defaults = try makeDefaults()
     let notifications = NotificationCenter()
