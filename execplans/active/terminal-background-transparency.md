@@ -23,10 +23,11 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - [x] (2026-07-15) Add the direct-opacity product contract, approved deferred System Blur/Frosted direction, and accepted ADR 0028 before implementation changes.
 - [x] (2026-07-15) Implement the shared requested/effective policy, notification-backed settings, explicit-background snapshot bit, ABI-1 transport, and negotiated helper capability with focused tests.
 - [x] (2026-07-15) Capture the immutable pre-renderer opaque Slug/vector release baseline at commit `0779195` with all 4,800 samples accepted across ten independent processes.
-- [ ] Deliver the first end-to-end Slug implementation, including AppKit window transparency and the grayscale antialiasing fallback.
+- [x] (2026-07-15) Deliver the first end-to-end Slug implementation, including AppKit window transparency and the grayscale antialiasing fallback.
 - [x] (2026-07-15) Add equivalent software, classic Metal, GPU-driven Metal, vector glyph, and Slug replace-compositing support; pass the 25-test renderer alpha/idempotence/AA suite across all five selectors.
-- [ ] Add live settings UI, full-screen and accessibility policy, debug/headless control, screenshots, alpha probes, and performance evidence.
-- [ ] Run the full repository gates, install and exercise `~/Laban.app`, and pass the fresh-agent Review Gate.
+- [x] (2026-07-15) Add the live settings UI, full-screen and accessibility policy, fixture-authorized GUI and headless controls, renderer-identity parity matrix, alpha probes, transition smoke, and passing fixed renderer benchmark evidence.
+- [ ] Capture the real Apple Pinyin installed-window evidence and the five-run compositor evidence on the exact base-M1/8-GiB/60-Hz lane; the current Computer Use bridge does not complete state or action requests, and this 16-GiB host is rejected by the pinned lane contract.
+- [ ] Finish repository closeout and pass the fresh-agent Review Gate. The app install and five-cycle transition smoke pass; `./scripts/check` reaches the 442-test suite but the unrelated `LabanSessionTests.testDECXCPRRepliesWithDECPrivateMarker` failure also reproduces at merge base `3599f60`.
 
 ## Surprises & Discoveries
 
@@ -59,6 +60,24 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 
 - Observation: the implementation host matches the required lane's stable macOS build, Macmini9,1 model, base Apple M1 chip, and 60 Hz display, but has 16 GiB rather than the required 8 GiB memory.
   Evidence: host identity captured on 2026-07-15 reports macOS 26.5.1 build 25F80, Macmini9,1, Apple M1, 17,179,869,184 bytes, and 60 Hz. The compositor profiler must reject this host on `memoryBytes`; no compositor summary is claimed from it.
+
+- Observation: the first end-to-end renderer comparison failed only vector opaque CPU p99 even though its p50, p95, wall metrics, and direct-transparency metrics improved; an unchanged repeat passed every fixed gate.
+  Evidence: the accepted repeat used 20 distinct release-benchmark processes and accepted all 4,800 samples. Vector opaque median CPU p50/p95/p99 was `1.097/1.401/1.696 ms` against the immutable baseline p99 limit of `1.939 ms`. No code, baseline, threshold, aggregation, or methodology changed; `.artifacts/transparency/renderer-comparison.json` is the passing repeat.
+
+- Observation: the renderer parity evidence script initially assumed TCP readiness, treated state-returning debug actions as if they returned an `ok` field, and used an invalid `jq all` expression plus the wrong command kind for its find probe.
+  Evidence: commit `16e2126` added Unix-socket readiness, validates each action's actual typed response, and corrected the probe expressions. The matrix now passes all five exact configured/effective renderer identities with null fallback reasons and nonempty PNGs.
+
+- Observation: the full repository gate has one failure unrelated to transparency: DEC private cursor-position reporting returns no reply in `LabanSessionTests.testDECXCPRRepliesWithDECPrivateMarker`.
+  Evidence: `./scripts/check` passed static checks, formal-spec drift checks, fuzz/build work, and reached the 442-test suite before that single failure. The same isolated test fails with the same empty reply in a clean validation worktree detached at merge base `3599f60`, while neighboring terminal-query tests pass.
+
+- Observation: Computer Use can enumerate applications in this environment, but state reads and input actions never complete for Finder or Laban, including after resetting its Node kernel and trying both the bundle identifier and application path.
+  Evidence: repeated `get_app_state`, `press_key`, and `type_text` calls hung without returning. Therefore no Apple Pinyin or labeled visible-window claim is fabricated; the CJK evidence manifest deliberately remains absent until a working UI bridge or human-operated run supplies it.
+
+## Outcomes & Retrospective
+
+As of 2026-07-15 the code implementation is renderer-complete. One requested/effective policy now drives software, classic Metal, GPU-driven Metal, vector glyph, and Slug; all five use overwrite/replace background semantics, preserve opaque semantic regions, keep retained damage idempotent, flip presentation opacity live, and force vector-family grayscale antialiasing only while the surface is translucent. The Appearance controls, generated 11-locale catalog, AppKit accessibility/full-screen coordinator, fixture-only diagnostic authorization, headless parity, and installed-app transition flow are implemented and mechanically exercised.
+
+Renderer correctness and renderer-side cost are no longer outstanding risks: focused suites, the five-backend authenticated parity matrix, a five-cycle installed-app transition smoke, and the immutable-baseline comparison pass. Closeout remains incomplete for three explicitly external reasons: this host cannot produce the required 8-GiB compositor artifact, the Computer Use bridge cannot currently drive and record Apple Pinyin, and the repository-wide test command contains a merge-base-reproducible DECXCPR failure. The Review Gate must record these failures rather than converting missing evidence into a pass.
 
 ## Research Snapshot: July 2026 State of the Art
 
