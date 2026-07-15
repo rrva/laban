@@ -127,10 +127,16 @@ public final class MetalGlyphAtlas {
   /// glyphs rasterize after the swap.
   public private(set) var rasterizedGlyphCount = 0
 
-  // Shelf packer state.
-  private var shelfX: Int = 0
-  private var shelfY: Int = 0
-  private var shelfHeight: Int = 0
+  // First-fit shelves reuse row tails left by wider styled glyphs instead of
+  // stranding that texture space when a new row opens.
+  private struct Shelf {
+    var nextX: Int
+    let originY: Int
+    let height: Int
+  }
+
+  private var shelves: [Shelf] = []
+  private var packedHeight: Int = 0
 
   public init?(
     device: MTLDevice,
@@ -292,12 +298,14 @@ public final class MetalGlyphAtlas {
 
     let leftSlop: CGFloat
     let rightSlop: CGFloat
+    let rasterRightSlop: CGFloat
     let admissionWidth: CGFloat
     let logicalOriginX: CGFloat
     let drawOriginX: CGFloat
     if cjkMetricPlan != nil {
       leftSlop = 0
       rightSlop = 0
+      rasterRightSlop = 0
       admissionWidth = baseTileCellWidth
       logicalOriginX = 0
       drawOriginX = max(0, ceil(-inkBounds.minX * horizontalScale))
@@ -307,12 +315,27 @@ public final class MetalGlyphAtlas {
       let italicSlop: CGFloat = italicFallback ? ceil(cellHeight * abs(Self.italicShear)) : 0
       let boldSlop: CGFloat = boldFallback ? max(1.0 / scale, 0.5) : 0
       rightSlop = rightInkSlop + italicSlop + boldSlop
+      rasterRightSlop = italicSlop + boldSlop
       admissionWidth = baseTileCellWidth + leftSlop + rightInkSlop
       logicalOriginX = -leftSlop
       drawOriginX = leftSlop
     }
     let logicalTileWidth = baseTileCellWidth + leftSlop + rightSlop
-    let pixelW = max(1, Int((logicalTileWidth * scale).rounded(.up)))
+    // The texture tile only needs to cover ink. Keep `logicalTileWidth` as the
+    // glyph's layout/admission extent, but do not allocate the transparent
+    // remainder of a terminal cell for narrow glyphs such as punctuation and
+    // spaces. CJK normalization deliberately retains its full target width.
+    let rasterTileWidth =
+      cjkMetricPlan == nil
+      ? leftSlop + max(0, inkBounds.maxX) + rasterRightSlop
+      : logicalTileWidth
+    let rasterPixelWidth = rasterTileWidth * scale
+    // CoreGraphics can cover the edge pixel when a path ends exactly on its
+    // boundary. Keep that pixel without adding a blanket guard to every tile.
+    let rightEdgeIsPixelAligned =
+      abs(rasterPixelWidth - rasterPixelWidth.rounded()) < 0.000_001
+    let antialiasGuard = cjkMetricPlan == nil && rightEdgeIsPixelAligned ? 1 : 0
+    let pixelW = max(1, Int(rasterPixelWidth.rounded(.up)) + antialiasGuard)
     let pixelH = max(1, Int((cellHeight * scale).rounded(.up)))
 
     guard pixelW <= textureSize, pixelH <= textureSize else {
@@ -320,21 +343,24 @@ public final class MetalGlyphAtlas {
       return nil
     }
 
-    // Allocate from the shelf packer.
-    if shelfX + pixelW > textureSize {
-      // New shelf row.
-      shelfX = 0
-      shelfY += shelfHeight
-      shelfHeight = 0
+    let originX: Int
+    let originY: Int
+    if let shelfIndex = shelves.firstIndex(where: {
+      $0.height >= pixelH && $0.nextX + pixelW <= textureSize
+    }) {
+      originX = shelves[shelfIndex].nextX
+      originY = shelves[shelfIndex].originY
+      shelves[shelfIndex].nextX += pixelW
+    } else {
+      guard packedHeight + pixelH <= textureSize else {
+        didOverflow = true
+        return nil
+      }
+      originX = 0
+      originY = packedHeight
+      shelves.append(Shelf(nextX: pixelW, originY: packedHeight, height: pixelH))
+      packedHeight += pixelH
     }
-    if shelfY + pixelH > textureSize {
-      didOverflow = true
-      return nil
-    }
-    let originX = shelfX
-    let originY = shelfY
-    shelfX += pixelW
-    shelfHeight = max(shelfHeight, pixelH)
 
     // Rasterize alpha mask into a CPU buffer.
     let bytesPerRow = pixelW
