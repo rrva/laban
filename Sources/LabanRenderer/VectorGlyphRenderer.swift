@@ -1299,7 +1299,9 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
 
       case .rect(let rect, let color, _, let compositing):
         let instance = solid(rect: rect, color: color)
-        if replacesDestination(compositing, color: color) {
+        if !surfaceTransparency.isOpaque
+          && replacesDestination(compositing, color: color)
+        {
           replaceSolids.append(instance)
         } else {
           solids.append(instance)
@@ -2575,6 +2577,13 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     let c = MetalRenderer.fullRedrawClearColor(commands)
     guard c.alpha > 0 else {
       return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+    }
+    if c.alpha == 1 {
+      return MTLClearColor(
+        red: Double(srgbToLinear(Float(c.red))),
+        green: Double(srgbToLinear(Float(c.green))),
+        blue: Double(srgbToLinear(Float(c.blue))),
+        alpha: 1)
     }
     // The shared non-sRGB clear is premultiplied in encoded sRGB. Recover the
     // straight channel, linearize it, then premultiply once for the sRGB target.

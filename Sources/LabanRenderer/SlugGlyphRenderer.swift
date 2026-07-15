@@ -1563,7 +1563,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         guard intersectsDamage(minY: rect.minY, maxY: rect.maxY, bands: damageBands) else {
           continue
         }
-        if replacesDestination(compositing, color: color) {
+        if !surfaceTransparency.isOpaque
+          && replacesDestination(compositing, color: color)
+        {
           replaceSolids.append(solid(rect: rect, color: color))
         } else {
           solids.append(solid(rect: rect, color: color))
@@ -2240,6 +2242,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let c = MetalRenderer.fullRedrawClearColor(commands)
     guard c.alpha > 0 else {
       return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+    }
+    if c.alpha == 1 {
+      return MTLClearColor(
+        red: Double(srgbToLinear(Float(c.red))),
+        green: Double(srgbToLinear(Float(c.green))),
+        blue: Double(srgbToLinear(Float(c.blue))),
+        alpha: 1)
     }
     let alpha = Float(c.alpha)
     return MTLClearColor(

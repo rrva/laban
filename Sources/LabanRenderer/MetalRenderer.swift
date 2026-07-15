@@ -1711,11 +1711,19 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     guard let c = rgba else {
       return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
     }
+    let red = Double((c >> 24) & 0xFF) / 255.0
+    let green = Double((c >> 16) & 0xFF) / 255.0
+    let blue = Double((c >> 8) & 0xFF) / 255.0
     let alpha = Double(c & 0xFF) / 255.0
+    if alpha == 1 {
+      // Preserve the shipped opaque clear path exactly; premultiplication is
+      // only work when the resolved canvas actually carries alpha.
+      return MTLClearColor(red: red, green: green, blue: blue, alpha: 1)
+    }
     return MTLClearColor(
-      red: (Double((c >> 24) & 0xFF) / 255.0) * alpha,
-      green: (Double((c >> 16) & 0xFF) / 255.0) * alpha,
-      blue: (Double((c >> 8) & 0xFF) / 255.0) * alpha,
+      red: red * alpha,
+      green: green * alpha,
+      blue: blue * alpha,
       alpha: alpha)
   }
 
