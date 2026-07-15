@@ -58,6 +58,41 @@ final class LabandSnapshotSyncOutputRingTests: XCTestCase {
     XCTAssertEqual(read.mouseFormat, 2, "1006 SGR format must cross the ring")
   }
 
+  func testExplicitBackgroundFlagCrossesABIV1Ring() throws {
+    var size = LabanTerminalSize()
+    size.rows = 6
+    size.cols = 24
+    let session = try Session.fixture(size: size)
+    _ = session.write(Array("D\u{1b}[41mR\u{1b}[0m\u{1b}[7mI\u{1b}[0m".utf8))
+    _ = session.poll()
+
+    let snapshot = try XCTUnwrap(session.snapshot())
+    defer { laban_snapshot_destroy(snapshot) }
+    let dir = ".tmp/explicit-background-ring-\(UUID().uuidString)"
+    defer { try? FileManager.default.removeItem(at: URL(fileURLWithPath: dir)) }
+    let writer = try LabandSnapshotRingWriter(
+      path: "\(dir)/ring.bin",
+      logicalSessionId: "explicit-background-ring",
+      incarnationId: "inc",
+      maxRows: Int(size.rows),
+      maxCols: Int(size.cols))
+    XCTAssertEqual(LabandSnapshotRingLayout.abiVersion, 1)
+    try writer.publish(snapshot: snapshot)
+
+    let reader = try LabandSnapshotRingReader(
+      attachment: writer.attachment,
+      logicalSessionId: "explicit-background-ring",
+      incarnationId: "inc")
+    let read = try reader.latestSnapshot()
+    let flag = UInt16(LABAN_CELL_FLAG_EXPLICIT_BACKGROUND)
+    let defaultCell = try XCTUnwrap(read.cells.first { $0.text == "D" })
+    let explicitCell = try XCTUnwrap(read.cells.first { $0.text == "R" })
+    let inverseCell = try XCTUnwrap(read.cells.first { $0.text == "I" })
+    XCTAssertEqual(defaultCell.flags & flag, 0)
+    XCTAssertNotEqual(explicitCell.flags & flag, 0)
+    XCTAssertNotEqual(inverseCell.flags & flag, 0)
+  }
+
   private func publishedSyncFlag(enable2026: Bool) throws -> Bool {
     var size = LabanTerminalSize()
     size.rows = 6

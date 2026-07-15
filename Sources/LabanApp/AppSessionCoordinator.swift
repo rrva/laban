@@ -14,6 +14,7 @@ final class AppSessionCoordinator {
   private var launchCwdOverrideByTabId: [Tab.ID: String] = [:]
   private let supportsThemeApplication: Bool
   private let supportsViewportScroll: Bool
+  private let snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
   private var infoByTabId: [Tab.ID: LabandSessionInfo] = [:]
   private var infoByLocalSessionId: [Session.ID: LabandSessionInfo] = [:]
   private var labptyDescriptorByTabId: [Tab.ID: LabptySessionDescriptor] = [:]
@@ -91,6 +92,10 @@ final class AppSessionCoordinator {
     let capabilities = (try? client.hello().capabilities) ?? []
     self.supportsThemeApplication = capabilities.contains("theme-palette/v1")
     self.supportsViewportScroll = capabilities.contains("viewport-scroll/v1")
+    self.snapshotBackgroundCapability =
+      capabilities.contains(LabandCapabilities.snapshotCellExplicitBackgroundV1)
+      ? .supported
+      : .legacy
     installThemeObserver()
   }
 
@@ -108,6 +113,7 @@ final class AppSessionCoordinator {
     self.ownedProcess = labptyProcess
     self.supportsThemeApplication = false
     self.supportsViewportScroll = false
+    self.snapshotBackgroundCapability = .inProcess
   }
 
   deinit {
@@ -129,6 +135,12 @@ final class AppSessionCoordinator {
 
   var usesRemoteSnapshots: Bool {
     mode == .laband
+  }
+
+  /// Capability attached to frames produced through this coordinator. `labpty`
+  /// feeds the app's own parser, while laband must negotiate the remote writer.
+  var terminalSnapshotBackgroundCapability: TerminalSnapshotBackgroundCapability {
+    snapshotBackgroundCapability
   }
 
   func startSnapshotGenerationMonitor(

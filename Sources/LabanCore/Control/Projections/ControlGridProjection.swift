@@ -39,7 +39,7 @@ public enum ControlGridProjection {
           text: cell.text,
           foreground: rgbaArray(cell.foregroundRGBA),
           background: rgbaArray(cell.backgroundRGBA),
-          attributes: TextAttributes(rawValue: cell.flags).intersection(.renderableMask).names,
+          attributes: TextAttributes(cellFlags: cell.flags).names,
           wide: "narrow",
           hyperlink: nil
         ))
@@ -100,7 +100,7 @@ public enum ControlGridProjection {
             text: text,
             foreground: rgbaArray(cell.foreground_rgba),
             background: rgbaArray(cell.background_rgba),
-            attributes: TextAttributes(rawValue: cell.flags).intersection(.renderableMask).names,
+            attributes: TextAttributes(cellFlags: cell.flags).names,
             wide: wideName(cell.wide),
             hyperlink: hyperlink
           ))

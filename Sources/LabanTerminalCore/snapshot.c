@@ -425,10 +425,15 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
                                         ((uint32_t)fg.b << 8) | 0xFF;
             }
 
-            /* Background color (GHOSTTY_INVALID_VALUE if unset → keep default). */
+            /* Background color (GHOSTTY_INVALID_VALUE if unset → keep default).
+             * Preserve whether the lookup succeeded: comparing the resolved
+             * color with the theme default cannot distinguish an explicit
+             * background that happens to use the same RGB value. */
             GhosttyColorRgb bg;
-            if (ghostty_render_state_row_cells_get(s->row_cells,
-                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg) == GHOSTTY_SUCCESS) {
+            const int has_explicit_background =
+                ghostty_render_state_row_cells_get(s->row_cells,
+                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg) == GHOSTTY_SUCCESS;
+            if (has_explicit_background) {
                 cell->background_rgba = ((uint32_t)bg.r << 24) |
                                         ((uint32_t)bg.g << 16) |
                                         ((uint32_t)bg.b << 8) | 0xFF;
@@ -438,6 +443,10 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
                 uint32_t swapped = cell->foreground_rgba;
                 cell->foreground_rgba = cell->background_rgba;
                 cell->background_rgba = swapped;
+            }
+            if (has_explicit_background
+                    || (cell->flags & LABAN_CELL_FLAG_INVERSE) != 0) {
+                cell->flags |= LABAN_CELL_FLAG_EXPLICIT_BACKGROUND;
             }
 
             /* Hyperlink URI lookup via grid ref. Only consult when the row is

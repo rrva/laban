@@ -1664,7 +1664,7 @@ public struct FrameProducer {
           }
           continue
         }
-        let attrs = TextAttributes(rawValue: cell.flags).intersection(.renderableMask)
+        let attrs = TextAttributes(cellFlags: cell.flags)
         if runStart == nil {
           runStart = col
           runFg = cell.foregroundRGBA

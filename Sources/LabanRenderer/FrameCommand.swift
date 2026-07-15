@@ -67,6 +67,13 @@ public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
     .bold, .italic, .faint, .inverse, .invisible, .underline, .strikethrough, .overline, .blink,
   ]
 
+  /// Converts the terminal core's wider semantic cell-flag field into glyph
+  /// attributes. Cell flags such as explicit-background identity must never
+  /// split font, glyph-atlas, or renderer batch keys.
+  public init(cellFlags: UInt16) {
+    self.rawValue = cellFlags & Self.renderableMask.rawValue
+  }
+
   /// Attributes the GPU-driven cell path renders without falling back to the
   /// classic command path. These are all colour/visibility-safe: `FrameProducer`
   /// pre-resolves `inverse` (the C bridge swaps fg/bg) and `faint` (fg is blended

@@ -50,7 +50,9 @@ enum {
     LABAN_CELL_FLAG_UNDERLINE = 1u << 5,
     LABAN_CELL_FLAG_STRIKETHROUGH = 1u << 6,
     LABAN_CELL_FLAG_OVERLINE = 1u << 7,
-    LABAN_CELL_FLAG_BLINK = 1u << 8
+    LABAN_CELL_FLAG_BLINK = 1u << 8,
+    /* Semantic background identity, not a glyph/font style bit. */
+    LABAN_CELL_FLAG_EXPLICIT_BACKGROUND = 1u << 9
 };
 
 /* Underline style values (matches GhosttySgrUnderline). */

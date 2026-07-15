@@ -416,6 +416,7 @@ private final class LabandDaemon {
           "theme-palette/v1",
           "viewport-scroll/v1",
           "snapshot-ring/v1",
+          LabandCapabilities.snapshotCellExplicitBackgroundV1,
           "client-attach/v1",
           "lifecycle-journal/v1",
           "lease-transfer/v1",

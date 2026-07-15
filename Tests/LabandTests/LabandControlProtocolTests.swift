@@ -29,6 +29,8 @@ final class LabandControlProtocolTests: XCTestCase {
     let hello = try client.hello()
     XCTAssertEqual(hello.protocolVersion, LabandProtocolVersion.current)
     XCTAssertEqual(hello.capabilities.contains("control-json/v1"), true)
+    XCTAssertTrue(
+      hello.capabilities.contains(LabandCapabilities.snapshotCellExplicitBackgroundV1))
 
     let session = try client.createSession(
       TerminalSessionLaunchRequest(
