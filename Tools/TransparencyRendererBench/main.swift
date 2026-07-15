@@ -368,38 +368,62 @@ private struct TransparencyRendererBenchmark {
       pixelHeight: pixelHeight,
       waitForCompletion: waitForCompletion)
     for frame in 0..<warmupFrames {
-      guard renderer.render(commands, damage: .full) else {
-        throw BenchmarkError.renderFailed(
-          renderer: selection.rawValue,
-          metric: "\(metric)Warmup",
-          frame: frame)
-      }
+      _ = try renderAccepted(
+        renderer: renderer,
+        commands: commands,
+        rendererName: selection.rawValue,
+        metric: "\(metric)Warmup",
+        frame: frame)
     }
 
     var samples: [Double] = []
     samples.reserveCapacity(measuredFrames)
     for frame in 0..<measuredFrames {
-      let start = DispatchTime.now().uptimeNanoseconds
-      guard renderer.render(commands, damage: .full) else {
-        throw BenchmarkError.renderFailed(
-          renderer: selection.rawValue,
-          metric: metric,
-          frame: frame)
-      }
-      let end = DispatchTime.now().uptimeNanoseconds
+      let (start, end) = try renderAccepted(
+        renderer: renderer,
+        commands: commands,
+        rendererName: selection.rawValue,
+        metric: metric,
+        frame: frame)
       samples.append(Double(end - start) / 1_000_000)
     }
 
     if !waitForCompletion {
       renderer.waitForFrameCompletion = true
-      guard renderer.render(commands, damage: .full) else {
-        throw BenchmarkError.renderFailed(
-          renderer: selection.rawValue,
-          metric: "cpuEncodeDrain",
-          frame: measuredFrames)
-      }
+      _ = try renderAccepted(
+        renderer: renderer,
+        commands: commands,
+        rendererName: selection.rawValue,
+        metric: "cpuEncodeDrain",
+        frame: measuredFrames)
     }
     return samples
+  }
+
+  /// A renderer with one command buffer in flight may reject an immediate
+  /// second submission while the prior frame completes. Such backpressure is
+  /// not a failed sample: wait outside the timed interval, then record exactly
+  /// the next accepted encode. Bound the retry so a genuinely wedged renderer
+  /// still fails the benchmark deterministically.
+  private func renderAccepted(
+    renderer: RendererBackend,
+    commands: [FrameCommand],
+    rendererName: String,
+    metric: String,
+    frame: Int
+  ) throws -> (start: UInt64, end: UInt64) {
+    let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+      let start = DispatchTime.now().uptimeNanoseconds
+      if renderer.render(commands, damage: .full) {
+        return (start, DispatchTime.now().uptimeNanoseconds)
+      }
+      Thread.sleep(forTimeInterval: 0.0001)
+    }
+    throw BenchmarkError.renderFailed(
+      renderer: rendererName,
+      metric: metric,
+      frame: frame)
   }
 
   private func validateSamples(_ samples: [Double], metric: String, expected: Int) throws {
