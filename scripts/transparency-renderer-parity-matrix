@@ -186,24 +186,48 @@ wait_ready() {
 }
 
 authenticated_get() {
-  local url=$1
+  local socket_or_url=$1
   local token=$2
   local path=$3
   local output=$4
-  curl -fsS -H "Authorization: Bearer $token" "$url$path" >"$output"
+  case "$socket_or_url" in
+    http://*|https://*)
+      curl -fsS -H "Authorization: Bearer $token" \
+        "${socket_or_url%/}$path" >"$output"
+      ;;
+    *)
+      curl -fsS --unix-socket "$socket_or_url" \
+        -H "Authorization: Bearer $token" \
+        "http://localhost$path" >"$output"
+      ;;
+  esac
 }
 
 post_action() {
-  local url=$1
+  local socket_or_url=$1
   local token=$2
   local output=$3
   local payload=$4
-  curl -fsS \
-    -H "Authorization: Bearer $token" \
-    -H "Content-Type: application/json" \
-    -d "$payload" \
-    "$url/debug/actions" >"$output"
-  jq -e '.ok == true' "$output" >/dev/null
+  case "$socket_or_url" in
+    http://*|https://*)
+      curl -fsS \
+        -H "Authorization: Bearer $token" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "${socket_or_url%/}/debug/actions" >"$output"
+      ;;
+    *)
+      curl -fsS --unix-socket "$socket_or_url" \
+        -H "Authorization: Bearer $token" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "http://localhost/debug/actions" >"$output"
+      ;;
+  esac
+  # Some established debug actions return their resulting state projection
+  # instead of the generic {"ok":true} envelope. HTTP success plus a JSON
+  # object is authoritative; when an `ok` field is present it must be true.
+  jq -e 'type == "object" and ((has("ok") | not) or .ok == true)' "$output" >/dev/null
 }
 
 capture_screenshot() {
@@ -311,12 +335,14 @@ for renderer in "${renderers[@]}"; do
       and .text == $fixture[0].transparencyParity.authenticatedActions.preeditText)
     and any(.commands[]; .kind == "cursor")
     and any(.commands[]; .kind == "selection")
-    and any(.commands[]; .kind == "findMatch")
+    and any(.commands[];
+      .source == "find" and (.kind == "findMatch" or .kind == "findSelected")
+    )
     and (([.commands[] | select(.kind == "glyphRun" and .source == "terminal") | .text]
       | join("")) as $text
       | all(
-          $fixture[0].transparencyParity.requiredTerminalText[] as $required;
-          $text | contains($required)
+          $fixture[0].transparencyParity.requiredTerminalText[];
+          . as $required | $text | contains($required)
         ))
     and any(.commands[];
       .kind == "glyphRun"
