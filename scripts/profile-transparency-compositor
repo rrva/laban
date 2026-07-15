@@ -99,6 +99,44 @@ class ProfileError(RuntimeError):
     pass
 
 
+class ProfileTerminationSignalGuard:
+    signals = (signal.SIGHUP, signal.SIGTERM)
+
+    def __init__(self) -> None:
+        self.previous_handlers: dict[signal.Signals, Any] = {}
+        self.handler = self._handle_signal
+
+    def __enter__(self) -> ProfileTerminationSignalGuard:
+        try:
+            for signum in self.signals:
+                self.previous_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, self.handler)
+        except (OSError, ValueError) as error:
+            self.restore()
+            fail(f"could not install profiling termination handler: {error}")
+        return self
+
+    def __exit__(self, _kind: Any, _value: Any, _traceback: Any) -> bool:
+        self.restore()
+        return False
+
+    def restore(self) -> None:
+        handlers = self.previous_handlers
+        self.previous_handlers = {}
+        for signum, handler in handlers.items():
+            signal.signal(signum, handler)
+
+    def _handle_signal(self, signum: int, _frame: Any) -> None:
+        # Restore first so the exception unwinds through run_profile's cleanup
+        # without leaving process-global signal state changed.
+        self.restore()
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = str(signum)
+        fail(f"profiling interrupted by {name}")
+
+
 def fail(message: str) -> None:
     raise ProfileError(message)
 
@@ -1102,7 +1140,41 @@ def self_test_preference_restoration() -> None:
         )
 
 
+def self_test_termination_signal_guard() -> None:
+    original = {
+        signum: signal.getsignal(signum)
+        for signum in ProfileTerminationSignalGuard.signals
+    }
+    for interrupted_by in ProfileTerminationSignalGuard.signals:
+        guard = ProfileTerminationSignalGuard()
+        try:
+            with guard:
+                for signum in ProfileTerminationSignalGuard.signals:
+                    if signal.getsignal(signum) != guard.handler:
+                        fail("self-test did not install a profiling termination handler")
+                guard.handler(interrupted_by, None)
+        except ProfileError as error:
+            if signal.Signals(interrupted_by).name not in str(error):
+                fail("self-test termination handler reported the wrong signal")
+        else:
+            fail("self-test termination handler did not interrupt profiling")
+        for signum, handler in original.items():
+            if signal.getsignal(signum) != handler:
+                fail("self-test did not restore the prior signal handler")
+
+    guard = ProfileTerminationSignalGuard()
+    try:
+        with guard:
+            raise RuntimeError("self-test sentinel")
+    except RuntimeError:
+        pass
+    for signum, handler in original.items():
+        if signal.getsignal(signum) != handler:
+            fail("self-test exception path did not restore the prior signal handler")
+
+
 def self_test() -> None:
+    self_test_termination_signal_guard()
     self_test_preference_restoration()
     fixture_path, fixture_sha256 = validate_image_fixture(DEFAULT_IMAGE_FIXTURE)
     if fixture_path != "fixtures/transparency/background-gradient.png" or re.fullmatch(r"[0-9a-f]{64}", fixture_sha256) is None:
@@ -1280,7 +1352,8 @@ def main() -> int:
             self_test()
             print("profile-transparency-compositor: self-test passed")
         else:
-            run_profile(arguments)
+            with ProfileTerminationSignalGuard():
+                run_profile(arguments)
         return 0
     except (ProfileError, ValueError) as error:
         print(f"profile-transparency-compositor: {error}", file=sys.stderr)
