@@ -11,12 +11,14 @@ frames=
 runs=
 baseline=
 output=
+schedule_only=false
 
 usage() {
   printf '%s\n' \
     'usage: scripts/benchmark-transparency-renderers --phase=baseline|compare' \
     '       --fixture=fixtures/cjk/trust-gate.fixture.json --warmup=40' \
-    '       --frames=240 --runs=5 [--baseline=PATH] --output=PATH' >&2
+    '       --frames=240 --runs=5 [--baseline=PATH] --output=PATH' \
+    '       [--schedule-only]' >&2
 }
 
 for argument in "$@"; do
@@ -28,6 +30,7 @@ for argument in "$@"; do
     --runs=*) runs=${argument#--runs=} ;;
     --baseline=*) baseline=${argument#--baseline=} ;;
     --output=*) output=${argument#--output=} ;;
+    --schedule-only) schedule_only=true ;;
     --help|-h)
       usage
       exit 0
@@ -64,6 +67,10 @@ if [ "$phase" = compare ] && [ -z "$baseline" ]; then
   printf 'benchmark-transparency-renderers: compare phase requires --baseline\n' >&2
   exit 2
 fi
+if [ "$schedule_only" = true ] && [ "$phase" != compare ]; then
+  printf 'benchmark-transparency-renderers: --schedule-only requires --phase=compare\n' >&2
+  exit 2
+fi
 if [ ! -f "$fixture" ]; then
   printf 'benchmark-transparency-renderers: fixture does not exist: %s\n' "$fixture" >&2
   exit 2
@@ -80,6 +87,82 @@ for required_command in git python3 swift sw_vers sysctl; do
     exit 2
   fi
 done
+
+# Keep each renderer's opaque/direct processes adjacent, then reverse both the
+# renderer and opacity order on even runs. This prevents a later thermal or
+# system-load regime from being assigned exclusively to one scenario while
+# preserving five independent processes per renderer/scenario.
+comparison_schedule=()
+if [ "$phase" = compare ]; then
+  run=1
+  while [ "$run" -le "$runs" ]; do
+    if [ $((run % 2)) -eq 1 ]; then
+      comparison_schedule+=(
+        "slugGlyph:opaque:$run"
+        "slugGlyph:direct090:$run"
+        "vectorGlyph:opaque:$run"
+        "vectorGlyph:direct090:$run"
+      )
+    else
+      comparison_schedule+=(
+        "vectorGlyph:direct090:$run"
+        "vectorGlyph:opaque:$run"
+        "slugGlyph:direct090:$run"
+        "slugGlyph:opaque:$run"
+      )
+    fi
+    run=$((run + 1))
+  done
+
+  # Fail before building or sampling if the schedule loses exact order,
+  # adjacency, counts, or unique run identities.
+  python3 - "${comparison_schedule[@]}" <<'PY'
+import collections
+import sys
+
+actual = sys.argv[1:]
+expected = []
+for run in range(1, 6):
+    if run % 2:
+        cases = (
+            ("slugGlyph", "opaque"),
+            ("slugGlyph", "direct090"),
+            ("vectorGlyph", "opaque"),
+            ("vectorGlyph", "direct090"),
+        )
+    else:
+        cases = (
+            ("vectorGlyph", "direct090"),
+            ("vectorGlyph", "opaque"),
+            ("slugGlyph", "direct090"),
+            ("slugGlyph", "opaque"),
+        )
+    expected.extend(f"{renderer}:{scenario}:{run}" for renderer, scenario in cases)
+
+if actual != expected:
+    raise SystemExit("benchmark schedule validation failed: exact alternating order drifted")
+if len(actual) != 20:
+    raise SystemExit("benchmark schedule validation failed: expected 20 processes")
+
+parsed = [entry.split(":") for entry in actual]
+counts = collections.Counter((renderer, scenario) for renderer, scenario, _ in parsed)
+if any(counts[(renderer, scenario)] != 5
+       for renderer in ("slugGlyph", "vectorGlyph")
+       for scenario in ("opaque", "direct090")):
+    raise SystemExit("benchmark schedule validation failed: scenario counts drifted")
+if len(set(actual)) != 20:
+    raise SystemExit("benchmark schedule validation failed: run identity repeated")
+for index in range(0, len(parsed), 2):
+    first, second = parsed[index:index + 2]
+    if first[0] != second[0] or first[1] == second[1] or first[2] != second[2]:
+        raise SystemExit("benchmark schedule validation failed: pair adjacency drifted")
+PY
+fi
+
+if [ "$schedule_only" = true ]; then
+  printf '%s\n' "${comparison_schedule[@]}"
+  exit 0
+fi
 
 temporary_root="$repo_root/.tmp/transparency-renderer-$phase.$$"
 mkdir -p "$temporary_root"
@@ -106,50 +189,58 @@ fi
 
 fixture_path="$repo_root/$fixture"
 run_records=()
-for renderer in slugGlyph vectorGlyph; do
-  if [ "$phase" = baseline ]; then
-    cases=baseline
-  else
-    cases='opaque direct090'
+
+run_benchmark_process() {
+  local renderer=$1
+  local case_name=$2
+  local run=$3
+  local run_record="$temporary_root/$renderer-$case_name-run-$run.json"
+  local run_log="$temporary_root/$renderer-$case_name-run-$run.log"
+  printf 'benchmark-transparency-renderers: %s %s run %s/%s\n' \
+    "$renderer" "$case_name" "$run" "$runs"
+  local executable_arguments=(
+    "--phase=$phase"
+    "--renderer=$renderer"
+    "--fixture=$fixture_path"
+    "--run=$run"
+    "--warmup=$warmup"
+    "--frames=$frames"
+    "--output=$run_record"
+  )
+  if [ "$case_name" = opaque ]; then
+    executable_arguments+=("--surface-opacity=1.0")
+  elif [ "$case_name" = direct090 ]; then
+    executable_arguments+=("--surface-opacity=0.90")
   fi
-  for case_name in $cases; do
+  if ! "$benchmark_executable" "${executable_arguments[@]}" >"$run_log" 2>&1
+  then
+    printf 'benchmark-transparency-renderers: %s %s run %s failed\n' \
+      "$renderer" "$case_name" "$run" >&2
+    sed -n '1,240p' "$run_log" >&2
+    exit 1
+  fi
+  if [ ! -s "$run_record" ]; then
+    printf 'benchmark-transparency-renderers: %s %s run %s produced no record\n' \
+      "$renderer" "$case_name" "$run" >&2
+    exit 1
+  fi
+  run_records+=("$run_record")
+}
+
+if [ "$phase" = baseline ]; then
+  for renderer in slugGlyph vectorGlyph; do
     run=1
     while [ "$run" -le "$runs" ]; do
-      run_record="$temporary_root/$renderer-$case_name-run-$run.json"
-      run_log="$temporary_root/$renderer-$case_name-run-$run.log"
-      printf 'benchmark-transparency-renderers: %s %s run %s/%s\n' \
-        "$renderer" "$case_name" "$run" "$runs"
-      executable_arguments=(
-        "--phase=$phase"
-        "--renderer=$renderer"
-        "--fixture=$fixture_path"
-        "--run=$run"
-        "--warmup=$warmup"
-        "--frames=$frames"
-        "--output=$run_record"
-      )
-      if [ "$case_name" = opaque ]; then
-        executable_arguments+=("--surface-opacity=1.0")
-      elif [ "$case_name" = direct090 ]; then
-        executable_arguments+=("--surface-opacity=0.90")
-      fi
-      if ! "$benchmark_executable" "${executable_arguments[@]}" >"$run_log" 2>&1
-      then
-        printf 'benchmark-transparency-renderers: %s %s run %s failed\n' \
-          "$renderer" "$case_name" "$run" >&2
-        sed -n '1,240p' "$run_log" >&2
-        exit 1
-      fi
-      if [ ! -s "$run_record" ]; then
-        printf 'benchmark-transparency-renderers: %s %s run %s produced no record\n' \
-          "$renderer" "$case_name" "$run" >&2
-        exit 1
-      fi
-      run_records+=("$run_record")
+      run_benchmark_process "$renderer" baseline "$run"
       run=$((run + 1))
     done
   done
-done
+else
+  for schedule_entry in "${comparison_schedule[@]}"; do
+    IFS=: read -r renderer case_name run <<<"$schedule_entry"
+    run_benchmark_process "$renderer" "$case_name" "$run"
+  done
+fi
 
 python3 - "$phase" "$output" "$fixture" "$benchmark_executable" "$baseline" "${run_records[@]}" <<'PY'
 import datetime
@@ -228,6 +319,36 @@ def metric_median(records, metric_name):
     for percentile in PERCENTILES:
         values = sorted(record["metrics"][metric_name][percentile] for record in records)
         result[percentile] = values[len(values) // 2]
+    return result
+
+
+def expected_comparison_schedule():
+    result = []
+    for run in range(1, 6):
+        if run % 2:
+            cases = (
+                ("slugGlyph", "opaque", 1.0),
+                ("slugGlyph", "direct090", 0.9),
+                ("vectorGlyph", "opaque", 1.0),
+                ("vectorGlyph", "direct090", 0.9),
+            )
+        else:
+            cases = (
+                ("vectorGlyph", "direct090", 0.9),
+                ("vectorGlyph", "opaque", 1.0),
+                ("slugGlyph", "direct090", 0.9),
+                ("slugGlyph", "opaque", 1.0),
+            )
+        result.extend(
+            {
+                "ordinal": len(result) + 1,
+                "renderer": renderer,
+                "scenario": scenario,
+                "run": run,
+                "surfaceOpacity": opacity,
+            }
+            for renderer, scenario, opacity in cases
+        )
     return result
 
 
@@ -369,6 +490,20 @@ if PHASE == "baseline":
     }
 else:
     require(len(records) == 20, f"expected 20 comparison records, found {len(records)}")
+    execution_schedule = [
+        {
+            "ordinal": ordinal,
+            "renderer": record.get("renderer"),
+            "scenario": "opaque" if record.get("surfaceOpacity") == 1.0 else "direct090",
+            "run": record.get("run"),
+            "surfaceOpacity": record.get("surfaceOpacity"),
+        }
+        for ordinal, record in enumerate(records, 1)
+    ]
+    require(
+        execution_schedule == expected_comparison_schedule(),
+        "comparison process order is not the balanced adjacent schedule",
+    )
     baseline = load(BASELINE_PATH)
     require(baseline.get("schemaVersion") == 1 and baseline.get("phase") == "baseline", "baseline identity invalid")
     require(baseline.get("benchmark") == "terminal-background-transparency-renderers", "baseline benchmark invalid")
@@ -468,6 +603,7 @@ else:
             "directMaximumRegressionFraction": 0.10,
             "maximumP99Milliseconds": 8.33,
         },
+        "executionSchedule": execution_schedule,
         "renderers": renderer_evidence,
         "validation": {
             "passed": not threshold_failures,
