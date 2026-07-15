@@ -20,7 +20,7 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - [x] (2026-07-14) Address the independent fresh-context plan review: idempotent alpha, real backend proof, frame/cache routing, mixed-version `laband`, generated localization, observer ownership, mechanical performance gates, and theme-neutral preset semantics.
 - [x] (2026-07-14) Descope `System Blur` and the `Frosted` preset to a documented follow-up; this plan ships direct opacity only (see `Deferred Follow-Up: System Blur and Frosted Preset`).
 - [x] (2026-07-14) Address the second independent plan review: define an authenticated installed-GUI control path, correct the software compositing seam, distinguish full-frame canvas overwrite from partial transparent erasure, and replace interpretive source/performance/IME review checks with executable verifiers.
-- [ ] Add the product-spec entry and ADR before implementation changes.
+- [x] (2026-07-15) Add the direct-opacity product contract, approved deferred System Blur/Frosted direction, and accepted ADR 0028 before implementation changes.
 - [ ] Implement the shared settings, effective-policy resolver, and explicit-background snapshot bit with unit tests.
 - [ ] Deliver the first end-to-end Slug implementation, including AppKit window transparency and the grayscale antialiasing fallback.
 - [ ] Add equivalent software, classic Metal, GPU-driven Metal, and vector glyph support.

@@ -232,6 +232,45 @@ fallback.
 Laban does not bundle CJK fonts. Bundling Noto or Sarasa remains a separate
 decision if system fonts prove insufficient.
 
+## 26. Terminal background transparency
+
+The Appearance settings expose terminal background opacity and a separate
+opt-in for applying that opacity to explicitly colored terminal cell
+backgrounds. Opacity defaults to `1.0`, so existing installations and fresh
+installs remain fully opaque. The default terminal canvas and the sidebar base
+use the selected opacity; foreground glyphs, the cursor, selection, find
+highlights, images, input-method preedit, selected-tab cards, attention chrome,
+and explicitly colored or inverse-video cell backgrounds remain at their
+existing semantic strength. Enabling the explicit-cell option makes only those
+explicit and inverse terminal backgrounds follow the selected opacity.
+
+Software, classic Metal, GPU-driven Metal, vector glyph, and Slug glyph are
+equivalent implementations of one renderer-neutral alpha and compositing
+contract. Switching renderer, resizing, zooming, rebuilding the view, or
+restoring a session must preserve session identity and must not reveal an
+opaque or uninitialized flash. Headless mode uses the same frame-command
+semantics, and its PNG output preserves alpha so deterministic pixel probes can
+verify the behavior without a visible window.
+
+The persisted setting is the user's request. macOS Reduce Transparency, native
+full screen, or a remote helper that cannot identify explicitly colored cell
+backgrounds may temporarily resolve that request to a fully opaque effective
+surface. Removing the override restores the unchanged request immediately.
+Vector and Slug glyph rendering use grayscale antialiasing while the effective
+surface is translucent, because RGB-subpixel coverage assumes a known opaque
+destination; the configured antialiasing preference is retained and restored
+when the surface becomes opaque.
+
+`System Blur` and a theme-neutral `Frosted` preset are approved follow-up
+direction, not shipped behavior in the direct-opacity feature. The follow-up
+uses a public behind-window AppKit material, never Liquid Glass behind terminal
+content, private filters, or a renderer blur shader. `Frosted` means 90%
+background opacity with System Blur and opaque explicit cell backgrounds; it
+does not change the active theme or auto-select itself from locale. The complete
+deferred contract and compositor evidence requirements are recorded in
+`execplans/active/terminal-background-transparency.md`, under “Deferred
+Follow-Up: System Blur and Frosted Preset.”
+
 ---
 
 ## 24. Agent control plane (live GUI control over loopback)
