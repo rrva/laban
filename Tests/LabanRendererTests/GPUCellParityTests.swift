@@ -513,7 +513,8 @@ final class GPUCellParityTests: XCTestCase {
       .rect(
         CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
         color: defaultBg,
-        source: .terminal)
+        source: .terminal,
+        compositing: .replace)
     ]
 
     // Full frame: every row carries a distinct, non-default background.
@@ -598,7 +599,8 @@ final class GPUCellParityTests: XCTestCase {
       .rect(
         CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
         color: defaultBg,
-        source: .terminal)
+        source: .terminal,
+        compositing: .replace)
     ]
 
     // Two non-contiguous dirty rows leave clean rows between them, so the

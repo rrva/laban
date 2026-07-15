@@ -1745,6 +1745,35 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     }
   }
 
+  /// Replay a draw once per exact dirty band. A union scissor would also cover
+  /// clean rows between disjoint ranges, while recursively encoding one pass
+  /// per band would overwrite the shared instance buffers before the command
+  /// buffer is committed.
+  private func drawThroughDamageScissors(
+    _ damage: RenderDamage,
+    target: MTLTexture,
+    surfacePxH: Int,
+    encoder: MTLRenderCommandEncoder,
+    draw: () -> Void
+  ) {
+    switch damage {
+    case .full:
+      draw()
+    case .partial(let ranges):
+      for range in ranges {
+        guard
+          let scissor = scissorRectFromYRanges(
+            [range],
+            surfacePxW: target.width,
+            surfacePxH: surfacePxH,
+            scale: layer.contentsScale)
+        else { continue }
+        encoder.setScissorRect(scissor)
+        draw()
+      }
+    }
+  }
+
   private func fullRedrawClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
     Self.fullRedrawClearColor(commands)
   }
@@ -1758,20 +1787,6 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     uniforms u: inout Uniforms,
     cmdBuf: MTLCommandBuffer
   ) -> Bool {
-    if case .partial(let ranges) = damage, ranges.count > 1 {
-      var encodedAny = false
-      for range in ranges {
-        encodedAny =
-          encodeContentPass(
-            commands: commands,
-            damage: .partial(yRanges: [range]),
-            target: target,
-            surfacePxH: surfacePxH,
-            uniforms: &u,
-            cmdBuf: cmdBuf) || encodedAny
-      }
-      return encodedAny
-    }
     // Build instance lists once for both the content pass and the cursor pass.
     buildInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: damage)
 
@@ -1887,51 +1902,75 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     if let buf = damageEraseFrameBuffer {
       encoder.setRenderPipelineState(replaceSolidPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: damageEraseInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: damageEraseInstances.count)
+      }
     }
     if let buf = replaceSolidFrameBuffer {
       encoder.setRenderPipelineState(replaceSolidPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: replaceSolidInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: replaceSolidInstances.count)
+      }
     }
 
     if let buf = solidFrameBuffer {
       encoder.setRenderPipelineState(solidPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: solidInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: solidInstances.count)
+      }
     }
     if let buf = glyphFrameBuffer {
       encoder.setRenderPipelineState(glyphPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
       encoder.setFragmentTexture(glyphAtlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: glyphInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: glyphInstances.count)
+      }
     }
     if let buf = colorGlyphFrameBuffer {
       encoder.setRenderPipelineState(colorGlyphPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
       encoder.setFragmentTexture(colorGlyphAtlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: colorGlyphInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: colorGlyphInstances.count)
+      }
     }
     if let buf = sidebarGlyphFrameBuffer {
       encoder.setRenderPipelineState(glyphPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
       encoder.setFragmentTexture(sidebarGlyphAtlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: sidebarGlyphInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: sidebarGlyphInstances.count)
+      }
     }
     encoder.endEncoding()
     return true
@@ -1947,21 +1986,6 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     uniforms u: inout Uniforms,
     cmdBuf: MTLCommandBuffer
   ) -> Bool {
-    if case .partial(let ranges) = damage, ranges.count > 1 {
-      var encodedAny = false
-      for range in ranges {
-        encodedAny =
-          encodeGPUCellContentPass(
-            commands: commands,
-            cellPayload: cellPayload,
-            damage: .partial(yRanges: [range]),
-            target: target,
-            surfacePxH: surfacePxH,
-            uniforms: &u,
-            cmdBuf: cmdBuf) || encodedAny
-      }
-      return encodedAny
-    }
     if commandsContainColorGlyph(commands) {
       return encodeContentPass(
         commands: commands,
@@ -2095,33 +2119,49 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     if let buf = damageEraseFrameBuffer {
       encoder.setRenderPipelineState(replaceSolidPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: damageEraseInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: damageEraseInstances.count)
+      }
     }
     if let buf = replaceSolidFrameBuffer {
       encoder.setRenderPipelineState(replaceSolidPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: replaceSolidInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: replaceSolidInstances.count)
+      }
     }
 
     if let buf = solidFrameBuffer {
       encoder.setRenderPipelineState(solidPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: solidInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: solidInstances.count)
+      }
     }
     if let buf = sidebarGlyphFrameBuffer {
       encoder.setRenderPipelineState(glyphPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
       encoder.setFragmentTexture(sidebarGlyphAtlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: sidebarGlyphInstances.count)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: sidebarGlyphInstances.count)
+      }
     }
     if let buf = cellGlyphFrameBuffer {
       encoder.setRenderPipelineState(cellGlyphPipeline)
