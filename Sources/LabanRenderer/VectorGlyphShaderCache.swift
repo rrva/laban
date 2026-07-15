@@ -24,6 +24,7 @@ import Metal
 enum VectorGlyphShaderCache {
   struct RenderPipelines {
     let solid: MTLRenderPipelineState
+    let replaceSolid: MTLRenderPipelineState
     let glyphCoverage: MTLRenderPipelineState
     let glyphColor: MTLRenderPipelineState
     let rasterGlyph: MTLRenderPipelineState
@@ -112,6 +113,13 @@ enum VectorGlyphShaderCache {
     solidDescriptor.colorAttachments[0]?.pixelFormat = pixelFormat
     configureAlphaBlend(solidDescriptor.colorAttachments[0])
 
+    let replaceSolidDescriptor = MTLRenderPipelineDescriptor()
+    replaceSolidDescriptor.label = "laban.vector.solid-replace"
+    replaceSolidDescriptor.vertexFunction = solidVertex
+    replaceSolidDescriptor.fragmentFunction = solidFragment
+    replaceSolidDescriptor.colorAttachments[0]?.pixelFormat = pixelFormat
+    replaceSolidDescriptor.colorAttachments[0]?.isBlendingEnabled = false
+
     let glyphCoverageDescriptor = MTLRenderPipelineDescriptor()
     glyphCoverageDescriptor.label = "laban.vector.glyph-coverage"
     glyphCoverageDescriptor.vertexFunction = glyphVertex
@@ -142,6 +150,8 @@ enum VectorGlyphShaderCache {
 
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDescriptor),
+      let replaceSolidPipeline = try? device.makeRenderPipelineState(
+        descriptor: replaceSolidDescriptor),
       let glyphCoveragePipeline = try? device.makeRenderPipelineState(
         descriptor: glyphCoverageDescriptor),
       let glyphColorPipeline = try? device.makeRenderPipelineState(
@@ -154,6 +164,7 @@ enum VectorGlyphShaderCache {
 
     let pipelines = RenderPipelines(
       solid: solidPipeline,
+      replaceSolid: replaceSolidPipeline,
       glyphCoverage: glyphCoveragePipeline,
       glyphColor: glyphColorPipeline,
       rasterGlyph: rasterGlyphPipeline,

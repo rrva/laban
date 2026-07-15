@@ -40,6 +40,28 @@ public final class SoftwareRenderer {
     return c
   }
 
+  /// Overwrite every pixel in the reusable bitmap with the already-resolved
+  /// terminal canvas. This is deliberately separate from command replay: the
+  /// following `.replace` canvas rectangle writes the same bytes instead of
+  /// source-over tinting the clear a second time.
+  public func resetCanvas(to rgba: UInt32) {
+    let ctx = surface.context
+    ctx.saveGState()
+    ctx.setBlendMode(.copy)
+    ctx.setFillColor(color(rgba))
+    ctx.fill(
+      CGRect(
+        x: 0,
+        y: 0,
+        width: CGFloat(surface.width),
+        height: CGFloat(surface.height)))
+    ctx.restoreGState()
+  }
+
+  private func blendMode(for compositing: FrameCompositingMode) -> CGBlendMode {
+    compositing == .replace ? CGBlendMode.copy : .normal
+  }
+
   /// Final, memoized color-ness decision. Runs CoreText at most once per
   /// distinct (cluster, font); keyed without bold/italic because color
   /// detection ignores them.
@@ -61,7 +83,8 @@ public final class SoftwareRenderer {
     ctx.scaleBy(x: surface.scale, y: surface.scale)
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let colorValue, _, _):
+      case .rect(let rect, let colorValue, _, let compositing):
+        ctx.setBlendMode(blendMode(for: compositing))
         ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 
@@ -69,6 +92,7 @@ public final class SoftwareRenderer {
         let origin, let text, let fg, let bg, let attrs, let runSource,
         let underlineStyle, let underlineColor, _, _
       ):
+        ctx.setBlendMode(.normal)
         let atlas = runSource == .sidebar ? sidebarFontAtlas : fontAtlas
         let advance = runSource == .sidebar ? sidebarCellAdvance : glyphCellAdvance
         drawText(
@@ -77,15 +101,18 @@ public final class SoftwareRenderer {
           atlas: atlas, cellAdvance: advance, in: ctx)
 
       case .cursor(let rect, let colorValue):
+        ctx.setBlendMode(.normal)
         ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 
       case .selection(let rect, let colorValue):
+        ctx.setBlendMode(.normal)
         ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 
       case .findMatch(let rect, let colorValue),
         .findSelected(let rect, let colorValue):
+        ctx.setBlendMode(.normal)
         ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 

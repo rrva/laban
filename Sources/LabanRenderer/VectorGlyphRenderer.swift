@@ -126,6 +126,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   private var targetRingCursor = 0
   private static let targetRingDepth = 3
   private let solidPipeline: MTLRenderPipelineState
+  private let replaceSolidPipeline: MTLRenderPipelineState
   private let glyphCoveragePipeline: MTLRenderPipelineState
   private let glyphColorPipeline: MTLRenderPipelineState
   private let rasterGlyphPipeline: MTLRenderPipelineState
@@ -179,7 +180,17 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   /// (grayscale fallback on scaled/non-integer-scale displays).
   var effectiveSubpixelLayout: VectorSubpixelLayout {
     VectorSubpixelLayout.effective(
-      configured: subpixelLayout, scale: Double(scale), downsampled: displayDownsampled)
+      configured: subpixelLayout,
+      scale: Double(scale),
+      downsampled: displayDownsampled,
+      surfaceIsOpaque: surfaceTransparency.isOpaque)
+  }
+  var effectiveSubpixelFallbackReason: String? {
+    VectorSubpixelLayout.effectiveFallbackReason(
+      configured: subpixelLayout,
+      scale: Double(scale),
+      downsampled: displayDownsampled,
+      surfaceIsOpaque: surfaceTransparency.isOpaque)
   }
   public private(set) var lastRasterFallbackGlyphs = 0
 
@@ -252,6 +263,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       effectiveRenderer: RendererSelection.vectorGlyph.rawValue,
       rasterFallbackGlyphs: lastRasterFallbackGlyphs,
       vectorSubpixelLayout: effectiveSubpixelLayout.name,
+      vectorSubpixelFallbackReason: effectiveSubpixelFallbackReason,
       textCompositeModel: .linearLight)
   }
 
@@ -323,6 +335,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     self.layer = layer
     self.drawableScheduler = MetalDrawableScheduler(layer: layer)
     self.solidPipeline = pipelines.solid
+    self.replaceSolidPipeline = pipelines.replaceSolid
     self.glyphCoveragePipeline = pipelines.glyphCoverage
     self.glyphColorPipeline = pipelines.glyphColor
     self.rasterGlyphPipeline = pipelines.rasterGlyph
@@ -423,7 +436,11 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     // retire it before clearing publication state so an old-policy target
     // cannot become visible after this transition returns.
     lastCommandBuffer?.waitUntilCompleted()
+    let priorEffectiveSubpixelLayout = effectiveSubpixelLayout
     surfaceTransparency = transparency
+    if effectiveSubpixelLayout != priorEffectiveSubpixelLayout {
+      resetMaskCaches()
+    }
     layer.isOpaque = transparency.isOpaque
     targetTexture = nil
     targetRing.removeAll(keepingCapacity: true)
@@ -1186,6 +1203,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     frameFluidDeviceOffsetY = CGFloat(scrollPhaseOffset.y) * scale
 
     var solids: [VectorSolidInstance] = []
+    var replaceSolids: [VectorSolidInstance] = []
     var glyphs: [VectorGlyphInstance] = []
     var rasterGlyphs: [VectorGlyphInstance] = []
     var sidebarRasterGlyphs: [VectorGlyphInstance] = []
@@ -1198,7 +1216,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
 
     func flush() {
       guard
-        !solids.isEmpty || !glyphs.isEmpty || !rasterGlyphs.isEmpty
+        !replaceSolids.isEmpty || !solids.isEmpty || !glyphs.isEmpty || !rasterGlyphs.isEmpty
           || !sidebarRasterGlyphs.isEmpty || !colorGlyphs.isEmpty
       else { return }
       setScissor(currentClip, encoder: encoder)
@@ -1207,6 +1225,20 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         scale: Float(scale),
         gestureZoom: Float(gestureZoom),
         gestureZoomAnchor: SIMD2<Float>(Float(gestureZoomAnchor.x), Float(gestureZoomAnchor.y)))
+      if !replaceSolids.isEmpty {
+        encoder.setRenderPipelineState(replaceSolidPipeline)
+        if setVertexInstances(
+          replaceSolids, encoder: encoder, retainedBuffers: &retainedInstanceBuffers)
+        {
+          encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
+          encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 6,
+            instanceCount: replaceSolids.count)
+        }
+        replaceSolids.removeAll(keepingCapacity: true)
+      }
       if !solids.isEmpty {
         encoder.setRenderPipelineState(solidPipeline)
         if setVertexInstances(solids, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
@@ -1265,8 +1297,15 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         flush()
         currentClip = rect
 
-      case .rect(let rect, let color, _, _),
-        .cursor(let rect, let color),
+      case .rect(let rect, let color, _, let compositing):
+        let instance = solid(rect: rect, color: color)
+        if replacesDestination(compositing) {
+          replaceSolids.append(instance)
+        } else {
+          solids.append(instance)
+        }
+
+      case .cursor(let rect, let color),
         .selection(let rect, let color),
         .findMatch(let rect, let color),
         .findSelected(let rect, let color):
@@ -2140,6 +2179,11 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       color: vectorColor(color))
   }
 
+  @inline(__always)
+  private func replacesDestination(_ compositing: FrameCompositingMode) -> Bool {
+    compositing == .replace
+  }
+
   private func glyphInstance(
     mask: VectorGlyphMaskAtlas.Entry,
     position: CGPoint,
@@ -2523,10 +2567,16 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   /// double-encode). Alpha stays linear.
   static func linearizedClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
     let c = MetalRenderer.fullRedrawClearColor(commands)
+    guard c.alpha > 0 else {
+      return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+    }
+    // The shared non-sRGB clear is premultiplied in encoded sRGB. Recover the
+    // straight channel, linearize it, then premultiply once for the sRGB target.
+    let alpha = Float(c.alpha)
     return MTLClearColor(
-      red: Double(srgbToLinear(Float(c.red))),
-      green: Double(srgbToLinear(Float(c.green))),
-      blue: Double(srgbToLinear(Float(c.blue))),
+      red: Double(srgbToLinear(Float(c.red) / alpha) * alpha),
+      green: Double(srgbToLinear(Float(c.green) / alpha) * alpha),
+      blue: Double(srgbToLinear(Float(c.blue) / alpha) * alpha),
       alpha: c.alpha)
   }
 }

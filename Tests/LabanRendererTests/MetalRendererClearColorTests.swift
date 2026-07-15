@@ -16,7 +16,11 @@ final class MetalRendererClearColorTests: XCTestCase {
     let cream: UInt32 = 0xFBF3_DBFF  // 251,243,219
     let commands: [FrameCommand] = [
       .rect(CGRect(x: 0, y: 0, width: 10, height: 10), color: 0xECEC_ECFF, source: .sidebar),
-      .rect(CGRect(x: 10, y: 0, width: 100, height: 100), color: cream, source: .terminal),
+      .rect(
+        CGRect(x: 10, y: 0, width: 100, height: 100),
+        color: cream,
+        source: .terminal,
+        compositing: .replace),
     ]
     let c = MetalRenderer.fullRedrawClearColor(commands)
     XCTAssertEqual(c.red, 251.0 / 255.0, accuracy: 0.001)
@@ -30,7 +34,11 @@ final class MetalRendererClearColorTests: XCTestCase {
 
   func testIntentionalBlackTerminalBackgroundIsRespected() {
     let commands: [FrameCommand] = [
-      .rect(CGRect(x: 0, y: 0, width: 100, height: 100), color: 0x0000_00FF, source: .terminal)
+      .rect(
+        CGRect(x: 0, y: 0, width: 100, height: 100),
+        color: 0x0000_00FF,
+        source: .terminal,
+        compositing: .replace)
     ]
     let c = MetalRenderer.fullRedrawClearColor(commands)
     XCTAssertEqual(c.red, 0, accuracy: 0.001)
@@ -39,14 +47,31 @@ final class MetalRendererClearColorTests: XCTestCase {
     XCTAssertEqual(c.alpha, 1.0, accuracy: 0.001)
   }
 
-  func testNoTerminalRectFallsBackToFirstRect() {
+  func testTranslucentCanvasClearIsPremultipliedOnce() {
+    let commands: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: 100, height: 100),
+        color: 0x2040_60B3,
+        source: .terminal,
+        compositing: .replace)
+    ]
+    let c = MetalRenderer.fullRedrawClearColor(commands)
+    let alpha = 179.0 / 255.0
+    XCTAssertEqual(c.red, (32.0 / 255.0) * alpha, accuracy: 0.001)
+    XCTAssertEqual(c.green, (64.0 / 255.0) * alpha, accuracy: 0.001)
+    XCTAssertEqual(c.blue, (96.0 / 255.0) * alpha, accuracy: 0.001)
+    XCTAssertEqual(c.alpha, alpha, accuracy: 0.001)
+  }
+
+  func testNoTerminalCanvasFallsBackToTransparentBlack() {
     let commands: [FrameCommand] = [
       .rect(CGRect(x: 0, y: 0, width: 10, height: 10), color: 0x112233_FF, source: .sidebar)
     ]
     let c = MetalRenderer.fullRedrawClearColor(commands)
-    XCTAssertEqual(c.red, Double(0x11) / 255.0, accuracy: 0.001)
-    XCTAssertEqual(c.green, Double(0x22) / 255.0, accuracy: 0.001)
-    XCTAssertEqual(c.blue, Double(0x33) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(c.red, 0, accuracy: 0.001)
+    XCTAssertEqual(c.green, 0, accuracy: 0.001)
+    XCTAssertEqual(c.blue, 0, accuracy: 0.001)
+    XCTAssertEqual(c.alpha, 0, accuracy: 0.001)
   }
 
   func testNoRectsFallsBackToBlack() {
@@ -54,5 +79,6 @@ final class MetalRendererClearColorTests: XCTestCase {
     XCTAssertEqual(c.red, 0, accuracy: 0.001)
     XCTAssertEqual(c.green, 0, accuracy: 0.001)
     XCTAssertEqual(c.blue, 0, accuracy: 0.001)
+    XCTAssertEqual(c.alpha, 0, accuracy: 0.001)
   }
 }

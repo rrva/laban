@@ -191,6 +191,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private let device: MTLDevice
   private let queue: MTLCommandQueue
   private let solidPipeline: MTLRenderPipelineState
+  private let replaceSolidPipeline: MTLRenderPipelineState
   private let glyphAlphaPipeline: MTLRenderPipelineState
   private let glyphCoveragePipeline: MTLRenderPipelineState
   private let glyphColorPipeline: MTLRenderPipelineState
@@ -360,7 +361,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     VectorSubpixelLayout.effective(
       configured: subpixelLayout,
       scale: Double(scale),
-      downsampled: displayDownsampled)
+      downsampled: displayDownsampled,
+      surfaceIsOpaque: surfaceTransparency.isOpaque)
+  }
+  public var effectiveSubpixelFallbackReason: String? {
+    VectorSubpixelLayout.effectiveFallbackReason(
+      configured: subpixelLayout,
+      scale: Double(scale),
+      downsampled: displayDownsampled,
+      surfaceIsOpaque: surfaceTransparency.isOpaque)
   }
 
   public var onFrameCompleted: (() -> Void)?
@@ -397,6 +406,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       effectiveRenderer: RendererSelection.slugGlyph.rawValue,
       rasterFallbackGlyphs: lastRasterFallbackGlyphs,
       vectorSubpixelLayout: effectiveSubpixelLayout.name,
+      vectorSubpixelFallbackReason: effectiveSubpixelFallbackReason,
       textCompositeModel: .linearLight)
   }
 
@@ -459,6 +469,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     solidDescriptor.fragmentFunction = solidFragment
     solidDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
     configureSlugAlphaBlend(solidDescriptor.colorAttachments[0])
+
+    let replaceSolidDescriptor = MTLRenderPipelineDescriptor()
+    replaceSolidDescriptor.label = "laban.slug.solid-replace"
+    replaceSolidDescriptor.vertexFunction = solidVertex
+    replaceSolidDescriptor.fragmentFunction = solidFragment
+    replaceSolidDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    replaceSolidDescriptor.colorAttachments[0]?.isBlendingEnabled = false
 
     let glyphAlphaDescriptor = MTLRenderPipelineDescriptor()
     glyphAlphaDescriptor.label = "laban.slug.glyph-alpha"
@@ -535,6 +552,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDescriptor),
+      let replaceSolidPipeline = try? device.makeRenderPipelineState(
+        descriptor: replaceSolidDescriptor),
       let glyphAlphaPipeline = try? device.makeRenderPipelineState(
         descriptor: glyphAlphaDescriptor),
       let glyphCoveragePipeline = try? device.makeRenderPipelineState(
@@ -557,6 +576,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     self.device = device
     self.queue = queue
     self.solidPipeline = solidPipeline
+    self.replaceSolidPipeline = replaceSolidPipeline
     self.glyphAlphaPipeline = glyphAlphaPipeline
     self.glyphCoveragePipeline = glyphCoveragePipeline
     self.glyphColorPipeline = glyphColorPipeline
@@ -642,7 +662,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     // Retire the publish handler before removing the current target; otherwise
     // an old-policy frame could be republished after this method returns.
     lastCommandBuffer?.waitUntilCompleted()
+    let priorEffectiveSubpixelLayout = effectiveSubpixelLayout
     surfaceTransparency = transparency
+    if effectiveSubpixelLayout != priorEffectiveSubpixelLayout {
+      // Subpixel accumulation is destination-dependent. Drop it immediately so
+      // returning opaque restores the configured layout from fresh coverage.
+      subpixelCoverageAccum = nil
+      subpixelColorAccum = nil
+    }
     layer.isOpaque = transparency.isOpaque
     targetTexture = nil
     targetRing.removeAll(keepingCapacity: true)
@@ -1013,6 +1040,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
 
     var solids: [SlugSolidInstance] = []
+    var replaceSolids: [SlugSolidInstance] = []
     var slugGlyphs: [SlugGlyphGPUInstance] = []
     var rasterGlyphs: [SlugTextureInstance] = []
     var colorGlyphs: [SlugTextureInstance] = []
@@ -1025,15 +1053,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     buildInstances(
       commands: commands,
       solids: &solids,
+      replaceSolids: &replaceSolids,
       glyphs: &slugGlyphs,
       rasterGlyphs: &rasterGlyphs,
       colorGlyphs: &colorGlyphs,
       damageBands: damageBands)
-    lastFrameSolidsCount = solids.count
+    lastFrameSolidsCount = solids.count + replaceSolids.count
     lastFrameSlugGlyphsCount = slugGlyphs.count
     lastFrameRasterGlyphsCount = rasterGlyphs.count
     lastFrameColorGlyphsCount = colorGlyphs.count
-    spanSolids = solids.count
+    spanSolids = solids.count + replaceSolids.count
     spanGlyphs = slugGlyphs.count
     spanRaster = rasterGlyphs.count
     spanColor = colorGlyphs.count
@@ -1140,6 +1169,52 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       gestureZoomAnchor: SIMD2<Float>(
         Float(gestureZoomAnchor.x),
         Float(gestureZoomAnchor.y)))
+
+    // A partial update starts by overwriting every damaged band with
+    // transparent black. Use an unzoomed full-target quad plus the existing
+    // exact-band scissors so clean gaps between bands remain byte-identical.
+    if case .bands = scissorPlan {
+      let erase = SlugSolidInstance(
+        origin: .zero,
+        size: SIMD2<Float>(Float(pixelWidth), Float(pixelHeight)),
+        color: .zero)
+      if let eraseBuffer = makeBuffer([erase]) {
+        retainedBuffers.append(eraseBuffer)
+        var eraseUniforms = SlugVectorUniforms(
+          surfaceSizePixels: SIMD2<Float>(Float(pixelWidth), Float(pixelHeight)),
+          scale: Float(scale))
+        encoder.setRenderPipelineState(replaceSolidPipeline)
+        encoder.setVertexBuffer(eraseBuffer, offset: 0, index: 0)
+        encoder.setVertexBytes(
+          &eraseUniforms,
+          length: MemoryLayout<SlugVectorUniforms>.stride,
+          index: 1)
+        repeatingBands(scissorPlan, on: encoder) {
+          encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 6,
+            instanceCount: 1)
+        }
+      }
+    }
+
+    if !replaceSolids.isEmpty, let replaceSolidBuffer = makeBuffer(replaceSolids) {
+      retainedBuffers.append(replaceSolidBuffer)
+      encoder.setRenderPipelineState(replaceSolidPipeline)
+      encoder.setVertexBuffer(replaceSolidBuffer, offset: 0, index: 0)
+      encoder.setVertexBytes(
+        &vectorUniforms,
+        length: MemoryLayout<SlugVectorUniforms>.stride,
+        index: 1)
+      repeatingBands(scissorPlan, on: encoder) {
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: replaceSolids.count)
+      }
+    }
 
     if !solids.isEmpty, let solidBuffer = makeBuffer(solids) {
       retainedBuffers.append(solidBuffer)
@@ -1472,6 +1547,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private func buildInstances(
     commands: [FrameCommand],
     solids: inout [SlugSolidInstance],
+    replaceSolids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
     rasterGlyphs: inout [SlugTextureInstance],
     colorGlyphs: inout [SlugTextureInstance],
@@ -1483,8 +1559,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     for command in commands {
       switch command {
-      case .rect(let rect, let color, _, _),
-        .cursor(let rect, let color),
+      case .rect(let rect, let color, _, let compositing):
+        guard intersectsDamage(minY: rect.minY, maxY: rect.maxY, bands: damageBands) else {
+          continue
+        }
+        if replacesDestination(compositing) {
+          replaceSolids.append(solid(rect: rect, color: color))
+        } else {
+          solids.append(solid(rect: rect, color: color))
+        }
+
+      case .cursor(let rect, let color),
         .selection(let rect, let color),
         .findMatch(let rect, let color),
         .findSelected(let rect, let color):
@@ -2133,6 +2218,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       color: slugColor(color))
   }
 
+  @inline(__always)
+  private func replacesDestination(_ compositing: FrameCompositingMode) -> Bool {
+    compositing == .replace
+  }
+
   private func slugColor(_ rgba: UInt32) -> SIMD4<Float> {
     SIMD4<Float>(
       Self.srgbToLinear(Float((rgba >> 24) & 0xFF) / 255),
@@ -2143,10 +2233,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   private static func linearizedClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
     let c = MetalRenderer.fullRedrawClearColor(commands)
+    guard c.alpha > 0 else {
+      return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+    }
+    let alpha = Float(c.alpha)
     return MTLClearColor(
-      red: Double(srgbToLinear(Float(c.red))),
-      green: Double(srgbToLinear(Float(c.green))),
-      blue: Double(srgbToLinear(Float(c.blue))),
+      red: Double(srgbToLinear(Float(c.red) / alpha) * alpha),
+      green: Double(srgbToLinear(Float(c.green) / alpha) * alpha),
+      blue: Double(srgbToLinear(Float(c.blue) / alpha) * alpha),
       alpha: c.alpha)
   }
 

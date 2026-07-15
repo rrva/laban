@@ -158,6 +158,9 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
     name: "bgrStripe",
     areas: .bgrStripe)
 
+  /// Stable debug/status vocabulary for the alpha-safety fallback.
+  public static let transparentSurfaceReason = "transparentSurface"
+
   /// The layout actually used for rendering, given the display conditions.
   /// Subpixel AA only works when the rendered framebuffer maps 1:1 onto the
   /// monitor's physical subpixels. On Apple Retina displays in a "scaled"
@@ -170,12 +173,27 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
   public static func effective(
     configured: VectorSubpixelLayout,
     scale: Double,
-    downsampled: Bool
+    downsampled: Bool,
+    surfaceIsOpaque: Bool = true
   ) -> VectorSubpixelLayout {
+    if !surfaceIsOpaque { return .grayscale }
     if configured == .grayscale { return .grayscale }
     if downsampled { return .grayscale }
     if scale <= 0 || scale.rounded() != scale { return .grayscale }
     return configured
+  }
+
+  public static func effectiveFallbackReason(
+    configured: VectorSubpixelLayout,
+    scale: Double,
+    downsampled: Bool,
+    surfaceIsOpaque: Bool = true
+  ) -> String? {
+    if !surfaceIsOpaque { return transparentSurfaceReason }
+    if configured == .grayscale { return nil }
+    if downsampled { return "downsampledDisplay" }
+    if scale <= 0 || scale.rounded() != scale { return "nonIntegerScale" }
+    return nil
   }
 
   /// Whether a display is in a "scaled" (downsampled) mode: macOS renders the

@@ -38,6 +38,41 @@ final class VectorSubpixelPolicyTests: XCTestCase {
       .grayscale)
   }
 
+  func testTransparentSurfaceUsesExactFallbackReason() {
+    XCTAssertEqual(
+      VectorSubpixelLayout.effective(
+        configured: .rgbStripe,
+        scale: 2,
+        downsampled: false,
+        surfaceIsOpaque: false),
+      .grayscale)
+    XCTAssertEqual(
+      VectorSubpixelLayout.effectiveFallbackReason(
+        configured: .rgbStripe,
+        scale: 2,
+        downsampled: false,
+        surfaceIsOpaque: false),
+      "transparentSurface")
+  }
+
+  func testOpaqueSurfaceRestoresConfiguredModeWithoutMutation() {
+    let configured = VectorSubpixelLayout.rgbStripe
+    XCTAssertEqual(
+      VectorSubpixelLayout.effective(
+        configured: configured,
+        scale: 2,
+        downsampled: false,
+        surfaceIsOpaque: false),
+      .grayscale)
+    XCTAssertEqual(
+      VectorSubpixelLayout.effective(
+        configured: configured,
+        scale: 2,
+        downsampled: false,
+        surfaceIsOpaque: true),
+      configured)
+  }
+
   func testRendererReportsEffectiveLayout() throws {
     guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("no Metal device") }
     let atlas = FontAtlas(pointSize: 16, fontName: nil)

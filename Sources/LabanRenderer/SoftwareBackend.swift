@@ -71,6 +71,7 @@ public final class SoftwareBackend: RendererBackend {
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
     // Software backend has no persistent target; damage is ignored.
+    renderer.resetCanvas(to: Self.resolvedCanvasColor(commands))
     renderer.render(commands)
     lastImage = surface.cgImage
     onFrameCompleted?()
@@ -84,4 +85,14 @@ public final class SoftwareBackend: RendererBackend {
   public var presentationLayer: CALayer? { nil }
   public var presentationImage: CGImage? { lastImage }
   public var pngData: Data? { surface.pngData }
+
+  /// FrameProducer emits the terminal canvas first. Without that semantic
+  /// canvas, reset to transparent black; a sidebar or overlay is not a valid
+  /// substitute for the terminal's zoom-margin color.
+  private static func resolvedCanvasColor(_ commands: [FrameCommand]) -> UInt32 {
+    for case .rect(_, let color, .terminal, .replace) in commands {
+      return color
+    }
+    return 0x0000_0000
+  }
 }

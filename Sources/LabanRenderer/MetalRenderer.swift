@@ -337,6 +337,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
   private let queue: MTLCommandQueue
   private let solidPipeline: MTLRenderPipelineState
+  private let replaceSolidPipeline: MTLRenderPipelineState
   private let glyphPipeline: MTLRenderPipelineState
   private let colorGlyphPipeline: MTLRenderPipelineState
   private let cellGlyphPipeline: MTLRenderPipelineState
@@ -349,6 +350,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   private var sidebarGlyphAtlas: MetalGlyphAtlas
 
   private var solidInstances: [SolidInstance] = []
+  private var replaceSolidInstances: [SolidInstance] = []
   private var glyphInstances: [GlyphInstance] = []
   private var colorGlyphInstances: [GlyphInstance] = []
   private var cellGlyphs: [CellGlyph] = []
@@ -390,17 +392,21 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   /// pass must always cover the whole strip, so it rebuilds from the
   /// sidebar-source commands into its own lists and buffers.
   private var stripSolidInstances: [SolidInstance] = []
+  private var stripReplaceSolidInstances: [SolidInstance] = []
   private var stripGlyphInstances: [GlyphInstance] = []
   // setVertexBytes has a hard 4 KB limit, which one 80×24 frame can blow
   // past easily (one solid instance is 32 B, one glyph instance is 48 B).
   // We size MTLBuffers on demand and reuse them frame-to-frame.
   private var solidBuffer: MTLBuffer?
+  private var replaceSolidBuffer: MTLBuffer?
+  private var damageEraseBuffer: MTLBuffer?
   private var glyphBuffer: MTLBuffer?
   private var colorGlyphBuffer: MTLBuffer?
   private var cellGlyphBuffer: MTLBuffer?
   private var sidebarGlyphBuffer: MTLBuffer?
   private var cursorBuffer: MTLBuffer?
   private var stripSolidBuffer: MTLBuffer?
+  private var stripReplaceSolidBuffer: MTLBuffer?
   private var stripGlyphBuffer: MTLBuffer?
 
   /// Persistent terminal-content render target. Holds the most recent fully
@@ -745,6 +751,14 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     solidAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
     solidAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
 
+    let replaceSolidDesc = MTLRenderPipelineDescriptor()
+    replaceSolidDesc.label = "laban.solid-quad-replace"
+    replaceSolidDesc.vertexFunction = solidVS
+    replaceSolidDesc.fragmentFunction = solidFS
+    let replaceSolidAttachment = replaceSolidDesc.colorAttachments[0]!
+    replaceSolidAttachment.pixelFormat = layer.pixelFormat
+    replaceSolidAttachment.isBlendingEnabled = false
+
     let glyphDesc = MTLRenderPipelineDescriptor()
     glyphDesc.label = "laban.glyph-quad"
     glyphDesc.vertexFunction = glyphVS
@@ -791,6 +805,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDesc),
+      let replaceSolidPipeline = try? device.makeRenderPipelineState(
+        descriptor: replaceSolidDesc),
       let glyphPipeline = try? device.makeRenderPipelineState(descriptor: glyphDesc),
       let colorGlyphPipeline = try? device.makeRenderPipelineState(descriptor: colorGlyphDesc),
       let cellGlyphPipeline = try? device.makeRenderPipelineState(descriptor: cellGlyphDesc)
@@ -853,6 +869,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     self.configuredRendererMode = rendererMode.isAvailableOnCurrentOS ? rendererMode : .classic
     self.surfaceTransparency = surfaceTransparency
     self.solidPipeline = solidPipeline
+    self.replaceSolidPipeline = replaceSolidPipeline
     self.glyphPipeline = glyphPipeline
     self.colorGlyphPipeline = colorGlyphPipeline
     self.cellGlyphPipeline = cellGlyphPipeline
@@ -1680,29 +1697,45 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   /// `damage == .partial([])` or encoder construction failed). The caller
   /// uses this to mark sample-buffer slot 0/1 as valid.
   /// The colour a full-redraw clear should use: the terminal's default
-  /// background (from the background rect the FrameProducer always emits), so a
-  /// full redraw never flashes black under a themed terminal. Falls back to the
-  /// first rect's colour, then to black.
+  /// background (from the replace rectangle the FrameProducer always emits), so
+  /// a full redraw never flashes black under a themed terminal. If no terminal
+  /// canvas exists, the renderer-neutral contract requires transparent black.
   static func fullRedrawClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
     var rgba: UInt32?
-    for case .rect(_, let color, let source, _) in commands where source == .terminal {
+    for case .rect(_, let color, let source, let compositing) in commands
+    where source == .terminal && compositing == .replace
+    {
       rgba = color
       break
     }
-    if rgba == nil {
-      for case .rect(_, let color, _, _) in commands {
-        rgba = color
-        break
-      }
-    }
     guard let c = rgba else {
-      return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+      return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
     }
+    let alpha = Double(c & 0xFF) / 255.0
     return MTLClearColor(
-      red: Double((c >> 24) & 0xFF) / 255.0,
-      green: Double((c >> 16) & 0xFF) / 255.0,
-      blue: Double((c >> 8) & 0xFF) / 255.0,
-      alpha: Double(c & 0xFF) / 255.0)
+      red: (Double((c >> 24) & 0xFF) / 255.0) * alpha,
+      green: (Double((c >> 16) & 0xFF) / 255.0) * alpha,
+      blue: (Double((c >> 8) & 0xFF) / 255.0) * alpha,
+      alpha: alpha)
+  }
+
+  /// Transparent-black overwrite quads for every partial damage band. Keeping
+  /// these as distinct instances (rather than one union scissor) preserves clean
+  /// rows between disjoint bands.
+  private func partialDamageEraseInstances(
+    _ damage: RenderDamage,
+    targetWidth: Int
+  ) -> [SolidInstance] {
+    guard case .partial(let ranges) = damage else { return [] }
+    let scale = Float(layer.contentsScale)
+    let width = Float(targetWidth)
+    return ranges.compactMap { range in
+      guard range.height > 0 else { return nil }
+      return SolidInstance(
+        origin: SIMD2<Float>(0, Float(range.y) * scale),
+        size: SIMD2<Float>(width, Float(range.height) * scale),
+        color: SIMD4<Float>(repeating: 0))
+    }
   }
 
   private func fullRedrawClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
@@ -1718,6 +1751,19 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     uniforms u: inout Uniforms,
     cmdBuf: MTLCommandBuffer
   ) -> Bool {
+    if case .partial(let ranges) = damage, ranges.count > 1 {
+      var encodedAny = false
+      for range in ranges {
+        encodedAny = encodeContentPass(
+          commands: commands,
+          damage: .partial(yRanges: [range]),
+          target: target,
+          surfacePxH: surfacePxH,
+          uniforms: &u,
+          cmdBuf: cmdBuf) || encodedAny
+      }
+      return encodedAny
+    }
     // Build instance lists once for both the content pass and the cursor pass.
     buildInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: damage)
 
@@ -1769,6 +1815,25 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       solidFrameBuffer = buffer
     }
 
+    let replaceSolidFrameBuffer: MTLBuffer?
+    if replaceSolidInstances.isEmpty {
+      replaceSolidFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&replaceSolidBuffer, for: replaceSolidInstances)
+      else { return false }
+      replaceSolidFrameBuffer = buffer
+    }
+
+    let damageEraseInstances = partialDamageEraseInstances(damage, targetWidth: target.width)
+    let damageEraseFrameBuffer: MTLBuffer?
+    if damageEraseInstances.isEmpty {
+      damageEraseFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&damageEraseBuffer, for: damageEraseInstances)
+      else { return false }
+      damageEraseFrameBuffer = buffer
+    }
+
     let glyphFrameBuffer: MTLBuffer?
     if glyphInstances.isEmpty {
       glyphFrameBuffer = nil
@@ -1809,6 +1874,21 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     encoder.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
     if let s = scissor {
       encoder.setScissorRect(s)
+    }
+
+    if let buf = damageEraseFrameBuffer {
+      encoder.setRenderPipelineState(replaceSolidPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: damageEraseInstances.count)
+    }
+    if let buf = replaceSolidFrameBuffer {
+      encoder.setRenderPipelineState(replaceSolidPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: replaceSolidInstances.count)
     }
 
     if let buf = solidFrameBuffer {
@@ -1859,6 +1939,20 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     uniforms u: inout Uniforms,
     cmdBuf: MTLCommandBuffer
   ) -> Bool {
+    if case .partial(let ranges) = damage, ranges.count > 1 {
+      var encodedAny = false
+      for range in ranges {
+        encodedAny = encodeGPUCellContentPass(
+          commands: commands,
+          cellPayload: cellPayload,
+          damage: .partial(yRanges: [range]),
+          target: target,
+          surfacePxH: surfacePxH,
+          uniforms: &u,
+          cmdBuf: cmdBuf) || encodedAny
+      }
+      return encodedAny
+    }
     if commandsContainColorGlyph(commands) {
       return encodeContentPass(
         commands: commands,
@@ -1946,6 +2040,25 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       solidFrameBuffer = buffer
     }
 
+    let replaceSolidFrameBuffer: MTLBuffer?
+    if replaceSolidInstances.isEmpty {
+      replaceSolidFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&replaceSolidBuffer, for: replaceSolidInstances)
+      else { return false }
+      replaceSolidFrameBuffer = buffer
+    }
+
+    let damageEraseInstances = partialDamageEraseInstances(damage, targetWidth: target.width)
+    let damageEraseFrameBuffer: MTLBuffer?
+    if damageEraseInstances.isEmpty {
+      damageEraseFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&damageEraseBuffer, for: damageEraseInstances)
+      else { return false }
+      damageEraseFrameBuffer = buffer
+    }
+
     let sidebarGlyphFrameBuffer: MTLBuffer?
     if sidebarGlyphInstances.isEmpty {
       sidebarGlyphFrameBuffer = nil
@@ -1968,6 +2081,21 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     encoder.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
     if let s = scissor {
       encoder.setScissorRect(s)
+    }
+
+    if let buf = damageEraseFrameBuffer {
+      encoder.setRenderPipelineState(replaceSolidPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: damageEraseInstances.count)
+    }
+    if let buf = replaceSolidFrameBuffer {
+      encoder.setRenderPipelineState(replaceSolidPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: replaceSolidInstances.count)
     }
 
     if let buf = solidFrameBuffer {
@@ -2085,7 +2213,20 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     let widthPx = Self.sidebarStripWidthPx(commands: commands, scale: layer.contentsScale)
     guard widthPx > 0 else { return false }
     guard buildSidebarStripInstanceLists(commands: commands) else { return false }
-    guard !stripSolidInstances.isEmpty || !stripGlyphInstances.isEmpty else { return false }
+    guard !stripReplaceSolidInstances.isEmpty || !stripSolidInstances.isEmpty
+      || !stripGlyphInstances.isEmpty
+    else { return false }
+
+    let replaceSolidFrameBuffer: MTLBuffer?
+    if stripReplaceSolidInstances.isEmpty {
+      replaceSolidFrameBuffer = nil
+    } else {
+      guard
+        let buffer = prepareInstanceBuffer(
+          &stripReplaceSolidBuffer, for: stripReplaceSolidInstances)
+      else { return false }
+      replaceSolidFrameBuffer = buffer
+    }
 
     let solidFrameBuffer: MTLBuffer?
     if stripSolidInstances.isEmpty {
@@ -2119,6 +2260,13 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
         x: 0, y: 0,
         width: min(widthPx, target.width),
         height: min(surfacePxH, target.height)))
+    if let buf = replaceSolidFrameBuffer {
+      encoder.setRenderPipelineState(replaceSolidPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: stripReplaceSolidInstances.count)
+    }
     if let buf = solidFrameBuffer {
       encoder.setRenderPipelineState(solidPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
@@ -2156,24 +2304,33 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   }
 
   private func buildSidebarStripInstanceListsOnce(commands: [FrameCommand]) {
+    stripReplaceSolidInstances.removeAll(keepingCapacity: true)
     stripSolidInstances.removeAll(keepingCapacity: true)
     stripGlyphInstances.removeAll(keepingCapacity: true)
     let scale = Float(layer.contentsScale)
 
     @inline(__always)
-    func appendSolid(rect: CGRect, color: UInt32) {
+    func appendSolid(
+      rect: CGRect,
+      color: UInt32,
+      compositing: FrameCompositingMode = .sourceOver
+    ) {
       guard rect.width > 0, rect.height > 0 else { return }
-      stripSolidInstances.append(
-        SolidInstance(
-          origin: SIMD2<Float>(Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
-          size: SIMD2<Float>(Float(rect.width) * scale, Float(rect.height) * scale),
-          color: rgbaToFloat4(color)))
+      let instance = SolidInstance(
+        origin: SIMD2<Float>(Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
+        size: SIMD2<Float>(Float(rect.width) * scale, Float(rect.height) * scale),
+        color: rgbaToFloat4(color))
+      if compositing == .replace {
+        stripReplaceSolidInstances.append(instance)
+      } else {
+        stripSolidInstances.append(instance)
+      }
     }
 
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let color, .sidebar, _):
-        appendSolid(rect: rect, color: color)
+      case .rect(let rect, let color, .sidebar, let compositing):
+        appendSolid(rect: rect, color: color, compositing: compositing)
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, .sidebar,
         let underlineStyle, let underlineColor, _, _
@@ -2534,6 +2691,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     damageBounds: DamageYBounds?
   ) -> Bool {
     solidInstances.removeAll(keepingCapacity: true)
+    replaceSolidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
     colorGlyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
@@ -2593,16 +2751,24 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     let scale = Float(layer.contentsScale)
 
     @inline(__always)
-    func appendSolid(rect: CGRect, color: UInt32) {
+    func appendSolid(
+      rect: CGRect,
+      color: UInt32,
+      compositing: FrameCompositingMode = .sourceOver
+    ) {
       guard rect.width > 0, rect.height > 0 else { return }
       if let damageBounds, !damageBounds.overlaps(y: rect.origin.y, height: rect.height) {
         return
       }
-      solidInstances.append(
-        SolidInstance(
-          origin: SIMD2<Float>(Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
-          size: SIMD2<Float>(Float(rect.width) * scale, Float(rect.height) * scale),
-          color: rgbaToFloat4(color)))
+      let instance = SolidInstance(
+        origin: SIMD2<Float>(Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
+        size: SIMD2<Float>(Float(rect.width) * scale, Float(rect.height) * scale),
+        color: rgbaToFloat4(color))
+      if compositing == .replace {
+        replaceSolidInstances.append(instance)
+      } else {
+        solidInstances.append(instance)
+      }
       _ = surfaceH
     }
 
@@ -2632,7 +2798,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       // preedit pass below — AFTER the payload's own cell backgrounds — so it
       // covers an app-rendered caret under the composition instead of being
       // painted over by those backgrounds.
-      guard case .rect(let rect, let color, let source, _) = cmd, source != .preedit
+      guard case .rect(let rect, let color, let source, let compositing) = cmd,
+        source != .preedit
       else { continue }
       // On a partial payload frame the per-dirty-row background below repaints
       // exactly the dirty rows; the full-viewport terminal-area background rect
@@ -2642,12 +2809,15 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       // backgrounds / procedural fills to the default colour. Skip it on partial
       // frames — clean rows are preserved by the persistent target's load action.
       if case .partial = damage, source == .terminal { continue }
-      appendSolid(rect: rect, color: color)
+      appendSolid(rect: rect, color: color, compositing: compositing)
     }
 
     switch damage {
     case .full:
-      appendSolid(rect: payload.terminalRect, color: payload.defaultBackground)
+      appendSolid(
+        rect: payload.terminalRect,
+        color: payload.defaultBackground,
+        compositing: .replace)
     case .partial:
       resetPayloadRowsWithFullBackgroundRun(count: payload.rows)
       for run in payload.backgroundRuns
@@ -2665,7 +2835,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
               + payload.contentYOffset,
             width: CGFloat(payload.cols) * payload.cellSize.width,
             height: payload.cellSize.height),
-          color: payload.defaultBackground)
+          color: payload.defaultBackground,
+          compositing: .replace)
       }
     }
     for run in payload.backgroundRuns {
@@ -2675,7 +2846,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           + payload.contentYOffset,
         width: CGFloat(run.colCount) * payload.cellSize.width,
         height: payload.cellSize.height)
-      appendSolid(rect: rect, color: run.color)
+      appendSolid(rect: rect, color: run.color, compositing: .replace)
     }
 
     for procedural in payload.proceduralCells {
@@ -3157,7 +3328,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     }
 
     lastInstanceCounts = RenderInstanceCounts(
-      solids: solidInstances.count,
+      solids: solidInstances.count + replaceSolidInstances.count,
       glyphs: glyphInstances.count + colorGlyphInstances.count,
       sidebarGlyphs: sidebarGlyphInstances.count,
       cellGlyphs: cellGlyphs.count,
@@ -3273,6 +3444,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     damageBounds: DamageYBounds?
   ) -> Bool {
     solidInstances.removeAll(keepingCapacity: true)
+    replaceSolidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
     colorGlyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
@@ -3328,7 +3500,11 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     }
 
     @inline(__always)
-    func appendSolid(rect: CGRect, color: UInt32) {
+    func appendSolid(
+      rect: CGRect,
+      color: UInt32,
+      compositing: FrameCompositingMode = .sourceOver
+    ) {
       guard rect.width > 0, rect.height > 0 else { return }
       if let damageBounds, !damageBounds.overlaps(y: rect.origin.y, height: rect.height) {
         return
@@ -3337,8 +3513,13 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
         Float(rect.origin.x) * scale, Float(rect.origin.y) * scale)
       let sizePx = SIMD2<Float>(
         Float(rect.width) * scale, Float(rect.height) * scale)
-      solidInstances.append(
-        SolidInstance(origin: originPx, size: sizePx, color: rgbaToFloat4(color)))
+      let instance = SolidInstance(
+        origin: originPx, size: sizePx, color: rgbaToFloat4(color))
+      if compositing == .replace {
+        replaceSolidInstances.append(instance)
+      } else {
+        solidInstances.append(instance)
+      }
       _ = surfaceH
     }
 
@@ -3394,8 +3575,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let color, _, _):
-        appendSolid(rect: rect, color: color)
+      case .rect(let rect, let color, _, let compositing):
+        appendSolid(rect: rect, color: color, compositing: compositing)
 
       case .cursor(let rect, let color):
         guard rect.width > 0, rect.height > 0 else { break }
@@ -3515,7 +3696,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     }
 
     lastInstanceCounts = RenderInstanceCounts(
-      solids: solidInstances.count,
+      solids: solidInstances.count + replaceSolidInstances.count,
       glyphs: glyphInstances.count + colorGlyphInstances.count,
       sidebarGlyphs: sidebarGlyphInstances.count,
       cellGlyphs: cellGlyphs.count,
@@ -3525,6 +3706,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
   private func buildCursorInstanceList(commands: [FrameCommand]) {
     solidInstances.removeAll(keepingCapacity: true)
+    replaceSolidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
     colorGlyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
@@ -3543,7 +3725,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           color: rgbaToFloat4(color)))
     }
     lastInstanceCounts = RenderInstanceCounts(
-      solids: solidInstances.count,
+      solids: solidInstances.count + replaceSolidInstances.count,
       glyphs: glyphInstances.count + colorGlyphInstances.count,
       sidebarGlyphs: sidebarGlyphInstances.count,
       cellGlyphs: 0,
@@ -3579,6 +3761,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     damageBounds: DamageYBounds?
   ) {
     solidInstances.removeAll(keepingCapacity: true)
+    replaceSolidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
     colorGlyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
@@ -3596,15 +3779,24 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     }
 
     @inline(__always)
-    func appendSolid(rect: CGRect, color: UInt32) {
+    func appendSolid(
+      rect: CGRect,
+      color: UInt32,
+      compositing: FrameCompositingMode = .sourceOver
+    ) {
       // Skip empty rects — a stray .clip(.zero) would otherwise blank the screen.
       guard rect.width > 0, rect.height > 0 else { return }
       let originPx = SIMD2<Float>(
         Float(rect.origin.x) * scale, Float(rect.origin.y) * scale)
       let sizePx = SIMD2<Float>(
         Float(rect.width) * scale, Float(rect.height) * scale)
-      solidInstances.append(
-        SolidInstance(origin: originPx, size: sizePx, color: rgbaToFloat4(color)))
+      let instance = SolidInstance(
+        origin: originPx, size: sizePx, color: rgbaToFloat4(color))
+      if compositing == .replace {
+        replaceSolidInstances.append(instance)
+      } else {
+        solidInstances.append(instance)
+      }
       _ = surfaceH  // silences the unused-capture lint when building release
     }
 
@@ -3664,11 +3856,11 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let color, _, _):
+      case .rect(let rect, let color, _, let compositing):
         if let damageBounds, !damageBounds.overlaps(y: rect.origin.y, height: rect.height) {
           continue
         }
-        appendSolid(rect: rect, color: color)
+        appendSolid(rect: rect, color: color, compositing: compositing)
 
       case .cursor(let rect, let color):
         // Cursor lives in its own overlay pass on the drawable, not in the
@@ -3775,7 +3967,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       }
     }
     lastInstanceCounts = RenderInstanceCounts(
-      solids: solidInstances.count,
+      solids: solidInstances.count + replaceSolidInstances.count,
       glyphs: glyphInstances.count + colorGlyphInstances.count,
       sidebarGlyphs: sidebarGlyphInstances.count,
       cellGlyphs: cellGlyphs.count,

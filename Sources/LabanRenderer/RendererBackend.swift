@@ -48,6 +48,7 @@ public struct RendererStatus: Equatable, Sendable, Encodable {
   public var fallbackReason: String?
   public var rasterFallbackGlyphs: Int?
   public var vectorSubpixelLayout: String?
+  public var vectorSubpixelFallbackReason: String?
   public var textCompositeModel: TextCompositeModel?
 
   public init(
@@ -56,6 +57,7 @@ public struct RendererStatus: Equatable, Sendable, Encodable {
     fallbackReason: String? = nil,
     rasterFallbackGlyphs: Int? = nil,
     vectorSubpixelLayout: String? = nil,
+    vectorSubpixelFallbackReason: String? = nil,
     textCompositeModel: TextCompositeModel? = nil
   ) {
     self.configuredRenderer = configuredRenderer
@@ -63,6 +65,7 @@ public struct RendererStatus: Equatable, Sendable, Encodable {
     self.fallbackReason = fallbackReason
     self.rasterFallbackGlyphs = rasterFallbackGlyphs
     self.vectorSubpixelLayout = vectorSubpixelLayout
+    self.vectorSubpixelFallbackReason = vectorSubpixelFallbackReason
     self.textCompositeModel = textCompositeModel
   }
 }
