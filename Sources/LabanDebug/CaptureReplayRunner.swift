@@ -350,7 +350,8 @@ public final class CaptureReplayRunner {
             .rect(
               terminalArea,
               color: snap.pointee.default_background_rgba,
-              source: .terminal
+              source: .terminal,
+              compositing: .replace
             ))
         }
         let selection = selectionBySession[session.id]

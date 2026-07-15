@@ -278,7 +278,8 @@ final class CaptureReplayTests: XCTestCase {
           height: logicalHeight
         ),
         color: snap.pointee.default_background_rgba,
-        source: .terminal
+        source: .terminal,
+        compositing: .replace
       ))
     commands += FrameProducer(
       cellWidth: cellWidth,
