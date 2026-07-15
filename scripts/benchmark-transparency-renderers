@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+phase=
+fixture=
+warmup=
+frames=
+runs=
+output=
+
+usage() {
+  printf '%s\n' \
+    'usage: scripts/benchmark-transparency-renderers --phase=baseline' \
+    '       --fixture=fixtures/cjk/trust-gate.fixture.json --warmup=40' \
+    '       --frames=240 --runs=5 --output=PATH' >&2
+}
+
+for argument in "$@"; do
+  case "$argument" in
+    --phase=*) phase=${argument#--phase=} ;;
+    --fixture=*) fixture=${argument#--fixture=} ;;
+    --warmup=*) warmup=${argument#--warmup=} ;;
+    --frames=*) frames=${argument#--frames=} ;;
+    --runs=*) runs=${argument#--runs=} ;;
+    --output=*) output=${argument#--output=} ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'benchmark-transparency-renderers: unknown argument: %s\n' "$argument" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [ "$phase" != baseline ]; then
+  printf 'benchmark-transparency-renderers: only --phase=baseline is implemented\n' >&2
+  exit 2
+fi
+if [ "$fixture" != fixtures/cjk/trust-gate.fixture.json ]; then
+  printf 'benchmark-transparency-renderers: baseline fixture must be fixtures/cjk/trust-gate.fixture.json\n' >&2
+  exit 2
+fi
+if [ "$warmup" != 40 ] || [ "$frames" != 240 ] || [ "$runs" != 5 ]; then
+  printf 'benchmark-transparency-renderers: baseline requires --warmup=40 --frames=240 --runs=5\n' >&2
+  exit 2
+fi
+if [ -z "$output" ]; then
+  printf 'benchmark-transparency-renderers: --output is required\n' >&2
+  exit 2
+fi
+if [ ! -f "$fixture" ]; then
+  printf 'benchmark-transparency-renderers: fixture does not exist: %s\n' "$fixture" >&2
+  exit 2
+fi
+
+for required_command in git python3 shasum swift sw_vers sysctl; do
+  if ! command -v "$required_command" >/dev/null 2>&1; then
+    printf 'benchmark-transparency-renderers: missing required command: %s\n' \
+      "$required_command" >&2
+    exit 2
+  fi
+done
+
+temporary_root="$repo_root/.tmp/transparency-renderer-baseline.$$"
+mkdir -p "$temporary_root"
+cleanup() {
+  rm -rf "$temporary_root"
+}
+trap cleanup EXIT
+
+build_log="$temporary_root/build.log"
+printf 'benchmark-transparency-renderers: building release benchmark support\n'
+if ! LABAN_RUN_TRANSPARENCY_BENCH=0 swift test -c release \
+  --filter RendererTransparencyPerformanceTests.testOpaqueRendererBaseline \
+  >"$build_log" 2>&1
+then
+  sed -n '1,240p' "$build_log" >&2
+  exit 1
+fi
+
+bin_path=$(swift build -c release --show-bin-path)
+test_executable="$bin_path/LabanPackageTests.xctest/Contents/MacOS/LabanPackageTests"
+if [ ! -x "$test_executable" ]; then
+  printf 'benchmark-transparency-renderers: release test executable missing: %s\n' \
+    "$test_executable" >&2
+  exit 1
+fi
+
+fixture_path="$repo_root/$fixture"
+run_records=()
+for renderer in slugGlyph vectorGlyph; do
+  run=1
+  while [ "$run" -le "$runs" ]; do
+    run_record="$temporary_root/$renderer-run-$run.json"
+    run_log="$temporary_root/$renderer-run-$run.log"
+    printf 'benchmark-transparency-renderers: %s run %s/%s\n' "$renderer" "$run" "$runs"
+    if ! LABAN_RUN_TRANSPARENCY_BENCH=1 \
+      LABAN_TRANSPARENCY_BENCH_RENDERER="$renderer" \
+      LABAN_TRANSPARENCY_BENCH_RUN="$run" \
+      LABAN_TRANSPARENCY_BENCH_FIXTURE="$fixture_path" \
+      LABAN_TRANSPARENCY_BENCH_WARMUP="$warmup" \
+      LABAN_TRANSPARENCY_BENCH_FRAMES="$frames" \
+      LABAN_TRANSPARENCY_BENCH_OUTPUT="$run_record" \
+      swift test -c release --skip-build \
+        --filter RendererTransparencyPerformanceTests.testOpaqueRendererBaseline \
+        >"$run_log" 2>&1
+    then
+      printf 'benchmark-transparency-renderers: %s run %s failed\n' "$renderer" "$run" >&2
+      sed -n '1,240p' "$run_log" >&2
+      exit 1
+    fi
+    if [ ! -s "$run_record" ]; then
+      printf 'benchmark-transparency-renderers: %s run %s produced no record\n' \
+        "$renderer" "$run" >&2
+      sed -n '1,240p' "$run_log" >&2
+      exit 1
+    fi
+    run_records+=("$run_record")
+    run=$((run + 1))
+  done
+done
+
+python3 - "$output" "$fixture" "$test_executable" "${run_records[@]}" <<'PY'
+import datetime
+import hashlib
+import json
+import math
+import os
+import platform
+import subprocess
+import sys
+from pathlib import Path
+
+
+def command(*arguments, required=True):
+    completed = subprocess.run(
+        arguments,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        if required:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise SystemExit(f"identity command failed ({' '.join(arguments)}): {detail}")
+        return None
+    return completed.stdout.strip()
+
+
+def require(condition, message):
+    if not condition:
+        raise SystemExit(f"benchmark validation failed: {message}")
+
+
+def metric_median(records, metric_name):
+    result = {}
+    for percentile in ("p50Milliseconds", "p95Milliseconds", "p99Milliseconds"):
+        values = sorted(record["metrics"][metric_name][percentile] for record in records)
+        result[percentile] = values[len(values) // 2]
+    return result
+
+
+output_path = Path(sys.argv[1])
+fixture_path = sys.argv[2]
+test_executable = Path(sys.argv[3])
+record_paths = [Path(path) for path in sys.argv[4:]]
+require(len(record_paths) == 10, f"expected 10 process records, found {len(record_paths)}")
+
+records = []
+for record_path in record_paths:
+    try:
+        record = json.loads(record_path.read_text())
+    except Exception as error:
+        raise SystemExit(f"could not read {record_path}: {error}") from error
+    records.append(record)
+
+expected_renderers = ("slugGlyph", "vectorGlyph")
+process_ids = []
+for renderer in expected_renderers:
+    renderer_records = [record for record in records if record.get("renderer") == renderer]
+    require(len(renderer_records) == 5, f"{renderer} must have five runs")
+    require(
+        sorted(record.get("run") for record in renderer_records) == [1, 2, 3, 4, 5],
+        f"{renderer} run identifiers are incomplete",
+    )
+    for record in renderer_records:
+        require(record.get("schemaVersion") == 1, "unsupported process-record schema")
+        require(record.get("phase") == "baseline", "process record is not baseline")
+        require(record.get("configuredRenderer") == renderer, f"{renderer} configured identity")
+        require(record.get("effectiveRenderer") == renderer, f"{renderer} effective identity")
+        require(record.get("fixtureName") == "trust-gate", "fixture name drifted")
+        require(record.get("fixtureVersion") == 1, "fixture version drifted")
+        require(record.get("grid", {}).get("columns") == 160, "grid columns drifted")
+        require(record.get("grid", {}).get("rows") == 48, "grid rows drifted")
+        require(record.get("scale") == 2.0, "scale drifted")
+        require(record.get("surfaceIsOpaque") is True, "baseline surface is not opaque")
+        require(
+            record.get("antialiasing") == {"configured": "grayscale", "effective": "grayscale"},
+            "anti-aliasing mode drifted",
+        )
+        require(record.get("warmupFrames") == 40, "warmup count drifted")
+        require(record.get("measuredFrames") == 240, "measured-frame count drifted")
+        for metric_name in ("cpuEncode", "wallTime"):
+            metric = record.get("metrics", {}).get(metric_name, {})
+            require(metric.get("acceptedSamples") == 240, f"{renderer} {metric_name} sample loss")
+            values = [
+                metric.get("minimumMilliseconds"),
+                metric.get("p50Milliseconds"),
+                metric.get("p95Milliseconds"),
+                metric.get("p99Milliseconds"),
+                metric.get("maximumMilliseconds"),
+            ]
+            require(
+                all(isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+                    for value in values),
+                f"{renderer} {metric_name} has an invalid timing value",
+            )
+            require(values == sorted(values), f"{renderer} {metric_name} percentiles are unordered")
+        process_ids.append(record.get("processIdentifier"))
+
+require(len(set(process_ids)) == 10, "benchmark runs did not use ten independent processes")
+
+identity_record = records[0]
+for record in records[1:]:
+    require(record.get("grid") == identity_record.get("grid"), "cell metrics changed between runs")
+    require(record.get("font") == identity_record.get("font"), "font identity changed between runs")
+
+implementation_commit = command("git", "rev-parse", "HEAD")
+tracked_dirty = subprocess.run(
+    ["git", "diff", "--quiet", "--ignore-submodules", "--"], check=False
+).returncode != 0
+swift_version = command("swift", "--version")
+executable_sha256 = hashlib.sha256(test_executable.read_bytes()).hexdigest()
+
+renderers = {}
+for renderer in expected_renderers:
+    renderer_records = sorted(
+        (record for record in records if record["renderer"] == renderer),
+        key=lambda record: record["run"],
+    )
+    renderers[renderer] = {
+        "runs": renderer_records,
+        "medianOfFive": {
+            "cpuEncode": metric_median(renderer_records, "cpuEncode"),
+            "wallTime": metric_median(renderer_records, "wallTime"),
+        },
+    }
+
+report = {
+    "schemaVersion": 1,
+    "benchmark": "terminal-background-transparency-renderers",
+    "phase": "baseline",
+    "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    "implementationCommit": implementation_commit,
+    "sourceTreeTrackedDirty": tracked_dirty,
+    "fixture": {
+        "path": fixture_path,
+        "name": identity_record["fixtureName"],
+        "version": identity_record["fixtureVersion"],
+    },
+    "workload": {
+        "grid": identity_record["grid"],
+        "scale": identity_record["scale"],
+        "pixelWidth": identity_record["pixelWidth"],
+        "pixelHeight": identity_record["pixelHeight"],
+        "surfaceOpacity": 1.0,
+        "surfaceIsOpaque": True,
+        "antialiasing": identity_record["antialiasing"],
+        "font": identity_record["font"],
+        "warmupFrames": 40,
+        "measuredFrames": 240,
+        "runsPerRenderer": 5,
+    },
+    "identity": {
+        "build": {
+            "configuration": "release",
+            "mode": "SwiftPM release XCTest",
+            "benchmarkTest": "RendererTransparencyPerformanceTests.testOpaqueRendererBaseline",
+            "swiftVersion": swift_version,
+            "testExecutableSHA256": executable_sha256,
+        },
+        "os": {
+            "productName": command("sw_vers", "-productName"),
+            "productVersion": command("sw_vers", "-productVersion"),
+            "buildVersion": command("sw_vers", "-buildVersion"),
+        },
+        "hardware": {
+            "architecture": platform.machine(),
+            "model": command("sysctl", "-n", "hw.model"),
+            "processor": command("sysctl", "-n", "machdep.cpu.brand_string", required=False),
+            "memoryBytes": int(command("sysctl", "-n", "hw.memsize")),
+        },
+    },
+    "thresholdsForPostChangeComparison": {
+        "opaqueMedianP99MaximumRegressionFraction": 0.05,
+        "directTranslucentMedianP99MaximumRegressionFraction": 0.10,
+        "maximumP99Milliseconds": 8.33,
+    },
+    "renderers": renderers,
+    "validation": {
+        "allSamplesAccepted": True,
+        "acceptedSamplesPerMetricPerRun": 240,
+        "expectedProcessCount": 10,
+        "uniqueProcessCount": len(set(process_ids)),
+    },
+}
+
+output_path.parent.mkdir(parents=True, exist_ok=True)
+temporary_output = output_path.with_name(output_path.name + f".tmp.{os.getpid()}")
+temporary_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+temporary_output.replace(output_path)
+
+for renderer in expected_renderers:
+    median = report["renderers"][renderer]["medianOfFive"]
+    print(
+        f"{renderer}: "
+        f"cpu p50/p95/p99="
+        f"{median['cpuEncode']['p50Milliseconds']:.3f}/"
+        f"{median['cpuEncode']['p95Milliseconds']:.3f}/"
+        f"{median['cpuEncode']['p99Milliseconds']:.3f} ms; "
+        f"wall p50/p95/p99="
+        f"{median['wallTime']['p50Milliseconds']:.3f}/"
+        f"{median['wallTime']['p95Milliseconds']:.3f}/"
+        f"{median['wallTime']['p99Milliseconds']:.3f} ms"
+    )
+print(f"baseline={output_path}")
+print(f"implementationCommit={implementation_commit}")
+print("validation=all 4800 measured samples accepted across 10 independent processes")
+PY
