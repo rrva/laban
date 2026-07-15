@@ -22,7 +22,7 @@ public enum TerminalBackgroundImageAvailability: String, CaseIterable, Codable, 
   case none
   case available
   case missing
-  case invalid
+  case corrupt
   case headlessUnsupported
 }
 

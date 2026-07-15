@@ -158,7 +158,7 @@ final class TerminalWindowTransparencyCoordinator {
   }
 
   /// URL-free availability supplied by the future managed image store. A
-  /// missing or invalid image fails closed through pure policy without
+  /// missing or corrupt image fails closed through pure policy without
   /// exposing a filesystem location to this coordinator or debug state.
   func updateBackgroundImageAvailability(
     _ availability: TerminalBackgroundImageAvailability,

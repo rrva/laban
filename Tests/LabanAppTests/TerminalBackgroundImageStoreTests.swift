@@ -156,7 +156,7 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     XCTAssertEqual(context.store.resolveRequestedImage().availability, .available)
   }
 
-  func testManagedDirectoryAndFileArePrivateAndSymlinkEscapeIsInvalid() throws {
+  func testManagedDirectoryAndFileArePrivateAndSymlinkEscapeIsReportedCorrupt() throws {
     let context = try makeContext()
     let sourceURL = context.externalURL.appendingPathComponent("private.png")
     try writeImage(makeImage(width: 2, height: 2, color: .green), to: sourceURL, type: .png)
@@ -174,7 +174,7 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
         displayName: "escaped.png"))
     let escapedURL = context.store.directoryURL.appendingPathComponent(escaped.identifier)
     try FileManager.default.createSymbolicLink(at: escapedURL, withDestinationURL: sourceURL)
-    XCTAssertEqual(context.store.resolveManagedImage(escaped).availability, .invalid)
+    XCTAssertEqual(context.store.resolveManagedImage(escaped).availability, .corrupt)
   }
 
   func testSymlinkedManagedRootIsRejectedWithoutTouchingTarget() throws {
@@ -219,7 +219,7 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     XCTAssertEqual(context.store.resolveRequestedImage().availability, .missing)
 
     try Data("corrupt".utf8).write(to: managedURL)
-    XCTAssertEqual(context.store.resolveRequestedImage().availability, .invalid)
+    XCTAssertEqual(context.store.resolveRequestedImage().availability, .corrupt)
 
     let repairURL = context.externalURL.appendingPathComponent("repair.png")
     try writeImage(makeImage(width: 3, height: 2, color: .green), to: repairURL, type: .png)
@@ -409,7 +409,7 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     try Data("corrupt".utf8).write(to: managedURL)
     XCTAssertEqual(coordinator.status.backgroundImageAvailability, .available)
     context.notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-    XCTAssertEqual(coordinator.status.backgroundImageAvailability, .invalid)
+    XCTAssertEqual(coordinator.status.backgroundImageAvailability, .corrupt)
     XCTAssertEqual(
       coordinator.status.effective.forceOpaqueReason,
       .backgroundImageUnavailable)

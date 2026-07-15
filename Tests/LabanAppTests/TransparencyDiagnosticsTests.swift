@@ -111,6 +111,16 @@ final class TransparencyDiagnosticsTests: XCTestCase {
         ]))
   }
 
+  func testCorruptImageAvailabilityUsesExactDebugWireValue() throws {
+    var state = sampleState()
+    state.backgroundImageState = TerminalBackgroundImageAvailability.corrupt.rawValue
+
+    let body = try JSONEncoder().encode(state)
+    let projection = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: body) as? [String: Any])
+    XCTAssertEqual(projection["backgroundImageState"] as? String, "corrupt")
+  }
+
   private func action(_ body: String) -> Intent {
     let envelope = try! JSONDecoder().decode(DebugActionEnvelope.self, from: Data(body.utf8))
     return .legacyDebugAction(

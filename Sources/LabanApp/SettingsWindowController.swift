@@ -1036,7 +1036,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       backgroundImageStatusLabel.stringValue = String(
         format: L10n.tr("Image file is missing: %@"), displayName)
       backgroundImageStatusLabel.textColor = .systemOrange
-    case .invalid, .headlessUnsupported:
+    case .corrupt, .headlessUnsupported:
       backgroundImageStatusLabel.stringValue = String(
         format: L10n.tr("Image could not be loaded: %@"), displayName)
       backgroundImageStatusLabel.textColor = .systemOrange

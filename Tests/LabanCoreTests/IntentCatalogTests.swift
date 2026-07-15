@@ -95,6 +95,32 @@ final class IntentCatalogTests: XCTestCase {
     }
   }
 
+  func testTransparencySchemasUseExactBackgroundImageAvailabilityWireValues() throws {
+    let expected = ["none", "available", "missing", "corrupt", "headlessUnsupported"]
+    XCTAssertEqual(TerminalBackgroundImageAvailability.allCases.map(\.rawValue), expected)
+
+    let generated = TerminalTransparencyDebugResponse.jsonSchema.toJSONSchema()
+    let generatedProperties = try XCTUnwrap(generated["properties"] as? [String: Any])
+    let generatedState = try XCTUnwrap(
+      generatedProperties["backgroundImageState"] as? [String: Any])
+    XCTAssertEqual(generatedState["enum"] as? [String], expected)
+
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let checkedSchemaURL =
+      repositoryRoot
+      .appendingPathComponent("schemas/debug/transparency.schema.json")
+    let checkedSchema = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(contentsOf: checkedSchemaURL))
+        as? [String: Any])
+    let checkedProperties = try XCTUnwrap(checkedSchema["properties"] as? [String: Any])
+    let checkedState = try XCTUnwrap(
+      checkedProperties["backgroundImageState"] as? [String: Any])
+    XCTAssertEqual(checkedState["enum"] as? [String], expected)
+  }
+
   func testKnownDebugActionIntentIDsAreCataloged() {
     for action in DebugActionIntentID.knownActionNames {
       guard let id = DebugActionIntentID.intentID(forAction: action) else {

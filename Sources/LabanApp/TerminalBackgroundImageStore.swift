@@ -193,11 +193,11 @@ final class TerminalBackgroundImageStore {
     }
     guard isTrustedManagedDirectory() else {
       cachedResolution = nil
-      return TerminalBackgroundImageResolution(availability: .invalid, asset: nil)
+      return TerminalBackgroundImageResolution(availability: .corrupt, asset: nil)
     }
     guard let fileURL = containedURL(for: managedImage) else {
       cachedResolution = nil
-      return TerminalBackgroundImageResolution(availability: .invalid, asset: nil)
+      return TerminalBackgroundImageResolution(availability: .corrupt, asset: nil)
     }
     guard fileManager.fileExists(atPath: fileURL.path) else {
       cachedResolution = nil
@@ -207,7 +207,7 @@ final class TerminalBackgroundImageStore {
       let fingerprint = fingerprint(for: fileURL)
     else {
       cachedResolution = nil
-      return TerminalBackgroundImageResolution(availability: .invalid, asset: nil)
+      return TerminalBackgroundImageResolution(availability: .corrupt, asset: nil)
     }
     if let cachedResolution,
       cachedResolution.identifier == managedImage.identifier,
@@ -225,7 +225,7 @@ final class TerminalBackgroundImageStore {
           image: image,
           contentDigest: Self.contentDigest(image)))
     } else {
-      resolution = TerminalBackgroundImageResolution(availability: .invalid, asset: nil)
+      resolution = TerminalBackgroundImageResolution(availability: .corrupt, asset: nil)
     }
     cachedResolution = CachedResolution(
       identifier: managedImage.identifier,

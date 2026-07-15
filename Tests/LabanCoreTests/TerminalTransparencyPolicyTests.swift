@@ -108,7 +108,7 @@ final class TerminalTransparencyPolicyTests: XCTestCase {
     for availability in [
       TerminalBackgroundImageAvailability.none,
       .missing,
-      .invalid,
+      .corrupt,
       .headlessUnsupported,
     ] {
       let effective = resolve(

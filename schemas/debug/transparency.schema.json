@@ -43,7 +43,7 @@
     "effectiveBackdropStyle": {"enum": ["none", "systemBlur", "image"]},
     "backgroundImageScaling": {"enum": ["fill", "fit", "stretch"]},
     "backgroundImageState": {
-      "enum": ["none", "available", "missing", "invalid", "headlessUnsupported"]
+      "enum": ["none", "available", "missing", "corrupt", "headlessUnsupported"]
     },
     "backgroundImageIdentifier": {"type": ["string", "null"]},
     "backgroundImagePixelWidth": {"type": ["integer", "null"], "minimum": 1},
