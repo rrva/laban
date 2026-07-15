@@ -81,6 +81,16 @@ if [ -f "$LIB_OUT" ] && [ -f "$HDR_OUT" ] && [ -d "$DEST/.git" ]; then
     printf 'fetch-libghostty-vt: stale pin, patch set, or source state; rebuilding\n'
 fi
 
+# A valid cache does not need Zig installed. Once a rebuild is necessary,
+# reject the wrong toolchain before changing the shared vendored checkout or
+# removing its last successful stamp.
+command -v zig >/dev/null 2>&1 \
+    || fail "Zig 0.15.2 is required. Install via https://ziglang.org/download/"
+zig_version=$(zig version 2>/dev/null || echo "unknown")
+if [ "$zig_version" != "0.15.2" ]; then
+    fail "Ghostty pin $GHOSTTY_COMMIT requires Zig 0.15.2 exactly; found $zig_version"
+fi
+
 # Clone or reset to the pinned commit.
 if [ -d "$DEST/.git" ]; then
     stored=$(git -C "$DEST" rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -167,12 +177,6 @@ done
 #     's/pub fn verifyIntegrity(self: \*const Page) void {/&\n    return;/' \
 #     "$DEST/src/terminal/page.zig"
 #
-command -v zig >/dev/null 2>&1 \
-    || fail "Zig 0.15.2 is required. Install via https://ziglang.org/download/"
-zig_version=$(zig version 2>/dev/null || echo "unknown")
-if [ "$zig_version" != "0.15.2" ]; then
-    fail "Ghostty pin $GHOSTTY_COMMIT requires Zig 0.15.2 exactly; found $zig_version"
-fi
 printf 'fetch-libghostty-vt: running zig build -Demit-lib-vt -Doptimize=ReleaseFast (this may take a few minutes)\n'
 cd "$repo_root/$DEST"
 zig build -Demit-lib-vt -Doptimize=ReleaseFast
