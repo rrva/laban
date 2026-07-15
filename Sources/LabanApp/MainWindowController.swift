@@ -573,6 +573,7 @@ final class MainWindowController: NSWindowController {
       reduceTransparency: termView.accessibilityDisplayOptionsForTesting.reduceTransparency,
       snapshotBackgroundCapability:
         sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
+      backgroundImageStore: TerminalBackgroundImageStore(),
       backgroundEffectHost: backgroundEffectHost)
     window.center()
     window.makeKeyAndOrderFront(nil)

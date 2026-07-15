@@ -33,6 +33,7 @@ final class TerminalWindowTransparencyCoordinator {
   private weak var window: NSWindow?
   private weak var terminalView: TerminalBitmapView?
   private weak var backgroundEffectHost: TerminalBackgroundEffectHost?
+  private let backgroundImageStore: TerminalBackgroundImageStore?
   private let defaults: UserDefaults
   private let notificationCenter: NotificationCenter
   private var observerTokens: [NSObjectProtocol] = []
@@ -52,24 +53,35 @@ final class TerminalWindowTransparencyCoordinator {
     reduceTransparency: Bool,
     snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability,
     backgroundImageAvailability: TerminalBackgroundImageAvailability = .none,
+    backgroundImageStore: TerminalBackgroundImageStore? = nil,
     backgroundEffectHost: TerminalBackgroundEffectHost? = nil
   ) {
     self.window = window
     self.terminalView = terminalView
     self.backgroundEffectHost = backgroundEffectHost
+    self.backgroundImageStore = backgroundImageStore
     self.defaults = defaults
     self.notificationCenter = notificationCenter
-    self.requested = TerminalTransparencySettings.requestedConfiguration(defaults: defaults)
+    let requestedSettings = TerminalTransparencySettings.requestedSettings(defaults: defaults)
+    self.requested = requestedSettings.configuration
     self.reduceTransparency = reduceTransparency
     self.nativeFullscreen = window.styleMask.contains(.fullScreen)
-    self.backgroundImageAvailability = backgroundImageAvailability
+    if let backgroundImageStore {
+      self.backgroundImageAvailability =
+        backgroundImageStore.resolveManagedImage(
+          requestedSettings.managedBackgroundImage
+        ).availability
+      try? backgroundImageStore.cleanupOrphans(keeping: requestedSettings.managedBackgroundImage)
+    } else {
+      self.backgroundImageAvailability = backgroundImageAvailability
+    }
     self.snapshotBackgroundCapability = snapshotBackgroundCapability
     self.effective = TerminalTransparencyPolicy.resolve(
       requested: requested,
       reduceTransparency: reduceTransparency,
       nativeFullscreen: nativeFullscreen,
       supportsBehindWindowBlur: backgroundEffectHost?.supportsBehindWindowBlur == true,
-      backgroundImageAvailability: backgroundImageAvailability,
+      backgroundImageAvailability: self.backgroundImageAvailability,
       snapshotBackgroundCapability: snapshotBackgroundCapability,
       headless: false)
 
@@ -145,8 +157,29 @@ final class TerminalWindowTransparencyCoordinator {
       ) { [weak self] _ in
         MainActor.assumeIsolated {
           guard let self else { return }
-          self.requested = TerminalTransparencySettings.requestedConfiguration(
+          let settings = TerminalTransparencySettings.requestedSettings(
             defaults: self.defaults)
+          self.requested = settings.configuration
+          self.refreshBackgroundImageAvailability(
+            managedImage: settings.managedBackgroundImage,
+            cleanupOrphans: true)
+          self.resolveAndApply(wake: true)
+        }
+      })
+    observerTokens.append(
+      notificationCenter.addObserver(
+        forName: NSApplication.didBecomeActiveNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        MainActor.assumeIsolated {
+          guard let self, let backgroundImageStore = self.backgroundImageStore else { return }
+          let managedImage = TerminalTransparencySettings.requestedSettings(
+            defaults: self.defaults
+          ).managedBackgroundImage
+          let availability = backgroundImageStore.resolveManagedImage(managedImage).availability
+          guard availability != self.backgroundImageAvailability else { return }
+          self.backgroundImageAvailability = availability
           self.resolveAndApply(wake: true)
         }
       })
@@ -176,6 +209,18 @@ final class TerminalWindowTransparencyCoordinator {
     guard nativeFullscreen != enabled else { return }
     nativeFullscreen = enabled
     resolveAndApply(wake: true)
+  }
+
+  private func refreshBackgroundImageAvailability(
+    managedImage: TerminalManagedBackgroundImage?,
+    cleanupOrphans: Bool
+  ) {
+    guard let backgroundImageStore else { return }
+    backgroundImageAvailability =
+      backgroundImageStore.resolveManagedImage(managedImage).availability
+    if cleanupOrphans {
+      try? backgroundImageStore.cleanupOrphans(keeping: managedImage)
+    }
   }
 
   private func resolveAndApply(wake: Bool) {
