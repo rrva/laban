@@ -2,7 +2,7 @@
 # Fetch and build libghostty-vt from source.
 # Pin: Ghostty commit 46d54ed673a004df09078bee56e809421a82370e (main snapshot, 2026-05-20)
 # Artifacts written to .external/libghostty-vt/zig-out/ (git-ignored).
-# Requires: git, zig >= 0.15.2
+# Requires: git, Zig 0.15.2
 set -eu
 
 GHOSTTY_COMMIT="46d54ed673a004df09078bee56e809421a82370e"
@@ -10,6 +10,17 @@ GHOSTTY_URL="https://github.com/ghostty-org/ghostty"
 DEST=".external/libghostty-vt"
 LIB_OUT="$DEST/zig-out/lib/libghostty-vt.a"
 HDR_OUT="$DEST/zig-out/include/ghostty/vt.h"
+PATCH_STAMP="$DEST/zig-out/.laban-patchset"
+RELINK_INPUT="Sources/LabanTerminalCore/ghostty_vt_bridge_smoke.c"
+
+# Application order is intentional and shared by the fingerprint, applied-state
+# check, and rebuild path. Keep each patch in a named variable so
+# scripts/check-dependencies can prove that every committed vendored patch is
+# represented here.
+PATCH_0002="patches/libghostty-vt-0002-stream-log-scope-and-mode-debug.patch"
+PATCH_0001="patches/libghostty-vt-0001-alt-screen-clear-uses-primary-pen.patch"
+PATCH_0003="patches/libghostty-vt-0003-decxcpr-cursor-position-report.patch"
+PATCH_ORDER="$PATCH_0002 $PATCH_0001 $PATCH_0003"
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
@@ -34,16 +45,40 @@ fail() {
 }
 
 command -v git >/dev/null 2>&1 || fail "git is required"
-command -v zig >/dev/null 2>&1 || fail "zig is required (>= 0.15.2). Install via https://ziglang.org/download/"
 
-# If artifacts are already present from the correct commit, skip everything.
+# The upstream pin alone is not a complete cache key: Laban's numbered patches
+# can change while GHOSTTY_COMMIT remains fixed. Hash their contents in the same
+# order in which they are applied and persist the result only after a successful
+# Zig build.
+patchset_fingerprint=$(
+    for patch in $PATCH_ORDER; do
+        git hash-object "$repo_root/$patch"
+    done
+)
+
+patches_are_applied() {
+    for patch in $PATCH_ORDER; do
+        git -C "$DEST" apply --reverse --check "$repo_root/$patch" >/dev/null 2>&1 \
+            || return 1
+    done
+    return 0
+}
+
+# A no-op requires all four parts of the vendored build identity: upstream pin,
+# artifacts, patch-set stamp, and source state. The source check catches an
+# interrupted or manually reset shared .external checkout even when an old
+# stamp remains beside the archive.
 if [ -f "$LIB_OUT" ] && [ -f "$HDR_OUT" ] && [ -d "$DEST/.git" ]; then
     stored=$(git -C "$DEST" rev-parse HEAD 2>/dev/null || echo "unknown")
-    if [ "$stored" = "$GHOSTTY_COMMIT" ]; then
-        printf 'fetch-libghostty-vt: already at %s, artifacts present\n' "$GHOSTTY_COMMIT"
+    stamped=$(cat "$PATCH_STAMP" 2>/dev/null || echo "missing")
+    if [ "$stored" = "$GHOSTTY_COMMIT" ] && \
+       [ "$stamped" = "$patchset_fingerprint" ] && \
+       patches_are_applied; then
+        printf 'fetch-libghostty-vt: already at %s with current Laban patch set\n' \
+            "$GHOSTTY_COMMIT"
         exit 0
     fi
-    printf 'fetch-libghostty-vt: stale commit %s, rebuilding\n' "$stored"
+    printf 'fetch-libghostty-vt: stale pin, patch set, or source state; rebuilding\n'
 fi
 
 # Clone or reset to the pinned commit.
@@ -77,6 +112,14 @@ if [ "$actual" != "$GHOSTTY_COMMIT" ]; then
     fail "expected commit $GHOSTTY_COMMIT, got $actual"
 fi
 
+# A previous run may have applied only part of the patch series, or may have
+# failed after applying it but before rebuilding. Remove the success stamp
+# first, then restore the disposable vendored checkout to the pin so every
+# patch below is applied exactly once.
+rm -f "$PATCH_STAMP"
+git -C "$DEST" reset --hard "$GHOSTTY_COMMIT" >/dev/null \
+    || fail "failed to restore vendored source to $GHOSTTY_COMMIT"
+
 # Apply local patches to the vendored source. Every modification lives as a
 # reviewable patch in patches/ — never an inline sed — so its provenance is
 # auditable as a diff and it applies identically on every platform.
@@ -85,9 +128,6 @@ fi
 # are clearly attributed to this library; downgrade unimplemented-mode warnings
 # to debug so benign mode requests from programs like tmux don't surface as
 # noise.
-git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0002-stream-log-scope-and-mode-debug.patch" \
-    || fail "failed to apply stream log/mode patch (libghostty-vt-0002)"
-
 # 0001 (Terminal.zig): clear the alternate screen using the PRIMARY screen's pen, not the
 # alternate screen's stale SGR background. Upstream switchScreenMode (mode 1049
 # enter) erases the screen BEFORE copying the primary cursor; because each screen
@@ -96,16 +136,15 @@ git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0002-stream-log-scope-and
 # then repaints in the old app's background until the new app draws (a black
 # flash). The patch reorders the cursor copy before the erase.
 # See docs/adr/0011-libghostty-alt-screen-clear-uses-primary-pen.md.
-git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0001-alt-screen-clear-uses-primary-pen.patch" \
-    || fail "failed to apply alt-screen clear patch (libghostty-vt-0001)"
-
 # 0003 (device_status.zig, stream_terminal.zig, stream_handler.zig): answer
 # DECXCPR (CSI ? 6 n) with the DEC-private form CSI ? row ; col R. Upstream
 # only answers the plain CSI 6 n; apps prefer the ? form because a plain
 # CSI row;col R reply is ambiguous with modified function-key input.
 # See docs/adr/0019-libghostty-answers-decxcpr.md.
-git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0003-decxcpr-cursor-position-report.patch" \
-    || fail "failed to apply DECXCPR patch (libghostty-vt-0003)"
+for patch in $PATCH_ORDER; do
+    git -C "$DEST" apply "$repo_root/$patch" \
+        || fail "failed to apply vendored patch $patch"
+done
 
 # Build libghostty-vt. Zig fetches its own dependencies on first build
 # (~3-10 min). Subsequent builds use ~/.cache/zig and are fast.
@@ -128,6 +167,12 @@ git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0003-decxcpr-cursor-posit
 #     's/pub fn verifyIntegrity(self: \*const Page) void {/&\n    return;/' \
 #     "$DEST/src/terminal/page.zig"
 #
+command -v zig >/dev/null 2>&1 \
+    || fail "Zig 0.15.2 is required. Install via https://ziglang.org/download/"
+zig_version=$(zig version 2>/dev/null || echo "unknown")
+if [ "$zig_version" != "0.15.2" ]; then
+    fail "Ghostty pin $GHOSTTY_COMMIT requires Zig 0.15.2 exactly; found $zig_version"
+fi
 printf 'fetch-libghostty-vt: running zig build -Demit-lib-vt -Doptimize=ReleaseFast (this may take a few minutes)\n'
 cd "$repo_root/$DEST"
 zig build -Demit-lib-vt -Doptimize=ReleaseFast
@@ -135,5 +180,14 @@ zig build -Demit-lib-vt -Doptimize=ReleaseFast
 cd "$repo_root"
 [ -f "$LIB_OUT" ] || fail "zig build did not produce $LIB_OUT"
 [ -f "$HDR_OUT" ] || fail "zig build did not produce $HDR_OUT"
+
+# SwiftPM does not track the static archive supplied through unsafeFlags. A
+# newer mtime on this established bridge input makes every scratch build relink
+# LabanTerminalCore after an actual vendored rebuild. Publish the patch stamp
+# only after both the archive and relink trigger are ready.
+touch "$repo_root/$RELINK_INPUT"
+stamp_tmp="$PATCH_STAMP.tmp.$$"
+printf '%s\n' "$patchset_fingerprint" > "$stamp_tmp"
+mv "$stamp_tmp" "$PATCH_STAMP"
 
 printf 'fetch-libghostty-vt: done. artifacts at %s/zig-out/\n' "$DEST"

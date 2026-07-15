@@ -85,7 +85,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .external/libghostty-vt/zig-out
-          key: libghostty-vt-zigout-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_COMMIT }}
+          key: libghostty-vt-zigout-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_COMMIT }}-${{ hashFiles('scripts/fetch-libghostty-vt', 'patches/libghostty-vt-*.patch') }}
 
       - name: Install Zig 0.15
         if: steps.cache-vt.outputs.cache-hit != 'true'
@@ -100,12 +100,12 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .build
-          # v4: the runner moved from macos-15 (Xcode 16.4) to macos-26 (Xcode
-          # 26.x); a .build compiled by the old toolchain must not be restored
-          # onto the new one.
-          key: swiftpm-v4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**') }}
+          # The vendored-input hash must precede the source hash and stay in the
+          # restore prefix. libghostty-vt.a is linked through unsafeFlags, so
+          # SwiftPM does not otherwise notice that a local patch changed it.
+          key: swiftpm-v5-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-libghostty-vt', 'patches/libghostty-vt-*.patch') }}-${{ hashFiles('Package.swift', 'Sources/**') }}
           restore-keys: |
-            swiftpm-v4-${{ runner.os }}-${{ runner.arch }}-
+            swiftpm-v5-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-libghostty-vt', 'patches/libghostty-vt-*.patch') }}-
 
       - name: Build
         run: swift build

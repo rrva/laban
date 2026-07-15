@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "Package.swift"
 PACKAGE_RESOLVED = ROOT / "Package.resolved"
 FETCH = ROOT / "scripts/fetch-libghostty-vt"
+WORKFLOW = ROOT / ".github/workflows/check.yml"
 ADR = ROOT / "docs/adr/0001-libghostty-vt-owns-vt-parsing.md"
 PROFILE_DOC = ROOT / "docs/process/profiling-hiccups.md"
 ALLOWED_SWIFTPM_DEPENDENCIES = {
@@ -58,6 +59,7 @@ def main() -> int:
     errors: list[str] = []
     package = PACKAGE.read_text(encoding="utf-8")
     fetch = FETCH.read_text(encoding="utf-8")
+    workflow = WORKFLOW.read_text(encoding="utf-8")
     adr = ADR.read_text(encoding="utf-8")
 
     dependencies = package_dependencies(package)
@@ -104,6 +106,48 @@ def main() -> int:
     if commit and commit not in adr:
         fail(errors, "ADR 0001 must name the same libghostty-vt commit as scripts/fetch-libghostty-vt")
 
+    patch_paths = sorted(ROOT.glob("patches/libghostty-vt-*.patch"))
+    declared_patches = [
+        ROOT / path
+        for path in re.findall(r'^PATCH_[0-9]{4}="([^"]+)"$', fetch, re.M)
+    ]
+    if declared_patches != [
+        ROOT / "patches/libghostty-vt-0002-stream-log-scope-and-mode-debug.patch",
+        ROOT / "patches/libghostty-vt-0001-alt-screen-clear-uses-primary-pen.patch",
+        ROOT / "patches/libghostty-vt-0003-decxcpr-cursor-position-report.patch",
+    ]:
+        fail(errors, "scripts/fetch-libghostty-vt must declare the reviewed 0002/0001/0003 patch order")
+    if set(declared_patches) != set(patch_paths):
+        fail(errors, "every patches/libghostty-vt-*.patch file must be declared exactly once by the fetch script")
+    if 'PATCH_ORDER="$PATCH_0002 $PATCH_0001 $PATCH_0003"' not in fetch:
+        fail(errors, "scripts/fetch-libghostty-vt must apply patches in 0002/0001/0003 order")
+
+    fetch_guards = {
+        "content-addressed patch fingerprint": "git hash-object",
+        "applied-source validation": "apply --reverse --check",
+        "partial-patch recovery": 'reset --hard "$GHOSTTY_COMMIT"',
+        "pinned Zig toolchain check": 'if [ "$zig_version" != "0.15.2" ]',
+        "post-build patch stamp": 'mv "$stamp_tmp" "$PATCH_STAMP"',
+        "SwiftPM relink trigger": 'touch "$repo_root/$RELINK_INPUT"',
+    }
+    for label, snippet in fetch_guards.items():
+        if snippet not in fetch:
+            fail(errors, f"scripts/fetch-libghostty-vt is missing {label}")
+
+    vendored_hash = "${{ hashFiles('scripts/fetch-libghostty-vt', 'patches/libghostty-vt-*.patch') }}"
+    cache_lines = [line.strip() for line in workflow.splitlines() if vendored_hash in line]
+    if len(cache_lines) < 3:
+        fail(errors, "CI vendored, SwiftPM exact, and SwiftPM restore cache keys must include the patch-set hash")
+    if not any(line.startswith("key: libghostty-vt-zigout-") for line in cache_lines):
+        fail(errors, "CI libghostty-vt zig-out cache key must include the patch-set hash")
+    if not any(
+        line.startswith("key: swiftpm-") and "hashFiles('Package.swift', 'Sources/**')" in line
+        for line in cache_lines
+    ):
+        fail(errors, "CI SwiftPM cache key must put the patch-set hash before the source hash")
+    if not any(line.startswith("swiftpm-") for line in cache_lines):
+        fail(errors, "CI SwiftPM restore prefix must retain the patch-set hash")
+
     external = ROOT / ".external/libghostty-vt"
     if external.exists():
         git_dir = external / ".git"
@@ -118,10 +162,25 @@ def main() -> int:
 
             lib = external / "zig-out/lib/libghostty-vt.a"
             header = external / "zig-out/include/ghostty/vt.h"
+            stamp = external / "zig-out/.laban-patchset"
             if not lib.is_file():
                 fail(errors, f"missing vendored libghostty-vt archive: {lib.relative_to(ROOT)}")
             if not header.is_file():
                 fail(errors, f"missing vendored libghostty-vt header: {header.relative_to(ROOT)}")
+            patch_hashes = [shell(["git", "hash-object", str(path)], cwd=ROOT) for path in declared_patches]
+            if any(value is None for value in patch_hashes):
+                fail(errors, "failed to fingerprint the declared libghostty-vt patches")
+            else:
+                expected_stamp = "\n".join(value for value in patch_hashes if value is not None)
+                actual_stamp = stamp.read_text(encoding="utf-8").strip() if stamp.is_file() else None
+                if actual_stamp != expected_stamp:
+                    fail(errors, ".external/libghostty-vt patch-set stamp is missing or stale")
+            for patch in declared_patches:
+                applied = shell(
+                    ["git", "-C", str(external), "apply", "--reverse", "--check", str(patch)]
+                )
+                if applied is None:
+                    fail(errors, f"vendored patch is not applied: {patch.relative_to(ROOT)}")
         else:
             fail(errors, ".external/libghostty-vt exists but is not a git checkout")
 
