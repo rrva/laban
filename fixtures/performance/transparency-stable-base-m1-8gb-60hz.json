@@ -1,0 +1,10 @@
+{
+  "chipModel": "Apple M1",
+  "displayHz": 60,
+  "hardwareModel": "Macmini9,1",
+  "lane": "stable-base-m1-8gb-60hz",
+  "memoryBytes": 8589934592,
+  "osBuild": "25F80",
+  "osReleaseChannel": "stable",
+  "osVersion": "26.5.1"
+}

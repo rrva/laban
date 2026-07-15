@@ -1,0 +1,701 @@
+#!/usr/bin/env python3
+"""Capture the installed-app transparency compositor matrix on its pinned lane."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Any
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+LANE = "stable-base-m1-8gb-60hz"
+EIGHT_GIB = 8 * 1024 * 1024 * 1024
+IDENTITY_FIELDS = (
+    "lane",
+    "osVersion",
+    "osBuild",
+    "osReleaseChannel",
+    "hardwareModel",
+    "chipModel",
+    "memoryBytes",
+    "displayHz",
+)
+SCENARIOS = (
+    ("opaqueStatic", 1.0, False),
+    ("opaqueAnimated", 1.0, True),
+    ("directStatic", 0.9, False),
+    ("directAnimated", 0.9, True),
+)
+COUNTERS = (
+    "rendererPresentCount",
+    "accessibilityRefreshCount",
+    "effectiveTransparencyApplyCount",
+    "transparencyRenderWakeCount",
+    "presentIntervalDeadlineMisses",
+)
+
+
+class ProfileError(RuntimeError):
+    pass
+
+
+def fail(message: str) -> None:
+    raise ProfileError(message)
+
+
+def command(arguments: list[str], label: str) -> str:
+    completed = subprocess.run(arguments, check=False, text=True, capture_output=True)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        fail(f"{label} failed: {detail}")
+    return completed.stdout.strip()
+
+
+def load_json(path: Path, label: str) -> dict[str, Any]:
+    if not path.is_file():
+        fail(f"{label} is missing: {path}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"{label} is invalid: {error}")
+    if not isinstance(value, dict):
+        fail(f"{label} must be a JSON object")
+    return value
+
+
+def validate_lane_contract(contract: dict[str, Any]) -> None:
+    if set(contract) != set(IDENTITY_FIELDS):
+        fail("lane contract fields do not match the required identity contract")
+    if contract["lane"] != LANE:
+        fail(f"lane contract must name {LANE}")
+    if not isinstance(contract["osVersion"], str) or re.fullmatch(r"26(?:\.[0-9]+){1,2}", contract["osVersion"]) is None:
+        fail("lane contract osVersion must be macOS 26.x")
+    if contract["osReleaseChannel"] != "stable":
+        fail("lane contract must pin the stable release channel")
+    if contract["hardwareModel"] != "Macmini9,1" or contract["chipModel"] != "Apple M1":
+        fail("lane contract must pin a base Apple M1 Mac mini")
+    if contract["memoryBytes"] != EIGHT_GIB:
+        fail("lane contract must pin exactly 8 GiB")
+    if contract["displayHz"] != 60:
+        fail("lane contract must pin exactly 60 Hz")
+
+
+def display_hz() -> int:
+    raw = command(["system_profiler", "SPDisplaysDataType", "-json"], "display identity")
+    try:
+        report = json.loads(raw)
+    except json.JSONDecodeError as error:
+        fail(f"display identity was not JSON: {error}")
+    rates: list[float] = []
+    for adapter in report.get("SPDisplaysDataType", []):
+        for display in adapter.get("spdisplays_ndrvs", []):
+            if display.get("spdisplays_main") != "spdisplays_yes":
+                continue
+            resolution = str(display.get("spdisplays_resolution") or display.get("_spdisplays_pixels") or "")
+            match = re.search(r"@\s*([0-9]+(?:\.[0-9]+)?)\s*Hz", resolution)
+            if match:
+                rates.append(float(match.group(1)))
+    if len(rates) != 1 or not math.isfinite(rates[0]):
+        fail("could not identify exactly one main-display refresh rate")
+    rounded = round(rates[0])
+    if abs(rates[0] - rounded) > 0.1:
+        fail(f"main display has a non-integral refresh rate: {rates[0]}")
+    return int(rounded)
+
+
+def host_identity(contract: dict[str, Any]) -> dict[str, Any]:
+    os_version = command(["sw_vers", "-productVersion"], "OS version")
+    os_build = command(["sw_vers", "-buildVersion"], "OS build")
+    # Release-channel classification is established by the checked-in contract's
+    # exact version/build and its dated ExecPlan decision. A host with either
+    # value changed is rejected rather than being inferred stable.
+    release_channel = contract["osReleaseChannel"] if (
+        os_version == contract["osVersion"] and os_build == contract["osBuild"]
+    ) else "unverified"
+    return {
+        "lane": LANE,
+        "osVersion": os_version,
+        "osBuild": os_build,
+        "osReleaseChannel": release_channel,
+        "hardwareModel": command(["sysctl", "-n", "hw.model"], "hardware model"),
+        "chipModel": command(["sysctl", "-n", "machdep.cpu.brand_string"], "chip model"),
+        "memoryBytes": int(command(["sysctl", "-n", "hw.memsize"], "memory size")),
+        "displayHz": display_hz(),
+    }
+
+
+def validate_host(identity: dict[str, Any], contract: dict[str, Any]) -> None:
+    mismatches = [field for field in IDENTITY_FIELDS if identity.get(field) != contract.get(field)]
+    if mismatches:
+        fail("host does not match lane contract: " + ", ".join(mismatches))
+
+
+def wait_for_control(control_dir: Path, run_id: str, pid: int, timeout: float = 30.0) -> tuple[Path, str]:
+    advertisement_path = control_dir / "control.json"
+    deadline = time.monotonic() + timeout
+    last_detail = "control.json not created"
+    while time.monotonic() < deadline:
+        if not process_alive(pid):
+            fail("installed app exited before diagnostic control became ready")
+        try:
+            advertisement = load_json(advertisement_path, "diagnostic control advertisement")
+            socket_path = Path(str(advertisement.get("url") or ""))
+            token = advertisement.get("diagnosticControlToken")
+            if advertisement.get("runId") != run_id:
+                last_detail = "runId mismatch"
+            elif advertisement.get("pid") != pid:
+                last_detail = "pid mismatch"
+            elif socket_path != control_dir / "control.sock":
+                last_detail = "socket path mismatch"
+            elif not stat.S_ISSOCK(socket_path.stat().st_mode):
+                last_detail = "control socket is not live"
+            elif not isinstance(token, str) or not token:
+                last_detail = "diagnosticControlToken missing"
+            else:
+                return socket_path, token
+        except (ProfileError, OSError):
+            pass
+        time.sleep(0.1)
+    fail(f"diagnostic control readiness timed out: {last_detail}")
+
+
+def process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+class ControlClient:
+    def __init__(self, socket_path: Path, token: str, control_dir: Path):
+        self.socket_path = socket_path
+        self.config_path = control_dir / "curl-diagnostic.conf"
+        self.config_path.write_text(
+            "silent\nshow-error\nfail-with-body\n"
+            + f'header = "Authorization: Bearer {token}"\n',
+            encoding="utf-8",
+        )
+        self.config_path.chmod(0o600)
+
+    def close(self) -> None:
+        try:
+            self.config_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        arguments = [
+            "curl",
+            "--config",
+            str(self.config_path),
+            "--unix-socket",
+            str(self.socket_path),
+            "--request",
+            method,
+            "http://localhost" + path,
+        ]
+        if payload is not None:
+            arguments += ["--header", "Content-Type: application/json", "--data-binary", json.dumps(payload, separators=(",", ":"))]
+        completed = subprocess.run(arguments, check=False, text=True, capture_output=True)
+        if completed.returncode != 0:
+            fail(f"diagnostic {method} {path} failed: {completed.stderr.strip()}")
+        try:
+            value = json.loads(completed.stdout)
+        except json.JSONDecodeError as error:
+            fail(f"diagnostic {method} {path} returned invalid JSON: {error}")
+        if not isinstance(value, dict):
+            fail(f"diagnostic {method} {path} did not return an object")
+        return value
+
+    def action(self, action: str, **fields: Any) -> dict[str, Any]:
+        return self.request("POST", "/debug/actions", {"action": action, **fields})
+
+    def transparency(self) -> dict[str, Any]:
+        return self.request("GET", "/debug/transparency")
+
+
+BACKDROP_SOURCE = r'''import AppKit
+
+final class BackdropView: NSView {
+  let animated: Bool
+  var phase: CGFloat = 0
+  init(frame: NSRect, animated: Bool) {
+    self.animated = animated
+    super.init(frame: frame)
+    if animated {
+      Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        guard let self else { return }
+        self.phase = (self.phase + 6).truncatingRemainder(dividingBy: 160)
+        self.needsDisplay = true
+      }
+    }
+  }
+  required init?(coder: NSCoder) { nil }
+  override func draw(_ dirtyRect: NSRect) {
+    NSColor.white.setFill(); dirtyRect.fill()
+    let tile: CGFloat = 80
+    let offset = animated ? phase : 0
+    for row in -1...Int(bounds.height / tile) + 1 {
+      for column in -1...Int(bounds.width / tile) + 1 where (row + column) % 2 == 0 {
+        NSColor.black.setFill()
+        NSRect(x: CGFloat(column) * tile + offset, y: CGFloat(row) * tile, width: tile, height: tile).fill()
+      }
+    }
+    NSColor.systemRed.setFill(); NSRect(x: bounds.midX - 12 + offset, y: 0, width: 24, height: bounds.height).fill()
+    NSColor.systemBlue.setFill(); NSRect(x: 0, y: bounds.midY - 12, width: bounds.width, height: 24).fill()
+  }
+}
+
+final class Delegate: NSObject, NSApplicationDelegate {
+  var window: NSWindow?
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    guard let screen = NSScreen.main else { exit(2) }
+    let animated = CommandLine.arguments.contains("--animated")
+    let window = NSWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.level = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)
+    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    window.contentView = BackdropView(frame: screen.frame, animated: animated)
+    window.orderFront(nil)
+    self.window = window
+    print("READY"); fflush(stdout)
+  }
+}
+
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+let delegate = Delegate()
+app.delegate = delegate
+app.run()
+'''
+
+
+def build_backdrop_helper(work: Path) -> Path:
+    source = work / "TransparencyBackdrop.swift"
+    executable = work / "transparency-backdrop"
+    source.write_text(BACKDROP_SOURCE, encoding="utf-8")
+    completed = subprocess.run(
+        ["xcrun", "swiftc", str(source), "-framework", "AppKit", "-o", str(executable)],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        fail(f"could not build deterministic backdrop helper: {completed.stderr.strip()}")
+    return executable
+
+
+def start_backdrop(executable: Path, animated: bool, scenario_dir: Path) -> subprocess.Popen[str]:
+    stdout = (scenario_dir / "backdrop.stdout.log").open("w", encoding="utf-8")
+    stderr = (scenario_dir / "backdrop.stderr.log").open("w", encoding="utf-8")
+    arguments = [str(executable)] + (["--animated"] if animated else [])
+    process = subprocess.Popen(arguments, stdout=stdout, stderr=stderr, text=True)
+    stdout.close(); stderr.close()
+    readiness = scenario_dir / "backdrop.stdout.log"
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            fail("deterministic backdrop helper exited before readiness")
+        if readiness.is_file() and "READY" in readiness.read_text(encoding="utf-8", errors="replace"):
+            return process
+        time.sleep(0.1)
+    terminate(process)
+    fail("deterministic backdrop helper timed out")
+
+
+def terminate(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        fail("CPU sampler produced no values")
+    rank = (len(ordered) - 1) * fraction
+    low = math.floor(rank)
+    high = math.ceil(rank)
+    if low == high:
+        return ordered[low]
+    return ordered[low] + (ordered[high] - ordered[low]) * (rank - low)
+
+
+def sample_cpu(app_pid: int, window_server_pid: int, duration: int) -> tuple[list[float], list[float]]:
+    app: list[float] = []
+    window_server: list[float] = []
+    deadline = time.monotonic() + duration
+    while time.monotonic() < deadline:
+        started = time.monotonic()
+        output = command(
+            ["ps", "-p", f"{app_pid},{window_server_pid}", "-o", "pid=,%cpu="],
+            "CPU sampling",
+        )
+        found: dict[int, float] = {}
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) == 2:
+                found[int(fields[0])] = float(fields[1])
+        if app_pid not in found or window_server_pid not in found:
+            fail("CPU sampling lost the app or WindowServer process")
+        app.append(found[app_pid])
+        window_server.append(found[window_server_pid])
+        remaining = 1.0 - (time.monotonic() - started)
+        if remaining > 0:
+            time.sleep(remaining)
+    if len(app) < duration - 1:
+        fail("CPU sampler did not produce the required one-second cadence")
+    return app, window_server
+
+
+def counters(state: dict[str, Any]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for field in COUNTERS:
+        value = state.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            fail(f"/debug/transparency missing nonnegative counter {field}")
+        result[field] = value
+    return result
+
+
+def relative_artifact(path: Path, root: Path) -> str:
+    return path.resolve().relative_to(root.resolve()).as_posix()
+
+
+def run_scenario(
+    *,
+    name: str,
+    opacity: float,
+    animated: bool,
+    run: int,
+    app_path: Path,
+    app_pid: int,
+    window_server_pid: int,
+    client: ControlClient,
+    backdrop_executable: Path,
+    duration: int,
+    artifacts: Path,
+) -> dict[str, Any]:
+    scenario_dir = artifacts / name / f"run-{run}"
+    scenario_dir.mkdir(parents=True)
+    backdrop = start_backdrop(backdrop_executable, animated, scenario_dir)
+    try:
+        client.action(
+            "setBackgroundTransparency",
+            opacity=opacity,
+            applyToExplicitCellBackgrounds=False,
+        )
+        command(["open", "-a", str(app_path)], "installed-app activation")
+        time.sleep(2)
+        client.action("resetTransparencyDiagnostics")
+        before_state = client.transparency()
+        before = counters(before_state)
+
+        cpu_profile = scenario_dir / "cpu.perf"
+        metal_trace = scenario_dir / "metal.trace"
+        metal_analysis = scenario_dir / "metal-analysis.json"
+        cpu_log = (scenario_dir / "capture-profile.log").open("w", encoding="utf-8")
+        metal_log = (scenario_dir / "metal-analysis.log").open("w", encoding="utf-8")
+        cpu_capture = subprocess.Popen(
+            [
+                str(REPOSITORY_ROOT / "scripts/capture-profile"),
+                "--pid", str(app_pid),
+                "--samples", str(duration * 10),
+                "--interval", "100 ms",
+                "--out", str(cpu_profile),
+            ],
+            stdout=cpu_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        metal_capture = subprocess.Popen(
+            [
+                sys.executable,
+                str(REPOSITORY_ROOT / "scripts/analyze-metal-trace"),
+                "--record", str(duration),
+                "--attach", str(app_pid),
+                "--record-output", str(metal_trace),
+                "--json-output", str(metal_analysis),
+                "--format", "none",
+            ],
+            stdout=metal_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        cpu_log.close(); metal_log.close()
+        app_samples, window_samples = sample_cpu(app_pid, window_server_pid, duration)
+        try:
+            cpu_status = cpu_capture.wait(timeout=120)
+            metal_status = metal_capture.wait(timeout=600)
+        except subprocess.TimeoutExpired:
+            terminate(cpu_capture); terminate(metal_capture)
+            fail(f"{name} run {run} trace capture timed out")
+        if cpu_status != 0:
+            fail(f"{name} run {run} in-process CPU capture failed")
+        if metal_status != 0:
+            fail(f"{name} run {run} Metal trace capture/analysis failed")
+        for path, label in ((cpu_profile, "CPU profile"), (metal_trace, "Metal trace"), (metal_analysis, "Metal analysis")):
+            nonempty = path.is_file() and path.stat().st_size > 0 if path.exists() else False
+            if path.is_dir():
+                nonempty = any(item.is_file() and item.stat().st_size > 0 for item in path.rglob("*"))
+            if not nonempty:
+                fail(f"{name} run {run} produced no {label}")
+
+        after_state = client.transparency()
+        after = counters(after_state)
+        deltas = {field: after[field] - before[field] for field in COUNTERS}
+        if any(value < 0 for value in deltas.values()):
+            fail(f"{name} run {run} diagnostics counters moved backwards")
+        return {
+            "run": run,
+            "durationSeconds": duration,
+            "settlingSeconds": 2,
+            "appCPU": {
+                "medianPercent": percentile(app_samples, 0.50),
+                "p95Percent": percentile(app_samples, 0.95),
+                "samples": len(app_samples),
+            },
+            "windowServerCPU": {
+                "medianPercent": percentile(window_samples, 0.50),
+                "p95Percent": percentile(window_samples, 0.95),
+                "samples": len(window_samples),
+            },
+            "rendererPresentDelta": deltas["rendererPresentCount"],
+            "accessibilityRefreshDelta": deltas["accessibilityRefreshCount"],
+            "effectiveTransparencyApplyDelta": deltas["effectiveTransparencyApplyCount"],
+            "transparencyRenderWakeDelta": deltas["transparencyRenderWakeCount"],
+            "presentIntervalDeadlineMisses": deltas["presentIntervalDeadlineMisses"],
+            "tracePaths": {
+                "cpuProfile": relative_artifact(cpu_profile, artifacts),
+                "metalTrace": relative_artifact(metal_trace, artifacts),
+                "metalAnalysis": relative_artifact(metal_analysis, artifacts),
+            },
+        }
+    finally:
+        terminate(backdrop)
+
+
+def median(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def gate_scenarios(scenarios: dict[str, list[dict[str, Any]]]) -> list[str]:
+    failures: list[str] = []
+    for name, runs in scenarios.items():
+        for run in runs:
+            if run["presentIntervalDeadlineMisses"] != 0:
+                failures.append(f"{name} run {run['run']} has deadline misses")
+            if name.endswith("Static"):
+                if run["rendererPresentDelta"] != 0:
+                    failures.append(f"{name} run {run['run']} presented while static")
+                if run["appCPU"]["medianPercent"] >= 1.0:
+                    failures.append(f"{name} run {run['run']} app CPU median is not below 1.0%")
+    opaque = median([run["windowServerCPU"]["medianPercent"] for run in scenarios["opaqueStatic"]])
+    direct = median([run["windowServerCPU"]["medianPercent"] for run in scenarios["directStatic"]])
+    if direct > opaque + 2.0:
+        failures.append("direct static WindowServer CPU median exceeds opaque by more than 2.0 points")
+    return failures
+
+
+def installed_executable(app_path: Path) -> Path:
+    executable = app_path / "Contents/MacOS/LabanApp"
+    if not app_path.is_dir() or not os.access(executable, os.X_OK):
+        fail(f"installed app executable is missing: {executable}")
+    return executable
+
+
+def running_laban_pids() -> list[int]:
+    completed = subprocess.run(["pgrep", "-x", "LabanApp"], check=False, text=True, capture_output=True)
+    if completed.returncode not in (0, 1):
+        fail(f"could not inspect existing Laban processes: {completed.stderr.strip()}")
+    return [int(line) for line in completed.stdout.splitlines() if line.strip().isdigit()]
+
+
+def run_profile(arguments: argparse.Namespace) -> None:
+    contract = load_json(arguments.lane_contract, "lane contract")
+    validate_lane_contract(contract)
+    identity = host_identity(contract)
+    validate_host(identity, contract)
+    executable = installed_executable(arguments.app)
+    existing = running_laban_pids()
+    if existing:
+        fail("an existing LabanApp is running; close it before the isolated installed-app profile")
+    if arguments.artifacts.exists() and any(arguments.artifacts.iterdir()):
+        fail(f"artifact directory is not empty: {arguments.artifacts}")
+    arguments.artifacts.mkdir(parents=True, exist_ok=True)
+    (REPOSITORY_ROOT / ".tmp").mkdir(exist_ok=True)
+
+    for required in ("curl", "open", "ps", "pgrep", "xcrun", "system_profiler", "sw_vers", "sysctl"):
+        if shutil.which(required) is None:
+            fail(f"missing required command: {required}")
+    window_server = command(["pgrep", "-x", "WindowServer"], "WindowServer lookup").splitlines()
+    if len(window_server) != 1:
+        fail("expected exactly one WindowServer process")
+    window_server_pid = int(window_server[0])
+
+    with tempfile.TemporaryDirectory(prefix="transparency-compositor-", dir=REPOSITORY_ROOT / ".tmp") as temporary:
+        work = Path(temporary)
+        control_dir = work / "control"
+        control_dir.mkdir(mode=0o700)
+        backdrop_executable = build_backdrop_helper(work)
+        run_id = f"transparency-compositor-{os.getpid()}"
+        environment = os.environ.copy()
+        environment.update({
+            "LABAN_GUI_FIXTURE_CONTROL": "1",
+            "LABAN_CONTROL_DIR": str(control_dir),
+            "LABAN_RUN_ID": run_id,
+        })
+        app_stdout = (arguments.artifacts / "app.stdout.log").open("w", encoding="utf-8")
+        app_stderr = (arguments.artifacts / "app.stderr.log").open("w", encoding="utf-8")
+        app_process = subprocess.Popen(
+            [str(executable), "--no-persistence", "--terminal-backend=in-process", "--profile-recorder"],
+            env=environment,
+            stdout=app_stdout,
+            stderr=app_stderr,
+            text=True,
+        )
+        app_stdout.close(); app_stderr.close()
+        client: ControlClient | None = None
+        try:
+            socket_path, token = wait_for_control(control_dir, run_id, app_process.pid)
+            client = ControlClient(socket_path, token, control_dir)
+            scenarios: dict[str, list[dict[str, Any]]] = {name: [] for name, _, _ in SCENARIOS}
+            for run in range(1, arguments.runs + 1):
+                for name, opacity, animated in SCENARIOS:
+                    print(f"profile-transparency-compositor: {name} run {run}/{arguments.runs}", file=sys.stderr)
+                    scenarios[name].append(run_scenario(
+                        name=name,
+                        opacity=opacity,
+                        animated=animated,
+                        run=run,
+                        app_path=arguments.app,
+                        app_pid=app_process.pid,
+                        window_server_pid=window_server_pid,
+                        client=client,
+                        backdrop_executable=backdrop_executable,
+                        duration=arguments.duration,
+                        artifacts=arguments.artifacts,
+                    ))
+            failures = gate_scenarios(scenarios)
+            summary = {
+                "schemaVersion": 1,
+                "benchmark": "terminal-background-transparency-compositor",
+                **identity,
+                "durationSeconds": arguments.duration,
+                "settlingSeconds": 2,
+                "runsPerScenario": arguments.runs,
+                "scenarios": scenarios,
+                "validation": {"passed": not failures, "failures": failures},
+            }
+            summary_path = arguments.artifacts / "summary.json"
+            temporary_summary = summary_path.with_suffix(f".json.tmp.{os.getpid()}")
+            temporary_summary.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temporary_summary.replace(summary_path)
+            if failures:
+                fail("; ".join(failures))
+            print(f"profile-transparency-compositor: summary={summary_path}")
+        finally:
+            if client is not None:
+                try:
+                    client.action("setBackgroundTransparency", opacity=1.0, applyToExplicitCellBackgrounds=False)
+                except ProfileError:
+                    pass
+                client.close()
+            terminate(app_process)
+
+
+def self_test() -> None:
+    contract = {
+        "lane": LANE,
+        "osVersion": "26.5.1",
+        "osBuild": "25F80",
+        "osReleaseChannel": "stable",
+        "hardwareModel": "Macmini9,1",
+        "chipModel": "Apple M1",
+        "memoryBytes": EIGHT_GIB,
+        "displayHz": 60,
+    }
+    validate_lane_contract(contract)
+    validate_host(dict(contract), contract)
+    wrong = dict(contract, memoryBytes=16 * 1024 * 1024 * 1024)
+    try:
+        validate_host(wrong, contract)
+    except ProfileError:
+        pass
+    else:
+        fail("self-test accepted a 16 GiB host for the 8 GiB lane")
+    scenarios: dict[str, list[dict[str, Any]]] = {}
+    for name, _, _ in SCENARIOS:
+        scenarios[name] = [{
+            "run": run,
+            "appCPU": {"medianPercent": 0.2},
+            "windowServerCPU": {"medianPercent": 2.0 if name == "directStatic" else 1.0},
+            "rendererPresentDelta": 0,
+            "presentIntervalDeadlineMisses": 0,
+        } for run in range(1, 6)]
+    if gate_scenarios(scenarios):
+        fail("self-test rejected valid fixed thresholds")
+    scenarios["opaqueStatic"][0]["rendererPresentDelta"] = 1
+    if not gate_scenarios(scenarios):
+        fail("self-test accepted a static renderer present")
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--app", type=Path)
+    parser.add_argument("--lane")
+    parser.add_argument("--lane-contract", type=Path)
+    parser.add_argument("--duration", type=int)
+    parser.add_argument("--runs", type=int)
+    parser.add_argument("--artifacts", type=Path)
+    parser.add_argument("--self-test", action="store_true")
+    arguments = parser.parse_args()
+    if arguments.self_test:
+        if any((arguments.app, arguments.lane, arguments.lane_contract, arguments.duration, arguments.runs, arguments.artifacts)):
+            parser.error("--self-test cannot be combined with capture arguments")
+        return arguments
+    if not all((arguments.app, arguments.lane, arguments.lane_contract, arguments.duration, arguments.runs, arguments.artifacts)):
+        parser.error("all capture arguments are required")
+    if arguments.lane != LANE:
+        parser.error(f"--lane must be {LANE}")
+    if arguments.duration != 60:
+        parser.error("--duration must be 60")
+    if arguments.runs != 5:
+        parser.error("--runs must be 5")
+    return arguments
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    try:
+        if arguments.self_test:
+            self_test()
+            print("profile-transparency-compositor: self-test passed")
+        else:
+            run_profile(arguments)
+        return 0
+    except (ProfileError, ValueError) as error:
+        print(f"profile-transparency-compositor: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

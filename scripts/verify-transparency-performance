@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+"""Verify renderer and installed-compositor transparency performance evidence."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import sys
+import tempfile
+from typing import Any
+
+
+LANE = "stable-base-m1-8gb-60hz"
+EIGHT_GIB = 8 * 1024 * 1024 * 1024
+IDENTITY_FIELDS = (
+    "lane",
+    "osVersion",
+    "osBuild",
+    "osReleaseChannel",
+    "hardwareModel",
+    "chipModel",
+    "memoryBytes",
+    "displayHz",
+)
+RENDERERS = ("slugGlyph", "vectorGlyph")
+CASES = ("opaqueStatic", "opaqueAnimated", "directStatic", "directAnimated")
+METRICS = ("cpuEncode", "wallTime")
+PERCENTILES = ("p50Milliseconds", "p95Milliseconds", "p99Milliseconds")
+
+
+class VerificationError(RuntimeError):
+    pass
+
+
+def fail(message: str) -> None:
+    raise VerificationError(message)
+
+
+def load_json(path: Path, label: str) -> dict[str, Any]:
+    if not path.is_file():
+        fail(f"{label} is missing: {path}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"{label} is not valid JSON: {error}")
+    if not isinstance(value, dict):
+        fail(f"{label} must be a JSON object")
+    return value
+
+
+def require_number(value: Any, label: str, *, minimum: float | None = None) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        fail(f"{label} must be a finite number")
+    number = float(value)
+    if minimum is not None and number < minimum:
+        fail(f"{label} must be at least {minimum}")
+    return number
+
+
+def require_integer(value: Any, label: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        fail(f"{label} must be an integer >= {minimum}")
+    return value
+
+
+def require_object(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        fail(f"{label} must be an object")
+    return value
+
+
+def require_exact_keys(value: dict[str, Any], keys: set[str], label: str) -> None:
+    actual = set(value)
+    if actual != keys:
+        fail(f"{label} fields do not match the required contract")
+
+
+def validate_lane_contract(contract: dict[str, Any]) -> None:
+    require_exact_keys(contract, set(IDENTITY_FIELDS), "lane contract")
+    if contract["lane"] != LANE:
+        fail(f"lane contract must name {LANE}")
+    version = contract["osVersion"]
+    if not isinstance(version, str) or re.fullmatch(r"26(?:\.[0-9]+){1,2}", version) is None:
+        fail("lane contract osVersion must be a macOS 26.x version")
+    build = contract["osBuild"]
+    if not isinstance(build, str) or re.fullmatch(r"[0-9]{2}[A-Z][0-9]+[a-z]?", build) is None:
+        fail("lane contract osBuild is malformed")
+    if contract["osReleaseChannel"] != "stable":
+        fail("lane contract osReleaseChannel must be stable")
+    if contract["hardwareModel"] != "Macmini9,1":
+        fail("lane contract hardwareModel must identify the base M1 Mac mini")
+    if contract["chipModel"] != "Apple M1":
+        fail("lane contract chipModel must be Apple M1")
+    if contract["memoryBytes"] != EIGHT_GIB:
+        fail("lane contract memoryBytes must be exactly 8 GiB")
+    if contract["displayHz"] != 60:
+        fail("lane contract displayHz must be exactly 60")
+
+
+def metric_percentiles(value: Any, label: str) -> dict[str, float]:
+    metric = require_object(value, label)
+    result = {
+        percentile: require_number(metric.get(percentile), f"{label}.{percentile}", minimum=0.000001)
+        for percentile in PERCENTILES
+    }
+    if list(result.values()) != sorted(result.values()):
+        fail(f"{label} percentiles must be ordered")
+    return result
+
+
+def renderer_case(
+    value: Any,
+    label: str,
+    *,
+    renderer: str,
+    opacity: float,
+) -> tuple[dict[str, dict[str, float]], set[int]]:
+    case = require_object(value, label)
+    median = require_object(case.get("medianOfFive"), f"{label}.medianOfFive")
+    runs = case.get("runs")
+    if not isinstance(runs, list) or len(runs) != 5:
+        fail(f"{label}.runs must contain five process records")
+    process_ids: set[int] = set()
+    for index, run in enumerate(runs, 1):
+        record = require_object(run, f"{label}.runs[{index}]")
+        if record.get("run") != index:
+            fail(f"{label}.runs identifiers must be 1 through 5")
+        if record.get("phase") != "compare":
+            fail(f"{label}.runs[{index}] phase must be compare")
+        if record.get("renderer") != renderer or record.get("configuredRenderer") != renderer or record.get("effectiveRenderer") != renderer:
+            fail(f"{label}.runs[{index}] renderer identity mismatch")
+        if record.get("surfaceOpacity") != opacity or record.get("surfaceIsOpaque") is not (opacity == 1.0):
+            fail(f"{label}.runs[{index}] surface identity mismatch")
+        antialiasing = require_object(record.get("antialiasing"), f"{label}.runs[{index}].antialiasing")
+        if antialiasing.get("configured") != "grayscale" or antialiasing.get("effective") != "grayscale":
+            fail(f"{label}.runs[{index}] anti-aliasing identity mismatch")
+        expected_fallback = None if opacity == 1.0 else "transparentSurface"
+        if antialiasing.get("fallbackReason") != expected_fallback:
+            fail(f"{label}.runs[{index}] anti-aliasing fallback mismatch")
+        process_ids.add(require_integer(record.get("processIdentifier"), f"{label}.runs[{index}].processIdentifier", minimum=1))
+        metrics = require_object(record.get("metrics"), f"{label}.runs[{index}].metrics")
+        for metric_name in METRICS:
+            summary = metric_percentiles(metrics.get(metric_name), f"{label}.runs[{index}].metrics.{metric_name}")
+            if require_integer(metrics[metric_name].get("acceptedSamples"), f"{label}.runs[{index}].metrics.{metric_name}.acceptedSamples") != 240:
+                fail(f"{label} must accept all 240 {metric_name} samples per run")
+            _ = summary
+    if len(process_ids) != 5:
+        fail(f"{label} runs must use five independent processes")
+    return ({
+        metric_name: metric_percentiles(median.get(metric_name), f"{label}.medianOfFive.{metric_name}")
+        for metric_name in METRICS
+    }, process_ids)
+
+
+def validate_renderer_report(report: dict[str, Any]) -> None:
+    if report.get("schemaVersion") != 2 or report.get("phase") != "comparison":
+        fail("renderer report must be schema 2 comparison evidence")
+    if report.get("benchmark") != "terminal-background-transparency-renderers":
+        fail("renderer benchmark identity is incorrect")
+    baseline = require_object(report.get("baseline"), "renderer.baseline")
+    post_change = require_object(report.get("postChange"), "renderer.postChange")
+    sha = baseline.get("artifactSHA256")
+    if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{64}", sha) is None:
+        fail("renderer baseline artifactSHA256 is missing or malformed")
+    artifact_path = baseline.get("artifactPath")
+    if not isinstance(artifact_path, str) or not artifact_path:
+        fail("renderer baseline artifactPath is missing")
+    baseline_artifact_path = Path(artifact_path)
+    if not baseline_artifact_path.is_file():
+        fail(f"renderer baseline artifact is missing: {baseline_artifact_path}")
+    if hashlib.sha256(baseline_artifact_path.read_bytes()).hexdigest() != sha:
+        fail("renderer baseline artifact hash mismatch")
+    baseline_artifact = load_json(baseline_artifact_path, "renderer baseline artifact")
+    if baseline_artifact.get("phase") != "baseline" or baseline_artifact.get("schemaVersion") != 1:
+        fail("renderer baseline artifact identity is invalid")
+    for label, identity in (("baseline", baseline), ("postChange", post_change)):
+        commit = identity.get("implementationCommit")
+        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            fail(f"renderer {label} implementationCommit is malformed")
+        if identity.get("sourceTreeTrackedDirty") is not False:
+            fail(f"renderer {label} evidence must come from a tracked-clean tree")
+        require_object(identity.get("identity"), f"renderer.{label}.identity")
+        require_object(identity.get("workload"), f"renderer.{label}.workload")
+    baseline_identity = baseline["identity"]
+    post_identity = post_change["identity"]
+    if baseline_identity.get("os") != post_identity.get("os"):
+        fail("renderer baseline and comparison OS identity differ")
+    if baseline_identity.get("hardware") != post_identity.get("hardware"):
+        fail("renderer baseline and comparison hardware identity differ")
+    for field in ("configuration", "mode", "swiftVersion"):
+        if baseline_identity.get("build", {}).get(field) != post_identity.get("build", {}).get(field):
+            fail(f"renderer baseline and comparison build {field} differ")
+    if baseline["workload"] != post_change["workload"]:
+        fail("renderer baseline and comparison workload identity differ")
+    if baseline_artifact.get("implementationCommit") != baseline.get("implementationCommit"):
+        fail("renderer embedded baseline commit differs from its artifact")
+    if baseline_artifact.get("sourceTreeTrackedDirty") != baseline.get("sourceTreeTrackedDirty"):
+        fail("renderer embedded baseline cleanliness differs from its artifact")
+    if baseline_artifact.get("identity") != baseline.get("identity"):
+        fail("renderer embedded baseline identity differs from its artifact")
+    if baseline_artifact.get("workload") != baseline.get("workload"):
+        fail("renderer embedded baseline workload differs from its artifact")
+
+    thresholds = require_object(report.get("thresholds"), "renderer.thresholds")
+    if thresholds != {
+        "opaqueMaximumRegressionFraction": 0.05,
+        "directMaximumRegressionFraction": 0.10,
+        "maximumP99Milliseconds": 8.33,
+    }:
+        fail("renderer thresholds differ from the fixed plan budgets")
+
+    renderers = require_object(report.get("renderers"), "renderer.renderers")
+    if set(renderers) != set(RENDERERS):
+        fail("renderer report must contain exactly Slug and vector")
+    all_process_ids: set[int] = set()
+    for renderer in RENDERERS:
+        evidence = require_object(renderers[renderer], f"renderer.renderers.{renderer}")
+        baseline_metrics = require_object(evidence.get("baselineOpaqueMedianOfFive"), f"renderer.{renderer}.baselineOpaqueMedianOfFive")
+        baseline_summary = {
+            metric_name: metric_percentiles(baseline_metrics.get(metric_name), f"renderer.{renderer}.baseline.{metric_name}")
+            for metric_name in METRICS
+        }
+        artifact_baseline = baseline_artifact.get("renderers", {}).get(renderer, {}).get("medianOfFive")
+        if artifact_baseline != baseline_metrics:
+            fail(f"renderer {renderer} embedded baseline medians differ from its artifact")
+        opaque_summary, opaque_pids = renderer_case(
+            evidence.get("postChangeOpaque"),
+            f"renderer.{renderer}.postChangeOpaque",
+            renderer=renderer,
+            opacity=1.0,
+        )
+        direct_summary, direct_pids = renderer_case(
+            evidence.get("direct090"),
+            f"renderer.{renderer}.direct090",
+            renderer=renderer,
+            opacity=0.9,
+        )
+        if all_process_ids.intersection(opaque_pids | direct_pids) or opaque_pids.intersection(direct_pids):
+            fail("renderer comparison reused a process across cases")
+        all_process_ids.update(opaque_pids)
+        all_process_ids.update(direct_pids)
+        for metric_name in METRICS:
+            for percentile in ("p50Milliseconds", "p99Milliseconds"):
+                baseline_value = baseline_summary[metric_name][percentile]
+                opaque_value = opaque_summary[metric_name][percentile]
+                direct_value = direct_summary[metric_name][percentile]
+                if opaque_value > baseline_value * 1.05:
+                    fail(f"{renderer} {metric_name} opaque {percentile} exceeds 5% regression budget")
+                if direct_value > opaque_value * 1.10:
+                    fail(f"{renderer} {metric_name} direct {percentile} exceeds 10% regression budget")
+            for case_name, summary in (("baseline", baseline_summary), ("opaque", opaque_summary), ("direct", direct_summary)):
+                if summary[metric_name]["p99Milliseconds"] > 8.33:
+                    fail(f"{renderer} {metric_name} {case_name} p99 exceeds 8.33 ms")
+    if len(all_process_ids) != 20:
+        fail("renderer comparison must use twenty independent processes")
+
+
+def trace_path(summary_path: Path, raw_path: Any, label: str) -> Path:
+    if not isinstance(raw_path, str) or not raw_path:
+        fail(f"{label} must be a nonempty relative path")
+    candidate = Path(raw_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        fail(f"{label} must stay under the compositor artifact directory")
+    resolved = (summary_path.parent / candidate).resolve()
+    root = summary_path.parent.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        fail(f"{label} escapes the compositor artifact directory")
+    if not resolved.exists():
+        fail(f"{label} does not reference a nonempty artifact")
+    if resolved.is_file():
+        nonempty = resolved.stat().st_size > 0
+    elif resolved.is_dir():
+        nonempty = any(item.is_file() and item.stat().st_size > 0 for item in resolved.rglob("*"))
+    else:
+        nonempty = False
+    if not nonempty:
+        fail(f"{label} does not reference a nonempty artifact")
+    return resolved
+
+
+def median(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def validate_compositor_report(
+    report: dict[str, Any],
+    summary_path: Path,
+    contract: dict[str, Any],
+) -> None:
+    if report.get("schemaVersion") != 1 or report.get("benchmark") != "terminal-background-transparency-compositor":
+        fail("compositor summary identity is incorrect")
+    for field in IDENTITY_FIELDS:
+        if report.get(field) != contract[field]:
+            fail(f"compositor summary {field} does not match the lane contract")
+    if report.get("durationSeconds") != 60 or report.get("settlingSeconds") != 2 or report.get("runsPerScenario") != 5:
+        fail("compositor duration, settling interval, or run count differs from the fixed contract")
+    scenarios = require_object(report.get("scenarios"), "compositor.scenarios")
+    if set(scenarios) != set(CASES):
+        fail("compositor summary must contain exactly four scenarios")
+
+    static_window_server: dict[str, list[float]] = {"opaqueStatic": [], "directStatic": []}
+    for case_name in CASES:
+        runs = scenarios[case_name]
+        if not isinstance(runs, list) or len(runs) != 5:
+            fail(f"compositor {case_name} must contain five runs")
+        for index, raw_run in enumerate(runs, 1):
+            run = require_object(raw_run, f"compositor.{case_name}[{index}]")
+            if run.get("run") != index:
+                fail(f"compositor {case_name} run identifiers must be 1 through 5")
+            if run.get("durationSeconds") != 60 or run.get("settlingSeconds") != 2:
+                fail(f"compositor {case_name} run {index} duration contract drifted")
+            app_cpu = require_object(run.get("appCPU"), f"compositor.{case_name}[{index}].appCPU")
+            window_cpu = require_object(run.get("windowServerCPU"), f"compositor.{case_name}[{index}].windowServerCPU")
+            app_median = require_number(app_cpu.get("medianPercent"), f"compositor.{case_name}[{index}].appCPU.medianPercent", minimum=0)
+            _ = require_number(app_cpu.get("p95Percent"), f"compositor.{case_name}[{index}].appCPU.p95Percent", minimum=0)
+            _ = require_integer(app_cpu.get("samples"), f"compositor.{case_name}[{index}].appCPU.samples", minimum=2)
+            ws_median = require_number(window_cpu.get("medianPercent"), f"compositor.{case_name}[{index}].windowServerCPU.medianPercent", minimum=0)
+            _ = require_number(window_cpu.get("p95Percent"), f"compositor.{case_name}[{index}].windowServerCPU.p95Percent", minimum=0)
+            _ = require_integer(window_cpu.get("samples"), f"compositor.{case_name}[{index}].windowServerCPU.samples", minimum=2)
+            present_delta = require_integer(run.get("rendererPresentDelta"), f"compositor.{case_name}[{index}].rendererPresentDelta")
+            _ = require_integer(run.get("accessibilityRefreshDelta"), f"compositor.{case_name}[{index}].accessibilityRefreshDelta")
+            _ = require_integer(run.get("effectiveTransparencyApplyDelta"), f"compositor.{case_name}[{index}].effectiveTransparencyApplyDelta")
+            _ = require_integer(run.get("transparencyRenderWakeDelta"), f"compositor.{case_name}[{index}].transparencyRenderWakeDelta")
+            deadline_misses = require_integer(run.get("presentIntervalDeadlineMisses"), f"compositor.{case_name}[{index}].presentIntervalDeadlineMisses")
+            if deadline_misses != 0:
+                fail(f"compositor {case_name} run {index} has display-deadline misses")
+            if case_name.endswith("Static"):
+                if present_delta != 0:
+                    fail(f"compositor {case_name} run {index} presented while static")
+                if app_median >= 1.0:
+                    fail(f"compositor {case_name} run {index} app CPU median is not below 1.0%")
+                static_window_server[case_name].append(ws_median)
+            traces = require_object(run.get("tracePaths"), f"compositor.{case_name}[{index}].tracePaths")
+            require_exact_keys(traces, {"cpuProfile", "metalTrace", "metalAnalysis"}, f"compositor.{case_name}[{index}].tracePaths")
+            for trace_name, raw_path in traces.items():
+                trace_path(summary_path, raw_path, f"compositor.{case_name}[{index}].tracePaths.{trace_name}")
+
+    opaque_static = median(static_window_server["opaqueStatic"])
+    direct_static = median(static_window_server["directStatic"])
+    if direct_static > opaque_static + 2.0:
+        fail("direct static WindowServer CPU median exceeds opaque static by more than 2.0 points")
+
+
+def verify(renderer_path: Path, compositor_path: Path, contract_path: Path) -> None:
+    contract = load_json(contract_path, "lane contract")
+    validate_lane_contract(contract)
+    renderer = load_json(renderer_path, "renderer report")
+    compositor = load_json(compositor_path, "compositor summary")
+    validate_renderer_report(renderer)
+    validate_compositor_report(compositor, compositor_path, contract)
+
+
+def metric(value: float) -> dict[str, Any]:
+    return {
+        "acceptedSamples": 240,
+        "minimumMilliseconds": value * 0.8,
+        "p50Milliseconds": value,
+        "p95Milliseconds": value * 1.1,
+        "p99Milliseconds": value * 1.2,
+        "maximumMilliseconds": value * 1.3,
+    }
+
+
+def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="verify-transparency-performance-") as temporary:
+        root = Path(temporary)
+        contract = {
+            "lane": LANE,
+            "osVersion": "26.5.1",
+            "osBuild": "25F80",
+            "osReleaseChannel": "stable",
+            "hardwareModel": "Macmini9,1",
+            "chipModel": "Apple M1",
+            "memoryBytes": EIGHT_GIB,
+            "displayHz": 60,
+        }
+        contract_path = root / "contract.json"
+        contract_path.write_text(json.dumps(contract), encoding="utf-8")
+        identity = {
+            "build": {"configuration": "release", "mode": "SwiftPM release executable", "swiftVersion": "Swift 6", "benchmarkExecutableSHA256": "a" * 64},
+            "os": {"productName": "macOS", "productVersion": "26.5.1", "buildVersion": "25F80"},
+            "hardware": {"architecture": "arm64", "model": "Macmini9,1", "processor": "Apple M1", "memoryBytes": EIGHT_GIB},
+        }
+        workload = {"grid": {"columns": 160, "rows": 48}, "scale": 2.0}
+        renderers: dict[str, Any] = {}
+        for renderer in RENDERERS:
+            cases: dict[str, Any] = {}
+            for case_name, value in (("postChangeOpaque", 1.01), ("direct090", 1.05)):
+                runs = []
+                for run in range(1, 6):
+                    process_offset = 100 if renderer == "slugGlyph" else 200
+                    if case_name == "direct090":
+                        process_offset += 10
+                    runs.append({
+                        "phase": "compare",
+                        "renderer": renderer,
+                        "configuredRenderer": renderer,
+                        "effectiveRenderer": renderer,
+                        "surfaceOpacity": 1.0 if case_name == "postChangeOpaque" else 0.9,
+                        "surfaceIsOpaque": case_name == "postChangeOpaque",
+                        "antialiasing": {
+                            "configured": "grayscale",
+                            "effective": "grayscale",
+                            "fallbackReason": None if case_name == "postChangeOpaque" else "transparentSurface",
+                        },
+                        "run": run,
+                        "processIdentifier": run + process_offset,
+                        "metrics": {name: metric(value) for name in METRICS},
+                    })
+                cases[case_name] = {"runs": runs, "medianOfFive": {name: metric(value) for name in METRICS}}
+            renderers[renderer] = {
+                "baselineOpaqueMedianOfFive": {name: metric(1.0) for name in METRICS},
+                **cases,
+            }
+        baseline_artifact = {
+            "schemaVersion": 1,
+            "benchmark": "terminal-background-transparency-renderers",
+            "phase": "baseline",
+            "implementationCommit": "c" * 40,
+            "sourceTreeTrackedDirty": False,
+            "identity": identity,
+            "workload": workload,
+            "renderers": {
+                renderer: {"medianOfFive": renderers[renderer]["baselineOpaqueMedianOfFive"]}
+                for renderer in RENDERERS
+            },
+        }
+        baseline_artifact_path = root / "baseline.json"
+        baseline_artifact_path.write_text(json.dumps(baseline_artifact), encoding="utf-8")
+        renderer_report = {
+            "schemaVersion": 2,
+            "benchmark": "terminal-background-transparency-renderers",
+            "phase": "comparison",
+            "baseline": {
+                "artifactPath": str(baseline_artifact_path),
+                "artifactSHA256": hashlib.sha256(baseline_artifact_path.read_bytes()).hexdigest(),
+                "implementationCommit": "c" * 40,
+                "sourceTreeTrackedDirty": False,
+                "identity": identity,
+                "workload": workload,
+            },
+            "postChange": {"implementationCommit": "d" * 40, "sourceTreeTrackedDirty": False, "identity": identity, "workload": workload},
+            "thresholds": {"opaqueMaximumRegressionFraction": 0.05, "directMaximumRegressionFraction": 0.10, "maximumP99Milliseconds": 8.33},
+            "renderers": renderers,
+        }
+        renderer_path = root / "renderer.json"
+        renderer_path.write_text(json.dumps(renderer_report), encoding="utf-8")
+        scenarios: dict[str, Any] = {}
+        for case_name in CASES:
+            runs = []
+            for run in range(1, 6):
+                trace_paths: dict[str, str] = {}
+                for trace_name, suffix in (("cpuProfile", "perf"), ("metalTrace", "trace"), ("metalAnalysis", "json")):
+                    path = Path("traces") / f"{case_name}-{run}-{trace_name}.{suffix}"
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_text("evidence", encoding="utf-8")
+                    trace_paths[trace_name] = path.as_posix()
+                runs.append({
+                    "run": run,
+                    "durationSeconds": 60,
+                    "settlingSeconds": 2,
+                    "appCPU": {"medianPercent": 0.2, "p95Percent": 0.4, "samples": 60},
+                    "windowServerCPU": {"medianPercent": 2.0 if case_name == "directStatic" else 1.0, "p95Percent": 3.0, "samples": 60},
+                    "rendererPresentDelta": 0,
+                    "accessibilityRefreshDelta": 0,
+                    "effectiveTransparencyApplyDelta": 0,
+                    "transparencyRenderWakeDelta": 0,
+                    "presentIntervalDeadlineMisses": 0,
+                    "tracePaths": trace_paths,
+                })
+            scenarios[case_name] = runs
+        compositor_report = {
+            "schemaVersion": 1,
+            "benchmark": "terminal-background-transparency-compositor",
+            **contract,
+            "durationSeconds": 60,
+            "settlingSeconds": 2,
+            "runsPerScenario": 5,
+            "scenarios": scenarios,
+        }
+        compositor_path = root / "summary.json"
+        compositor_path.write_text(json.dumps(compositor_report), encoding="utf-8")
+        verify(renderer_path, compositor_path, contract_path)
+        compositor_report["memoryBytes"] = 16 * 1024 * 1024 * 1024
+        compositor_path.write_text(json.dumps(compositor_report), encoding="utf-8")
+        try:
+            verify(renderer_path, compositor_path, contract_path)
+        except VerificationError:
+            pass
+        else:
+            fail("self-test accepted a 16 GiB host for the 8 GiB lane")
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--renderer", type=Path)
+    parser.add_argument("--compositor", type=Path)
+    parser.add_argument("--lane-contract", type=Path)
+    parser.add_argument("--self-test", action="store_true")
+    arguments = parser.parse_args()
+    if arguments.self_test:
+        if any((arguments.renderer, arguments.compositor, arguments.lane_contract)):
+            parser.error("--self-test cannot be combined with artifact arguments")
+    elif not all((arguments.renderer, arguments.compositor, arguments.lane_contract)):
+        parser.error("--renderer, --compositor, and --lane-contract are required")
+    return arguments
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    try:
+        if arguments.self_test:
+            self_test()
+            print("verify-transparency-performance: self-test passed")
+        else:
+            verify(arguments.renderer, arguments.compositor, arguments.lane_contract)
+            print("verify-transparency-performance: passed")
+        return 0
+    except VerificationError as error:
+        print(f"verify-transparency-performance: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

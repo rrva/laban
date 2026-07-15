@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Reject renderer-side UserDefaults references outside the opaque baseline allowlist."""
+
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+import sys
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+RENDERER_ROOT = REPOSITORY_ROOT / "Sources/LabanRenderer"
+
+# Exact path-and-source allowlist captured before renderer transparency changes at
+# commit 0779195be3c2c75b2ffe51fe5fb7f4ac8b0026aa. Line numbers are deliberately
+# excluded: unrelated edits may move an existing reference, but changing its
+# source text or adding another reference remains a deterministic failure.
+ALLOWED_REFERENCES = Counter(
+    {
+        ("Sources/LabanRenderer/CJKFontSettings.swift", "public static func current(defaults: UserDefaults = .standard) -> CJKFontPreference {"): 1,
+        ("Sources/LabanRenderer/CJKFontSettings.swift", "public static func customPostScriptName(defaults: UserDefaults = .standard) -> String? {"): 1,
+        ("Sources/LabanRenderer/CJKFontSettings.swift", "public static func set(_ preference: CJKFontPreference, defaults: UserDefaults = .standard) {"): 1,
+        ("Sources/LabanRenderer/CJKFontSettings.swift", "defaults: UserDefaults = .standard"): 2,
+        ("Sources/LabanRenderer/EmojiRenderingSettings.swift", "public static func current(defaults: UserDefaults = .standard) -> EmojiRenderingMode {"): 1,
+        ("Sources/LabanRenderer/EmojiRenderingSettings.swift", "public static func set(_ mode: EmojiRenderingMode, defaults: UserDefaults = .standard) {"): 1,
+        ("Sources/LabanRenderer/FontAtlas.swift", "/// UserDefaults keys for the user's NSFontPanel picks."): 1,
+        ("Sources/LabanRenderer/FontAtlas.swift", "/// Terminal point size from UserDefaults, or `defaultTerminalPointSize`."): 1,
+        ("Sources/LabanRenderer/FontAtlas.swift", "let stored = UserDefaults.standard.object(forKey: userFontSizeKey) as? Double"): 1,
+        ("Sources/LabanRenderer/FontAtlas.swift", "fontName: UserDefaults.standard.string(forKey: Self.userFontKey)),"): 1,
+        ("Sources/LabanRenderer/FontAtlas.swift", "//   1. The user's NSFontPanel pick, if any (UserDefaults)."): 1,
+        ("Sources/LabanRenderer/MetalRenderer.swift", "let defaults = UserDefaults.standard"): 1,
+        ("Sources/LabanRenderer/MetalRenderer.swift", "/// `UserDefaults`."): 1,
+        ("Sources/LabanRenderer/RendererMode.swift", "public static func persisted(defaults: UserDefaults = .standard) -> RendererMode {"): 1,
+        ("Sources/LabanRenderer/RendererMode.swift", "public static func set(_ mode: RendererMode, defaults: UserDefaults = .standard) {"): 1,
+        ("Sources/LabanRenderer/RendererSelection.swift", "public static func persisted(defaults: UserDefaults = .standard) -> RendererSelection {"): 1,
+        ("Sources/LabanRenderer/RendererSelection.swift", "public static func set(_ selection: RendererSelection, defaults: UserDefaults = .standard) {"): 1,
+        ("Sources/LabanRenderer/SlugGlyphRenderer.swift", "let defaults = UserDefaults.standard"): 1,
+        ("Sources/LabanRenderer/SoftwareRenderer.swift", "/// glyph loop never reads `UserDefaults`."): 1,
+        ("Sources/LabanRenderer/VectorGlyphRenderer.swift", "/// set `LabanVectorPresentDisplayLink` to NO in `UserDefaults` to fall back to"): 1,
+        ("Sources/LabanRenderer/VectorGlyphRenderer.swift", "let defaults = UserDefaults.standard"): 1,
+        ("Sources/LabanRenderer/VectorSmoothScrollSettings.swift", "public static func current(defaults: UserDefaults = .standard) -> VectorSmoothScrollMode {"): 1,
+        ("Sources/LabanRenderer/VectorSmoothScrollSettings.swift", "defaults: UserDefaults = .standard"): 1,
+        ("Sources/LabanRenderer/VectorSubpixelLayout.swift", "defaults: UserDefaults = .standard"): 3,
+        ("Sources/LabanRenderer/VectorSubpixelLayout.swift", "public static func persisted(defaults: UserDefaults = .standard) -> VectorSubpixelLayout {"): 1,
+        ("Sources/LabanRenderer/VectorTextWeightSettings.swift", "public static func current(defaults: UserDefaults = .standard) -> Double {"): 1,
+        ("Sources/LabanRenderer/VectorTextWeightSettings.swift", "public static func setCurrent(_ weight: Double, defaults: UserDefaults = .standard) {"): 1,
+    }
+)
+
+
+def collect_references() -> Counter[tuple[str, str]]:
+    references: Counter[tuple[str, str]] = Counter()
+    for path in sorted(RENDERER_ROOT.rglob("*")):
+        if not path.is_file() or path.suffix not in {".swift", ".metal", ".h", ".c"}:
+            continue
+        relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "UserDefaults" in line:
+                references[(relative, line.strip())] += 1
+    return references
+
+
+def main() -> int:
+    if not RENDERER_ROOT.is_dir():
+        print("check-transparency-source-invariants: renderer source directory missing", file=sys.stderr)
+        return 1
+    if collect_references() != ALLOWED_REFERENCES:
+        print("check-transparency-source-invariants: renderer UserDefaults allowlist mismatch", file=sys.stderr)
+        return 1
+    print("check-transparency-source-invariants: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

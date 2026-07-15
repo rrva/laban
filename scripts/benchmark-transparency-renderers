@@ -9,13 +9,14 @@ fixture=
 warmup=
 frames=
 runs=
+baseline=
 output=
 
 usage() {
   printf '%s\n' \
-    'usage: scripts/benchmark-transparency-renderers --phase=baseline' \
+    'usage: scripts/benchmark-transparency-renderers --phase=baseline|compare' \
     '       --fixture=fixtures/cjk/trust-gate.fixture.json --warmup=40' \
-    '       --frames=240 --runs=5 --output=PATH' >&2
+    '       --frames=240 --runs=5 [--baseline=PATH] --output=PATH' >&2
 }
 
 for argument in "$@"; do
@@ -25,6 +26,7 @@ for argument in "$@"; do
     --warmup=*) warmup=${argument#--warmup=} ;;
     --frames=*) frames=${argument#--frames=} ;;
     --runs=*) runs=${argument#--runs=} ;;
+    --baseline=*) baseline=${argument#--baseline=} ;;
     --output=*) output=${argument#--output=} ;;
     --help|-h)
       usage
@@ -38,28 +40,40 @@ for argument in "$@"; do
   esac
 done
 
-if [ "$phase" != baseline ]; then
-  printf 'benchmark-transparency-renderers: only --phase=baseline is implemented\n' >&2
+if [ "$phase" != baseline ] && [ "$phase" != compare ]; then
+  printf 'benchmark-transparency-renderers: --phase must be baseline or compare\n' >&2
   exit 2
 fi
 if [ "$fixture" != fixtures/cjk/trust-gate.fixture.json ]; then
-  printf 'benchmark-transparency-renderers: baseline fixture must be fixtures/cjk/trust-gate.fixture.json\n' >&2
+  printf 'benchmark-transparency-renderers: fixture must be fixtures/cjk/trust-gate.fixture.json\n' >&2
   exit 2
 fi
 if [ "$warmup" != 40 ] || [ "$frames" != 240 ] || [ "$runs" != 5 ]; then
-  printf 'benchmark-transparency-renderers: baseline requires --warmup=40 --frames=240 --runs=5\n' >&2
+  printf 'benchmark-transparency-renderers: requires --warmup=40 --frames=240 --runs=5\n' >&2
   exit 2
 fi
 if [ -z "$output" ]; then
   printf 'benchmark-transparency-renderers: --output is required\n' >&2
   exit 2
 fi
+if [ "$phase" = baseline ] && [ -n "$baseline" ]; then
+  printf 'benchmark-transparency-renderers: baseline phase does not accept --baseline\n' >&2
+  exit 2
+fi
+if [ "$phase" = compare ] && [ -z "$baseline" ]; then
+  printf 'benchmark-transparency-renderers: compare phase requires --baseline\n' >&2
+  exit 2
+fi
 if [ ! -f "$fixture" ]; then
   printf 'benchmark-transparency-renderers: fixture does not exist: %s\n' "$fixture" >&2
   exit 2
 fi
+if [ "$phase" = compare ] && [ ! -f "$baseline" ]; then
+  printf 'benchmark-transparency-renderers: baseline does not exist: %s\n' "$baseline" >&2
+  exit 2
+fi
 
-for required_command in git python3 shasum swift sw_vers sysctl; do
+for required_command in git python3 swift sw_vers sysctl; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     printf 'benchmark-transparency-renderers: missing required command: %s\n' \
       "$required_command" >&2
@@ -67,7 +81,7 @@ for required_command in git python3 shasum swift sw_vers sysctl; do
   fi
 done
 
-temporary_root="$repo_root/.tmp/transparency-renderer-baseline.$$"
+temporary_root="$repo_root/.tmp/transparency-renderer-$phase.$$"
 mkdir -p "$temporary_root"
 cleanup() {
   rm -rf "$temporary_root"
@@ -93,37 +107,51 @@ fi
 fixture_path="$repo_root/$fixture"
 run_records=()
 for renderer in slugGlyph vectorGlyph; do
-  run=1
-  while [ "$run" -le "$runs" ]; do
-    run_record="$temporary_root/$renderer-run-$run.json"
-    run_log="$temporary_root/$renderer-run-$run.log"
-    printf 'benchmark-transparency-renderers: %s run %s/%s\n' "$renderer" "$run" "$runs"
-    if ! "$benchmark_executable" \
-      --phase=baseline \
-      --renderer="$renderer" \
-      --fixture="$fixture_path" \
-      --run="$run" \
-      --warmup="$warmup" \
-      --frames="$frames" \
-      --output="$run_record" \
-      >"$run_log" 2>&1
-    then
-      printf 'benchmark-transparency-renderers: %s run %s failed\n' "$renderer" "$run" >&2
-      sed -n '1,240p' "$run_log" >&2
-      exit 1
-    fi
-    if [ ! -s "$run_record" ]; then
-      printf 'benchmark-transparency-renderers: %s run %s produced no record\n' \
-        "$renderer" "$run" >&2
-      sed -n '1,240p' "$run_log" >&2
-      exit 1
-    fi
-    run_records+=("$run_record")
-    run=$((run + 1))
+  if [ "$phase" = baseline ]; then
+    cases=baseline
+  else
+    cases='opaque direct090'
+  fi
+  for case_name in $cases; do
+    run=1
+    while [ "$run" -le "$runs" ]; do
+      run_record="$temporary_root/$renderer-$case_name-run-$run.json"
+      run_log="$temporary_root/$renderer-$case_name-run-$run.log"
+      printf 'benchmark-transparency-renderers: %s %s run %s/%s\n' \
+        "$renderer" "$case_name" "$run" "$runs"
+      executable_arguments=(
+        "--phase=$phase"
+        "--renderer=$renderer"
+        "--fixture=$fixture_path"
+        "--run=$run"
+        "--warmup=$warmup"
+        "--frames=$frames"
+        "--output=$run_record"
+      )
+      if [ "$case_name" = opaque ]; then
+        executable_arguments+=("--surface-opacity=1.0")
+      elif [ "$case_name" = direct090 ]; then
+        executable_arguments+=("--surface-opacity=0.90")
+      fi
+      if ! "$benchmark_executable" "${executable_arguments[@]}" >"$run_log" 2>&1
+      then
+        printf 'benchmark-transparency-renderers: %s %s run %s failed\n' \
+          "$renderer" "$case_name" "$run" >&2
+        sed -n '1,240p' "$run_log" >&2
+        exit 1
+      fi
+      if [ ! -s "$run_record" ]; then
+        printf 'benchmark-transparency-renderers: %s %s run %s produced no record\n' \
+          "$renderer" "$case_name" "$run" >&2
+        exit 1
+      fi
+      run_records+=("$run_record")
+      run=$((run + 1))
+    done
   done
 done
 
-python3 - "$output" "$fixture" "$benchmark_executable" "${run_records[@]}" <<'PY'
+python3 - "$phase" "$output" "$fixture" "$benchmark_executable" "$baseline" "${run_records[@]}" <<'PY'
 import datetime
 import hashlib
 import json
@@ -133,6 +161,17 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+
+
+PHASE = sys.argv[1]
+OUTPUT_PATH = Path(sys.argv[2])
+FIXTURE_PATH = sys.argv[3]
+EXECUTABLE = Path(sys.argv[4])
+BASELINE_PATH = Path(sys.argv[5]) if sys.argv[5] else None
+RECORD_PATHS = [Path(path) for path in sys.argv[6:]]
+RENDERERS = ("slugGlyph", "vectorGlyph")
+METRICS = ("cpuEncode", "wallTime")
+PERCENTILES = ("p50Milliseconds", "p95Milliseconds", "p99Milliseconds")
 
 
 def command(*arguments, required=True):
@@ -156,132 +195,83 @@ def require(condition, message):
         raise SystemExit(f"benchmark validation failed: {message}")
 
 
+def load(path):
+    try:
+        value = json.loads(path.read_text())
+    except Exception as error:
+        raise SystemExit(f"could not read {path}: {error}") from error
+    require(isinstance(value, dict), f"{path} is not an object")
+    return value
+
+
+def validate_metric(metric, label):
+    require(isinstance(metric, dict), f"{label} is missing")
+    require(metric.get("acceptedSamples") == 240, f"{label} sample loss")
+    names = (
+        "minimumMilliseconds",
+        "p50Milliseconds",
+        "p95Milliseconds",
+        "p99Milliseconds",
+        "maximumMilliseconds",
+    )
+    values = [metric.get(name) for name in names]
+    require(
+        all(isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value > 0 for value in values),
+        f"{label} has an invalid timing value",
+    )
+    require(values == sorted(values), f"{label} percentiles are unordered")
+
+
 def metric_median(records, metric_name):
     result = {}
-    for percentile in ("p50Milliseconds", "p95Milliseconds", "p99Milliseconds"):
+    for percentile in PERCENTILES:
         values = sorted(record["metrics"][metric_name][percentile] for record in records)
         result[percentile] = values[len(values) // 2]
     return result
 
 
-output_path = Path(sys.argv[1])
-fixture_path = sys.argv[2]
-benchmark_executable = Path(sys.argv[3])
-record_paths = [Path(path) for path in sys.argv[4:]]
-require(len(record_paths) == 10, f"expected 10 process records, found {len(record_paths)}")
+def validate_record(record, *, renderer, run, opacity, phase):
+    require(record.get("schemaVersion") == 1, "unsupported process-record schema")
+    require(record.get("phase") == phase, "process-record phase drifted")
+    require(record.get("renderer") == renderer, f"{renderer} record identity drifted")
+    require(record.get("configuredRenderer") == renderer, f"{renderer} configured identity")
+    require(record.get("effectiveRenderer") == renderer, f"{renderer} effective identity")
+    require(record.get("run") == run, f"{renderer} run identity drifted")
+    require(record.get("fixtureName") == "trust-gate", "fixture name drifted")
+    require(record.get("fixtureVersion") == 1, "fixture version drifted")
+    require(record.get("grid", {}).get("columns") == 160, "grid columns drifted")
+    require(record.get("grid", {}).get("rows") == 48, "grid rows drifted")
+    require(record.get("scale") == 2.0, "scale drifted")
+    recorded_opacity = record.get("surfaceOpacity", 1.0 if phase == "baseline" else None)
+    require(recorded_opacity == opacity, "surface opacity drifted")
+    expected_opaque = opacity == 1.0
+    require(record.get("surfaceIsOpaque") is expected_opaque, "surface opacity identity drifted")
+    antialiasing = record.get("antialiasing")
+    require(isinstance(antialiasing, dict), "anti-aliasing identity missing")
+    require(antialiasing.get("configured") == "grayscale", "configured AA drifted")
+    require(antialiasing.get("effective") == "grayscale", "effective AA drifted")
+    fallback = antialiasing.get("fallbackReason")
+    if expected_opaque:
+        require(fallback is None, "opaque AA unexpectedly has a fallback reason")
+    else:
+        require(fallback == "transparentSurface", "direct AA fallback reason drifted")
+    require(record.get("warmupFrames") == 40, "warmup count drifted")
+    require(record.get("measuredFrames") == 240, "measured-frame count drifted")
+    for metric_name in METRICS:
+        validate_metric(record.get("metrics", {}).get(metric_name), f"{renderer} {metric_name}")
+    process_identifier = record.get("processIdentifier")
+    require(isinstance(process_identifier, int) and process_identifier > 0, "process identifier invalid")
 
-records = []
-for record_path in record_paths:
-    try:
-        record = json.loads(record_path.read_text())
-    except Exception as error:
-        raise SystemExit(f"could not read {record_path}: {error}") from error
-    records.append(record)
 
-expected_renderers = ("slugGlyph", "vectorGlyph")
-process_ids = []
-for renderer in expected_renderers:
-    renderer_records = [record for record in records if record.get("renderer") == renderer]
-    require(len(renderer_records) == 5, f"{renderer} must have five runs")
-    require(
-        sorted(record.get("run") for record in renderer_records) == [1, 2, 3, 4, 5],
-        f"{renderer} run identifiers are incomplete",
-    )
-    for record in renderer_records:
-        require(record.get("schemaVersion") == 1, "unsupported process-record schema")
-        require(record.get("phase") == "baseline", "process record is not baseline")
-        require(record.get("configuredRenderer") == renderer, f"{renderer} configured identity")
-        require(record.get("effectiveRenderer") == renderer, f"{renderer} effective identity")
-        require(record.get("fixtureName") == "trust-gate", "fixture name drifted")
-        require(record.get("fixtureVersion") == 1, "fixture version drifted")
-        require(record.get("grid", {}).get("columns") == 160, "grid columns drifted")
-        require(record.get("grid", {}).get("rows") == 48, "grid rows drifted")
-        require(record.get("scale") == 2.0, "scale drifted")
-        require(record.get("surfaceIsOpaque") is True, "baseline surface is not opaque")
-        require(
-            record.get("antialiasing") == {"configured": "grayscale", "effective": "grayscale"},
-            "anti-aliasing mode drifted",
-        )
-        require(record.get("warmupFrames") == 40, "warmup count drifted")
-        require(record.get("measuredFrames") == 240, "measured-frame count drifted")
-        for metric_name in ("cpuEncode", "wallTime"):
-            metric = record.get("metrics", {}).get(metric_name, {})
-            require(metric.get("acceptedSamples") == 240, f"{renderer} {metric_name} sample loss")
-            values = [
-                metric.get("minimumMilliseconds"),
-                metric.get("p50Milliseconds"),
-                metric.get("p95Milliseconds"),
-                metric.get("p99Milliseconds"),
-                metric.get("maximumMilliseconds"),
-            ]
-            require(
-                all(isinstance(value, (int, float)) and math.isfinite(value) and value > 0
-                    for value in values),
-                f"{renderer} {metric_name} has an invalid timing value",
-            )
-            require(values == sorted(values), f"{renderer} {metric_name} percentiles are unordered")
-        process_ids.append(record.get("processIdentifier"))
-
-require(len(set(process_ids)) == 10, "benchmark runs did not use ten independent processes")
-
-identity_record = records[0]
-for record in records[1:]:
-    require(record.get("grid") == identity_record.get("grid"), "cell metrics changed between runs")
-    require(record.get("font") == identity_record.get("font"), "font identity changed between runs")
-
-implementation_commit = command("git", "rev-parse", "HEAD")
-tracked_dirty = subprocess.run(
-    ["git", "diff", "--quiet", "--ignore-submodules", "--"], check=False
-).returncode != 0
-swift_version = command("swift", "--version")
-executable_sha256 = hashlib.sha256(benchmark_executable.read_bytes()).hexdigest()
-
-renderers = {}
-for renderer in expected_renderers:
-    renderer_records = sorted(
-        (record for record in records if record["renderer"] == renderer),
-        key=lambda record: record["run"],
-    )
-    renderers[renderer] = {
-        "runs": renderer_records,
-        "medianOfFive": {
-            "cpuEncode": metric_median(renderer_records, "cpuEncode"),
-            "wallTime": metric_median(renderer_records, "wallTime"),
-        },
-    }
-
-report = {
-    "schemaVersion": 1,
-    "benchmark": "terminal-background-transparency-renderers",
-    "phase": "baseline",
-    "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
-    "implementationCommit": implementation_commit,
-    "sourceTreeTrackedDirty": tracked_dirty,
-    "fixture": {
-        "path": fixture_path,
-        "name": identity_record["fixtureName"],
-        "version": identity_record["fixtureVersion"],
-    },
-    "workload": {
-        "grid": identity_record["grid"],
-        "scale": identity_record["scale"],
-        "pixelWidth": identity_record["pixelWidth"],
-        "pixelHeight": identity_record["pixelHeight"],
-        "surfaceOpacity": 1.0,
-        "surfaceIsOpaque": True,
-        "antialiasing": identity_record["antialiasing"],
-        "font": identity_record["font"],
-        "warmupFrames": 40,
-        "measuredFrames": 240,
-        "runsPerRenderer": 5,
-    },
-    "identity": {
+def identity():
+    return {
         "build": {
             "configuration": "release",
             "mode": "SwiftPM release executable",
             "benchmarkExecutable": "transparency-renderer-bench",
-            "swiftVersion": swift_version,
-            "benchmarkExecutableSHA256": executable_sha256,
+            "swiftVersion": command("swift", "--version"),
+            "benchmarkExecutableSHA256": hashlib.sha256(EXECUTABLE.read_bytes()).hexdigest(),
         },
         "os": {
             "productName": command("sw_vers", "-productName"),
@@ -294,40 +284,227 @@ report = {
             "processor": command("sysctl", "-n", "machdep.cpu.brand_string", required=False),
             "memoryBytes": int(command("sysctl", "-n", "hw.memsize")),
         },
-    },
-    "thresholdsForPostChangeComparison": {
-        "opaqueMedianP99MaximumRegressionFraction": 0.05,
-        "directTranslucentMedianP99MaximumRegressionFraction": 0.10,
-        "maximumP99Milliseconds": 8.33,
-    },
-    "renderers": renderers,
-    "validation": {
-        "allSamplesAccepted": True,
-        "acceptedSamplesPerMetricPerRun": 240,
-        "expectedProcessCount": 10,
-        "uniqueProcessCount": len(set(process_ids)),
-    },
-}
+    }
 
-output_path.parent.mkdir(parents=True, exist_ok=True)
-temporary_output = output_path.with_name(output_path.name + f".tmp.{os.getpid()}")
+
+def current_workload(record):
+    return {
+        "grid": record["grid"],
+        "scale": record["scale"],
+        "pixelWidth": record["pixelWidth"],
+        "pixelHeight": record["pixelHeight"],
+        "surfaceOpacity": 1.0,
+        "surfaceIsOpaque": True,
+        "antialiasing": {
+            "configured": record["antialiasing"]["configured"],
+            "effective": record["antialiasing"]["effective"],
+        },
+        "font": record["font"],
+        "warmupFrames": 40,
+        "measuredFrames": 240,
+        "runsPerRenderer": 5,
+    }
+
+
+def current_source_dirty():
+    return subprocess.run(
+        ["git", "diff", "--quiet", "--ignore-submodules", "--"], check=False
+    ).returncode != 0
+
+
+records = [load(path) for path in RECORD_PATHS]
+implementation_commit = command("git", "rev-parse", "HEAD")
+current_identity = identity()
+
+if PHASE == "baseline":
+    require(len(records) == 10, f"expected 10 baseline records, found {len(records)}")
+    process_ids = []
+    for renderer in RENDERERS:
+        renderer_records = [record for record in records if record.get("renderer") == renderer]
+        require(len(renderer_records) == 5, f"{renderer} must have five runs")
+        renderer_records.sort(key=lambda record: record.get("run", 0))
+        for run, record in enumerate(renderer_records, 1):
+            validate_record(record, renderer=renderer, run=run, opacity=1.0, phase="baseline")
+            process_ids.append(record["processIdentifier"])
+    require(len(set(process_ids)) == 10, "baseline did not use ten independent processes")
+    identity_record = records[0]
+    for record in records[1:]:
+        require(record.get("grid") == identity_record.get("grid"), "cell metrics changed between runs")
+        require(record.get("font") == identity_record.get("font"), "font identity changed between runs")
+    renderers = {}
+    for renderer in RENDERERS:
+        renderer_records = sorted(
+            (record for record in records if record["renderer"] == renderer),
+            key=lambda record: record["run"],
+        )
+        renderers[renderer] = {
+            "runs": renderer_records,
+            "medianOfFive": {
+                metric_name: metric_median(renderer_records, metric_name)
+                for metric_name in METRICS
+            },
+        }
+    report = {
+        "schemaVersion": 1,
+        "benchmark": "terminal-background-transparency-renderers",
+        "phase": "baseline",
+        "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "implementationCommit": implementation_commit,
+        "sourceTreeTrackedDirty": current_source_dirty(),
+        "fixture": {"path": FIXTURE_PATH, "name": "trust-gate", "version": 1},
+        "workload": current_workload(identity_record),
+        "identity": current_identity,
+        "thresholdsForPostChangeComparison": {
+            "opaqueMedianP99MaximumRegressionFraction": 0.05,
+            "directTranslucentMedianP99MaximumRegressionFraction": 0.10,
+            "maximumP99Milliseconds": 8.33,
+        },
+        "renderers": renderers,
+        "validation": {
+            "allSamplesAccepted": True,
+            "acceptedSamplesPerMetricPerRun": 240,
+            "expectedProcessCount": 10,
+            "uniqueProcessCount": len(set(process_ids)),
+        },
+    }
+else:
+    require(len(records) == 20, f"expected 20 comparison records, found {len(records)}")
+    baseline = load(BASELINE_PATH)
+    require(baseline.get("schemaVersion") == 1 and baseline.get("phase") == "baseline", "baseline identity invalid")
+    require(baseline.get("benchmark") == "terminal-background-transparency-renderers", "baseline benchmark invalid")
+    require(baseline.get("sourceTreeTrackedDirty") is False, "baseline must come from a tracked-clean tree")
+    require(current_source_dirty() is False, "comparison must come from a tracked-clean tree")
+    baseline_identity = baseline.get("identity", {})
+    require(baseline_identity.get("os") == current_identity.get("os"), "baseline OS identity mismatch")
+    require(baseline_identity.get("hardware") == current_identity.get("hardware"), "baseline hardware identity mismatch")
+    for field in ("configuration", "mode", "swiftVersion"):
+        require(
+            baseline_identity.get("build", {}).get(field) == current_identity.get("build", {}).get(field),
+            f"baseline build {field} mismatch",
+        )
+    process_ids = []
+    grouped = {}
+    for renderer in RENDERERS:
+        grouped[renderer] = {}
+        for case_name, opacity in (("opaque", 1.0), ("direct090", 0.9)):
+            case_records = [
+                record for record in records
+                if record.get("renderer") == renderer and record.get("surfaceOpacity") == opacity
+            ]
+            require(len(case_records) == 5, f"{renderer} {case_name} must have five runs")
+            case_records.sort(key=lambda record: record.get("run", 0))
+            for run, record in enumerate(case_records, 1):
+                validate_record(record, renderer=renderer, run=run, opacity=opacity, phase="compare")
+                process_ids.append(record["processIdentifier"])
+            grouped[renderer][case_name] = case_records
+    require(len(set(process_ids)) == 20, "comparison did not use twenty independent processes")
+    identity_record = grouped["slugGlyph"]["opaque"][0]
+    workload = current_workload(identity_record)
+    require(workload == baseline.get("workload"), "baseline workload identity mismatch")
+    for record in records:
+        require(record.get("grid") == identity_record.get("grid"), "cell metrics changed between runs")
+        require(record.get("font") == identity_record.get("font"), "font identity changed between runs")
+
+    threshold_failures = []
+    renderer_evidence = {}
+    for renderer in RENDERERS:
+        baseline_medians = baseline.get("renderers", {}).get(renderer, {}).get("medianOfFive")
+        require(isinstance(baseline_medians, dict), f"baseline missing {renderer} medians")
+        opaque = grouped[renderer]["opaque"]
+        direct = grouped[renderer]["direct090"]
+        opaque_medians = {metric_name: metric_median(opaque, metric_name) for metric_name in METRICS}
+        direct_medians = {metric_name: metric_median(direct, metric_name) for metric_name in METRICS}
+        for metric_name in METRICS:
+            for percentile in ("p50Milliseconds", "p99Milliseconds"):
+                baseline_value = baseline_medians[metric_name][percentile]
+                opaque_value = opaque_medians[metric_name][percentile]
+                direct_value = direct_medians[metric_name][percentile]
+                if opaque_value > baseline_value * 1.05:
+                    threshold_failures.append(
+                        f"{renderer} {metric_name} opaque {percentile} exceeds 5% regression budget")
+                if direct_value > opaque_value * 1.10:
+                    threshold_failures.append(
+                        f"{renderer} {metric_name} direct {percentile} exceeds 10% regression budget")
+            for case_name, medians in (
+                ("baseline", baseline_medians),
+                ("opaque", opaque_medians),
+                ("direct090", direct_medians),
+            ):
+                if medians[metric_name]["p99Milliseconds"] > 8.33:
+                    threshold_failures.append(
+                        f"{renderer} {metric_name} {case_name} p99 exceeds 8.33 ms")
+        renderer_evidence[renderer] = {
+            "baselineOpaqueMedianOfFive": baseline_medians,
+            "postChangeOpaque": {
+                "runs": opaque,
+                "medianOfFive": opaque_medians,
+            },
+            "direct090": {
+                "runs": direct,
+                "medianOfFive": direct_medians,
+            },
+        }
+    report = {
+        "schemaVersion": 2,
+        "benchmark": "terminal-background-transparency-renderers",
+        "phase": "comparison",
+        "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "baseline": {
+            "artifactPath": str(BASELINE_PATH),
+            "artifactSHA256": hashlib.sha256(BASELINE_PATH.read_bytes()).hexdigest(),
+            "implementationCommit": baseline.get("implementationCommit"),
+            "sourceTreeTrackedDirty": baseline.get("sourceTreeTrackedDirty"),
+            "identity": baseline_identity,
+            "workload": baseline.get("workload"),
+        },
+        "postChange": {
+            "implementationCommit": implementation_commit,
+            "sourceTreeTrackedDirty": False,
+            "identity": current_identity,
+            "workload": workload,
+        },
+        "thresholds": {
+            "opaqueMaximumRegressionFraction": 0.05,
+            "directMaximumRegressionFraction": 0.10,
+            "maximumP99Milliseconds": 8.33,
+        },
+        "renderers": renderer_evidence,
+        "validation": {
+            "passed": not threshold_failures,
+            "failures": threshold_failures,
+            "allSamplesAccepted": True,
+            "acceptedSamplesPerMetricPerRun": 240,
+            "expectedProcessCount": 20,
+            "uniqueProcessCount": len(set(process_ids)),
+        },
+    }
+
+OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+temporary_output = OUTPUT_PATH.with_name(OUTPUT_PATH.name + f".tmp.{os.getpid()}")
 temporary_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-temporary_output.replace(output_path)
+temporary_output.replace(OUTPUT_PATH)
 
-for renderer in expected_renderers:
-    median = report["renderers"][renderer]["medianOfFive"]
-    print(
-        f"{renderer}: "
-        f"cpu p50/p95/p99="
-        f"{median['cpuEncode']['p50Milliseconds']:.3f}/"
-        f"{median['cpuEncode']['p95Milliseconds']:.3f}/"
-        f"{median['cpuEncode']['p99Milliseconds']:.3f} ms; "
-        f"wall p50/p95/p99="
-        f"{median['wallTime']['p50Milliseconds']:.3f}/"
-        f"{median['wallTime']['p95Milliseconds']:.3f}/"
-        f"{median['wallTime']['p99Milliseconds']:.3f} ms"
-    )
-print(f"baseline={output_path}")
-print(f"implementationCommit={implementation_commit}")
-print("validation=all 4800 measured samples accepted across 10 independent processes")
+if PHASE == "baseline":
+    for renderer in RENDERERS:
+        median = report["renderers"][renderer]["medianOfFive"]
+        print(
+            f"{renderer}: cpu p50/p95/p99="
+            f"{median['cpuEncode']['p50Milliseconds']:.3f}/"
+            f"{median['cpuEncode']['p95Milliseconds']:.3f}/"
+            f"{median['cpuEncode']['p99Milliseconds']:.3f} ms; "
+            f"wall p50/p95/p99="
+            f"{median['wallTime']['p50Milliseconds']:.3f}/"
+            f"{median['wallTime']['p95Milliseconds']:.3f}/"
+            f"{median['wallTime']['p99Milliseconds']:.3f} ms"
+        )
+    print(f"baseline={OUTPUT_PATH}")
+    print(f"implementationCommit={implementation_commit}")
+    print("validation=all 4800 measured samples accepted across 10 independent processes")
+else:
+    print(f"comparison={OUTPUT_PATH}")
+    if report["validation"]["failures"]:
+        for failure in report["validation"]["failures"]:
+            print(f"benchmark threshold failed: {failure}", file=sys.stderr)
+        raise SystemExit(1)
+    print("validation=all renderer transparency thresholds passed")
 PY

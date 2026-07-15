@@ -25,12 +25,14 @@ private enum BenchmarkError: Error, CustomStringConvertible {
 }
 
 private struct Configuration {
+  let phase: String
   let renderer: RendererSelection
   let fixtureURL: URL
   let outputURL: URL
   let run: Int
   let warmupFrames: Int
   let measuredFrames: Int
+  let surfaceOpacity: Double
 
   init(arguments: [String]) throws {
     var values: [String: String] = [:]
@@ -46,15 +48,16 @@ private struct Configuration {
       values[name] = value
     }
 
-    let expectedNames = Set(["phase", "renderer", "fixture", "run", "warmup", "frames", "output"])
+    guard let phase = values["phase"], phase == "baseline" || phase == "compare" else {
+      throw BenchmarkError.invalidArgument("--phase must be baseline or compare")
+    }
+    var expectedNames = Set(["phase", "renderer", "fixture", "run", "warmup", "frames", "output"])
+    if phase == "compare" { expectedNames.insert("surface-opacity") }
     guard Set(values.keys) == expectedNames else {
       let missing = expectedNames.subtracting(values.keys).sorted().joined(separator: ", ")
       let unknown = Set(values.keys).subtracting(expectedNames).sorted().joined(separator: ", ")
       throw BenchmarkError.invalidArgument(
         "argument set mismatch; missing=[\(missing)] unknown=[\(unknown)]")
-    }
-    guard values["phase"] == "baseline" else {
-      throw BenchmarkError.invalidArgument("only --phase=baseline is implemented")
     }
     guard
       let rendererName = values["renderer"],
@@ -83,13 +86,27 @@ private struct Configuration {
     guard let fixture = values["fixture"], let output = values["output"] else {
       throw BenchmarkError.invalidArgument("--fixture and --output are required")
     }
+    let surfaceOpacity: Double
+    if phase == "baseline" {
+      surfaceOpacity = 1.0
+    } else {
+      guard let rawOpacity = values["surface-opacity"],
+        let opacity = Double(rawOpacity),
+        opacity == 1.0 || opacity == 0.90
+      else {
+        throw BenchmarkError.invalidArgument("compare --surface-opacity must be 1.0 or 0.90")
+      }
+      surfaceOpacity = opacity
+    }
 
+    self.phase = phase
     self.renderer = renderer
     fixtureURL = URL(fileURLWithPath: fixture)
     outputURL = URL(fileURLWithPath: output)
     self.run = run
     self.warmupFrames = warmupFrames
     self.measuredFrames = measuredFrames
+    self.surfaceOpacity = surfaceOpacity
   }
 }
 
@@ -135,6 +152,7 @@ private struct Grid: Codable {
 private struct Antialiasing: Codable {
   let configured: String
   let effective: String
+  let fallbackReason: String?
 }
 
 private struct FontIdentity: Codable {
@@ -158,6 +176,7 @@ private struct RunRecord: Codable {
   let scale: Double
   let pixelWidth: Int
   let pixelHeight: Int
+  let surfaceOpacity: Double
   let surfaceIsOpaque: Bool
   let antialiasing: Antialiasing
   let font: FontIdentity
@@ -188,7 +207,8 @@ private struct TransparencyRendererBenchmark {
     let commands = try frameCommands(
       fixture: fixture,
       cellWidth: cellWidth,
-      cellHeight: cellHeight)
+      cellHeight: cellHeight,
+      surfaceOpacity: configuration.surfaceOpacity)
     guard !commands.isEmpty else {
       throw BenchmarkError.invalidArgument("fixture produced no frame commands")
     }
@@ -199,6 +219,7 @@ private struct TransparencyRendererBenchmark {
       commands: commands,
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
+      surfaceOpacity: configuration.surfaceOpacity,
       warmupFrames: configuration.warmupFrames,
       measuredFrames: configuration.measuredFrames,
       waitForCompletion: false)
@@ -208,6 +229,7 @@ private struct TransparencyRendererBenchmark {
       commands: commands,
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
+      surfaceOpacity: configuration.surfaceOpacity,
       warmupFrames: configuration.warmupFrames,
       measuredFrames: configuration.measuredFrames,
       waitForCompletion: true)
@@ -225,6 +247,7 @@ private struct TransparencyRendererBenchmark {
       fontAtlas: fontAtlas,
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
+      surfaceOpacity: configuration.surfaceOpacity,
       waitForCompletion: true)
     let status = identityRenderer.rendererStatus
     guard status.configuredRenderer == configuration.renderer.rawValue,
@@ -234,9 +257,10 @@ private struct TransparencyRendererBenchmark {
         "renderer identity mismatch: configured=\(status.configuredRenderer) "
           + "effective=\(status.effectiveRenderer)")
     }
-    guard identityRenderer.presentationLayer?.isOpaque == true else {
+    let expectedOpaque = configuration.surfaceOpacity == 1.0
+    guard identityRenderer.presentationLayer?.isOpaque == expectedOpaque else {
       throw BenchmarkError.invalidArgument(
-        "\(configuration.renderer.rawValue) presentation layer is not opaque")
+        "\(configuration.renderer.rawValue) presentation-layer opacity mismatch")
     }
     guard status.vectorSubpixelLayout == "grayscale" else {
       throw BenchmarkError.invalidArgument(
@@ -246,7 +270,7 @@ private struct TransparencyRendererBenchmark {
     let cjk = fontAtlas.cjkFontDiagnostics
     let record = RunRecord(
       schemaVersion: 1,
-      phase: "baseline",
+      phase: configuration.phase,
       renderer: configuration.renderer.rawValue,
       configuredRenderer: status.configuredRenderer,
       effectiveRenderer: status.effectiveRenderer,
@@ -262,10 +286,12 @@ private struct TransparencyRendererBenchmark {
       scale: Double(scale),
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
-      surfaceIsOpaque: identityRenderer.presentationLayer?.isOpaque == true,
+      surfaceOpacity: configuration.surfaceOpacity,
+      surfaceIsOpaque: expectedOpaque,
       antialiasing: Antialiasing(
         configured: "grayscale",
-        effective: status.vectorSubpixelLayout ?? "unknown"),
+        effective: status.vectorSubpixelLayout ?? "unknown",
+        fallbackReason: status.vectorSubpixelFallbackReason),
       font: FontIdentity(
         primaryPostScriptName: fontAtlas.fontPostScriptName,
         cjkPostScriptName: cjk.selectedFontPostScriptName,
@@ -288,7 +314,8 @@ private struct TransparencyRendererBenchmark {
   private func frameCommands(
     fixture: FixtureRunner,
     cellWidth: Int,
-    cellHeight: Int
+    cellHeight: Int,
+    surfaceOpacity: Double
   ) throws -> [FrameCommand] {
     var size = LabanTerminalSize()
     size.cols = Int32(columns)
@@ -307,7 +334,12 @@ private struct TransparencyRendererBenchmark {
       throw BenchmarkError.invalidArgument(
         "fixture snapshot must remain \(columns)x\(rows)")
     }
-    return FrameProducer(cellWidth: cellWidth, cellHeight: cellHeight)
+    return FrameProducer(
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      backgroundCompositingOptions: TerminalBackgroundCompositingOptions(
+        opacity: UInt8((surfaceOpacity * 255).rounded()),
+        applyToExplicitCellBackgrounds: false))
       .commands(from: UnsafePointer(snapshot))
   }
 
@@ -316,6 +348,7 @@ private struct TransparencyRendererBenchmark {
     fontAtlas: FontAtlas,
     pixelWidth: Int,
     pixelHeight: Int,
+    surfaceOpacity: Double,
     waitForCompletion: Bool
   ) throws -> RendererBackend {
     let renderer: RendererBackend?
@@ -343,8 +376,10 @@ private struct TransparencyRendererBenchmark {
     guard let renderer else {
       throw BenchmarkError.rendererUnavailable(selection.rawValue)
     }
-    guard renderer.presentationLayer?.isOpaque == true else {
-      throw BenchmarkError.invalidArgument("\(selection.rawValue) presentation layer is not opaque")
+    let expectedOpaque = surfaceOpacity == 1.0
+    renderer.setSurfaceTransparency(RendererSurfaceTransparency(isOpaque: expectedOpaque))
+    guard renderer.presentationLayer?.isOpaque == expectedOpaque else {
+      throw BenchmarkError.invalidArgument("\(selection.rawValue) presentation-layer opacity mismatch")
     }
     renderer.waitForFrameCompletion = waitForCompletion
     return renderer
@@ -356,6 +391,7 @@ private struct TransparencyRendererBenchmark {
     commands: [FrameCommand],
     pixelWidth: Int,
     pixelHeight: Int,
+    surfaceOpacity: Double,
     warmupFrames: Int,
     measuredFrames: Int,
     waitForCompletion: Bool
@@ -366,6 +402,7 @@ private struct TransparencyRendererBenchmark {
       fontAtlas: fontAtlas,
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
+      surfaceOpacity: surfaceOpacity,
       waitForCompletion: waitForCompletion)
     for frame in 0..<warmupFrames {
       _ = try renderAccepted(
@@ -444,8 +481,9 @@ do {
 } catch {
   fputs("transparency-renderer-bench: \(error)\n", stderr)
   fputs(
-    "usage: transparency-renderer-bench --phase=baseline --renderer=slugGlyph|vectorGlyph "
-      + "--fixture=PATH --run=N --warmup=N --frames=N --output=PATH\n",
+    "usage: transparency-renderer-bench --phase=baseline|compare "
+      + "--renderer=slugGlyph|vectorGlyph --fixture=PATH --run=N --warmup=N "
+      + "--frames=N [--surface-opacity=1.0|0.90] --output=PATH\n",
     stderr)
   exit(2)
 }
