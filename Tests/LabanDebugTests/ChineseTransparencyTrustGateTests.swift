@@ -158,24 +158,42 @@ final class ChineseTransparencyTrustGateTests: XCTestCase {
       "Chinese preedit backing must stay opaque and source-over",
       file: file,
       line: line)
-    XCTAssertTrue(
-      commands.contains { command in
-        guard case .glyphRun(_, let text, _, _, _, .preedit, _, _, _, let cells) = command else {
-          return false
-        }
-        return text == "中文" && cells == 4
-      },
+    let preeditRuns = commands.compactMap { command -> (String, Int)? in
+      guard case .glyphRun(_, let text, _, _, _, .preedit, _, _, _, let cells) = command else {
+        return nil
+      }
+      return (text, cells ?? TerminalDisplayWidth.cells(of: text))
+    }
+    XCTAssertEqual(
+      preeditRuns.map(\.0).joined(),
+      "中文",
+      "Chinese preedit text may be split by fallback fonts but must remain ordered",
+      file: file,
+      line: line)
+    XCTAssertEqual(
+      preeditRuns.reduce(0) { $0 + $1.1 },
+      4,
       "Chinese preedit must retain its two-cells-per-Hanzi geometry",
       file: file,
       line: line)
   }
 
   private func cjkGeometry(in commands: [FrameCommand]) throws -> [CJKRunGeometry] {
+    let terminalText = commands.compactMap { command -> String? in
+      guard case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, _) = command else {
+        return nil
+      }
+      return text
+    }.joined()
+    XCTAssertTrue(
+      terminalText.contains("中文"),
+      "the checked-in trust gate must preserve adjacent 中文 across fallback runs")
+
     let runs = commands.compactMap { command -> CJKRunGeometry? in
       guard
         case .glyphRun(
           let origin, let text, _, _, _, .terminal, _, _, _, let displayCellCount) = command,
-        text.contains("中文")
+        text.unicodeScalars.contains(where: Self.isHan)
       else { return nil }
       return CJKRunGeometry(
         x: Double(origin.x),
@@ -189,6 +207,15 @@ final class ChineseTransparencyTrustGateTests: XCTestCase {
           && run.displayCellCount >= 4
       }, "the trust-gate Chinese run must retain two-cell geometry")
     return runs
+  }
+
+  private static func isHan(_ scalar: Unicode.Scalar) -> Bool {
+    switch scalar.value {
+    case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF:
+      return true
+    default:
+      return false
+    }
   }
 
   private func alphaHistogram(_ png: Data) throws -> [Int: Int] {
