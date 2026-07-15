@@ -1,0 +1,64 @@
+{
+  "name": "transparency-parity",
+  "version": 1,
+  "description": "Renderer-neutral transparency fixture with inherited, explicit, inverse, faint, CJK, selection/find, preedit, and sidebar probe anchors. UI overlays are applied by the authenticated parity runner.",
+  "initialSize": {
+    "cols": 72,
+    "rows": 18
+  },
+  "steps": [
+    {
+      "op": "setTitle",
+      "title": "Fixture: Transparency Parity"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "\u001b[2J\u001b[HTransparency renderer parity\r\n\r\n\u001b[41m  \u001b[0m explicit-red   \u001b[7m  \u001b[27m inverse-background\r\nnormal glyph   \u001b[2mfaint glyph\u001b[22m\r\nalpha apple marker for selection and find\r\nCJK adjacent: 中文  mixed: 终端 alpha\r\nsemantic image-content marker (textured image rendering is covered by renderer command tests)\r\npreedit anchor follows this row"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "title": "Fixture: Transparency Parity",
+    "nonEmptyScreenshot": true,
+    "containsText": [
+      "Transparency renderer parity",
+      "explicit-red",
+      "inverse-background",
+      "faint glyph",
+      "alpha apple marker for selection and find",
+      "CJK adjacent: 中文",
+      "preedit anchor follows this row"
+    ]
+  },
+  "transparencyParity": {
+    "authenticatedActions": {
+      "selection": {
+        "anchor": {"row": 4, "col": 0},
+        "focus": {"row": 4, "col": 5}
+      },
+      "findNeedle": "apple",
+      "preeditText": "中文",
+      "preeditCaretCells": 4
+    },
+    "requiredTerminalText": [
+      "explicit-red",
+      "inverse-background",
+      "faint glyph",
+      "alpha apple marker for selection and find",
+      "CJK adjacent: 中文"
+    ],
+    "requiredSemanticCommands": [
+      "cursor",
+      "selection",
+      "findMatch",
+      "rect:preedit",
+      "glyphRun:preedit",
+      "rect:sidebar",
+      "glyphRun:sidebar"
+    ]
+  }
+}

@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+fixture="fixtures/transparency-parity.fixture.json"
+opacity="0.70"
+artifact_root=".artifacts/transparency/parity"
+agent_bin="${AGENT_BIN:-.build/debug/laban-agent}"
+
+usage() {
+  cat <<'USAGE'
+usage: transparency-renderer-parity-matrix [options]
+
+  --fixture=<path>    deterministic transparency fixture
+  --opacity=<0...1>   direct background opacity (default: 0.70)
+  --artifacts=<path>  output root
+USAGE
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --fixture=*) fixture=${arg#*=} ;;
+    --opacity=*) opacity=${arg#*=} ;;
+    --artifacts=*) artifact_root=${arg#*=} ;;
+    --help|-h) usage; exit 0 ;;
+    *)
+      printf 'transparency-renderer-parity-matrix: unknown argument: %s\n' "$arg" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'transparency-renderer-parity-matrix: missing required command: %s\n' "$1" >&2
+    exit 2
+  }
+}
+
+require cmp
+require curl
+require jq
+require shasum
+require swift
+require swiftc
+
+[ -f "$fixture" ] || {
+  printf 'transparency-renderer-parity-matrix: fixture not found: %s\n' "$fixture" >&2
+  exit 2
+}
+[ -n "$artifact_root" ] && [ "$artifact_root" != "/" ] || {
+  printf 'transparency-renderer-parity-matrix: refusing unsafe artifact root\n' >&2
+  exit 2
+}
+
+if ! jq -en --argjson opacity "$opacity" \
+  '$opacity >= 0 and $opacity <= 1 and ($opacity < 1)' >/dev/null 2>&1
+then
+  printf 'transparency-renderer-parity-matrix: opacity must be numeric, nonopaque, and in 0...1\n' >&2
+  exit 2
+fi
+
+jq -e '
+  .name == "transparency-parity"
+  and .transparencyParity.authenticatedActions.selection.anchor
+  and .transparencyParity.authenticatedActions.selection.focus
+  and (.transparencyParity.authenticatedActions.findNeedle | length > 0)
+  and (.transparencyParity.authenticatedActions.preeditText | length > 0)
+  and (.transparencyParity.requiredTerminalText | length >= 5)
+' "$fixture" >/dev/null
+
+if [ ! -x "$agent_bin" ]; then
+  swift build --product laban-agent >/dev/null
+fi
+
+rm -rf "$artifact_root"
+mkdir -p "$artifact_root"
+helper_dir=$(mktemp -d "${TMPDIR:-/tmp}/laban-transparency-parity.XXXXXX")
+alpha_helper="$helper_dir/alpha_probe.swift"
+alpha_probe_bin="$helper_dir/alpha-probe"
+cat >"$alpha_helper" <<'SWIFT'
+import CoreGraphics
+import Foundation
+import ImageIO
+
+enum ProbeError: Error {
+  case decode
+  case context
+}
+
+guard CommandLine.arguments.count == 4, let expected = Int(CommandLine.arguments[2]) else {
+  fputs("usage: alpha_probe screenshot.png expected-alpha output.json\n", stderr)
+  exit(2)
+}
+
+let input = CommandLine.arguments[1]
+let output = CommandLine.arguments[3]
+let data = try Data(contentsOf: URL(fileURLWithPath: input))
+guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+  let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+else { throw ProbeError.decode }
+
+var rgba = [UInt8](repeating: 0, count: image.width * image.height * 4)
+guard
+  let context = CGContext(
+    data: &rgba,
+    width: image.width,
+    height: image.height,
+    bitsPerComponent: 8,
+    bytesPerRow: image.width * 4,
+    space: CGColorSpaceCreateDeviceRGB(),
+    bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+      | CGImageAlphaInfo.premultipliedLast.rawValue)
+else { throw ProbeError.context }
+context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+
+var expectedCount = 0
+var opaqueCount = 0
+var minimum = 255
+var maximum = 0
+for index in stride(from: 3, to: rgba.count, by: 4) {
+  let alpha = Int(rgba[index])
+  if abs(alpha - expected) <= 1 { expectedCount += 1 }
+  if alpha == 255 { opaqueCount += 1 }
+  minimum = min(minimum, alpha)
+  maximum = max(maximum, alpha)
+}
+
+let result: [String: Any] = [
+  "width": image.width,
+  "height": image.height,
+  "expectedAlpha": expected,
+  "expectedAlphaPixelCount": expectedCount,
+  "opaquePixelCount": opaqueCount,
+  "minimumAlpha": minimum,
+  "maximumAlpha": maximum,
+  "passed": expectedCount >= 100 && opaqueCount >= 100,
+]
+let encoded = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+try encoded.write(to: URL(fileURLWithPath: output))
+guard expectedCount >= 100, opaqueCount >= 100 else {
+  fputs("alpha probe failed for \(input): expected=\(expectedCount) opaque=\(opaqueCount)\n", stderr)
+  exit(1)
+}
+SWIFT
+swiftc -O "$alpha_helper" -o "$alpha_probe_bin"
+
+pids=()
+cleanup() {
+  for pid in "${pids[@]:-}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+  done
+  rm -rf "$helper_dir"
+}
+trap cleanup EXIT
+
+wait_ready() {
+  local stdout=$1
+  local stderr=$2
+  local pid=$3
+  local ready=
+  for _ in {1..120}; do
+    if [ -s "$stdout" ]; then
+      ready=$(head -n 1 "$stdout" || true)
+      if printf '%s' "$ready" | jq -e '.debugServer and .debugToken' >/dev/null 2>&1; then
+        printf '%s' "$ready"
+        return 0
+      fi
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      printf 'transparency-renderer-parity-matrix: agent exited before readiness\n' >&2
+      sed -n '1,200p' "$stderr" >&2 || true
+      return 1
+    fi
+    sleep 0.1
+  done
+  printf 'transparency-renderer-parity-matrix: timed out waiting for readiness\n' >&2
+  sed -n '1,200p' "$stderr" >&2 || true
+  return 1
+}
+
+authenticated_get() {
+  local url=$1
+  local token=$2
+  local path=$3
+  local output=$4
+  curl -fsS -H "Authorization: Bearer $token" "$url$path" >"$output"
+}
+
+post_action() {
+  local url=$1
+  local token=$2
+  local output=$3
+  local payload=$4
+  curl -fsS \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    "$url/debug/actions" >"$output"
+  jq -e '.ok == true' "$output" >/dev/null
+}
+
+capture_screenshot() {
+  local url=$1
+  local token=$2
+  local output=$3
+  authenticated_get "$url" "$token" "/debug/screenshot?target=active" "$output"
+  [ -s "$output" ] || {
+    printf 'transparency-renderer-parity-matrix: empty screenshot: %s\n' "$output" >&2
+    return 1
+  }
+}
+
+selection_payload=$(jq -c '
+  .transparencyParity.authenticatedActions.selection
+  | {action:"setSelection", anchor:.anchor, focus:.focus}
+' "$fixture")
+find_payload=$(jq -c '
+  .transparencyParity.authenticatedActions.findNeedle
+  | {action:"find.start", needle:.}
+' "$fixture")
+preedit_payload=$(jq -c '
+  .transparencyParity.authenticatedActions
+  | {
+      action:"setPreedit",
+      text:.preeditText,
+      caretCells:.preeditCaretCells
+    }
+' "$fixture")
+expected_alpha=$(jq -n --argjson opacity "$opacity" '($opacity * 255) | round')
+
+renderers=(software classic gpuDriven vectorGlyph slugGlyph)
+for renderer in "${renderers[@]}"; do
+  output_dir="$artifact_root/$renderer"
+  mkdir -p "$output_dir"
+
+  "$agent_bin" \
+    --headless \
+    --debug-server=127.0.0.1:0 \
+    --fixture="$fixture" \
+    --artifacts="$output_dir" \
+    --renderer="$renderer" \
+    --deterministic \
+    --background-opacity="$opacity" \
+    >"$output_dir/stdout.log" \
+    2>"$output_dir/stderr.log" &
+  pid=$!
+  pids+=("$pid")
+
+  ready=$(wait_ready "$output_dir/stdout.log" "$output_dir/stderr.log" "$pid")
+  url=$(printf '%s' "$ready" | jq -r '.debugServer')
+  token=$(printf '%s' "$ready" | jq -r '.debugToken')
+
+  authenticated_get "$url" "$token" "/debug/state" "$output_dir/state-initial.json"
+  initial_tab_id=$(jq -r '.activeTabId' "$output_dir/state-initial.json")
+  post_action "$url" "$token" "$output_dir/new-attention-tab.json" '{"action":"newTab"}'
+  authenticated_get "$url" "$token" "/debug/state" "$output_dir/state-second-tab.json"
+  attention_tab_id=$(jq -r '.activeTabId' "$output_dir/state-second-tab.json")
+  attention_payload=$(jq -nc --arg tabId "$attention_tab_id" \
+    '{action:"setTabMetadata",tabId:$tabId,bellAttention:true,unseenOutput:true}')
+  post_action "$url" "$token" "$output_dir/set-attention.json" "$attention_payload"
+  select_initial_payload=$(jq -nc --arg tabId "$initial_tab_id" \
+    '{action:"selectTab",tabId:$tabId}')
+  post_action "$url" "$token" "$output_dir/select-fixture-tab.json" "$select_initial_payload"
+
+  post_action "$url" "$token" "$output_dir/set-selection.json" "$selection_payload"
+  post_action "$url" "$token" "$output_dir/find-start.json" "$find_payload"
+  post_action "$url" "$token" "$output_dir/set-preedit.json" "$preedit_payload"
+
+  authenticated_get "$url" "$token" "/debug/render" "$output_dir/render.json"
+  authenticated_get "$url" "$token" "/debug/transparency" "$output_dir/transparency.json"
+  authenticated_get "$url" "$token" \
+    "/debug/frame-commands?source=all&includeText=true&limit=2000" \
+    "$output_dir/frame-commands.json"
+
+  jq -e --arg renderer "$renderer" '
+    .configuredRenderer == $renderer
+    and .effectiveRenderer == $renderer
+    and .fallbackReason == null
+  ' "$output_dir/render.json" >/dev/null
+  jq -e --arg renderer "$renderer" --argjson opacity "$opacity" '
+    .configuredRenderer == $renderer
+    and .effectiveRenderer == $renderer
+    and ((.requestedOpacity - $opacity) | fabs) <= 0.000001
+    and ((.effectiveOpacity - $opacity) | fabs) <= 0.000001
+    and .applyToExplicitCellBackgrounds == false
+    and .forceOpaqueReason == null
+    and .surfaceOpaque == false
+    and .effectiveBackdropStyle == "none"
+    and .backdropSubviewCount == 0
+  ' "$output_dir/transparency.json" >/dev/null
+
+  jq -e --argjson alpha "$expected_alpha" --slurpfile fixture "$fixture" '
+    any(.commands[]; .kind == "rect" and .source == "terminal" and .color[3] == $alpha)
+    and ([.commands[] | select(
+      .kind == "rect" and .source == "terminal" and .color[3] == 255
+    )] | length) >= 2
+    and any(.commands[]; .kind == "rect" and .source == "sidebar" and .color[3] == $alpha)
+    and ([.commands[] | select(
+      .kind == "rect" and .source == "sidebar" and .color[3] == 255
+    )] | length) >= 2
+    and any(.commands[]; .kind == "glyphRun" and .source == "sidebar")
+    and any(.commands[]; .kind == "rect" and .source == "preedit" and .color[3] == 255)
+    and any(.commands[]; .kind == "glyphRun" and .source == "preedit"
+      and .text == $fixture[0].transparencyParity.authenticatedActions.preeditText)
+    and any(.commands[]; .kind == "cursor")
+    and any(.commands[]; .kind == "selection")
+    and any(.commands[]; .kind == "findMatch")
+    and (([.commands[] | select(.kind == "glyphRun" and .source == "terminal") | .text]
+      | join("")) as $text
+      | all(
+          $fixture[0].transparencyParity.requiredTerminalText[] as $required;
+          $text | contains($required)
+        ))
+    and any(.commands[];
+      .kind == "glyphRun"
+      and (((.attributes // []) | index("faint")) != null)
+    )
+  ' "$output_dir/frame-commands.json" >/dev/null
+
+  capture_screenshot "$url" "$token" "$output_dir/screenshot.png"
+  "$alpha_probe_bin" "$output_dir/screenshot.png" "$expected_alpha" \
+    "$output_dir/alpha-probes.json"
+
+  post_action "$url" "$token" "$output_dir/advance-full-100.json" \
+    '{"action":"advanceFrames","count":100}'
+  capture_screenshot "$url" "$token" "$output_dir/screenshot-full-100.png"
+  "$alpha_probe_bin" "$output_dir/screenshot-full-100.png" "$expected_alpha" \
+    "$output_dir/alpha-probes-full-100.json"
+  cmp -s "$output_dir/screenshot.png" "$output_dir/screenshot-full-100.png" || {
+    printf 'transparency-renderer-parity-matrix: %s accumulated or drifted over 100 identical frames\n' \
+      "$renderer" >&2
+    exit 1
+  }
+
+  scroll_text=$(printf 'scroll-alpha-%02d\r\n' {1..24})
+  scroll_payload=$(jq -nc --arg text "$scroll_text" '{action:"feedOutput", text:$text}')
+  post_action "$url" "$token" "$output_dir/feed-scroll-rows.json" "$scroll_payload"
+  post_action "$url" "$token" "$output_dir/scroll-back.json" \
+    '{"action":"scrollViewport","deltaRows":-1}'
+  post_action "$url" "$token" "$output_dir/scroll-forward.json" \
+    '{"action":"scrollViewport","deltaRows":1}'
+  post_action "$url" "$token" "$output_dir/reset-preedit.json" "$preedit_payload"
+  capture_screenshot "$url" "$token" "$output_dir/screenshot-scroll-replay.png"
+  "$alpha_probe_bin" "$output_dir/screenshot-scroll-replay.png" "$expected_alpha" \
+    "$output_dir/alpha-probes-scroll-replay.json"
+
+  initial_sha=$(shasum -a 256 "$output_dir/screenshot.png" | awk '{print $1}')
+  repeated_sha=$(shasum -a 256 "$output_dir/screenshot-full-100.png" | awk '{print $1}')
+  jq -n \
+    --arg renderer "$renderer" \
+    --arg initial "$initial_sha" \
+    --arg repeated "$repeated_sha" \
+    --argjson expectedAlpha "$expected_alpha" \
+    '{
+      renderer:$renderer,
+      expectedAlpha:$expectedAlpha,
+      identicalFullFrameReplay:($initial == $repeated),
+      initialSHA256:$initial,
+      repeatedFullFrameSHA256:$repeated,
+      repeatedFullFrames:100,
+      scrollBlitAndExposedRowReplay:true
+    }' >"$output_dir/idempotence.json"
+
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  printf '%s %s\n' "$renderer" \
+    "$(jq -c '{configuredRenderer,effectiveRenderer,fallbackReason}' "$output_dir/render.json")"
+done
+
+printf 'transparency-renderer-parity-matrix: artifacts at %s\n' "$artifact_root"
