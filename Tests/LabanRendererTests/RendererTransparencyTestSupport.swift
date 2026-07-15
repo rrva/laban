@@ -21,7 +21,9 @@ enum RendererTransparencyTestSupport {
         source: .terminal,
         compositing: .replace),
       .rect(
-        CGRect(x: 4, y: 4, width: 4, height: 4),
+        // A full-height stripe avoids CoreGraphics/PNG row-orientation
+        // ambiguity while still leaving canvas probes on both sides.
+        CGRect(x: 4, y: 0, width: 4, height: height),
         color: opaqueCell,
         source: .terminal,
         compositing: .replace),
@@ -76,10 +78,12 @@ enum RendererTransparencyTestSupport {
     line: UInt = #line
   ) {
     XCTAssertLessThanOrEqual(
-      abs(Int(image.pixel(x: 1, y: 1).a) - Int(alpha70)),
+      // PNG rows are top-down, so y=12 samples the lower logical half covered
+      // by the partial-damage range used by the idempotence suites.
+      abs(Int(image.pixel(x: 1, y: 12).a) - Int(alpha70)),
       1,
       file: file,
       line: line)
-    XCTAssertEqual(image.pixel(x: 5, y: 5).a, 255, file: file, line: line)
+    XCTAssertEqual(image.pixel(x: 5, y: 12).a, 255, file: file, line: line)
   }
 }
