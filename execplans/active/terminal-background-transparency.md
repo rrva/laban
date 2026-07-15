@@ -15,7 +15,7 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - [x] (2026-07-14) Read `PLANS.md`, the product contracts, renderer ADRs, renderer process rules, and the existing renderer-parity plans.
 - [x] (2026-07-14) Map the window, settings, snapshot, shared frame producer, debug harness, and all five renderer paths.
 - [x] (2026-07-14) Research current Apple APIs and mature terminal transparency behavior, including macOS 26/27 Liquid Glass changes available in July 2026.
-- [x] (2026-07-14) Research Chinese desktop/terminal transparency conventions and audit Laban's live CJK fonts, localization, fixtures, IME path, and renderer tests.
+- [x] (2026-07-14) Research native and mature terminal transparency behavior and audit Laban's existing CJK fonts, localization, fixtures, IME path, and renderer tests as compatibility surfaces.
 - [x] (2026-07-14) Record the renderer-neutral design, rollout order, and measurable acceptance criteria in this ExecPlan.
 - [x] (2026-07-14) Address the independent fresh-context plan review: idempotent alpha, real backend proof, frame/cache routing, mixed-version `laband`, generated localization, observer ownership, mechanical performance gates, and theme-neutral preset semantics.
 - [x] (2026-07-14) Descope `System Blur` and the `Frosted` preset to a documented follow-up; this historical decision was superseded after live validation (see `Active Work: System Blur and Frosted Preset`).
@@ -40,7 +40,7 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 
 ## Surprises & Discoveries
 
-- Observation: The older Chinese-support inventory understates the current app. The live string catalog has 189 entries and zero missing `zh-Hans` or `zh-Hant` values, and focused CJK font, Chinese trust-gate, and preedit suites currently pass 30 tests with zero failures.
+- Observation: The older CJK-compatibility inventory understates the current app. The live string catalog has 189 entries and zero missing `zh-Hans` or `zh-Hant` values, and focused CJK font, Chinese trust-gate, and preedit suites currently pass 30 tests with zero failures.
   Evidence: `rtk jq` over `Sources/LabanApp/Resources/Localizable.xcstrings`, followed by `rtk swift test --filter CJKFont`, `rtk swift test --filter ChineseTrustGate`, and `rtk swift test --filter FrameProducerPreedit` on 2026-07-14.
 
 - Observation: The July 2026 native-looking answer for a terminal content canvas is not Liquid Glass. Apple's material guidance reserves Liquid Glass for navigation and controls and directs content backgrounds to standard materials.
@@ -135,9 +135,9 @@ Current terminal implementations converge on three useful semantics:
 
 Ghostty's current configuration documents default-background opacity, separate cell-background opacity, blur, and macOS 26 `macos-glass-regular` / `macos-glass-clear` modes. Its current AppKit implementation places `NSGlassEffectView` below the terminal surface and disables transparency in native full screen. Stable source snapshots used for this plan are [`TerminalViewContainer.swift`](https://github.com/ghostty-org/ghostty/blob/cf60af281bd7559a819aa25372cef01d623b8c5a/macos/Sources/Features/Terminal/TerminalViewContainer.swift) and [`TerminalWindow.swift`](https://github.com/ghostty-org/ghostty/blob/cf60af281bd7559a819aa25372cef01d623b8c5a/macos/Sources/Features/Terminal/Window%20Styles/TerminalWindow.swift); the user-facing reference is [Ghostty configuration](https://ghostty.org/docs/config/reference). WezTerm exposes separate window and text/background opacity plus a macOS blur control in [Appearance](https://wezterm.org/config/appearance.html) and [`macos_window_background_blur`](https://wezterm.org/config/lua/config/macos_window_background_blur.html). Kitty likewise applies opacity to the default background by default and treats blur as optional in [its configuration reference](https://sw.kovidgoyal.net/kitty/conf/).
 
-Chinese products and Chinese-language configurations point to a compatible, not separate, design. Deepin Terminal exposes background transparency as a basic appearance setting; Deepin's current desktop work treats blur as a first-class compositor feature with explicit performance engineering; and WindTerm advertises window transparency. Chinese-language WezTerm and Kitty examples commonly pair a dark background with moderate opacity and frosted blur. These examples are evidence of a recurring customization pattern, not a claim that China has one universal style. Laban will therefore offer a discoverable, theme-neutral `Frosted` preset at 90% opacity with system blur and opaque explicit cell backgrounds, localized in every supported locale, with the global default kept opaque instead of silently selecting a style from the user's locale. The preset preserves the active theme, so it appears dark only when the user has selected or inherited a dark theme. Sources: [Deepin Terminal](https://wiki.deepin.org/en/Software/Offical_Project/Deepin_Terminal), [Deepin 25 Treeland blur work](https://www.deepin.org/en/deepin-25-pre-treeland/), [DTK `InWindowBlur`](https://docs.deepin.org/linuxdeepin/master/dtkdeclarative/classInWindowBlur.html), [WindTerm](https://github.com/kingToolbox/WindTerm), [Chinese WezTerm configuration discussion](https://github.com/wezterm/wezterm/discussions/628), and [Chinese macOS Kitty configuration](https://www.zhuangsanmeng.xyz/posts/terminal-configuration/).
+Additional terminal and desktop implementations confirm that transparency and compositor blur can be exposed as independent, performance-sensitive controls. Deepin Terminal exposes background transparency, Deepin's compositor work treats blur as an explicitly measured effect, and WindTerm exposes window transparency. These implementations inform API and performance constraints only; they are not evidence about demand from any demographic. Laban's `Frosted` preset is instead a deterministic convenience bundle justified by the user's live validation: 90% opacity, system blur, opaque explicit cell backgrounds, and no theme change. It is localized like every other setting, keeps the global default opaque, and is never selected from locale, language, region, input source, or font. Sources: [Deepin Terminal](https://wiki.deepin.org/en/Software/Offical_Project/Deepin_Terminal), [Deepin 25 Treeland blur work](https://www.deepin.org/en/deepin-25-pre-treeland/), [DTK `InWindowBlur`](https://docs.deepin.org/linuxdeepin/master/dtkdeclarative/classInWindowBlur.html), and [WindTerm](https://github.com/kingToolbox/WindTerm).
 
-Laban already has substantial Chinese support that this feature must preserve. The accepted CJK font policy offers PingFang SC, Noto Sans Mono CJK SC, Sarasa Term/Mono/Gothic SC, and custom choices with live renderer refresh; CJK cells remain exactly two terminal cells wide and oversized glyphs may only scale down. The committed trust-gate fixture covers mixed Chinese prompts, dense Hanzi, ambiguous-width characters, emoji/ZWJ/flags, Powerline, and box drawing. The current localization catalog contains 189 strings with no missing `zh-Hans` or `zh-Hant` values. Transparency acceptance must reuse those assets, preserve opaque IME preedit backing, and explicitly guard Slug's adjacent-Hanzi raster fallback. The remaining manual claim gate is a real Rime/Squirrel IME pass; Apple Pinyin coverage alone is not enough to advertise broad Chinese IME compatibility.
+Laban already has substantial CJK compatibility that this feature must preserve. The accepted CJK font policy offers PingFang SC, Noto Sans Mono CJK SC, Sarasa Term/Mono/Gothic SC, and custom choices with live renderer refresh; CJK cells remain exactly two terminal cells wide and oversized glyphs may only scale down. The committed trust-gate fixture covers mixed Chinese prompts, dense Hanzi, ambiguous-width characters, emoji/ZWJ/flags, Powerline, and box drawing. The current localization catalog contains 189 strings with no missing `zh-Hans` or `zh-Hant` values. Transparency acceptance must reuse those assets, preserve opaque IME preedit backing, and explicitly guard Slug's adjacent-Hanzi raster fallback. The remaining manual claim gate is a real Rime/Squirrel IME pass; Apple Pinyin coverage alone is not enough to claim broad IME compatibility.
 
 Laban has one additional correctness constraint. `Sources/LabanRenderer/VectorGlyphShaders.metal` states that its RGB subpixel path preserves destination alpha and assumes an opaque destination; it is therefore unsuitable for a translucent render target. Both vector and Slug renderers must resolve their effective antialiasing mode to grayscale whenever effective opacity is below 1.0 or system blur is active. Preserve the user's configured subpixel choice and restore it immediately when the surface returns to opaque.
 
@@ -167,13 +167,13 @@ Laban has one additional correctness constraint. `Sources/LabanRenderer/VectorGl
   Amended 2026-07-15: installed-app feedback promoted System Blur back into this active ExecPlan. The effect remains AppKit-only and all compositor/accessibility gates remain binding.
 
 - Decision: Add a localized, theme-neutral `Frosted` preset with opacity 0.90, system blur, and explicit cell backgrounds kept opaque; do not auto-select it by locale and do not change the active theme.
-  Rationale: Moderate frosted transparency recurs in Deepin, WindTerm, and Chinese-language terminal configurations. A named preset makes that convention easy to reach while preserving the user's theme, keeping the opaque global default, and avoiding stereotyping users by language or region.
+  Rationale: Live validation established that direct transparency was not useful enough without blur. A named preset makes the exact validated combination reproducible while preserving the user's theme and keeping the opaque global default; its availability is unrelated to language, locale, region, input source, or font.
   Date/Author: 2026-07-14 / Codex
   Amended 2026-07-14: the preset was deferred with system blur; the definition above remains preserved in `Active Work: System Blur and Frosted Preset`.
   Amended 2026-07-15: `Frosted` is again active work in this plan because direct transparency without blur did not provide enough utility in live use.
 
-- Decision: Make the existing Chinese trust gate, all 11 generated localizations, CJK font cascade, adjacent-Hanzi Slug fallback, and real IME composition part of transparency acceptance.
-  Rationale: Transparency is only successful for Chinese users if fine strokes, double-width placement, fallback glyphs, and preedit remain readable across every renderer. A generic Latin alpha probe cannot establish that.
+- Decision: Make the existing CJK trust gate, all 11 generated localizations, CJK font cascade, adjacent-Hanzi Slug fallback, and real IME composition part of transparency acceptance.
+  Rationale: Compatibility acceptance must preserve fine strokes, double-width placement, fallback glyphs, and preedit readability across every renderer. A generic Latin alpha probe cannot establish those properties.
   Date/Author: 2026-07-14 / Codex
 
 - Decision: Force effective grayscale antialiasing in vector and Slug renderers for every translucent/material surface.
@@ -504,13 +504,13 @@ Add a shared renderer parity fixture with default canvas, explicit colored and i
 
 At the end of this milestone, switching among all five renderers preserves background alpha and exclusions. Default opacity 1.0 produces the same opaque images as the pre-feature baselines.
 
-### Milestone 3: Prove China-facing CJK and IME quality
+### Milestone 3: Prove CJK and IME compatibility
 
 Reuse `fixtures/cjk/trust-gate.fixture.json` rather than inventing a transparency-only approximation. Extend its debug run so opaque, 85%, 90%, and 95% direct transparency can be selected without changing the fixture text.
 
 Run the fixture through software, classic, GPU-driven, vector glyph, and Slug with PingFang SC. If Noto Sans Mono CJK SC or a Sarasa SC preset is installed, repeat visible spot checks with it and record the exact font/version; absence of optional fonts is not a failure. Probes and screenshots must cover the mixed Chinese prompt, dense Hanzi, ambiguous-width characters, emoji/ZWJ/flag clusters, Powerline and box drawing, and adjacent `中文` in Slug. Confirm every CJK glyph occupies the same two-cell geometry as the opaque run and that fine horizontal/vertical strokes remain distinguishable over both light and dark high-contrast backdrops.
 
-Exercise live Apple Pinyin composition and selection with the window transparent. The preedit mask, caret, candidate-window anchor, marked-text replacement, wide-glyph wrap, and mode-2027 cluster widths must match the opaque path. Before claiming broad Chinese IME support in release notes, repeat the same acceptance flow with a current Rime/Squirrel installation; if that manual pass has not happened, document Apple Pinyin as tested and leave Rime/Squirrel unclaimed.
+Exercise live Apple Pinyin composition and selection with the window transparent. The preedit mask, caret, candidate-window anchor, marked-text replacement, wide-glyph wrap, and mode-2027 cluster widths must match the opaque path. Before claiming broad IME compatibility in release notes, repeat the same acceptance flow with a current Rime/Squirrel installation; if that manual pass has not happened, document Apple Pinyin as tested and leave Rime/Squirrel unclaimed.
 
 Store the CJK/IME record at `.artifacts/transparency/cjk/cjk-evidence.json`. It contains a `rendererArtifacts` object with exactly the five keys `software`, `classic`, `gpuDriven`, `vectorGlyph`, and `slugGlyph`, each pointing to its nonempty `transparency-cjk-<renderer>.png`; an `applePinyin` object with `status: "passed"` and a nonempty `artifacts` list; and a `rimeSquirrel` object whose status is exactly `passed` or `notTested`. Rime/Squirrel `passed` requires nonempty artifacts, while `notTested` requires an empty artifact list and `compatibilityClaimed: false`. Add a `Transparency IME support` table to `docs/product/spec.md` whose Rime/Squirrel status cell is exactly `passed` or `not tested - compatibility unclaimed`, matching the manifest. `scripts/verify-transparency-cjk-evidence` validates the manifest schema, every required renderer key, every referenced file's containment under `.artifacts/transparency/cjk/`, existence/nonzero size, and exact agreement with that table. This permits an honest Rime/Squirrel limitation statement while mechanically rejecting a positive claim without evidence.
 
@@ -599,7 +599,7 @@ rtk ./scripts/transparency-renderer-parity-matrix --fixture=fixtures/transparenc
 
 The matrix exits 0 only after all five renderer-identity assertions, alpha probes, idempotence captures, and PNG nonemptiness checks pass. It writes one subdirectory per renderer containing `render.json`, `transparency.json`, `frame-commands.json`, and `screenshot.png`.
 
-Milestone 3 China-facing CJK checks:
+Milestone 3 CJK and IME compatibility checks:
 
 ```sh
 rtk swift test --filter CJKFont
@@ -704,7 +704,7 @@ These probes must pass for software, classic, GPU-driven, vector, and Slug. Glyp
 - No colored fringe appears on vertical glyph stems over a high-contrast checkerboard backdrop.
 - Returning to an opaque surface restores the user's configured RGB-subpixel mode without changing its persisted setting.
 
-### China-facing CJK and IME quality
+### CJK and IME compatibility
 
 - `fixtures/cjk/trust-gate.fixture.json` passes through software, classic, GPU-driven, vector glyph, and Slug at opaque, 85%, 90%, and 95% direct transparency; mixed Chinese/English, dense Hanzi, ambiguous widths, emoji clusters, Powerline, and box drawing retain their opaque-run cell geometry.
 - Fine Hanzi strokes remain distinguishable over light and dark high-contrast backdrops. Slug renders adjacent `中文` without a blank glyph, bad raster stride, overlap, or one-cell shift.
