@@ -76,19 +76,17 @@ trap cleanup EXIT
 
 build_log="$temporary_root/build.log"
 printf 'benchmark-transparency-renderers: building release benchmark support\n'
-if ! LABAN_RUN_TRANSPARENCY_BENCH=0 swift test -c release \
-  --filter RendererTransparencyPerformanceTests.testOpaqueRendererBaseline \
-  >"$build_log" 2>&1
+if ! swift build -c release --product transparency-renderer-bench >"$build_log" 2>&1
 then
   sed -n '1,240p' "$build_log" >&2
   exit 1
 fi
 
-bin_path=$(swift build -c release --show-bin-path)
-test_executable="$bin_path/LabanPackageTests.xctest/Contents/MacOS/LabanPackageTests"
-if [ ! -x "$test_executable" ]; then
-  printf 'benchmark-transparency-renderers: release test executable missing: %s\n' \
-    "$test_executable" >&2
+bin_path=$(swift build -c release --product transparency-renderer-bench --show-bin-path)
+benchmark_executable="$bin_path/transparency-renderer-bench"
+if [ ! -x "$benchmark_executable" ]; then
+  printf 'benchmark-transparency-renderers: release benchmark executable missing: %s\n' \
+    "$benchmark_executable" >&2
   exit 1
 fi
 
@@ -100,16 +98,15 @@ for renderer in slugGlyph vectorGlyph; do
     run_record="$temporary_root/$renderer-run-$run.json"
     run_log="$temporary_root/$renderer-run-$run.log"
     printf 'benchmark-transparency-renderers: %s run %s/%s\n' "$renderer" "$run" "$runs"
-    if ! LABAN_RUN_TRANSPARENCY_BENCH=1 \
-      LABAN_TRANSPARENCY_BENCH_RENDERER="$renderer" \
-      LABAN_TRANSPARENCY_BENCH_RUN="$run" \
-      LABAN_TRANSPARENCY_BENCH_FIXTURE="$fixture_path" \
-      LABAN_TRANSPARENCY_BENCH_WARMUP="$warmup" \
-      LABAN_TRANSPARENCY_BENCH_FRAMES="$frames" \
-      LABAN_TRANSPARENCY_BENCH_OUTPUT="$run_record" \
-      swift test -c release --skip-build \
-        --filter RendererTransparencyPerformanceTests.testOpaqueRendererBaseline \
-        >"$run_log" 2>&1
+    if ! "$benchmark_executable" \
+      --phase=baseline \
+      --renderer="$renderer" \
+      --fixture="$fixture_path" \
+      --run="$run" \
+      --warmup="$warmup" \
+      --frames="$frames" \
+      --output="$run_record" \
+      >"$run_log" 2>&1
     then
       printf 'benchmark-transparency-renderers: %s run %s failed\n' "$renderer" "$run" >&2
       sed -n '1,240p' "$run_log" >&2
@@ -126,7 +123,7 @@ for renderer in slugGlyph vectorGlyph; do
   done
 done
 
-python3 - "$output" "$fixture" "$test_executable" "${run_records[@]}" <<'PY'
+python3 - "$output" "$fixture" "$benchmark_executable" "${run_records[@]}" <<'PY'
 import datetime
 import hashlib
 import json
@@ -169,7 +166,7 @@ def metric_median(records, metric_name):
 
 output_path = Path(sys.argv[1])
 fixture_path = sys.argv[2]
-test_executable = Path(sys.argv[3])
+benchmark_executable = Path(sys.argv[3])
 record_paths = [Path(path) for path in sys.argv[4:]]
 require(len(record_paths) == 10, f"expected 10 process records, found {len(record_paths)}")
 
@@ -237,7 +234,7 @@ tracked_dirty = subprocess.run(
     ["git", "diff", "--quiet", "--ignore-submodules", "--"], check=False
 ).returncode != 0
 swift_version = command("swift", "--version")
-executable_sha256 = hashlib.sha256(test_executable.read_bytes()).hexdigest()
+executable_sha256 = hashlib.sha256(benchmark_executable.read_bytes()).hexdigest()
 
 renderers = {}
 for renderer in expected_renderers:
@@ -281,10 +278,10 @@ report = {
     "identity": {
         "build": {
             "configuration": "release",
-            "mode": "SwiftPM release XCTest",
-            "benchmarkTest": "RendererTransparencyPerformanceTests.testOpaqueRendererBaseline",
+            "mode": "SwiftPM release executable",
+            "benchmarkExecutable": "transparency-renderer-bench",
             "swiftVersion": swift_version,
-            "testExecutableSHA256": executable_sha256,
+            "benchmarkExecutableSHA256": executable_sha256,
         },
         "os": {
             "productName": command("sw_vers", "-productName"),

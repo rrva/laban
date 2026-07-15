@@ -49,6 +49,9 @@ let package = Package(
     .executable(name: "find-perf", targets: ["FindPerf"]),
     .executable(name: "bench-pty-drain", targets: ["BenchPtyDrain"]),
     .executable(name: "bench-keystroke-latency", targets: ["BenchKeystrokeLatency"]),
+    .executable(
+      name: "transparency-renderer-bench",
+      targets: ["TransparencyRendererBench"]),
     .executable(name: "labpty-dump", targets: ["LabptyDump"]),
     .executable(name: "bench-labpty-hot-path", targets: ["BenchLabptyHotPath"]),
   ],
@@ -145,6 +148,12 @@ let package = Package(
       name: "BenchKeystrokeLatency",
       dependencies: ["LabanCore", "LabanRenderer", "LabanTerminalCore"],
       path: "Tools/KeystrokeLatencyBench"
+    ),
+    .executableTarget(
+      name: "TransparencyRendererBench",
+      dependencies: ["LabanCore", "LabanRenderer", "LabanTerminalCore"],
+      path: "Tools/TransparencyRendererBench",
+      swiftSettings: _releaseExclusivity + _fastProfile
     ),
     .executableTarget(
       name: "LabptyDump",
