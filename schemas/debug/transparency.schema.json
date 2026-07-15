@@ -10,6 +10,15 @@
     "effectiveBackdropStyle",
     "backgroundImageScaling",
     "backgroundImageState",
+    "backgroundImageIdentifier",
+    "backgroundImagePixelWidth",
+    "backgroundImagePixelHeight",
+    "backgroundImageContentDigest",
+    "backgroundImageImportCount",
+    "backgroundImageDecodeCount",
+    "backgroundImageFileReadCount",
+    "backgroundImageApplyCount",
+    "backgroundImageRedrawCount",
     "applyToExplicitCellBackgrounds",
     "surfaceOpaque",
     "effectiveGlyphAntialiasing",
@@ -36,6 +45,18 @@
     "backgroundImageState": {
       "enum": ["none", "available", "missing", "invalid", "headlessUnsupported"]
     },
+    "backgroundImageIdentifier": {"type": ["string", "null"]},
+    "backgroundImagePixelWidth": {"type": ["integer", "null"], "minimum": 1},
+    "backgroundImagePixelHeight": {"type": ["integer", "null"], "minimum": 1},
+    "backgroundImageContentDigest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "backgroundImageImportCount": {"type": "integer", "minimum": 0},
+    "backgroundImageDecodeCount": {"type": "integer", "minimum": 0},
+    "backgroundImageFileReadCount": {"type": "integer", "minimum": 0},
+    "backgroundImageApplyCount": {"type": "integer", "minimum": 0},
+    "backgroundImageRedrawCount": {"type": "integer", "minimum": 0},
     "applyToExplicitCellBackgrounds": {"type": "boolean"},
     "forceOpaqueReason": {
       "type": ["string", "null"],

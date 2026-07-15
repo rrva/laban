@@ -34,7 +34,11 @@
     {"$ref": "#/$defs/setBackgroundTransparency"},
     {"$ref": "#/$defs/resetTransparencyDiagnostics"},
     {"$ref": "#/$defs/setReduceTransparencyOverride"},
-    {"$ref": "#/$defs/setNativeFullScreen"}
+    {"$ref": "#/$defs/setNativeFullScreen"},
+    {"$ref": "#/$defs/setBackgroundSource"},
+    {"$ref": "#/$defs/setBackgroundImageScaling"},
+    {"$ref": "#/$defs/importBackgroundImage"},
+    {"$ref": "#/$defs/removeBackgroundImage"}
   ],
   "$defs": {
     "newTab": {
@@ -390,6 +394,42 @@
       "properties": {
         "action": {"const": "setNativeFullScreen"},
         "enabled": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "setBackgroundSource": {
+      "type": "object",
+      "required": ["action", "source"],
+      "properties": {
+        "action": {"const": "setBackgroundSource"},
+        "source": {"enum": ["none", "systemBlur", "image"]}
+      },
+      "additionalProperties": false
+    },
+    "setBackgroundImageScaling": {
+      "type": "object",
+      "required": ["action", "scaling"],
+      "properties": {
+        "action": {"const": "setBackgroundImageScaling"},
+        "scaling": {"enum": ["fill", "fit", "stretch"]}
+      },
+      "additionalProperties": false
+    },
+    "importBackgroundImage": {
+      "type": "object",
+      "required": ["action", "path", "scaling"],
+      "properties": {
+        "action": {"const": "importBackgroundImage"},
+        "path": {"type": "string"},
+        "scaling": {"enum": ["fill", "fit", "stretch"]}
+      },
+      "additionalProperties": false
+    },
+    "removeBackgroundImage": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "removeBackgroundImage"}
       },
       "additionalProperties": false
     },

@@ -386,6 +386,17 @@ report `0`.
   "effectiveOpacity": 1,
   "requestedBackdropStyle": "none",
   "effectiveBackdropStyle": "none",
+  "backgroundImageScaling": "fill",
+  "backgroundImageState": "none",
+  "backgroundImageIdentifier": null,
+  "backgroundImagePixelWidth": null,
+  "backgroundImagePixelHeight": null,
+  "backgroundImageContentDigest": null,
+  "backgroundImageImportCount": 0,
+  "backgroundImageDecodeCount": 0,
+  "backgroundImageFileReadCount": 0,
+  "backgroundImageApplyCount": 0,
+  "backgroundImageRedrawCount": 0,
   "applyToExplicitCellBackgrounds": false,
   "forceOpaqueReason": "reduceTransparency",
   "surfaceOpaque": true,
@@ -395,6 +406,7 @@ report `0`.
   "configuredRenderer": "slugGlyph",
   "effectiveRenderer": "slugGlyph",
   "backdropSubviewCount": 0,
+  "backdropSubviewKind": "none",
   "systemReduceTransparency": false,
   "reduceTransparencyOverride": true,
   "effectiveReduceTransparency": true,
@@ -407,7 +419,7 @@ report `0`.
 }
 ```
 
-The aggregate `POST /debug/actions` route accepts four typed diagnostic
+The aggregate `POST /debug/actions` route accepts eight typed diagnostic
 actions. They require `diagnosticControl`, which only the whole-app fixture
 token grants:
 
@@ -417,6 +429,10 @@ token grants:
 {"action":"setReduceTransparencyOverride","enabled":true}
 {"action":"setReduceTransparencyOverride","enabled":null}
 {"action":"setNativeFullScreen","enabled":true}
+{"action":"setBackgroundSource","source":"image"}
+{"action":"setBackgroundImageScaling","scaling":"fit"}
+{"action":"importBackgroundImage","path":"fixtures/background-gradient.png","scaling":"fill"}
+{"action":"removeBackgroundImage"}
 ```
 
 `setBackgroundTransparency` persists through the same requested-settings path
@@ -428,9 +444,23 @@ notification; `null` removes it and immediately rereads the real workspace
 value. `/debug/accessibility` remains read-only. `setNativeFullScreen` starts
 the real AppKit `toggleFullScreen(_:)` transition and returns before its
 animation necessarily completes, so clients must poll `nativeFullscreen` and
-`forceOpaqueReason` to the expected values. The action is unavailable
-headlessly; the other three actions and this projection have headless semantic
-parity.
+`forceOpaqueReason` to the expected values. `setBackgroundSource` changes only
+the requested None/System Blur/Image source and reuses an imported image.
+`setBackgroundImageScaling` changes Fill/Fit/Stretch without decoding or
+waking a parked renderer. `importBackgroundImage` accepts only a relative,
+non-symlink path contained by the authorized fixture root, normalizes its first
+frame into a private generated PNG, atomically selects Image, and never projects
+an absolute path. `removeBackgroundImage` selects None, clears the managed
+identifier, and deletes only the run-owned generated copy. Native full screen
+is unavailable headlessly; the other seven actions and the requested/effective
+projection have headless semantic parity. Headless native source resolution is
+always `none`, with Image reported as `headlessUnsupported`.
+
+Image metadata is deliberately URL-free: the projection exposes only a
+generated identifier, decoded dimensions, and SHA-256 content digest. The
+import/decode/file-read/apply/redraw counters are reset by
+`resetTransparencyDiagnostics`; their settled deltas prove that static image
+backdrops do not poll or decode per frame.
 
 The installed-GUI fixture credential is fail-closed. It is minted only when
 both `LABAN_GUI_FIXTURE_CONTROL=1` and an explicit, isolated
@@ -453,6 +483,18 @@ LABAN_CONTROL_DIR="$CONTROL_DIR" \
 LABAN_GUI_FIXTURE_CONTROL=1 \
 LABAN_RUN_ID="$RUN_ID" \
   "$HOME/Laban.app/Contents/MacOS/LabanApp"
+```
+
+In isolated GUI mode, both fixture authority and managed output are scoped to
+`$LABAN_CONTROL_DIR`; the managed directory is exactly
+`$LABAN_CONTROL_DIR/background-images`. Copy the checked-in deterministic
+1920×1080 fixture beneath the control root before importing it by relative
+path:
+
+```sh
+mkdir -p "$CONTROL_DIR/fixtures"
+cp fixtures/transparency/background-gradient.png \
+  "$CONTROL_DIR/fixtures/background-gradient.png"
 ```
 
 After readiness, read tokens into shell variables without echoing them and use

@@ -14,6 +14,8 @@ final class MainWindowController: NSWindowController {
   private(set) var model: AppModel?
   private(set) var terminalView: TerminalBitmapView?
   private(set) var transparencyCoordinator: TerminalWindowTransparencyCoordinator?
+  var terminalBackgroundImageStore: TerminalBackgroundImageStore?
+  var terminalBackgroundFixtureRootURL: URL?
   private(set) var terminalBackend: TerminalSessionBackend = .inProcess
   private(set) var terminalSessionClient: TerminalSessionClient?
   private(set) var sessionCoordinator: AppSessionCoordinator?
@@ -71,6 +73,15 @@ final class MainWindowController: NSWindowController {
       effectiveBackdropStyle: status.effective.backdropStyle.rawValue,
       backgroundImageScaling: status.requested.backgroundImageScaling.rawValue,
       backgroundImageState: status.backgroundImageAvailability.rawValue,
+      backgroundImageIdentifier: status.backgroundImageIdentifier,
+      backgroundImagePixelWidth: status.backgroundImagePixelWidth,
+      backgroundImagePixelHeight: status.backgroundImagePixelHeight,
+      backgroundImageContentDigest: status.backgroundImageContentDigest,
+      backgroundImageImportCount: status.backgroundImageImportCount,
+      backgroundImageDecodeCount: status.backgroundImageDecodeCount,
+      backgroundImageFileReadCount: status.backgroundImageFileReadCount,
+      backgroundImageApplyCount: status.backgroundImageApplyCount,
+      backgroundImageRedrawCount: status.backgroundImageRedrawCount,
       applyToExplicitCellBackgrounds: status.requested.applyToExplicitCellBackgrounds,
       forceOpaqueReason: status.effective.forceOpaqueReason?.rawValue,
       surfaceOpaque: status.effective.isSurfaceOpaque,
@@ -110,6 +121,36 @@ final class MainWindowController: NSWindowController {
 
   func resetTransparencyDiagnostics() {
     terminalView?.resetTransparencyDiagnostics()
+    transparencyCoordinator?.resetBackgroundImageDiagnostics()
+  }
+
+  func setBackgroundSource(_ source: TerminalBackdropStyle) {
+    guard let transparencyCoordinator else { return }
+    var requested = transparencyCoordinator.status.requested
+    requested.backdropStyle = source
+    transparencyCoordinator.setRequestedConfiguration(requested)
+  }
+
+  func setBackgroundImageScaling(_ scaling: TerminalBackgroundImageScaling) {
+    guard let transparencyCoordinator else { return }
+    var requested = transparencyCoordinator.status.requested
+    requested.backgroundImageScaling = scaling
+    transparencyCoordinator.setRequestedConfiguration(requested)
+  }
+
+  func importBackgroundImageFixture(
+    relativePath: String,
+    scaling: TerminalBackgroundImageScaling
+  ) throws {
+    guard let root = terminalBackgroundFixtureRootURL, let terminalBackgroundImageStore else {
+      throw ControlledFixturePathError.escapedRoot
+    }
+    let sourceURL = try ControlledFixturePathResolver.resolve(relativePath, root: root)
+    _ = try terminalBackgroundImageStore.importImage(from: sourceURL, scaling: scaling)
+  }
+
+  func removeBackgroundImage() {
+    terminalBackgroundImageStore?.removeManagedImage()
   }
 
   func setReduceTransparencyOverride(_ enabled: Bool?) {
@@ -564,6 +605,21 @@ final class MainWindowController: NSWindowController {
     }
 
     window.contentView = containerView
+    let backgroundFixtureRootURL: URL?
+    if Self.shouldEnableIsolatedGUIFixtureControl(),
+      let controlDirectory = ProcessInfo.processInfo.environment["LABAN_CONTROL_DIR"]
+    {
+      backgroundFixtureRootURL = URL(
+        fileURLWithPath: controlDirectory,
+        isDirectory: true
+      ).standardizedFileURL.resolvingSymlinksInPath()
+    } else {
+      backgroundFixtureRootURL = nil
+    }
+    let backgroundImageStore =
+      backgroundFixtureRootURL.map {
+        TerminalBackgroundImageStore(baseURL: $0)
+      } ?? TerminalBackgroundImageStore()
     // Resolve and apply window/surface policy after the terminal-only material
     // host is installed but before the window is presented. This prevents
     // AppKit's default opaque background from flashing through a translucent
@@ -574,7 +630,7 @@ final class MainWindowController: NSWindowController {
       reduceTransparency: termView.accessibilityDisplayOptionsForTesting.reduceTransparency,
       snapshotBackgroundCapability:
         sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
-      backgroundImageStore: TerminalBackgroundImageStore(),
+      backgroundImageStore: backgroundImageStore,
       backgroundEffectHost: backgroundEffectHost)
     window.center()
     window.makeKeyAndOrderFront(nil)
@@ -607,6 +663,8 @@ final class MainWindowController: NSWindowController {
     window.addTitlebarAccessoryViewController(accessory)
 
     let controller = MainWindowController(window: window)
+    controller.terminalBackgroundImageStore = backgroundImageStore
+    controller.terminalBackgroundFixtureRootURL = backgroundFixtureRootURL
     controller.controlSessionLaunchCoordinator = launchCoordinator
     controller.liveControlRouter = liveRouter
     liveRouter.bindWindowScreenshotProvider {
@@ -634,6 +692,19 @@ final class MainWindowController: NSWindowController {
       },
       setNativeFullScreen: { [weak controller] enabled in
         controller?.setNativeFullScreen(enabled)
+      },
+      setBackgroundSource: { [weak controller] source in
+        controller?.setBackgroundSource(source)
+      },
+      setBackgroundImageScaling: { [weak controller] scaling in
+        controller?.setBackgroundImageScaling(scaling)
+      },
+      importBackgroundImage: { [weak controller] path, scaling in
+        guard let controller else { return }
+        try controller.importBackgroundImageFixture(relativePath: path, scaling: scaling)
+      },
+      removeBackgroundImage: { [weak controller] in
+        controller?.removeBackgroundImage()
       })
     if let bootstrappedControl {
       controller.controlServer = bootstrappedControl.server

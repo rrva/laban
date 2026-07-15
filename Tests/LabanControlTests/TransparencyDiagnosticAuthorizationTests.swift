@@ -32,6 +32,10 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
       "transparency.diagnostics.reset",
       "transparency.reduceTransparencyOverride.set",
       "transparency.nativeFullScreen.set",
+      "transparency.backgroundSource.set",
+      "transparency.backgroundImageScaling.set",
+      "transparency.backgroundImage.import",
+      "transparency.backgroundImage.remove",
     ] {
       let descriptor = try XCTUnwrap(IntentCatalog.shared.descriptor(id: id))
       XCTAssertEqual(descriptor.requiredCapability, .diagnosticControl)
@@ -47,7 +51,7 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
       try IntentCatalog.all.validate(endpointDescriptors: ControlRouteCatalog.endpoints))
   }
 
-  func testGUIFixtureTokenRoutesAllFourActionsAndProjection() throws {
+  func testGUIFixtureTokenRoutesAllEightActionsAndProjection() throws {
     let router = TransparencySpyRouter()
     let socketPath = "/tmp/laban-transparency-auth-\(UUID().uuidString.prefix(8)).sock"
     let server = LabanControlServer(router: router, surface: .gui)
@@ -59,6 +63,10 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
       #"{"action":"resetTransparencyDiagnostics"}"#,
       #"{"action":"setReduceTransparencyOverride","enabled":true}"#,
       #"{"action":"setNativeFullScreen","enabled":true}"#,
+      #"{"action":"setBackgroundSource","source":"image"}"#,
+      #"{"action":"setBackgroundImageScaling","scaling":"fit"}"#,
+      #"{"action":"importBackgroundImage","path":"fixtures/background.svg","scaling":"fill"}"#,
+      #"{"action":"removeBackgroundImage"}"#,
     ]
     for body in bodies {
       let response = try ControlUDSClient.request(
@@ -82,6 +90,10 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
         "transparency.diagnostics.reset",
         "transparency.reduceTransparencyOverride.set",
         "transparency.nativeFullScreen.set",
+        "transparency.backgroundSource.set",
+        "transparency.backgroundImageScaling.set",
+        "transparency.backgroundImage.import",
+        "transparency.backgroundImage.remove",
       ])
     XCTAssertEqual(router.queryIDs, ["transparency.state"])
   }

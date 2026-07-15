@@ -54,6 +54,7 @@ public final class HeadlessDebugRuntime {
   let terminalBackend: TerminalSessionBackend
   let artifactsURL: URL
   let fixtureRootURL: URL
+  let backgroundImageStore: DebugBackgroundImageStore
   let deterministic: Bool
 
   var model: AppModel
@@ -199,6 +200,7 @@ public final class HeadlessDebugRuntime {
   ) throws {
     self.runId = runId
     self.artifactsURL = artifactsURL
+    self.backgroundImageStore = DebugBackgroundImageStore(baseURL: artifactsURL)
     self.fixtureRootURL =
       (fixtureRootURL
       ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)

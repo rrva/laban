@@ -11,13 +11,21 @@ final class TransparencyDiagnosticsTests: XCTestCase {
     var resetCount = 0
     var overrideValues: [Bool?] = []
     var fullscreenValues: [Bool] = []
+    var sourceValues: [TerminalBackdropStyle] = []
+    var scalingValues: [TerminalBackgroundImageScaling] = []
+    var imports: [(String, TerminalBackgroundImageScaling)] = []
+    var removalCount = 0
     let state = sampleState()
     router.bindTransparencyControl(
       state: { state },
       setBackground: { backgrounds.append(($0, $1, $2)) },
       resetDiagnostics: { resetCount += 1 },
       setReduceTransparencyOverride: { overrideValues.append($0) },
-      setNativeFullScreen: { fullscreenValues.append($0) })
+      setNativeFullScreen: { fullscreenValues.append($0) },
+      setBackgroundSource: { sourceValues.append($0) },
+      setBackgroundImageScaling: { scalingValues.append($0) },
+      importBackgroundImage: { imports.append(($0, $1)) },
+      removeBackgroundImage: { removalCount += 1 })
 
     XCTAssertEqual(
       router.route(
@@ -54,10 +62,30 @@ final class TransparencyDiagnosticsTests: XCTestCase {
       200)
     XCTAssertEqual(
       router.route(action(#"{"action":"setNativeFullScreen","enabled":true}"#)).status, 200)
+    XCTAssertEqual(
+      router.route(action(#"{"action":"setBackgroundSource","source":"image"}"#)).status, 200)
+    XCTAssertEqual(
+      router.route(
+        action(#"{"action":"setBackgroundImageScaling","scaling":"stretch"}"#)
+      ).status,
+      200)
+    XCTAssertEqual(
+      router.route(
+        action(
+          #"{"action":"importBackgroundImage","path":"images/backdrop.svg","scaling":"fit"}"#)
+      ).status,
+      200)
+    XCTAssertEqual(
+      router.route(action(#"{"action":"removeBackgroundImage"}"#)).status, 200)
     XCTAssertEqual(resetCount, 1)
     XCTAssertEqual(overrideValues.count, 1)
     XCTAssertNil(overrideValues[0])
     XCTAssertEqual(fullscreenValues, [true])
+    XCTAssertEqual(sourceValues, [.image])
+    XCTAssertEqual(scalingValues, [.stretch])
+    XCTAssertEqual(imports.first?.0, "images/backdrop.svg")
+    XCTAssertEqual(imports.first?.1, .fit)
+    XCTAssertEqual(removalCount, 1)
 
     let projection = router.query(
       LegacyDebugQueryInput(intentID: "transparency.state"))

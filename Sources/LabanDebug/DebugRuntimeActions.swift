@@ -59,6 +59,14 @@ extension HeadlessDebugRuntime {
       return setReduceTransparencyOverrideUnlocked(request)
     case .setNativeFullScreen:
       return unsupportedAction("setNativeFullScreen")
+    case .setBackgroundSource(let request):
+      return setBackgroundSourceUnlocked(request)
+    case .setBackgroundImageScaling(let request):
+      return setBackgroundImageScalingUnlocked(request)
+    case .importBackgroundImage(let request):
+      return importBackgroundImageUnlocked(request)
+    case .removeBackgroundImage:
+      return removeBackgroundImageUnlocked()
     case .typeText(let request):
       return DebugInputActions(runtime: self).typeText(request)
     case .feedOutput(let request):

@@ -53,6 +53,9 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     XCTAssertEqual(result.pixelHeight, 2)
     XCTAssertFalse(result.managedImage.identifier.contains("/"))
     XCTAssertEqual(notificationCount, 1)
+    XCTAssertEqual(
+      context.store.diagnostics,
+      TerminalBackgroundImageStoreDiagnostics(importCount: 1, decodeCount: 1, fileReadCount: 1))
 
     let relaunched = TerminalBackgroundImageStore(
       baseURL: context.baseURL,
@@ -64,9 +67,13 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     XCTAssertEqual(resolution.asset?.managedImage, result.managedImage)
     XCTAssertEqual(resolution.asset?.image.width, 3)
     XCTAssertEqual(resolution.asset?.image.height, 2)
+    XCTAssertEqual(resolution.asset?.contentDigest.count, 64)
     let firstResolvedImage = try XCTUnwrap(resolution.asset?.image)
     let repeatedResolvedImage = try XCTUnwrap(repeatedResolution.asset?.image)
     XCTAssertTrue(firstResolvedImage === repeatedResolvedImage)
+    XCTAssertEqual(
+      relaunched.diagnostics,
+      TerminalBackgroundImageStoreDiagnostics(importCount: 0, decodeCount: 1, fileReadCount: 1))
   }
 
   func testCancelledImportIsExactNoOp() throws {
@@ -412,6 +419,65 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     assertActiveImage(coordinator: coordinator, host: backgroundHost)
     XCTAssertEqual(model.tabs.map(\.id), tabIdentity)
     XCTAssertEqual(model.tabs.map(\.sessionId), sessionIdentity)
+  }
+
+  func testGUIFixtureImportUsesContainedControlRootAndRunScopedManagedStore() throws {
+    let context = try makeContext()
+    let controlRoot = context.baseURL.appendingPathComponent("gui-control", isDirectory: true)
+    let fixtureDirectory = controlRoot.appendingPathComponent("fixtures", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: fixtureDirectory, withIntermediateDirectories: true)
+    let sourceURL = fixtureDirectory.appendingPathComponent("backdrop.png")
+    try writeImage(makeImage(width: 4, height: 2, color: .purple), to: sourceURL, type: .png)
+    let runStore = TerminalBackgroundImageStore(
+      baseURL: controlRoot,
+      defaults: context.defaults,
+      notificationCenter: context.notifications)
+    let controller = MainWindowController(window: NSWindow())
+    controller.terminalBackgroundFixtureRootURL = controlRoot
+    controller.terminalBackgroundImageStore = runStore
+
+    try controller.importBackgroundImageFixture(
+      relativePath: "fixtures/backdrop.png",
+      scaling: .fit)
+
+    let requested = TerminalTransparencySettings.requestedSettings(defaults: context.defaults)
+    let identifier = try XCTUnwrap(requested.managedBackgroundImage?.identifier)
+    XCTAssertEqual(requested.configuration.backdropStyle, .image)
+    XCTAssertEqual(requested.configuration.backgroundImageScaling, .fit)
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: controlRoot.appendingPathComponent("background-images/\(identifier)").path))
+    XCTAssertFalse(identifier.contains(controlRoot.path))
+
+    let outside = context.baseURL.appendingPathComponent("outside.png")
+    try writeImage(makeImage(width: 1, height: 1, color: .red), to: outside, type: .png)
+    XCTAssertThrowsError(
+      try controller.importBackgroundImageFixture(relativePath: outside.path, scaling: .fill))
+    XCTAssertThrowsError(
+      try controller.importBackgroundImageFixture(
+        relativePath: "../outside.png", scaling: .fill))
+    let link = fixtureDirectory.appendingPathComponent("link.png")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+    XCTAssertThrowsError(
+      try controller.importBackgroundImageFixture(
+        relativePath: "fixtures/link.png", scaling: .fill))
+  }
+
+  func testCheckedInHighResolutionBackgroundFixtureImportsThroughImageIO() throws {
+    let context = try makeContext()
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let fixture = repositoryRoot.appendingPathComponent(
+      "fixtures/transparency/background-gradient.png")
+
+    let result = try XCTUnwrap(try context.store.importImage(from: fixture, scaling: .fill))
+
+    XCTAssertEqual(result.pixelWidth, 1_920)
+    XCTAssertEqual(result.pixelHeight, 1_080)
+    XCTAssertEqual(context.store.resolveRequestedImage().availability, .available)
   }
 
   private struct Context {

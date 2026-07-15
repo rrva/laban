@@ -209,7 +209,9 @@ extension LabanControlServer {
     case "terminal.scrollViewport", "command.propose", "commandProposal.list",
       "commandProposal.get", "commandProposal.cancel", "transparency.setBackground",
       "transparency.diagnostics.reset", "transparency.reduceTransparencyOverride.set",
-      "transparency.nativeFullScreen.set":
+      "transparency.nativeFullScreen.set", "transparency.backgroundSource.set",
+      "transparency.backgroundImageScaling.set", "transparency.backgroundImage.import",
+      "transparency.backgroundImage.remove":
       guard let envelope = try? JSONDecoder().decode(DebugActionEnvelope.self, from: request.body)
       else {
         return .error(400, "bad request")

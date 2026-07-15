@@ -1,6 +1,8 @@
 import Foundation
+import ImageIO
 import LabanCore
 import LabanRenderer
+import UniformTypeIdentifiers
 import XCTest
 
 @testable import LabanDebug
@@ -8,7 +10,14 @@ import XCTest
 final class TransparencyHeadlessTests: XCTestCase {
   func testInitialOpacityReachesFrameCommandsAndDebugProjection() throws {
     let runtime = try makeRuntime(opacity: 0.7, cells: false)
-    let state = try decode(runtime.transparencyState())
+    let response = runtime.transparencyState()
+    let state = try decode(response)
+    let json = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    XCTAssertTrue(json["backgroundImageIdentifier"] is NSNull)
+    XCTAssertTrue(json["backgroundImagePixelWidth"] is NSNull)
+    XCTAssertTrue(json["backgroundImagePixelHeight"] is NSNull)
+    XCTAssertTrue(json["backgroundImageContentDigest"] is NSNull)
     XCTAssertEqual(state.requestedOpacity, 0.7, accuracy: 0.0001)
     XCTAssertEqual(state.effectiveOpacity, 0.7, accuracy: 0.0001)
     XCTAssertFalse(state.surfaceOpaque)
@@ -131,20 +140,115 @@ final class TransparencyHeadlessTests: XCTestCase {
     XCTAssertEqual(state.backdropSubviewCount, 0)
   }
 
+  func testContainedImageActionsPreserveHeadlessParityAndURLFreeDiagnostics() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-transparency-image-actions-\(UUID().uuidString)")
+    let fixtureRoot = root.appendingPathComponent("fixtures", isDirectory: true)
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    let sourceURL = fixtureRoot.appendingPathComponent("gradient.png")
+    try writeImage(to: sourceURL)
+    let runtime = try makeRuntime(
+      opacity: 0.6,
+      cells: false,
+      fixtureRootURL: fixtureRoot,
+      artifactsURL: root.appendingPathComponent("artifacts", isDirectory: true))
+
+    XCTAssertEqual(
+      runtime.applyAction(
+        Data(
+          #"{"action":"importBackgroundImage","path":"gradient.png","scaling":"fit"}"#.utf8)
+      ).status,
+      200)
+    var state = try decode(runtime.transparencyState())
+    let identifier = try XCTUnwrap(state.backgroundImageIdentifier)
+    XCTAssertTrue(identifier.hasPrefix("image-"))
+    XCTAssertFalse(identifier.contains("/"))
+    XCTAssertEqual(state.backgroundImagePixelWidth, 4)
+    XCTAssertEqual(state.backgroundImagePixelHeight, 2)
+    XCTAssertEqual(state.backgroundImageContentDigest?.count, 64)
+    XCTAssertEqual(state.backgroundImageImportCount, 1)
+    XCTAssertEqual(state.backgroundImageDecodeCount, 1)
+    XCTAssertEqual(state.backgroundImageFileReadCount, 1)
+    XCTAssertEqual(state.backgroundImageApplyCount, 0)
+    XCTAssertEqual(state.backgroundImageRedrawCount, 0)
+    XCTAssertEqual(state.requestedBackdropStyle, "image")
+    XCTAssertEqual(state.effectiveBackdropStyle, "none")
+    XCTAssertEqual(state.backgroundImageState, "headlessUnsupported")
+    XCTAssertEqual(state.backgroundImageScaling, "fit")
+    XCTAssertFalse(
+      String(data: runtime.transparencyState().body, encoding: .utf8)!.contains(root.path))
+
+    let presentCount = state.rendererPresentCount
+    XCTAssertEqual(
+      runtime.applyAction(
+        Data(#"{"action":"setBackgroundImageScaling","scaling":"stretch"}"#.utf8)
+      ).status,
+      200)
+    state = try decode(runtime.transparencyState())
+    XCTAssertEqual(state.backgroundImageScaling, "stretch")
+    XCTAssertEqual(state.rendererPresentCount, presentCount)
+    XCTAssertEqual(state.backgroundImageDecodeCount, 1)
+    XCTAssertEqual(state.backgroundImageFileReadCount, 1)
+
+    _ = runtime.applyAction(
+      Data(#"{"action":"setBackgroundSource","source":"none"}"#.utf8))
+    state = try decode(runtime.transparencyState())
+    XCTAssertEqual(state.requestedBackdropStyle, "none")
+    XCTAssertEqual(state.backgroundImageIdentifier, identifier)
+
+    _ = runtime.applyAction(Data(#"{"action":"removeBackgroundImage"}"#.utf8))
+    state = try decode(runtime.transparencyState())
+    XCTAssertEqual(state.requestedBackdropStyle, "none")
+    XCTAssertNil(state.backgroundImageIdentifier)
+  }
+
+  func testImageImportRejectsAbsoluteTraversalAndSymlinkFixturePaths() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-transparency-image-denial-\(UUID().uuidString)")
+    let fixtureRoot = root.appendingPathComponent("fixtures", isDirectory: true)
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    let outside = root.appendingPathComponent("outside.png")
+    try writeImage(to: outside)
+    let link = fixtureRoot.appendingPathComponent("link.png")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+    let runtime = try makeRuntime(
+      opacity: 0.6,
+      cells: false,
+      fixtureRootURL: fixtureRoot,
+      artifactsURL: root.appendingPathComponent("artifacts", isDirectory: true))
+
+    for path in [outside.path, "../outside.png", "link.png"] {
+      let body = try JSONSerialization.data(withJSONObject: [
+        "action": "importBackgroundImage",
+        "path": path,
+        "scaling": "fill",
+      ])
+      XCTAssertEqual(runtime.applyAction(body).status, 400, path)
+    }
+    let state = try decode(runtime.transparencyState())
+    XCTAssertNil(state.backgroundImageIdentifier)
+    XCTAssertEqual(state.backgroundImageImportCount, 0)
+    XCTAssertEqual(state.backgroundImageDecodeCount, 0)
+    XCTAssertEqual(state.backgroundImageFileReadCount, 0)
+  }
+
   private func makeRuntime(
     opacity: Double,
     cells: Bool,
     effect: TerminalBackdropStyle = .none,
-    scaling: TerminalBackgroundImageScaling = .default
+    scaling: TerminalBackgroundImageScaling = .default,
+    fixtureRootURL: URL? = nil,
+    artifactsURL: URL? = nil
   ) throws -> HeadlessDebugRuntime {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-transparency-headless-\(UUID().uuidString)")
     return try HeadlessDebugRuntime(
       fixtureURL: nil,
-      artifactsURL: root,
+      artifactsURL: artifactsURL ?? root,
       tempURL: nil,
       deterministic: true,
       runId: root.lastPathComponent,
+      fixtureRootURL: fixtureRootURL,
       sessionMode: .fixture,
       rendererSelection: .software,
       backgroundOpacity: opacity,
@@ -152,6 +256,24 @@ final class TransparencyHeadlessTests: XCTestCase {
       backgroundImageScaling: scaling,
       applyTransparencyToExplicitCellBackgrounds: cells,
       restorePersistedState: false)
+  }
+
+  private func writeImage(to url: URL) throws {
+    let context = CGContext(
+      data: nil,
+      width: 4,
+      height: 2,
+      bitsPerComponent: 8,
+      bytesPerRow: 16,
+      space: CGColorSpaceCreateDeviceRGB(),
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    context.setFillColor(CGColor(red: 0.9, green: 0.2, blue: 0.4, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: 4, height: 2))
+    let destination = try XCTUnwrap(
+      CGImageDestinationCreateWithURL(
+        url as CFURL, UTType.png.identifier as CFString, 1, nil))
+    CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+    XCTAssertTrue(CGImageDestinationFinalize(destination))
   }
 
   private func decode(_ response: DebugResponse) throws -> TerminalTransparencyDebugResponse {

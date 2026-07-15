@@ -42,6 +42,10 @@ enum DebugAction: Decodable {
   case resetTransparencyDiagnostics(ResetTransparencyDiagnosticsActionRequest)
   case setReduceTransparencyOverride(SetReduceTransparencyOverrideActionRequest)
   case setNativeFullScreen(SetNativeFullScreenActionRequest)
+  case setBackgroundSource(SetBackgroundSourceActionRequest)
+  case setBackgroundImageScaling(SetBackgroundImageScalingActionRequest)
+  case importBackgroundImage(ImportBackgroundImageActionRequest)
+  case removeBackgroundImage(RemoveBackgroundImageActionRequest)
   case unsupported(String)
 
   private enum CodingKeys: String, CodingKey {
@@ -131,6 +135,15 @@ enum DebugAction: Decodable {
         try SetReduceTransparencyOverrideActionRequest(from: decoder))
     case "setNativeFullScreen":
       self = .setNativeFullScreen(try SetNativeFullScreenActionRequest(from: decoder))
+    case "setBackgroundSource":
+      self = .setBackgroundSource(try SetBackgroundSourceActionRequest(from: decoder))
+    case "setBackgroundImageScaling":
+      self = .setBackgroundImageScaling(
+        try SetBackgroundImageScalingActionRequest(from: decoder))
+    case "importBackgroundImage":
+      self = .importBackgroundImage(try ImportBackgroundImageActionRequest(from: decoder))
+    case "removeBackgroundImage":
+      self = .removeBackgroundImage(try RemoveBackgroundImageActionRequest(from: decoder))
     default:
       self = .unsupported(action)
     }
@@ -217,6 +230,14 @@ extension DebugAction {
       return legacyIntent(action: "setReduceTransparencyOverride")
     case .setNativeFullScreen:
       return legacyIntent(action: "setNativeFullScreen")
+    case .setBackgroundSource:
+      return legacyIntent(action: "setBackgroundSource")
+    case .setBackgroundImageScaling:
+      return legacyIntent(action: "setBackgroundImageScaling")
+    case .importBackgroundImage:
+      return legacyIntent(action: "importBackgroundImage")
+    case .removeBackgroundImage:
+      return legacyIntent(action: "removeBackgroundImage")
     case .unsupported(let action):
       return .unsupportedDebugAction(UnsupportedDebugActionInput(action: action))
     }

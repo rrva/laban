@@ -118,6 +118,30 @@ final class DebugActionDecodingTests: XCTestCase {
     XCTAssertFalse(required.contains("backdropStyle"))
   }
 
+  func testDecodesTypedBackgroundImageActions() throws {
+    guard
+      case .setBackgroundSource(let source) = try decode(
+        #"{"action":"setBackgroundSource","source":"image"}"#)
+    else { return XCTFail("Expected setBackgroundSource action") }
+    XCTAssertEqual(source.source, .image)
+
+    guard
+      case .setBackgroundImageScaling(let scaling) = try decode(
+        #"{"action":"setBackgroundImageScaling","scaling":"stretch"}"#)
+    else { return XCTFail("Expected setBackgroundImageScaling action") }
+    XCTAssertEqual(scaling.scaling, .stretch)
+
+    guard
+      case .importBackgroundImage(let image) = try decode(
+        #"{"action":"importBackgroundImage","path":"images/test.svg","scaling":"fit"}"#)
+    else { return XCTFail("Expected importBackgroundImage action") }
+    XCTAssertEqual(image.path, "images/test.svg")
+    XCTAssertEqual(image.scaling, .fit)
+
+    guard case .removeBackgroundImage = try decode(#"{"action":"removeBackgroundImage"}"#)
+    else { return XCTFail("Expected removeBackgroundImage action") }
+  }
+
   func testDecodesSetPreeditPayloadFromFlatWireShape() throws {
     guard
       case .setPreedit(let request) = try decode(
@@ -195,6 +219,12 @@ final class DebugActionDecodingTests: XCTestCase {
           #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false}"#
       case "setNativeFullScreen":
         payload = #"{"action":"setNativeFullScreen","enabled":false}"#
+      case "setBackgroundSource":
+        payload = #"{"action":"setBackgroundSource","source":"none"}"#
+      case "setBackgroundImageScaling":
+        payload = #"{"action":"setBackgroundImageScaling","scaling":"fill"}"#
+      case "importBackgroundImage":
+        payload = #"{"action":"importBackgroundImage","path":"image.svg","scaling":"fill"}"#
       default:
         payload = #"{"action":"\#(action)"}"#
       }

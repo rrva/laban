@@ -59,6 +59,11 @@ final class LiveIntentRouter: IntentRouter {
   private var resetTransparencyDiagnosticsHandler: (() -> Void)?
   private var setReduceTransparencyOverrideHandler: ((Bool?) -> Void)?
   private var setNativeFullScreenHandler: ((Bool) -> Void)?
+  private var setBackgroundSourceHandler: ((TerminalBackdropStyle) -> Void)?
+  private var setBackgroundImageScalingHandler: ((TerminalBackgroundImageScaling) -> Void)?
+  private var importBackgroundImageHandler:
+    ((String, TerminalBackgroundImageScaling) throws -> Void)?
+  private var removeBackgroundImageHandler: (() -> Void)?
   weak var proposalPresenter: CommandProposalReviewPresenting?
 
   init(
@@ -127,7 +132,11 @@ final class LiveIntentRouter: IntentRouter {
     setBackground: @escaping (Double, Bool, TerminalBackdropStyle?) -> Void,
     resetDiagnostics: @escaping () -> Void,
     setReduceTransparencyOverride: @escaping (Bool?) -> Void,
-    setNativeFullScreen: @escaping (Bool) -> Void
+    setNativeFullScreen: @escaping (Bool) -> Void,
+    setBackgroundSource: @escaping (TerminalBackdropStyle) -> Void,
+    setBackgroundImageScaling: @escaping (TerminalBackgroundImageScaling) -> Void,
+    importBackgroundImage: @escaping (String, TerminalBackgroundImageScaling) throws -> Void,
+    removeBackgroundImage: @escaping () -> Void
   ) {
     performOnMain {
       self.transparencyStateProvider = state
@@ -135,6 +144,10 @@ final class LiveIntentRouter: IntentRouter {
       self.resetTransparencyDiagnosticsHandler = resetDiagnostics
       self.setReduceTransparencyOverrideHandler = setReduceTransparencyOverride
       self.setNativeFullScreenHandler = setNativeFullScreen
+      self.setBackgroundSourceHandler = setBackgroundSource
+      self.setBackgroundImageScalingHandler = setBackgroundImageScaling
+      self.importBackgroundImageHandler = importBackgroundImage
+      self.removeBackgroundImageHandler = removeBackgroundImage
     }
   }
 
@@ -162,6 +175,14 @@ final class LiveIntentRouter: IntentRouter {
           return setReduceTransparencyOverrideAction(body: input.body)
         case "transparency.nativeFullScreen.set":
           return setNativeFullScreenAction(body: input.body)
+        case "transparency.backgroundSource.set":
+          return setBackgroundSourceAction(body: input.body)
+        case "transparency.backgroundImageScaling.set":
+          return setBackgroundImageScalingAction(body: input.body)
+        case "transparency.backgroundImage.import":
+          return importBackgroundImageAction(body: input.body)
+        case "transparency.backgroundImage.remove":
+          return removeBackgroundImageAction(body: input.body)
         default:
           return .error(404, "unavailable on gui")
         }
@@ -369,6 +390,55 @@ final class LiveIntentRouter: IntentRouter {
       return .error(400, "invalid setNativeFullScreen request")
     }
     handler(request.enabled)
+    return diagnosticActionOK()
+  }
+
+  private func setBackgroundSourceAction(body: Data) -> ControlResponse {
+    guard
+      let request = try? JSONDecoder().decode(SetBackgroundSourceActionRequest.self, from: body),
+      let handler = setBackgroundSourceHandler
+    else {
+      return .error(400, "invalid setBackgroundSource request")
+    }
+    handler(request.source)
+    return diagnosticActionOK()
+  }
+
+  private func setBackgroundImageScalingAction(body: Data) -> ControlResponse {
+    guard
+      let request = try? JSONDecoder().decode(
+        SetBackgroundImageScalingActionRequest.self, from: body),
+      let handler = setBackgroundImageScalingHandler
+    else {
+      return .error(400, "invalid setBackgroundImageScaling request")
+    }
+    handler(request.scaling)
+    return diagnosticActionOK()
+  }
+
+  private func importBackgroundImageAction(body: Data) -> ControlResponse {
+    guard
+      let request = try? JSONDecoder().decode(ImportBackgroundImageActionRequest.self, from: body),
+      let handler = importBackgroundImageHandler
+    else {
+      return .error(400, "invalid importBackgroundImage request")
+    }
+    do {
+      try handler(request.path, request.scaling)
+      return diagnosticActionOK()
+    } catch {
+      return .error(400, "background image fixture import rejected")
+    }
+  }
+
+  private func removeBackgroundImageAction(body: Data) -> ControlResponse {
+    guard
+      (try? JSONDecoder().decode(RemoveBackgroundImageActionRequest.self, from: body)) != nil,
+      let handler = removeBackgroundImageHandler
+    else {
+      return .error(400, "invalid removeBackgroundImage request")
+    }
+    handler()
     return diagnosticActionOK()
   }
 
@@ -718,5 +788,9 @@ final class LiveIntentRouter: IntentRouter {
     "transparency.diagnostics.reset": "resetTransparencyDiagnostics",
     "transparency.reduceTransparencyOverride.set": "setReduceTransparencyOverride",
     "transparency.nativeFullScreen.set": "setNativeFullScreen",
+    "transparency.backgroundSource.set": "setBackgroundSource",
+    "transparency.backgroundImageScaling.set": "setBackgroundImageScaling",
+    "transparency.backgroundImage.import": "importBackgroundImage",
+    "transparency.backgroundImage.remove": "removeBackgroundImage",
   ]
 }

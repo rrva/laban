@@ -12,6 +12,15 @@ struct TerminalWindowTransparencyStatus: Equatable, Sendable {
   var reduceTransparency: Bool
   var nativeFullscreen: Bool
   var backgroundImageAvailability: TerminalBackgroundImageAvailability
+  var backgroundImageIdentifier: String?
+  var backgroundImagePixelWidth: Int?
+  var backgroundImagePixelHeight: Int?
+  var backgroundImageContentDigest: String?
+  var backgroundImageImportCount: Int
+  var backgroundImageDecodeCount: Int
+  var backgroundImageFileReadCount: Int
+  var backgroundImageApplyCount: Int
+  var backgroundImageRedrawCount: Int
   var backdropSubviewCount: Int
   var backdropSubviewKind: TerminalBackdropStyle
 }
@@ -45,6 +54,7 @@ final class TerminalWindowTransparencyCoordinator {
   private var nativeFullscreen: Bool
   private var backgroundImageAvailability: TerminalBackgroundImageAvailability
   private var backgroundImageAsset: TerminalResolvedBackgroundImage?
+  private var backgroundImageManagedReference: TerminalManagedBackgroundImage?
   private var snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
 
   init(
@@ -68,6 +78,7 @@ final class TerminalWindowTransparencyCoordinator {
     self.requested = requestedSettings.configuration
     self.reduceTransparency = reduceTransparency
     self.nativeFullscreen = window.styleMask.contains(.fullScreen)
+    self.backgroundImageManagedReference = requestedSettings.managedBackgroundImage
     if let backgroundImageStore {
       let resolution = backgroundImageStore.resolveManagedImage(
         requestedSettings.managedBackgroundImage)
@@ -100,15 +111,30 @@ final class TerminalWindowTransparencyCoordinator {
   }
 
   var status: TerminalWindowTransparencyStatus {
-    TerminalWindowTransparencyStatus(
+    let storeDiagnostics = backgroundImageStore?.diagnostics
+    return TerminalWindowTransparencyStatus(
       requested: requested,
       effective: effective,
       snapshotBackgroundCapability: snapshotBackgroundCapability,
       reduceTransparency: reduceTransparency,
       nativeFullscreen: nativeFullscreen,
       backgroundImageAvailability: backgroundImageAvailability,
+      backgroundImageIdentifier: backgroundImageManagedReference?.identifier,
+      backgroundImagePixelWidth: backgroundImageAsset?.image.width,
+      backgroundImagePixelHeight: backgroundImageAsset?.image.height,
+      backgroundImageContentDigest: backgroundImageAsset?.contentDigest,
+      backgroundImageImportCount: storeDiagnostics?.importCount ?? 0,
+      backgroundImageDecodeCount: storeDiagnostics?.decodeCount ?? 0,
+      backgroundImageFileReadCount: storeDiagnostics?.fileReadCount ?? 0,
+      backgroundImageApplyCount: backgroundEffectHost?.backgroundImageApplyCount ?? 0,
+      backgroundImageRedrawCount: backgroundEffectHost?.backgroundImageRedrawCount ?? 0,
       backdropSubviewCount: backgroundEffectHost?.backdropSubviewCount ?? 0,
       backdropSubviewKind: backgroundEffectHost?.backdropSubviewKind ?? .none)
+  }
+
+  func resetBackgroundImageDiagnostics() {
+    backgroundImageStore?.resetDiagnostics()
+    backgroundEffectHost?.resetBackgroundImageDiagnostics()
   }
 
   /// Cached accessibility input from TerminalBitmapView's sole workspace
@@ -185,6 +211,7 @@ final class TerminalWindowTransparencyCoordinator {
           let managedImage = TerminalTransparencySettings.requestedSettings(
             defaults: self.defaults
           ).managedBackgroundImage
+          self.backgroundImageManagedReference = managedImage
           let resolution = backgroundImageStore.resolveManagedImage(managedImage)
           guard self.backgroundImageResolutionChanged(resolution) else { return }
           self.backgroundImageAvailability = resolution.availability
@@ -225,6 +252,7 @@ final class TerminalWindowTransparencyCoordinator {
     cleanupOrphans: Bool
   ) {
     guard let backgroundImageStore else { return }
+    backgroundImageManagedReference = managedImage
     let resolution = backgroundImageStore.resolveManagedImage(managedImage)
     backgroundImageAvailability = resolution.availability
     backgroundImageAsset = resolution.asset

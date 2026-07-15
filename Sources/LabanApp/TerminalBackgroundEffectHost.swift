@@ -117,6 +117,13 @@ final class TerminalBackgroundEffectHost: NSView {
   private(set) var imageView: TerminalBackgroundImageView?
   private var semanticChildConstraints: [NSLayoutConstraint] = []
   private var placementConstraints: [NSLayoutConstraint] = []
+  private var retiredImageRedrawCount = 0
+
+  private(set) var backgroundImageApplyCount = 0
+
+  var backgroundImageRedrawCount: Int {
+    retiredImageRedrawCount + (imageView?.drawCount ?? 0)
+  }
 
   private(set) var appliedStyle: TerminalBackdropStyle = .none
 
@@ -192,6 +199,11 @@ final class TerminalBackgroundEffectHost: NSView {
     precondition(backdropSubviewCount <= 1, "Terminal backdrop must own at most one child")
   }
 
+  func resetBackgroundImageDiagnostics() {
+    backgroundImageApplyCount = 0
+    retiredImageRedrawCount = -(imageView?.drawCount ?? 0)
+  }
+
   private func installSystemBlurIfNeeded() {
     guard effectView == nil else { return }
     removeSemanticChild()
@@ -210,7 +222,9 @@ final class TerminalBackgroundEffectHost: NSView {
     scaling: TerminalBackgroundImageScaling
   ) {
     if let imageView {
-      imageView.configure(asset: asset, scaling: scaling)
+      if imageView.configure(asset: asset, scaling: scaling) {
+        backgroundImageApplyCount += 1
+      }
       return
     }
 
@@ -218,6 +232,7 @@ final class TerminalBackgroundEffectHost: NSView {
     let imageView = TerminalBackgroundImageView(frame: bounds)
     imageView.translatesAutoresizingMaskIntoConstraints = false
     imageView.configure(asset: asset, scaling: scaling)
+    backgroundImageApplyCount += 1
     addSubview(imageView)
     self.imageView = imageView
     pinSemanticChild(imageView)
@@ -237,7 +252,10 @@ final class TerminalBackgroundEffectHost: NSView {
     NSLayoutConstraint.deactivate(semanticChildConstraints)
     semanticChildConstraints.removeAll()
     effectView?.removeFromSuperview()
-    imageView?.removeFromSuperview()
+    if let imageView {
+      retiredImageRedrawCount += imageView.drawCount
+      imageView.removeFromSuperview()
+    }
     effectView = nil
     imageView = nil
   }

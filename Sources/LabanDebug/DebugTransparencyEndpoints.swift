@@ -12,6 +12,7 @@ extension HeadlessDebugRuntime {
     let presentStats =
       (rendererBackend as? DisplayLinkPresentingRenderer)?.presentDisplayLinkStats(reset: false)
     let misses = presentStats?["estimatedMissedVsyncs"] ?? 0
+    let managedImage = backgroundImageStore.managedImage
     return TerminalTransparencyDebugResponse(
       requestedOpacity: requestedTransparency.backgroundOpacity,
       effectiveOpacity: effectiveTransparency.backgroundOpacity,
@@ -22,6 +23,15 @@ extension HeadlessDebugRuntime {
         requestedTransparency.backdropStyle == .image
         ? TerminalBackgroundImageAvailability.headlessUnsupported.rawValue
         : TerminalBackgroundImageAvailability.none.rawValue,
+      backgroundImageIdentifier: managedImage?.identifier,
+      backgroundImagePixelWidth: managedImage?.pixelWidth,
+      backgroundImagePixelHeight: managedImage?.pixelHeight,
+      backgroundImageContentDigest: managedImage?.contentDigest,
+      backgroundImageImportCount: backgroundImageStore.importCount,
+      backgroundImageDecodeCount: backgroundImageStore.decodeCount,
+      backgroundImageFileReadCount: backgroundImageStore.fileReadCount,
+      backgroundImageApplyCount: 0,
+      backgroundImageRedrawCount: 0,
       applyToExplicitCellBackgrounds:
         requestedTransparency.applyToExplicitCellBackgrounds,
       forceOpaqueReason: effectiveTransparency.forceOpaqueReason?.rawValue,
@@ -68,6 +78,48 @@ extension HeadlessDebugRuntime {
     effectiveTransparencyApplyCount = 0
     transparencyRenderWakeCount = 0
     transparencyRendererPresentBaseline = currentFrame
+    backgroundImageStore.resetDiagnostics()
+    return actionResult(ok: true)
+  }
+
+  func setBackgroundSourceUnlocked(
+    _ request: SetBackgroundSourceActionRequest
+  ) -> DebugResponse {
+    guard requestedTransparency.backdropStyle != request.source else {
+      return actionResult(ok: true)
+    }
+    requestedTransparency.backdropStyle = request.source
+    resolveTransparencyAndRenderUnlocked()
+    return actionResult(ok: true)
+  }
+
+  func setBackgroundImageScalingUnlocked(
+    _ request: SetBackgroundImageScalingActionRequest
+  ) -> DebugResponse {
+    requestedTransparency.backgroundImageScaling = request.scaling
+    return actionResult(ok: true)
+  }
+
+  func importBackgroundImageUnlocked(
+    _ request: ImportBackgroundImageActionRequest
+  ) -> DebugResponse {
+    let sourceURL: URL
+    do {
+      sourceURL = try DebugFixtureResolver.resolve(request.path, root: fixtureRootURL)
+      _ = try backgroundImageStore.importImage(from: sourceURL)
+    } catch {
+      return jsonError("background image fixture import rejected")
+    }
+    requestedTransparency.backgroundImageScaling = request.scaling
+    requestedTransparency.backdropStyle = .image
+    resolveTransparencyAndRenderUnlocked()
+    return actionResult(ok: true)
+  }
+
+  func removeBackgroundImageUnlocked() -> DebugResponse {
+    backgroundImageStore.removeImage()
+    requestedTransparency.backdropStyle = .none
+    resolveTransparencyAndRenderUnlocked()
     return actionResult(ok: true)
   }
 

@@ -1,4 +1,5 @@
 import CoreGraphics
+import CryptoKit
 import Foundation
 import ImageIO
 import LabanCore
@@ -27,11 +28,18 @@ struct TerminalResolvedBackgroundImage {
   let managedImage: TerminalManagedBackgroundImage
   let fileURL: URL
   let image: CGImage
+  let contentDigest: String
 }
 
 struct TerminalBackgroundImageResolution {
   let availability: TerminalBackgroundImageAvailability
   let asset: TerminalResolvedBackgroundImage?
+}
+
+struct TerminalBackgroundImageStoreDiagnostics: Equatable, Sendable {
+  var importCount: Int
+  var decodeCount: Int
+  var fileReadCount: Int
 }
 
 /// Owns Laban's private, normalized background-image copies. External picker
@@ -50,6 +58,16 @@ final class TerminalBackgroundImageStore {
   private let fileManager: FileManager
   private let beforeSettingsPublication: () throws -> Void
   private var cachedResolution: CachedResolution?
+  private var importCount = 0
+  private var decodeCount = 0
+  private var fileReadCount = 0
+
+  var diagnostics: TerminalBackgroundImageStoreDiagnostics {
+    TerminalBackgroundImageStoreDiagnostics(
+      importCount: importCount,
+      decodeCount: decodeCount,
+      fileReadCount: fileReadCount)
+  }
 
   convenience init(
     defaults: UserDefaults = .standard,
@@ -147,6 +165,7 @@ final class TerminalBackgroundImageStore {
       defaults: defaults,
       notificationCenter: notificationCenter)
     published = true
+    importCount += 1
 
     if previous.managedBackgroundImage?.identifier != managedImage.identifier {
       removeManagedFileIfContained(previous.managedBackgroundImage)
@@ -203,7 +222,8 @@ final class TerminalBackgroundImageStore {
         asset: TerminalResolvedBackgroundImage(
           managedImage: managedImage,
           fileURL: fileURL,
-          image: image))
+          image: image,
+          contentDigest: Self.contentDigest(image)))
     } else {
       resolution = TerminalBackgroundImageResolution(availability: .invalid, asset: nil)
     }
@@ -234,6 +254,12 @@ final class TerminalBackgroundImageStore {
     cachedResolution = nil
     removeManagedFileIfContained(previous.managedBackgroundImage)
     try? cleanupOrphans(keeping: nil)
+  }
+
+  func resetDiagnostics() {
+    importCount = 0
+    decodeCount = 0
+    fileReadCount = 0
   }
 
   /// Removes crash-left staging files and generated managed assets other than
@@ -277,6 +303,8 @@ final class TerminalBackgroundImageStore {
   }
 
   private func decodeAndNormalizeFirstFrame(at sourceURL: URL) throws -> DecodedSource {
+    fileReadCount += 1
+    decodeCount += 1
     guard
       let source = CGImageSourceCreateWithURL(
         sourceURL as CFURL,
@@ -342,6 +370,8 @@ final class TerminalBackgroundImageStore {
   }
 
   private func decodeManagedPNG(at url: URL) -> CGImage? {
+    fileReadCount += 1
+    decodeCount += 1
     guard
       let source = CGImageSourceCreateWithURL(
         url as CFURL,
@@ -467,7 +497,26 @@ final class TerminalBackgroundImageStore {
         asset: TerminalResolvedBackgroundImage(
           managedImage: managedImage,
           fileURL: fileURL,
-          image: image)))
+          image: image,
+          contentDigest: Self.contentDigest(image))))
+  }
+
+  private static func contentDigest(_ image: CGImage) -> String {
+    let width = image.width
+    let height = image.height
+    var bytes = [UInt8](repeating: 0, count: width * height * 4)
+    let context = CGContext(
+      data: &bytes,
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bytesPerRow: width * 4,
+      space: CGColorSpaceCreateDeviceRGB(),
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    context?.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    var payload = Data("\(width)x\(height):".utf8)
+    payload.append(contentsOf: bytes)
+    return SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
   }
 
   private func removeManagedFileIfContained(_ managedImage: TerminalManagedBackgroundImage?) {

@@ -112,6 +112,10 @@ public enum DebugActionIntentID {
     "resetTransparencyDiagnostics",
     "setReduceTransparencyOverride",
     "setNativeFullScreen",
+    "setBackgroundSource",
+    "setBackgroundImageScaling",
+    "importBackgroundImage",
+    "removeBackgroundImage",
   ]
 
   public static func intentID(forAction action: String) -> String? {
@@ -154,6 +158,10 @@ public enum DebugActionIntentID {
     case "resetTransparencyDiagnostics": return "transparency.diagnostics.reset"
     case "setReduceTransparencyOverride": return "transparency.reduceTransparencyOverride.set"
     case "setNativeFullScreen": return "transparency.nativeFullScreen.set"
+    case "setBackgroundSource": return "transparency.backgroundSource.set"
+    case "setBackgroundImageScaling": return "transparency.backgroundImageScaling.set"
+    case "importBackgroundImage": return "transparency.backgroundImage.import"
+    case "removeBackgroundImage": return "transparency.backgroundImage.remove"
     default: return nil
     }
   }
@@ -261,17 +269,168 @@ public struct SetNativeFullScreenActionRequest: Codable, Sendable, Equatable,
   }
 }
 
+public struct SetBackgroundSourceActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var action: String?
+  public var source: TerminalBackdropStyle
+
+  public init(action: String? = "setBackgroundSource", source: TerminalBackdropStyle) {
+    self.action = action
+    self.source = source
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": .string(
+          enumValues: nil, const: "setBackgroundSource", format: nil, pattern: nil),
+        "source": .string(
+          enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
+          pattern: nil),
+      ],
+      required: ["action", "source"],
+      additionalProperties: false)
+  }
+}
+
+public struct SetBackgroundImageScalingActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var action: String?
+  public var scaling: TerminalBackgroundImageScaling
+
+  public init(
+    action: String? = "setBackgroundImageScaling",
+    scaling: TerminalBackgroundImageScaling
+  ) {
+    self.action = action
+    self.scaling = scaling
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": .string(
+          enumValues: nil, const: "setBackgroundImageScaling", format: nil, pattern: nil),
+        "scaling": .string(
+          enumValues: TerminalBackgroundImageScaling.allCases.map(\.rawValue), const: nil,
+          format: nil, pattern: nil),
+      ],
+      required: ["action", "scaling"],
+      additionalProperties: false)
+  }
+}
+
+public struct ImportBackgroundImageActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var action: String?
+  public var path: String
+  public var scaling: TerminalBackgroundImageScaling
+
+  public init(
+    action: String? = "importBackgroundImage",
+    path: String,
+    scaling: TerminalBackgroundImageScaling
+  ) {
+    self.action = action
+    self.path = path
+    self.scaling = scaling
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": .string(
+          enumValues: nil, const: "importBackgroundImage", format: nil, pattern: nil),
+        "path": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "scaling": .string(
+          enumValues: TerminalBackgroundImageScaling.allCases.map(\.rawValue), const: nil,
+          format: nil, pattern: nil),
+      ],
+      required: ["action", "path", "scaling"],
+      additionalProperties: false)
+  }
+}
+
+public struct RemoveBackgroundImageActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var action: String?
+
+  public init(action: String? = "removeBackgroundImage") {
+    self.action = action
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": .string(
+          enumValues: nil, const: "removeBackgroundImage", format: nil, pattern: nil)
+      ],
+      required: ["action"],
+      additionalProperties: false)
+  }
+}
+
 /// Stable wire projection for `GET /debug/transparency`. Requested values are
 /// never overwritten by temporary accessibility/full-screen policy.
 public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
   JSONSchemaProviding
 {
+  private enum CodingKeys: String, CodingKey {
+    case requestedOpacity
+    case effectiveOpacity
+    case requestedBackdropStyle
+    case effectiveBackdropStyle
+    case backgroundImageScaling
+    case backgroundImageState
+    case backgroundImageIdentifier
+    case backgroundImagePixelWidth
+    case backgroundImagePixelHeight
+    case backgroundImageContentDigest
+    case backgroundImageImportCount
+    case backgroundImageDecodeCount
+    case backgroundImageFileReadCount
+    case backgroundImageApplyCount
+    case backgroundImageRedrawCount
+    case applyToExplicitCellBackgrounds
+    case forceOpaqueReason
+    case surfaceOpaque
+    case effectiveGlyphAntialiasing
+    case effectiveGlyphAntialiasingReason
+    case snapshotExplicitBackgroundCapability
+    case configuredRenderer
+    case effectiveRenderer
+    case backdropSubviewCount
+    case backdropSubviewKind
+    case systemReduceTransparency
+    case reduceTransparencyOverride
+    case effectiveReduceTransparency
+    case nativeFullscreen
+    case accessibilityRefreshCount
+    case effectiveTransparencyApplyCount
+    case transparencyRenderWakeCount
+    case rendererPresentCount
+    case presentIntervalDeadlineMisses
+  }
+
   public var requestedOpacity: Double
   public var effectiveOpacity: Double
   public var requestedBackdropStyle: String
   public var effectiveBackdropStyle: String
   public var backgroundImageScaling: String
   public var backgroundImageState: String
+  public var backgroundImageIdentifier: String?
+  public var backgroundImagePixelWidth: Int?
+  public var backgroundImagePixelHeight: Int?
+  public var backgroundImageContentDigest: String?
+  public var backgroundImageImportCount: Int
+  public var backgroundImageDecodeCount: Int
+  public var backgroundImageFileReadCount: Int
+  public var backgroundImageApplyCount: Int
+  public var backgroundImageRedrawCount: Int
   public var applyToExplicitCellBackgrounds: Bool
   public var forceOpaqueReason: String?
   public var surfaceOpaque: Bool
@@ -299,6 +458,15 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     effectiveBackdropStyle: String,
     backgroundImageScaling: String,
     backgroundImageState: String,
+    backgroundImageIdentifier: String? = nil,
+    backgroundImagePixelWidth: Int? = nil,
+    backgroundImagePixelHeight: Int? = nil,
+    backgroundImageContentDigest: String? = nil,
+    backgroundImageImportCount: Int = 0,
+    backgroundImageDecodeCount: Int = 0,
+    backgroundImageFileReadCount: Int = 0,
+    backgroundImageApplyCount: Int = 0,
+    backgroundImageRedrawCount: Int = 0,
     applyToExplicitCellBackgrounds: Bool,
     forceOpaqueReason: String?,
     surfaceOpaque: Bool,
@@ -325,6 +493,15 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     self.effectiveBackdropStyle = effectiveBackdropStyle
     self.backgroundImageScaling = backgroundImageScaling
     self.backgroundImageState = backgroundImageState
+    self.backgroundImageIdentifier = backgroundImageIdentifier
+    self.backgroundImagePixelWidth = backgroundImagePixelWidth
+    self.backgroundImagePixelHeight = backgroundImagePixelHeight
+    self.backgroundImageContentDigest = backgroundImageContentDigest
+    self.backgroundImageImportCount = backgroundImageImportCount
+    self.backgroundImageDecodeCount = backgroundImageDecodeCount
+    self.backgroundImageFileReadCount = backgroundImageFileReadCount
+    self.backgroundImageApplyCount = backgroundImageApplyCount
+    self.backgroundImageRedrawCount = backgroundImageRedrawCount
     self.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
     self.forceOpaqueReason = forceOpaqueReason
     self.surfaceOpaque = surfaceOpaque
@@ -346,6 +523,52 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     self.presentIntervalDeadlineMisses = presentIntervalDeadlineMisses
   }
 
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(requestedOpacity, forKey: .requestedOpacity)
+    try container.encode(effectiveOpacity, forKey: .effectiveOpacity)
+    try container.encode(requestedBackdropStyle, forKey: .requestedBackdropStyle)
+    try container.encode(effectiveBackdropStyle, forKey: .effectiveBackdropStyle)
+    try container.encode(backgroundImageScaling, forKey: .backgroundImageScaling)
+    try container.encode(backgroundImageState, forKey: .backgroundImageState)
+    // These keys are required stable fields in the checked response schema.
+    // Encode absent metadata as JSON null rather than omitting the keys.
+    try container.encode(backgroundImageIdentifier, forKey: .backgroundImageIdentifier)
+    try container.encode(backgroundImagePixelWidth, forKey: .backgroundImagePixelWidth)
+    try container.encode(backgroundImagePixelHeight, forKey: .backgroundImagePixelHeight)
+    try container.encode(backgroundImageContentDigest, forKey: .backgroundImageContentDigest)
+    try container.encode(backgroundImageImportCount, forKey: .backgroundImageImportCount)
+    try container.encode(backgroundImageDecodeCount, forKey: .backgroundImageDecodeCount)
+    try container.encode(backgroundImageFileReadCount, forKey: .backgroundImageFileReadCount)
+    try container.encode(backgroundImageApplyCount, forKey: .backgroundImageApplyCount)
+    try container.encode(backgroundImageRedrawCount, forKey: .backgroundImageRedrawCount)
+    try container.encode(applyToExplicitCellBackgrounds, forKey: .applyToExplicitCellBackgrounds)
+    try container.encodeIfPresent(forceOpaqueReason, forKey: .forceOpaqueReason)
+    try container.encode(surfaceOpaque, forKey: .surfaceOpaque)
+    try container.encode(effectiveGlyphAntialiasing, forKey: .effectiveGlyphAntialiasing)
+    try container.encodeIfPresent(
+      effectiveGlyphAntialiasingReason,
+      forKey: .effectiveGlyphAntialiasingReason)
+    try container.encode(
+      snapshotExplicitBackgroundCapability,
+      forKey: .snapshotExplicitBackgroundCapability)
+    try container.encode(configuredRenderer, forKey: .configuredRenderer)
+    try container.encode(effectiveRenderer, forKey: .effectiveRenderer)
+    try container.encode(backdropSubviewCount, forKey: .backdropSubviewCount)
+    try container.encode(backdropSubviewKind, forKey: .backdropSubviewKind)
+    try container.encode(systemReduceTransparency, forKey: .systemReduceTransparency)
+    try container.encodeIfPresent(
+      reduceTransparencyOverride,
+      forKey: .reduceTransparencyOverride)
+    try container.encode(effectiveReduceTransparency, forKey: .effectiveReduceTransparency)
+    try container.encode(nativeFullscreen, forKey: .nativeFullscreen)
+    try container.encode(accessibilityRefreshCount, forKey: .accessibilityRefreshCount)
+    try container.encode(effectiveTransparencyApplyCount, forKey: .effectiveTransparencyApplyCount)
+    try container.encode(transparencyRenderWakeCount, forKey: .transparencyRenderWakeCount)
+    try container.encode(rendererPresentCount, forKey: .rendererPresentCount)
+    try container.encode(presentIntervalDeadlineMisses, forKey: .presentIntervalDeadlineMisses)
+  }
+
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object(
       [
@@ -363,6 +586,17 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
         "backgroundImageState": .string(
           enumValues: TerminalBackgroundImageAvailability.allCases.map(\.rawValue), const: nil,
           format: nil, pattern: nil),
+        "backgroundImageIdentifier": .optional(
+          .string(enumValues: nil, const: nil, format: nil, pattern: nil)),
+        "backgroundImagePixelWidth": .optional(.integer(min: 1, max: nil)),
+        "backgroundImagePixelHeight": .optional(.integer(min: 1, max: nil)),
+        "backgroundImageContentDigest": .optional(
+          .string(enumValues: nil, const: nil, format: nil, pattern: "^[0-9a-f]{64}$")),
+        "backgroundImageImportCount": .integer(min: 0, max: nil),
+        "backgroundImageDecodeCount": .integer(min: 0, max: nil),
+        "backgroundImageFileReadCount": .integer(min: 0, max: nil),
+        "backgroundImageApplyCount": .integer(min: 0, max: nil),
+        "backgroundImageRedrawCount": .integer(min: 0, max: nil),
         "applyToExplicitCellBackgrounds": .boolean,
         "forceOpaqueReason": .optional(
           .string(
@@ -399,6 +633,9 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
       required: [
         "requestedOpacity", "effectiveOpacity", "requestedBackdropStyle",
         "effectiveBackdropStyle", "backgroundImageScaling", "backgroundImageState",
+        "backgroundImageIdentifier", "backgroundImagePixelWidth", "backgroundImagePixelHeight",
+        "backgroundImageContentDigest", "backgroundImageImportCount", "backgroundImageDecodeCount",
+        "backgroundImageFileReadCount", "backgroundImageApplyCount", "backgroundImageRedrawCount",
         "applyToExplicitCellBackgrounds", "surfaceOpaque",
         "effectiveGlyphAntialiasing", "snapshotExplicitBackgroundCapability",
         "configuredRenderer", "effectiveRenderer", "backdropSubviewCount",

@@ -63,6 +63,23 @@ public enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(name: "clearTabTitle", summary: "Clear the manual tab title."),
     DebugDiscoveryControl(
       name: "setTabMetadata", summary: "Set workspace, process, or agent metadata."),
+    DebugDiscoveryControl(
+      name: "setBackgroundTransparency",
+      summary: "Set requested terminal opacity and explicit-cell policy."),
+    DebugDiscoveryControl(
+      name: "resetTransparencyDiagnostics", summary: "Reset transparency diagnostics."),
+    DebugDiscoveryControl(
+      name: "setReduceTransparencyOverride",
+      summary: "Install or remove the diagnostic Reduce Transparency override."),
+    DebugDiscoveryControl(
+      name: "setBackgroundSource", summary: "Set the requested terminal background source."),
+    DebugDiscoveryControl(
+      name: "setBackgroundImageScaling", summary: "Set managed image scaling."),
+    DebugDiscoveryControl(
+      name: "importBackgroundImage",
+      summary: "Import a contained fixture image into run-scoped storage."),
+    DebugDiscoveryControl(
+      name: "removeBackgroundImage", summary: "Remove the run-scoped managed image."),
   ]
 
   public static let waitConditions: [DebugDiscoveryControl] = [

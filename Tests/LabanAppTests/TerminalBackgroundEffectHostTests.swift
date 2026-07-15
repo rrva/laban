@@ -185,7 +185,8 @@ final class TerminalBackgroundEffectHostTests: XCTestCase {
       managedImage: TerminalManagedBackgroundImage(
         identifier: "image-test.png", displayName: "test.png")!,
       fileURL: URL(fileURLWithPath: "/managed/image-test.png"),
-      image: image)
+      image: image,
+      contentDigest: String(repeating: "0", count: 64))
   }
 
   private func makeSolidImage(
