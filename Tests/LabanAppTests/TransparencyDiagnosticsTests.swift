@@ -121,6 +121,38 @@ final class TransparencyDiagnosticsTests: XCTestCase {
     XCTAssertEqual(projection["backgroundImageState"] as? String, "corrupt")
   }
 
+  func testLiveRouterProjectsResetReduceTransparencyOverrideAsJSONNull() throws {
+    let router = LiveIntentRouter(model: nil)
+    var state = sampleState()
+    router.bindTransparencyControl(
+      state: { state },
+      setBackground: { _, _, _ in },
+      resetDiagnostics: {},
+      setReduceTransparencyOverride: { state.reduceTransparencyOverride = $0 },
+      setNativeFullScreen: { _ in },
+      setBackgroundSource: { _ in },
+      setBackgroundImageScaling: { _ in },
+      importBackgroundImage: { _, _ in },
+      removeBackgroundImage: {})
+
+    XCTAssertEqual(
+      router.route(action(#"{"action":"setReduceTransparencyOverride","enabled":false}"#)).status,
+      200)
+    var response = router.query(LegacyDebugQueryInput(intentID: "transparency.state"))
+    var projection = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    XCTAssertEqual(projection["reduceTransparencyOverride"] as? Bool, false)
+
+    XCTAssertEqual(
+      router.route(action(#"{"action":"setReduceTransparencyOverride","enabled":null}"#)).status,
+      200)
+    response = router.query(LegacyDebugQueryInput(intentID: "transparency.state"))
+    projection = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    XCTAssertTrue(projection.keys.contains("reduceTransparencyOverride"))
+    XCTAssertTrue(projection["reduceTransparencyOverride"] is NSNull)
+  }
+
   private func action(_ body: String) -> Intent {
     let envelope = try! JSONDecoder().decode(DebugActionEnvelope.self, from: Data(body.utf8))
     return .legacyDebugAction(

@@ -557,9 +557,10 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     try container.encode(backdropSubviewCount, forKey: .backdropSubviewCount)
     try container.encode(backdropSubviewKind, forKey: .backdropSubviewKind)
     try container.encode(systemReduceTransparency, forKey: .systemReduceTransparency)
-    try container.encodeIfPresent(
-      reduceTransparencyOverride,
-      forKey: .reduceTransparencyOverride)
+    // The reset state is observable evidence, not an absent projection field.
+    // Encode nil as JSON null so clients can distinguish "system value" from
+    // an older server that does not expose the override contract.
+    try container.encode(reduceTransparencyOverride, forKey: .reduceTransparencyOverride)
     try container.encode(effectiveReduceTransparency, forKey: .effectiveReduceTransparency)
     try container.encode(nativeFullscreen, forKey: .nativeFullscreen)
     try container.encode(accessibilityRefreshCount, forKey: .accessibilityRefreshCount)
