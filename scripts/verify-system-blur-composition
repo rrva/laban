@@ -1,39 +1,41 @@
 #!/usr/bin/env python3
-"""Verify real System Blur composition with a full-display ScreenCaptureKit oracle."""
+"""Verify real System Blur composition without persisting a desktop capture."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import plistlib
-import shutil
+import runpy
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Callable, NoReturn
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-FIXTURE = (
-    REPOSITORY_ROOT
-    / "Tests/LabanAppTests/Fixtures/SystemBlurCompositionOracle.swift"
-)
-PREFERENCE_TYPES = {
-    "LabanTerminalBackgroundOpacity": "float",
-    "LabanTerminalApplyOpacityToExplicitCellBackgrounds": "bool",
-    "LabanTerminalBackdropStyle": "string",
-    "LabanTerminalBackgroundImageScaling": "string",
-    "LabanTerminalBackgroundImageIdentifier": "string",
-    "LabanTerminalBackgroundImageDisplayName": "string",
-}
+FIXTURE = REPOSITORY_ROOT / "Tests/LabanAppTests/Fixtures/SystemBlurCompositionOracle.swift"
+PROCESS_SUPPORT = runpy.run_path(str(REPOSITORY_ROOT / "scripts/profile-transparency-compositor"))
+ProfileTerminationSignalGuard = PROCESS_SUPPORT["ProfileTerminationSignalGuard"]
+OwnedProcesses = PROCESS_SUPPORT["OwnedProcesses"]
+ProfileError = PROCESS_SUPPORT["ProfileError"]
 
 
 class OracleError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class PreferenceSnapshot:
+    existed: bool
+    exported: bytes
+    canonical: bytes
 
 
 def fail(message: str) -> NoReturn:
@@ -46,6 +48,10 @@ def run(arguments: list[str], description: str) -> subprocess.CompletedProcess[s
         detail = completed.stderr.strip() or completed.stdout.strip()
         fail(f"{description} failed: {detail}")
     return completed
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def compile_fixture(destination: Path) -> None:
@@ -65,18 +71,29 @@ def compile_fixture(destination: Path) -> None:
     )
 
 
-def bundle_identifier(app: Path) -> str:
-    info = app / "Contents/Info.plist"
+def app_info(app: Path) -> dict[str, Any]:
     try:
-        value = plistlib.loads(info.read_bytes()).get("CFBundleIdentifier")
+        value = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     except (OSError, plistlib.InvalidFileException) as error:
         fail(f"could not read installed app metadata: {error}")
-    if not isinstance(value, str) or not value:
-        fail("installed app has no bundle identifier")
+    if not isinstance(value, dict):
+        fail("installed app metadata is not a dictionary")
     return value
 
 
-def read_preferences(domain: str) -> dict[str, Any]:
+def canonical_plist(value: dict[str, Any]) -> bytes:
+    return plistlib.dumps(value, fmt=plistlib.FMT_BINARY, sort_keys=True)
+
+
+def read_preferences(domain: str) -> PreferenceSnapshot:
+    exists = subprocess.run(
+        ["/usr/bin/defaults", "read", domain],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    if not exists:
+        return PreferenceSnapshot(False, b"", b"")
     completed = subprocess.run(
         ["/usr/bin/defaults", "export", domain, "-"],
         check=False,
@@ -84,60 +101,66 @@ def read_preferences(domain: str) -> dict[str, Any]:
     )
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace")
-        if "does not exist" in detail:
-            return {}
-        fail(f"could not snapshot transparency preferences: {detail.strip()}")
+        fail(f"could not snapshot installed-app preferences: {detail.strip()}")
     try:
         value = plistlib.loads(completed.stdout)
     except plistlib.InvalidFileException as error:
-        fail(f"transparency preference snapshot is invalid: {error}")
+        fail(f"installed-app preference snapshot is invalid: {error}")
     if not isinstance(value, dict):
-        fail("transparency preference snapshot is not a dictionary")
-    return {key: value[key] for key in PREFERENCE_TYPES if key in value}
+        fail("installed-app preference snapshot is not a dictionary")
+    return PreferenceSnapshot(True, completed.stdout, canonical_plist(value))
 
 
-def restore_preferences(domain: str, snapshot: dict[str, Any]) -> None:
-    for key, kind in PREFERENCE_TYPES.items():
-        if key not in snapshot:
-            subprocess.run(
-                ["/usr/bin/defaults", "delete", domain, key],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            continue
-        value = snapshot[key]
-        if kind == "float":
-            arguments = ["-float", repr(float(value))]
-        elif kind == "bool":
-            arguments = ["-bool", "true" if bool(value) else "false"]
-        else:
-            arguments = ["-string", str(value)]
-        run(
-            ["/usr/bin/defaults", "write", domain, key, *arguments],
-            f"restoring {key}",
+def import_preference_domain(domain: str, payload: bytes) -> None:
+    subprocess.run(
+        ["/usr/bin/defaults", "delete", domain],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    completed = subprocess.run(
+        ["/usr/bin/defaults", "import", domain, "-"],
+        input=payload,
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        fail(f"could not import installed-app preferences: {detail}")
+
+
+def restore_preferences(domain: str, snapshot: PreferenceSnapshot) -> None:
+    if snapshot.existed:
+        import_preference_domain(domain, snapshot.exported)
+    else:
+        subprocess.run(
+            ["/usr/bin/defaults", "delete", domain],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    if read_preferences(domain) != snapshot:
-        fail("transparency preferences did not restore exactly")
+    restored = read_preferences(domain)
+    if restored != snapshot:
+        fail("installed-app preference domain did not restore byte-for-byte with exact types")
 
 
-def terminate(process: subprocess.Popen[str] | None) -> None:
-    if process is None:
+def cleanup_all(steps: list[tuple[str, Callable[[], None]]]) -> list[str]:
+    errors: list[str] = []
+    for label, action in steps:
+        try:
+            action()
+        except BaseException as error:
+            errors.append(f"{label}: {error}")
+    return errors
+
+
+def reset_reduce_transparency_override(client: Client | None) -> None:
+    if client is None:
         return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=5)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait(timeout=5)
+    client.action("setReduceTransparencyOverride", enabled=None)
+    state = client.transparency()
+    if state.get("effectiveReduceTransparency") != state.get("systemReduceTransparency"):
+        fail("Reduce Transparency override did not restore to the live system value")
 
 
 def wait_for_backdrop(process: subprocess.Popen[str], log: Path) -> dict[str, Any]:
@@ -238,9 +261,8 @@ def wait_for_state(client: Client, source: str) -> dict[str, Any]:
         "surfaceOpaque": False,
         "backdropSubviewKind": source,
         "backdropSubviewCount": 1 if source == "systemBlur" else 0,
+        "effectiveReduceTransparency": False,
     }
-    if source == "none":
-        expected["backdropSubviewKind"] = "none"
     deadline = time.monotonic() + 15
     state: dict[str, Any] = {}
     while time.monotonic() < deadline:
@@ -252,29 +274,126 @@ def wait_for_state(client: Client, source: str) -> dict[str, Any]:
     fail(f"{source} state did not settle exactly: " + ", ".join(mismatches))
 
 
-def capture(executable: Path, destination: Path) -> None:
-    run([str(executable), "capture", str(destination)], "full-display capture")
+def capture(executable: Path, destination: Path, pid: int) -> dict[str, Any]:
+    completed = run(
+        [str(executable), "capture", str(destination), str(pid)],
+        "full-display in-memory crop",
+    )
     if not destination.is_file() or destination.stat().st_size == 0:
-        fail("full-display capture did not create a PNG")
+        fail("in-memory terminal crop did not create a PNG")
+    try:
+        value = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        fail(f"capture metadata is invalid: {error}")
+    if not isinstance(value, dict) or value.get("captureKind") != "fullDisplayCroppedInMemory":
+        fail("capture did not attest full-display in-memory cropping")
+    return value
 
 
-def verify(app: Path, artifacts: Path) -> None:
+def git_output(arguments: list[str], description: str) -> str:
+    return run(["git", *arguments], description).stdout.strip()
+
+
+def provenance(app: Path, executable: Path, info: dict[str, Any]) -> dict[str, Any]:
+    raw_commit = info.get("LABANBuildCommit")
+    if not isinstance(raw_commit, str) or not raw_commit:
+        fail("installed app is missing LABANBuildCommit")
+    installed_commit = git_output(["rev-parse", f"{raw_commit}^{{commit}}"], "build commit")
+    repository_head = git_output(["rev-parse", "HEAD"], "repository HEAD")
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", installed_commit, repository_head],
+        check=False,
+    ).returncode == 0
+    if not ancestor:
+        fail("installed LABANBuildCommit is not an ancestor of repository HEAD")
+    relation = "current"
+    if installed_commit != repository_head:
+        unchanged = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--quiet",
+                f"{installed_commit}..{repository_head}",
+                "--",
+                "Package.swift",
+                "Package.resolved",
+                "Sources",
+            ],
+            check=False,
+        ).returncode == 0
+        if not unchanged:
+            fail("installed app is stale relative to current app sources")
+        relation = "ancestorWithNoAppSourceChanges"
+    if subprocess.run(
+        ["git", "diff", "--quiet", "HEAD", "--", "Package.swift", "Package.resolved", "Sources"],
+        check=False,
+    ).returncode != 0:
+        fail("uncommitted app-source changes make installed provenance ambiguous")
+    return {
+        "appPath": str(app),
+        "executableSHA256": sha256(executable),
+        "fixtureSHA256": sha256(FIXTURE),
+        "labanBuildCommit": raw_commit,
+        "labanBuildCommitResolved": installed_commit,
+        "repositoryHead": repository_head,
+        "installedCommitRelation": relation,
+        "osVersion": run(["sw_vers", "-productVersion"], "OS version").stdout.strip(),
+        "osBuild": run(["sw_vers", "-buildVersion"], "OS build").stdout.strip(),
+    }
+
+
+def sanitized_environment(control_dir: Path, run_id: str) -> dict[str, str]:
+    home = control_dir / "home"
+    temporary = control_dir / "tmp"
+    home.mkdir(mode=0o700)
+    temporary.mkdir(mode=0o700)
+    return {
+        "HOME": str(home),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "LOGNAME": "laban-fixture",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "SHELL": "/bin/sh",
+        "TERM": "xterm-256color",
+        "TMPDIR": str(temporary),
+        "USER": "laban-fixture",
+        "LABAN_CONTROL_DIR": str(control_dir),
+        "LABAN_GUI_FIXTURE_CONTROL": "1",
+        "LABAN_RUN_ID": run_id,
+    }
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def verify(
+    app: Path,
+    artifacts: Path,
+    termination_guard: Any,
+) -> None:
     executable = app / "Contents/MacOS/LabanApp"
     if not executable.is_file() or not os.access(executable, os.X_OK):
         fail(f"installed app executable not found: {executable}")
-    existing = subprocess.run(
-        ["pgrep", "-x", "LabanApp"], check=False, text=True, capture_output=True
-    ).stdout.split()
-    if existing:
+    if subprocess.run(
+        ["pgrep", "-x", "LabanApp"], check=False, capture_output=True
+    ).stdout.split():
         fail("close the existing LabanApp before running the isolated visual oracle")
     if artifacts.exists() and any(artifacts.iterdir()):
         fail(f"artifact directory is not empty: {artifacts}")
     artifacts.mkdir(parents=True, exist_ok=True)
 
-    domain = bundle_identifier(app)
+    info = app_info(app)
+    domain = info.get("CFBundleIdentifier")
+    if not isinstance(domain, str) or not domain:
+        fail("installed app has no bundle identifier")
+    identity = provenance(app, executable, info)
     preference_snapshot = read_preferences(domain)
-    backdrop: subprocess.Popen[str] | None = None
-    laban: subprocess.Popen[str] | None = None
+    processes = OwnedProcesses(termination_guard)
+    client: Client | None = None
+    primary_error: BaseException | None = None
+    completed_summary: dict[str, Any] | None = None
+
     with tempfile.TemporaryDirectory(
         prefix="system-blur-composition-", dir=REPOSITORY_ROOT / ".tmp"
     ) as raw_work:
@@ -283,18 +402,16 @@ def verify(app: Path, artifacts: Path) -> None:
         control_dir.mkdir(mode=0o700)
         helper = work / "system-blur-composition-oracle"
         compile_fixture(helper)
-        backdrop_log = artifacts / "backdrop.stdout.log"
-        backdrop_error = (artifacts / "backdrop.stderr.log").open("w", encoding="utf-8")
-        app_log = (artifacts / "app.log").open("w", encoding="utf-8")
         try:
+            backdrop_log = artifacts / "backdrop.stdout.log"
             backdrop_output = backdrop_log.open("w", encoding="utf-8")
+            backdrop_error = (artifacts / "backdrop.stderr.log").open("w", encoding="utf-8")
             try:
-                backdrop = subprocess.Popen(
+                backdrop = processes.start(
                     [str(helper), "backdrop"],
                     stdout=backdrop_output,
                     stderr=backdrop_error,
                     text=True,
-                    start_new_session=True,
                 )
             finally:
                 backdrop_output.close()
@@ -302,31 +419,20 @@ def verify(app: Path, artifacts: Path) -> None:
             geometry = wait_for_backdrop(backdrop, backdrop_log)
 
             run_id = f"system-blur-composition-{os.getpid()}"
-            environment = os.environ.copy()
-            environment.update(
-                {
-                    "LABAN_CONTROL_DIR": str(control_dir),
-                    "LABAN_GUI_FIXTURE_CONTROL": "1",
-                    "LABAN_RUN_ID": run_id,
-                }
-            )
+            app_log = (artifacts / "app.log").open("w", encoding="utf-8")
             try:
-                laban = subprocess.Popen(
-                    [
-                        str(executable),
-                        "--no-persistence",
-                        "--terminal-backend=in-process",
-                    ],
-                    env=environment,
+                laban = processes.start(
+                    [str(executable), "--no-persistence", "--terminal-backend=in-process"],
+                    env=sanitized_environment(control_dir, run_id),
+                    cwd=control_dir / "home",
                     stdout=app_log,
                     stderr=subprocess.STDOUT,
                     text=True,
-                    start_new_session=True,
                 )
             finally:
                 app_log.close()
             client = Client(wait_for_control(laban, control_dir, run_id))
-
+            client.action("setReduceTransparencyOverride", enabled=False)
             client.action(
                 "setBackgroundTransparency",
                 opacity=0.3,
@@ -334,23 +440,21 @@ def verify(app: Path, artifacts: Path) -> None:
             )
             client.action("setBackgroundSource", source="none")
             direct_state = wait_for_state(client, "none")
-            (artifacts / "direct-state.json").write_text(
-                json.dumps(direct_state, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            direct_state_path = artifacts / "direct-state.json"
+            write_json(direct_state_path, direct_state)
             time.sleep(0.5)
-            direct_capture = artifacts / "direct-full-display.png"
-            capture(helper, direct_capture)
+            direct_capture = artifacts / "direct-terminal-crop.png"
+            direct_metadata = capture(helper, direct_capture, laban.pid)
 
             client.action("setBackgroundSource", source="systemBlur")
             blur_state = wait_for_state(client, "systemBlur")
-            (artifacts / "system-blur-state.json").write_text(
-                json.dumps(blur_state, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            blur_state_path = artifacts / "system-blur-state.json"
+            write_json(blur_state_path, blur_state)
             time.sleep(0.5)
-            blur_capture = artifacts / "system-blur-full-display.png"
-            capture(helper, blur_capture)
+            blur_capture = artifacts / "system-blur-terminal-crop.png"
+            blur_metadata = capture(helper, blur_capture, laban.pid)
+            if blur_metadata != direct_metadata:
+                fail("direct and System Blur terminal crops have different metadata")
 
             analyzed = subprocess.run(
                 [
@@ -358,24 +462,260 @@ def verify(app: Path, artifacts: Path) -> None:
                     "analyze",
                     str(direct_capture),
                     str(blur_capture),
-                    str(laban.pid),
-                    str(geometry["screenWidth"]),
-                    str(geometry["screenHeight"]),
+                    str(direct_metadata["sampleOriginXPoints"]),
+                    str(direct_metadata["captureScale"]),
+                    str(direct_metadata["terminalSampleHeight"]),
                     str(geometry["stripeWidth"]),
                 ],
                 check=False,
                 text=True,
                 capture_output=True,
             )
-            (artifacts / "summary.json").write_text(analyzed.stdout, encoding="utf-8")
+            try:
+                summary = json.loads(analyzed.stdout)
+            except json.JSONDecodeError as error:
+                fail(f"composition summary is invalid: {error}")
             if analyzed.returncode != 0:
-                fail(analyzed.stderr.strip() or "full-display composition gates failed")
-        finally:
-            terminate(laban)
-            terminate(backdrop)
-            restore_preferences(domain, preference_snapshot)
+                failures = summary.get("failures") if isinstance(summary, dict) else None
+                fail(analyzed.stderr.strip() or f"full-display composition gates failed: {failures}")
+            if not isinstance(summary, dict):
+                fail("composition summary is not an object")
+            summary.update(
+                {
+                    "capture": direct_metadata,
+                    "provenance": identity,
+                    "artifacts": {
+                        "directCropSHA256": sha256(direct_capture),
+                        "systemBlurCropSHA256": sha256(blur_capture),
+                        "directStateSHA256": sha256(direct_state_path),
+                        "systemBlurStateSHA256": sha256(blur_state_path),
+                    },
+                }
+            )
+            completed_summary = summary
+        except BaseException as error:
+            primary_error = error
+
+        with termination_guard.defer():
+            cleanup_errors = cleanup_all(
+                [
+                    (
+                        "Reduce Transparency override reset",
+                        lambda: reset_reduce_transparency_override(client),
+                    ),
+                    ("owned process cleanup", processes.close),
+                    ("preference restoration", lambda: restore_preferences(domain, preference_snapshot)),
+                ]
+            )
+        if cleanup_errors:
+            prefix = f"{primary_error}; " if primary_error is not None else ""
+            fail(prefix + "cleanup failures: " + "; ".join(cleanup_errors))
+        if primary_error is not None:
+            raise primary_error
+        if completed_summary is None:
+            fail("composition completed without a summary")
+        completed_summary["cleanup"] = {
+            "ownedProcessGroupsReaped": True,
+            "preferenceDomainRestoredByteForByte": True,
+            "reduceTransparencyOverrideRestoredToSystem": True,
+        }
+        write_json(artifacts / "summary.json", completed_summary)
 
     print(f"verify-system-blur-composition: summary={artifacts / 'summary.json'}")
+
+
+def self_test_preferences() -> None:
+    domain = f"com.laban.system-blur-oracle.self-test.{os.getpid()}.{time.time_ns()}"
+    malformed: dict[str, Any] = {
+        "LabanTerminalBackgroundOpacity": "malformed-opacity",
+        "LabanTerminalApplyOpacityToExplicitCellBackgrounds": 7,
+        "LabanTerminalBackdropStyle": ["not", "a", "string"],
+        "UnrelatedBinary": b"\x00\xfffixture",
+        "UnrelatedInteger": 42,
+    }
+    try:
+        missing = read_preferences(domain)
+        if missing.existed:
+            fail("preference self-test domain unexpectedly existed")
+        import_preference_domain(domain, plistlib.dumps(malformed, fmt=plistlib.FMT_XML))
+        snapshot = read_preferences(domain)
+        import_preference_domain(domain, plistlib.dumps({"replacement": True}))
+        restore_preferences(domain, snapshot)
+        restored = read_preferences(domain)
+        if restored.exported != snapshot.exported or restored.canonical != canonical_plist(malformed):
+            fail("malformed preference values did not restore byte-for-byte with exact types")
+        restore_preferences(domain, missing)
+        if read_preferences(domain).existed:
+            fail("missing preference domain was not restored as missing")
+    finally:
+        subprocess.run(
+            ["/usr/bin/defaults", "delete", domain],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def self_test_cleanup_aggregation() -> None:
+    called: list[str] = []
+
+    def step(name: str, broken: bool) -> Callable[[], None]:
+        def action() -> None:
+            called.append(name)
+            if broken:
+                raise RuntimeError(name)
+
+        return action
+
+    errors = cleanup_all(
+        [("first", step("first", True)), ("second", step("second", True)), ("third", step("third", False))]
+    )
+    if called != ["first", "second", "third"] or len(errors) != 2:
+        fail("cleanup aggregation did not run every independent cleanup step")
+
+
+def run_signal_cleanup_child(directory: Path) -> int:
+    directory.mkdir(parents=True, exist_ok=True)
+    descendant_ready = directory / "descendant-ready"
+    stubborn_script = directory / "stubborn-descendant.py"
+    stubborn_script.write_text(
+        "import os, pathlib, signal, time\n"
+        "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"pathlib.Path({str(descendant_ready)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    processes: Any = None
+    interrupted = False
+    try:
+        with ProfileTerminationSignalGuard() as termination_guard:
+            processes = OwnedProcesses(termination_guard)
+            worker = processes.start(
+                [
+                    "/bin/sh",
+                    "-c",
+                    '"$1" "$2" &',
+                    "system-blur-signal-wrapper",
+                    sys.executable,
+                    str(stubborn_script),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not descendant_ready.is_file():
+                time.sleep(0.05)
+            if not descendant_ready.is_file():
+                return 3
+            (directory / "ready").write_text(str(worker.pid), encoding="utf-8")
+            try:
+                while True:
+                    time.sleep(1)
+            except ProfileError:
+                interrupted = True
+            finally:
+                processes.close()
+                processes = None
+    finally:
+        if processes is not None:
+            processes.close()
+    if not interrupted:
+        return 2
+    (directory / "cleaned").write_text("cleaned\n", encoding="utf-8")
+    return 0
+
+
+def self_test_real_signal_cleanup() -> None:
+    for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        with tempfile.TemporaryDirectory(
+            prefix=f"system-blur-signal-{signal.Signals(signum).name.lower()}-",
+            dir=REPOSITORY_ROOT / ".tmp",
+        ) as raw_directory:
+            directory = Path(raw_directory)
+            child = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), f"--signal-cleanup-child={directory}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            worker_pid: int | None = None
+            descendant_pid: int | None = None
+            try:
+                deadline = time.monotonic() + 10
+                ready = directory / "ready"
+                while time.monotonic() < deadline:
+                    if child.poll() is not None:
+                        stdout, stderr = child.communicate()
+                        fail(
+                            f"real-signal child exited before readiness for "
+                            f"{signal.Signals(signum).name}: {stderr or stdout}"
+                        )
+                    if ready.is_file():
+                        worker_pid = int(ready.read_text(encoding="utf-8"))
+                        descendant_pid = int(
+                            (directory / "descendant-ready").read_text(encoding="utf-8")
+                        )
+                        break
+                    time.sleep(0.05)
+                if worker_pid is None:
+                    fail(f"real-signal child did not become ready for {signal.Signals(signum).name}")
+                os.kill(child.pid, signum)
+                stdout, stderr = child.communicate(timeout=12)
+                if child.returncode != 0 or not (directory / "cleaned").is_file():
+                    fail(
+                        f"real {signal.Signals(signum).name} cleanup failed: "
+                        f"{stderr or stdout or child.returncode}"
+                    )
+                try:
+                    os.killpg(worker_pid, 0)
+                except ProcessLookupError:
+                    pass
+                else:
+                    fail(
+                        f"real {signal.Signals(signum).name} cleanup left a stubborn "
+                        "descendant process group alive"
+                    )
+                if descendant_pid is None:
+                    fail("real-signal cleanup did not record the stubborn descendant")
+                try:
+                    os.kill(descendant_pid, 0)
+                except ProcessLookupError:
+                    pass
+                else:
+                    fail(
+                        f"real {signal.Signals(signum).name} cleanup left stubborn "
+                        f"descendant PID {descendant_pid} alive"
+                    )
+            finally:
+                if child.poll() is None:
+                    PROCESS_SUPPORT["terminate"](child, process_group_id=child.pid)
+                if worker_pid is not None:
+                    try:
+                        os.killpg(worker_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                if descendant_pid is not None:
+                    try:
+                        os.kill(descendant_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+
+def self_test() -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="system-blur-oracle-self-test-", dir=REPOSITORY_ROOT / ".tmp"
+    ) as raw_work:
+        helper = Path(raw_work) / "system-blur-composition-oracle"
+        compile_fixture(helper)
+        run([str(helper), "self-test"], "metric and no-blur negative self-test")
+    PROCESS_SUPPORT["self_test_termination_signal_guard"]()
+    PROCESS_SUPPORT["self_test_owned_process_cleanup"]()
+    self_test_real_signal_cleanup()
+    self_test_preferences()
+    self_test_cleanup_aggregation()
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -387,7 +727,12 @@ def parse_arguments() -> argparse.Namespace:
         default=REPOSITORY_ROOT / ".artifacts/transparency/system-blur-composition",
     )
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--signal-cleanup-child", type=Path, help=argparse.SUPPRESS)
     arguments = parser.parse_args()
+    if arguments.signal_cleanup_child is not None:
+        if arguments.self_test or arguments.app is not None:
+            parser.error("--signal-cleanup-child cannot be combined with other modes")
+        return arguments
     if not arguments.self_test and arguments.app is None:
         parser.error("--app is required unless --self-test is used")
     return arguments
@@ -397,18 +742,16 @@ def main() -> int:
     arguments = parse_arguments()
     try:
         (REPOSITORY_ROOT / ".tmp").mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix="system-blur-oracle-self-test-", dir=REPOSITORY_ROOT / ".tmp"
-        ) as raw_work:
-            helper = Path(raw_work) / "system-blur-composition-oracle"
-            compile_fixture(helper)
-            run([str(helper), "self-test"], "metric self-test")
+        if arguments.signal_cleanup_child is not None:
+            return run_signal_cleanup_child(arguments.signal_cleanup_child)
         if arguments.self_test:
+            self_test()
             print("verify-system-blur-composition: self-test passed")
-            return 0
-        verify(arguments.app.resolve(), arguments.artifacts.resolve())
+        else:
+            with ProfileTerminationSignalGuard() as termination_guard:
+                verify(arguments.app.resolve(), arguments.artifacts.resolve(), termination_guard)
         return 0
-    except OracleError as error:
+    except (OracleError, ProfileError, ValueError) as error:
         print(f"verify-system-blur-composition: {error}", file=sys.stderr)
         return 1
 

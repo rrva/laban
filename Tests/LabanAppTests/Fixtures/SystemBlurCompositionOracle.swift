@@ -59,22 +59,30 @@ private final class BackdropDelegate: NSObject, NSApplicationDelegate {
 }
 
 private struct Analysis: Codable {
-  var schemaVersion = 1
+  var schemaVersion = 2
   var directSourceCorrelation: Double
   var blurSourceCorrelation: Double
+  var directSourceAmplitude: Double
+  var blurSourceAmplitude: Double
   var directEdgeEnergy: Double
   var blurEdgeEnergy: Double
-  var blurToDirectEdgeEnergyRatio: Double
-  var windowX: Double
-  var windowY: Double
-  var windowWidth: Double
-  var windowHeight: Double
-  var terminalSampleX: Int
-  var terminalSampleY: Int
+  var directNormalizedEdgeSharpness: Double
+  var blurNormalizedEdgeSharpness: Double
+  var blurToDirectNormalizedEdgeRatio: Double
   var terminalSampleWidth: Int
   var terminalSampleHeight: Int
   var passed: Bool
   var failures: [String]
+}
+
+private struct CaptureMetadata: Codable, Equatable {
+  var schemaVersion = 1
+  var captureKind = "fullDisplayCroppedInMemory"
+  var sampleOriginXPoints: Double
+  var sampleOriginYPoints: Double
+  var captureScale: Double
+  var terminalSampleWidth: Int
+  var terminalSampleHeight: Int
 }
 
 private final class ShareableContentBox: @unchecked Sendable {
@@ -119,7 +127,7 @@ private final class CaptureBox: @unchecked Sendable {
 /// window-only ScreenCaptureKit filter suppresses behind-window composition,
 /// so substituting an app/window screenshot would invalidate this oracle.
 @available(macOS 14.0, *)
-private func captureFullDisplay(to path: String) {
+private func captureFullDisplay(to path: String, labanPID: pid_t) {
   guard CGPreflightScreenCaptureAccess() else {
     fail("Screen Recording access is required for full-display capture")
   }
@@ -164,15 +172,53 @@ private func captureFullDisplay(to path: String) {
   guard captureError == nil, let image else {
     fail("full-display ScreenCaptureKit capture failed: \(String(describing: captureError))")
   }
-  let bitmap = NSBitmapImageRep(cgImage: image)
+
+  guard let screen = NSScreen.main, screen.frame.origin == .zero else {
+    fail("the main screen must have a zero origin for deterministic capture")
+  }
+  let scaleX = Double(image.width) / screen.frame.width
+  let scaleY = Double(image.height) / screen.frame.height
+  guard abs(scaleX - scaleY) < 0.01, scaleX >= 1 else {
+    fail("full-display capture dimensions do not match the main screen")
+  }
+  let window = labanWindowBounds(pid: labanPID)
+  let sampleMinX = Int(((window.minX + 220) * scaleX).rounded(.up))
+  let sampleMaxX = Int(((window.maxX - 30) * scaleX).rounded(.down))
+  let sampleMinY = Int(((window.minY + 90) * scaleY).rounded(.up))
+  let sampleMaxY = Int(((window.maxY - 60) * scaleY).rounded(.down))
+  let cropRect = CGRect(
+    x: sampleMinX,
+    y: sampleMinY,
+    width: sampleMaxX - sampleMinX,
+    height: sampleMaxY - sampleMinY)
+  guard cropRect.minX >= 0, cropRect.minY >= 0,
+    cropRect.maxX <= CGFloat(image.width), cropRect.maxY <= CGFloat(image.height),
+    cropRect.width >= 320, cropRect.height >= 100,
+    let cropped = image.cropping(to: cropRect)
+  else { fail("live Laban window does not provide a valid terminal crop") }
+
+  // The complete display exists only in this process's memory. Persist only
+  // the deterministic terminal crop so unrelated desktop content cannot enter
+  // the evidence bundle.
+  let bitmap = NSBitmapImageRep(cgImage: cropped)
   guard let png = bitmap.representation(using: .png, properties: [:]) else {
-    fail("could not encode the full-display capture")
+    fail("could not encode the in-memory terminal crop")
   }
   do {
     try png.write(to: URL(fileURLWithPath: path), options: .atomic)
   } catch {
-    fail("could not write the full-display capture: \(error)")
+    fail("could not write the in-memory terminal crop: \(error)")
   }
+  let metadata = CaptureMetadata(
+    sampleOriginXPoints: Double(sampleMinX) / scaleX,
+    sampleOriginYPoints: Double(sampleMinY) / scaleY,
+    captureScale: scaleX,
+    terminalSampleWidth: cropped.width,
+    terminalSampleHeight: cropped.height)
+  let encoder = JSONEncoder()
+  encoder.outputFormatting = [.sortedKeys]
+  FileHandle.standardOutput.write(try! encoder.encode(metadata))
+  FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
 private func labanWindowBounds(pid: pid_t) -> CGRect {
@@ -249,6 +295,24 @@ private func correlation(_ values: [Double], _ expected: [Double]) -> Double {
   return numerator / sqrt(valuesEnergy * expectedEnergy)
 }
 
+private func sourceAmplitude(_ values: [Double], _ expected: [Double]) -> Double {
+  var lowSum = 0.0
+  var lowCount = 0
+  var highSum = 0.0
+  var highCount = 0
+  for (value, target) in zip(values, expected) {
+    if target < 0.5 {
+      lowSum += value
+      lowCount += 1
+    } else {
+      highSum += value
+      highCount += 1
+    }
+  }
+  guard lowCount > 0, highCount > 0 else { return 0 }
+  return abs(highSum / Double(highCount) - lowSum / Double(lowCount))
+}
+
 private func edgeEnergy(
   profile: [Double],
   captureScale: Double,
@@ -274,62 +338,31 @@ private func edgeEnergy(
   return maxima.reduce(0, +) / Double(maxima.count)
 }
 
-private func analyze(arguments: [String]) {
-  guard arguments.count == 6,
-    let pid = pid_t(arguments[2]),
-    let screenWidth = Double(arguments[3]),
-    let screenHeight = Double(arguments[4]),
-    let stripeWidthPoints = Double(arguments[5]),
-    screenWidth > 0,
-    screenHeight > 0,
-    stripeWidthPoints > 0
-  else {
-    fail("analyze expects DIRECT_PNG BLUR_PNG PID SCREEN_WIDTH SCREEN_HEIGHT STRIPE_WIDTH")
-  }
-
-  let direct = bitmap(at: arguments[0])
-  let blur = bitmap(at: arguments[1])
-  guard direct.pixelsWide == blur.pixelsWide, direct.pixelsHigh == blur.pixelsHigh else {
-    fail("direct and blur captures have different dimensions")
-  }
-  let scaleX = Double(direct.pixelsWide) / screenWidth
-  let scaleY = Double(direct.pixelsHigh) / screenHeight
-  guard abs(scaleX - scaleY) < 0.01, scaleX >= 1 else {
-    fail("capture dimensions do not match the main screen")
-  }
-
-  let window = labanWindowBounds(pid: pid)
-  let sampleMinX = Int(((window.minX + 220) * scaleX).rounded(.up))
-  let sampleMaxX = Int(((window.maxX - 30) * scaleX).rounded(.down))
-  let sampleMinY = Int(((window.minY + 90) * scaleY).rounded(.up))
-  let sampleMaxY = Int(((window.maxY - 60) * scaleY).rounded(.down))
-  guard sampleMinX >= 0, sampleMinY >= 0,
-    sampleMaxX <= direct.pixelsWide, sampleMaxY <= direct.pixelsHigh,
-    sampleMaxX - sampleMinX >= Int(4 * stripeWidthPoints * scaleX),
-    sampleMaxY - sampleMinY >= 100
-  else { fail("live Laban window does not provide a valid terminal sample rectangle") }
-
-  let xRange = sampleMinX..<sampleMaxX
-  let yRange = sampleMinY..<sampleMaxY
-  let directProfile = columnProfile(direct, xRange: xRange, yRange: yRange)
-  let blurProfile = columnProfile(blur, xRange: xRange, yRange: yRange)
-  let expected = xRange.map { x -> Double in
-    let pointX = Double(x) / scaleX
-    return Int(floor(pointX / stripeWidthPoints)).isMultiple(of: 2) ? 0 : 1
-  }
+private func evaluate(
+  directProfile: [Double],
+  blurProfile: [Double],
+  expected: [Double],
+  captureScale: Double,
+  sampleOriginX: Int,
+  stripeWidthPoints: Double
+) -> Analysis {
   let directCorrelation = correlation(directProfile, expected)
   let blurCorrelation = correlation(blurProfile, expected)
+  let directAmplitude = sourceAmplitude(directProfile, expected)
+  let blurAmplitude = sourceAmplitude(blurProfile, expected)
   let directEdges = edgeEnergy(
     profile: directProfile,
-    captureScale: scaleX,
-    sampleOriginX: sampleMinX,
+    captureScale: captureScale,
+    sampleOriginX: sampleOriginX,
     stripeWidthPoints: stripeWidthPoints)
   let blurEdges = edgeEnergy(
     profile: blurProfile,
-    captureScale: scaleX,
-    sampleOriginX: sampleMinX,
+    captureScale: captureScale,
+    sampleOriginX: sampleOriginX,
     stripeWidthPoints: stripeWidthPoints)
-  let ratio = directEdges > 0 ? blurEdges / directEdges : .infinity
+  let directSharpness = directAmplitude > 0 ? directEdges / directAmplitude : .infinity
+  let blurSharpness = blurAmplitude > 0 ? blurEdges / blurAmplitude : .infinity
+  let normalizedRatio = directSharpness > 0 ? blurSharpness / directSharpness : .infinity
 
   var failures: [String] = []
   if directCorrelation < 0.50 {
@@ -339,34 +372,83 @@ private func analyze(arguments: [String]) {
   if blurCorrelation < 0.10 {
     failures.append(String(format: "blur source correlation %.3f is below 0.10", blurCorrelation))
   }
-  if directEdges < 5 {
-    failures.append(String(format: "direct edge energy %.3f is below 5.0", directEdges))
+  if directAmplitude < 20 {
+    failures.append(String(format: "direct source amplitude %.3f is below 20.0", directAmplitude))
   }
-  if ratio > 0.85 {
-    failures.append(String(format: "blur/direct edge-energy ratio %.3f exceeds 0.85", ratio))
+  if blurAmplitude < 1 {
+    failures.append(String(format: "blur source amplitude %.3f is below 1.0", blurAmplitude))
+  }
+  if directSharpness < 0.50 {
+    failures.append(
+      String(format: "direct normalized edge sharpness %.3f is below 0.50", directSharpness))
+  }
+  if normalizedRatio > 0.60 {
+    failures.append(
+      String(format: "blur/direct normalized edge ratio %.3f exceeds 0.60", normalizedRatio))
   }
 
-  let result = Analysis(
+  return Analysis(
     directSourceCorrelation: directCorrelation,
     blurSourceCorrelation: blurCorrelation,
+    directSourceAmplitude: directAmplitude,
+    blurSourceAmplitude: blurAmplitude,
     directEdgeEnergy: directEdges,
     blurEdgeEnergy: blurEdges,
-    blurToDirectEdgeEnergyRatio: ratio,
-    windowX: window.minX,
-    windowY: window.minY,
-    windowWidth: window.width,
-    windowHeight: window.height,
-    terminalSampleX: sampleMinX,
-    terminalSampleY: sampleMinY,
-    terminalSampleWidth: sampleMaxX - sampleMinX,
-    terminalSampleHeight: sampleMaxY - sampleMinY,
+    directNormalizedEdgeSharpness: directSharpness,
+    blurNormalizedEdgeSharpness: blurSharpness,
+    blurToDirectNormalizedEdgeRatio: normalizedRatio,
+    terminalSampleWidth: directProfile.count,
+    terminalSampleHeight: 0,
     passed: failures.isEmpty,
     failures: failures)
+}
+
+private func analyze(arguments: [String]) {
+  guard arguments.count == 6,
+    let sampleOriginXPoints = Double(arguments[2]),
+    let captureScale = Double(arguments[3]),
+    let sampleHeight = Int(arguments[4]),
+    let stripeWidthPoints = Double(arguments[5]),
+    sampleOriginXPoints >= 0,
+    captureScale >= 1,
+    sampleHeight >= 100,
+    stripeWidthPoints > 0
+  else {
+    fail(
+      "analyze expects DIRECT_CROP BLUR_CROP SAMPLE_ORIGIN_X CAPTURE_SCALE SAMPLE_HEIGHT STRIPE_WIDTH"
+    )
+  }
+
+  let direct = bitmap(at: arguments[0])
+  let blur = bitmap(at: arguments[1])
+  guard direct.pixelsWide == blur.pixelsWide, direct.pixelsHigh == blur.pixelsHigh else {
+    fail("direct and blur captures have different dimensions")
+  }
+  guard direct.pixelsHigh == sampleHeight,
+    direct.pixelsWide >= Int(4 * stripeWidthPoints * captureScale)
+  else { fail("terminal crop dimensions do not match capture metadata") }
+
+  let xRange = 0..<direct.pixelsWide
+  let yRange = 0..<direct.pixelsHigh
+  let directProfile = columnProfile(direct, xRange: xRange, yRange: yRange)
+  let blurProfile = columnProfile(blur, xRange: xRange, yRange: yRange)
+  let expected = xRange.map { x -> Double in
+    let pointX = sampleOriginXPoints + Double(x) / captureScale
+    return Int(floor(pointX / stripeWidthPoints)).isMultiple(of: 2) ? 0 : 1
+  }
+  var result = evaluate(
+    directProfile: directProfile,
+    blurProfile: blurProfile,
+    expected: expected,
+    captureScale: captureScale,
+    sampleOriginX: Int((sampleOriginXPoints * captureScale).rounded()),
+    stripeWidthPoints: stripeWidthPoints)
+  result.terminalSampleHeight = direct.pixelsHigh
   let encoder = JSONEncoder()
   encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
   FileHandle.standardOutput.write(try! encoder.encode(result))
   FileHandle.standardOutput.write(Data("\n".utf8))
-  if !failures.isEmpty { exit(1) }
+  if !result.failures.isEmpty { exit(1) }
 }
 
 private func selfTest() {
@@ -382,17 +464,28 @@ private func selfTest() {
   let expected = (0..<width).map { index in
     Int(floor(Double(index) / Double(stripeWidth))).isMultiple(of: 2) ? 0.0 : 1.0
   }
-  let directCorrelation = correlation(direct, expected)
-  let blurCorrelation = correlation(blurred, expected)
-  let directEdges = edgeEnergy(
-    profile: direct, captureScale: scale, sampleOriginX: 0,
+  let valid = evaluate(
+    directProfile: direct,
+    blurProfile: blurred,
+    expected: expected,
+    captureScale: scale,
+    sampleOriginX: 0,
     stripeWidthPoints: Double(stripeWidth))
-  let blurEdges = edgeEnergy(
-    profile: blurred, captureScale: scale, sampleOriginX: 0,
+  guard valid.passed else { fail("synthetic blur metric self-test failed") }
+
+  // A sharp affine low-contrast copy has tiny raw edge energy but no blur.
+  // Normalizing edge energy by retained source amplitude must reject it.
+  let sharpTint = direct.map { 110 + 0.05 * $0 }
+  let invalid = evaluate(
+    directProfile: direct,
+    blurProfile: sharpTint,
+    expected: expected,
+    captureScale: scale,
+    sampleOriginX: 0,
     stripeWidthPoints: Double(stripeWidth))
-  guard directCorrelation > 0.99, blurCorrelation > 0.90,
-    directEdges > 100, blurEdges / directEdges < 0.20
-  else { fail("synthetic metric self-test failed") }
+  guard !invalid.passed,
+    invalid.failures.contains(where: { $0.contains("normalized edge ratio") })
+  else { fail("sharp low-contrast no-blur negative self-test was accepted") }
   print("system-blur-composition-oracle: self-test passed")
 }
 
@@ -406,9 +499,11 @@ case "backdrop":
 case "analyze":
   analyze(arguments: Array(CommandLine.arguments.dropFirst(2)))
 case "capture":
-  guard CommandLine.arguments.count == 3 else { fail("capture expects OUTPUT_PNG") }
+  guard CommandLine.arguments.count == 4,
+    let pid = pid_t(CommandLine.arguments[3])
+  else { fail("capture expects OUTPUT_PNG LABAN_PID") }
   if #available(macOS 14.0, *) {
-    captureFullDisplay(to: CommandLine.arguments[2])
+    captureFullDisplay(to: CommandLine.arguments[2], labanPID: pid)
   } else {
     fail("full-display ScreenCaptureKit capture requires macOS 14 or newer")
   }

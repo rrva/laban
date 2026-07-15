@@ -535,15 +535,35 @@ transitions, but their post-completion idle windows must also park.
 `scripts/verify-system-blur-composition` is the visual oracle for the native
 material. It launches checked-in fixture code that orders known black/white
 stripes immediately behind an isolated installed Laban window, applies exact
-30% None and System Blur states through the credential above, and captures the
+30% None and System Blur states through the credential above, forces the
+diagnostic Reduce Transparency override off for measurement, and captures the
 complete main display with `SCContentFilter(display:excludingWindows:)`. Do not
 replace that display filter with Laban's app screenshot or a window-only
 ScreenCaptureKit filter: those capture paths suppress behind-window material
-composition. The oracle locates the live terminal rectangle, requires the
-blurred output to remain correlated with the stripe source, and requires lower
-stripe-edge energy than direct transparency. It restores the typed transparency
-preference subset and terminates only its owned processes on every exit path.
-Screen Recording access and a closed existing Laban instance are prerequisites.
+composition. The full display exists only in fixture-process memory. Before any
+PNG is written, the fixture crops to a text-free interior of the terminal
+canvas; no menu bar, Dock, other window, sidebar, title bar, or shell row is
+persisted. Laban launches with an empty fixture home, `/bin/sh`, and an explicit
+minimal environment.
+
+The oracle requires the blurred crop to remain correlated with the stripe
+source and compares edge sharpness after normalizing by each crop's retained
+stripe amplitude. This rejects a sharp low-contrast tint as well as an opaque
+surface. Its self-test includes that negative, malformed plist value and absent
+domain restoration, independent cleanup-error aggregation, deferred
+SIGHUP/SIGINT/SIGTERM delivery, and a surviving descendant process group that
+requires SIGKILL while its direct child is reaped. Runtime cleanup always tries
+to reset the Reduce Transparency override to `null`, terminate/reap every owned
+process group, and restore the complete exported preference domain byte-for-
+byte with exact plist types, even when a peer cleanup fails.
+
+`summary.json` binds the result to the absolute app path, executable and fixture
+SHA-256 hashes, `LABANBuildCommit`, repository HEAD/ancestry, OS version/build,
+cropped PNG hashes, and token-free state hashes. A non-current installed commit
+is accepted only when it is an ancestor of HEAD and `Package.swift`,
+`Package.resolved`, and `Sources/` are unchanged since that commit. Screen
+Recording access, a closed existing Laban instance, and a zero-origin main
+display are prerequisites.
 
 For deterministic debug-server PNG alpha, `laban-agent` accepts equals-form
 `--background-opacity=<0...1>`, `--background-effect=none|system-blur`, and the
