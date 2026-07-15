@@ -24,7 +24,7 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - [x] (2026-07-15) Implement the shared requested/effective policy, notification-backed settings, explicit-background snapshot bit, ABI-1 transport, and negotiated helper capability with focused tests.
 - [x] (2026-07-15) Capture the immutable pre-renderer opaque Slug/vector release baseline at commit `0779195` with all 4,800 samples accepted across ten independent processes.
 - [ ] Deliver the first end-to-end Slug implementation, including AppKit window transparency and the grayscale antialiasing fallback.
-- [ ] Add equivalent software, classic Metal, GPU-driven Metal, and vector glyph support.
+- [x] (2026-07-15) Add equivalent software, classic Metal, GPU-driven Metal, vector glyph, and Slug replace-compositing support; pass the 25-test renderer alpha/idempotence/AA suite across all five selectors.
 - [ ] Add live settings UI, full-screen and accessibility policy, debug/headless control, screenshots, alpha probes, and performance evidence.
 - [ ] Run the full repository gates, install and exercise `~/Laban.app`, and pass the fresh-agent Review Gate.
 
@@ -50,6 +50,15 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 
 - Observation: vector rendering intentionally permits only one content frame in flight, so an immediate asynchronous second submission can return `false` while the prior command buffer completes; that is backpressure, not a failed timing sample.
   Evidence: the first isolated vector baseline stopped at CPU-encode warmup frame 1. The final harness waits outside the timed interval for the next accepted submission, bounds the retry at five seconds, and accepted exactly 240 measured CPU and 240 measured wall frames in each of five processes per renderer.
+
+- Observation: adding a defaulted compositing argument to the Metal renderer's local solid-emitter closure changes its function value from `(CGRect, UInt32) -> Void` to `(CGRect, UInt32, FrameCompositingMode) -> Void`; Swift does not apply default arguments when converting a function value to a narrower closure type.
+  Evidence: the first clean detached renderer build failed at all decoration emitters. Commit `f22b205` wraps those call sites in explicit two-argument closures, after which the renderer target compiled.
+
+- Observation: PNG test images use top-down row indexing while renderer damage coordinates are bottom-up. A small opaque rectangle at logical `y = 4...8` made the intended PNG `(5, 5)` semantic probe sample the translucent canvas instead.
+  Evidence: the first clean renderer run produced alpha 179 for every purported opaque probe across all five backends. Commit `0bd657c` uses a full-height opaque stripe and probes PNG row 12, which is also inside the lower logical damage band; all 25 focused renderer tests then passed.
+
+- Observation: the implementation host matches the required lane's stable macOS build, Macmini9,1 model, base Apple M1 chip, and 60 Hz display, but has 16 GiB rather than the required 8 GiB memory.
+  Evidence: host identity captured on 2026-07-15 reports macOS 26.5.1 build 25F80, Macmini9,1, Apple M1, 17,179,869,184 bytes, and 60 Hz. The compositor profiler must reject this host on `memoryBytes`; no compositor summary is claimed from it.
 
 ## Research Snapshot: July 2026 State of the Art
 
