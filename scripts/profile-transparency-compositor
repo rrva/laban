@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Capture the installed-app transparency compositor matrix on its pinned lane."""
+"""Capture the installed-app transparency compositor matrix on a pinned lane."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -20,7 +21,9 @@ from typing import Any
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-LANE = "stable-base-m1-8gb-60hz"
+STABLE_LANE = "stable-base-m1-8gb-60hz"
+HIGH_REFRESH_LANE = "macos27-apple-silicon-120hz"
+REQUIRED_LANES = (STABLE_LANE, HIGH_REFRESH_LANE)
 EIGHT_GIB = 8 * 1024 * 1024 * 1024
 IDENTITY_FIELDS = (
     "lane",
@@ -33,10 +36,15 @@ IDENTITY_FIELDS = (
     "displayHz",
 )
 SCENARIOS = (
-    ("opaqueStatic", 1.0, False),
-    ("opaqueAnimated", 1.0, True),
-    ("directStatic", 0.9, False),
-    ("directAnimated", 0.9, True),
+    ("opaqueStatic", 1.0, "none", "fill", False),
+    ("opaqueAnimated", 1.0, "none", "fill", True),
+    ("directStatic", 0.9, "none", "fill", False),
+    ("directAnimated", 0.9, "none", "fill", True),
+    ("frostedStatic", 0.9, "systemBlur", "fill", False),
+    ("frostedAnimated", 0.9, "systemBlur", "fill", True),
+    ("imageFillStatic", 0.9, "image", "fill", False),
+    ("imageFitStatic", 0.9, "image", "fit", False),
+    ("imageStretchStatic", 0.9, "image", "stretch", False),
 )
 COUNTERS = (
     "rendererPresentCount",
@@ -44,7 +52,31 @@ COUNTERS = (
     "effectiveTransparencyApplyCount",
     "transparencyRenderWakeCount",
     "presentIntervalDeadlineMisses",
+    "backgroundImageImportCount",
+    "backgroundImageDecodeCount",
+    "backgroundImageFileReadCount",
+    "backgroundImageApplyCount",
+    "backgroundImageRedrawCount",
 )
+STATE_FIELDS = (
+    "requestedOpacity",
+    "effectiveOpacity",
+    "requestedBackdropStyle",
+    "effectiveBackdropStyle",
+    "backgroundImageScaling",
+    "backgroundImageState",
+    "applyToExplicitCellBackgrounds",
+    "forceOpaqueReason",
+    "surfaceOpaque",
+    "backdropSubviewCount",
+    "backdropSubviewKind",
+    "backgroundImageIdentifier",
+    "backgroundImagePixelWidth",
+    "backgroundImagePixelHeight",
+    "backgroundImageContentDigest",
+)
+DEFAULT_IMAGE_FIXTURE = REPOSITORY_ROOT / "fixtures/transparency/background-gradient.png"
+HIGH_RESOLUTION_MINIMUM_PIXELS = 1920 * 1080
 
 
 class ProfileError(RuntimeError):
@@ -78,18 +110,36 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
 def validate_lane_contract(contract: dict[str, Any]) -> None:
     if set(contract) != set(IDENTITY_FIELDS):
         fail("lane contract fields do not match the required identity contract")
-    if contract["lane"] != LANE:
-        fail(f"lane contract must name {LANE}")
-    if not isinstance(contract["osVersion"], str) or re.fullmatch(r"26(?:\.[0-9]+){1,2}", contract["osVersion"]) is None:
-        fail("lane contract osVersion must be macOS 26.x")
-    if contract["osReleaseChannel"] != "stable":
-        fail("lane contract must pin the stable release channel")
-    if contract["hardwareModel"] != "Macmini9,1" or contract["chipModel"] != "Apple M1":
-        fail("lane contract must pin a base Apple M1 Mac mini")
-    if contract["memoryBytes"] != EIGHT_GIB:
-        fail("lane contract must pin exactly 8 GiB")
-    if contract["displayHz"] != 60:
-        fail("lane contract must pin exactly 60 Hz")
+    if not isinstance(contract["osBuild"], str) or re.fullmatch(r"[0-9]{2}[A-Z][0-9]+[a-z]?", contract["osBuild"]) is None:
+        fail("lane contract osBuild is malformed")
+    lane = contract.get("lane")
+    if lane == STABLE_LANE:
+        if not isinstance(contract["osVersion"], str) or re.fullmatch(r"26(?:\.[0-9]+){1,2}", contract["osVersion"]) is None:
+            fail("stable lane contract osVersion must be macOS 26.x")
+        if contract["osReleaseChannel"] != "stable":
+            fail("stable lane contract must pin the stable release channel")
+        if contract["hardwareModel"] != "Macmini9,1" or contract["chipModel"] != "Apple M1":
+            fail("stable lane contract must pin a base Apple M1 Mac mini")
+        if contract["memoryBytes"] != EIGHT_GIB:
+            fail("stable lane contract must pin exactly 8 GiB")
+        if contract["displayHz"] != 60:
+            fail("stable lane contract must pin exactly 60 Hz")
+        return
+    if lane == HIGH_REFRESH_LANE:
+        if not isinstance(contract["osVersion"], str) or re.fullmatch(r"27(?:\.[0-9]+){1,2}", contract["osVersion"]) is None:
+            fail("120 Hz lane contract osVersion must be macOS 27.x")
+        if contract["osReleaseChannel"] not in ("stable", "developerSeed"):
+            fail("120 Hz lane contract release channel must be stable or developerSeed")
+        if not isinstance(contract["hardwareModel"], str) or not contract["hardwareModel"].startswith("Mac"):
+            fail("120 Hz lane contract hardwareModel must identify a Mac")
+        if not isinstance(contract["chipModel"], str) or not contract["chipModel"].startswith("Apple M"):
+            fail("120 Hz lane contract chipModel must identify Apple silicon")
+        if isinstance(contract["memoryBytes"], bool) or not isinstance(contract["memoryBytes"], int) or contract["memoryBytes"] <= 0:
+            fail("120 Hz lane contract memoryBytes must be a positive exact byte count")
+        if contract["displayHz"] != 120:
+            fail("120 Hz lane contract must pin exactly 120 Hz")
+        return
+    fail("lane contract must name one of the two required compositor lanes")
 
 
 def display_hz() -> int:
@@ -103,16 +153,24 @@ def display_hz() -> int:
         for display in adapter.get("spdisplays_ndrvs", []):
             if display.get("spdisplays_main") != "spdisplays_yes":
                 continue
-            resolution = str(display.get("spdisplays_resolution") or display.get("_spdisplays_pixels") or "")
-            match = re.search(r"@\s*([0-9]+(?:\.[0-9]+)?)\s*Hz", resolution)
-            if match:
-                rates.append(float(match.group(1)))
-    if len(rates) != 1 or not math.isfinite(rates[0]):
+            for key, raw_value in display.items():
+                key_lower = str(key).lower()
+                text_value = str(raw_value)
+                match: re.Match[str] | None = None
+                if "refresh" in key_lower:
+                    match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text_value)
+                elif "resolution" in key_lower:
+                    match = re.search(r"@\s*([0-9]+(?:\.[0-9]+)?)\s*Hz", text_value)
+                if match:
+                    rates.append(float(match.group(1)))
+    rounded_rates = {
+        round(rate)
+        for rate in rates
+        if math.isfinite(rate) and abs(rate - round(rate)) <= 0.1
+    }
+    if len(rounded_rates) != 1:
         fail("could not identify exactly one main-display refresh rate")
-    rounded = round(rates[0])
-    if abs(rates[0] - rounded) > 0.1:
-        fail(f"main display has a non-integral refresh rate: {rates[0]}")
-    return int(rounded)
+    return int(next(iter(rounded_rates)))
 
 
 def host_identity(contract: dict[str, Any]) -> dict[str, Any]:
@@ -125,7 +183,7 @@ def host_identity(contract: dict[str, Any]) -> dict[str, Any]:
         os_version == contract["osVersion"] and os_build == contract["osBuild"]
     ) else "unverified"
     return {
-        "lane": LANE,
+        "lane": contract["lane"],
         "osVersion": os_version,
         "osBuild": os_build,
         "osReleaseChannel": release_channel,
@@ -375,6 +433,131 @@ def counters(state: dict[str, Any]) -> dict[str, int]:
     return result
 
 
+def observed_state(state: dict[str, Any]) -> dict[str, Any]:
+    missing = [field for field in STATE_FIELDS if field not in state]
+    if missing:
+        fail("/debug/transparency is missing state fields: " + ", ".join(missing))
+    return {field: state[field] for field in STATE_FIELDS}
+
+
+def validate_managed_image_identity(state: dict[str, Any]) -> None:
+    identifier = state.get("backgroundImageIdentifier")
+    if not isinstance(identifier, str) or not identifier:
+        fail("/debug/transparency is missing the managed image identifier")
+    for field in ("backgroundImagePixelWidth", "backgroundImagePixelHeight"):
+        value = state.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            fail(f"/debug/transparency is missing positive {field}")
+    if state["backgroundImagePixelWidth"] * state["backgroundImagePixelHeight"] < HIGH_RESOLUTION_MINIMUM_PIXELS:
+        fail("managed image fixture is not high resolution")
+    digest = state.get("backgroundImageContentDigest")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        fail("/debug/transparency is missing a SHA-256 image content digest")
+
+
+def validate_scenario_state(
+    state: dict[str, Any],
+    *,
+    name: str,
+    opacity: float,
+    source: str,
+    scaling: str,
+) -> None:
+    validate_managed_image_identity(state)
+    effective_source = "none" if opacity == 1.0 else source
+    expected: dict[str, Any] = {
+        "requestedOpacity": opacity,
+        "effectiveOpacity": opacity,
+        "requestedBackdropStyle": source,
+        "effectiveBackdropStyle": effective_source,
+        "backgroundImageScaling": scaling,
+        "backgroundImageState": "available",
+        "applyToExplicitCellBackgrounds": False,
+        "forceOpaqueReason": None,
+        "surfaceOpaque": opacity == 1.0,
+        "backdropSubviewCount": 0 if effective_source == "none" else 1,
+        "backdropSubviewKind": effective_source,
+    }
+    mismatches = [field for field, value in expected.items() if state.get(field) != value]
+    if mismatches:
+        fail(f"{name} did not reach its exact requested/effective identity: " + ", ".join(mismatches))
+
+
+def wait_for_scenario_state(
+    client: ControlClient,
+    *,
+    name: str,
+    opacity: float,
+    source: str,
+    scaling: str,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    last_error = "no state returned"
+    while time.monotonic() < deadline:
+        state = client.transparency()
+        try:
+            validate_scenario_state(
+                state,
+                name=name,
+                opacity=opacity,
+                source=source,
+                scaling=scaling,
+            )
+            return state
+        except ProfileError as error:
+            last_error = str(error)
+        time.sleep(0.1)
+    fail(f"{name} state did not settle: {last_error}")
+
+
+def configure_scenario(
+    client: ControlClient,
+    *,
+    opacity: float,
+    source: str,
+    scaling: str,
+) -> None:
+    client.action(
+        "setBackgroundTransparency",
+        opacity=opacity,
+        applyToExplicitCellBackgrounds=False,
+    )
+    client.action("setBackgroundImageScaling", scaling=scaling)
+    client.action("setBackgroundSource", source=source)
+
+
+def validate_image_fixture(path: Path) -> tuple[str, str]:
+    try:
+        resolved = path.resolve(strict=True)
+        relative = resolved.relative_to(REPOSITORY_ROOT.resolve())
+    except (FileNotFoundError, ValueError):
+        fail("image fixture must be an existing file contained by the repository")
+    if not resolved.is_file() or resolved.stat().st_size == 0:
+        fail("image fixture must be a nonempty regular file")
+    command(
+        ["git", "ls-files", "--error-unmatch", relative.as_posix()],
+        "checked-in image fixture validation",
+    )
+    return relative.as_posix(), hashlib.sha256(resolved.read_bytes()).hexdigest()
+
+
+def wait_for_imported_image(client: ControlClient, timeout: float = 15.0) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    last_error = "no state returned"
+    while time.monotonic() < deadline:
+        state = client.transparency()
+        try:
+            if state.get("backgroundImageState") != "available":
+                fail("background image is not available")
+            validate_managed_image_identity(state)
+            return state
+        except ProfileError as error:
+            last_error = str(error)
+        time.sleep(0.1)
+    fail(f"managed image import did not settle: {last_error}")
+
+
 def relative_artifact(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
 
@@ -383,6 +566,8 @@ def run_scenario(
     *,
     name: str,
     opacity: float,
+    source: str,
+    scaling: str,
     animated: bool,
     run: int,
     app_path: Path,
@@ -397,15 +582,25 @@ def run_scenario(
     scenario_dir.mkdir(parents=True)
     backdrop = start_backdrop(backdrop_executable, animated, scenario_dir)
     try:
-        client.action(
-            "setBackgroundTransparency",
-            opacity=opacity,
-            applyToExplicitCellBackgrounds=False,
-        )
+        configure_scenario(client, opacity=opacity, source=source, scaling=scaling)
         command(["open", "-a", str(app_path)], "installed-app activation")
+        _ = wait_for_scenario_state(
+            client,
+            name=name,
+            opacity=opacity,
+            source=source,
+            scaling=scaling,
+        )
         time.sleep(2)
         client.action("resetTransparencyDiagnostics")
         before_state = client.transparency()
+        validate_scenario_state(
+            before_state,
+            name=name,
+            opacity=opacity,
+            source=source,
+            scaling=scaling,
+        )
         before = counters(before_state)
 
         cpu_profile = scenario_dir / "cpu.perf"
@@ -459,6 +654,15 @@ def run_scenario(
                 fail(f"{name} run {run} produced no {label}")
 
         after_state = client.transparency()
+        validate_scenario_state(
+            after_state,
+            name=name,
+            opacity=opacity,
+            source=source,
+            scaling=scaling,
+        )
+        if observed_state(after_state) != observed_state(before_state):
+            fail(f"{name} run {run} requested/effective state drifted during sampling")
         after = counters(after_state)
         deltas = {field: after[field] - before[field] for field in COUNTERS}
         if any(value < 0 for value in deltas.values()):
@@ -467,6 +671,14 @@ def run_scenario(
             "run": run,
             "durationSeconds": duration,
             "settlingSeconds": 2,
+            "scenarioIdentity": {
+                "name": name,
+                "requestedOpacity": opacity,
+                "requestedBackdropStyle": source,
+                "backgroundImageScaling": scaling,
+                "backdropAnimated": animated,
+            },
+            "observedState": observed_state(before_state),
             "appCPU": {
                 "medianPercent": percentile(app_samples, 0.50),
                 "p95Percent": percentile(app_samples, 0.95),
@@ -482,6 +694,11 @@ def run_scenario(
             "effectiveTransparencyApplyDelta": deltas["effectiveTransparencyApplyCount"],
             "transparencyRenderWakeDelta": deltas["transparencyRenderWakeCount"],
             "presentIntervalDeadlineMisses": deltas["presentIntervalDeadlineMisses"],
+            "backgroundImageImportDelta": deltas["backgroundImageImportCount"],
+            "backgroundImageDecodeDelta": deltas["backgroundImageDecodeCount"],
+            "backgroundImageFileReadDelta": deltas["backgroundImageFileReadCount"],
+            "backgroundImageApplyDelta": deltas["backgroundImageApplyCount"],
+            "backgroundImageRedrawDelta": deltas["backgroundImageRedrawCount"],
             "tracePaths": {
                 "cpuProfile": relative_artifact(cpu_profile, artifacts),
                 "metalTrace": relative_artifact(metal_trace, artifacts),
@@ -508,10 +725,26 @@ def gate_scenarios(scenarios: dict[str, list[dict[str, Any]]]) -> list[str]:
                     failures.append(f"{name} run {run['run']} presented while static")
                 if run["appCPU"]["medianPercent"] >= 1.0:
                     failures.append(f"{name} run {run['run']} app CPU median is not below 1.0%")
+            if name.startswith("image"):
+                if run["backgroundImageDecodeDelta"] != 0:
+                    failures.append(f"{name} run {run['run']} decoded the settled image")
+                if run["backgroundImageFileReadDelta"] != 0:
+                    failures.append(f"{name} run {run['run']} read the settled image file")
     opaque = median([run["windowServerCPU"]["medianPercent"] for run in scenarios["opaqueStatic"]])
     direct = median([run["windowServerCPU"]["medianPercent"] for run in scenarios["directStatic"]])
     if direct > opaque + 2.0:
         failures.append("direct static WindowServer CPU median exceeds opaque by more than 2.0 points")
+    frosted_static = median([run["windowServerCPU"]["medianPercent"] for run in scenarios["frostedStatic"]])
+    if frosted_static > opaque + 8.0:
+        failures.append("Frosted static WindowServer CPU median exceeds opaque by more than 8.0 points")
+    opaque_animated = median([run["windowServerCPU"]["medianPercent"] for run in scenarios["opaqueAnimated"]])
+    frosted_animated = median([run["windowServerCPU"]["medianPercent"] for run in scenarios["frostedAnimated"]])
+    if frosted_animated > opaque_animated + 15.0:
+        failures.append("Frosted animated WindowServer CPU median exceeds opaque by more than 15.0 points")
+    for name in ("imageFillStatic", "imageFitStatic", "imageStretchStatic"):
+        image_static = median([run["windowServerCPU"]["medianPercent"] for run in scenarios[name]])
+        if image_static > opaque + 2.0:
+            failures.append(f"{name} WindowServer CPU median exceeds opaque by more than 2.0 points")
     return failures
 
 
@@ -532,8 +765,12 @@ def running_laban_pids() -> list[int]:
 def run_profile(arguments: argparse.Namespace) -> None:
     contract = load_json(arguments.lane_contract, "lane contract")
     validate_lane_contract(contract)
+    if contract["lane"] != arguments.lane:
+        fail("--lane does not match the lane contract")
     identity = host_identity(contract)
     validate_host(identity, contract)
+    image_fixture_path, image_fixture_sha256 = validate_image_fixture(arguments.image_fixture)
+    lane_contract_sha256 = hashlib.sha256(arguments.lane_contract.read_bytes()).hexdigest()
     executable = installed_executable(arguments.app)
     existing = running_laban_pids()
     if existing:
@@ -555,6 +792,10 @@ def run_profile(arguments: argparse.Namespace) -> None:
         work = Path(temporary)
         control_dir = work / "control"
         control_dir.mkdir(mode=0o700)
+        fixture_relative_path = Path("fixtures") / arguments.image_fixture.name
+        isolated_fixture = control_dir / fixture_relative_path
+        isolated_fixture.parent.mkdir(mode=0o700)
+        shutil.copy2(arguments.image_fixture, isolated_fixture)
         backdrop_executable = build_backdrop_helper(work)
         run_id = f"transparency-compositor-{os.getpid()}"
         environment = os.environ.copy()
@@ -577,13 +818,32 @@ def run_profile(arguments: argparse.Namespace) -> None:
         try:
             socket_path, token = wait_for_control(control_dir, run_id, app_process.pid)
             client = ControlClient(socket_path, token, control_dir)
-            scenarios: dict[str, list[dict[str, Any]]] = {name: [] for name, _, _ in SCENARIOS}
+            client.action(
+                "importBackgroundImage",
+                path=fixture_relative_path.as_posix(),
+                scaling="fill",
+            )
+            imported_image_state = wait_for_imported_image(client)
+            managed_image_identity = {
+                field: imported_image_state[field]
+                for field in (
+                    "backgroundImageIdentifier",
+                    "backgroundImagePixelWidth",
+                    "backgroundImagePixelHeight",
+                    "backgroundImageContentDigest",
+                )
+            }
+            scenarios: dict[str, list[dict[str, Any]]] = {
+                name: [] for name, _, _, _, _ in SCENARIOS
+            }
             for run in range(1, arguments.runs + 1):
-                for name, opacity, animated in SCENARIOS:
+                for name, opacity, source, scaling, animated in SCENARIOS:
                     print(f"profile-transparency-compositor: {name} run {run}/{arguments.runs}", file=sys.stderr)
                     scenarios[name].append(run_scenario(
                         name=name,
                         opacity=opacity,
+                        source=source,
+                        scaling=scaling,
                         animated=animated,
                         run=run,
                         app_path=arguments.app,
@@ -596,9 +856,15 @@ def run_profile(arguments: argparse.Namespace) -> None:
                     ))
             failures = gate_scenarios(scenarios)
             summary = {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "benchmark": "terminal-background-transparency-compositor",
                 **identity,
+                "laneContractSHA256": lane_contract_sha256,
+                "imageFixture": {
+                    "path": image_fixture_path,
+                    "sha256": image_fixture_sha256,
+                },
+                "managedImageIdentity": managed_image_identity,
                 "durationSeconds": arguments.duration,
                 "settlingSeconds": 2,
                 "runsPerScenario": arguments.runs,
@@ -615,7 +881,9 @@ def run_profile(arguments: argparse.Namespace) -> None:
         finally:
             if client is not None:
                 try:
+                    client.action("setBackgroundSource", source="none")
                     client.action("setBackgroundTransparency", opacity=1.0, applyToExplicitCellBackgrounds=False)
+                    client.action("removeBackgroundImage")
                 except ProfileError:
                     pass
                 client.close()
@@ -623,8 +891,11 @@ def run_profile(arguments: argparse.Namespace) -> None:
 
 
 def self_test() -> None:
+    fixture_path, fixture_sha256 = validate_image_fixture(DEFAULT_IMAGE_FIXTURE)
+    if fixture_path != "fixtures/transparency/background-gradient.png" or re.fullmatch(r"[0-9a-f]{64}", fixture_sha256) is None:
+        fail("self-test did not validate the checked-in high-resolution image fixture")
     contract = {
-        "lane": LANE,
+        "lane": STABLE_LANE,
         "osVersion": "26.5.1",
         "osBuild": "25F80",
         "osReleaseChannel": "stable",
@@ -635,6 +906,24 @@ def self_test() -> None:
     }
     validate_lane_contract(contract)
     validate_host(dict(contract), contract)
+    high_refresh_contract = {
+        "lane": HIGH_REFRESH_LANE,
+        "osVersion": "27.0",
+        "osBuild": "26A123a",
+        "osReleaseChannel": "developerSeed",
+        "hardwareModel": "Mac16,1",
+        "chipModel": "Apple M4 Pro",
+        "memoryBytes": 24 * 1024 * 1024 * 1024,
+        "displayHz": 120,
+    }
+    validate_lane_contract(high_refresh_contract)
+    validate_host(dict(high_refresh_contract), high_refresh_contract)
+    try:
+        validate_lane_contract(dict(high_refresh_contract, displayHz=60))
+    except ProfileError:
+        pass
+    else:
+        fail("self-test accepted 60 Hz for the 120 Hz lane")
     wrong = dict(contract, memoryBytes=16 * 1024 * 1024 * 1024)
     try:
         validate_host(wrong, contract)
@@ -642,20 +931,91 @@ def self_test() -> None:
         pass
     else:
         fail("self-test accepted a 16 GiB host for the 8 GiB lane")
+    counter_state = {field: 0 for field in COUNTERS}
+    if counters(counter_state) != counter_state:
+        fail("self-test did not preserve the exact diagnostics counters")
+    missing_counter = dict(counter_state)
+    missing_counter.pop("backgroundImageFileReadCount")
+    try:
+        counters(missing_counter)
+    except ProfileError:
+        pass
+    else:
+        fail("self-test accepted a missing image lifecycle counter")
     scenarios: dict[str, list[dict[str, Any]]] = {}
-    for name, _, _ in SCENARIOS:
+    for name, opacity, source, scaling, animated in SCENARIOS:
+        state = {
+            "requestedOpacity": opacity,
+            "effectiveOpacity": opacity,
+            "requestedBackdropStyle": source,
+            "effectiveBackdropStyle": "none" if opacity == 1.0 else source,
+            "backgroundImageScaling": scaling,
+            "backgroundImageState": "available",
+            "applyToExplicitCellBackgrounds": False,
+            "forceOpaqueReason": None,
+            "surfaceOpaque": opacity == 1.0,
+            "backdropSubviewCount": 0 if opacity == 1.0 or source == "none" else 1,
+            "backdropSubviewKind": "none" if opacity == 1.0 else source,
+            "backgroundImageIdentifier": "image-self-test.png",
+            "backgroundImagePixelWidth": 1920,
+            "backgroundImagePixelHeight": 1080,
+            "backgroundImageContentDigest": "a" * 64,
+        }
+        validate_scenario_state(
+            state,
+            name=name,
+            opacity=opacity,
+            source=source,
+            scaling=scaling,
+        )
+        window_server = {
+            "opaqueStatic": 1.0,
+            "opaqueAnimated": 2.0,
+            "directStatic": 2.0,
+            "directAnimated": 2.0,
+            "frostedStatic": 8.0,
+            "frostedAnimated": 16.0,
+            "imageFillStatic": 2.0,
+            "imageFitStatic": 2.0,
+            "imageStretchStatic": 2.0,
+        }[name]
         scenarios[name] = [{
             "run": run,
             "appCPU": {"medianPercent": 0.2},
-            "windowServerCPU": {"medianPercent": 2.0 if name == "directStatic" else 1.0},
+            "windowServerCPU": {"medianPercent": window_server},
             "rendererPresentDelta": 0,
             "presentIntervalDeadlineMisses": 0,
+            "backgroundImageDecodeDelta": 0,
+            "backgroundImageFileReadDelta": 0,
         } for run in range(1, 6)]
     if gate_scenarios(scenarios):
         fail("self-test rejected valid fixed thresholds")
     scenarios["opaqueStatic"][0]["rendererPresentDelta"] = 1
     if not gate_scenarios(scenarios):
         fail("self-test accepted a static renderer present")
+    scenarios["opaqueStatic"][0]["rendererPresentDelta"] = 0
+    scenarios["imageFillStatic"][0]["backgroundImageFileReadDelta"] = 1
+    if not gate_scenarios(scenarios):
+        fail("self-test accepted a settled image file read")
+    scenarios["imageFillStatic"][0]["backgroundImageFileReadDelta"] = 0
+    for case_name, baseline_name, excess in (
+        ("directStatic", "opaqueStatic", 2.1),
+        ("frostedStatic", "opaqueStatic", 8.1),
+        ("frostedAnimated", "opaqueAnimated", 15.1),
+        ("imageFitStatic", "opaqueStatic", 2.1),
+    ):
+        baseline = median([
+            run["windowServerCPU"]["medianPercent"] for run in scenarios[baseline_name]
+        ])
+        previous = [
+            run["windowServerCPU"]["medianPercent"] for run in scenarios[case_name]
+        ]
+        for run in scenarios[case_name]:
+            run["windowServerCPU"]["medianPercent"] = baseline + excess
+        if not gate_scenarios(scenarios):
+            fail(f"self-test accepted the {case_name} WindowServer budget violation")
+        for run, value in zip(scenarios[case_name], previous):
+            run["windowServerCPU"]["medianPercent"] = value
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -666,20 +1026,23 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--duration", type=int)
     parser.add_argument("--runs", type=int)
     parser.add_argument("--artifacts", type=Path)
+    parser.add_argument("--image-fixture", type=Path)
     parser.add_argument("--self-test", action="store_true")
     arguments = parser.parse_args()
     if arguments.self_test:
-        if any((arguments.app, arguments.lane, arguments.lane_contract, arguments.duration, arguments.runs, arguments.artifacts)):
+        if any((arguments.app, arguments.lane, arguments.lane_contract, arguments.duration, arguments.runs, arguments.artifacts, arguments.image_fixture)):
             parser.error("--self-test cannot be combined with capture arguments")
         return arguments
     if not all((arguments.app, arguments.lane, arguments.lane_contract, arguments.duration, arguments.runs, arguments.artifacts)):
         parser.error("all capture arguments are required")
-    if arguments.lane != LANE:
-        parser.error(f"--lane must be {LANE}")
+    if arguments.lane not in REQUIRED_LANES:
+        parser.error("--lane must name one of the two required compositor lanes")
     if arguments.duration != 60:
         parser.error("--duration must be 60")
     if arguments.runs != 5:
         parser.error("--runs must be 5")
+    if arguments.image_fixture is None:
+        arguments.image_fixture = DEFAULT_IMAGE_FIXTURE
     return arguments
 
 
