@@ -1299,7 +1299,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
 
       case .rect(let rect, let color, _, let compositing):
         let instance = solid(rect: rect, color: color)
-        if replacesDestination(compositing) {
+        if replacesDestination(compositing, color: color) {
           replaceSolids.append(instance)
         } else {
           solids.append(instance)
@@ -2180,8 +2180,14 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   }
 
   @inline(__always)
-  private func replacesDestination(_ compositing: FrameCompositingMode) -> Bool {
-    compositing == .replace
+  private func replacesDestination(
+    _ compositing: FrameCompositingMode,
+    color: UInt32
+  ) -> Bool {
+    // Source-over with alpha 1 is byte-equivalent to replace. Keep the shipped
+    // opaque path on its original single solid batch; only alpha-bearing
+    // replacement pixels need the no-blend pipeline.
+    compositing == .replace && UInt8(color & 0xFF) != 255
   }
 
   private func glyphInstance(

@@ -1563,7 +1563,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         guard intersectsDamage(minY: rect.minY, maxY: rect.maxY, bands: damageBands) else {
           continue
         }
-        if replacesDestination(compositing) {
+        if replacesDestination(compositing, color: color) {
           replaceSolids.append(solid(rect: rect, color: color))
         } else {
           solids.append(solid(rect: rect, color: color))
@@ -2219,8 +2219,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   @inline(__always)
-  private func replacesDestination(_ compositing: FrameCompositingMode) -> Bool {
-    compositing == .replace
+  private func replacesDestination(
+    _ compositing: FrameCompositingMode,
+    color: UInt32
+  ) -> Bool {
+    // Source-over with alpha 1 is byte-equivalent to replace. Avoid adding a
+    // second solid batch to the default opaque path.
+    compositing == .replace && UInt8(color & 0xFF) != 255
   }
 
   private func slugColor(_ rgba: UInt32) -> SIMD4<Float> {
