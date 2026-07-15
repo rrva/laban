@@ -614,40 +614,101 @@ def terminate(
     process: subprocess.Popen[Any],
     *,
     process_group_id: int | None = None,
+    group_grace_seconds: float = 5.0,
+    group_poll_interval: float = 0.05,
 ) -> None:
-    running = process.poll() is None
-    group_signaled = False
     group_error: OSError | None = None
-    if process_group_id is not None:
-        try:
-            os.killpg(process_group_id, signal.SIGTERM)
-            group_signaled = True
-        except ProcessLookupError:
-            pass
-        except OSError as error:
-            group_error = error
-    if running and not group_signaled:
-        process.terminate()
-    if not running:
-        if group_error is not None:
-            raise group_error
-        return
     try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
         if process_group_id is not None:
             try:
-                os.killpg(process_group_id, signal.SIGKILL)
+                os.killpg(process_group_id, signal.SIGTERM)
             except ProcessLookupError:
-                process.kill()
-            except OSError as error:
-                group_error = group_error or error
-                process.kill()
-        else:
-            process.kill()
-        process.wait(timeout=5)
+                pass
+            if not wait_for_process_group_disappearance(
+                process_group_id,
+                process,
+                timeout=group_grace_seconds,
+                poll_interval=group_poll_interval,
+            ):
+                try:
+                    os.killpg(process_group_id, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                if not wait_for_process_group_disappearance(
+                    process_group_id,
+                    process,
+                    timeout=group_grace_seconds,
+                    poll_interval=group_poll_interval,
+                ):
+                    raise OSError(
+                        f"profiling process group {process_group_id} survived SIGKILL"
+                    )
+    except OSError as error:
+        group_error = error
+
+    if process_group_id is None:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+
+    # Reap the direct child independently of group liveness. A short-lived
+    # wrapper may already be gone while xctrace/curl descendants remain in its
+    # process group, or may have moved out of the original group itself.
+    direct_error: OSError | subprocess.SubprocessError | None = None
+    try:
+        reap_direct_child(process)
+    except (OSError, subprocess.SubprocessError) as error:
+        direct_error = error
+    if direct_error is not None:
+        if group_error is not None:
+            raise OSError(f"{group_error}; direct-child reap failed: {direct_error}")
+        raise direct_error
     if group_error is not None:
         raise group_error
+
+
+def reap_direct_child(process: subprocess.Popen[Any]) -> None:
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=5)
+
+
+def wait_for_process_group_disappearance(
+    process_group_id: int,
+    direct_child: subprocess.Popen[Any],
+    *,
+    timeout: float,
+    poll_interval: float,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        # poll() nonblockingly reaps a direct child that exited while the group
+        # still had descendants; group liveness remains an independent check.
+        direct_child.poll()
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -1361,6 +1422,9 @@ def self_test_owned_process_cleanup() -> None:
     original_popen = subprocess.Popen
     original_killpg = os.killpg
     created: list[FakeProcess] = []
+    group_alive: dict[int, bool] = {}
+    ignore_group_sigterm: set[int] = set()
+    group_sigkill_count: dict[int, int] = {}
     guard = ProfileTerminationSignalGuard()
     inject_signal = True
 
@@ -1369,6 +1433,7 @@ def self_test_owned_process_cleanup() -> None:
             fail("self-test child was not isolated in an owned process group")
         process = FakeProcess(10_000 + len(created))
         created.append(process)
+        group_alive[process.pid] = True
         if inject_signal and len(created) == 2:
             # OwnedProcesses.start has created the child but has not returned;
             # this is the adversarial window that previously leaked a process.
@@ -1376,16 +1441,28 @@ def self_test_owned_process_cleanup() -> None:
         return process
 
     def fake_killpg(process_group_id: int, signum: int) -> None:
+        if not group_alive.get(process_group_id, False):
+            raise ProcessLookupError(process_group_id)
         process = next(
             (candidate for candidate in created if candidate.pid == process_group_id),
             None,
         )
         if process is None:
             raise ProcessLookupError(process_group_id)
+        if signum == 0:
+            return
         if signum == signal.SIGTERM:
-            process.terminate()
+            if process.returncode is None:
+                process.terminate()
+            if process_group_id not in ignore_group_sigterm:
+                group_alive[process_group_id] = False
         elif signum == signal.SIGKILL:
-            process.kill()
+            if process.returncode is None:
+                process.kill()
+            group_alive[process_group_id] = False
+            group_sigkill_count[process_group_id] = (
+                group_sigkill_count.get(process_group_id, 0) + 1
+            )
         else:
             fail("self-test process group received an unexpected signal")
 
@@ -1427,6 +1504,32 @@ def self_test_owned_process_cleanup() -> None:
             for process in created
         ):
             fail("self-test arbitrary error orphaned an owned child")
+
+        # The direct wrapper has already exited, but a descendant keeps its
+        # process group alive and ignores SIGTERM. Cleanup must still observe
+        # group liveness, escalate the group, and reap the direct child.
+        created = [FakeProcess(20_000)]
+        wrapper = created[0]
+        wrapper.returncode = 0
+        group_alive[wrapper.pid] = True
+        ignore_group_sigterm.add(wrapper.pid)
+        terminate(
+            wrapper,
+            process_group_id=wrapper.pid,
+            group_grace_seconds=0,
+            group_poll_interval=0,
+        )
+        if group_alive[wrapper.pid]:
+            fail("self-test left a descendant process group alive")
+        if group_sigkill_count.get(wrapper.pid) != 1:
+            fail("self-test did not SIGKILL a surviving descendant process group")
+        if wrapper.wait_count != 1:
+            fail("self-test did not reap an already-exited direct child")
+
+        direct_child = FakeProcess(30_000)
+        terminate(direct_child)
+        if direct_child.terminate_count != 1 or direct_child.wait_count != 1:
+            fail("self-test regressed non-group process termination")
     finally:
         subprocess.Popen = original_popen
         os.killpg = original_killpg
