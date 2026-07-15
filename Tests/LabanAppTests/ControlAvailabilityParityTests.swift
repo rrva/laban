@@ -38,6 +38,10 @@ final class ControlAvailabilityParityTests: XCTestCase {
     "transparency.diagnostics.reset",
     "transparency.reduceTransparencyOverride.set",
     "transparency.nativeFullScreen.set",
+    "transparency.backgroundSource.set",
+    "transparency.backgroundImageScaling.set",
+    "transparency.backgroundImage.import",
+    "transparency.backgroundImage.remove",
   ]
 
   func testLiveRouterImplementsEveryGUIAvailableOp() throws {
