@@ -108,3 +108,55 @@ enum TerminalTransparencySettings {
     defaults.object(forKey: applyToExplicitCellBackgroundsKey) as? Bool
   }
 }
+
+/// Trailing-edge persistence for the continuous Appearance slider. The UI
+/// updates its numeric label on every AppKit action, while a burst of drag
+/// events becomes one requested-setting write and therefore one full redraw.
+@MainActor
+final class TerminalTransparencyLivePersistence {
+  nonisolated static let defaultDelay: TimeInterval = 0.05
+
+  private let defaults: UserDefaults
+  private let notificationCenter: NotificationCenter
+  private let delay: TimeInterval
+  private var pendingOpacity: Double?
+  private var pendingWork: DispatchWorkItem?
+  private var generation: UInt64 = 0
+
+  init(
+    defaults: UserDefaults = .standard,
+    notificationCenter: NotificationCenter = .default,
+    delay: TimeInterval = TerminalTransparencyLivePersistence.defaultDelay
+  ) {
+    self.defaults = defaults
+    self.notificationCenter = notificationCenter
+    self.delay = max(0, delay)
+  }
+
+  func scheduleBackgroundOpacity(_ opacity: Double) {
+    pendingOpacity = opacity
+    pendingWork?.cancel()
+    generation &+= 1
+    let scheduledGeneration = generation
+    let work = DispatchWorkItem { [weak self] in
+      MainActor.assumeIsolated {
+        guard let self, self.generation == scheduledGeneration else { return }
+        self.flush()
+      }
+    }
+    pendingWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+  }
+
+  func flush() {
+    generation &+= 1
+    pendingWork?.cancel()
+    pendingWork = nil
+    guard let pendingOpacity else { return }
+    self.pendingOpacity = nil
+    TerminalTransparencySettings.setBackgroundOpacity(
+      pendingOpacity,
+      defaults: defaults,
+      notificationCenter: notificationCenter)
+  }
+}

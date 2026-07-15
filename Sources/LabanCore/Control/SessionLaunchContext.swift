@@ -42,6 +42,10 @@ public enum ControlEnvironmentKeys {
   public static let agentControlURL = "LABAN_AGENT_CONTROL_URL"
   /// When set to `"0"`, the GUI control server does not start (force-disable).
   public static let controlServerForceDisable = "LABAN_CONTROL_SERVER"
+  /// Explicit installed-GUI diagnostic fixture gate. The app also requires an
+  /// isolated `LABAN_CONTROL_DIR`; setting this alone never broadens the normal
+  /// advertisement or app-observe token.
+  public static let guiFixtureControl = "LABAN_GUI_FIXTURE_CONTROL"
   /// When set to `"1"`, agent-attached sessions receive `LABAN_SESSION_ATTACH`
   /// through env for explicit development / E2E attach paths.
   public static let attachEnvOptIn = "LABAN_CONTROL_ATTACH_ENV"

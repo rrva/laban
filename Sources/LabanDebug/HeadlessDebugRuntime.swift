@@ -101,6 +101,21 @@ public final class HeadlessDebugRuntime {
     increaseContrast: false,
     differentiateWithoutColor: false,
     reduceTransparency: false)
+  var requestedTransparency = TerminalTransparencyConfiguration(
+    backgroundOpacity: 1,
+    applyToExplicitCellBackgrounds: false,
+    backdropStyle: .none)
+  var effectiveTransparency = EffectiveTerminalTransparency(
+    backgroundOpacity: 1,
+    applyToExplicitCellBackgrounds: false,
+    backdropStyle: .none,
+    forceOpaqueReason: nil,
+    isSurfaceOpaque: true)
+  var reduceTransparencyOverride: Bool?
+  var transparencyAccessibilityRefreshCount = 0
+  var effectiveTransparencyApplyCount = 0
+  var transparencyRenderWakeCount = 0
+  var transparencyRendererPresentBaseline = 0
 
   /// Optional persistence wiring. When `--persistence-dir=<path>` is
   /// passed to the laban-agent CLI, the runtime mirrors what
@@ -131,6 +146,8 @@ public final class HeadlessDebugRuntime {
       pixelHeight: max(windowHeight, 1),
       scale: 1)
     enableBackendReadbackIfNeededUnlocked()
+    rendererBackend.setSurfaceTransparency(
+      RendererSurfaceTransparency(isOpaque: effectiveTransparency.isSurfaceOpaque))
     syncSoftwareRendererIfNeededUnlocked()
   }
 
@@ -173,6 +190,8 @@ public final class HeadlessDebugRuntime {
     captureName: String? = nil,
     captureScreenshots: CaptureScreenshotPolicy = .marked,
     persistenceBaseURL: URL? = nil,
+    backgroundOpacity: Double = 1,
+    applyTransparencyToExplicitCellBackgrounds: Bool = false,
     restorePersistedState: Bool = true,
     restoreOnLaunchEnabled: @escaping () -> Bool = { true }
   ) throws {
@@ -189,6 +208,17 @@ public final class HeadlessDebugRuntime {
     let initialSessionMode: HeadlessSessionMode = fixtureURL != nil ? .fixture : sessionMode
     self.sessionMode = initialSessionMode
     self.rendererSelection = rendererSelection
+    self.requestedTransparency = TerminalTransparencyConfiguration(
+      backgroundOpacity: backgroundOpacity,
+      applyToExplicitCellBackgrounds: applyTransparencyToExplicitCellBackgrounds,
+      backdropStyle: .none)
+    self.effectiveTransparency = TerminalTransparencyPolicy.resolve(
+      requested: self.requestedTransparency,
+      reduceTransparency: false,
+      nativeFullscreen: false,
+      supportsBehindWindowBlur: false,
+      snapshotBackgroundCapability: .inProcess,
+      headless: true)
     let configuredBackend = try TerminalSessionBackend.configured()
     self.terminalBackend = fixtureURL == nil ? configuredBackend : .inProcess
 
@@ -380,6 +410,8 @@ public final class HeadlessDebugRuntime {
       captureSink: initialRecorder
     )
     self.enableBackendReadbackIfNeededUnlocked()
+    self.rendererBackend.setSurfaceTransparency(
+      RendererSurfaceTransparency(isOpaque: effectiveTransparency.isSurfaceOpaque))
 
     if terminalBackend == .laband {
       try configureLabandBackendUnlocked()
@@ -786,10 +818,16 @@ public final class HeadlessDebugRuntime {
           increaseContrast: accessibilityDisplayFlags.increaseContrast,
           differentiateWithoutColor: accessibilityDisplayFlags.differentiateWithoutColor,
           reduceTransparency: accessibilityDisplayFlags.reduceTransparency),
-        backgroundCompositingOptions: .opaque,
+        backgroundCompositingOptions: TerminalBackgroundCompositingOptions(
+          opacity: UInt8((effectiveTransparency.backgroundOpacity * 255).rounded()),
+          applyToExplicitCellBackgrounds:
+            effectiveTransparency.applyToExplicitCellBackgrounds),
         snapshotBackgroundCapability: .inProcess,
         selection: activeSelection,
-        includeTerminalAreaBackground: false,
+        // Headless PNGs are part of the transparency contract. Emit the same
+        // resolved-alpha terminal canvas as the visible app so screenshots do
+        // not leave the terminal region at transparent black.
+        includeTerminalAreaBackground: true,
         requireActiveSnapshot: false,
         forceFullDamage: true,
         surfaceWidth: surface.width,

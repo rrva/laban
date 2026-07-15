@@ -306,6 +306,56 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
       "display accessibility notification must refresh the cached flags")
   }
 
+  @MainActor
+  func testAccessibilityNotificationCoalescesTransparencyApplyIntoOneWake() throws {
+    var options = TerminalBitmapView.AccessibilityDisplayOptions(
+      reduceMotion: false,
+      increaseContrast: false,
+      differentiateWithoutColor: false,
+      reduceTransparency: false)
+    TerminalBitmapView.accessibilityDisplayOptionsProviderForTests = { options }
+    let harness = try makeHarness()
+    let suiteName = "TerminalBitmapViewWakeTests-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+    let notifications = NotificationCenter()
+    TerminalTransparencySettings.setBackgroundOpacity(
+      0.7,
+      defaults: defaults,
+      notificationCenter: notifications)
+    let window = NSWindow()
+    let coordinator = TerminalWindowTransparencyCoordinator(
+      window: window,
+      terminalView: harness.view,
+      defaults: defaults,
+      notificationCenter: notifications,
+      reduceTransparency: false,
+      snapshotBackgroundCapability: .supported)
+    XCTAssertEqual(coordinator.status.effective.backgroundOpacity, 0.7)
+    harness.view.resetTransparencyDiagnostics()
+    let wakeBaseline = harness.view.advanceFrameCallCountForTesting
+
+    options = TerminalBitmapView.AccessibilityDisplayOptions(
+      reduceMotion: true,
+      increaseContrast: true,
+      differentiateWithoutColor: true,
+      reduceTransparency: true)
+    NSWorkspace.shared.notificationCenter.post(
+      name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+      object: NSWorkspace.shared)
+
+    XCTAssertTrue(
+      drainMainQueue {
+        harness.view.advanceFrameCallCountForTesting == wakeBaseline + 1
+      },
+      "the combined accessibility/transparency refresh must schedule one render wake")
+    let diagnostics = harness.view.transparencyDiagnostics
+    XCTAssertEqual(diagnostics.accessibilityRefreshCount, 1)
+    XCTAssertLessThanOrEqual(diagnostics.effectiveTransparencyApplyCount, 1)
+    XCTAssertEqual(diagnostics.transparencyRenderWakeCount, 1)
+    XCTAssertEqual(coordinator.status.effective.forceOpaqueReason, .reduceTransparency)
+  }
+
   // MARK: - Synchronized output (DEC 2026) defer must self-schedule a re-wake
 
   /// A frame deferred by DEC synchronized output (mode 2026) must schedule its

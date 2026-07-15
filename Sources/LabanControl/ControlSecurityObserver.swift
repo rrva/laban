@@ -54,7 +54,7 @@ extension ControlSecurityObserver {
 
 extension LabanControlPolicy {
   public static let privilegedCapabilities: Set<Capability> = [
-    .observeSensitive, .navigate, .propose,
+    .observeSensitive, .navigate, .propose, .diagnosticControl,
   ]
 
   public static func isPrivileged(_ capability: Capability) -> Bool {

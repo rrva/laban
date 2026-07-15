@@ -308,7 +308,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var gpuCellPayloadFailureNotificationPolicy =
     GPUCellPayloadFailureNotificationPolicy()
   private var themeChangeObserver: NSObjectProtocol?
-  private var reduceMotionObserver: NSObjectProtocol?
+  private var accessibilityDisplayOptionsObserver: NSObjectProtocol?
   private var cursorSettingsObserver: NSObjectProtocol?
   private var emojiRenderingObserver: NSObjectProtocol?
   private var cjkFontSettingsObserver: NSObjectProtocol?
@@ -329,10 +329,27 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// changes are observable while renderer-specific adaptations remain bounded.
   private var accessibilityDisplayOptions =
     TerminalBitmapView.currentAccessibilityDisplayOptions()
+  private var reduceTransparencyOverride: Bool?
   private var reduceMotion: Bool { accessibilityDisplayOptions.reduceMotion }
   var accessibilityDisplayOptionsForTesting: AccessibilityDisplayOptions {
     accessibilityDisplayOptions
   }
+  weak var transparencyCoordinator: TerminalWindowTransparencyCoordinator?
+  private var requestedTransparency = TerminalTransparencyConfiguration(
+    backgroundOpacity: 1,
+    applyToExplicitCellBackgrounds: false,
+    backdropStyle: .none)
+  private var effectiveTransparency = EffectiveTerminalTransparency(
+    backgroundOpacity: 1,
+    applyToExplicitCellBackgrounds: false,
+    backdropStyle: .none,
+    forceOpaqueReason: nil,
+    isSurfaceOpaque: true)
+  private var backgroundCompositingOptions = TerminalBackgroundCompositingOptions.opaque
+  private(set) var accessibilityRefreshCount = 0
+  private(set) var effectiveTransparencyApplyCount = 0
+  private(set) var transparencyRenderWakeCount = 0
+  private var transparencyRendererPresentBaseline = 0
   private var terminalOutputActiveUntil = Date.distantPast
   /// While a precise scroll stream is flowing, the display link paces
   /// rendering at the panel rate instead of a synchronous render per wheel
@@ -568,10 +585,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   var undoManagerForTesting: UndoManager?
   private var renderingResizeFrame = false
   private var renderRetryScheduled = false
-  private var resizeBackgroundReset: DispatchWorkItem?
-  private weak var resizeBackgroundView: NSView?
-  private var normalResizeBackgroundColor: CGColor?
-  private var normalResizeBackgroundWantsLayer: Bool?
 
   /// Hook for the overlay scroll indicator (sibling view in the window
   /// containerView). Called every frame from `advanceFrame` with the active
@@ -750,6 +763,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       self.activeRendererSelection = resolvedSelection
     }
     self.backendSelfPresents = backend.presentationLayer != nil
+    self.backend.setSurfaceTransparency(RendererSurfaceTransparency(isOpaque: true))
     super.init(frame: .zero)
     registerForDraggedTypes(TerminalDrop.acceptedTypes)
     // The terminal is the window's primary surface and effectively always the
@@ -929,12 +943,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // take effect mid-session, and force a frame so the change is immediate.
     // The wake matters: with a parked display link the invalidation alone
     // would sit unpainted until some other source produced a frame.
-    reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+    accessibilityDisplayOptionsObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
       object: nil, queue: .main
     ) { [weak self] _ in
-      self?.accessibilityDisplayOptions = Self.currentAccessibilityDisplayOptions()
-      self?.invalidateRenderAndWake()
+      self?.refreshAccessibilityDisplayOptions()
     }
 
     // The per-session reader thread fires this callback whenever it drained
@@ -1154,6 +1167,94 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
+  override var isOpaque: Bool {
+    effectiveTransparency.isSurfaceOpaque
+  }
+
+  /// Apply already-resolved policy. Equal applications are no-ops; a caller
+  /// coalescing a larger accessibility refresh passes `wake: false` and owns
+  /// the single wake after all cached flags are current.
+  func applyTransparency(
+    requested: TerminalTransparencyConfiguration,
+    effective: EffectiveTerminalTransparency,
+    wake: Bool = true,
+    force: Bool = false
+  ) {
+    let changed = force || effectiveTransparency != effective
+    requestedTransparency = requested
+    guard changed else { return }
+
+    effectiveTransparency = effective
+    backgroundCompositingOptions = TerminalBackgroundCompositingOptions(
+      opacity: UInt8((effective.backgroundOpacity * 255).rounded()),
+      applyToExplicitCellBackgrounds: effective.applyToExplicitCellBackgrounds)
+    let surface = RendererSurfaceTransparency(isOpaque: effective.isSurfaceOpaque)
+    backend.setSurfaceTransparency(surface)
+    pendingBackendSwap?.backend.setSurfaceTransparency(surface)
+    effectiveTransparencyApplyCount += 1
+    renderInvalidated = true
+    if wake {
+      transparencyRenderWakeCount += 1
+      scheduleRenderRetry()
+    }
+  }
+
+  /// The sole accessibility refresh/apply/wake path. Tests inject the provider
+  /// above; the debug adapter can install only the Reduce Transparency override
+  /// below without forking the system-notification behavior.
+  private func refreshAccessibilityDisplayOptions() {
+    var refreshed = Self.currentAccessibilityDisplayOptions()
+    if let reduceTransparencyOverride {
+      refreshed.reduceTransparency = reduceTransparencyOverride
+    }
+    accessibilityRefreshCount += 1
+    accessibilityDisplayOptions = refreshed
+    transparencyCoordinator?.updateReduceTransparency(
+      refreshed.reduceTransparency,
+      wake: false)
+    transparencyRenderWakeCount += 1
+    invalidateRenderAndWake()
+  }
+
+  func setReduceTransparencyOverride(_ enabled: Bool?) {
+    guard reduceTransparencyOverride != enabled else { return }
+    reduceTransparencyOverride = enabled
+    refreshAccessibilityDisplayOptions()
+  }
+
+  var transparencyStatus: TerminalWindowTransparencyStatus? {
+    transparencyCoordinator?.status
+  }
+
+  /// Read-only renderer projection for the transparency debug endpoint. Keep
+  /// configured/effective fallback and antialiasing reason coupled to the
+  /// backend that actually presents the window.
+  var transparencyRendererStatus: RendererStatus {
+    backend.rendererStatus
+  }
+
+  var transparencyDiagnostics: TerminalTransparencyDiagnostics {
+    let deadlineMisses =
+      (debugPresentStats(reset: false)["estimatedMissedVsyncs"] as? Double)
+      .map { max(0, Int($0.rounded())) } ?? 0
+    return TerminalTransparencyDiagnostics(
+      accessibilityRefreshCount: accessibilityRefreshCount,
+      effectiveTransparencyApplyCount: effectiveTransparencyApplyCount,
+      transparencyRenderWakeCount: transparencyRenderWakeCount,
+      rendererPresentCount: max(0, renderedFrameCount - transparencyRendererPresentBaseline),
+      presentIntervalDeadlineMisses: deadlineMisses)
+  }
+
+  func resetTransparencyDiagnostics() {
+    // Renderer-owned present cadence is cumulative. Reset it in lockstep with
+    // the view counters so a diagnostics window has one unambiguous origin.
+    _ = debugPresentStats(reset: true)
+    accessibilityRefreshCount = 0
+    effectiveTransparencyApplyCount = 0
+    transparencyRenderWakeCount = 0
+    transparencyRendererPresentBaseline = renderedFrameCount
+  }
+
   private var fractionalZoomBackend: (any GestureZoomRenderable)? {
     backend as? any GestureZoomRenderable
   }
@@ -1326,6 +1427,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     _ pendingBackend: RendererBackend,
     metrics: RendererSurfaceMetrics
   ) {
+    pendingBackend.setSurfaceTransparency(
+      RendererSurfaceTransparency(isOpaque: effectiveTransparency.isSurfaceOpaque))
     pendingBackend.resize(
       pixelWidth: metrics.pixelWidth,
       pixelHeight: metrics.pixelHeight,
@@ -1394,6 +1497,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   var debugBackendEffectiveRenderer: RendererSelection? {
     RendererSelection(
       rawValue: (pendingBackendSwap?.backend ?? backend).rendererStatus.effectiveRenderer)
+  }
+
+  var debugBackendSurfaceIsOpaque: Bool? {
+    (pendingBackendSwap?.backend ?? backend).presentationLayer?.isOpaque
+  }
+
+  var backgroundCompositingOptionsForTesting: TerminalBackgroundCompositingOptions {
+    backgroundCompositingOptions
   }
 
   @discardableResult
@@ -1473,9 +1584,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         increaseContrast: accessibilityDisplayOptions.increaseContrast,
         differentiateWithoutColor: accessibilityDisplayOptions.differentiateWithoutColor,
         reduceTransparency: accessibilityDisplayOptions.reduceTransparency),
-      backgroundCompositingOptions: .opaque,
+      backgroundCompositingOptions: backgroundCompositingOptions,
       snapshotBackgroundCapability:
-        sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
+        transparencyCoordinator?.status.snapshotBackgroundCapability
+          ?? sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
       selection: currentTerminalSelection(sessionId: session.id),
       includeTerminalAreaBackground: true,
       requireActiveSnapshot: true,
@@ -1568,11 +1680,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       syncActiveSessionFocus(windowFocused: false)
       stopDisplayLink()
       sessionCoordinator?.stopSnapshotGenerationMonitor()
-      resizeBackgroundReset?.cancel()
-      resizeBackgroundReset = nil
-      resizeBackgroundView = nil
-      normalResizeBackgroundColor = nil
-      normalResizeBackgroundWantsLayer = nil
       return
     }
     if let window {
@@ -2073,33 +2180,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func applyTransientResizeBackground() {
-    guard let view = window?.contentView?.superview else { return }
-    if resizeBackgroundView !== view {
-      normalResizeBackgroundColor = nil
-      normalResizeBackgroundWantsLayer = nil
-      resizeBackgroundView = view
-    }
-    if normalResizeBackgroundWantsLayer == nil {
-      normalResizeBackgroundWantsLayer = view.wantsLayer
-      normalResizeBackgroundColor = view.layer?.backgroundColor
-    }
-    view.wantsLayer = true
-    view.layer?.backgroundColor = cgColorFrom(Theme.current.bg0)
-
-    resizeBackgroundReset?.cancel()
-    let reset = DispatchWorkItem { [weak self, weak view] in
-      guard let self, let view, view === self.resizeBackgroundView else { return }
-      if let originalWantsLayer = self.normalResizeBackgroundWantsLayer {
-        view.layer?.backgroundColor = self.normalResizeBackgroundColor
-        view.wantsLayer = originalWantsLayer
-      }
-      self.resizeBackgroundView = nil
-      self.normalResizeBackgroundColor = nil
-      self.normalResizeBackgroundWantsLayer = nil
-      self.resizeBackgroundReset = nil
-    }
-    resizeBackgroundReset = reset
-    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120), execute: reset)
+    // Retained renderer pixels already cover live resize. The former fallback
+    // changed the permanent AppKit frame-view background to an opaque themed
+    // tint for 120 ms; on a translucent surface that sat behind renderer alpha
+    // and double-composited the canvas. Keep the permanent hierarchy clear and
+    // let the next fully initialized renderer frame replace retained pixels.
   }
 
   private func stopDisplayLink() {
@@ -2293,20 +2378,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     sessionCoordinator?.stopSnapshotGenerationMonitor()
     removeWindowFocusObservers()
     preciseScrollSettleWork?.cancel()
-    resizeBackgroundReset?.cancel()
-    if let view = resizeBackgroundView,
-      let originalWantsLayer = normalResizeBackgroundWantsLayer
-    {
-      view.layer?.backgroundColor = normalResizeBackgroundColor
-      view.wantsLayer = originalWantsLayer
-    }
     frameProbe?.close()
     resizeProbe?.close()
     if let themeChangeObserver {
       NotificationCenter.default.removeObserver(themeChangeObserver)
     }
-    if let reduceMotionObserver {
-      NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
+    if let accessibilityDisplayOptionsObserver {
+      NSWorkspace.shared.notificationCenter.removeObserver(accessibilityDisplayOptionsObserver)
     }
     if let cursorSettingsObserver {
       NotificationCenter.default.removeObserver(cursorSettingsObserver)
@@ -2933,9 +3011,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         increaseContrast: accessibilityDisplayOptions.increaseContrast,
         differentiateWithoutColor: accessibilityDisplayOptions.differentiateWithoutColor,
         reduceTransparency: accessibilityDisplayOptions.reduceTransparency),
-      backgroundCompositingOptions: .opaque,
+      backgroundCompositingOptions: backgroundCompositingOptions,
       snapshotBackgroundCapability:
-        sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
+        transparencyCoordinator?.status.snapshotBackgroundCapability
+          ?? sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
       selection: currentTerminalSelection(sessionId: session.id),
       includeTerminalAreaBackground: true,
       requireActiveSnapshot: true,
@@ -3649,8 +3728,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if backendSelfPresents { return }
     guard let ctx = NSGraphicsContext.current?.cgContext else { return }
     guard let cgImg = backend.presentationImage else {
-      ctx.setFillColor(cgColorFrom(Theme.current.bg0))
-      ctx.fill(bounds)
+      ctx.clear(bounds)
       return
     }
     ctx.saveGState()

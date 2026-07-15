@@ -51,6 +51,14 @@ extension HeadlessDebugRuntime {
       return DebugWindowActions(runtime: self).setVectorSubpixelLayout(request)
     case .windowFocus(let request):
       return DebugWindowActions(runtime: self).windowFocus(request)
+    case .setBackgroundTransparency(let request):
+      return setBackgroundTransparencyUnlocked(request)
+    case .resetTransparencyDiagnostics:
+      return resetTransparencyDiagnosticsUnlocked()
+    case .setReduceTransparencyOverride(let request):
+      return setReduceTransparencyOverrideUnlocked(request)
+    case .setNativeFullScreen:
+      return unsupportedAction("setNativeFullScreen")
     case .typeText(let request):
       return DebugInputActions(runtime: self).typeText(request)
     case .feedOutput(let request):

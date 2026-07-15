@@ -21,10 +21,19 @@ public enum LabanControlServerError: Error, Equatable, Sendable {
 public struct GUIControlStartResult: Sendable, Equatable {
   public let socketPath: String
   public let appObserveToken: String
+  public let diagnosticControlToken: String?
+  public let diagnosticSessionObserveToken: String?
 
-  public init(socketPath: String, appObserveToken: String) {
+  public init(
+    socketPath: String,
+    appObserveToken: String,
+    diagnosticControlToken: String? = nil,
+    diagnosticSessionObserveToken: String? = nil
+  ) {
     self.socketPath = socketPath
     self.appObserveToken = appObserveToken
+    self.diagnosticControlToken = diagnosticControlToken
+    self.diagnosticSessionObserveToken = diagnosticSessionObserveToken
   }
 }
 
@@ -137,7 +146,7 @@ public final class LabanControlServer {
     securityObserver = observer
   }
 
-  public func start() throws -> GUIControlStartResult {
+  public func start(enableGUIFixtureControl: Bool = false) throws -> GUIControlStartResult {
     let path = Self.defaultControlSocketPath()
     let controlDir = ControlAdvertisement.directory()
     try ControlDirectorySecurity.rejectSymlinkDirectory(at: controlDir)
@@ -145,7 +154,20 @@ public final class LabanControlServer {
     try bindListener(at: path)
     let appObserveToken = Self.makeToken()
     registerToken(appObserveToken, tier: .appObserve)
-    return GUIControlStartResult(socketPath: path, appObserveToken: appObserveToken)
+    guard enableGUIFixtureControl else {
+      return GUIControlStartResult(socketPath: path, appObserveToken: appObserveToken)
+    }
+    let diagnosticControlToken = Self.makeToken()
+    registerToken(diagnosticControlToken, tier: .fixture)
+    let diagnosticSessionObserveToken = Self.makeToken()
+    registerToken(
+      diagnosticSessionObserveToken,
+      tier: .sessionObserve(sessionID: "diagnostic-control-denial"))
+    return GUIControlStartResult(
+      socketPath: path,
+      appObserveToken: appObserveToken,
+      diagnosticControlToken: diagnosticControlToken,
+      diagnosticSessionObserveToken: diagnosticSessionObserveToken)
   }
 
   public func start(socketPath: String) throws -> ControlReadiness {

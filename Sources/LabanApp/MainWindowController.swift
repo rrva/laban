@@ -13,6 +13,7 @@ final class MainWindowController: NSWindowController {
   private(set) var persistenceCoordinator: PersistenceCoordinator?
   private(set) var model: AppModel?
   private(set) var terminalView: TerminalBitmapView?
+  private(set) var transparencyCoordinator: TerminalWindowTransparencyCoordinator?
   private(set) var terminalBackend: TerminalSessionBackend = .inProcess
   private(set) var terminalSessionClient: TerminalSessionClient?
   private(set) var sessionCoordinator: AppSessionCoordinator?
@@ -42,9 +43,82 @@ final class MainWindowController: NSWindowController {
   private(set) var controlSecurityCoordinator: ControlSecurityCoordinator?
   private(set) var controlSessionLaunchCoordinator = ControlSessionLaunchCoordinator()
   private var liveControlRouter: LiveIntentRouter?
+  private var debugReduceTransparencyOverride: Bool?
 
   func accessibilityDebugState() -> [String: Any]? {
     terminalView?.debugAccessibilityState()
+  }
+
+  // MARK: Transparency control/debug adapter seam
+
+  func terminalTransparencyStatus() -> TerminalWindowTransparencyStatus? {
+    transparencyCoordinator?.status
+  }
+
+  func terminalTransparencyDiagnostics() -> TerminalTransparencyDiagnostics? {
+    terminalView?.transparencyDiagnostics
+  }
+
+  func terminalTransparencyDebugResponse() -> TerminalTransparencyDebugResponse? {
+    guard let status = terminalTransparencyStatus(),
+      let diagnostics = terminalTransparencyDiagnostics(),
+      let rendererStatus = terminalView?.transparencyRendererStatus
+    else { return nil }
+    return TerminalTransparencyDebugResponse(
+      requestedOpacity: status.requested.backgroundOpacity,
+      effectiveOpacity: status.effective.backgroundOpacity,
+      requestedBackdropStyle: status.requested.backdropStyle.rawValue,
+      effectiveBackdropStyle: status.effective.backdropStyle.rawValue,
+      applyToExplicitCellBackgrounds: status.requested.applyToExplicitCellBackgrounds,
+      forceOpaqueReason: status.effective.forceOpaqueReason?.rawValue,
+      surfaceOpaque: status.effective.isSurfaceOpaque,
+      effectiveGlyphAntialiasing: rendererStatus.vectorSubpixelLayout ?? "rendererDefault",
+      effectiveGlyphAntialiasingReason: rendererStatus.vectorSubpixelFallbackReason,
+      snapshotExplicitBackgroundCapability: status.snapshotBackgroundCapability.rawValue,
+      configuredRenderer: rendererStatus.configuredRenderer,
+      effectiveRenderer: rendererStatus.effectiveRenderer,
+      backdropSubviewCount: status.backdropSubviewCount,
+      systemReduceTransparency:
+        NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
+      reduceTransparencyOverride: debugReduceTransparencyOverride,
+      effectiveReduceTransparency: status.reduceTransparency,
+      nativeFullscreen: status.nativeFullscreen,
+      accessibilityRefreshCount: diagnostics.accessibilityRefreshCount,
+      effectiveTransparencyApplyCount: diagnostics.effectiveTransparencyApplyCount,
+      transparencyRenderWakeCount: diagnostics.transparencyRenderWakeCount,
+      rendererPresentCount: diagnostics.rendererPresentCount,
+      presentIntervalDeadlineMisses: diagnostics.presentIntervalDeadlineMisses)
+  }
+
+  func setBackgroundTransparency(
+    opacity: Double,
+    applyToExplicitCellBackgrounds: Bool
+  ) {
+    guard let transparencyCoordinator else { return }
+    var requested = transparencyCoordinator.status.requested
+    requested.backgroundOpacity = opacity
+    requested.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
+    transparencyCoordinator.setRequestedConfiguration(requested)
+  }
+
+  func resetTransparencyDiagnostics() {
+    terminalView?.resetTransparencyDiagnostics()
+  }
+
+  func setReduceTransparencyOverride(_ enabled: Bool?) {
+    debugReduceTransparencyOverride = enabled
+    terminalView?.setReduceTransparencyOverride(enabled)
+  }
+
+  /// Starts the real AppKit transition; callers observe completion through
+  /// `terminalTransparencyStatus().nativeFullscreen` rather than assuming the
+  /// animation completed synchronously.
+  func setNativeFullScreen(_ enabled: Bool) {
+    guard let window else { return }
+    let current = window.styleMask.contains(.fullScreen)
+      || transparencyCoordinator?.status.nativeFullscreen == true
+    guard current != enabled else { return }
+    window.toggleFullScreen(nil)
   }
 
   /// GUI parity for the headless `/debug/terminal-modes` endpoint: the active
@@ -432,6 +506,15 @@ final class MainWindowController: NSWindowController {
     // (⌃⌘F) take the terminal fullscreen, which a terminal is a prime
     // candidate for. Without fullScreenPrimary AppKit disables toggleFullScreen.
     window.collectionBehavior.insert(.fullScreenPrimary)
+    // Resolve and apply window/surface policy before the window is ever
+    // presented. This prevents AppKit's default opaque background from
+    // flashing through a translucent first frame or cold-launch backend swap.
+    let transparencyCoordinator = TerminalWindowTransparencyCoordinator(
+      window: window,
+      terminalView: termView,
+      reduceTransparency: termView.accessibilityDisplayOptionsForTesting.reduceTransparency,
+      snapshotBackgroundCapability:
+        sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess)
     // Container view hosts the terminal plus a small overlay badge. The
     // terminal stays the full size; the badge floats in the bottom-left,
     // sized to its content. Using a sibling instead of a TerminalBitmapView
@@ -518,6 +601,23 @@ final class MainWindowController: NSWindowController {
         window: window,
         including: controller?.windowScreenshotAuxiliaryWindowsProvider() ?? [])
     }
+    liveRouter.bindTransparencyControl(
+      state: { [weak controller] in
+        controller?.terminalTransparencyDebugResponse()
+      },
+      setBackground: { [weak controller] opacity, cells in
+        controller?.setBackgroundTransparency(
+          opacity: opacity, applyToExplicitCellBackgrounds: cells)
+      },
+      resetDiagnostics: { [weak controller] in
+        controller?.resetTransparencyDiagnostics()
+      },
+      setReduceTransparencyOverride: { [weak controller] enabled in
+        controller?.setReduceTransparencyOverride(enabled)
+      },
+      setNativeFullScreen: { [weak controller] enabled in
+        controller?.setNativeFullScreen(enabled)
+      })
     if let bootstrappedControl {
       controller.controlServer = bootstrappedControl.server
       controller.controlSecurityCoordinator = ControlSecurityCoordinator(indicatorHost: termView)
@@ -526,6 +626,7 @@ final class MainWindowController: NSWindowController {
     }
     controller.model = model
     controller.terminalView = termView
+    controller.transparencyCoordinator = transparencyCoordinator
     controller.scrollIndicator = scrollIndicator
     controller.syncPillTextSourceToRenderer()
     controller.refreshLiveControlEnvironment()
@@ -706,13 +807,16 @@ final class MainWindowController: NSWindowController {
       router: router,
       surface: .gui,
       securityObserver: security)
-    let info = try server.start()
+    let info = try server.start(
+      enableGUIFixtureControl: Self.shouldEnableIsolatedGUIFixtureControl())
     try ControlAdvertisement.write(
       url: info.socketPath,
       token: info.appObserveToken,
       pid: ProcessInfo.processInfo.processIdentifier,
       runId: ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
-        ?? "gui-\(ProcessInfo.processInfo.processIdentifier)")
+        ?? "gui-\(ProcessInfo.processInfo.processIdentifier)",
+      diagnosticControlToken: info.diagnosticControlToken,
+      diagnosticSessionObserveToken: info.diagnosticSessionObserveToken)
     launchCoordinator.noteControlServerStarted(server, socketPath: info.socketPath)
     AppLog.app.info("control server: \(info.socketPath)")
     return (server, security)
@@ -723,6 +827,22 @@ final class MainWindowController: NSWindowController {
     guard ControlServerSettings.isEnabled else { return false }
     if ProcessInfo.processInfo.environment[ControlEnvironmentKeys.controlServerForceDisable] == "0"
     {
+      return false
+    }
+    return true
+  }
+
+  /// Diagnostic fixture authority exists only in an explicitly isolated
+  /// control directory. Requiring both inputs prevents an accidental
+  /// `LABAN_GUI_FIXTURE_CONTROL=1` in a normal launch from placing a privileged
+  /// token in the user's production advertisement.
+  static func shouldEnableIsolatedGUIFixtureControl(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    guard environment[ControlEnvironmentKeys.guiFixtureControl] == "1" else {
+      return false
+    }
+    guard let directory = environment["LABAN_CONTROL_DIR"], !directory.isEmpty else {
       return false
     }
     return true
@@ -763,13 +883,16 @@ final class MainWindowController: NSWindowController {
         surface: .gui,
         securityObserver: security)
       server.setApprovalDelegate(ControlAttachApprovalPresenter.shared)
-      let info = try server.start()
+      let info = try server.start(
+        enableGUIFixtureControl: Self.shouldEnableIsolatedGUIFixtureControl())
       try ControlAdvertisement.write(
         url: info.socketPath,
         token: info.appObserveToken,
         pid: ProcessInfo.processInfo.processIdentifier,
         runId: ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
-          ?? "gui-\(ProcessInfo.processInfo.processIdentifier)")
+          ?? "gui-\(ProcessInfo.processInfo.processIdentifier)",
+        diagnosticControlToken: info.diagnosticControlToken,
+        diagnosticSessionObserveToken: info.diagnosticSessionObserveToken)
       controlServer = server
       controlSessionLaunchCoordinator.noteControlServerStarted(server, socketPath: info.socketPath)
       AppLog.app.info("control server: \(info.socketPath)")

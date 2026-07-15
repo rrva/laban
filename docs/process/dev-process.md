@@ -368,6 +368,115 @@ Schemas:
 - `schemas/debug/notifications-test.schema.json`
 - `schemas/debug/notifications-test-result.schema.json`
 
+### Terminal Transparency Diagnostics
+
+`GET /debug/transparency`
+
+Returns requested user intent separately from effective window/renderer policy,
+including the accessibility/full-screen force-opaque reason, snapshot-writer
+capability, active renderer, grayscale-AA fallback reason, and resettable
+transition counters. `presentIntervalDeadlineMisses` is the renderer-owned
+display-link estimate accumulated since the most recent
+`resetTransparencyDiagnostics`; software and other non-display-link backends
+report `0`.
+
+```json
+{
+  "requestedOpacity": 0.7,
+  "effectiveOpacity": 1,
+  "requestedBackdropStyle": "none",
+  "effectiveBackdropStyle": "none",
+  "applyToExplicitCellBackgrounds": false,
+  "forceOpaqueReason": "reduceTransparency",
+  "surfaceOpaque": true,
+  "effectiveGlyphAntialiasing": "grayscale",
+  "effectiveGlyphAntialiasingReason": "transparentSurface",
+  "snapshotExplicitBackgroundCapability": "inProcess",
+  "configuredRenderer": "slugGlyph",
+  "effectiveRenderer": "slugGlyph",
+  "backdropSubviewCount": 0,
+  "systemReduceTransparency": false,
+  "reduceTransparencyOverride": true,
+  "effectiveReduceTransparency": true,
+  "nativeFullscreen": false,
+  "accessibilityRefreshCount": 1,
+  "effectiveTransparencyApplyCount": 1,
+  "transparencyRenderWakeCount": 1,
+  "rendererPresentCount": 1,
+  "presentIntervalDeadlineMisses": 0
+}
+```
+
+The aggregate `POST /debug/actions` route accepts four typed diagnostic
+actions. They require `diagnosticControl`, which only the whole-app fixture
+token grants:
+
+```json
+{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false}
+{"action":"resetTransparencyDiagnostics"}
+{"action":"setReduceTransparencyOverride","enabled":true}
+{"action":"setReduceTransparencyOverride","enabled":null}
+{"action":"setNativeFullScreen","enabled":true}
+```
+
+`setBackgroundTransparency` persists through the same requested-settings path
+as Appearance. Opacity is clamped to `0...1`. The Reduce Transparency override
+runs the same cached accessibility/coalesced-wake path as the workspace
+notification; `null` removes it and immediately rereads the real workspace
+value. `/debug/accessibility` remains read-only. `setNativeFullScreen` starts
+the real AppKit `toggleFullScreen(_:)` transition and returns before its
+animation necessarily completes, so clients must poll `nativeFullscreen` and
+`forceOpaqueReason` to the expected values. The action is unavailable
+headlessly; the other three actions and this projection have headless semantic
+parity.
+
+The installed-GUI fixture credential is fail-closed. It is minted only when
+both `LABAN_GUI_FIXTURE_CONTROL=1` and an explicit, isolated
+`LABAN_CONTROL_DIR` are present. The resulting private `control.json` keeps
+`token` as the unchanged app-observe token and adds
+`diagnosticControlToken` plus a dummy-scoped
+`diagnosticSessionObserveToken` for mechanical `403` checks. Normal launches
+omit both diagnostic fields. Readiness means the file's `runId` and `pid` match
+the launched process, `url` equals `$LABAN_CONTROL_DIR/control.sock`, the Unix
+socket exists, and all three tokens are nonempty. Never print or persist those
+tokens outside the isolated control file.
+
+An authenticated installed-app launch shape is:
+
+```sh
+CONTROL_DIR="$PWD/.artifacts/transparency/gui-control"
+RUN_ID="transparency-$(date +%s)-$$"
+mkdir -p "$CONTROL_DIR"
+LABAN_CONTROL_DIR="$CONTROL_DIR" \
+LABAN_GUI_FIXTURE_CONTROL=1 \
+LABAN_RUN_ID="$RUN_ID" \
+  "$HOME/Laban.app/Contents/MacOS/LabanApp"
+```
+
+After readiness, read tokens into shell variables without echoing them and use
+the fixture credential over the advertised Unix socket:
+
+```sh
+SOCKET=$(jq -r .url "$CONTROL_DIR/control.json")
+DIAGNOSTIC_TOKEN=$(jq -r .diagnosticControlToken "$CONTROL_DIR/control.json")
+curl --silent --show-error --unix-socket "$SOCKET" \
+  -H "Authorization: Bearer $DIAGNOSTIC_TOKEN" \
+  http://laban/debug/transparency | jq
+```
+
+Register trap/defer cleanup before the first mutation. Cleanup sends
+`setReduceTransparencyOverride` with `null`, exits native full screen when
+needed and polls completion, restores the initial requested opacity/cell
+policy, terminates only the process the test launched, and removes the isolated
+control directory. `scripts/transparency-transition-smoke` implements this
+contract and saves token-free state snapshots under its artifact directory.
+
+For deterministic offscreen PNG alpha, `laban-agent` accepts equals-form
+`--background-opacity=<0...1>` and the boolean
+`--background-opacity-cells`. The PNG preserves alpha; inspect it with a PNG
+reader or `/debug/pixel-probe`, not a desktop screenshot tool that may flatten
+against an opaque background.
+
 ### Session Introspection
 
 `GET /debug/sessions`

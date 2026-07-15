@@ -196,7 +196,7 @@ final class LabanControlPolicyTests: XCTestCase {
       [.observe, .observeSensitive, .navigate, .propose])
     XCTAssertEqual(
       LabanControlPolicy.grants(for: .fixture),
-      [.fixture, .observe, .observeSensitive, .navigate, .propose, .input])
+      [.fixture, .observe, .observeSensitive, .navigate, .propose, .diagnosticControl, .input])
   }
 
   func testNoDescriptorRequiresClipboardCapability() {
@@ -230,6 +230,20 @@ final class LabanControlPolicyTests: XCTestCase {
     XCTAssertEqual(json["token"] as? String, "app-observe-token")
     XCTAssertEqual(json["pid"] as? Int, 42)
     XCTAssertEqual(json["runId"] as? String, "run-test")
+    XCTAssertNil(json["diagnosticControlToken"])
+    XCTAssertNil(json["diagnosticSessionObserveToken"])
+
+    try ControlAdvertisement.write(
+      url: socketPath,
+      token: "app-observe-token",
+      pid: 42,
+      runId: "run-test",
+      diagnosticControlToken: "fixture-token",
+      diagnosticSessionObserveToken: "session-token")
+    let fixtureData = try Data(contentsOf: dir.appendingPathComponent("control.json"))
+    let fixtureJSON = try JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
+    XCTAssertEqual(fixtureJSON["diagnosticControlToken"] as? String, "fixture-token")
+    XCTAssertEqual(fixtureJSON["diagnosticSessionObserveToken"] as? String, "session-token")
 
     let attributes = try FileManager.default.attributesOfItem(atPath: dir.path)
     let permissions = (attributes[.posixPermissions] as? NSNumber)?.uint16Value

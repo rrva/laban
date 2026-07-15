@@ -111,6 +111,50 @@ final class RendererActivationNoBlankWindowTests: XCTestCase {
     XCTAssertEqual(vector.renderedDamages, [.full])
   }
 
+  func testTransparencyIsAppliedBeforeWarmSwapFrameAndLayerInstallation() throws {
+    let harness = BackendHarness()
+    let classic = ControlledBackend(selection: .classic)
+    let slug = ControlledBackend(selection: .slugGlyph)
+    harness.enqueue(classic)
+    harness.enqueue(slug)
+    TerminalBitmapView.backendFactoryForTesting = harness.makeBackend
+    RendererSelection.set(.classic)
+    let view = try makeView()
+    let requested = TerminalTransparencyConfiguration(
+      backgroundOpacity: 0.7,
+      applyToExplicitCellBackgrounds: false,
+      backdropStyle: .none)
+    let effective = TerminalTransparencyPolicy.resolve(
+      requested: requested,
+      reduceTransparency: false,
+      nativeFullscreen: false,
+      supportsBehindWindowBlur: false,
+      snapshotBackgroundCapability: .supported,
+      headless: false)
+    view.applyTransparency(requested: requested, effective: effective, wake: false)
+
+    view.applyRendererSelection(.slugGlyph)
+
+    XCTAssertFalse(classic.surfaceTransparency.isOpaque)
+    XCTAssertFalse(slug.surfaceTransparency.isOpaque)
+    XCTAssertFalse(slug.layer.isOpaque)
+    XCTAssertEqual(view.backgroundCompositingOptionsForTesting.opacity, 179)
+    XCTAssertEqual(slug.renderCount, 1)
+    XCTAssertTrue(
+      slug.renderedCommandFrames.last?.contains(where: { command in
+        guard case let .rect(_, color, source, compositing) = command else { return false }
+        return (source == .terminal || source == .sidebar)
+          && compositing == .replace
+          && (color & 0xFF) == 179
+      }) == true,
+      "the hidden warm-up frame must use the current effective compositing options")
+
+    slug.completeFrame()
+    drainMainQueue()
+    XCTAssertTrue(view.layer === slug.layer)
+    XCTAssertFalse(view.debugBackendSurfaceIsOpaque ?? true)
+  }
+
   private func makeView(
     file: StaticString = #filePath,
     line: UInt = #line
@@ -173,6 +217,7 @@ private final class ControlledBackend: RendererBackend {
   private var scale: CGFloat = 1
   var renderCount = 0
   var renderedDamages: [RenderDamage] = []
+  var renderedCommandFrames: [[FrameCommand]] = []
   var onFrameCompleted: (() -> Void)?
   var waitForFrameCompletion = false
   private(set) var surfaceTransparency = RendererSurfaceTransparency(isOpaque: true)
@@ -191,6 +236,7 @@ private final class ControlledBackend: RendererBackend {
   func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
     renderCount += 1
     renderedDamages.append(damage)
+    renderedCommandFrames.append(commands)
     return renderResult
   }
 

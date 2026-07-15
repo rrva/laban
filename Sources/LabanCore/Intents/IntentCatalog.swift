@@ -5,6 +5,11 @@ public enum Capability: String, Codable, CaseIterable, Sendable {
   case observeSensitive
   case navigate
   case propose
+  /// Whole-app mutation used only by explicitly environment-gated diagnostic
+  /// fixtures. It is deliberately distinct from `.fixture` so GUI-safe
+  /// diagnostic descriptors do not relax the catalog's ban on GUI fixture
+  /// intents.
+  case diagnosticControl
   case input
   case clipboard
   case fixture
@@ -795,6 +800,38 @@ public struct IntentCatalog: Sendable {
 
   private static let legacyActionDescriptors: [IntentDescriptor] = [
     descriptor(
+      id: "transparency.setBackground",
+      category: "transparency",
+      summary: "Set requested terminal background opacity and explicit-cell policy.",
+      requiredCapability: .diagnosticControl,
+      dataSensitivity: .nonSensitiveState,
+      availability: guiObserve,
+      inputSchema: SetBackgroundTransparencyActionRequest.jsonSchema),
+    descriptor(
+      id: "transparency.diagnostics.reset",
+      category: "transparency",
+      summary: "Reset transparency counters without changing requested or effective state.",
+      requiredCapability: .diagnosticControl,
+      dataSensitivity: .nonSensitiveState,
+      availability: guiObserve,
+      inputSchema: ResetTransparencyDiagnosticsActionRequest.jsonSchema),
+    descriptor(
+      id: "transparency.reduceTransparencyOverride.set",
+      category: "transparency",
+      summary: "Install or remove the diagnostic Reduce Transparency override.",
+      requiredCapability: .diagnosticControl,
+      dataSensitivity: .nonSensitiveState,
+      availability: guiObserve,
+      inputSchema: SetReduceTransparencyOverrideActionRequest.jsonSchema),
+    descriptor(
+      id: "transparency.nativeFullScreen.set",
+      category: "transparency",
+      summary: "Start a real native full-screen transition for the target GUI window.",
+      requiredCapability: .diagnosticControl,
+      dataSensitivity: .nonSensitiveState,
+      availability: guiOnly,
+      inputSchema: SetNativeFullScreenActionRequest.jsonSchema),
+    descriptor(
       id: "tab.new", category: "tab", summary: "Create and select a new tab.",
       requiredCapability: .input, dataSensitivity: .nonSensitiveState,
       sideEffects: .init(lifecycle: true)),
@@ -1003,6 +1040,12 @@ public struct IntentCatalog: Sendable {
   ]
 
   private static let legacyQueryDescriptors: [IntentDescriptor] = [
+    descriptor(
+      id: "transparency.state", kind: .query, category: "transparency",
+      summary: "Return requested/effective transparency policy and diagnostic counters.",
+      requiredCapability: .diagnosticControl, dataSensitivity: .nonSensitiveState,
+      availability: guiObserve,
+      outputSchema: TerminalTransparencyDebugResponse.jsonSchema),
     descriptor(
       id: "debug.discovery", kind: .query, category: "discovery",
       summary: "List debug endpoints and examples.",

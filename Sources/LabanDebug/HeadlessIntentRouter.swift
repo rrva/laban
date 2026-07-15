@@ -46,6 +46,8 @@ public final class HeadlessIntentRouter: IntentRouter {
           since: query.params["since"].flatMap(Int.init)))
     case "app.accessibility":
       return json(runtime.accessibility())
+    case "transparency.state":
+      return json(runtime.transparencyState())
     case "terminal.modes":
       return json(runtime.terminalModes())
     case "persistence.state":

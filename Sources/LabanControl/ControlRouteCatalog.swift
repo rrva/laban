@@ -95,6 +95,13 @@ public enum ControlRouteCatalog {
       intentID: "app.accessibility"),
     endpoint(
       method: "GET",
+      path: "/debug/transparency",
+      category: "state",
+      summary: "Return requested/effective transparency policy and diagnostic counters.",
+      responseSchema: "schemas/debug/transparency.schema.json",
+      intentID: "transparency.state"),
+    endpoint(
+      method: "GET",
       path: "/debug/terminal-modes",
       category: "state",
       summary:
@@ -476,6 +483,7 @@ public enum ControlRouteCatalog {
     ("GET", "/debug/health"),
     ("GET", "/debug/notifications/state"),
     ("GET", "/debug/accessibility"),
+    ("GET", "/debug/transparency"),
     ("GET", "/debug/terminal-modes"),
     ("GET", "/debug/window-screenshot"),
     ("GET", "/debug/persistence/state"),

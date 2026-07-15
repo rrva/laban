@@ -54,6 +54,11 @@ final class LiveIntentRouter: IntentRouter {
   private let notificationIdentityProvider: () -> NativeNotificationRuntimeIdentity
   private var notificationStateRefresh: () -> Void
   private var notificationTestHandler: ((AttentionNotificationEvent, Bool) -> Void)?
+  private var transparencyStateProvider: (() -> TerminalTransparencyDebugResponse?)?
+  private var setBackgroundTransparencyHandler: ((Double, Bool) -> Void)?
+  private var resetTransparencyDiagnosticsHandler: (() -> Void)?
+  private var setReduceTransparencyOverrideHandler: ((Bool?) -> Void)?
+  private var setNativeFullScreenHandler: ((Bool) -> Void)?
   weak var proposalPresenter: CommandProposalReviewPresenting?
 
   init(
@@ -117,6 +122,22 @@ final class LiveIntentRouter: IntentRouter {
     performOnMain { self.notificationTestHandler = handler }
   }
 
+  func bindTransparencyControl(
+    state: @escaping () -> TerminalTransparencyDebugResponse?,
+    setBackground: @escaping (Double, Bool) -> Void,
+    resetDiagnostics: @escaping () -> Void,
+    setReduceTransparencyOverride: @escaping (Bool?) -> Void,
+    setNativeFullScreen: @escaping (Bool) -> Void
+  ) {
+    performOnMain {
+      self.transparencyStateProvider = state
+      self.setBackgroundTransparencyHandler = setBackground
+      self.resetTransparencyDiagnosticsHandler = resetDiagnostics
+      self.setReduceTransparencyOverrideHandler = setReduceTransparencyOverride
+      self.setNativeFullScreenHandler = setNativeFullScreen
+    }
+  }
+
   func route(_ intent: Intent) -> ControlResponse {
     performOnMain {
       switch intent {
@@ -133,6 +154,14 @@ final class LiveIntentRouter: IntentRouter {
         case "commandProposal.cancel":
           return commandProposalCancelAction(
             body: input.body, scopedSessionID: input.scopedSessionID)
+        case "transparency.setBackground":
+          return setBackgroundTransparencyAction(body: input.body)
+        case "transparency.diagnostics.reset":
+          return resetTransparencyDiagnosticsAction(body: input.body)
+        case "transparency.reduceTransparencyOverride.set":
+          return setReduceTransparencyOverrideAction(body: input.body)
+        case "transparency.nativeFullScreen.set":
+          return setNativeFullScreenAction(body: input.body)
         default:
           return .error(404, "unavailable on gui")
         }
@@ -164,6 +193,12 @@ final class LiveIntentRouter: IntentRouter {
 
   func query(_ query: LegacyDebugQueryInput) -> ControlResponse {
     performOnMain {
+      if query.intentID == "transparency.state" {
+        guard let state = transparencyStateProvider?() else {
+          return .error(503, "transparency diagnostics unavailable")
+        }
+        return json(state)
+      }
       guard let model = model else {
         return .error(500, "model released")
       }
@@ -284,6 +319,61 @@ final class LiveIntentRouter: IntentRouter {
     return json(
       NativeNotificationTestAcceptedResponse(accepted: true, eventId: event.id),
       status: 202)
+  }
+
+  private func setBackgroundTransparencyAction(body: Data) -> ControlResponse {
+    guard
+      let request = try? JSONDecoder().decode(
+        SetBackgroundTransparencyActionRequest.self, from: body),
+      request.opacity.isFinite,
+      let handler = setBackgroundTransparencyHandler
+    else {
+      return .error(400, "invalid setBackgroundTransparency request")
+    }
+    handler(min(max(request.opacity, 0), 1), request.applyToExplicitCellBackgrounds)
+    return diagnosticActionOK()
+  }
+
+  private func resetTransparencyDiagnosticsAction(body: Data) -> ControlResponse {
+    guard
+      (try? JSONDecoder().decode(ResetTransparencyDiagnosticsActionRequest.self, from: body))
+        != nil,
+      let handler = resetTransparencyDiagnosticsHandler
+    else {
+      return .error(400, "invalid resetTransparencyDiagnostics request")
+    }
+    handler()
+    return diagnosticActionOK()
+  }
+
+  private func setReduceTransparencyOverrideAction(body: Data) -> ControlResponse {
+    guard
+      let request = try? JSONDecoder().decode(
+        SetReduceTransparencyOverrideActionRequest.self, from: body),
+      let handler = setReduceTransparencyOverrideHandler
+    else {
+      return .error(400, "invalid setReduceTransparencyOverride request")
+    }
+    handler(request.enabled)
+    return diagnosticActionOK()
+  }
+
+  private func setNativeFullScreenAction(body: Data) -> ControlResponse {
+    guard
+      let request = try? JSONDecoder().decode(SetNativeFullScreenActionRequest.self, from: body),
+      let handler = setNativeFullScreenHandler
+    else {
+      return .error(400, "invalid setNativeFullScreen request")
+    }
+    handler(request.enabled)
+    return diagnosticActionOK()
+  }
+
+  private func diagnosticActionOK() -> ControlResponse {
+    ControlResponse(
+      status: 200,
+      contentType: "application/json",
+      body: Data(#"{"ok":true}"#.utf8))
   }
 
   private func windowScreenshotResponse(
@@ -621,5 +711,9 @@ final class LiveIntentRouter: IntentRouter {
   private static let guiDebugActionNames: [String: String] = [
     "terminal.scrollViewport": "scrollViewport",
     "command.propose": "propose",
+    "transparency.setBackground": "setBackgroundTransparency",
+    "transparency.diagnostics.reset": "resetTransparencyDiagnostics",
+    "transparency.reduceTransparencyOverride.set": "setReduceTransparencyOverride",
+    "transparency.nativeFullScreen.set": "setNativeFullScreen",
   ]
 }

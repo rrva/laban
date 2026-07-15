@@ -33,17 +33,30 @@ public enum ControlAdvertisement {
     return base.appendingPathComponent("Laban", isDirectory: true)
   }
 
-  public static func write(url: String, token: String, pid: Int32, runId: String) throws {
+  public static func write(
+    url: String,
+    token: String,
+    pid: Int32,
+    runId: String,
+    diagnosticControlToken: String? = nil,
+    diagnosticSessionObserveToken: String? = nil
+  ) throws {
     let dir = directory()
     try ControlDirectorySecurity.rejectSymlinkDirectory(at: dir)
     try ControlDirectorySecurity.ensurePrivateDirectory(at: dir)
     let file = dir.appendingPathComponent("control.json")
-    let payload: [String: Any] = [
+    var payload: [String: Any] = [
       "pid": Int(pid),
       "runId": runId,
       "token": token,
       "url": url,
     ]
+    if let diagnosticControlToken {
+      payload["diagnosticControlToken"] = diagnosticControlToken
+    }
+    if let diagnosticSessionObserveToken {
+      payload["diagnosticSessionObserveToken"] = diagnosticSessionObserveToken
+    }
     let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     let tmp = dir.appendingPathComponent("control.json.\(getpid()).\(UUID().uuidString).tmp")
 

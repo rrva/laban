@@ -71,6 +71,16 @@
   {
     "category" : "state",
     "method" : "GET",
+    "path" : "\/debug\/transparency",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/transparency.schema.json",
+    "summary" : "Return requested\/effective transparency policy and diagnostic counters."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
     "path" : "\/debug\/terminal-modes",
     "queryParameters" : [
 

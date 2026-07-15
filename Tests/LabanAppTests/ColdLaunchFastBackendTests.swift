@@ -98,6 +98,33 @@ final class ColdLaunchFastBackendTests: XCTestCase {
     XCTAssertEqual(view.rendererSelection, .slugGlyph)
   }
 
+  func testColdLaunchSwapKeepsCurrentNonopaqueSurfacePolicy() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    RendererSelection.set(.slugGlyph)
+    let view = try makeView()
+    let requested = TerminalTransparencyConfiguration(
+      backgroundOpacity: 0.7,
+      applyToExplicitCellBackgrounds: false,
+      backdropStyle: .none)
+    let effective = TerminalTransparencyPolicy.resolve(
+      requested: requested,
+      reduceTransparency: false,
+      nativeFullscreen: false,
+      supportsBehindWindowBlur: false,
+      snapshotBackgroundCapability: .supported,
+      headless: false)
+    view.applyTransparency(requested: requested, effective: effective, wake: false)
+    XCTAssertFalse(view.debugBackendSurfaceIsOpaque ?? true)
+
+    XCTAssertTrue(view.debugPerformColdLaunchSwapSynchronously(scale: 1))
+
+    XCTAssertEqual(view.debugBackendEffectiveRenderer, .slugGlyph)
+    XCTAssertFalse(view.debugBackendSurfaceIsOpaque ?? true)
+    XCTAssertEqual(view.backgroundCompositingOptionsForTesting.opacity, 179)
+  }
+
   /// A non-vector/slug persisted selection must take the unchanged path: no
   /// cold-launch deferral, the real backend is constructed directly, and no
   /// cold-launch swap is pending.

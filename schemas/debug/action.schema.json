@@ -30,7 +30,11 @@
     {"$ref": "#/$defs/setPreedit"},
     {"$ref": "#/$defs/findStart"},
     {"$ref": "#/$defs/findStep"},
-    {"$ref": "#/$defs/findStop"}
+    {"$ref": "#/$defs/findStop"},
+    {"$ref": "#/$defs/setBackgroundTransparency"},
+    {"$ref": "#/$defs/resetTransparencyDiagnostics"},
+    {"$ref": "#/$defs/setReduceTransparencyOverride"},
+    {"$ref": "#/$defs/setNativeFullScreen"}
   ],
   "$defs": {
     "newTab": {
@@ -349,6 +353,42 @@
         "action": {"const": "find.stop"},
         "sessionID": {"type": "string"},
         "sessionId": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "setBackgroundTransparency": {
+      "type": "object",
+      "required": ["action", "opacity", "applyToExplicitCellBackgrounds"],
+      "properties": {
+        "action": {"const": "setBackgroundTransparency"},
+        "opacity": {"type": "number", "minimum": 0, "maximum": 1},
+        "applyToExplicitCellBackgrounds": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "resetTransparencyDiagnostics": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "resetTransparencyDiagnostics"}
+      },
+      "additionalProperties": false
+    },
+    "setReduceTransparencyOverride": {
+      "type": "object",
+      "required": ["action", "enabled"],
+      "properties": {
+        "action": {"const": "setReduceTransparencyOverride"},
+        "enabled": {"type": ["boolean", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "setNativeFullScreen": {
+      "type": "object",
+      "required": ["action", "enabled"],
+      "properties": {
+        "action": {"const": "setNativeFullScreen"},
+        "enabled": {"type": "boolean"}
       },
       "additionalProperties": false
     },

@@ -20,6 +20,9 @@ struct AgentArgs {
   var capture: String? = nil
   var captureScreenshots: CaptureScreenshotPolicy = .marked
   var rendererSelection: RendererSelection = .software
+  var backgroundOpacity: Double = 1
+  var backgroundOpacityCells = false
+  var argumentError: String?
   var emojiRenderingMode: EmojiRenderingMode? = nil
   var replayCapture: String? = nil
   var replayMode: CaptureReplayMode = .both
@@ -57,6 +60,7 @@ func parseArgs() -> AgentArgs {
     case "--help", "-h": a.help = true
     case "--headless": a.headless = true
     case "--deterministic": a.deterministic = true
+    case "--background-opacity-cells": a.backgroundOpacityCells = true
     case "--debug-server": a.debugServerAddress = "127.0.0.1:0"
     case "--control-attach": a.controlAttach = true
     case "--control-attach-serve-cli": a.controlAttachServeCLI = true
@@ -90,6 +94,13 @@ func parseArgs() -> AgentArgs {
       } else if arg.hasPrefix("--renderer=") {
         let raw = String(arg.dropFirst("--renderer=".count))
         a.rendererSelection = RendererSelection(rawValue: raw) ?? .software
+      } else if arg.hasPrefix("--background-opacity=") {
+        let raw = String(arg.dropFirst("--background-opacity=".count))
+        if let value = Double(raw), value.isFinite, (0...1).contains(value) {
+          a.backgroundOpacity = value
+        } else {
+          a.argumentError = "--background-opacity must be a finite value in 0...1"
+        }
       } else if arg.hasPrefix("--emoji-rendering=") {
         let raw = String(arg.dropFirst("--emoji-rendering=".count))
         a.emojiRenderingMode = EmojiRenderingMode(rawValue: raw)
@@ -141,6 +152,8 @@ func usage() -> String {
     --capture-screenshots=POLICY    final, all, none, or marked.
     --renderer=NAME                 software, classic, gpuDriven, vectorGlyph, or slugGlyph
                                     for the debug/headless renderer backend.
+    --background-opacity=VALUE      Terminal canvas opacity in the closed range 0...1.
+    --background-opacity-cells      Apply opacity to explicit/inverse cell backgrounds too.
     --emoji-rendering=MODE          monochrome or color. Process-local override
                                     for autonomous renderer verification.
     --persistence-dir=PATH          Wire workspace.json + transcript + agent
@@ -565,6 +578,10 @@ if args.help {
   exit(0)
 }
 
+if let argumentError = args.argumentError {
+  fail(argumentError)
+}
+
 if let emojiRenderingMode = args.emojiRenderingMode {
   UserDefaults.standard.setVolatileDomain(
     [EmojiRenderingSettings.defaultsKey: emojiRenderingMode.rawValue],
@@ -638,6 +655,8 @@ if let debugAddr = args.debugServerAddress {
       captureName: args.capture,
       captureScreenshots: args.captureScreenshots,
       persistenceBaseURL: args.noPersistence ? nil : args.persistenceDir.map(resolveURL),
+      backgroundOpacity: args.backgroundOpacity,
+      applyTransparencyToExplicitCellBackgrounds: args.backgroundOpacityCells,
       restorePersistedState: !(args.noPersistenceRestore || args.noPersistence)
     )
   } catch {

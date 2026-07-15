@@ -272,14 +272,15 @@ final class ControlPlaneInvariantTests: XCTestCase {
           + "sessionObserve's \(sessionObserveGrants)")
     }
 
-    // Capabilities sessionObserve never grants at all (fixture, input,
-    // clipboard) are a fortiori not a subset, which is the general shape of
+    // Capabilities sessionObserve never grants at all (fixture, diagnostic
+    // control, input, clipboard) are a fortiori not a subset, which is the general shape of
     // "the user approves one operation; the authority is that operation":
     // an approvedSession minted for one of these would already violate I1,
     // and would also violate this invariant independently.
     XCTAssertFalse(sessionObserveGrants.contains(.input))
     XCTAssertFalse(sessionObserveGrants.contains(.clipboard))
     XCTAssertFalse(sessionObserveGrants.contains(.fixture))
+    XCTAssertFalse(sessionObserveGrants.contains(.diagnosticControl))
   }
 
   // MARK: - I4: The dialog-first family stays within the read/observe ceiling.

@@ -54,6 +54,7 @@ extension HeadlessDebugRuntime {
           fallbackReason: status.fallbackReason,
           rasterFallbackGlyphs: status.rasterFallbackGlyphs,
           vectorSubpixelLayout: status.vectorSubpixelLayout,
+          vectorSubpixelFallbackReason: status.vectorSubpixelFallbackReason,
           surface: SurfaceResponse(
             width: rendererBackend.surfaceWidth,
             height: rendererBackend.surfaceHeight,

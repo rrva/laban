@@ -74,8 +74,13 @@ still holds, alongside peer-credential + filesystem-permission auth.)*
   `.control` + `.observeSensitive`. A same-user process can read the file but
   cannot read another process's environment on macOS, so control/sensitive
   authority never sits in a world-path file.
-- **Fixture token** — headless tests only (`.fixture`); the shipped GUI never
-  grants it.
+- **Fixture token** — headless tests normally (`.fixture`). An installed GUI
+  may register it only for an explicitly environment-gated diagnostic run
+  that supplies both `LABAN_GUI_FIXTURE_CONTROL=1` and an isolated
+  `LABAN_CONTROL_DIR`; normal GUI launches never mint or advertise it. The
+  transparency mutation descriptors reachable through this exception require
+  the narrower `.diagnosticControl` capability. App-observe and every
+  session/approval tier remain unchanged.
 
 **Capability tiers, policy generated from the catalog** (a new intent is denied
 until classified with a `requiredCapability`): `.observe` / `.observeSensitive`

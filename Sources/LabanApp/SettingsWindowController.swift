@@ -23,6 +23,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let themePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let followSystemCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Follow system appearance"), target: nil, action: nil)
+  private let backgroundOpacitySlider = NSSlider(
+    value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
+  private let backgroundOpacityValueLabel = NSTextField(labelWithString: "100%")
+  private let explicitCellBackgroundOpacityCheckbox = NSButton(
+    checkboxWithTitle: L10n.tr("Apply opacity to colored cell backgrounds"),
+    target: nil,
+    action: nil)
+  private let transparencyPersistence = TerminalTransparencyLivePersistence()
   private let fontLabel = NSTextField(labelWithString: "")
   private let cjkFontPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let cjkFontStatusLabel = NSTextField(labelWithString: "")
@@ -151,6 +159,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       selector: #selector(cjkFontSettingsDidChange(_:)),
       name: CJKFontSettings.didChangeNotification,
       object: nil)
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(transparencySettingsDidChange(_:)),
+      name: TerminalTransparencySettings.didChangeNotification,
+      object: nil)
     window.delegate = self
     buildLayout()
     refresh()
@@ -177,6 +190,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     refresh()
   }
 
+  func windowWillClose(_ notification: Notification) {
+    transparencyPersistence.flush()
+  }
+
   // MARK: Layout
 
   private func buildLayout() {
@@ -188,6 +205,37 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     followSystemCheckbox.target = self
     followSystemCheckbox.action = #selector(followSystemChanged(_:))
+
+    backgroundOpacitySlider.isContinuous = true
+    backgroundOpacitySlider.numberOfTickMarks = 11
+    backgroundOpacitySlider.allowsTickMarkValuesOnly = false
+    backgroundOpacitySlider.target = self
+    backgroundOpacitySlider.action = #selector(backgroundOpacityChanged(_:))
+    backgroundOpacitySlider.toolTip = L10n.tr(
+      "Choose how much of the default terminal and sidebar background is visible. Text, the cursor, selections, and images remain fully visible. 100% is fully opaque."
+    )
+    backgroundOpacitySlider.setAccessibilityLabel(L10n.tr("Background opacity"))
+    backgroundOpacitySlider.widthAnchor.constraint(equalToConstant: 190).isActive = true
+    backgroundOpacityValueLabel.font = .monospacedDigitSystemFont(
+      ofSize: NSFont.smallSystemFontSize,
+      weight: .regular)
+    backgroundOpacityValueLabel.alignment = .right
+    backgroundOpacityValueLabel.widthAnchor.constraint(equalToConstant: 42).isActive = true
+
+    explicitCellBackgroundOpacityCheckbox.target = self
+    explicitCellBackgroundOpacityCheckbox.action =
+      #selector(explicitCellBackgroundOpacityChanged(_:))
+    explicitCellBackgroundOpacityCheckbox.toolTip = L10n.tr(
+      "Also applies the selected opacity to background colors set by terminal programs, including inverse video."
+    )
+
+    let backgroundOpacityRow = NSStackView(views: [
+      backgroundOpacitySlider,
+      backgroundOpacityValueLabel,
+    ])
+    backgroundOpacityRow.orientation = .horizontal
+    backgroundOpacityRow.spacing = 8
+    backgroundOpacityRow.alignment = .firstBaseline
 
     fontLabel.lineBreakMode = .byTruncatingTail
     let changeFontButton = NSButton(
@@ -412,6 +460,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let appearanceGrid = makeSettingsGrid([
       [makeLabel(L10n.tr("Theme:")), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
+      [makeLabel(L10n.tr("Background opacity:")), backgroundOpacityRow],
+      [NSGridCell.emptyContentView, explicitCellBackgroundOpacityCheckbox],
       [makeLabel(L10n.tr("Font:")), fontRow],
       [makeLabel(L10n.tr("CJK font:")), cjkFontRow],
       [NSGridCell.emptyContentView, cjkFontStatusLabel],
@@ -469,7 +519,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       content.bottomAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 20),
     ])
     window.layoutIfNeeded()
-    window.setContentSize(NSSize(width: 560, height: 360))
+    window.setContentSize(NSSize(width: 580, height: 410))
   }
 
   private func populateThemePopUp() {
@@ -658,6 +708,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       themePopUp.selectItem(at: row)
     }
     followSystemCheckbox.state = themeController.followsSystemAppearance ? .on : .off
+    refreshTransparencyControls()
     fontLabel.stringValue = currentFontDisplayName()
     refreshCJKFontControls()
     if let row = rendererOptions.firstIndex(of: rendererSelection) {
@@ -730,6 +781,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     refresh()
   }
 
+  @objc private func backgroundOpacityChanged(_ sender: NSSlider) {
+    let percent = min(100, max(0, Int(sender.doubleValue.rounded())))
+    sender.doubleValue = Double(percent)
+    updateBackgroundOpacityValueLabel(percent: percent)
+    transparencyPersistence.scheduleBackgroundOpacity(Double(percent) / 100)
+  }
+
+  @objc private func explicitCellBackgroundOpacityChanged(_ sender: NSButton) {
+    // Preserve the final slider position when the checkbox is clicked before
+    // the trailing coalescer fires.
+    transparencyPersistence.flush()
+    TerminalTransparencySettings.setApplyToExplicitCellBackgrounds(sender.state == .on)
+  }
+
   @objc private func changeFontClicked(_ sender: Any?) {
     onChangeFont()
   }
@@ -744,6 +809,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   @objc private func cjkFontSettingsDidChange(_ notification: Notification) {
     refresh()
+  }
+
+  @objc private func transparencySettingsDidChange(_ notification: Notification) {
+    refreshTransparencyControls()
+  }
+
+  private func refreshTransparencyControls() {
+    let requested = TerminalTransparencySettings.requestedConfiguration
+    let percent = min(100, max(0, Int((requested.backgroundOpacity * 100).rounded())))
+    backgroundOpacitySlider.doubleValue = Double(percent)
+    explicitCellBackgroundOpacityCheckbox.state =
+      requested.applyToExplicitCellBackgrounds ? .on : .off
+    updateBackgroundOpacityValueLabel(percent: percent)
+  }
+
+  private func updateBackgroundOpacityValueLabel(percent: Int) {
+    backgroundOpacityValueLabel.stringValue = "\(percent)%"
+    backgroundOpacitySlider.setAccessibilityValueDescription(
+      String(
+        format: L10n.tr("Background opacity: %lld percent"),
+        Int64(percent)))
+  }
+
+  var transparencyControlsForTesting: (
+    slider: NSSlider,
+    valueLabel: NSTextField,
+    explicitCellCheckbox: NSButton
+  ) {
+    (backgroundOpacitySlider, backgroundOpacityValueLabel, explicitCellBackgroundOpacityCheckbox)
+  }
+
+  func flushPendingTransparencyPersistenceForTesting() {
+    transparencyPersistence.flush()
   }
 
   @objc private func rendererChanged(_ sender: NSPopUpButton) {

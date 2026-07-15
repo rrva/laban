@@ -1,0 +1,113 @@
+import Foundation
+import LabanCore
+import LabanRenderer
+
+extension HeadlessDebugRuntime {
+  func transparencyState() -> DebugResponse {
+    withRuntimeLock { jsonEncode(transparencyStateUnlocked()) }
+  }
+
+  func transparencyStateUnlocked() -> TerminalTransparencyDebugResponse {
+    let status = rendererBackend.rendererStatus
+    let presentStats =
+      (rendererBackend as? DisplayLinkPresentingRenderer)?.presentDisplayLinkStats(reset: false)
+    let misses = presentStats?["estimatedMissedVsyncs"] ?? 0
+    return TerminalTransparencyDebugResponse(
+      requestedOpacity: requestedTransparency.backgroundOpacity,
+      effectiveOpacity: effectiveTransparency.backgroundOpacity,
+      requestedBackdropStyle: requestedTransparency.backdropStyle.rawValue,
+      effectiveBackdropStyle: effectiveTransparency.backdropStyle.rawValue,
+      applyToExplicitCellBackgrounds:
+        requestedTransparency.applyToExplicitCellBackgrounds,
+      forceOpaqueReason: effectiveTransparency.forceOpaqueReason?.rawValue,
+      surfaceOpaque: effectiveTransparency.isSurfaceOpaque,
+      effectiveGlyphAntialiasing: status.vectorSubpixelLayout ?? "rendererDefault",
+      effectiveGlyphAntialiasingReason: status.vectorSubpixelFallbackReason,
+      snapshotExplicitBackgroundCapability:
+        TerminalSnapshotBackgroundCapability.inProcess.rawValue,
+      configuredRenderer: status.configuredRenderer,
+      effectiveRenderer: status.effectiveRenderer,
+      backdropSubviewCount: 0,
+      systemReduceTransparency: false,
+      reduceTransparencyOverride: reduceTransparencyOverride,
+      effectiveReduceTransparency: accessibilityDisplayFlags.reduceTransparency,
+      nativeFullscreen: false,
+      accessibilityRefreshCount: transparencyAccessibilityRefreshCount,
+      effectiveTransparencyApplyCount: effectiveTransparencyApplyCount,
+      transparencyRenderWakeCount: transparencyRenderWakeCount,
+      rendererPresentCount: max(0, currentFrame - transparencyRendererPresentBaseline),
+      presentIntervalDeadlineMisses: max(0, Int(misses.rounded())))
+  }
+
+  func setBackgroundTransparencyUnlocked(
+    _ request: SetBackgroundTransparencyActionRequest
+  ) -> DebugResponse {
+    guard request.opacity.isFinite else {
+      return jsonError("opacity must be finite")
+    }
+    let next = TerminalTransparencyConfiguration(
+      backgroundOpacity: request.opacity,
+      applyToExplicitCellBackgrounds: request.applyToExplicitCellBackgrounds,
+      backdropStyle: requestedTransparency.backdropStyle)
+    guard next != requestedTransparency else { return actionResult(ok: true) }
+    requestedTransparency = next
+    resolveTransparencyAndRenderUnlocked()
+    return actionResult(ok: true)
+  }
+
+  func resetTransparencyDiagnosticsUnlocked() -> DebugResponse {
+    _ = (rendererBackend as? DisplayLinkPresentingRenderer)?.presentDisplayLinkStats(reset: true)
+    transparencyAccessibilityRefreshCount = 0
+    effectiveTransparencyApplyCount = 0
+    transparencyRenderWakeCount = 0
+    transparencyRendererPresentBaseline = currentFrame
+    return actionResult(ok: true)
+  }
+
+  func setReduceTransparencyOverrideUnlocked(
+    _ request: SetReduceTransparencyOverrideActionRequest
+  ) -> DebugResponse {
+    guard reduceTransparencyOverride != request.enabled else {
+      return actionResult(ok: true)
+    }
+    reduceTransparencyOverride = request.enabled
+    accessibilityDisplayFlags.reduceTransparency = request.enabled ?? false
+    transparencyAccessibilityRefreshCount += 1
+
+    let previous = effectiveTransparency
+    resolveTransparencyUnlocked()
+    if effectiveTransparency != previous {
+      applyEffectiveTransparencyUnlocked()
+    }
+    // Match TerminalBitmapView's single coalesced accessibility wake even if
+    // removing an override resolves to the same effective system value.
+    transparencyRenderWakeCount += 1
+    renderFrameUnlocked()
+    return actionResult(ok: true)
+  }
+
+  private func resolveTransparencyAndRenderUnlocked() {
+    let previous = effectiveTransparency
+    resolveTransparencyUnlocked()
+    guard effectiveTransparency != previous else { return }
+    applyEffectiveTransparencyUnlocked()
+    transparencyRenderWakeCount += 1
+    renderFrameUnlocked()
+  }
+
+  private func resolveTransparencyUnlocked() {
+    effectiveTransparency = TerminalTransparencyPolicy.resolve(
+      requested: requestedTransparency,
+      reduceTransparency: accessibilityDisplayFlags.reduceTransparency,
+      nativeFullscreen: false,
+      supportsBehindWindowBlur: false,
+      snapshotBackgroundCapability: .inProcess,
+      headless: true)
+  }
+
+  private func applyEffectiveTransparencyUnlocked() {
+    rendererBackend.setSurfaceTransparency(
+      RendererSurfaceTransparency(isOpaque: effectiveTransparency.isSurfaceOpaque))
+    effectiveTransparencyApplyCount += 1
+  }
+}

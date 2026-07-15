@@ -38,6 +38,10 @@ enum DebugAction: Decodable {
   case click(ClickActionRequest)
   case key(DebugKeyActionRequest)
   case windowFocus(WindowFocusActionRequest)
+  case setBackgroundTransparency(SetBackgroundTransparencyActionRequest)
+  case resetTransparencyDiagnostics(ResetTransparencyDiagnosticsActionRequest)
+  case setReduceTransparencyOverride(SetReduceTransparencyOverrideActionRequest)
+  case setNativeFullScreen(SetNativeFullScreenActionRequest)
   case unsupported(String)
 
   private enum CodingKeys: String, CodingKey {
@@ -116,6 +120,17 @@ enum DebugAction: Decodable {
       self = .key(try DebugKeyActionRequest(from: decoder))
     case "windowFocus":
       self = .windowFocus(try WindowFocusActionRequest(from: decoder))
+    case "setBackgroundTransparency":
+      self = .setBackgroundTransparency(
+        try SetBackgroundTransparencyActionRequest(from: decoder))
+    case "resetTransparencyDiagnostics":
+      self = .resetTransparencyDiagnostics(
+        try ResetTransparencyDiagnosticsActionRequest(from: decoder))
+    case "setReduceTransparencyOverride":
+      self = .setReduceTransparencyOverride(
+        try SetReduceTransparencyOverrideActionRequest(from: decoder))
+    case "setNativeFullScreen":
+      self = .setNativeFullScreen(try SetNativeFullScreenActionRequest(from: decoder))
     default:
       self = .unsupported(action)
     }
@@ -194,6 +209,14 @@ extension DebugAction {
         SendKeyInput(key: request.key ?? "", modifiers: request.modifiers ?? []))
     case .windowFocus:
       return legacyIntent(action: "windowFocus")
+    case .setBackgroundTransparency:
+      return legacyIntent(action: "setBackgroundTransparency")
+    case .resetTransparencyDiagnostics:
+      return legacyIntent(action: "resetTransparencyDiagnostics")
+    case .setReduceTransparencyOverride:
+      return legacyIntent(action: "setReduceTransparencyOverride")
+    case .setNativeFullScreen:
+      return legacyIntent(action: "setNativeFullScreen")
     case .unsupported(let action):
       return .unsupportedDebugAction(UnsupportedDebugActionInput(action: action))
     }
@@ -235,6 +258,13 @@ typealias FindStartRequest = LabanCore.FindStartRequest
 typealias FindStepRequest = LabanCore.FindStepRequest
 typealias FindSessionRequest = LabanCore.FindSessionRequest
 typealias CaptureStartRequest = LabanCore.CaptureStartRequest
+typealias SetBackgroundTransparencyActionRequest =
+  LabanCore.SetBackgroundTransparencyActionRequest
+typealias ResetTransparencyDiagnosticsActionRequest =
+  LabanCore.ResetTransparencyDiagnosticsActionRequest
+typealias SetReduceTransparencyOverrideActionRequest =
+  LabanCore.SetReduceTransparencyOverrideActionRequest
+typealias SetNativeFullScreenActionRequest = LabanCore.SetNativeFullScreenActionRequest
 
 struct CaptureStatusResponse: Encodable {
   var active: Bool

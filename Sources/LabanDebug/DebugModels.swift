@@ -140,6 +140,7 @@ struct RenderResponse: Encodable {
   var fallbackReason: String?
   var rasterFallbackGlyphs: Int?
   var vectorSubpixelLayout: String?
+  var vectorSubpixelFallbackReason: String?
   var surface: SurfaceResponse
   var terminalViewport: RectResponse
   var cell: CellSizeResponse

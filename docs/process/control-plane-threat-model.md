@@ -156,6 +156,19 @@ suite as `testNoBearerTokenEnvironmentKeysInChildEnvBuilder`.
 it directly from the catalog so the floor is visible next to the other
 invariants. Test: `testGuiCatalogFloorHasNoActuationAndExactAllowlists`.
 
+**I8: Diagnostic GUI mutation is an isolated fixture authority, never an
+approval.** `.diagnosticControl` is granted only by `ControlTokenTier.fixture`.
+The installed GUI registers that tier only when both
+`LABAN_GUI_FIXTURE_CONTROL=1` and an explicit isolated `LABAN_CONTROL_DIR` are
+present. The ordinary `control.json` `token` remains app-observe; normal
+advertisements omit all diagnostic fields. `sessionObserve`,
+`approvedSession`, and `approvedSessionFamily` never grant this capability,
+and the policy filters it even from a forged approved-session capability
+array. Diagnostic intents are absent from `ControlLazyAttachAllowlist` and
+`ControlSessionObserveFamily`. Tests:
+`TransparencyDiagnosticAuthorizationTests` and
+`TransparencyDiagnosticsTests.testGUIFixtureGateRequiresBothEnvironmentInputs`.
+
 ## Honesty notes (what is not a boundary)
 
 **Approval-record HMAC is tamper evidence, not a boundary.** Persisted
@@ -196,6 +209,10 @@ consent matches the grant.
   and the decision is recorded in the relevant ExecPlan Decision Log with a
   named reviewer. If a change requires editing an invariant test, that edit is
   itself a security decision under the same rule.
+- A GUI diagnostic intent must require `.diagnosticControl`, remain absent from
+  every lazy/session-observe family, and use the two-input isolated fixture
+  gate in I8. Never add diagnostic authority to app-observe or an approval
+  capability array.
 - Adding a fourth trust derivation (for example a cross-session observe
   grant): add its invariants here and to the suite in the same change that
   lands the mechanism.

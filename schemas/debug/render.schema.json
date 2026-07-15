@@ -13,6 +13,7 @@
     "fallbackReason": {"type": ["string", "null"]},
     "rasterFallbackGlyphs": {"type": "integer", "minimum": 0},
     "vectorSubpixelLayout": {"type": "string"},
+    "vectorSubpixelFallbackReason": {"type": ["string", "null"]},
     "surface": {"$ref": "#/$defs/rectWithScale"},
     "terminalViewport": {"$ref": "#/$defs/rect"},
     "cell": {

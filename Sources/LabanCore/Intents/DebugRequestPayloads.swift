@@ -108,6 +108,10 @@ public enum DebugActionIntentID {
     "click",
     "key",
     "windowFocus",
+    "setBackgroundTransparency",
+    "resetTransparencyDiagnostics",
+    "setReduceTransparencyOverride",
+    "setNativeFullScreen",
   ]
 
   public static func intentID(forAction action: String) -> String? {
@@ -146,8 +150,238 @@ public enum DebugActionIntentID {
     case "click": return "terminal.click"
     case "key": return "terminal.sendKey"
     case "windowFocus": return "fixture.windowFocus"
+    case "setBackgroundTransparency": return "transparency.setBackground"
+    case "resetTransparencyDiagnostics": return "transparency.diagnostics.reset"
+    case "setReduceTransparencyOverride": return "transparency.reduceTransparencyOverride.set"
+    case "setNativeFullScreen": return "transparency.nativeFullScreen.set"
     default: return nil
     }
+  }
+}
+
+public struct SetBackgroundTransparencyActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var action: String?
+  public var opacity: Double
+  public var applyToExplicitCellBackgrounds: Bool
+
+  public init(
+    action: String? = "setBackgroundTransparency",
+    opacity: Double,
+    applyToExplicitCellBackgrounds: Bool
+  ) {
+    self.action = action
+    self.opacity = opacity
+    self.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": .string(
+          enumValues: nil, const: "setBackgroundTransparency", format: nil, pattern: nil),
+        "opacity": .number(min: 0, max: 1),
+        "applyToExplicitCellBackgrounds": .boolean,
+      ],
+      required: ["action", "opacity", "applyToExplicitCellBackgrounds"],
+      additionalProperties: false)
+  }
+}
+
+public struct ResetTransparencyDiagnosticsActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var action: String?
+
+  public init(action: String? = "resetTransparencyDiagnostics") {
+    self.action = action
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": .string(
+          enumValues: nil, const: "resetTransparencyDiagnostics", format: nil, pattern: nil)
+      ],
+      required: ["action"],
+      additionalProperties: false)
+  }
+}
+
+public struct SetReduceTransparencyOverrideActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var action: String?
+  public var enabled: Bool?
+
+  public init(action: String? = "setReduceTransparencyOverride", enabled: Bool?) {
+    self.action = action
+    self.enabled = enabled
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": .string(
+          enumValues: nil, const: "setReduceTransparencyOverride", format: nil, pattern: nil),
+        "enabled": .optional(.boolean),
+      ],
+      required: ["action", "enabled"],
+      additionalProperties: false)
+  }
+}
+
+public struct SetNativeFullScreenActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var action: String?
+  public var enabled: Bool
+
+  public init(action: String? = "setNativeFullScreen", enabled: Bool) {
+    self.action = action
+    self.enabled = enabled
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": .string(
+          enumValues: nil, const: "setNativeFullScreen", format: nil, pattern: nil),
+        "enabled": .boolean,
+      ],
+      required: ["action", "enabled"],
+      additionalProperties: false)
+  }
+}
+
+/// Stable wire projection for `GET /debug/transparency`. Requested values are
+/// never overwritten by temporary accessibility/full-screen policy.
+public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var requestedOpacity: Double
+  public var effectiveOpacity: Double
+  public var requestedBackdropStyle: String
+  public var effectiveBackdropStyle: String
+  public var applyToExplicitCellBackgrounds: Bool
+  public var forceOpaqueReason: String?
+  public var surfaceOpaque: Bool
+  public var effectiveGlyphAntialiasing: String
+  public var effectiveGlyphAntialiasingReason: String?
+  public var snapshotExplicitBackgroundCapability: String
+  public var configuredRenderer: String
+  public var effectiveRenderer: String
+  public var backdropSubviewCount: Int
+  public var systemReduceTransparency: Bool
+  public var reduceTransparencyOverride: Bool?
+  public var effectiveReduceTransparency: Bool
+  public var nativeFullscreen: Bool
+  public var accessibilityRefreshCount: Int
+  public var effectiveTransparencyApplyCount: Int
+  public var transparencyRenderWakeCount: Int
+  public var rendererPresentCount: Int
+  public var presentIntervalDeadlineMisses: Int
+
+  public init(
+    requestedOpacity: Double,
+    effectiveOpacity: Double,
+    requestedBackdropStyle: String,
+    effectiveBackdropStyle: String,
+    applyToExplicitCellBackgrounds: Bool,
+    forceOpaqueReason: String?,
+    surfaceOpaque: Bool,
+    effectiveGlyphAntialiasing: String,
+    effectiveGlyphAntialiasingReason: String?,
+    snapshotExplicitBackgroundCapability: String,
+    configuredRenderer: String,
+    effectiveRenderer: String,
+    backdropSubviewCount: Int,
+    systemReduceTransparency: Bool,
+    reduceTransparencyOverride: Bool?,
+    effectiveReduceTransparency: Bool,
+    nativeFullscreen: Bool,
+    accessibilityRefreshCount: Int,
+    effectiveTransparencyApplyCount: Int,
+    transparencyRenderWakeCount: Int,
+    rendererPresentCount: Int,
+    presentIntervalDeadlineMisses: Int
+  ) {
+    self.requestedOpacity = requestedOpacity
+    self.effectiveOpacity = effectiveOpacity
+    self.requestedBackdropStyle = requestedBackdropStyle
+    self.effectiveBackdropStyle = effectiveBackdropStyle
+    self.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
+    self.forceOpaqueReason = forceOpaqueReason
+    self.surfaceOpaque = surfaceOpaque
+    self.effectiveGlyphAntialiasing = effectiveGlyphAntialiasing
+    self.effectiveGlyphAntialiasingReason = effectiveGlyphAntialiasingReason
+    self.snapshotExplicitBackgroundCapability = snapshotExplicitBackgroundCapability
+    self.configuredRenderer = configuredRenderer
+    self.effectiveRenderer = effectiveRenderer
+    self.backdropSubviewCount = backdropSubviewCount
+    self.systemReduceTransparency = systemReduceTransparency
+    self.reduceTransparencyOverride = reduceTransparencyOverride
+    self.effectiveReduceTransparency = effectiveReduceTransparency
+    self.nativeFullscreen = nativeFullscreen
+    self.accessibilityRefreshCount = accessibilityRefreshCount
+    self.effectiveTransparencyApplyCount = effectiveTransparencyApplyCount
+    self.transparencyRenderWakeCount = transparencyRenderWakeCount
+    self.rendererPresentCount = rendererPresentCount
+    self.presentIntervalDeadlineMisses = presentIntervalDeadlineMisses
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "requestedOpacity": .number(min: 0, max: 1),
+        "effectiveOpacity": .number(min: 0, max: 1),
+        "requestedBackdropStyle": .string(
+          enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
+          pattern: nil),
+        "effectiveBackdropStyle": .string(
+          enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
+          pattern: nil),
+        "applyToExplicitCellBackgrounds": .boolean,
+        "forceOpaqueReason": .optional(
+          .string(
+            enumValues: [
+              TerminalTransparencyForceOpaqueReason.reduceTransparency.rawValue,
+              TerminalTransparencyForceOpaqueReason.nativeFullscreen.rawValue,
+              TerminalTransparencyForceOpaqueReason.legacySnapshotWriter.rawValue,
+            ], const: nil, format: nil, pattern: nil)),
+        "surfaceOpaque": .boolean,
+        "effectiveGlyphAntialiasing": .string(
+          enumValues: nil, const: nil, format: nil, pattern: nil),
+        "effectiveGlyphAntialiasingReason": .optional(
+          .string(enumValues: nil, const: nil, format: nil, pattern: nil)),
+        "snapshotExplicitBackgroundCapability": .string(
+          enumValues: TerminalSnapshotBackgroundCapability.allCases.map(\.rawValue), const: nil,
+          format: nil, pattern: nil),
+        "configuredRenderer": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "effectiveRenderer": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "backdropSubviewCount": .integer(min: 0, max: 0),
+        "systemReduceTransparency": .boolean,
+        "reduceTransparencyOverride": .optional(.boolean),
+        "effectiveReduceTransparency": .boolean,
+        "nativeFullscreen": .boolean,
+        "accessibilityRefreshCount": .integer(min: 0, max: nil),
+        "effectiveTransparencyApplyCount": .integer(min: 0, max: nil),
+        "transparencyRenderWakeCount": .integer(min: 0, max: nil),
+        "rendererPresentCount": .integer(min: 0, max: nil),
+        "presentIntervalDeadlineMisses": .integer(min: 0, max: nil),
+      ],
+      required: [
+        "requestedOpacity", "effectiveOpacity", "requestedBackdropStyle",
+        "effectiveBackdropStyle", "applyToExplicitCellBackgrounds", "surfaceOpaque",
+        "effectiveGlyphAntialiasing", "snapshotExplicitBackgroundCapability",
+        "configuredRenderer", "effectiveRenderer", "backdropSubviewCount",
+        "systemReduceTransparency", "effectiveReduceTransparency", "nativeFullscreen",
+        "accessibilityRefreshCount", "effectiveTransparencyApplyCount",
+        "transparencyRenderWakeCount", "rendererPresentCount",
+        "presentIntervalDeadlineMisses",
+      ],
+      additionalProperties: false)
   }
 }
 

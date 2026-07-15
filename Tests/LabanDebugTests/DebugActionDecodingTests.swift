@@ -146,7 +146,17 @@ final class DebugActionDecodingTests: XCTestCase {
 
   func testEveryKnownDebugActionNameMapsToCatalogDescriptor() throws {
     for action in DebugActionIntentID.knownActionNames {
-      let decoded = try decode(#"{"action":"\#(action)"}"#)
+      let payload: String
+      switch action {
+      case "setBackgroundTransparency":
+        payload =
+          #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false}"#
+      case "setNativeFullScreen":
+        payload = #"{"action":"setNativeFullScreen","enabled":false}"#
+      default:
+        payload = #"{"action":"\#(action)"}"#
+      }
+      let decoded = try decode(payload)
       XCTAssertNotNil(IntentCatalog.all.descriptor(id: decoded.intentID), action)
     }
   }

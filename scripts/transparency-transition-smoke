@@ -1,0 +1,402 @@
+#!/usr/bin/env sh
+set -eu
+
+app=
+cycles=5
+artifacts=.artifacts/transparency/transitions
+
+for argument in "$@"; do
+  case "$argument" in
+    --app=*) app=${argument#--app=} ;;
+    --cycles=*) cycles=${argument#--cycles=} ;;
+    --artifacts=*) artifacts=${argument#--artifacts=} ;;
+    --help|-h)
+      printf '%s\n' \
+        'usage: transparency-transition-smoke --app=$HOME/Laban.app --cycles=5' \
+        '       --artifacts=.artifacts/transparency/transitions'
+      exit 0
+      ;;
+    *)
+      printf 'transparency-transition-smoke: unknown argument: %s\n' "$argument" >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$cycles" in
+  ''|*[!0-9]*)
+    printf 'transparency-transition-smoke: --cycles must be a positive integer\n' >&2
+    exit 2
+    ;;
+esac
+if [ "$cycles" -lt 1 ]; then
+  printf 'transparency-transition-smoke: --cycles must be a positive integer\n' >&2
+  exit 2
+fi
+if [ -z "$app" ] || [ ! -x "$app/Contents/MacOS/LabanApp" ]; then
+  printf 'transparency-transition-smoke: installed app executable not found: %s\n' "$app" >&2
+  exit 2
+fi
+
+mkdir -p "$artifacts"
+artifacts=$(CDPATH= cd -- "$artifacts" && pwd)
+control_dir="$artifacts/.gui-control-$$"
+mkdir -p "$control_dir"
+run_id="transparency-transition-$$-$(date +%s)"
+control_json="$control_dir/control.json"
+app_log="$artifacts/installed-app.log"
+app_pid=
+socket=
+app_token=
+diagnostic_token=
+session_token=
+initial_opacity=
+initial_cells=
+
+fail() {
+  printf 'transparency-transition-smoke: %s\n' "$1" >&2
+  exit 1
+}
+
+request_status() {
+  token=$1
+  method=$2
+  path=$3
+  body=$4
+  output=$5
+  if [ -n "$body" ]; then
+    curl --silent --show-error --max-time 5 \
+      --unix-socket "$socket" \
+      -H "Authorization: Bearer $token" \
+      -H 'Content-Type: application/json' \
+      -X "$method" \
+      --data "$body" \
+      -o "$output" \
+      -w '%{http_code}' \
+      http://laban"$path"
+  else
+    curl --silent --show-error --max-time 5 \
+      --unix-socket "$socket" \
+      -H "Authorization: Bearer $token" \
+      -X "$method" \
+      -o "$output" \
+      -w '%{http_code}' \
+      http://laban"$path"
+  fi
+}
+
+post_action() {
+  body=$1
+  output=$2
+  status=$(request_status "$diagnostic_token" POST /debug/actions "$body" "$output")
+  [ "$status" = 200 ] || fail "diagnostic action returned HTTP $status"
+}
+
+read_state() {
+  output=$1
+  status=$(request_status "$diagnostic_token" GET /debug/transparency '' "$output")
+  [ "$status" = 200 ] || return 1
+}
+
+poll_state() {
+  mode=$1
+  value=$2
+  cells=$3
+  output=$4
+  attempt=0
+  while [ "$attempt" -lt 200 ]; do
+    attempt=$((attempt + 1))
+    if read_state "$output"; then
+      if python3 - "$mode" "$value" "$cells" "$output" <<'PY'
+import json
+import math
+import sys
+
+mode, value, cells, path = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    state = json.load(handle)
+ok = False
+if mode == "requested":
+    ok = (
+        math.isclose(float(state["requestedOpacity"]), float(value), abs_tol=1e-9)
+        and state["applyToExplicitCellBackgrounds"] == (cells == "true")
+        and math.isclose(float(state["effectiveOpacity"]), float(value), abs_tol=1e-9)
+        and state.get("forceOpaqueReason") is None
+    )
+elif mode == "reduce":
+    ok = (
+        state["effectiveReduceTransparency"] == (value == "true")
+        and state.get("forceOpaqueReason") == ("reduceTransparency" if value == "true" else None)
+    )
+elif mode == "fullscreen":
+    ok = (
+        state["nativeFullscreen"] == (value == "true")
+        and state.get("forceOpaqueReason") == ("nativeFullscreen" if value == "true" else None)
+    )
+sys.exit(0 if ok else 1)
+PY
+      then
+        return 0
+      fi
+    fi
+    sleep 0.05
+  done
+  fail "timed out polling $mode=$value"
+}
+
+require_counters() {
+  output=$1
+  accessibility=$2
+  apply=$3
+  wake=$4
+  present=$5
+  attempt=0
+  while [ "$attempt" -lt 200 ]; do
+    attempt=$((attempt + 1))
+    read_state "$output" || true
+    if python3 - "$output" "$accessibility" "$apply" "$wake" "$present" <<'PY'
+import json
+import sys
+
+path, accessibility, apply, wake, present = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    state = json.load(handle)
+expected = tuple(map(int, (accessibility, apply, wake, present)))
+actual = (
+    int(state["accessibilityRefreshCount"]),
+    int(state["effectiveTransparencyApplyCount"]),
+    int(state["transparencyRenderWakeCount"]),
+    int(state["rendererPresentCount"]),
+)
+if any(a > e for a, e in zip(actual, expected)):
+    print(f"counter exceeded expected value: actual={actual} expected={expected}", file=sys.stderr)
+    sys.exit(2)
+sys.exit(0 if actual == expected else 1)
+PY
+    then
+      sleep 0.2
+      read_state "$output"
+      python3 - "$output" "$accessibility" "$apply" "$wake" "$present" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    state = json.load(handle)
+actual = (
+    state["accessibilityRefreshCount"],
+    state["effectiveTransparencyApplyCount"],
+    state["transparencyRenderWakeCount"],
+    state["rendererPresentCount"],
+)
+expected = tuple(map(int, sys.argv[2:]))
+if actual != expected:
+    raise SystemExit(f"counters did not settle: actual={actual} expected={expected}")
+PY
+      return 0
+    else
+      code=$?
+      [ "$code" -ne 2 ] || fail "transition counter exceeded its exact bound"
+    fi
+    sleep 0.05
+  done
+  fail "transition counters did not reach their exact values"
+}
+
+cleanup() {
+  set +e
+  if [ -n "$socket" ] && [ -n "$diagnostic_token" ] && [ -S "$socket" ]; then
+    tmp="$artifacts/.cleanup.json"
+    request_status "$diagnostic_token" POST /debug/actions \
+      '{"action":"setReduceTransparencyOverride","enabled":null}' "$tmp" >/dev/null 2>&1
+    state="$artifacts/.cleanup-state.json"
+    if read_state "$state" >/dev/null 2>&1; then
+      is_full=$(python3 - "$state" <<'PY'
+import json, sys
+print("true" if json.load(open(sys.argv[1], encoding="utf-8"))["nativeFullscreen"] else "false")
+PY
+)
+      if [ "$is_full" = true ]; then
+        request_status "$diagnostic_token" POST /debug/actions \
+          '{"action":"setNativeFullScreen","enabled":false}' "$tmp" >/dev/null 2>&1
+        n=0
+        while [ "$n" -lt 100 ]; do
+          n=$((n + 1))
+          read_state "$state" >/dev/null 2>&1 || break
+          python3 - "$state" <<'PY' >/dev/null 2>&1 && break
+import json, sys
+raise SystemExit(0 if not json.load(open(sys.argv[1], encoding="utf-8"))["nativeFullscreen"] else 1)
+PY
+          sleep 0.05
+        done
+      fi
+    fi
+    if [ -n "$initial_opacity" ] && [ -n "$initial_cells" ]; then
+      request_status "$diagnostic_token" POST /debug/actions \
+        "{\"action\":\"setBackgroundTransparency\",\"opacity\":$initial_opacity,\"applyToExplicitCellBackgrounds\":$initial_cells}" \
+        "$tmp" >/dev/null 2>&1
+    fi
+    rm -f "$tmp" "$state"
+  fi
+  if [ -n "$app_pid" ] && kill -0 "$app_pid" 2>/dev/null; then
+    kill -TERM "$app_pid" 2>/dev/null
+    wait "$app_pid" 2>/dev/null
+  fi
+  rm -f "$control_json" "$control_dir/control.sock"
+  rmdir "$control_dir" 2>/dev/null
+}
+trap cleanup EXIT HUP INT TERM
+
+LABAN_CONTROL_DIR="$control_dir" \
+LABAN_GUI_FIXTURE_CONTROL=1 \
+LABAN_RUN_ID="$run_id" \
+  "$app/Contents/MacOS/LabanApp" >"$app_log" 2>&1 &
+app_pid=$!
+
+attempt=0
+while [ "$attempt" -lt 300 ]; do
+  attempt=$((attempt + 1))
+  kill -0 "$app_pid" 2>/dev/null || fail "installed app exited before readiness; see $app_log"
+  if [ -f "$control_json" ]; then
+    if python3 - "$control_json" "$run_id" "$app_pid" "$control_dir/control.sock" <<'PY'
+import json
+import os
+import sys
+
+path, run_id, pid, socket = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as handle:
+        record = json.load(handle)
+except Exception:
+    raise SystemExit(1)
+ok = (
+    record.get("runId") == run_id
+    and int(record.get("pid", -1)) == int(pid)
+    and record.get("url") == socket
+    and bool(record.get("token"))
+    and bool(record.get("diagnosticControlToken"))
+    and bool(record.get("diagnosticSessionObserveToken"))
+    and os.path.exists(socket)
+)
+raise SystemExit(0 if ok else 1)
+PY
+    then
+      break
+    fi
+  fi
+  sleep 0.05
+done
+[ "$attempt" -lt 300 ] || fail "timed out waiting for isolated GUI fixture readiness"
+
+socket=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$control_json")
+app_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$control_json")
+diagnostic_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["diagnosticControlToken"])' "$control_json")
+session_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["diagnosticSessionObserveToken"])' "$control_json")
+
+attempt=0
+while [ "$attempt" -lt 200 ]; do
+  attempt=$((attempt + 1))
+  if read_state "$artifacts/transparency-initial.json"; then
+    break
+  fi
+  sleep 0.05
+done
+[ "$attempt" -lt 200 ] || fail 'transparency endpoint did not become ready'
+initial_opacity=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["requestedOpacity"])' "$artifacts/transparency-initial.json")
+initial_cells=$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["applyToExplicitCellBackgrounds"]).lower())' "$artifacts/transparency-initial.json")
+
+target_opacity=$(python3 - "$initial_opacity" <<'PY'
+import math, sys
+initial = float(sys.argv[1])
+print("0.71" if math.isclose(initial, 0.70, abs_tol=1e-9) else "0.70")
+PY
+)
+target_cells=false
+if [ "$initial_cells" = false ] && [ "$target_opacity" = "$initial_opacity" ]; then
+  target_cells=true
+fi
+
+denial_bodies='{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false}
+{"action":"resetTransparencyDiagnostics"}
+{"action":"setReduceTransparencyOverride","enabled":false}
+{"action":"setNativeFullScreen","enabled":false}'
+printf '%s\n' "$denial_bodies" | while IFS= read -r body; do
+  [ -n "$body" ] || continue
+  for token in "$app_token" "$session_token"; do
+    status=$(request_status "$token" POST /debug/actions "$body" "$artifacts/.denied.json")
+    [ "$status" = 403 ] || fail "non-fixture token unexpectedly received HTTP $status"
+  done
+done
+rm -f "$artifacts/.denied.json"
+
+post_action '{"action":"setReduceTransparencyOverride","enabled":false}' "$artifacts/.action.json"
+poll_state requested "$initial_opacity" "$initial_cells" "$artifacts/.precondition.json" || true
+
+post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
+post_action \
+  "{\"action\":\"setBackgroundTransparency\",\"opacity\":$target_opacity,\"applyToExplicitCellBackgrounds\":$target_cells}" \
+  "$artifacts/.action.json"
+poll_state requested "$target_opacity" "$target_cells" "$artifacts/transparency-requested.json"
+require_counters "$artifacts/transparency-requested.json" 0 1 1 1
+
+cycle=1
+while [ "$cycle" -le "$cycles" ]; do
+  post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
+  post_action '{"action":"setReduceTransparencyOverride","enabled":true}' "$artifacts/.action.json"
+  poll_state reduce true false "$artifacts/transparency-reduce-enter-$cycle.json"
+  require_counters "$artifacts/transparency-reduce-enter-$cycle.json" 1 1 1 1
+
+  post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
+  post_action '{"action":"setReduceTransparencyOverride","enabled":false}' "$artifacts/.action.json"
+  poll_state reduce false false "$artifacts/transparency-reduce-exit-$cycle.json"
+  require_counters "$artifacts/transparency-reduce-exit-$cycle.json" 1 1 1 1
+  cycle=$((cycle + 1))
+done
+cp "$artifacts/transparency-reduce-enter-$cycles.json" \
+  "$artifacts/transparency-reduce-transparency.json"
+
+cycle=1
+while [ "$cycle" -le "$cycles" ]; do
+  post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
+  post_action '{"action":"setNativeFullScreen","enabled":true}' "$artifacts/.action.json"
+  poll_state fullscreen true false "$artifacts/transparency-fullscreen-enter-$cycle.json"
+  cp "$artifacts/transparency-fullscreen-enter-$cycle.json" "$artifacts/.idle-before.json"
+  sleep 2
+  read_state "$artifacts/.idle-after.json"
+  python3 - "$artifacts/.idle-before.json" "$artifacts/.idle-after.json" <<'PY'
+import json, sys
+before = json.load(open(sys.argv[1], encoding="utf-8"))
+after = json.load(open(sys.argv[2], encoding="utf-8"))
+if after["backdropSubviewCount"] != 0:
+    raise SystemExit("backdropSubviewCount must stay zero")
+if before["rendererPresentCount"] != after["rendererPresentCount"]:
+    raise SystemExit("rendererPresentCount changed during post-full-screen idle window")
+PY
+
+  post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
+  post_action '{"action":"setNativeFullScreen","enabled":false}' "$artifacts/.action.json"
+  poll_state fullscreen false false "$artifacts/transparency-fullscreen-exit-$cycle.json"
+  cp "$artifacts/transparency-fullscreen-exit-$cycle.json" "$artifacts/.idle-before.json"
+  sleep 2
+  read_state "$artifacts/.idle-after.json"
+  python3 - "$artifacts/.idle-before.json" "$artifacts/.idle-after.json" <<'PY'
+import json, sys
+before = json.load(open(sys.argv[1], encoding="utf-8"))
+after = json.load(open(sys.argv[2], encoding="utf-8"))
+if after["backdropSubviewCount"] != 0:
+    raise SystemExit("backdropSubviewCount must stay zero")
+if before["rendererPresentCount"] != after["rendererPresentCount"]:
+    raise SystemExit("rendererPresentCount changed during post-full-screen idle window")
+PY
+  cycle=$((cycle + 1))
+done
+cp "$artifacts/transparency-fullscreen-enter-$cycles.json" \
+  "$artifacts/transparency-fullscreen.json"
+
+post_action '{"action":"setReduceTransparencyOverride","enabled":null}' "$artifacts/.action.json"
+post_action \
+  "{\"action\":\"setBackgroundTransparency\",\"opacity\":$initial_opacity,\"applyToExplicitCellBackgrounds\":$initial_cells}" \
+  "$artifacts/.action.json"
+poll_state requested "$initial_opacity" "$initial_cells" "$artifacts/transparency-restored.json"
+rm -f "$artifacts/.action.json" \
+  "$artifacts/.precondition.json" "$artifacts/.idle-before.json" "$artifacts/.idle-after.json"
+
+printf 'transparency-transition-smoke: passed %s Reduce Transparency and native full-screen cycles\n' "$cycles"
