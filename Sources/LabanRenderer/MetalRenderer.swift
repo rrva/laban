@@ -2368,7 +2368,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           descent: sidebarFontAtlas.descent,
           fg: fg,
           underlineStyle: underlineStyle, underlineColor: underlineColor,
-          appendSolid: appendSolid)
+          appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
       default:
         break
       }
@@ -2918,7 +2918,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           descent: sidebarFontAtlas.descent,
           fg: fg,
           underlineStyle: underlineStyle, underlineColor: underlineColor,
-          appendSolid: appendSolid)
+          appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
       default:
         break
       }
@@ -2960,7 +2960,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
         underlineStyle: runUnderlineStyle,
         underlineColor: runUnderlineColor,
         phaseOriginX: payload.origin.x,
-        appendSolid: appendSolid)
+        appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
       runRow = nil
       runCellCount = 0
     }
@@ -3314,7 +3314,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
         descent: fontAtlas.descent,
         fg: fg,
         underlineStyle: underlineStyle, underlineColor: underlineColor,
-        appendSolid: appendSolid)
+        appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
     }
 
     for cursor in payload.cursorRects {
@@ -3657,7 +3657,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
             fg: fg,
             underlineStyle: underlineStyle, underlineColor: underlineColor,
             phaseOriginX: geometry.originX,
-            appendSolid: appendSolid)
+            appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
           continue
         }
 
@@ -3688,7 +3688,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           descent: sidebarFontAtlas.descent,
           fg: fg,
           underlineStyle: underlineStyle, underlineColor: underlineColor,
-          appendSolid: appendSolid)
+          appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
 
       case .texturedQuad:
         break
@@ -3960,7 +3960,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           descent: activeFontAtlas.descent,
           fg: fg,
           underlineStyle: underlineStyle, underlineColor: underlineColor,
-          appendSolid: appendSolid)
+          appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
 
       case .texturedQuad:
         break
