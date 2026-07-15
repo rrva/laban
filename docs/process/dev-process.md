@@ -557,13 +557,16 @@ to reset the Reduce Transparency override to `null`, terminate/reap every owned
 process group, and restore the complete exported preference domain byte-for-
 byte with exact plist types, even when a peer cleanup fails.
 
-`summary.json` binds the result to the absolute app path, executable and fixture
-SHA-256 hashes, `LABANBuildCommit`, repository HEAD/ancestry, OS version/build,
-cropped PNG hashes, and token-free state hashes. A non-current installed commit
-is accepted only when it is an ancestor of HEAD and `Package.swift`,
-`Package.resolved`, and `Sources/` are unchanged since that commit. Screen
-Recording access, a closed existing Laban instance, and a zero-origin main
-display are prerequisites.
+`summary.json` binds the result to the absolute app path, executable, verifier,
+fixture, and imported compositor process-support SHA-256 hashes, all three
+oracle-source git blob IDs,
+`LABANBuildCommit`, repository HEAD/ancestry, OS version/build, cropped PNG
+hashes, and token-free state hashes. All three oracle sources must match their
+exact tracked bytes at the recorded HEAD; a dirty or substituted oracle
+cannot produce evidence. A non-current installed commit is accepted only when
+it is an ancestor of HEAD and `Package.swift`, `Package.resolved`, and
+`Sources/` are unchanged since that commit. Screen Recording access, a closed
+existing Laban instance, and a zero-origin main display are prerequisites.
 
 For deterministic debug-server PNG alpha, `laban-agent` accepts equals-form
 `--background-opacity=<0...1>`, `--background-effect=none|system-blur`, and the

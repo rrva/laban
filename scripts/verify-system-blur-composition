@@ -159,8 +159,37 @@ def reset_reduce_transparency_override(client: Client | None) -> None:
         return
     client.action("setReduceTransparencyOverride", enabled=None)
     state = client.transparency()
+    validate_reduce_transparency_override_reset(state)
+
+
+def validate_reduce_transparency_override_reset(state: dict[str, Any]) -> None:
+    if "reduceTransparencyOverride" not in state or state["reduceTransparencyOverride"] is not None:
+        fail("Reduce Transparency override did not restore to null")
     if state.get("effectiveReduceTransparency") != state.get("systemReduceTransparency"):
         fail("Reduce Transparency override did not restore to the live system value")
+
+
+def decode_http_json(raw: str, label: str) -> dict[str, Any]:
+    try:
+        body, raw_status = raw.rsplit("\n", 1)
+        status = int(raw_status)
+    except (ValueError, TypeError):
+        fail(f"{label} did not return an HTTP status")
+    if not 200 <= status < 300:
+        detail = body.strip()
+        fail(f"{label} returned HTTP {status}: {detail}")
+    try:
+        value = json.loads(body)
+    except json.JSONDecodeError as error:
+        fail(f"{label} returned invalid JSON: {error}")
+    if not isinstance(value, dict):
+        fail(f"{label} did not return an object")
+    return value
+
+
+def validate_action_response(name: str, value: dict[str, Any]) -> None:
+    if value.get("ok") is not True:
+        fail(f"fixture action {name} did not return ok=true")
 
 
 def wait_for_backdrop(process: subprocess.Popen[str], log: Path) -> dict[str, Any]:
@@ -225,6 +254,8 @@ class Client:
             f"Authorization: Bearer {self.token}",
             "--request",
             method,
+            "--write-out",
+            "\n%{http_code}",
             "http://laban" + path,
         ]
         if payload is not None:
@@ -234,17 +265,16 @@ class Client:
                 "--data-binary",
                 json.dumps(payload, separators=(",", ":")),
             ]
-        completed = run(arguments, f"fixture request {method} {path}")
-        try:
-            value = json.loads(completed.stdout)
-        except json.JSONDecodeError as error:
-            fail(f"fixture request returned invalid JSON: {error}")
-        if not isinstance(value, dict):
-            fail("fixture request did not return an object")
-        return value
+        label = f"fixture request {method} {path}"
+        completed = subprocess.run(arguments, check=False, text=True, capture_output=True)
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            fail(f"{label} failed: {detail}")
+        return decode_http_json(completed.stdout, label)
 
     def action(self, name: str, **fields: Any) -> None:
-        self.request("POST", "/debug/actions", {"action": name, **fields})
+        value = self.request("POST", "/debug/actions", {"action": name, **fields})
+        validate_action_response(name, value)
 
     def transparency(self) -> dict[str, Any]:
         return self.request("GET", "/debug/transparency")
@@ -262,6 +292,7 @@ def wait_for_state(client: Client, source: str) -> dict[str, Any]:
         "backdropSubviewKind": source,
         "backdropSubviewCount": 1 if source == "systemBlur" else 0,
         "effectiveReduceTransparency": False,
+        "reduceTransparencyOverride": False,
     }
     deadline = time.monotonic() + 15
     state: dict[str, Any] = {}
@@ -294,12 +325,50 @@ def git_output(arguments: list[str], description: str) -> str:
     return run(["git", *arguments], description).stdout.strip()
 
 
+def tracked_oracle_identity(
+    repository_head: str,
+    relative_path: str,
+    *,
+    worktree_bytes: bytes | None = None,
+) -> dict[str, str]:
+    completed = subprocess.run(
+        ["git", "show", f"{repository_head}:{relative_path}"],
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        fail(f"tracked oracle source is absent at repository HEAD: {relative_path}: {detail}")
+    expected = completed.stdout
+    actual = (
+        (REPOSITORY_ROOT / relative_path).read_bytes()
+        if worktree_bytes is None
+        else worktree_bytes
+    )
+    if actual != expected:
+        fail(f"oracle source differs from repository HEAD: {relative_path}")
+    return {
+        "path": relative_path,
+        "sha256": hashlib.sha256(expected).hexdigest(),
+        "gitBlob": git_output(
+            ["rev-parse", f"{repository_head}:{relative_path}"],
+            f"tracked oracle blob for {relative_path}",
+        ),
+    }
+
+
 def provenance(app: Path, executable: Path, info: dict[str, Any]) -> dict[str, Any]:
     raw_commit = info.get("LABANBuildCommit")
     if not isinstance(raw_commit, str) or not raw_commit:
         fail("installed app is missing LABANBuildCommit")
     installed_commit = git_output(["rev-parse", f"{raw_commit}^{{commit}}"], "build commit")
     repository_head = git_output(["rev-parse", "HEAD"], "repository HEAD")
+    verifier_identity = tracked_oracle_identity(
+        repository_head, "scripts/verify-system-blur-composition")
+    fixture_identity = tracked_oracle_identity(
+        repository_head, "Tests/LabanAppTests/Fixtures/SystemBlurCompositionOracle.swift")
+    process_support_identity = tracked_oracle_identity(
+        repository_head, "scripts/profile-transparency-compositor")
     ancestor = subprocess.run(
         ["git", "merge-base", "--is-ancestor", installed_commit, repository_head],
         check=False,
@@ -332,11 +401,18 @@ def provenance(app: Path, executable: Path, info: dict[str, Any]) -> dict[str, A
     return {
         "appPath": str(app),
         "executableSHA256": sha256(executable),
-        "fixtureSHA256": sha256(FIXTURE),
+        "fixtureSHA256": fixture_identity["sha256"],
+        "processSupportSHA256": process_support_identity["sha256"],
+        "verifierSHA256": verifier_identity["sha256"],
         "labanBuildCommit": raw_commit,
         "labanBuildCommitResolved": installed_commit,
         "repositoryHead": repository_head,
         "installedCommitRelation": relation,
+        "oracleSources": {
+            "fixture": fixture_identity,
+            "processSupport": process_support_identity,
+            "verifier": verifier_identity,
+        },
         "osVersion": run(["sw_vers", "-productVersion"], "OS version").stdout.strip(),
         "osBuild": run(["sw_vers", "-buildVersion"], "OS build").stdout.strip(),
     }
@@ -574,6 +650,87 @@ def self_test_cleanup_aggregation() -> None:
         fail("cleanup aggregation did not run every independent cleanup step")
 
 
+def expect_oracle_failure(action: Callable[[], None], label: str) -> None:
+    try:
+        action()
+    except OracleError:
+        return
+    fail(f"self-test accepted {label}")
+
+
+def self_test_http_and_override_validation() -> None:
+    valid = decode_http_json('{"ok":true}\n200', "self-test request")
+    validate_action_response("selfTest", valid)
+    expect_oracle_failure(
+        lambda: decode_http_json('{"error":"denied"}\n403', "self-test request"),
+        "an HTTP error response",
+    )
+    expect_oracle_failure(
+        lambda: validate_action_response("selfTest", {"ok": False}),
+        "an action response with ok=false",
+    )
+    expect_oracle_failure(
+        lambda: validate_action_response("selfTest", {}),
+        "an action response without ok=true",
+    )
+    validate_reduce_transparency_override_reset(
+        {
+            "systemReduceTransparency": False,
+            "effectiveReduceTransparency": False,
+            "reduceTransparencyOverride": None,
+        }
+    )
+    expect_oracle_failure(
+        lambda: validate_reduce_transparency_override_reset(
+            {
+                "systemReduceTransparency": False,
+                "effectiveReduceTransparency": False,
+                "reduceTransparencyOverride": False,
+            }
+        ),
+        "a false Reduce Transparency override after reset",
+    )
+    expect_oracle_failure(
+        lambda: validate_reduce_transparency_override_reset(
+            {
+                "systemReduceTransparency": False,
+                "effectiveReduceTransparency": False,
+            }
+        ),
+        "a missing Reduce Transparency override projection after reset",
+    )
+
+
+def self_test_oracle_source_identity() -> None:
+    repository_head = git_output(["rev-parse", "HEAD"], "self-test repository HEAD")
+    oracle_sources = (
+        "scripts/verify-system-blur-composition",
+        "Tests/LabanAppTests/Fixtures/SystemBlurCompositionOracle.swift",
+        "scripts/profile-transparency-compositor",
+    )
+    for relative_path in oracle_sources:
+        head_bytes = subprocess.run(
+            ["git", "show", f"{repository_head}:{relative_path}"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        identity = tracked_oracle_identity(
+            repository_head,
+            relative_path,
+            worktree_bytes=head_bytes,
+        )
+        if identity["sha256"] != hashlib.sha256(head_bytes).hexdigest():
+            fail(f"oracle source identity self-test recorded the wrong SHA-256: {relative_path}")
+        expect_oracle_failure(
+            lambda path=relative_path, content=head_bytes: tracked_oracle_identity(
+                repository_head,
+                path,
+                worktree_bytes=content + b"mutation",
+            ),
+            f"an oracle source mutation relative to repository HEAD: {relative_path}",
+        )
+
+
 def run_signal_cleanup_child(directory: Path) -> int:
     directory.mkdir(parents=True, exist_ok=True)
     descendant_ready = directory / "descendant-ready"
@@ -716,6 +873,8 @@ def self_test() -> None:
     self_test_real_signal_cleanup()
     self_test_preferences()
     self_test_cleanup_aggregation()
+    self_test_http_and_override_validation()
+    self_test_oracle_source_identity()
 
 
 def parse_arguments() -> argparse.Namespace:
