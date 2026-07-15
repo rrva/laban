@@ -28,7 +28,8 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - [x] (2026-07-15) Add the live settings UI, full-screen and accessibility policy, fixture-authorized GUI and headless controls, renderer-identity parity matrix, alpha probes, transition smoke, and fixed renderer benchmark tooling.
 - [ ] Produce the final passing balanced renderer-comparison artifact. Sequential ordering was proven to confound opacity with host regime; two balanced runs accepted every sample but failed different vector p99 tail gates, so neither is promoted as passing evidence.
 - [ ] Capture the real Apple Pinyin installed-window evidence and the five-run compositor evidence on the exact base-M1/8-GiB/60-Hz lane; the current Computer Use bridge does not complete state or action requests, and this 16-GiB host is rejected by the pinned lane contract.
-- [ ] Finish repository closeout and pass the fresh-agent Review Gate. The app install and five-cycle transition smoke pass. The DECXCPR failure was traced to stale vendored-patch caching and fixed by content-addressing local patches, rebuilding, forcing a relink, and invalidating both CI caches; the full gate still needs its post-fix rerun.
+- [x] (2026-07-15) Finish repository implementation closeout at `a8e0644`: the canonical full gate passes 444 parallel-safe tests plus 2,132 sequential tests with 16 expected skips and zero failures, the profilable release is installed at `/Users/rrj/Laban.app`, and all five Reduce Transparency and native-full-screen transition cycles pass.
+- [ ] Pass the fresh-agent Review Gate after the final implementation closeout. The repository, install, and transition gates are green; the balanced renderer p99 result, Apple Pinyin evidence, and exact 8-GiB compositor artifact remain literal acceptance blockers and must not be waived.
 
 ## Surprises & Discoveries
 
@@ -80,11 +81,26 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - Observation: four sequential benchmark blocks assigned the final host/thermal regime exclusively to vector direct opacity, and unchanged runs reversed which vector condition looked faster. Balancing adjacent opaque/direct pairs removed that systematic confound but did not eliminate process/GPU scheduling tails tight enough for the 5%/10% p99 gates.
   Evidence: the passing sequential repeat had vector opaque/direct CPU p50 `1.097/0.958 ms`; the second review's unchanged sequential run reversed them to `0.957/1.212 ms`. Two balanced 20-process runs then accepted all 4,800 samples and recorded the exact alternating schedule, but failed different gates: run 1 only vector opaque wall p99, run 2 vector opaque CPU p99 plus direct wall p99. No renderer, benchmark executable, workload, sample count, aggregation, threshold, or baseline changed.
 
+- Observation: disjoint Metal damage bands could corrupt each other even though their scissors did not overlap, because recursive band encoding reused mutable renderer-owned instance buffers before the shared command buffer committed. The later band overwrote data still referenced by the earlier pass.
+  Evidence: commit `09d9955` encodes the stable draw data once and repeats it under exact per-band scissors in one encoder. `GPUCellParityTests` then passed 49 tests with one expected skip, including disjoint partial-damage coverage.
+
+- Observation: the styled glyph ladder initially exceeded its fixed 48-MiB atlas budget because admission counted synthetic bold/italic raster slop and the atlas used square next-fit shelf packing, not because the required glyph ink intrinsically exceeded the budget.
+  Evidence: commits `13e2aca` and `0e58f34` separate intrinsic admission width from synthetic style slop, crop transparent horizontal remainder while retaining the antialiasing guard and normalized CJK geometry, and use first-fit shelves. The final deterministic prewarm is 50,190,867 bytes (47.9 MiB), 140,781 bytes below the 48-MiB cap; all five atlas-ladder tests and the relevant GPU, Metal glyph-smoke, CJK font-metrics, vector, and Slug suites pass.
+
+- Observation: the final full gate's six assertions were stale contract reconstructions exposed by the transparency change, not renderer failures. Capture replay rebuilt the terminal canvas with implicit source-over although live capture serializes replacement compositing, and the control catalog still asserted 49 routes after adding the one fixed transparency endpoint.
+  Evidence: commits `ca734ca` and `a8e0644` align capture replay and its AppKit-style fixture with `.replace` and update the exact unique-route count to 50. On `a8e0644`, `rtk ./scripts/check` passes the 444-test parallel-safe shard and the 2,132-test sequential shard with 16 expected skips and zero failures; labpty MC/DC is 46.86% against the 45% floor, and sanitizer, runtime-smoke, and E2E gates pass.
+
+- Observation: the final implementation renderer comparison remained just outside the immutable wall-tail gate despite accepting every sample with the exact balanced schedule; rerunning until it passed would conceal the evidence rather than validate it.
+  Evidence: `.artifacts/transparency/renderer-comparison-final-head.json` accepted 4,800/4,800 samples and failed only vector opaque wall p99: `2.491208 ms` exceeds the `2.128219 ms` 5%-over-baseline threshold. CPU, direct-opacity, and 8.33-ms gates passed. The run was not retried or rerolled, and the older passing `.artifacts/transparency/renderer-comparison.json` was not replaced or misrepresented as final-head evidence.
+
+- Observation: the installed release exercises the real accessibility and native-full-screen transition machinery cleanly after repository closeout.
+  Evidence: `rtk ./scripts/install-app` installed profilable release `a8e0644` at `/Users/rrj/Laban.app`; `rtk ./scripts/transparency-transition-smoke --app=$HOME/Laban.app --cycles=5 --artifacts=.artifacts/transparency/transitions-final` passed all five Reduce Transparency and all five native-full-screen cycles.
+
 ## Outcomes & Retrospective
 
-As of 2026-07-15 the code implementation is renderer-complete. One requested/effective policy now drives software, classic Metal, GPU-driven Metal, vector glyph, and Slug; all five use overwrite/replace background semantics, preserve opaque semantic regions, keep retained damage idempotent, flip presentation opacity live, and force vector-family grayscale antialiasing only while the surface is translucent. The Appearance controls, generated 11-locale catalog, AppKit accessibility/full-screen coordinator, fixture-only diagnostic authorization, headless parity, and installed-app transition flow are implemented and mechanically exercised.
+As of 2026-07-15 the code implementation and repository regression closeout are complete. One requested/effective policy now drives software, classic Metal, GPU-driven Metal, vector glyph, and Slug; all five use overwrite/replace background semantics, preserve opaque semantic regions, keep retained damage idempotent, flip presentation opacity live, and force vector-family grayscale antialiasing only while the surface is translucent. The Appearance controls, generated 11-locale catalog, AppKit accessibility/full-screen coordinator, fixture-only diagnostic authorization, headless parity, and installed-app transition flow are implemented and mechanically exercised. At implementation head `a8e0644`, the canonical full gate passes 444 parallel-safe tests plus 2,132 sequential tests with 16 expected skips and zero failures, including sanitizer, runtime-smoke, E2E, and 46.86% labpty MC/DC coverage against the 45% floor. The same commit is installed as a profilable release at `/Users/rrj/Laban.app`, where five Reduce Transparency and five native-full-screen cycles pass.
 
-Renderer correctness is no longer an outstanding risk: focused suites, the five-backend authenticated parity matrix, and repeated five-cycle installed-app transition smokes pass. The vendored-cache defect behind the repository-wide DECXCPR failure is fixed and its focused regression passes. Renderer timing remains an evidence risk rather than a diagnosed code regression: the comparison harness now balances process order, but the final fixed-gate artifact still needs a clean pass after two balanced runs failed different p99 tails. Closeout also remains incomplete for two explicitly external reasons: this host cannot produce the required 8-GiB compositor artifact, and the Computer Use bridge cannot drive and record Apple Pinyin. The Review Gate must record missing evidence rather than convert it into a pass.
+Renderer correctness is no longer an outstanding implementation risk: focused suites, the five-backend authenticated parity matrix, atlas-budget coverage, GPU disjoint-damage coverage, capture/replay, and installed-app transition smoke pass. The vendored-cache defect behind DECXCPR and the two final stale gate assumptions are fixed. Overall acceptance nevertheless remains incomplete. The non-rerolled final-head balanced benchmark misses only vector opaque wall p99 (`2.491208 ms` versus `2.128219 ms`), the Computer Use state/action bridge hangs before it can drive Apple Pinyin and produce the required CJK manifest, and this base-M1 host has 16 GiB rather than the lane contract's exact 8 GiB, so it cannot produce the compositor summary. The Review Gate must keep those three evidence items open rather than convert code completeness or older passing artifacts into an acceptance pass.
 
 ## Research Snapshot: July 2026 State of the Art
 
@@ -684,7 +700,9 @@ These probes must pass for software, classic, GPU-driven, vector, and Slug. Glyp
 
 ### Repository closeout
 
-- Focused tests, the full current gate, `./scripts/install-app`, and the Review Gate pass.
+- Focused tests and the full current gate pass on implementation head `a8e0644`: 444 parallel-safe tests and 2,132 sequential tests with 16 expected skips and zero failures, plus sanitizer, runtime-smoke, E2E, and 46.86% labpty MC/DC coverage against the 45% floor.
+- `./scripts/install-app` installs profilable release `a8e0644` at `/Users/rrj/Laban.app`, and the five-cycle installed-app Reduce Transparency/native-full-screen smoke passes from `.artifacts/transparency/transitions-final`.
+- The Review Gate remains not passed until a final balanced renderer artifact meets every fixed threshold, the Apple Pinyin/CJK evidence verifier passes, and the exact base-M1/8-GiB/60-Hz compositor artifact exists and passes. Repository and install success do not waive those evidence requirements.
 - `docs/product/spec.md`, ADR 0028, schemas, and `docs/process/dev-process.md` describe the final behavior and actual commands.
 - Generated screenshots, traces, and PNGs stay in documented artifact directories and are not accidentally committed.
 - Unrelated pre-existing worktree changes remain untouched.
@@ -767,5 +785,16 @@ macOS 26.5.1 build 25F80, Macmini9,1 / Apple M1 / 16 GiB, Swift 6.3.3. All
 4,800 measured samples were accepted. Median-of-five timings were Slug CPU
 p50/p95/p99 `0.931/1.105/1.494 ms`, Slug wall `1.040/1.530/1.679 ms`, vector
 CPU `1.235/1.549/1.846 ms`, and vector wall `1.270/1.669/2.027 ms`.
+
+The non-rerolled final implementation comparison is
+`.artifacts/transparency/renderer-comparison-final-head.json`. It accepted all
+4,800 scheduled samples and passed every CPU, direct-opacity, and 8.33-ms gate,
+but failed vector opaque wall p99 at `2.491208 ms` against the fixed
+`2.128219 ms` limit. The older passing
+`.artifacts/transparency/renderer-comparison.json` remains preserved but is not
+promoted as final-head evidence. Installed-app transition evidence from release
+`a8e0644` is under `.artifacts/transparency/transitions-final`. The Apple Pinyin
+CJK manifest and exact 8-GiB compositor summary remain absent for the blockers
+recorded above.
 
 When implementation reveals a non-obvious compositing, AppKit, shader, or WindowServer behavior, add a short `Surprises & Discoveries` entry with the smallest evidence excerpt that proves it. At the end of each milestone, update `Progress` and add an `Outcomes & Retrospective` entry if the result or remaining risk differs materially from this plan.
