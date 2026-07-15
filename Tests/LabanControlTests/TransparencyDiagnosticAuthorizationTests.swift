@@ -55,7 +55,7 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
     defer { server.stop() }
 
     let bodies = [
-      #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false}"#,
+      #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false,"backdropStyle":"systemBlur"}"#,
       #"{"action":"resetTransparencyDiagnostics"}"#,
       #"{"action":"setReduceTransparencyOverride","enabled":true}"#,
       #"{"action":"setNativeFullScreen","enabled":true}"#,

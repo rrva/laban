@@ -802,7 +802,7 @@ public struct IntentCatalog: Sendable {
     descriptor(
       id: "transparency.setBackground",
       category: "transparency",
-      summary: "Set requested terminal background opacity and explicit-cell policy.",
+      summary: "Set requested terminal background opacity, effect, and explicit-cell policy.",
       requiredCapability: .diagnosticControl,
       dataSensitivity: .nonSensitiveState,
       availability: guiObserve,

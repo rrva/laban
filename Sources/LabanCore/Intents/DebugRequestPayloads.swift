@@ -165,15 +165,18 @@ public struct SetBackgroundTransparencyActionRequest: Codable, Sendable, Equatab
   public var action: String?
   public var opacity: Double
   public var applyToExplicitCellBackgrounds: Bool
+  public var backdropStyle: TerminalBackdropStyle?
 
   public init(
     action: String? = "setBackgroundTransparency",
     opacity: Double,
-    applyToExplicitCellBackgrounds: Bool
+    applyToExplicitCellBackgrounds: Bool,
+    backdropStyle: TerminalBackdropStyle? = nil
   ) {
     self.action = action
     self.opacity = opacity
     self.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
+    self.backdropStyle = backdropStyle
   }
 
   public static var jsonSchema: SchemaNode {
@@ -183,6 +186,9 @@ public struct SetBackgroundTransparencyActionRequest: Codable, Sendable, Equatab
           enumValues: nil, const: "setBackgroundTransparency", format: nil, pattern: nil),
         "opacity": .number(min: 0, max: 1),
         "applyToExplicitCellBackgrounds": .boolean,
+        "backdropStyle": .string(
+          enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
+          pattern: nil),
       ],
       required: ["action", "opacity", "applyToExplicitCellBackgrounds"],
       additionalProperties: false)

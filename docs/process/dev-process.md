@@ -412,7 +412,7 @@ actions. They require `diagnosticControl`, which only the whole-app fixture
 token grants:
 
 ```json
-{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false}
+{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false,"backdropStyle":"systemBlur"}
 {"action":"resetTransparencyDiagnostics"}
 {"action":"setReduceTransparencyOverride","enabled":true}
 {"action":"setReduceTransparencyOverride","enabled":null}
@@ -420,7 +420,9 @@ token grants:
 ```
 
 `setBackgroundTransparency` persists through the same requested-settings path
-as Appearance. Opacity is clamped to `0...1`. The Reduce Transparency override
+as Appearance. Its optional `backdropStyle` accepts `none` or `systemBlur`; when
+omitted, the current requested style is preserved for backward compatibility.
+Opacity is clamped to `0...1`. The Reduce Transparency override
 runs the same cached accessibility/coalesced-wake path as the workspace
 notification; `null` removes it and immediately rereads the real workspace
 value. `/debug/accessibility` remains read-only. `setNativeFullScreen` starts
@@ -471,11 +473,14 @@ policy, terminates only the process the test launched, and removes the isolated
 control directory. `scripts/transparency-transition-smoke` implements this
 contract and saves token-free state snapshots under its artifact directory.
 
-For deterministic offscreen PNG alpha, `laban-agent` accepts equals-form
-`--background-opacity=<0...1>` and the boolean
-`--background-opacity-cells`. The PNG preserves alpha; inspect it with a PNG
-reader or `/debug/pixel-probe`, not a desktop screenshot tool that may flatten
-against an opaque background.
+For deterministic debug-server PNG alpha, `laban-agent` accepts equals-form
+`--background-opacity=<0...1>`, `--background-effect=none|system-blur`, and the
+boolean `--background-opacity-cells`. The headless projection preserves a
+requested `systemBlur` value for semantic parity, but reports effective style
+`none` and `backdropSubviewCount: 0` because no AppKit behind-window material
+exists offscreen. The PNG preserves alpha; inspect it with a PNG reader or
+`/debug/pixel-probe`, not a desktop screenshot tool that may flatten against an
+opaque background.
 
 ### Session Introspection
 

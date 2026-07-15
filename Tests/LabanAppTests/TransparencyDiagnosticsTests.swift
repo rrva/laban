@@ -7,14 +7,14 @@ import XCTest
 final class TransparencyDiagnosticsTests: XCTestCase {
   func testLiveRouterBindsAllTypedTransparencyHandlers() throws {
     let router = LiveIntentRouter(model: nil)
-    var background: (Double, Bool)?
+    var backgrounds: [(Double, Bool, TerminalBackdropStyle?)] = []
     var resetCount = 0
     var overrideValues: [Bool?] = []
     var fullscreenValues: [Bool] = []
     let state = sampleState()
     router.bindTransparencyControl(
       state: { state },
-      setBackground: { background = ($0, $1) },
+      setBackground: { backgrounds.append(($0, $1, $2)) },
       resetDiagnostics: { resetCount += 1 },
       setReduceTransparencyOverride: { overrideValues.append($0) },
       setNativeFullScreen: { fullscreenValues.append($0) })
@@ -22,12 +22,31 @@ final class TransparencyDiagnosticsTests: XCTestCase {
     XCTAssertEqual(
       router.route(
         action(
-          #"{"action":"setBackgroundTransparency","opacity":2,"applyToExplicitCellBackgrounds":true}"#
+          #"{"action":"setBackgroundTransparency","opacity":2,"applyToExplicitCellBackgrounds":true,"backdropStyle":"systemBlur"}"#
         )
       ).status,
       200)
-    XCTAssertEqual(background?.0, 1)
-    XCTAssertEqual(background?.1, true)
+    XCTAssertEqual(backgrounds[0].0, 1)
+    XCTAssertEqual(backgrounds[0].1, true)
+    XCTAssertEqual(backgrounds[0].2, .systemBlur)
+    XCTAssertEqual(
+      router.route(
+        action(
+          #"{"action":"setBackgroundTransparency","opacity":0.4,"applyToExplicitCellBackgrounds":false}"#
+        )
+      ).status,
+      200)
+    XCTAssertEqual(backgrounds[1].0, 0.4)
+    XCTAssertEqual(backgrounds[1].1, false)
+    XCTAssertNil(backgrounds[1].2)
+    XCTAssertEqual(
+      router.route(
+        action(
+          #"{"action":"setBackgroundTransparency","opacity":0.4,"applyToExplicitCellBackgrounds":false,"backdropStyle":"system-blur"}"#
+        )
+      ).status,
+      400)
+    XCTAssertEqual(backgrounds.count, 2)
     XCTAssertEqual(
       router.route(action(#"{"action":"resetTransparencyDiagnostics"}"#)).status, 200)
     XCTAssertEqual(

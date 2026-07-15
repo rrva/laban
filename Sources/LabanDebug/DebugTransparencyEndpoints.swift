@@ -48,7 +48,7 @@ extension HeadlessDebugRuntime {
     let next = TerminalTransparencyConfiguration(
       backgroundOpacity: request.opacity,
       applyToExplicitCellBackgrounds: request.applyToExplicitCellBackgrounds,
-      backdropStyle: requestedTransparency.backdropStyle)
+      backdropStyle: request.backdropStyle ?? requestedTransparency.backdropStyle)
     guard next != requestedTransparency else { return actionResult(ok: true) }
     requestedTransparency = next
     resolveTransparencyAndRenderUnlocked()

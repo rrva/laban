@@ -92,12 +92,16 @@ final class MainWindowController: NSWindowController {
 
   func setBackgroundTransparency(
     opacity: Double,
-    applyToExplicitCellBackgrounds: Bool
+    applyToExplicitCellBackgrounds: Bool,
+    backdropStyle: TerminalBackdropStyle?
   ) {
     guard let transparencyCoordinator else { return }
     var requested = transparencyCoordinator.status.requested
     requested.backgroundOpacity = opacity
     requested.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
+    if let backdropStyle {
+      requested.backdropStyle = backdropStyle
+    }
     transparencyCoordinator.setRequestedConfiguration(requested)
   }
 
@@ -612,9 +616,11 @@ final class MainWindowController: NSWindowController {
       state: { [weak controller] in
         controller?.terminalTransparencyDebugResponse()
       },
-      setBackground: { [weak controller] opacity, cells in
+      setBackground: { [weak controller] opacity, cells, backdropStyle in
         controller?.setBackgroundTransparency(
-          opacity: opacity, applyToExplicitCellBackgrounds: cells)
+          opacity: opacity,
+          applyToExplicitCellBackgrounds: cells,
+          backdropStyle: backdropStyle)
       },
       resetDiagnostics: { [weak controller] in
         controller?.resetTransparencyDiagnostics()

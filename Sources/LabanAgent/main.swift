@@ -21,6 +21,7 @@ struct AgentArgs {
   var captureScreenshots: CaptureScreenshotPolicy = .marked
   var rendererSelection: RendererSelection = .software
   var backgroundOpacity: Double = 1
+  var backgroundEffect: TerminalBackdropStyle = .none
   var backgroundOpacityCells = false
   var argumentError: String?
   var emojiRenderingMode: EmojiRenderingMode? = nil
@@ -42,9 +43,9 @@ struct AgentArgs {
   var agentRunShimTest = false
 }
 
-func parseArgs() -> AgentArgs {
+func parseArgs(_ arguments: [String] = Array(CommandLine.arguments.dropFirst())) -> AgentArgs {
   var a = AgentArgs()
-  for arg in CommandLine.arguments.dropFirst() {
+  for arg in arguments {
     // Once we are collecting the child command for --control-attach-run,
     // stop interpreting flags. The first `--` after the run flag is the
     // argv separator and is dropped.
@@ -61,6 +62,8 @@ func parseArgs() -> AgentArgs {
     case "--headless": a.headless = true
     case "--deterministic": a.deterministic = true
     case "--background-opacity-cells": a.backgroundOpacityCells = true
+    case "--background-effect":
+      a.argumentError = "--background-effect must be none or system-blur"
     case "--debug-server": a.debugServerAddress = "127.0.0.1:0"
     case "--control-attach": a.controlAttach = true
     case "--control-attach-serve-cli": a.controlAttachServeCLI = true
@@ -100,6 +103,13 @@ func parseArgs() -> AgentArgs {
           a.backgroundOpacity = value
         } else {
           a.argumentError = "--background-opacity must be a finite value in 0...1"
+        }
+      } else if arg.hasPrefix("--background-effect=") {
+        let raw = String(arg.dropFirst("--background-effect=".count))
+        switch raw {
+        case "none": a.backgroundEffect = .none
+        case "system-blur": a.backgroundEffect = .systemBlur
+        default: a.argumentError = "--background-effect must be none or system-blur"
         }
       } else if arg.hasPrefix("--emoji-rendering=") {
         let raw = String(arg.dropFirst("--emoji-rendering=".count))
@@ -153,6 +163,8 @@ func usage() -> String {
     --renderer=NAME                 software, classic, gpuDriven, vectorGlyph, or slugGlyph
                                     for the debug/headless renderer backend.
     --background-opacity=VALUE      Terminal canvas opacity in the closed range 0...1.
+    --background-effect=MODE        Requested effect: none or system-blur. The debug server
+                                    records system-blur but resolves no AppKit material.
     --background-opacity-cells      Apply opacity to explicit/inverse cell backgrounds too.
     --emoji-rendering=MODE          monochrome or color. Process-local override
                                     for autonomous renderer verification.
@@ -656,6 +668,7 @@ if let debugAddr = args.debugServerAddress {
       captureScreenshots: args.captureScreenshots,
       persistenceBaseURL: args.noPersistence ? nil : args.persistenceDir.map(resolveURL),
       backgroundOpacity: args.backgroundOpacity,
+      backgroundEffect: args.backgroundEffect,
       applyTransparencyToExplicitCellBackgrounds: args.backgroundOpacityCells,
       restorePersistedState: !(args.noPersistenceRestore || args.noPersistence)
     )

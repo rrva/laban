@@ -55,7 +55,7 @@ final class LiveIntentRouter: IntentRouter {
   private var notificationStateRefresh: () -> Void
   private var notificationTestHandler: ((AttentionNotificationEvent, Bool) -> Void)?
   private var transparencyStateProvider: (() -> TerminalTransparencyDebugResponse?)?
-  private var setBackgroundTransparencyHandler: ((Double, Bool) -> Void)?
+  private var setBackgroundTransparencyHandler: ((Double, Bool, TerminalBackdropStyle?) -> Void)?
   private var resetTransparencyDiagnosticsHandler: (() -> Void)?
   private var setReduceTransparencyOverrideHandler: ((Bool?) -> Void)?
   private var setNativeFullScreenHandler: ((Bool) -> Void)?
@@ -124,7 +124,7 @@ final class LiveIntentRouter: IntentRouter {
 
   func bindTransparencyControl(
     state: @escaping () -> TerminalTransparencyDebugResponse?,
-    setBackground: @escaping (Double, Bool) -> Void,
+    setBackground: @escaping (Double, Bool, TerminalBackdropStyle?) -> Void,
     resetDiagnostics: @escaping () -> Void,
     setReduceTransparencyOverride: @escaping (Bool?) -> Void,
     setNativeFullScreen: @escaping (Bool) -> Void
@@ -330,7 +330,10 @@ final class LiveIntentRouter: IntentRouter {
     else {
       return .error(400, "invalid setBackgroundTransparency request")
     }
-    handler(min(max(request.opacity, 0), 1), request.applyToExplicitCellBackgrounds)
+    handler(
+      min(max(request.opacity, 0), 1),
+      request.applyToExplicitCellBackgrounds,
+      request.backdropStyle)
     return diagnosticActionOK()
   }
 

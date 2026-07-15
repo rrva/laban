@@ -76,6 +76,39 @@ final class DebugActionDecodingTests: XCTestCase {
     XCTAssertTrue(values.contains("slugGlyph"))
   }
 
+  func testSetBackgroundTransparencyDecodesOptionalBackdropStyle() throws {
+    guard
+      case .setBackgroundTransparency(let request) = try decode(
+        #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false,"backdropStyle":"systemBlur"}"#
+      )
+    else {
+      return XCTFail("Expected setBackgroundTransparency action")
+    }
+    XCTAssertEqual(request.backdropStyle, .systemBlur)
+
+    guard
+      case .setBackgroundTransparency(let legacyRequest) = try decode(
+        #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false}"#
+      )
+    else {
+      return XCTFail("Expected legacy setBackgroundTransparency action")
+    }
+    XCTAssertNil(legacyRequest.backdropStyle)
+    XCTAssertThrowsError(
+      try decode(
+        #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false,"backdropStyle":"system-blur"}"#
+      ))
+  }
+
+  func testSetBackgroundTransparencySchemaHasOptionalBackdropStyleEnum() throws {
+    let schema = SetBackgroundTransparencyActionRequest.jsonSchema.toJSONSchema()
+    let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+    let backdropStyle = try XCTUnwrap(properties["backdropStyle"] as? [String: Any])
+    XCTAssertEqual(backdropStyle["enum"] as? [String], ["none", "systemBlur"])
+    let required = try XCTUnwrap(schema["required"] as? [String])
+    XCTAssertFalse(required.contains("backdropStyle"))
+  }
+
   func testDecodesSetPreeditPayloadFromFlatWireShape() throws {
     guard
       case .setPreedit(let request) = try decode(

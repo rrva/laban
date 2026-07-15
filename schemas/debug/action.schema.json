@@ -362,7 +362,8 @@
       "properties": {
         "action": {"const": "setBackgroundTransparency"},
         "opacity": {"type": "number", "minimum": 0, "maximum": 1},
-        "applyToExplicitCellBackgrounds": {"type": "boolean"}
+        "applyToExplicitCellBackgrounds": {"type": "boolean"},
+        "backdropStyle": {"enum": ["none", "systemBlur"]}
       },
       "additionalProperties": false
     },

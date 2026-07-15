@@ -191,6 +191,7 @@ public final class HeadlessDebugRuntime {
     captureScreenshots: CaptureScreenshotPolicy = .marked,
     persistenceBaseURL: URL? = nil,
     backgroundOpacity: Double = 1,
+    backgroundEffect: TerminalBackdropStyle = .none,
     applyTransparencyToExplicitCellBackgrounds: Bool = false,
     restorePersistedState: Bool = true,
     restoreOnLaunchEnabled: @escaping () -> Bool = { true }
@@ -211,7 +212,7 @@ public final class HeadlessDebugRuntime {
     self.requestedTransparency = TerminalTransparencyConfiguration(
       backgroundOpacity: backgroundOpacity,
       applyToExplicitCellBackgrounds: applyTransparencyToExplicitCellBackgrounds,
-      backdropStyle: .none)
+      backdropStyle: backgroundEffect)
     self.effectiveTransparency = TerminalTransparencyPolicy.resolve(
       requested: self.requestedTransparency,
       reduceTransparency: false,
