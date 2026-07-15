@@ -1703,8 +1703,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   static func fullRedrawClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
     var rgba: UInt32?
     for case .rect(_, let color, let source, let compositing) in commands
-    where source == .terminal && compositing == .replace
-    {
+    where source == .terminal && compositing == .replace {
       rgba = color
       break
     }
@@ -1762,13 +1761,14 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     if case .partial(let ranges) = damage, ranges.count > 1 {
       var encodedAny = false
       for range in ranges {
-        encodedAny = encodeContentPass(
-          commands: commands,
-          damage: .partial(yRanges: [range]),
-          target: target,
-          surfacePxH: surfacePxH,
-          uniforms: &u,
-          cmdBuf: cmdBuf) || encodedAny
+        encodedAny =
+          encodeContentPass(
+            commands: commands,
+            damage: .partial(yRanges: [range]),
+            target: target,
+            surfacePxH: surfacePxH,
+            uniforms: &u,
+            cmdBuf: cmdBuf) || encodedAny
       }
       return encodedAny
     }
@@ -1950,14 +1950,15 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     if case .partial(let ranges) = damage, ranges.count > 1 {
       var encodedAny = false
       for range in ranges {
-        encodedAny = encodeGPUCellContentPass(
-          commands: commands,
-          cellPayload: cellPayload,
-          damage: .partial(yRanges: [range]),
-          target: target,
-          surfacePxH: surfacePxH,
-          uniforms: &u,
-          cmdBuf: cmdBuf) || encodedAny
+        encodedAny =
+          encodeGPUCellContentPass(
+            commands: commands,
+            cellPayload: cellPayload,
+            damage: .partial(yRanges: [range]),
+            target: target,
+            surfacePxH: surfacePxH,
+            uniforms: &u,
+            cmdBuf: cmdBuf) || encodedAny
       }
       return encodedAny
     }
@@ -2221,8 +2222,9 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     let widthPx = Self.sidebarStripWidthPx(commands: commands, scale: layer.contentsScale)
     guard widthPx > 0 else { return false }
     guard buildSidebarStripInstanceLists(commands: commands) else { return false }
-    guard !stripReplaceSolidInstances.isEmpty || !stripSolidInstances.isEmpty
-      || !stripGlyphInstances.isEmpty
+    guard
+      !stripReplaceSolidInstances.isEmpty || !stripSolidInstances.isEmpty
+        || !stripGlyphInstances.isEmpty
     else { return false }
 
     let replaceSolidFrameBuffer: MTLBuffer?

@@ -1588,11 +1588,12 @@ public struct FrameProducer {
       var bgColor: UInt32 = 0
 
       for col in 0..<cols {
-        let cellBg = cellAt(row: row, col: col).map {
-          compositedBackgroundColor(
-            $0.backgroundRGBA,
-            explicit: isExplicitBackground(flags: $0.flags))
-        } ?? defaultBg
+        let cellBg =
+          cellAt(row: row, col: col).map {
+            compositedBackgroundColor(
+              $0.backgroundRGBA,
+              explicit: isExplicitBackground(flags: $0.flags))
+          } ?? defaultBg
         if bgStart == nil {
           if cellBg != defaultBg {
             bgStart = col
@@ -1718,7 +1719,8 @@ public struct FrameProducer {
         } else if cell.foregroundRGBA == runFg
           && compositedBackgroundColor(
             cell.backgroundRGBA,
-            explicit: isExplicitBackground(flags: cell.flags)) == runBg && attrs == runAttrs
+            explicit: isExplicitBackground(flags: cell.flags)) == runBg
+          && attrs == runAttrs
         {
           runText += cell.text
         } else {

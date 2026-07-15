@@ -23,7 +23,8 @@ enum TerminalTransparencySettings {
     let opacity = (defaults.object(forKey: backgroundOpacityKey) as? NSNumber)?.doubleValue ?? 1
     let applyToExplicitCellBackgrounds =
       (defaults.object(forKey: applyToExplicitCellBackgroundsKey) as? Bool) ?? false
-    let backdropStyle = defaults.string(forKey: backdropStyleKey)
+    let backdropStyle =
+      defaults.string(forKey: backdropStyleKey)
       .flatMap(TerminalBackdropStyle.init(rawValue:)) ?? .none
 
     return TerminalTransparencyConfiguration(

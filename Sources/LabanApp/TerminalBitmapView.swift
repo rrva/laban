@@ -1587,7 +1587,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       backgroundCompositingOptions: backgroundCompositingOptions,
       snapshotBackgroundCapability:
         transparencyCoordinator?.status.snapshotBackgroundCapability
-          ?? sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
+        ?? sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
       selection: currentTerminalSelection(sessionId: session.id),
       includeTerminalAreaBackground: true,
       requireActiveSnapshot: true,
@@ -3014,7 +3014,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       backgroundCompositingOptions: backgroundCompositingOptions,
       snapshotBackgroundCapability:
         transparencyCoordinator?.status.snapshotBackgroundCapability
-          ?? sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
+        ?? sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
       selection: currentTerminalSelection(sessionId: session.id),
       includeTerminalAreaBackground: true,
       requireActiveSnapshot: true,

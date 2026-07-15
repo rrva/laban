@@ -832,11 +832,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         Int64(percent)))
   }
 
-  var transparencyControlsForTesting: (
-    slider: NSSlider,
-    valueLabel: NSTextField,
-    explicitCellCheckbox: NSButton
-  ) {
+  var transparencyControlsForTesting:
+    (
+      slider: NSSlider,
+      valueLabel: NSTextField,
+      explicitCellCheckbox: NSButton
+    )
+  {
     (backgroundOpacitySlider, backgroundOpacityValueLabel, explicitCellBackgroundOpacityCheckbox)
   }
 

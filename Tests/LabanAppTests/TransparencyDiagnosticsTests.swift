@@ -20,7 +20,11 @@ final class TransparencyDiagnosticsTests: XCTestCase {
       setNativeFullScreen: { fullscreenValues.append($0) })
 
     XCTAssertEqual(
-      router.route(action(#"{"action":"setBackgroundTransparency","opacity":2,"applyToExplicitCellBackgrounds":true}"#)).status,
+      router.route(
+        action(
+          #"{"action":"setBackgroundTransparency","opacity":2,"applyToExplicitCellBackgrounds":true}"#
+        )
+      ).status,
       200)
     XCTAssertEqual(background?.0, 1)
     XCTAssertEqual(background?.1, true)

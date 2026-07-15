@@ -142,7 +142,7 @@ final class RendererActivationNoBlankWindowTests: XCTestCase {
     XCTAssertEqual(slug.renderCount, 1)
     XCTAssertTrue(
       slug.renderedCommandFrames.last?.contains(where: { command in
-        guard case let .rect(_, color, source, compositing) = command else { return false }
+        guard case .rect(_, let color, let source, let compositing) = command else { return false }
         return (source == .terminal || source == .sidebar)
           && compositing == .replace
           && (color & 0xFF) == 179

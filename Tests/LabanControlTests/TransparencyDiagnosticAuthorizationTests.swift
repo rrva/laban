@@ -37,12 +37,14 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
       XCTAssertEqual(descriptor.requiredCapability, .diagnosticControl)
       XCTAssertTrue(descriptor.availability.gui)
     }
-    XCTAssertFalse(ControlLazyAttachAllowlist.entries.contains { entry in
-      entry.intentID.hasPrefix("transparency.")
-    })
+    XCTAssertFalse(
+      ControlLazyAttachAllowlist.entries.contains { entry in
+        entry.intentID.hasPrefix("transparency.")
+      })
     XCTAssertFalse(ControlSessionObserveFamily.capabilities.contains(.diagnosticControl))
     XCTAssertFalse(ControlSessionObserveFamily.intentIDs.contains { $0.hasPrefix("transparency.") })
-    XCTAssertNoThrow(try IntentCatalog.all.validate(endpointDescriptors: ControlRouteCatalog.endpoints))
+    XCTAssertNoThrow(
+      try IntentCatalog.all.validate(endpointDescriptors: ControlRouteCatalog.endpoints))
   }
 
   func testGUIFixtureTokenRoutesAllFourActionsAndProjection() throws {

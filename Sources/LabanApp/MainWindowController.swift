@@ -115,7 +115,8 @@ final class MainWindowController: NSWindowController {
   /// animation completed synchronously.
   func setNativeFullScreen(_ enabled: Bool) {
     guard let window else { return }
-    let current = window.styleMask.contains(.fullScreen)
+    let current =
+      window.styleMask.contains(.fullScreen)
       || transparencyCoordinator?.status.nativeFullscreen == true
     guard current != enabled else { return }
     window.toggleFullScreen(nil)

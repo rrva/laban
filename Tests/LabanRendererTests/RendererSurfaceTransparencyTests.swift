@@ -15,21 +15,25 @@ final class RendererSurfaceTransparencyTests: XCTestCase {
       (
         "classic",
         try XCTUnwrap(
-          MetalRenderer(fontAtlas: fontAtlas, rendererMode: .classic))),
+          MetalRenderer(fontAtlas: fontAtlas, rendererMode: .classic))
+      ),
       (
         "gpuDriven",
         try XCTUnwrap(
-          MetalRenderer(fontAtlas: fontAtlas, rendererMode: .gpuDriven))),
+          MetalRenderer(fontAtlas: fontAtlas, rendererMode: .gpuDriven))
+      ),
       (
         "vectorGlyph",
         try XCTUnwrap(
           VectorGlyphRenderer(
-            fontAtlas: fontAtlas, pixelWidth: 16, pixelHeight: 16))),
+            fontAtlas: fontAtlas, pixelWidth: 16, pixelHeight: 16))
+      ),
       (
         "slugGlyph",
         try XCTUnwrap(
           SlugGlyphRenderer(
-            fontAtlas: fontAtlas, pixelWidth: 16, pixelHeight: 16))),
+            fontAtlas: fontAtlas, pixelWidth: 16, pixelHeight: 16))
+      ),
     ]
 
     for (name, backend) in backends {

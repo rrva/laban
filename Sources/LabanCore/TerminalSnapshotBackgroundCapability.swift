@@ -2,7 +2,8 @@ import Foundation
 
 /// Whether a snapshot writer can distinguish inherited terminal backgrounds
 /// from explicit and inverse-video backgrounds.
-public enum TerminalSnapshotBackgroundCapability: String, Codable, CaseIterable, Equatable, Sendable {
+public enum TerminalSnapshotBackgroundCapability: String, Codable, CaseIterable, Equatable, Sendable
+{
   /// The app's own terminal core writes the snapshot, so its cell semantics are
   /// known to match this build without protocol negotiation.
   case inProcess

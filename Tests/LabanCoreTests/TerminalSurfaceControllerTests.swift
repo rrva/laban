@@ -158,18 +158,19 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       opacity: 91,
       applyToExplicitCellBackgrounds: false)
 
-    let frame = try XCTUnwrap(controller.makeFrame(
-      TerminalSurfaceFrameRequest(
-        frame: 1,
-        viewportWidth: 360,
-        viewportHeight: 64,
-        backgroundCompositingOptions: options,
-        snapshotBackgroundCapability: .supported,
-        includeTerminalAreaBackground: true,
-        requireActiveSnapshot: true,
-        surfaceWidth: 360,
-        surfaceHeight: 64,
-        surfaceScale: 1)))
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 360,
+          viewportHeight: 64,
+          backgroundCompositingOptions: options,
+          snapshotBackgroundCapability: .supported,
+          includeTerminalAreaBackground: true,
+          requireActiveSnapshot: true,
+          surfaceWidth: 360,
+          surfaceHeight: 64,
+          surfaceScale: 1)))
 
     let baseRects = frame.commands.compactMap { command -> (FrameSource, UInt32)? in
       guard case .rect(_, let color, let source, .replace) = command else { return nil }

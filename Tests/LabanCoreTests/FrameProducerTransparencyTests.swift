@@ -55,10 +55,11 @@ final class FrameProducerTransparencyTests: XCTestCase {
         applyToExplicitCellBackgrounds: false)
     ).commands(from: value)
 
-    XCTAssertTrue(commands.contains { command in
-      guard case .rect(let rect, let color, .terminal, .replace) = command else { return false }
-      return rect.origin.x == 8 && color == defaultBackground
-    })
+    XCTAssertTrue(
+      commands.contains { command in
+        guard case .rect(let rect, let color, .terminal, .replace) = command else { return false }
+        return rect.origin.x == 8 && color == defaultBackground
+      })
   }
 
   func testExplicitBackgroundOptInUsesEffectiveAlpha() {
