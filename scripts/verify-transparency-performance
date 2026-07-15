@@ -52,6 +52,13 @@ SCENARIO_IDENTITIES = {
     "imageFitStatic": (0.9, "image", "fit", False),
     "imageStretchStatic": (0.9, "image", "stretch", False),
 }
+IMAGE_LIFECYCLE_DELTAS = (
+    "backgroundImageImportDelta",
+    "backgroundImageDecodeDelta",
+    "backgroundImageFileReadDelta",
+    "backgroundImageApplyDelta",
+    "backgroundImageRedrawDelta",
+)
 RUN_FIELDS = {
     "run",
     "durationSeconds",
@@ -528,23 +535,27 @@ def validate_compositor_report(
             _ = require_integer(run.get("accessibilityRefreshDelta"), f"compositor.{case_name}[{index}].accessibilityRefreshDelta")
             _ = require_integer(run.get("effectiveTransparencyApplyDelta"), f"compositor.{case_name}[{index}].effectiveTransparencyApplyDelta")
             _ = require_integer(run.get("transparencyRenderWakeDelta"), f"compositor.{case_name}[{index}].transparencyRenderWakeDelta")
-            image_import_delta = require_integer(run.get("backgroundImageImportDelta"), f"compositor.{case_name}[{index}].backgroundImageImportDelta")
-            image_decode_delta = require_integer(run.get("backgroundImageDecodeDelta"), f"compositor.{case_name}[{index}].backgroundImageDecodeDelta")
-            image_file_read_delta = require_integer(run.get("backgroundImageFileReadDelta"), f"compositor.{case_name}[{index}].backgroundImageFileReadDelta")
-            _ = require_integer(run.get("backgroundImageApplyDelta"), f"compositor.{case_name}[{index}].backgroundImageApplyDelta")
-            _ = require_integer(run.get("backgroundImageRedrawDelta"), f"compositor.{case_name}[{index}].backgroundImageRedrawDelta")
+            image_lifecycle_deltas = {
+                field: require_integer(
+                    run.get(field),
+                    f"compositor.{case_name}[{index}].{field}",
+                )
+                for field in IMAGE_LIFECYCLE_DELTAS
+            }
             deadline_misses = require_integer(run.get("presentIntervalDeadlineMisses"), f"compositor.{case_name}[{index}].presentIntervalDeadlineMisses")
             if deadline_misses != 0:
                 fail(f"compositor {case_name} run {index} has display-deadline misses")
-            if image_import_delta != 0:
-                fail(f"compositor {case_name} run {index} imported an image while sampling")
+            for field, delta in image_lifecycle_deltas.items():
+                if delta != 0:
+                    fail(
+                        f"compositor {case_name} run {index} grew settled image "
+                        f"lifecycle counter {field}"
+                    )
             if case_name.endswith("Static"):
                 if present_delta != 0:
                     fail(f"compositor {case_name} run {index} presented while static")
                 if app_median >= 1.0:
                     fail(f"compositor {case_name} run {index} app CPU median is not below 1.0%")
-            if case_name.startswith("image") and (image_decode_delta != 0 or image_file_read_delta != 0):
-                fail(f"compositor {case_name} run {index} decoded or read the settled image")
             window_server_medians[case_name].append(ws_median)
             traces = require_object(run.get("tracePaths"), f"compositor.{case_name}[{index}].tracePaths")
             require_exact_keys(traces, {"cpuProfile", "metalTrace", "metalAnalysis"}, f"compositor.{case_name}[{index}].tracePaths")
@@ -561,8 +572,12 @@ def validate_compositor_report(
     if median(window_server_medians["frostedAnimated"]) > opaque_animated + 15.0:
         fail("Frosted animated WindowServer CPU median exceeds opaque animated by more than 15.0 points")
     for case_name in ("imageFillStatic", "imageFitStatic", "imageStretchStatic"):
-        if median(window_server_medians[case_name]) > opaque_static + 2.0:
-            fail(f"{case_name} WindowServer CPU median exceeds opaque static by more than 2.0 points")
+        for index, image_run_median in enumerate(window_server_medians[case_name], 1):
+            if image_run_median > opaque_static + 2.0:
+                fail(
+                    f"{case_name} run {index} WindowServer CPU median exceeds opaque "
+                    "static by more than 2.0 points"
+                )
 
 
 def verify(
@@ -825,13 +840,15 @@ def self_test() -> None:
             ("a missing Image/Fit scenario", lambda report: report["scenarios"].pop("imageFitStatic")),
             ("a missing exact counter field", lambda report: report["scenarios"]["imageFillStatic"][0].pop("backgroundImageDecodeDelta")),
             ("a settled image file read", lambda report: report["scenarios"]["imageFillStatic"][0].update(backgroundImageFileReadDelta=1)),
+            ("a settled image host apply", lambda report: report["scenarios"]["imageFillStatic"][0].update(backgroundImageApplyDelta=1)),
+            ("a settled image host redraw", lambda report: report["scenarios"]["imageFillStatic"][0].update(backgroundImageRedrawDelta=1)),
             ("a static renderer present", lambda report: report["scenarios"]["opaqueStatic"][0].update(rendererPresentDelta=1)),
             ("a static app CPU regression", lambda report: report["scenarios"]["directStatic"][0]["appCPU"].update(medianPercent=1.0)),
             ("a display deadline miss", lambda report: report["scenarios"]["frostedAnimated"][0].update(presentIntervalDeadlineMisses=1)),
             ("a direct static WindowServer regression", lambda report: set_window_server_median(report, "directStatic", 3.1)),
             ("a Frosted static WindowServer regression", lambda report: set_window_server_median(report, "frostedStatic", 9.1)),
             ("a Frosted animated WindowServer regression", lambda report: set_window_server_median(report, "frostedAnimated", 17.1)),
-            ("an Image/Fit WindowServer regression", lambda report: set_window_server_median(report, "imageFitStatic", 3.1)),
+            ("one Image/Fit run hidden by the aggregate median", lambda report: report["scenarios"]["imageFitStatic"][0]["windowServerCPU"].update(medianPercent=3.1)),
             ("a scenario source identity mismatch", lambda report: report["scenarios"]["frostedStatic"][0]["observedState"].update(effectiveBackdropStyle="none")),
             ("a lane contract hash mismatch", lambda report: report.update(laneContractSHA256="0" * 64)),
         )

@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import signal
@@ -58,6 +59,13 @@ COUNTERS = (
     "backgroundImageApplyCount",
     "backgroundImageRedrawCount",
 )
+IMAGE_LIFECYCLE_DELTAS = (
+    "backgroundImageImportDelta",
+    "backgroundImageDecodeDelta",
+    "backgroundImageFileReadDelta",
+    "backgroundImageApplyDelta",
+    "backgroundImageRedrawDelta",
+)
 STATE_FIELDS = (
     "requestedOpacity",
     "effectiveOpacity",
@@ -77,6 +85,14 @@ STATE_FIELDS = (
 )
 DEFAULT_IMAGE_FIXTURE = REPOSITORY_ROOT / "fixtures/transparency/background-gradient.png"
 HIGH_RESOLUTION_MINIMUM_PIXELS = 1920 * 1080
+TRANSPARENCY_PREFERENCE_TYPES = {
+    "LabanTerminalBackgroundOpacity": "float",
+    "LabanTerminalApplyOpacityToExplicitCellBackgrounds": "bool",
+    "LabanTerminalBackdropStyle": "string",
+    "LabanTerminalBackgroundImageScaling": "string",
+    "LabanTerminalBackgroundImageIdentifier": "string",
+    "LabanTerminalBackgroundImageDisplayName": "string",
+}
 
 
 class ProfileError(RuntimeError):
@@ -105,6 +121,117 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail(f"{label} must be a JSON object")
     return value
+
+
+def app_bundle_identifier(app_path: Path) -> str:
+    info_plist = app_path / "Contents/Info.plist"
+    try:
+        with info_plist.open("rb") as handle:
+            value = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException) as error:
+        fail(f"installed app Info.plist is invalid: {error}")
+    identifier = value.get("CFBundleIdentifier") if isinstance(value, dict) else None
+    if not isinstance(identifier, str) or not identifier:
+        fail("installed app has no bundle identifier")
+    return identifier
+
+
+def read_transparency_preferences(domain: str) -> dict[str, Any]:
+    completed = subprocess.run(
+        ["/usr/bin/defaults", "export", domain, "-"],
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        if "does not exist" in detail:
+            return {}
+        fail(f"could not snapshot installed-app preferences: {detail}")
+    try:
+        value = plistlib.loads(completed.stdout)
+    except plistlib.InvalidFileException as error:
+        fail(f"installed-app preference snapshot is invalid: {error}")
+    if not isinstance(value, dict):
+        fail("installed-app preference snapshot is not a dictionary")
+    snapshot = {
+        key: value[key]
+        for key in TRANSPARENCY_PREFERENCE_TYPES
+        if key in value
+    }
+    validate_transparency_preference_snapshot(snapshot)
+    return snapshot
+
+
+def validate_transparency_preference_snapshot(snapshot: dict[str, Any]) -> None:
+    for key, value in snapshot.items():
+        kind = TRANSPARENCY_PREFERENCE_TYPES.get(key)
+        if kind is None:
+            fail(f"preference snapshot contains an unexpected key: {key}")
+        if kind == "float":
+            valid = isinstance(value, float) and math.isfinite(value)
+        elif kind == "bool":
+            valid = isinstance(value, bool)
+        else:
+            valid = isinstance(value, str)
+        if not valid:
+            fail(f"preference snapshot has the wrong type for {key}")
+
+
+def restore_transparency_preferences(domain: str, snapshot: dict[str, Any]) -> None:
+    validate_transparency_preference_snapshot(snapshot)
+    for key, kind in TRANSPARENCY_PREFERENCE_TYPES.items():
+        if key not in snapshot:
+            subprocess.run(
+                ["/usr/bin/defaults", "delete", domain, key],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            continue
+        value = snapshot[key]
+        if kind == "float":
+            arguments = ["-float", repr(value)]
+        elif kind == "bool":
+            arguments = ["-bool", "true" if value else "false"]
+        else:
+            arguments = ["-string", value]
+        completed = subprocess.run(
+            ["/usr/bin/defaults", "write", domain, key, *arguments],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            fail(f"could not restore installed-app preference {key}: {detail}")
+
+    restored = read_transparency_preferences(domain)
+    if not transparency_preference_snapshots_equal(restored, snapshot):
+        differing = [
+            key
+            for key in TRANSPARENCY_PREFERENCE_TYPES
+            if (key in restored) != (key in snapshot)
+            or (
+                key in restored
+                and (
+                    type(restored[key]) is not type(snapshot[key])
+                    or restored[key] != snapshot[key]
+                )
+            )
+        ]
+        fail("installed-app preference restoration mismatch: " + ", ".join(differing))
+
+
+def transparency_preference_snapshots_equal(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> bool:
+    if left.keys() != right.keys():
+        return False
+    return all(
+        type(left[key]) is type(right[key]) and left[key] == right[key]
+        for key in left
+    )
 
 
 def validate_lane_contract(contract: dict[str, Any]) -> None:
@@ -558,6 +685,21 @@ def wait_for_imported_image(client: ControlClient, timeout: float = 15.0) -> dic
     fail(f"managed image import did not settle: {last_error}")
 
 
+def isolated_managed_image_path(control_dir: Path, state: dict[str, Any]) -> Path:
+    identifier = state.get("backgroundImageIdentifier")
+    if not isinstance(identifier, str) or re.fullmatch(r"image-[A-Za-z0-9-]+\.png", identifier) is None:
+        fail("managed image identifier is not a path-safe run-scoped asset")
+    directory = (control_dir / "background-images").resolve()
+    path = (directory / identifier).resolve()
+    try:
+        path.relative_to(directory)
+    except ValueError:
+        fail("managed image escaped the isolated control directory")
+    if not path.is_file():
+        fail("run-scoped managed image is missing after import")
+    return path
+
+
 def relative_artifact(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
 
@@ -725,11 +867,11 @@ def gate_scenarios(scenarios: dict[str, list[dict[str, Any]]]) -> list[str]:
                     failures.append(f"{name} run {run['run']} presented while static")
                 if run["appCPU"]["medianPercent"] >= 1.0:
                     failures.append(f"{name} run {run['run']} app CPU median is not below 1.0%")
-            if name.startswith("image"):
-                if run["backgroundImageDecodeDelta"] != 0:
-                    failures.append(f"{name} run {run['run']} decoded the settled image")
-                if run["backgroundImageFileReadDelta"] != 0:
-                    failures.append(f"{name} run {run['run']} read the settled image file")
+            for counter in IMAGE_LIFECYCLE_DELTAS:
+                if run[counter] != 0:
+                    failures.append(
+                        f"{name} run {run['run']} grew settled image lifecycle counter {counter}"
+                    )
     opaque = median([run["windowServerCPU"]["medianPercent"] for run in scenarios["opaqueStatic"]])
     direct = median([run["windowServerCPU"]["medianPercent"] for run in scenarios["directStatic"]])
     if direct > opaque + 2.0:
@@ -742,9 +884,12 @@ def gate_scenarios(scenarios: dict[str, list[dict[str, Any]]]) -> list[str]:
     if frosted_animated > opaque_animated + 15.0:
         failures.append("Frosted animated WindowServer CPU median exceeds opaque by more than 15.0 points")
     for name in ("imageFillStatic", "imageFitStatic", "imageStretchStatic"):
-        image_static = median([run["windowServerCPU"]["medianPercent"] for run in scenarios[name]])
-        if image_static > opaque + 2.0:
-            failures.append(f"{name} WindowServer CPU median exceeds opaque by more than 2.0 points")
+        for run in scenarios[name]:
+            if run["windowServerCPU"]["medianPercent"] > opaque + 2.0:
+                failures.append(
+                    f"{name} run {run['run']} WindowServer CPU median exceeds opaque "
+                    "by more than 2.0 points"
+                )
     return failures
 
 
@@ -772,6 +917,7 @@ def run_profile(arguments: argparse.Namespace) -> None:
     image_fixture_path, image_fixture_sha256 = validate_image_fixture(arguments.image_fixture)
     lane_contract_sha256 = hashlib.sha256(arguments.lane_contract.read_bytes()).hexdigest()
     executable = installed_executable(arguments.app)
+    bundle_identifier = app_bundle_identifier(arguments.app)
     existing = running_laban_pids()
     if existing:
         fail("an existing LabanApp is running; close it before the isolated installed-app profile")
@@ -806,6 +952,7 @@ def run_profile(arguments: argparse.Namespace) -> None:
         })
         app_stdout = (arguments.artifacts / "app.stdout.log").open("w", encoding="utf-8")
         app_stderr = (arguments.artifacts / "app.stderr.log").open("w", encoding="utf-8")
+        preference_snapshot = read_transparency_preferences(bundle_identifier)
         app_process = subprocess.Popen(
             [str(executable), "--no-persistence", "--terminal-backend=in-process", "--profile-recorder"],
             env=environment,
@@ -815,6 +962,7 @@ def run_profile(arguments: argparse.Namespace) -> None:
         )
         app_stdout.close(); app_stderr.close()
         client: ControlClient | None = None
+        run_managed_image: Path | None = None
         try:
             socket_path, token = wait_for_control(control_dir, run_id, app_process.pid)
             client = ControlClient(socket_path, token, control_dir)
@@ -824,6 +972,7 @@ def run_profile(arguments: argparse.Namespace) -> None:
                 scaling="fill",
             )
             imported_image_state = wait_for_imported_image(client)
+            run_managed_image = isolated_managed_image_path(control_dir, imported_image_state)
             managed_image_identity = {
                 field: imported_image_state[field]
                 for field in (
@@ -879,18 +1028,82 @@ def run_profile(arguments: argparse.Namespace) -> None:
                 fail("; ".join(failures))
             print(f"profile-transparency-compositor: summary={summary_path}")
         finally:
+            cleanup_errors: list[str] = []
             if client is not None:
                 try:
-                    client.action("setBackgroundSource", source="none")
-                    client.action("setBackgroundTransparency", opacity=1.0, applyToExplicitCellBackgrounds=False)
                     client.action("removeBackgroundImage")
                 except ProfileError:
+                    # The generated asset is confined to control_dir and is
+                    # removed below if the app can no longer service actions.
                     pass
                 client.close()
-            terminate(app_process)
+            try:
+                terminate(app_process)
+            except (OSError, subprocess.SubprocessError) as error:
+                cleanup_errors.append(f"could not stop installed app: {error}")
+            if run_managed_image is not None:
+                try:
+                    run_managed_image.unlink(missing_ok=True)
+                except OSError as error:
+                    cleanup_errors.append(f"could not remove run-scoped managed image: {error}")
+                if run_managed_image.exists():
+                    cleanup_errors.append("run-scoped managed image remained after cleanup")
+            try:
+                restore_transparency_preferences(bundle_identifier, preference_snapshot)
+            except ProfileError as error:
+                cleanup_errors.append(str(error))
+            if cleanup_errors:
+                fail("; ".join(cleanup_errors))
+
+
+def self_test_preference_restoration() -> None:
+    domain = (
+        "com.laban.profile-transparency-compositor.self-test."
+        f"{os.getpid()}.{time.time_ns()}"
+    )
+    complete = {
+        "LabanTerminalBackgroundOpacity": 0.875,
+        "LabanTerminalApplyOpacityToExplicitCellBackgrounds": True,
+        "LabanTerminalBackdropStyle": "image",
+        "LabanTerminalBackgroundImageScaling": "fit",
+        "LabanTerminalBackgroundImageIdentifier": "image-original.png",
+        "LabanTerminalBackgroundImageDisplayName": "Original.png",
+    }
+    sparse = {
+        "LabanTerminalBackgroundOpacity": 1.0,
+        "LabanTerminalApplyOpacityToExplicitCellBackgrounds": False,
+        "LabanTerminalBackdropStyle": "none",
+    }
+    try:
+        restore_transparency_preferences(domain, complete)
+        restore_transparency_preferences(domain, {})
+        restore_transparency_preferences(domain, complete)
+        if not transparency_preference_snapshots_equal(
+            read_transparency_preferences(domain), complete
+        ):
+            fail("self-test did not restore all six transparency preferences")
+
+        restore_transparency_preferences(domain, sparse)
+        if not transparency_preference_snapshots_equal(
+            read_transparency_preferences(domain), sparse
+        ):
+            fail("self-test did not restore absent transparency preferences")
+        if transparency_preference_snapshots_equal(
+            {"LabanTerminalApplyOpacityToExplicitCellBackgrounds": True},
+            {"LabanTerminalApplyOpacityToExplicitCellBackgrounds": 1},
+        ):
+            fail("self-test accepted a preference type mismatch")
+    finally:
+        subprocess.run(
+            ["/usr/bin/defaults", "delete", domain],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 def self_test() -> None:
+    self_test_preference_restoration()
     fixture_path, fixture_sha256 = validate_image_fixture(DEFAULT_IMAGE_FIXTURE)
     if fixture_path != "fixtures/transparency/background-gradient.png" or re.fullmatch(r"[0-9a-f]{64}", fixture_sha256) is None:
         fail("self-test did not validate the checked-in high-resolution image fixture")
@@ -985,8 +1198,11 @@ def self_test() -> None:
             "windowServerCPU": {"medianPercent": window_server},
             "rendererPresentDelta": 0,
             "presentIntervalDeadlineMisses": 0,
+            "backgroundImageImportDelta": 0,
             "backgroundImageDecodeDelta": 0,
             "backgroundImageFileReadDelta": 0,
+            "backgroundImageApplyDelta": 0,
+            "backgroundImageRedrawDelta": 0,
         } for run in range(1, 6)]
     if gate_scenarios(scenarios):
         fail("self-test rejected valid fixed thresholds")
@@ -998,11 +1214,22 @@ def self_test() -> None:
     if not gate_scenarios(scenarios):
         fail("self-test accepted a settled image file read")
     scenarios["imageFillStatic"][0]["backgroundImageFileReadDelta"] = 0
+    for counter in ("backgroundImageApplyDelta", "backgroundImageRedrawDelta"):
+        scenarios["imageFillStatic"][0][counter] = 1
+        if not gate_scenarios(scenarios):
+            fail(f"self-test accepted settled image lifecycle growth for {counter}")
+        scenarios["imageFillStatic"][0][counter] = 0
+    opaque_median = median([
+        run["windowServerCPU"]["medianPercent"] for run in scenarios["opaqueStatic"]
+    ])
+    scenarios["imageFitStatic"][0]["windowServerCPU"]["medianPercent"] = opaque_median + 2.1
+    if not gate_scenarios(scenarios):
+        fail("self-test accepted one over-budget Image/Fit run hidden by the aggregate median")
+    scenarios["imageFitStatic"][0]["windowServerCPU"]["medianPercent"] = 2.0
     for case_name, baseline_name, excess in (
         ("directStatic", "opaqueStatic", 2.1),
         ("frostedStatic", "opaqueStatic", 8.1),
         ("frostedAnimated", "opaqueAnimated", 15.1),
-        ("imageFitStatic", "opaqueStatic", 2.1),
     ):
         baseline = median([
             run["windowServerCPU"]["medianPercent"] for run in scenarios[baseline_name]
