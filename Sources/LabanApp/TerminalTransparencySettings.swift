@@ -48,6 +48,12 @@ enum TerminalTransparencyPreset: CaseIterable, Equatable, Sendable {
   case frosted
   case custom
 
+  /// Fixed canvas tint for the Frosted convenience bundle. The native
+  /// behind-window material contributes its own tint, so 90% canvas opacity
+  /// makes the composed result nearly flat; 30% keeps the blurred source
+  /// visibly present while custom opacity values remain literal.
+  static let frostedBackgroundOpacity = 0.30
+
   static func derive(
     from configuration: TerminalTransparencyConfiguration
   ) -> TerminalTransparencyPreset {
@@ -57,7 +63,7 @@ enum TerminalTransparencyPreset: CaseIterable, Equatable, Sendable {
     {
       return .opaque
     }
-    if configuration.backgroundOpacity == 0.90,
+    if configuration.backgroundOpacity == frostedBackgroundOpacity,
       configuration.backdropStyle == .systemBlur,
       !configuration.applyToExplicitCellBackgrounds
     {
@@ -108,7 +114,8 @@ enum TerminalTransparencySettings {
       requested.configuration.backdropStyle = .none
       requested.configuration.applyToExplicitCellBackgrounds = false
     case .frosted:
-      requested.configuration.backgroundOpacity = 0.90
+      requested.configuration.backgroundOpacity =
+        TerminalTransparencyPreset.frostedBackgroundOpacity
       requested.configuration.backdropStyle = .systemBlur
       requested.configuration.applyToExplicitCellBackgrounds = false
     case .custom:

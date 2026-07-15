@@ -315,7 +315,7 @@ composites over the image, so lower opacity reveals more of the image. There is
 no separate image-opacity slider. At 100% opacity no background host is active
 and it has zero steady-state cost.
 
-`Frosted` atomically selects 90% terminal background opacity, System Blur, and
+`Frosted` atomically selects 30% terminal background opacity, System Blur, and
 opaque explicit cell backgrounds. It is theme-neutral and preserves any
 imported image and its scaling choice for a later switch back to Image. Choosing
 Image or changing an individual control produces custom preset state; Frosted

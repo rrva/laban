@@ -28,7 +28,7 @@ final class FrostedPresetTests: XCTestCase {
     XCTAssertEqual(
       TerminalTransparencyPreset.derive(
         from: TerminalTransparencyConfiguration(
-          backgroundOpacity: 0.90,
+          backgroundOpacity: 0.30,
           applyToExplicitCellBackgrounds: false,
           backdropStyle: .systemBlur,
           backgroundImageScaling: .fit)),
@@ -48,11 +48,11 @@ final class FrostedPresetTests: XCTestCase {
         applyToExplicitCellBackgrounds: false,
         backdropStyle: .systemBlur),
       TerminalTransparencyConfiguration(
-        backgroundOpacity: 0.90,
+        backgroundOpacity: 0.30,
         applyToExplicitCellBackgrounds: true,
         backdropStyle: .systemBlur),
       TerminalTransparencyConfiguration(
-        backgroundOpacity: 0.90,
+        backgroundOpacity: 0.30,
         applyToExplicitCellBackgrounds: false,
         backdropStyle: .none),
       TerminalTransparencyConfiguration(
@@ -99,7 +99,7 @@ final class FrostedPresetTests: XCTestCase {
       TerminalTransparencySettings.requestedSettings(defaults: defaults),
       TerminalTransparencyRequestedSettings(
         configuration: TerminalTransparencyConfiguration(
-          backgroundOpacity: 0.90,
+          backgroundOpacity: 0.30,
           applyToExplicitCellBackgrounds: false,
           backdropStyle: .systemBlur,
           backgroundImageScaling: .stretch),
@@ -130,7 +130,7 @@ final class FrostedPresetTests: XCTestCase {
     XCTAssertEqual(
       TerminalTransparencySettings.requestedConfiguration(defaults: defaults),
       TerminalTransparencyConfiguration(
-        backgroundOpacity: 0.90,
+        backgroundOpacity: 0.30,
         applyToExplicitCellBackgrounds: false,
         backdropStyle: .systemBlur,
         backgroundImageScaling: .fill))

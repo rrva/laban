@@ -70,7 +70,7 @@ final class TerminalBackgroundSourceSettingsUITests: XCTestCase {
     XCTAssertEqual(
       TerminalTransparencySettings.requestedConfiguration(defaults: context.defaults),
       TerminalTransparencyConfiguration(
-        backgroundOpacity: 0.90,
+        backgroundOpacity: 0.30,
         applyToExplicitCellBackgrounds: false,
         backdropStyle: .systemBlur,
         backgroundImageScaling: .fill))

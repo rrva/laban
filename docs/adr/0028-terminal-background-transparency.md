@@ -189,7 +189,7 @@ is cached and never occurs in a renderer path or per-frame loop; selection,
 scaling changes, and resize may invalidate the host once.
 
 `System Blur` and the localized, theme-neutral `Frosted` preset are active work
-in the same ExecPlan. `Frosted` is fixed at 90% terminal background opacity
+in the same ExecPlan. `Frosted` is fixed at 30% terminal background opacity
 with System Blur and opaque explicit cell backgrounds. Applying it preserves an
 imported image and scaling mode for a later switch back to Image. Selecting
 Image or changing an individual control produces custom preset state; Frosted
