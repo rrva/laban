@@ -190,16 +190,18 @@ final class FrameProducerTransparencyTests: XCTestCase {
     XCTAssertFalse(classic.layer.isOpaque)
     let firstChangedFrame = try XCTUnwrap(
       classic.renderedCommandFrames.dropFirst(framesBeforeSettingsChange).first)
-    for source in [FrameSource.terminal, .sidebar] {
-      XCTAssertTrue(
-        firstChangedFrame.contains { command in
-          guard case .rect(_, let color, let commandSource, .replace) = command else {
-            return false
-          }
-          return commandSource == source && (color & 0xFF) == 179
-        },
-        "the current renderer's first post-change frame must use alpha 179 for \(source)")
-    }
+    XCTAssertTrue(
+      firstChangedFrame.contains { command in
+        guard case .rect(_, let color, .terminal, .replace) = command else { return false }
+        return (color & 0xFF) == 179
+      },
+      "the current renderer's first post-change terminal frame must use alpha 179")
+    XCTAssertTrue(
+      firstChangedFrame.contains { command in
+        guard case .rect(_, let color, .sidebar, .replace) = command else { return false }
+        return (color & 0xFF) == 255
+      },
+      "the current renderer's first post-change sidebar must remain opaque")
   }
 
   func testWarmRendererSwapFirstFrameUsesCurrentTransparencyRequest() throws {
@@ -223,11 +225,15 @@ final class FrameProducerTransparencyTests: XCTestCase {
     XCTAssertTrue(
       slug.renderedCommandFrames.last?.contains(where: { command in
         guard case .rect(_, let color, let source, let compositing) = command else { return false }
-        return (source == .terminal || source == .sidebar)
-          && compositing == .replace
-          && (color & 0xFF) == 179
+        return source == .terminal && compositing == .replace && (color & 0xFF) == 179
       }) == true,
       "the hidden warm-up frame must use the current effective compositing options")
+    XCTAssertTrue(
+      slug.renderedCommandFrames.last?.contains(where: { command in
+        guard case .rect(_, let color, .sidebar, .replace) = command else { return false }
+        return (color & 0xFF) == 255
+      }) == true,
+      "the hidden warm-up frame must preserve the opaque sidebar")
 
     slug.completeFrame()
     drainMainQueue()

@@ -325,10 +325,14 @@ for renderer in "${renderers[@]}"; do
     and ([.commands[] | select(
       .kind == "rect" and .source == "terminal" and .color[3] == 255
     )] | length) >= 2
-    and any(.commands[]; .kind == "rect" and .source == "sidebar" and .color[3] == $alpha)
-    and ([.commands[] | select(
-      .kind == "rect" and .source == "sidebar" and .color[3] == 255
-    )] | length) >= 2
+    and any(.commands[];
+      .kind == "rect" and .source == "sidebar"
+      and .compositing == "replace" and .color[3] == 255
+    )
+    and all(.commands[];
+      if .kind == "rect" and .source == "sidebar" and .compositing == "replace"
+      then .color[3] == 255 else true end
+    )
     and any(.commands[]; .kind == "glyphRun" and .source == "sidebar")
     and any(.commands[]; .kind == "rect" and .source == "preedit" and .color[3] == 255)
     and any(.commands[]; .kind == "glyphRun" and .source == "preedit"

@@ -11,18 +11,15 @@ public struct SidebarProducer {
   public let cellWidth: CGFloat
   public let cellHeight: CGFloat
   public let rowHeight: CGFloat
-  public let backgroundCompositingOptions: TerminalBackgroundCompositingOptions
 
   public init(
     sidebarWidth: CGFloat = 200,
     cellWidth: CGFloat = 8,
-    cellHeight: CGFloat = 16,
-    backgroundCompositingOptions: TerminalBackgroundCompositingOptions = .opaque
+    cellHeight: CGFloat = 16
   ) {
     self.sidebarWidth = sidebarWidth
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
-    self.backgroundCompositingOptions = backgroundCompositingOptions
     // Four lines per tab: title + workspace + command + status.
     self.rowHeight = ceil(cellHeight * 4) + 10
   }
@@ -175,7 +172,7 @@ public struct SidebarProducer {
     cmds.append(
       .rect(
         CGRect(x: 0, y: 0, width: sidebarWidth, height: height),
-        color: Self.withAlpha(Theme.current.bg1, backgroundCompositingOptions.opacity),
+        color: Theme.current.bg1,
         source: .sidebar,
         compositing: .replace
       ))
@@ -428,10 +425,6 @@ public struct SidebarProducer {
   /// user is dragging. Tuned to read as "lifted" on both light and dark
   /// themes without losing the underlying label.
   private static let dragSourceOverlayColor: UInt32 = 0x0000_0066
-
-  private static func withAlpha(_ color: UInt32, _ alpha: UInt8) -> UInt32 {
-    (color & 0xFFFF_FF00) | UInt32(alpha)
-  }
 
   /// Fraction the needsAction row tint blends `bg` toward the attention colour.
   /// Faint enough to read as a wash behind the text, not a fill.

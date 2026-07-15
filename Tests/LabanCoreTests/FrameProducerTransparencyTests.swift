@@ -37,7 +37,7 @@ final class FrameProducerTransparencyTests: XCTestCase {
         surfaceScale: 1)
     }
 
-    func assertBaseAlpha(
+    func assertSurfaceAlpha(
       _ frame: TerminalSurfaceFrame,
       equals expected: UInt32,
       file: StaticString = #filePath,
@@ -48,8 +48,8 @@ final class FrameProducerTransparencyTests: XCTestCase {
         return (source, color)
       }
       XCTAssertTrue(
-        baseRects.contains { $0.0 == .sidebar && ($0.1 & 0xFF) == expected },
-        "sidebar must use the request alpha on its first changed frame",
+        baseRects.contains { $0.0 == .sidebar && ($0.1 & 0xFF) == 255 },
+        "sidebar navigation must stay opaque on the first changed frame",
         file: file,
         line: line)
       XCTAssertTrue(
@@ -62,7 +62,7 @@ final class FrameProducerTransparencyTests: XCTestCase {
     _ = try XCTUnwrap(controller.makeFrame(request(frame: 1, opacity: 255)))
     let firstChangedLocalFrame = try XCTUnwrap(
       controller.makeFrame(request(frame: 2, opacity: 91)))
-    assertBaseAlpha(firstChangedLocalFrame, equals: 91)
+    assertSurfaceAlpha(firstChangedLocalFrame, equals: 91)
 
     let sessionId = try XCTUnwrap(model.activeTab?.sessionId)
     let firstChangedRemoteFrame = try XCTUnwrap(
@@ -70,10 +70,10 @@ final class FrameProducerTransparencyTests: XCTestCase {
         request(frame: 3, opacity: 73),
         remoteSnapshot: snapshot(),
         sessionId: sessionId))
-    assertBaseAlpha(firstChangedRemoteFrame, equals: 73)
+    assertSurfaceAlpha(firstChangedRemoteFrame, equals: 73)
   }
 
-  func testSidebarMemoInvalidatesOnFirstCompositingChangeThenReuses() throws {
+  func testSidebarMemoIgnoresTerminalCompositingChangesAndStaysOpaque() throws {
     var size = LabanTerminalSize()
     size.rows = 2
     size.cols = 10
@@ -85,33 +85,32 @@ final class FrameProducerTransparencyTests: XCTestCase {
       sidebarWidth: 200)
     let activeTabId = try XCTUnwrap(model.activeTab?.id)
 
-    _ = controller.sidebarCommands(
-      activeTabId: activeTabId,
-      viewportHeight: 100,
-      backgroundCompositingOptions: .opaque)
+    _ = controller.sidebarCommands(activeTabId: activeTabId, viewportHeight: 100)
     let opaqueBuildCount = controller.sidebarRebuildCountForTesting
-    let translucent = TerminalBackgroundCompositingOptions(
-      opacity: 123,
-      applyToExplicitCellBackgrounds: false)
-    let changed = controller.sidebarCommands(
-      activeTabId: activeTabId,
-      viewportHeight: 100,
-      backgroundCompositingOptions: translucent)
 
-    XCTAssertEqual(controller.sidebarRebuildCountForTesting, opaqueBuildCount + 1)
-    guard case .rect(_, let color, .sidebar, .replace)? = changed.first else {
-      return XCTFail("expected replace-composited sidebar base")
-    }
-    XCTAssertEqual(color & 0xFF, 123)
+    let changed = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 2,
+          viewportWidth: 360,
+          viewportHeight: 100,
+          backgroundCompositingOptions: TerminalBackgroundCompositingOptions(
+            opacity: 123,
+            applyToExplicitCellBackgrounds: false),
+          snapshotBackgroundCapability: .supported,
+          includeTerminalAreaBackground: true,
+          surfaceWidth: 360,
+          surfaceHeight: 100,
+          surfaceScale: 1)))
 
-    _ = controller.sidebarCommands(
-      activeTabId: activeTabId,
-      viewportHeight: 100,
-      backgroundCompositingOptions: translucent)
     XCTAssertEqual(
       controller.sidebarRebuildCountForTesting,
-      opaqueBuildCount + 1,
-      "equal compositing options should hit the sidebar memo")
+      opaqueBuildCount,
+      "terminal-only opacity changes must reuse the opaque sidebar memo")
+    guard case .rect(_, let color, .sidebar, .replace)? = changed.commands.first else {
+      return XCTFail("expected replace-composited sidebar base")
+    }
+    XCTAssertEqual(color & 0xFF, 255)
   }
 
   func testRemoteCanvasInheritedAndExplicitBackgroundSemantics() throws {

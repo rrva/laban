@@ -26,7 +26,7 @@ final class TransparencyLocalizationTests: XCTestCase {
       "Background opacity:",
       "Background opacity",
       "Background opacity: %lld percent",
-      "Choose how much of the default terminal and sidebar background is visible. Text, the cursor, selections, and images remain fully visible. 100% is fully opaque.",
+      "Choose how much of the default terminal background is visible. The sidebar remains opaque; text, the cursor, selections, and images remain fully visible. 100% is fully opaque.",
       "Apply opacity to colored cell backgrounds",
       "Also applies the selected opacity to background colors set by terminal programs, including inverse video.",
     ]

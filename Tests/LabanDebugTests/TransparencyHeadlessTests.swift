@@ -16,13 +16,19 @@ final class TransparencyHeadlessTests: XCTestCase {
     XCTAssertEqual(state.snapshotExplicitBackgroundCapability, "inProcess")
     XCTAssertEqual(state.backdropSubviewCount, 0)
 
-    let alpha = runtime.withRuntimeLock {
-      runtime.lastFrameCommands.compactMap { command -> UInt8? in
-        guard case .rect(_, let color, _, _) = command else { return nil }
+    let (terminalAlpha, sidebarAlpha) = runtime.withRuntimeLock {
+      let terminal = runtime.lastFrameCommands.compactMap { command -> UInt8? in
+        guard case .rect(_, let color, .terminal, .replace) = command else { return nil }
         return UInt8(color & 0xFF)
       }.first
+      let sidebar = runtime.lastFrameCommands.compactMap { command -> UInt8? in
+        guard case .rect(_, let color, .sidebar, .replace) = command else { return nil }
+        return UInt8(color & 0xFF)
+      }.first
+      return (terminal, sidebar)
     }
-    XCTAssertEqual(alpha, 179)
+    XCTAssertEqual(terminalAlpha, 179)
+    XCTAssertEqual(sidebarAlpha, 255)
   }
 
   func testTypedActionsPreserveRequestAcrossReduceTransparencyOverride() throws {

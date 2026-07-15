@@ -406,10 +406,10 @@ SUPPLEMENT_DE_PT_IT: dict[str, dict[str, str]] = {
         "pt-BR": "Opacidade do fundo: %lld%%",
         "it": "Opacità dello sfondo: %lld%%",
     },
-    "Choose how much of the default terminal and sidebar background is visible. Text, the cursor, selections, and images remain fully visible. 100% is fully opaque.": {
-        "de": "Stellen Sie ein, wie sichtbar der Standardhintergrund von Terminal und Seitenleiste ist. Text, Cursor, Auswahl und Bilder bleiben vollständig sichtbar. 100 % bedeutet vollständig deckend.",
-        "pt-BR": "Escolha quanto do fundo padrão do terminal e da barra lateral fica visível. O texto, o cursor, as seleções e as imagens permanecem totalmente visíveis. 100% é totalmente opaco.",
-        "it": "Scegli quanto rendere visibile lo sfondo predefinito del terminale e della barra laterale. Testo, cursore, selezioni e immagini restano completamente visibili. 100% corrisponde alla piena opacità.",
+    "Choose how much of the default terminal background is visible. The sidebar remains opaque; text, the cursor, selections, and images remain fully visible. 100% is fully opaque.": {
+        "de": "Stellen Sie ein, wie sichtbar der Standardhintergrund des Terminals ist. Die Seitenleiste bleibt deckend; Text, Cursor, Auswahl und Bilder bleiben vollständig sichtbar. 100 % bedeutet vollständig deckend.",
+        "pt-BR": "Escolha quanto do fundo padrão do terminal fica visível. A barra lateral permanece opaca; o texto, o cursor, as seleções e as imagens permanecem totalmente visíveis. 100% é totalmente opaco.",
+        "it": "Scegli quanto rendere visibile lo sfondo predefinito del terminale. La barra laterale resta opaca; testo, cursore, selezioni e immagini restano completamente visibili. 100% corrisponde alla piena opacità.",
     },
     "Apply opacity to colored cell backgrounds": {
         "de": "Deckkraft auf farbige Zellenhintergründe anwenden",

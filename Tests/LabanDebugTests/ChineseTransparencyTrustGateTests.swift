@@ -141,6 +141,14 @@ final class ChineseTransparencyTrustGateTests: XCTestCase {
       "explicit and inverse cell backgrounds must remain opaque",
       file: file,
       line: line)
+    XCTAssertTrue(
+      commands.contains { command in
+        guard case .rect(_, let color, .sidebar, .replace) = command else { return false }
+        return UInt8(color & 0xFF) == 255
+      },
+      "sidebar navigation must remain opaque while the terminal is translucent",
+      file: file,
+      line: line)
   }
 
   private func assertPreeditSemantics(

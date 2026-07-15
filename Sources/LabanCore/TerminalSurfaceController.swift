@@ -335,8 +335,6 @@ public enum TerminalSnapshotText {
 /// part of the key automatically, so a new metadata field cannot silently go
 /// stale.
 private struct SidebarCacheSignature: Equatable {
-  var backgroundCompositingOptions: TerminalBackgroundCompositingOptions
-
   struct Entry: Equatable {
     var id: Tab.ID
     var position: Int
@@ -584,8 +582,7 @@ public final class TerminalSurfaceController {
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
-      reduceMotion: request.reduceMotion,
-      backgroundCompositingOptions: request.backgroundCompositingOptions
+      reduceMotion: request.reduceMotion
     )
 
     guard let session = model.session(forTab: activeTab.id) else {
@@ -787,8 +784,7 @@ public final class TerminalSurfaceController {
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
-      reduceMotion: request.reduceMotion,
-      backgroundCompositingOptions: request.backgroundCompositingOptions
+      reduceMotion: request.reduceMotion
     )
 
     let rows = max(snapshot.rows, 1)
@@ -869,15 +865,13 @@ public final class TerminalSurfaceController {
     hoveredTabId: Tab.ID? = nil,
     dragIndicator: SidebarProducer.DragIndicator? = nil,
     now: Date = Date(),
-    reduceMotion: Bool = false,
-    backgroundCompositingOptions: TerminalBackgroundCompositingOptions = .opaque
+    reduceMotion: Bool = false
   ) -> [FrameCommand] {
     let tabs = model.tabs
     let producer = SidebarProducer(
       sidebarWidth: sidebarWidth,
       cellWidth: sidebarCellWidth,
-      cellHeight: sidebarCellHeight,
-      backgroundCompositingOptions: backgroundCompositingOptions)
+      cellHeight: sidebarCellHeight)
     func build() -> SidebarProducer.Output {
       sidebarRebuildCountForTesting += 1
       return producer.output(
@@ -897,7 +891,6 @@ public final class TerminalSurfaceController {
     // (and re-resolving every tab title) at the display rate to animate one
     // dot is what saturated the main thread under streaming load.
     let signature = SidebarCacheSignature(
-      backgroundCompositingOptions: backgroundCompositingOptions,
       tabs: tabs.map {
         SidebarCacheSignature.Entry(
           id: $0.id,

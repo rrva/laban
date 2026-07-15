@@ -212,7 +212,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     backgroundOpacitySlider.target = self
     backgroundOpacitySlider.action = #selector(backgroundOpacityChanged(_:))
     backgroundOpacitySlider.toolTip = L10n.tr(
-      "Choose how much of the default terminal and sidebar background is visible. Text, the cursor, selections, and images remain fully visible. 100% is fully opaque."
+      "Choose how much of the default terminal background is visible. The sidebar remains opaque; text, the cursor, selections, and images remain fully visible. 100% is fully opaque."
     )
     backgroundOpacitySlider.setAccessibilityLabel(L10n.tr("Background opacity"))
     backgroundOpacitySlider.widthAnchor.constraint(equalToConstant: 190).isActive = true
