@@ -55,7 +55,7 @@ final class VectorSmoothScrollTests: XCTestCase {
     let commands: [FrameCommand] = [
       .rect(
         CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale),
-        color: 0x00_00_00_FF, source: .terminal),
+        color: 0x00_00_00_FF, source: .terminal, compositing: .replace),
       // Full-height stems give a stable vertical centroid; thin horizontal
       // strokes wobble under AA redistribution and don't measure position well.
       .glyphRun(
@@ -115,7 +115,7 @@ final class VectorSmoothScrollTests: XCTestCase {
     let commands: [FrameCommand] = [
       .rect(
         CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale),
-        color: 0x00_00_00_FF, source: .terminal),
+        color: 0x00_00_00_FF, source: .terminal, compositing: .replace),
       .glyphRun(
         origin: CGPoint(x: 8, y: 30),
         text: "HHHHH",
@@ -126,9 +126,9 @@ final class VectorSmoothScrollTests: XCTestCase {
     ]
 
     // Sweep a sub-cell horizontal phase across a full device pixel. The slide
-    // offset is symmetric with the vertical axis (+phase adds +offset*scale), so
-    // a positive phase shifts the left-to-right centroid X the same way a positive
-    // vertical phase shifts centroid Y: monotonically toward smaller coordinates.
+    // offset is symmetric with the vertical axis (+phase adds +offset*scale), but
+    // image X increases to the right while image Y increases downward. A positive
+    // horizontal phase therefore moves the centroid toward larger coordinates.
     let phaseDevicePixels: [CGFloat] = [-0.5, -0.25, 0.0, 0.25, 0.5]
     var centroids: [Double] = []
     for devpx in phaseDevicePixels {
@@ -145,11 +145,11 @@ final class VectorSmoothScrollTests: XCTestCase {
     let totalShift = abs(centroids.last! - centroids.first!)
     XCTAssertGreaterThan(totalShift, 0.5, "phase sweep produced too little motion: \(centroids)")
     XCTAssertLessThan(totalShift, 2.0, "phase sweep jumped more than a pixel — snapped, not smooth")
-    // Monotonic in the expected direction (+phase -> decreasing X), matching the
-    // vertical axis's +phase -> decreasing Y convention.
+    // Monotonic in the expected direction (+phase -> increasing X). The vertical
+    // assertion decreases because its point-space axis is inverted in the image.
     for i in 1..<centroids.count {
-      XCTAssertLessThanOrEqual(
-        centroids[i] - centroids[i - 1], 0.06,
+      XCTAssertGreaterThanOrEqual(
+        centroids[i] - centroids[i - 1], -0.06,
         "centroid moved the wrong way (non-monotonic): \(centroids)")
     }
     XCTAssertNotEqual(centroids.first!, centroids.last!)
