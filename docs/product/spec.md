@@ -270,6 +270,17 @@ input method separately. A `passed` status requires nonempty manual evidence in
 `.artifacts/transparency/cjk/cjk-evidence.json`; an untested input method is not
 included in compatibility claims.
 
+The versioned record follows
+`schemas/transparency-cjk-evidence.schema.json`. Apple Pinyin can be marked
+`passed` only after the opaque baseline flow and the complete 90% composition,
+commit, wrap, and mode-2027 flow have each been captured again with System Blur
+and with Image/Fill. The native-source captures include raw
+`/debug/transparency` state proving that exactly one matching AppKit backdrop
+child was effective; System Blur trust-gate captures cover light and dark
+high-contrast backdrops, and Image/Fill has its own high-contrast trust-gate
+capture. Rime/Squirrel stays unclaimed unless equivalent source-specific
+artifacts exist for opaque, System Blur, and Image/Fill.
+
 | IME | Status |
 | --- | --- |
 | Apple Pinyin | not tested - compatibility unclaimed |

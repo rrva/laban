@@ -1,21 +1,34 @@
 #!/usr/bin/env python3
-"""Verify transparency CJK renderer and IME evidence without creating artifacts."""
+"""Verify installed transparency CJK/IME evidence without creating artifacts."""
 
 from __future__ import annotations
 
 import argparse
+import binascii
+import hashlib
 import json
+import re
+import struct
+import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 from typing import NoReturn
 
 
+SCHEMA_VERSION = 2
 RENDERERS = ("software", "classic", "gpuDriven", "vectorGlyph", "slugGlyph")
+NATIVE_SOURCES = ("systemBlur", "imageFill")
+APPLE_SOURCES = ("opaque", "systemBlur", "imageFill")
+APPLE_ROLES = ("candidate", "committed", "candidateWrap", "committedWrap", "mode2027")
 RIME_TABLE_STATUSES = {
     "passed": "passed",
     "notTested": "not tested - compatibility unclaimed",
 }
+HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+GIT_COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 class EvidenceError(RuntimeError):
@@ -32,11 +45,14 @@ def require_object(value: object, name: str) -> dict[str, object]:
     return value
 
 
-def require_artifact_list(value: object, name: str) -> list[str]:
-    if not isinstance(value, list):
-        fail(f"{name} must be an array")
-    if any(not isinstance(item, str) or not item.strip() for item in value):
-        fail(f"{name} must contain only nonempty path strings")
+def require_exact_keys(value: dict[str, object], expected: set[str], name: str) -> None:
+    if set(value) != expected:
+        fail(f"{name} must contain exactly: " + ", ".join(sorted(expected)))
+
+
+def require_nonempty_string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        fail(f"{name} must be a nonempty string")
     return value
 
 
@@ -57,9 +73,7 @@ def resolve_artifact(
     try:
         resolved.relative_to(evidence_root)
     except ValueError:
-        fail(
-            f"artifact escapes {evidence_root}: {reference} resolves to {resolved}"
-        )
+        fail(f"artifact escapes {evidence_root}: {reference} resolves to {resolved}")
     if not resolved.is_file():
         fail(f"artifact is missing or not a regular file: {reference}")
     if resolved.stat().st_size == 0:
@@ -67,26 +81,109 @@ def resolve_artifact(
     return resolved
 
 
-def require_named_artifact(
-    reference: str,
+def require_artifact_record(
+    value: object,
+    name: str,
     *,
-    exact_name: str | None = None,
-    prefix: str | None = None,
+    exact_name: str,
     repository_root: Path,
     evidence_root: Path,
     manifest_path: Path,
+    png: bool,
 ) -> Path:
+    record = require_object(value, name)
+    expected_keys = {"path", "sha256"}
+    if png:
+        expected_keys.update(("pixelWidth", "pixelHeight"))
+    require_exact_keys(record, expected_keys, name)
+    reference = require_nonempty_string(record.get("path"), f"{name}.path")
     resolved = resolve_artifact(
         reference,
         repository_root=repository_root,
         evidence_root=evidence_root,
         manifest_path=manifest_path,
     )
-    if exact_name is not None and resolved.name != exact_name:
-        fail(f"artifact must be named {exact_name}: {reference}")
-    if prefix is not None and not resolved.name.startswith(prefix):
-        fail(f"artifact name must start with {prefix}: {reference}")
+    if resolved.name != exact_name:
+        fail(f"{name}.path must name {exact_name}, got {resolved.name}")
+    digest = require_nonempty_string(record.get("sha256"), f"{name}.sha256")
+    if not HEX_SHA256.fullmatch(digest):
+        fail(f"{name}.sha256 must be 64 lowercase hexadecimal characters")
+    actual_digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    if digest != actual_digest:
+        fail(f"{name}.sha256 does not match {reference}")
+    if png:
+        width, height = png_dimensions(resolved, name)
+        if record.get("pixelWidth") != width or record.get("pixelHeight") != height:
+            fail(
+                f"{name} PNG dimensions do not match: expected {width}x{height}, "
+                f"got {record.get('pixelWidth')}x{record.get('pixelHeight')}"
+            )
     return resolved
+
+
+def png_dimensions(path: Path, name: str) -> tuple[int, int]:
+    header = path.read_bytes()[:24]
+    if len(header) != 24 or header[:8] != PNG_SIGNATURE or header[12:16] != b"IHDR":
+        fail(f"{name} must be a real PNG with an IHDR chunk")
+    width, height = struct.unpack(">II", header[16:24])
+    if width < 1 or height < 1:
+        fail(f"{name} PNG dimensions must be positive")
+    return width, height
+
+
+def read_json_artifact(path: Path, name: str) -> dict[str, object]:
+    try:
+        return require_object(json.loads(path.read_text(encoding="utf-8")), name)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"could not read {name} JSON: {error}")
+
+
+def require_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        fail(f"{name} must be a number")
+    return float(value)
+
+
+def verify_source_state(state: dict[str, object], source: str) -> None:
+    expected_style = "systemBlur" if source == "systemBlur" else "image"
+    for field in ("requestedOpacity", "effectiveOpacity"):
+        if abs(require_number(state.get(field), f"{source} state.{field}") - 0.90) > 0.0001:
+            fail(f"{source} state.{field} must be exactly 0.90")
+    for field in ("requestedBackdropStyle", "effectiveBackdropStyle", "backdropSubviewKind"):
+        if state.get(field) != expected_style:
+            fail(f"{source} state.{field} must be exactly {expected_style!r}")
+    if state.get("backdropSubviewCount") != 1:
+        fail(f"{source} state.backdropSubviewCount must be exactly 1")
+    if state.get("surfaceOpaque") is not False:
+        fail(f"{source} state.surfaceOpaque must be false")
+    if state.get("applyToExplicitCellBackgrounds") is not False:
+        fail(f"{source} state.applyToExplicitCellBackgrounds must be false")
+    if state.get("effectiveReduceTransparency") is not False:
+        fail(f"{source} state.effectiveReduceTransparency must be false")
+    if state.get("nativeFullscreen") is not False:
+        fail(f"{source} state.nativeFullscreen must be false")
+    if state.get("forceOpaqueReason") is not None:
+        fail(f"{source} state.forceOpaqueReason must be absent or null")
+    configured = require_nonempty_string(
+        state.get("configuredRenderer"), f"{source} state.configuredRenderer"
+    )
+    if state.get("effectiveRenderer") != configured:
+        fail(f"{source} state configuredRenderer and effectiveRenderer must match")
+    if source == "imageFill":
+        if state.get("backgroundImageScaling") != "fill":
+            fail("imageFill state.backgroundImageScaling must be exactly 'fill'")
+        if state.get("backgroundImageState") != "available":
+            fail("imageFill state.backgroundImageState must be exactly 'available'")
+        require_nonempty_string(
+            state.get("backgroundImageIdentifier"),
+            "imageFill state.backgroundImageIdentifier",
+        )
+        digest = require_nonempty_string(
+            state.get("backgroundImageContentDigest"),
+            "imageFill state.backgroundImageContentDigest",
+        )
+        if not HEX_SHA256.fullmatch(digest):
+            fail("imageFill state.backgroundImageContentDigest must be a SHA-256 digest")
 
 
 def ime_statuses_from_spec(spec_path: Path) -> dict[str, str]:
@@ -110,7 +207,7 @@ def ime_statuses_from_spec(spec_path: Path) -> dict[str, str]:
         stripped = line.lstrip()
         if stripped.startswith("#"):
             hashes = len(stripped) - len(stripped.lstrip("#"))
-            if hashes <= heading_level and stripped[hashes :].startswith(" "):
+            if hashes <= heading_level and stripped[hashes:].startswith(" "):
                 break
         section.append(line)
 
@@ -147,7 +244,43 @@ def ime_statuses_from_spec(spec_path: Path) -> dict[str, str]:
     return statuses
 
 
-def verify(manifest_path: Path, spec_path: Path, repository_root: Path) -> None:
+def verify_installed_build(value: object, repository_root: Path, *, check_git: bool) -> None:
+    build = require_object(value, "installedBuild")
+    require_exact_keys(build, {"commit", "bundleIdentifier"}, "installedBuild")
+    commit = require_nonempty_string(build.get("commit"), "installedBuild.commit")
+    if not GIT_COMMIT.fullmatch(commit):
+        fail("installedBuild.commit must be a 7-40 character lowercase Git commit")
+    if build.get("bundleIdentifier") != "com.laban.LabanApp":
+        fail("installedBuild.bundleIdentifier must be exactly 'com.laban.LabanApp'")
+    if check_git:
+        result = subprocess.run(
+            ["git", "-C", str(repository_root), "merge-base", "--is-ancestor", commit, "HEAD"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode != 0:
+            fail("installedBuild.commit must identify an ancestor of the repository HEAD")
+
+
+def verify_capture_host(value: object) -> None:
+    host = require_object(value, "captureHost")
+    require_exact_keys(
+        host,
+        {"osVersion", "osBuild", "hardwareModel", "chipModel"},
+        "captureHost",
+    )
+    for field in host:
+        require_nonempty_string(host[field], f"captureHost.{field}")
+
+
+def verify(
+    manifest_path: Path,
+    spec_path: Path,
+    repository_root: Path,
+    *,
+    check_git: bool = True,
+) -> None:
     repository_root = repository_root.resolve()
     evidence_root = (repository_root / ".artifacts/transparency/cjk").resolve()
     expected_manifest = evidence_root / "cjk-evidence.json"
@@ -168,70 +301,152 @@ def verify(manifest_path: Path, spec_path: Path, repository_root: Path) -> None:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         fail(f"could not read manifest JSON: {error}")
     manifest = require_object(manifest_value, "manifest")
-
-    renderer_artifacts = require_object(
-        manifest.get("rendererArtifacts"), "rendererArtifacts"
+    require_exact_keys(
+        manifest,
+        {
+            "schemaVersion",
+            "installedBuild",
+            "captureHost",
+            "rendererArtifacts",
+            "nativeSourceEvidence",
+            "applePinyin",
+            "rimeSquirrel",
+        },
+        "manifest",
     )
-    if set(renderer_artifacts) != set(RENDERERS):
-        fail(
-            "rendererArtifacts must contain exactly: " + ", ".join(RENDERERS)
-        )
+    if manifest.get("schemaVersion") != SCHEMA_VERSION:
+        fail(f"schemaVersion must be exactly {SCHEMA_VERSION}")
+    verify_installed_build(manifest.get("installedBuild"), repository_root, check_git=check_git)
+    verify_capture_host(manifest.get("captureHost"))
+
+    renderer_artifacts = require_object(manifest.get("rendererArtifacts"), "rendererArtifacts")
+    require_exact_keys(renderer_artifacts, set(RENDERERS), "rendererArtifacts")
     for renderer in RENDERERS:
-        reference = renderer_artifacts[renderer]
-        if not isinstance(reference, str) or not reference.strip():
-            fail(f"rendererArtifacts.{renderer} must be a nonempty path string")
-        require_named_artifact(
-            reference,
+        require_artifact_record(
+            renderer_artifacts[renderer],
+            f"rendererArtifacts.{renderer}",
             exact_name=f"transparency-cjk-{renderer}.png",
             repository_root=repository_root,
             evidence_root=evidence_root,
             manifest_path=manifest_path,
+            png=True,
         )
 
-    apple = require_object(manifest.get("applePinyin"), "applePinyin")
-    if apple.get("status") != "passed":
-        fail('applePinyin.status must be exactly "passed"')
-    apple_artifacts = require_artifact_list(
-        apple.get("artifacts"), "applePinyin.artifacts"
-    )
-    if not apple_artifacts:
-        fail("applePinyin.artifacts must be nonempty")
-    for reference in apple_artifacts:
-        require_named_artifact(
-            reference,
-            prefix="transparency-cjk-ime-apple-pinyin.",
+    native = require_object(manifest.get("nativeSourceEvidence"), "nativeSourceEvidence")
+    require_exact_keys(native, set(NATIVE_SOURCES), "nativeSourceEvidence")
+    for source in NATIVE_SOURCES:
+        source_record = require_object(native[source], f"nativeSourceEvidence.{source}")
+        expected_style = "systemBlur" if source == "systemBlur" else "image"
+        expected_scaling: str | None = None if source == "systemBlur" else "fill"
+        expected_contrasts = {"light", "dark"} if source == "systemBlur" else {"highContrast"}
+        require_exact_keys(
+            source_record,
+            {"backdropStyle", "backgroundOpacity", "backgroundImageScaling", "stateArtifact", "trustGateArtifacts"},
+            f"nativeSourceEvidence.{source}",
+        )
+        if source_record.get("backdropStyle") != expected_style:
+            fail(f"nativeSourceEvidence.{source}.backdropStyle must be {expected_style!r}")
+        if abs(require_number(source_record.get("backgroundOpacity"), f"nativeSourceEvidence.{source}.backgroundOpacity") - 0.90) > 0.0001:
+            fail(f"nativeSourceEvidence.{source}.backgroundOpacity must be exactly 0.90")
+        if source_record.get("backgroundImageScaling") != expected_scaling:
+            fail(f"nativeSourceEvidence.{source}.backgroundImageScaling must be {expected_scaling!r}")
+        state_path = require_artifact_record(
+            source_record.get("stateArtifact"),
+            f"nativeSourceEvidence.{source}.stateArtifact",
+            exact_name=f"transparency-cjk-{source}-state.json",
             repository_root=repository_root,
             evidence_root=evidence_root,
             manifest_path=manifest_path,
+            png=False,
         )
-
-    rime = require_object(manifest.get("rimeSquirrel"), "rimeSquirrel")
-    rime_status = rime.get("status")
-    if rime_status not in RIME_TABLE_STATUSES:
-        fail('rimeSquirrel.status must be exactly "passed" or "notTested"')
-    rime_artifacts = require_artifact_list(
-        rime.get("artifacts"), "rimeSquirrel.artifacts"
-    )
-    if rime_status == "passed":
-        if not rime_artifacts:
-            fail('rimeSquirrel status "passed" requires nonempty artifacts')
-        if "compatibilityClaimed" in rime and rime["compatibilityClaimed"] is not True:
-            fail('passed rimeSquirrel compatibilityClaimed must be true when present')
-        for reference in rime_artifacts:
-            require_named_artifact(
-                reference,
-                prefix="transparency-cjk-ime-rime-squirrel.",
+        verify_source_state(read_json_artifact(state_path, f"{source} state"), source)
+        trust = require_object(
+            source_record.get("trustGateArtifacts"),
+            f"nativeSourceEvidence.{source}.trustGateArtifacts",
+        )
+        require_exact_keys(
+            trust,
+            expected_contrasts,
+            f"nativeSourceEvidence.{source}.trustGateArtifacts",
+        )
+        for contrast in sorted(expected_contrasts):
+            require_artifact_record(
+                trust[contrast],
+                f"nativeSourceEvidence.{source}.trustGateArtifacts.{contrast}",
+                exact_name=f"transparency-cjk-{source}-{contrast}.png",
                 repository_root=repository_root,
                 evidence_root=evidence_root,
                 manifest_path=manifest_path,
+                png=True,
             )
-    else:
-        if rime_artifacts:
-            fail('rimeSquirrel status "notTested" requires an empty artifacts array')
+
+    apple = require_object(manifest.get("applePinyin"), "applePinyin")
+    require_exact_keys(apple, {"status", "sourceArtifacts"}, "applePinyin")
+    if apple.get("status") != "passed":
+        fail('applePinyin.status must be exactly "passed"')
+    apple_sources = require_object(apple.get("sourceArtifacts"), "applePinyin.sourceArtifacts")
+    require_exact_keys(apple_sources, set(APPLE_SOURCES), "applePinyin.sourceArtifacts")
+    for source in APPLE_SOURCES:
+        roles = require_object(apple_sources[source], f"applePinyin.sourceArtifacts.{source}")
+        require_exact_keys(roles, set(APPLE_ROLES), f"applePinyin.sourceArtifacts.{source}")
+        source_slug = {"opaque": "opaque", "systemBlur": "system-blur", "imageFill": "image-fill"}[source]
+        for role in APPLE_ROLES:
+            role_slug = {
+                "candidate": "candidate",
+                "committed": "committed",
+                "candidateWrap": "candidate-wrap",
+                "committedWrap": "committed-wrap",
+                "mode2027": "mode-2027",
+            }[role]
+            require_artifact_record(
+                roles[role],
+                f"applePinyin.sourceArtifacts.{source}.{role}",
+                exact_name=f"transparency-cjk-ime-apple-pinyin.{source_slug}-{role_slug}.png",
+                repository_root=repository_root,
+                evidence_root=evidence_root,
+                manifest_path=manifest_path,
+                png=True,
+            )
+
+    rime = require_object(manifest.get("rimeSquirrel"), "rimeSquirrel")
+    require_exact_keys(rime, {"status", "compatibilityClaimed", "sourceArtifacts"}, "rimeSquirrel")
+    rime_status = rime.get("status")
+    if rime_status not in RIME_TABLE_STATUSES:
+        fail('rimeSquirrel.status must be exactly "passed" or "notTested"')
+    rime_sources = require_object(rime.get("sourceArtifacts"), "rimeSquirrel.sourceArtifacts")
+    if rime_status == "notTested":
         if rime.get("compatibilityClaimed") is not False:
-            fail(
-                'rimeSquirrel status "notTested" requires compatibilityClaimed: false'
-            )
+            fail('rimeSquirrel status "notTested" requires compatibilityClaimed: false')
+        if rime_sources:
+            fail('rimeSquirrel status "notTested" requires an empty sourceArtifacts object')
+    else:
+        if rime.get("compatibilityClaimed") is not True:
+            fail('rimeSquirrel status "passed" requires compatibilityClaimed: true')
+        require_exact_keys(rime_sources, set(APPLE_SOURCES), "rimeSquirrel.sourceArtifacts")
+        for source in APPLE_SOURCES:
+            artifacts = rime_sources[source]
+            if not isinstance(artifacts, list) or not artifacts:
+                fail(f"rimeSquirrel.sourceArtifacts.{source} must be a nonempty array")
+            for index, artifact in enumerate(artifacts):
+                record = require_object(artifact, f"rimeSquirrel.sourceArtifacts.{source}[{index}]")
+                reference = require_nonempty_string(
+                    record.get("path"), f"rimeSquirrel.sourceArtifacts.{source}[{index}].path"
+                )
+                require_artifact_record(
+                    record,
+                    f"rimeSquirrel.sourceArtifacts.{source}[{index}]",
+                    exact_name=Path(reference).name,
+                    repository_root=repository_root,
+                    evidence_root=evidence_root,
+                    manifest_path=manifest_path,
+                    png=True,
+                )
+                if not Path(reference).name.startswith(
+                    f"transparency-cjk-ime-rime-squirrel.{source}-"
+                ):
+                    fail(
+                        f"rimeSquirrel.sourceArtifacts.{source}[{index}].path has the wrong prefix"
+                    )
 
     spec_statuses = ime_statuses_from_spec(spec_path)
     if spec_statuses["Apple Pinyin"] != "passed":
@@ -244,26 +459,107 @@ def verify(manifest_path: Path, spec_path: Path, repository_root: Path) -> None:
         )
 
 
+def png_bytes(width: int = 2, height: int = 2) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", binascii.crc32(kind + payload) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    rows = b"".join(b"\x00" + b"\x20\x40\x80\xff" * width for _ in range(height))
+    return PNG_SIGNATURE + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def artifact_record(path: Path, *, png: bool = True) -> dict[str, object]:
+    record: dict[str, object] = {
+        "path": path.name,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+    if png:
+        width, height = png_dimensions(path, path.name)
+        record.update(pixelWidth=width, pixelHeight=height)
+    return record
+
+
+def write_state(path: Path, source: str) -> None:
+    style = "systemBlur" if source == "systemBlur" else "image"
+    state: dict[str, object] = {
+        "requestedOpacity": 0.9,
+        "effectiveOpacity": 0.9,
+        "requestedBackdropStyle": style,
+        "effectiveBackdropStyle": style,
+        "backgroundImageScaling": "fill",
+        "backgroundImageState": "none" if source == "systemBlur" else "available",
+        "backgroundImageIdentifier": None if source == "systemBlur" else "image-test",
+        "backgroundImageContentDigest": None if source == "systemBlur" else "a" * 64,
+        "applyToExplicitCellBackgrounds": False,
+        "forceOpaqueReason": None,
+        "surfaceOpaque": False,
+        "configuredRenderer": "slugGlyph",
+        "effectiveRenderer": "slugGlyph",
+        "backdropSubviewCount": 1,
+        "backdropSubviewKind": style,
+        "effectiveReduceTransparency": False,
+        "nativeFullscreen": False,
+    }
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
 def write_self_test_tree(root: Path) -> tuple[Path, Path]:
     evidence_root = root / ".artifacts/transparency/cjk"
     evidence_root.mkdir(parents=True, exist_ok=True)
-    for renderer in RENDERERS:
-        (evidence_root / f"transparency-cjk-{renderer}.png").write_bytes(b"png")
-    (evidence_root / "transparency-cjk-ime-apple-pinyin.json").write_text(
-        "{}\n", encoding="utf-8"
-    )
+
+    def write_png(name: str) -> dict[str, object]:
+        path = evidence_root / name
+        path.write_bytes(png_bytes())
+        return artifact_record(path)
+
+    renderer_artifacts = {
+        renderer: write_png(f"transparency-cjk-{renderer}.png") for renderer in RENDERERS
+    }
+    native_source_evidence: dict[str, object] = {}
+    for source, contrasts in (("systemBlur", ("light", "dark")), ("imageFill", ("highContrast",))):
+        state_path = evidence_root / f"transparency-cjk-{source}-state.json"
+        write_state(state_path, source)
+        native_source_evidence[source] = {
+            "backdropStyle": "systemBlur" if source == "systemBlur" else "image",
+            "backgroundOpacity": 0.9,
+            "backgroundImageScaling": None if source == "systemBlur" else "fill",
+            "stateArtifact": artifact_record(state_path, png=False),
+            "trustGateArtifacts": {
+                contrast: write_png(f"transparency-cjk-{source}-{contrast}.png")
+                for contrast in contrasts
+            },
+        }
+    apple_sources: dict[str, object] = {}
+    for source in APPLE_SOURCES:
+        source_slug = {"opaque": "opaque", "systemBlur": "system-blur", "imageFill": "image-fill"}[source]
+        apple_sources[source] = {}
+        for role in APPLE_ROLES:
+            role_slug = {
+                "candidate": "candidate",
+                "committed": "committed",
+                "candidateWrap": "candidate-wrap",
+                "committedWrap": "committed-wrap",
+                "mode2027": "mode-2027",
+            }[role]
+            apple_sources[source][role] = write_png(
+                f"transparency-cjk-ime-apple-pinyin.{source_slug}-{role_slug}.png"
+            )
     manifest = {
-        "rendererArtifacts": {
-            renderer: f"transparency-cjk-{renderer}.png" for renderer in RENDERERS
+        "schemaVersion": SCHEMA_VERSION,
+        "installedBuild": {"commit": "abcdef1", "bundleIdentifier": "com.laban.LabanApp"},
+        "captureHost": {
+            "osVersion": "26.5.1",
+            "osBuild": "25F80",
+            "hardwareModel": "Macmini9,1",
+            "chipModel": "Apple M1",
         },
-        "applePinyin": {
-            "status": "passed",
-            "artifacts": ["transparency-cjk-ime-apple-pinyin.json"],
-        },
+        "rendererArtifacts": renderer_artifacts,
+        "nativeSourceEvidence": native_source_evidence,
+        "applePinyin": {"status": "passed", "sourceArtifacts": apple_sources},
         "rimeSquirrel": {
             "status": "notTested",
-            "artifacts": [],
             "compatibilityClaimed": False,
+            "sourceArtifacts": {},
         },
     }
     manifest_path = evidence_root / "cjk-evidence.json"
@@ -280,57 +576,75 @@ def write_self_test_tree(root: Path) -> tuple[Path, Path]:
     return manifest_path, spec_path
 
 
+def expect_failure(
+    manifest_path: Path,
+    spec_path: Path,
+    root: Path,
+    expected: str,
+) -> None:
+    try:
+        verify(manifest_path, spec_path, root, check_git=False)
+    except EvidenceError as error:
+        if expected not in str(error):
+            raise
+    else:
+        fail(f"self-test expected failure containing {expected!r}")
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="verify-transparency-cjk-") as temporary:
         root = Path(temporary)
         manifest_path, spec_path = write_self_test_tree(root)
-        verify(manifest_path, spec_path, root)
-
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["rendererArtifacts"]["software"] = "../../../../outside.png"
-        (root / "outside.png").write_bytes(b"png")
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        try:
-            verify(manifest_path, spec_path, root)
-        except EvidenceError as error:
-            if "escapes" not in str(error):
-                raise
-        else:
-            fail("self-test expected path-containment rejection")
+        verify(manifest_path, spec_path, root, check_git=False)
 
         manifest_path, spec_path = write_self_test_tree(root)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        del manifest["rendererArtifacts"]["classic"]
+        manifest["schemaVersion"] = 1
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        try:
-            verify(manifest_path, spec_path, root)
-        except EvidenceError as error:
-            if "exactly" not in str(error):
-                raise
-        else:
-            fail("self-test expected exact-renderer-set rejection")
+        expect_failure(manifest_path, spec_path, root, "schemaVersion")
 
         manifest_path, spec_path = write_self_test_tree(root)
-        (manifest_path.parent / "transparency-cjk-vectorGlyph.png").write_bytes(b"")
-        try:
-            verify(manifest_path, spec_path, root)
-        except EvidenceError as error:
-            if "empty" not in str(error):
-                raise
-        else:
-            fail("self-test expected empty-artifact rejection")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del manifest["nativeSourceEvidence"]["imageFill"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        expect_failure(manifest_path, spec_path, root, "nativeSourceEvidence must contain exactly")
+
+        manifest_path, spec_path = write_self_test_tree(root)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        state_record = manifest["nativeSourceEvidence"]["systemBlur"]["stateArtifact"]
+        state_path = manifest_path.parent / state_record["path"]
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["backdropSubviewKind"] = "none"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        state_record["sha256"] = hashlib.sha256(state_path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        expect_failure(manifest_path, spec_path, root, "backdropSubviewKind")
+
+        manifest_path, spec_path = write_self_test_tree(root)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del manifest["applePinyin"]["sourceArtifacts"]["imageFill"]["committedWrap"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        expect_failure(manifest_path, spec_path, root, "must contain exactly")
+
+        manifest_path, spec_path = write_self_test_tree(root)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["rendererArtifacts"]["software"]["sha256"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        expect_failure(manifest_path, spec_path, root, "does not match")
+
+        manifest_path, spec_path = write_self_test_tree(root)
+        (manifest_path.parent / "transparency-cjk-software.png").write_bytes(b"not a png")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        record = manifest["rendererArtifacts"]["software"]
+        record["sha256"] = hashlib.sha256(b"not a png").hexdigest()
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        expect_failure(manifest_path, spec_path, root, "real PNG")
 
         manifest_path, spec_path = write_self_test_tree(root)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["rimeSquirrel"]["compatibilityClaimed"] = True
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        try:
-            verify(manifest_path, spec_path, root)
-        except EvidenceError as error:
-            if "compatibilityClaimed" not in str(error):
-                raise
-        else:
-            fail("self-test expected unclaimed-compatibility rejection")
+        expect_failure(manifest_path, spec_path, root, "compatibilityClaimed")
 
         manifest_path, spec_path = write_self_test_tree(root)
         spec_path.write_text(
@@ -339,23 +653,19 @@ def self_test() -> None:
             ),
             encoding="utf-8",
         )
-        try:
-            verify(manifest_path, spec_path, root)
-        except EvidenceError as error:
-            if "does not match manifest" not in str(error):
-                raise
-        else:
-            fail("self-test expected spec/manifest mismatch rejection")
+        expect_failure(manifest_path, spec_path, root, "does not match manifest")
 
         manifest_path, spec_path = write_self_test_tree(root)
-        (manifest_path.parent / "transparency-cjk-ime-rime-squirrel.json").write_text(
-            "{}\n", encoding="utf-8"
-        )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        rime_sources: dict[str, object] = {}
+        for source in APPLE_SOURCES:
+            path = manifest_path.parent / f"transparency-cjk-ime-rime-squirrel.{source}-candidate.png"
+            path.write_bytes(png_bytes())
+            rime_sources[source] = [artifact_record(path)]
         manifest["rimeSquirrel"] = {
             "status": "passed",
-            "artifacts": ["transparency-cjk-ime-rime-squirrel.json"],
             "compatibilityClaimed": True,
+            "sourceArtifacts": rime_sources,
         }
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         spec_path.write_text(
@@ -364,7 +674,7 @@ def self_test() -> None:
             ),
             encoding="utf-8",
         )
-        verify(manifest_path, spec_path, root)
+        verify(manifest_path, spec_path, root, check_git=False)
 
 
 def main() -> int:
@@ -388,8 +698,9 @@ def main() -> int:
         return 1
 
     print(
-        "verify-transparency-cjk-evidence: verified five renderers, "
-        "Apple Pinyin, Rime/Squirrel status, and product spec"
+        "verify-transparency-cjk-evidence: verified five renderers, installed "
+        "System Blur and Image/Fill CJK evidence, Apple Pinyin source coverage, "
+        "Rime/Squirrel status, and product spec"
     )
     return 0
 

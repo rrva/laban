@@ -36,6 +36,8 @@ any programming language is chosen.
 
 - `fixture.schema.json` - deterministic terminal fixture definition.
 - `artifact-manifest.schema.json` - failed-run artifact manifest.
+- `transparency-cjk-evidence.schema.json` - installed System Blur/Image CJK and
+  IME compatibility evidence manifest.
 - `capture/manifest.schema.json` - durable capture artifact manifest.
 - `capture/event.schema.json` - ordered capture timeline event envelope.
 - `capture/replay-report.schema.json` - deterministic replay result report.

@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/transparency-cjk-evidence.schema.json",
+  "title": "Installed Transparency CJK and IME Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "installedBuild",
+    "captureHost",
+    "rendererArtifacts",
+    "nativeSourceEvidence",
+    "applePinyin",
+    "rimeSquirrel"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "installedBuild": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "bundleIdentifier"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+        "bundleIdentifier": {"const": "com.laban.LabanApp"}
+      }
+    },
+    "captureHost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["osVersion", "osBuild", "hardwareModel", "chipModel"],
+      "properties": {
+        "osVersion": {"type": "string", "minLength": 1},
+        "osBuild": {"type": "string", "minLength": 1},
+        "hardwareModel": {"type": "string", "minLength": 1},
+        "chipModel": {"type": "string", "minLength": 1}
+      }
+    },
+    "rendererArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["software", "classic", "gpuDriven", "vectorGlyph", "slugGlyph"],
+      "properties": {
+        "software": {"$ref": "#/$defs/pngArtifact"},
+        "classic": {"$ref": "#/$defs/pngArtifact"},
+        "gpuDriven": {"$ref": "#/$defs/pngArtifact"},
+        "vectorGlyph": {"$ref": "#/$defs/pngArtifact"},
+        "slugGlyph": {"$ref": "#/$defs/pngArtifact"}
+      }
+    },
+    "nativeSourceEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["systemBlur", "imageFill"],
+      "properties": {
+        "systemBlur": {
+          "allOf": [
+            {"$ref": "#/$defs/nativeSource"},
+            {
+              "properties": {
+                "backdropStyle": {"const": "systemBlur"},
+                "backgroundImageScaling": {"type": "null"},
+                "trustGateArtifacts": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["light", "dark"],
+                  "properties": {
+                    "light": {"$ref": "#/$defs/pngArtifact"},
+                    "dark": {"$ref": "#/$defs/pngArtifact"}
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "imageFill": {
+          "allOf": [
+            {"$ref": "#/$defs/nativeSource"},
+            {
+              "properties": {
+                "backdropStyle": {"const": "image"},
+                "backgroundImageScaling": {"const": "fill"},
+                "trustGateArtifacts": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["highContrast"],
+                  "properties": {
+                    "highContrast": {"$ref": "#/$defs/pngArtifact"}
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "applePinyin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "sourceArtifacts"],
+      "properties": {
+        "status": {"const": "passed"},
+        "sourceArtifacts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["opaque", "systemBlur", "imageFill"],
+          "properties": {
+            "opaque": {"$ref": "#/$defs/appleFlow"},
+            "systemBlur": {"$ref": "#/$defs/appleFlow"},
+            "imageFill": {"$ref": "#/$defs/appleFlow"}
+          }
+        }
+      }
+    },
+    "rimeSquirrel": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "compatibilityClaimed", "sourceArtifacts"],
+          "properties": {
+            "status": {"const": "notTested"},
+            "compatibilityClaimed": {"const": false},
+            "sourceArtifacts": {"type": "object", "maxProperties": 0}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "compatibilityClaimed", "sourceArtifacts"],
+          "properties": {
+            "status": {"const": "passed"},
+            "compatibilityClaimed": {"const": true},
+            "sourceArtifacts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["opaque", "systemBlur", "imageFill"],
+              "properties": {
+                "opaque": {"$ref": "#/$defs/nonemptyPngArtifacts"},
+                "systemBlur": {"$ref": "#/$defs/nonemptyPngArtifacts"},
+                "imageFill": {"$ref": "#/$defs/nonemptyPngArtifacts"}
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "pngArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "pixelWidth", "pixelHeight"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "pixelWidth": {"type": "integer", "minimum": 1},
+        "pixelHeight": {"type": "integer", "minimum": 1}
+      }
+    },
+    "nativeSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backdropStyle",
+        "backgroundOpacity",
+        "backgroundImageScaling",
+        "stateArtifact",
+        "trustGateArtifacts"
+      ],
+      "properties": {
+        "backdropStyle": {"enum": ["systemBlur", "image"]},
+        "backgroundOpacity": {"const": 0.9},
+        "backgroundImageScaling": {"type": ["string", "null"]},
+        "stateArtifact": {"$ref": "#/$defs/artifact"},
+        "trustGateArtifacts": {"type": "object"}
+      }
+    },
+    "appleFlow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate", "committed", "candidateWrap", "committedWrap", "mode2027"],
+      "properties": {
+        "candidate": {"$ref": "#/$defs/pngArtifact"},
+        "committed": {"$ref": "#/$defs/pngArtifact"},
+        "candidateWrap": {"$ref": "#/$defs/pngArtifact"},
+        "committedWrap": {"$ref": "#/$defs/pngArtifact"},
+        "mode2027": {"$ref": "#/$defs/pngArtifact"}
+      }
+    },
+    "nonemptyPngArtifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/pngArtifact"}
+    }
+  }
+}
