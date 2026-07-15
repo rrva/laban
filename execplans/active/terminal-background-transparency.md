@@ -26,8 +26,10 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - [x] (2026-07-15) Deliver the first end-to-end Slug implementation, including AppKit window transparency and the grayscale antialiasing fallback.
 - [x] (2026-07-15) Add equivalent software, classic Metal, GPU-driven Metal, vector glyph, and Slug replace-compositing support; pass the 25-test renderer alpha/idempotence/AA suite across all five selectors.
 - [x] (2026-07-15) Add the live settings UI, full-screen and accessibility policy, fixture-authorized GUI and headless controls, renderer-identity parity matrix, alpha probes, transition smoke, and fixed renderer benchmark tooling.
-- [ ] Produce the final passing balanced renderer-comparison artifact. Sequential ordering was proven to confound opacity with host regime; two balanced runs accepted every sample but failed different vector p99 tail gates, so neither is promoted as passing evidence.
-- [ ] Capture the real Apple Pinyin installed-window evidence and the five-run compositor evidence on the exact base-M1/8-GiB/60-Hz lane; the current Computer Use bridge does not complete state or action requests, and this 16-GiB host is rejected by the pinned lane contract.
+- [x] (2026-07-15) Diagnose the vector wall-time tail without changing production code, benchmark method, baseline, or thresholds: identical binaries move the failure between opaque and direct runs, while 2,000-frame Metal traces keep vector content GPU p99 below `0.45 ms` and expose wall-only host-scheduling outliers.
+- [x] (2026-07-15) Run exactly one post-diagnosis balanced acceptance comparison at `4ab9b68` with no retry. All 20 processes and 4,800 scheduled frames were accepted, but vector direct wall p99 remained outside its 10% gate, so the generated artifact was not promoted.
+- [ ] Produce the final passing balanced renderer-comparison artifact. Sequential ordering was proven to confound opacity with host regime; multiple balanced runs accept every sample but move the vector p99 tail failure between opaque CPU, opaque wall, and direct wall. The one authorized post-diagnosis run also failed; no failing artifact is promoted as passing evidence.
+- [ ] Capture the real Apple Pinyin installed-window evidence and the five-run compositor evidence on the exact base-M1/8-GiB/60-Hz lane. A fresh Computer Use kernel can enumerate apps but still cannot return Finder or Laban state, and the exact compositor invocation rejects this 16-GiB host on `memoryBytes` before sampling.
 - [x] (2026-07-15) Finish repository implementation closeout at `a8e0644`: the canonical full gate passes 444 parallel-safe tests plus 2,132 sequential tests with 16 expected skips and zero failures, the profilable release is installed at `/Users/rrj/Laban.app`, and all five Reduce Transparency and native-full-screen transition cycles pass.
 - [ ] Pass the fresh-agent Review Gate after the final implementation closeout. The repository, install, and transition gates are green; the balanced renderer p99 result, Apple Pinyin evidence, and exact 8-GiB compositor artifact remain literal acceptance blockers and must not be waived.
 
@@ -61,7 +63,7 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
   Evidence: the first clean renderer run produced alpha 179 for every purported opaque probe across all five backends. Commit `0bd657c` uses a full-height opaque stripe and probes PNG row 12, which is also inside the lower logical damage band; all 25 focused renderer tests then passed.
 
 - Observation: the implementation host matches the required lane's stable macOS build, Macmini9,1 model, base Apple M1 chip, and 60 Hz display, but has 16 GiB rather than the required 8 GiB memory.
-  Evidence: host identity captured on 2026-07-15 reports macOS 26.5.1 build 25F80, Macmini9,1, Apple M1, 17,179,869,184 bytes, and 60 Hz. The compositor profiler must reject this host on `memoryBytes`; no compositor summary is claimed from it.
+  Evidence: host identity captured on 2026-07-15 reports macOS 26.5.1 build 25F80, Macmini9,1, Apple M1, 17,179,869,184 bytes, and 60 Hz. The exact `profile-transparency-compositor --app=$HOME/Laban.app --lane=stable-base-m1-8gb-60hz --lane-contract=fixtures/performance/transparency-stable-base-m1-8gb-60hz.json --duration=60 --runs=5 --artifacts=.artifacts/transparency/compositor/stable-base-m1-8gb-60hz` invocation exits before sampling with `host does not match lane contract: memoryBytes`; it writes no summary, and none is claimed from this host.
 
 - Observation: the first end-to-end renderer comparison failed only vector opaque CPU p99 even though its p50, p95, wall metrics, and direct-transparency metrics improved; an unchanged repeat passed every fixed gate.
   Evidence: the accepted repeat used 20 distinct release-benchmark processes and accepted all 4,800 samples. Vector opaque median CPU p50/p95/p99 was `1.097/1.401/1.696 ms` against the immutable baseline p99 limit of `1.939 ms`. No code, baseline, threshold, aggregation, or methodology changed; `.artifacts/transparency/renderer-comparison.json` is the passing repeat.
@@ -72,8 +74,8 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - Observation: the full repository gate has one failure unrelated to transparency: DEC private cursor-position reporting returns no reply in `LabanSessionTests.testDECXCPRRepliesWithDECPrivateMarker`.
   Evidence: `./scripts/check` passed static checks, formal-spec drift checks, fuzz/build work, and reached the 442-test suite before that single failure. The same isolated test fails with the same empty reply in a clean validation worktree detached at merge base `3599f60`, while neighboring terminal-query tests pass.
 
-- Observation: Computer Use can enumerate applications in this environment, but state reads and input actions never complete for Finder or Laban, including after resetting its Node kernel and trying both the bundle identifier and application path.
-  Evidence: repeated `get_app_state`, `press_key`, and `type_text` calls hung without returning. Therefore no Apple Pinyin or labeled visible-window claim is fabricated; the CJK evidence manifest deliberately remains absent until a working UI bridge or human-operated run supplies it.
+- Observation: Computer Use can enumerate applications in this environment, but a fresh kernel still cannot return application state for either Finder or Laban.
+  Evidence: the fresh kernel initialized and `list_apps` returned, after which bounded `get_app_state` calls for `com.laban.LabanApp` and `com.apple.finder` both hung past their timeouts. No blind input was sent and no Apple Pinyin or labeled visible-window evidence is fabricated; the CJK evidence manifest deliberately remains absent until a working UI bridge or human-operated run supplies it.
 
 - Observation: the merge-base DECXCPR test failure was deterministic stale dependency output, not a terminal-session or transparency defect. `scripts/fetch-libghostty-vt` previously treated the upstream commit plus archive/header existence as a complete cache identity, so patches 0001 and 0003 could be added later while an archive containing only patch 0002 remained accepted; CI's zig-out and SwiftPM caches had the same omission.
   Evidence: before repair, both missing patches were forward-applicable and the fetch script exited early. The corrected fetch rejected the missing stamp/unapplied source, restored the pinned disposable checkout, applied 0002/0001/0003, rebuilt under Zig 0.15.2, touched the established C bridge relink input, and atomically wrote the ordered patch hash stamp. DECXCPR, DA1, XTWINOPS, and alt-screen-clear regressions then passed, a second fetch no-op'd without Zig, and `scripts/check-dependencies` mechanically validated source, stamp, and CI cache keys.
@@ -93,6 +95,12 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - Observation: the final implementation renderer comparison remained just outside the immutable wall-tail gate despite accepting every sample with the exact balanced schedule; rerunning until it passed would conceal the evidence rather than validate it.
   Evidence: `.artifacts/transparency/renderer-comparison-final-head.json` accepted 4,800/4,800 samples and failed only vector opaque wall p99: `2.491208 ms` exceeds the `2.128219 ms` 5%-over-baseline threshold. CPU, direct-opacity, and 8.33-ms gates passed. The run was not retried or rerolled, and the older passing `.artifacts/transparency/renderer-comparison.json` was not replaced or misrepresented as final-head evidence.
 
+- Observation: the vector acceptance miss follows host/GPU scheduling tails rather than a measured transparency-path or steady-state GPU regression, but that diagnosis is not a waiver for the fixed wall-time gate.
+  Evidence: the identical benchmark binary `c5c93473f8a7dead01f5d733b06746e0705e2176178dc37b5093e65f441d72cd` produced three unchanged balanced artifacts that respectively failed opaque wall p99 (`2.345583 ms`), failed direct wall p99 (`2.255542 ms`), and passed both (`1.939958/1.792459 ms`). At final head, focused 2,000-frame traces measured opaque CPU/wall p99 `1.795667/1.799791 ms` and direct CPU/wall p99 `1.853709/1.604208 ms`; actual vector-content GPU p99 was `0.408083/0.440166 ms`, while direct still contained a `28.371750 ms` wall maximum. No production or benchmark optimization follows from those data. Disabling or otherwise changing the presenter would change the method relative to the immutable baseline, so it was not used as acceptance evidence.
+
+- Observation: one post-diagnosis same-method acceptance run still failed a moving vector wall tail despite accepting every scheduled frame, so it does not replace either the final-head failure or the older canonical artifact.
+  Evidence: `.artifacts/transparency/renderer-comparison-post-diagnosis.json` (SHA-256 `d587ea29c5f199e17bdbfa9248c157ee59db63d5b7f62b87ab0d66a8763643c4`) records head `4ab9b689168fdc40e6717fa142bdcfa711b60f18`, benchmark binary `c646f3a3bee0f530bdcf5e37edfd520f01eb1c70fbd2c7b684d8cfb15e740529`, the exact alternating 20-process schedule, and 4,800/4,800 accepted scheduled frames. Its sole failure is vector direct wall p99 `1.987666 ms` above `1.689584 * 1.10 = 1.858542 ms`. The run was not retried, and `.artifacts/transparency/renderer-comparison.json` remained byte-for-byte unchanged.
+
 - Observation: the installed release exercises the real accessibility and native-full-screen transition machinery cleanly after repository closeout.
   Evidence: `rtk ./scripts/install-app` installed profilable release `a8e0644` at `/Users/rrj/Laban.app`; `rtk ./scripts/transparency-transition-smoke --app=$HOME/Laban.app --cycles=5 --artifacts=.artifacts/transparency/transitions-final` passed all five Reduce Transparency and all five native-full-screen cycles.
 
@@ -100,7 +108,7 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 
 As of 2026-07-15 the code implementation and repository regression closeout are complete. One requested/effective policy now drives software, classic Metal, GPU-driven Metal, vector glyph, and Slug; all five use overwrite/replace background semantics, preserve opaque semantic regions, keep retained damage idempotent, flip presentation opacity live, and force vector-family grayscale antialiasing only while the surface is translucent. The Appearance controls, generated 11-locale catalog, AppKit accessibility/full-screen coordinator, fixture-only diagnostic authorization, headless parity, and installed-app transition flow are implemented and mechanically exercised. At implementation head `a8e0644`, the canonical full gate passes 444 parallel-safe tests plus 2,132 sequential tests with 16 expected skips and zero failures, including sanitizer, runtime-smoke, E2E, and 46.86% labpty MC/DC coverage against the 45% floor. The same commit is installed as a profilable release at `/Users/rrj/Laban.app`, where five Reduce Transparency and five native-full-screen cycles pass.
 
-Renderer correctness is no longer an outstanding implementation risk: focused suites, the five-backend authenticated parity matrix, atlas-budget coverage, GPU disjoint-damage coverage, capture/replay, and installed-app transition smoke pass. The vendored-cache defect behind DECXCPR and the two final stale gate assumptions are fixed. Overall acceptance nevertheless remains incomplete. The non-rerolled final-head balanced benchmark misses only vector opaque wall p99 (`2.491208 ms` versus `2.128219 ms`), the Computer Use state/action bridge hangs before it can drive Apple Pinyin and produce the required CJK manifest, and this base-M1 host has 16 GiB rather than the lane contract's exact 8 GiB, so it cannot produce the compositor summary. The Review Gate must keep those three evidence items open rather than convert code completeness or older passing artifacts into an acceptance pass.
+Renderer correctness is no longer an outstanding implementation risk: focused suites, the five-backend authenticated parity matrix, atlas-budget coverage, GPU disjoint-damage coverage, capture/replay, and installed-app transition smoke pass. The vendored-cache defect behind DECXCPR and the two final stale gate assumptions are fixed. Overall acceptance nevertheless remains incomplete. The final-head balanced benchmark misses vector opaque wall p99 (`2.491208 ms` versus `2.128219 ms`), and the single post-diagnosis run moves the sole miss to vector direct wall p99 (`1.987666 ms` versus `1.858542 ms`) despite trace evidence that steady content GPU cost is below `0.45 ms` p99. A fresh Computer Use kernel still hangs on bounded Finder and Laban state reads before it can drive Apple Pinyin, and the exact compositor command rejects this 16-GiB base-M1 host on `memoryBytes` before writing a summary. The third Review Gate remains the final bounded review and stays **NOT PASSED**; new diagnosis and failed evidence do not create a fourth review or convert code completeness, an older passing artifact, or a mismatched host into acceptance.
 
 ## Research Snapshot: July 2026 State of the Art
 
@@ -800,11 +808,21 @@ The non-rerolled final implementation comparison is
 `.artifacts/transparency/renderer-comparison-final-head.json`. It accepted all
 4,800 scheduled samples and passed every CPU, direct-opacity, and 8.33-ms gate,
 but failed vector opaque wall p99 at `2.491208 ms` against the fixed
-`2.128219 ms` limit. The older passing
-`.artifacts/transparency/renderer-comparison.json` remains preserved but is not
-promoted as final-head evidence. Installed-app transition evidence from release
-`a8e0644` is under `.artifacts/transparency/transitions-final`. The Apple Pinyin
-CJK manifest and exact 8-GiB compositor summary remain absent for the blockers
-recorded above.
+`2.128219 ms` limit. After the host-scheduling diagnosis, exactly one unchanged
+acceptance run produced
+`.artifacts/transparency/renderer-comparison-post-diagnosis.json` (SHA-256
+`d587ea29c5f199e17bdbfa9248c157ee59db63d5b7f62b87ab0d66a8763643c4`). It
+records head `4ab9b68`, benchmark binary SHA-256
+`c646f3a3bee0f530bdcf5e37edfd520f01eb1c70fbd2c7b684d8cfb15e740529`, 20
+unique processes, and 4,800/4,800 accepted scheduled frames, but fails vector
+direct wall p99 at `1.987666 ms` against `1.858542 ms`; it was not retried or
+promoted. The older passing `.artifacts/transparency/renderer-comparison.json`
+remains byte-for-byte preserved at SHA-256
+`6312f78d681f61156110c2e4fa89b03d728540a54909a470a406e7225ec86e00` and is
+not represented as final-head evidence. Installed-app transition evidence from
+release `a8e0644` is under `.artifacts/transparency/transitions-final`. The fresh
+Computer Use attempt produced no Apple Pinyin artifact, and the exact compositor
+profiler invocation rejected this host on `memoryBytes` before producing an
+8-GiB-lane summary, so both required artifacts remain absent.
 
 When implementation reveals a non-obvious compositing, AppKit, shader, or WindowServer behavior, add a short `Surprises & Discoveries` entry with the smallest evidence excerpt that proves it. At the end of each milestone, update `Progress` and add an `Outcomes & Retrospective` entry if the result or remaining risk differs materially from this plan.
