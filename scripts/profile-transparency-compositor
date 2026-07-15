@@ -100,11 +100,14 @@ class ProfileError(RuntimeError):
 
 
 class ProfileTerminationSignalGuard:
-    signals = (signal.SIGHUP, signal.SIGTERM)
+    signals = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
 
     def __init__(self) -> None:
         self.previous_handlers: dict[signal.Signals, Any] = {}
         self.handler = self._handle_signal
+        self.defer_depth = 0
+        self.pending_signal: int | None = None
+        self.interrupted = False
 
     def __enter__(self) -> ProfileTerminationSignalGuard:
         try:
@@ -126,15 +129,41 @@ class ProfileTerminationSignalGuard:
         for signum, handler in handlers.items():
             signal.signal(signum, handler)
 
+    def defer(self) -> ProfileTerminationDeferral:
+        return ProfileTerminationDeferral(self)
+
     def _handle_signal(self, signum: int, _frame: Any) -> None:
-        # Restore first so the exception unwinds through run_profile's cleanup
-        # without leaving process-global signal state changed.
-        self.restore()
+        if self.defer_depth > 0 or self.interrupted:
+            if self.pending_signal is None:
+                self.pending_signal = signum
+            return
+        self._raise_signal(signum)
+
+    def _raise_signal(self, signum: int) -> None:
+        self.interrupted = True
         try:
             name = signal.Signals(signum).name
         except ValueError:
             name = str(signum)
         fail(f"profiling interrupted by {name}")
+
+
+class ProfileTerminationDeferral:
+    def __init__(self, guard: ProfileTerminationSignalGuard) -> None:
+        self.guard = guard
+
+    def __enter__(self) -> ProfileTerminationDeferral:
+        self.guard.defer_depth += 1
+        return self
+
+    def __exit__(self, _kind: Any, _value: Any, _traceback: Any) -> bool:
+        self.guard.defer_depth -= 1
+        if self.guard.defer_depth == 0 and self.guard.pending_signal is not None:
+            signum = self.guard.pending_signal
+            self.guard.pending_signal = None
+            if not self.guard.interrupted:
+                self.guard._raise_signal(signum)
+        return False
 
 
 def fail(message: str) -> None:
@@ -520,12 +549,56 @@ def build_backdrop_helper(work: Path) -> Path:
     return executable
 
 
-def start_backdrop(executable: Path, animated: bool, scenario_dir: Path) -> subprocess.Popen[str]:
+class OwnedProcesses:
+    def __init__(self, termination_guard: ProfileTerminationSignalGuard) -> None:
+        self.termination_guard = termination_guard
+        self.processes: list[tuple[subprocess.Popen[Any], int]] = []
+
+    def __enter__(self) -> OwnedProcesses:
+        return self
+
+    def __exit__(self, _kind: Any, _value: Any, _traceback: Any) -> bool:
+        self.close()
+        return False
+
+    def start(self, arguments: list[str], **options: Any) -> subprocess.Popen[Any]:
+        # A deferred signal cannot land after Popen created the child but before
+        # this owner records it. The signal is raised as soon as registration is
+        # complete, and the surrounding ownership scope then reaps the child.
+        with self.termination_guard.defer():
+            options["start_new_session"] = True
+            process = subprocess.Popen(arguments, **options)
+            self.processes.append((process, process.pid))
+        return process
+
+    def close(self) -> None:
+        cleanup_errors: list[str] = []
+        with self.termination_guard.defer():
+            processes = list(reversed(self.processes))
+            self.processes = []
+            for process, process_group_id in processes:
+                try:
+                    terminate(process, process_group_id=process_group_id)
+                except (OSError, subprocess.SubprocessError) as error:
+                    cleanup_errors.append(str(error))
+        if cleanup_errors:
+            fail("could not terminate owned profiling process: " + "; ".join(cleanup_errors))
+
+
+def start_backdrop(
+    executable: Path,
+    animated: bool,
+    scenario_dir: Path,
+    processes: OwnedProcesses,
+) -> subprocess.Popen[str]:
     stdout = (scenario_dir / "backdrop.stdout.log").open("w", encoding="utf-8")
     stderr = (scenario_dir / "backdrop.stderr.log").open("w", encoding="utf-8")
     arguments = [str(executable)] + (["--animated"] if animated else [])
-    process = subprocess.Popen(arguments, stdout=stdout, stderr=stderr, text=True)
-    stdout.close(); stderr.close()
+    try:
+        process = processes.start(arguments, stdout=stdout, stderr=stderr, text=True)
+    finally:
+        stdout.close()
+        stderr.close()
     readiness = scenario_dir / "backdrop.stdout.log"
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
@@ -534,19 +607,47 @@ def start_backdrop(executable: Path, animated: bool, scenario_dir: Path) -> subp
         if readiness.is_file() and "READY" in readiness.read_text(encoding="utf-8", errors="replace"):
             return process
         time.sleep(0.1)
-    terminate(process)
     fail("deterministic backdrop helper timed out")
 
 
-def terminate(process: subprocess.Popen[Any]) -> None:
-    if process.poll() is not None:
+def terminate(
+    process: subprocess.Popen[Any],
+    *,
+    process_group_id: int | None = None,
+) -> None:
+    running = process.poll() is None
+    group_signaled = False
+    group_error: OSError | None = None
+    if process_group_id is not None:
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+            group_signaled = True
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            group_error = error
+    if running and not group_signaled:
+        process.terminate()
+    if not running:
+        if group_error is not None:
+            raise group_error
         return
-    process.terminate()
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
+        if process_group_id is not None:
+            try:
+                os.killpg(process_group_id, signal.SIGKILL)
+            except ProcessLookupError:
+                process.kill()
+            except OSError as error:
+                group_error = group_error or error
+                process.kill()
+        else:
+            process.kill()
         process.wait(timeout=5)
+    if group_error is not None:
+        raise group_error
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -757,11 +858,18 @@ def run_scenario(
     backdrop_executable: Path,
     duration: int,
     artifacts: Path,
+    termination_guard: ProfileTerminationSignalGuard,
 ) -> dict[str, Any]:
     scenario_dir = artifacts / name / f"run-{run}"
     scenario_dir.mkdir(parents=True)
-    backdrop = start_backdrop(backdrop_executable, animated, scenario_dir)
+    processes = OwnedProcesses(termination_guard)
     try:
+        _ = start_backdrop(
+            backdrop_executable,
+            animated,
+            scenario_dir,
+            processes,
+        )
         configure_scenario(client, opacity=opacity, source=source, scaling=scaling)
         command(["open", "-a", str(app_path)], "installed-app activation")
         _ = wait_for_scenario_state(
@@ -787,40 +895,44 @@ def run_scenario(
         metal_trace = scenario_dir / "metal.trace"
         metal_analysis = scenario_dir / "metal-analysis.json"
         cpu_log = (scenario_dir / "capture-profile.log").open("w", encoding="utf-8")
+        try:
+            cpu_capture = processes.start(
+                [
+                    str(REPOSITORY_ROOT / "scripts/capture-profile"),
+                    "--pid", str(app_pid),
+                    "--samples", str(duration * 10),
+                    "--interval", "100 ms",
+                    "--out", str(cpu_profile),
+                ],
+                stdout=cpu_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        finally:
+            cpu_log.close()
         metal_log = (scenario_dir / "metal-analysis.log").open("w", encoding="utf-8")
-        cpu_capture = subprocess.Popen(
-            [
-                str(REPOSITORY_ROOT / "scripts/capture-profile"),
-                "--pid", str(app_pid),
-                "--samples", str(duration * 10),
-                "--interval", "100 ms",
-                "--out", str(cpu_profile),
-            ],
-            stdout=cpu_log,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        metal_capture = subprocess.Popen(
-            [
-                sys.executable,
-                str(REPOSITORY_ROOT / "scripts/analyze-metal-trace"),
-                "--record", str(duration),
-                "--attach", str(app_pid),
-                "--record-output", str(metal_trace),
-                "--json-output", str(metal_analysis),
-                "--format", "none",
-            ],
-            stdout=metal_log,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        cpu_log.close(); metal_log.close()
+        try:
+            metal_capture = processes.start(
+                [
+                    sys.executable,
+                    str(REPOSITORY_ROOT / "scripts/analyze-metal-trace"),
+                    "--record", str(duration),
+                    "--attach", str(app_pid),
+                    "--record-output", str(metal_trace),
+                    "--json-output", str(metal_analysis),
+                    "--format", "none",
+                ],
+                stdout=metal_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        finally:
+            metal_log.close()
         app_samples, window_samples = sample_cpu(app_pid, window_server_pid, duration)
         try:
             cpu_status = cpu_capture.wait(timeout=120)
             metal_status = metal_capture.wait(timeout=600)
         except subprocess.TimeoutExpired:
-            terminate(cpu_capture); terminate(metal_capture)
             fail(f"{name} run {run} trace capture timed out")
         if cpu_status != 0:
             fail(f"{name} run {run} in-process CPU capture failed")
@@ -886,7 +998,7 @@ def run_scenario(
             },
         }
     finally:
-        terminate(backdrop)
+        processes.close()
 
 
 def median(values: list[float]) -> float:
@@ -945,7 +1057,10 @@ def running_laban_pids() -> list[int]:
     return [int(line) for line in completed.stdout.splitlines() if line.strip().isdigit()]
 
 
-def run_profile(arguments: argparse.Namespace) -> None:
+def run_profile(
+    arguments: argparse.Namespace,
+    termination_guard: ProfileTerminationSignalGuard,
+) -> None:
     contract = load_json(arguments.lane_contract, "lane contract")
     validate_lane_contract(contract)
     if contract["lane"] != arguments.lane:
@@ -991,17 +1106,26 @@ def run_profile(arguments: argparse.Namespace) -> None:
         app_stdout = (arguments.artifacts / "app.stdout.log").open("w", encoding="utf-8")
         app_stderr = (arguments.artifacts / "app.stderr.log").open("w", encoding="utf-8")
         preference_snapshot = read_transparency_preferences(bundle_identifier)
-        app_process = subprocess.Popen(
-            [str(executable), "--no-persistence", "--terminal-backend=in-process", "--profile-recorder"],
-            env=environment,
-            stdout=app_stdout,
-            stderr=app_stderr,
-            text=True,
-        )
-        app_stdout.close(); app_stderr.close()
+        processes = OwnedProcesses(termination_guard)
         client: ControlClient | None = None
         run_managed_image: Path | None = None
         try:
+            try:
+                app_process = processes.start(
+                    [
+                        str(executable),
+                        "--no-persistence",
+                        "--terminal-backend=in-process",
+                        "--profile-recorder",
+                    ],
+                    env=environment,
+                    stdout=app_stdout,
+                    stderr=app_stderr,
+                    text=True,
+                )
+            finally:
+                app_stdout.close()
+                app_stderr.close()
             socket_path, token = wait_for_control(control_dir, run_id, app_process.pid)
             client = ControlClient(socket_path, token, control_dir)
             client.action(
@@ -1040,6 +1164,7 @@ def run_profile(arguments: argparse.Namespace) -> None:
                         backdrop_executable=backdrop_executable,
                         duration=arguments.duration,
                         artifacts=arguments.artifacts,
+                        termination_guard=termination_guard,
                     ))
             failures = gate_scenarios(scenarios)
             summary = {
@@ -1066,32 +1191,33 @@ def run_profile(arguments: argparse.Namespace) -> None:
                 fail("; ".join(failures))
             print(f"profile-transparency-compositor: summary={summary_path}")
         finally:
-            cleanup_errors: list[str] = []
-            if client is not None:
+            with termination_guard.defer():
+                cleanup_errors: list[str] = []
+                if client is not None:
+                    try:
+                        client.action("removeBackgroundImage")
+                    except ProfileError:
+                        # The generated asset is confined to control_dir and is
+                        # removed below if the app can no longer service actions.
+                        pass
+                    client.close()
                 try:
-                    client.action("removeBackgroundImage")
-                except ProfileError:
-                    # The generated asset is confined to control_dir and is
-                    # removed below if the app can no longer service actions.
-                    pass
-                client.close()
-            try:
-                terminate(app_process)
-            except (OSError, subprocess.SubprocessError) as error:
-                cleanup_errors.append(f"could not stop installed app: {error}")
-            if run_managed_image is not None:
+                    processes.close()
+                except ProfileError as error:
+                    cleanup_errors.append(str(error))
+                if run_managed_image is not None:
+                    try:
+                        run_managed_image.unlink(missing_ok=True)
+                    except OSError as error:
+                        cleanup_errors.append(f"could not remove run-scoped managed image: {error}")
+                    if run_managed_image.exists():
+                        cleanup_errors.append("run-scoped managed image remained after cleanup")
                 try:
-                    run_managed_image.unlink(missing_ok=True)
-                except OSError as error:
-                    cleanup_errors.append(f"could not remove run-scoped managed image: {error}")
-                if run_managed_image.exists():
-                    cleanup_errors.append("run-scoped managed image remained after cleanup")
-            try:
-                restore_transparency_preferences(bundle_identifier, preference_snapshot)
-            except ProfileError as error:
-                cleanup_errors.append(str(error))
-            if cleanup_errors:
-                fail("; ".join(cleanup_errors))
+                    restore_transparency_preferences(bundle_identifier, preference_snapshot)
+                except ProfileError as error:
+                    cleanup_errors.append(str(error))
+                if cleanup_errors:
+                    fail("; ".join(cleanup_errors))
 
 
 def self_test_preference_restoration() -> None:
@@ -1172,9 +1298,143 @@ def self_test_termination_signal_guard() -> None:
         if signal.getsignal(signum) != handler:
             fail("self-test exception path did not restore the prior signal handler")
 
+    for deferred_signal in ProfileTerminationSignalGuard.signals:
+        critical_section_completed = False
+        guard = ProfileTerminationSignalGuard()
+        try:
+            with guard:
+                with guard.defer():
+                    guard.handler(deferred_signal, None)
+                    critical_section_completed = True
+        except ProfileError as error:
+            if signal.Signals(deferred_signal).name not in str(error):
+                fail("self-test deferred termination reported the wrong signal")
+        else:
+            fail("self-test deferred termination did not interrupt after cleanup")
+        if not critical_section_completed:
+            fail("self-test termination interrupted a deferred cleanup section")
+        for signum, handler in original.items():
+            if signal.getsignal(signum) != handler:
+                fail("self-test deferred termination did not restore the prior handler")
+
+    reentrant_cleanup_completed = False
+    guard = ProfileTerminationSignalGuard()
+    with guard:
+        try:
+            guard.handler(signal.SIGTERM, None)
+        except ProfileError:
+            with guard.defer():
+                guard.handler(signal.SIGHUP, None)
+                reentrant_cleanup_completed = True
+    if not reentrant_cleanup_completed:
+        fail("self-test reentrant termination interrupted cleanup")
+    for signum, handler in original.items():
+        if signal.getsignal(signum) != handler:
+            fail("self-test reentrant termination did not restore the prior handler")
+
+
+def self_test_owned_process_cleanup() -> None:
+    class FakeProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+            self.returncode: int | None = None
+            self.terminate_count = 0
+            self.wait_count = 0
+            self.kill_count = 0
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminate_count += 1
+            self.returncode = -signal.SIGTERM
+
+        def wait(self, timeout: float | None = None) -> int:
+            _ = timeout
+            self.wait_count += 1
+            return self.returncode or 0
+
+        def kill(self) -> None:
+            self.kill_count += 1
+            self.returncode = -signal.SIGKILL
+
+    original_popen = subprocess.Popen
+    original_killpg = os.killpg
+    created: list[FakeProcess] = []
+    guard = ProfileTerminationSignalGuard()
+    inject_signal = True
+
+    def fake_popen(_arguments: list[str], **options: Any) -> FakeProcess:
+        if options.get("start_new_session") is not True:
+            fail("self-test child was not isolated in an owned process group")
+        process = FakeProcess(10_000 + len(created))
+        created.append(process)
+        if inject_signal and len(created) == 2:
+            # OwnedProcesses.start has created the child but has not returned;
+            # this is the adversarial window that previously leaked a process.
+            guard.handler(signal.SIGTERM, None)
+        return process
+
+    def fake_killpg(process_group_id: int, signum: int) -> None:
+        process = next(
+            (candidate for candidate in created if candidate.pid == process_group_id),
+            None,
+        )
+        if process is None:
+            raise ProcessLookupError(process_group_id)
+        if signum == signal.SIGTERM:
+            process.terminate()
+        elif signum == signal.SIGKILL:
+            process.kill()
+        else:
+            fail("self-test process group received an unexpected signal")
+
+    subprocess.Popen = fake_popen  # type: ignore[assignment]
+    os.killpg = fake_killpg  # type: ignore[assignment]
+    try:
+        try:
+            with guard:
+                with OwnedProcesses(guard) as processes:
+                    _ = processes.start(["first"])
+                    _ = processes.start(["second"])
+        except ProfileError:
+            pass
+        else:
+            fail("self-test injected termination did not interrupt process startup")
+        if len(created) != 2:
+            fail("self-test did not create both adversarial child processes")
+        if any(
+            process.terminate_count != 1
+            or process.wait_count != 1
+            or process.kill_count != 0
+            for process in created
+        ):
+            fail("self-test did not terminate and reap every adversarial child")
+
+        created = []
+        inject_signal = False
+        guard = ProfileTerminationSignalGuard()
+        try:
+            with guard:
+                with OwnedProcesses(guard) as processes:
+                    _ = processes.start(["first"])
+                    _ = processes.start(["second"])
+                    raise RuntimeError("self-test process-owner sentinel")
+        except RuntimeError:
+            pass
+        if len(created) != 2 or any(
+            process.terminate_count != 1 or process.wait_count != 1
+            for process in created
+        ):
+            fail("self-test arbitrary error orphaned an owned child")
+    finally:
+        subprocess.Popen = original_popen
+        os.killpg = original_killpg
+
 
 def self_test() -> None:
     self_test_termination_signal_guard()
+    self_test_owned_process_cleanup()
     self_test_preference_restoration()
     fixture_path, fixture_sha256 = validate_image_fixture(DEFAULT_IMAGE_FIXTURE)
     if fixture_path != "fixtures/transparency/background-gradient.png" or re.fullmatch(r"[0-9a-f]{64}", fixture_sha256) is None:
@@ -1352,8 +1612,8 @@ def main() -> int:
             self_test()
             print("profile-transparency-compositor: self-test passed")
         else:
-            with ProfileTerminationSignalGuard():
-                run_profile(arguments)
+            with ProfileTerminationSignalGuard() as termination_guard:
+                run_profile(arguments, termination_guard)
         return 0
     except (ProfileError, ValueError) as error:
         print(f"profile-transparency-compositor: {error}", file=sys.stderr)
