@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import argparse
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -799,6 +800,67 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "es": "Apariencia",
         "hi": "दिखावट",
         "ru": "Внешний вид",
+    },
+    # Terminal background transparency
+    "Background opacity:": {
+        "zh-Hans": "背景不透明度：",
+        "zh-Hant": "背景不透明度：",
+        "ja": "背景の不透明度：",
+        "ko": "배경 불투명도:",
+        "fr": "Opacité de l’arrière-plan :",
+        "es": "Opacidad del fondo:",
+        "hi": "पृष्ठभूमि अपारदर्शिता:",
+        "ru": "Непрозрачность фона:",
+    },
+    "Background opacity": {
+        "zh-Hans": "背景不透明度",
+        "zh-Hant": "背景不透明度",
+        "ja": "背景の不透明度",
+        "ko": "배경 불투명도",
+        "fr": "Opacité de l’arrière-plan",
+        "es": "Opacidad del fondo",
+        "hi": "पृष्ठभूमि अपारदर्शिता",
+        "ru": "Непрозрачность фона",
+    },
+    "Background opacity: %lld percent": {
+        "zh-Hans": "背景不透明度：%lld%%",
+        "zh-Hant": "背景不透明度：%lld%%",
+        "ja": "背景の不透明度：%lld%%",
+        "ko": "배경 불투명도: %lld%%",
+        "fr": "Opacité de l’arrière-plan : %lld %%",
+        "es": "Opacidad del fondo: %lld %%",
+        "hi": "पृष्ठभूमि अपारदर्शिता: %lld प्रतिशत",
+        "ru": "Непрозрачность фона: %lld %%",
+    },
+    "Choose how much of the default terminal and sidebar background is visible. Text, the cursor, selections, and images remain fully visible. 100% is fully opaque.": {
+        "zh-Hans": "选择默认终端和侧边栏背景的可见程度。文字、光标、选择区域和图像始终完全可见。100% 表示完全不透明。",
+        "zh-Hant": "選擇預設終端機和側邊欄背景的可見程度。文字、游標、選取範圍和影像始終完全可見。100% 表示完全不透明。",
+        "ja": "デフォルトのターミナルとサイドバー背景の見え方を調整します。テキスト、カーソル、選択範囲、画像は常に完全に表示されます。100% で完全に不透明になります。",
+        "ko": "기본 터미널과 사이드바 배경의 표시 정도를 선택합니다. 텍스트, 커서, 선택 영역 및 이미지는 항상 완전히 표시됩니다. 100%는 완전 불투명입니다.",
+        "fr": "Réglez la visibilité de l’arrière-plan par défaut du terminal et de la barre latérale. Le texte, le curseur, les sélections et les images restent entièrement visibles. 100 % correspond à une opacité totale.",
+        "es": "Elige la visibilidad del fondo predeterminado del terminal y de la barra lateral. El texto, el cursor, las selecciones y las imágenes permanecen completamente visibles. 100 % es totalmente opaco.",
+        "hi": "चुनें कि डिफ़ॉल्ट टर्मिनल और साइडबार की पृष्ठभूमि कितनी दिखाई दे। टेक्स्ट, कर्सर, चयन और चित्र पूरी तरह दिखाई देते रहते हैं। 100% पूरी तरह अपारदर्शी है।",
+        "ru": "Настройте видимость фона терминала и боковой панели по умолчанию. Текст, курсор, выделение и изображения остаются полностью видимыми. 100 % означает полную непрозрачность.",
+    },
+    "Apply opacity to colored cell backgrounds": {
+        "zh-Hans": "将不透明度应用于彩色单元格背景",
+        "zh-Hant": "將不透明度套用至彩色單元格背景",
+        "ja": "色付きセルの背景にも不透明度を適用",
+        "ko": "색이 지정된 셀 배경에도 불투명도 적용",
+        "fr": "Appliquer l’opacité aux arrière-plans colorés des cellules",
+        "es": "Aplicar opacidad a los fondos de celda con color",
+        "hi": "रंगीन सेल पृष्ठभूमि पर भी अपारदर्शिता लागू करें",
+        "ru": "Применять непрозрачность к цветному фону ячеек",
+    },
+    "Also applies the selected opacity to background colors set by terminal programs, including inverse video.": {
+        "zh-Hans": "还会将所选不透明度应用于终端程序设置的背景颜色，包括反显背景。",
+        "zh-Hant": "也會將所選不透明度套用至終端機程式設定的背景顏色，包括反相顯示背景。",
+        "ja": "ターミナルプログラムが設定した背景色（反転表示を含む）にも、選択した不透明度を適用します。",
+        "ko": "터미널 프로그램이 설정한 배경색(반전 표시 포함)에도 선택한 불투명도를 적용합니다.",
+        "fr": "Applique aussi l’opacité choisie aux couleurs d’arrière-plan définies par les programmes du terminal, y compris en vidéo inversée.",
+        "es": "También aplica la opacidad elegida a los colores de fondo definidos por los programas del terminal, incluido el vídeo inverso.",
+        "hi": "चुनी गई अपारदर्शिता को टर्मिनल प्रोग्राम द्वारा सेट किए गए पृष्ठभूमि रंगों पर भी लागू करता है, जिसमें उलटा वीडियो भी शामिल है।",
+        "ru": "Также применяет выбранную непрозрачность к цветам фона, заданным терминальными программами, включая инверсное отображение.",
     },
     "Terminal": {
         "zh-Hans": "终端",
@@ -1964,8 +2026,14 @@ def write_focus_info_plist_strings(resources: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--focus-usage-description", metavar="LOCALE")
-    parser.add_argument("--write-focus-info-plist-strings", type=Path, metavar="RESOURCES")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="verify that the committed string catalog matches generated output without writing",
+    )
+    mode.add_argument("--focus-usage-description", metavar="LOCALE")
+    mode.add_argument("--write-focus-info-plist-strings", type=Path, metavar="RESOURCES")
     args = parser.parse_args()
 
     if args.focus_usage_description:
@@ -1975,8 +2043,25 @@ def main() -> None:
         write_focus_info_plist_strings(args.write_focus_info_plist_strings)
         return
 
+    generated = json.dumps(build_xcstrings(), ensure_ascii=False, indent=2) + "\n"
+    if args.check:
+        try:
+            committed = OUT.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            print(f"missing generated catalog: {OUT}", file=sys.stderr)
+            raise SystemExit(1)
+        if committed != generated:
+            print(
+                "Localizable.xcstrings is out of date; "
+                "run python3 scripts/gen-localizable-xcstrings.py",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        print(f"verified {OUT} ({len(TRANSLATIONS)} strings)")
+        return
+
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(build_xcstrings(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    OUT.write_text(generated, encoding="utf-8")
     print(f"wrote {OUT} ({len(TRANSLATIONS)} strings)")
 
 

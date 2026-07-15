@@ -390,6 +390,37 @@ SUPPLEMENT_DE_PT_IT: dict[str, dict[str, str]] = {
         "pt-BR": "Aparência",
         "it": "Aspetto",
     },
+    # Terminal background transparency
+    "Background opacity:": {
+        "de": "Hintergrunddeckkraft:",
+        "pt-BR": "Opacidade do fundo:",
+        "it": "Opacità dello sfondo:",
+    },
+    "Background opacity": {
+        "de": "Hintergrunddeckkraft",
+        "pt-BR": "Opacidade do fundo",
+        "it": "Opacità dello sfondo",
+    },
+    "Background opacity: %lld percent": {
+        "de": "Hintergrunddeckkraft: %lld %%",
+        "pt-BR": "Opacidade do fundo: %lld%%",
+        "it": "Opacità dello sfondo: %lld%%",
+    },
+    "Choose how much of the default terminal and sidebar background is visible. Text, the cursor, selections, and images remain fully visible. 100% is fully opaque.": {
+        "de": "Stellen Sie ein, wie sichtbar der Standardhintergrund von Terminal und Seitenleiste ist. Text, Cursor, Auswahl und Bilder bleiben vollständig sichtbar. 100 % bedeutet vollständig deckend.",
+        "pt-BR": "Escolha quanto do fundo padrão do terminal e da barra lateral fica visível. O texto, o cursor, as seleções e as imagens permanecem totalmente visíveis. 100% é totalmente opaco.",
+        "it": "Scegli quanto rendere visibile lo sfondo predefinito del terminale e della barra laterale. Testo, cursore, selezioni e immagini restano completamente visibili. 100% corrisponde alla piena opacità.",
+    },
+    "Apply opacity to colored cell backgrounds": {
+        "de": "Deckkraft auf farbige Zellenhintergründe anwenden",
+        "pt-BR": "Aplicar opacidade aos fundos coloridos das células",
+        "it": "Applica opacità agli sfondi colorati delle celle",
+    },
+    "Also applies the selected opacity to background colors set by terminal programs, including inverse video.": {
+        "de": "Wendet die gewählte Deckkraft auch auf Hintergrundfarben an, die von Terminalprogrammen festgelegt werden, einschließlich inverser Darstellung.",
+        "pt-BR": "Também aplica a opacidade selecionada às cores de fundo definidas por programas de terminal, incluindo vídeo inverso.",
+        "it": "Applica l’opacità selezionata anche ai colori di sfondo impostati dai programmi del terminale, inclusa la visualizzazione inversa.",
+    },
     "Terminal": {
         "de": "Terminal",
         "pt-BR": "Terminal",
@@ -848,4 +879,3 @@ SUPPLEMENT_DE_PT_IT: dict[str, dict[str, str]] = {
         "it": "Salvato in ~/Library/Logs/Laban/profiles/. Dove aprirlo?",
     },
 }
-

@@ -261,6 +261,18 @@ surface is translucent, because RGB-subpixel coverage assumes a known opaque
 destination; the configured antialiasing preference is retained and restored
 when the surface becomes opaque.
 
+### Transparency IME support
+
+The release acceptance record for transparent terminal backgrounds names each
+input method separately. A `passed` status requires nonempty manual evidence in
+`.artifacts/transparency/cjk/cjk-evidence.json`; an untested input method is not
+included in compatibility claims.
+
+| IME | Status |
+| --- | --- |
+| Apple Pinyin | passed |
+| Rime/Squirrel | not tested - compatibility unclaimed |
+
 `System Blur` and a theme-neutral `Frosted` preset are approved follow-up
 direction, not shipped behavior in the direct-opacity feature. The follow-up
 uses a public behind-window AppKit material, never Liquid Glass behind terminal

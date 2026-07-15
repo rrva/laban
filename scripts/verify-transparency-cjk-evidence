@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""Verify transparency CJK renderer and IME evidence without creating artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import tempfile
+from pathlib import Path
+from typing import NoReturn
+
+
+RENDERERS = ("software", "classic", "gpuDriven", "vectorGlyph", "slugGlyph")
+RIME_TABLE_STATUSES = {
+    "passed": "passed",
+    "notTested": "not tested - compatibility unclaimed",
+}
+
+
+class EvidenceError(RuntimeError):
+    pass
+
+
+def fail(message: str) -> NoReturn:
+    raise EvidenceError(message)
+
+
+def require_object(value: object, name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        fail(f"{name} must be an object")
+    return value
+
+
+def require_artifact_list(value: object, name: str) -> list[str]:
+    if not isinstance(value, list):
+        fail(f"{name} must be an array")
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        fail(f"{name} must contain only nonempty path strings")
+    return value
+
+
+def resolve_artifact(
+    reference: str,
+    *,
+    repository_root: Path,
+    evidence_root: Path,
+    manifest_path: Path,
+) -> Path:
+    candidate = Path(reference)
+    if not candidate.is_absolute():
+        if candidate.parts and candidate.parts[0] == ".artifacts":
+            candidate = repository_root / candidate
+        else:
+            candidate = manifest_path.parent / candidate
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(evidence_root)
+    except ValueError:
+        fail(
+            f"artifact escapes {evidence_root}: {reference} resolves to {resolved}"
+        )
+    if not resolved.is_file():
+        fail(f"artifact is missing or not a regular file: {reference}")
+    if resolved.stat().st_size == 0:
+        fail(f"artifact is empty: {reference}")
+    return resolved
+
+
+def require_named_artifact(
+    reference: str,
+    *,
+    exact_name: str | None = None,
+    prefix: str | None = None,
+    repository_root: Path,
+    evidence_root: Path,
+    manifest_path: Path,
+) -> Path:
+    resolved = resolve_artifact(
+        reference,
+        repository_root=repository_root,
+        evidence_root=evidence_root,
+        manifest_path=manifest_path,
+    )
+    if exact_name is not None and resolved.name != exact_name:
+        fail(f"artifact must be named {exact_name}: {reference}")
+    if prefix is not None and not resolved.name.startswith(prefix):
+        fail(f"artifact name must start with {prefix}: {reference}")
+    return resolved
+
+
+def ime_statuses_from_spec(spec_path: Path) -> dict[str, str]:
+    lines = spec_path.read_text(encoding="utf-8").splitlines()
+    heading_index: int | None = None
+    heading_level = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.lstrip("#").strip() == "Transparency IME support" and stripped.startswith("#"):
+            hashes = len(stripped) - len(stripped.lstrip("#"))
+            if stripped[:hashes] == "#" * hashes:
+                if heading_index is not None:
+                    fail("spec must contain exactly one Transparency IME support heading")
+                heading_index = index
+                heading_level = hashes
+    if heading_index is None:
+        fail("spec is missing the Transparency IME support heading")
+
+    section: list[str] = []
+    for line in lines[heading_index + 1 :]:
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            hashes = len(stripped) - len(stripped.lstrip("#"))
+            if hashes <= heading_level and stripped[hashes :].startswith(" "):
+                break
+        section.append(line)
+
+    table_rows: list[list[str]] = []
+    for line in section:
+        stripped = line.strip()
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            continue
+        cells = [cell.strip() for cell in stripped[1:-1].split("|")]
+        if cells and all(cell.replace(":", "").replace("-", "") == "" for cell in cells):
+            continue
+        table_rows.append(cells)
+    if not table_rows:
+        fail("Transparency IME support section has no Markdown table")
+
+    header = table_rows[0]
+    try:
+        ime_index = [cell.casefold() for cell in header].index("ime")
+        status_index = [cell.casefold() for cell in header].index("status")
+    except ValueError:
+        fail("Transparency IME support table must have IME and Status columns")
+
+    statuses: dict[str, str] = {}
+    for row in table_rows[1:]:
+        if len(row) <= max(ime_index, status_index):
+            fail("Transparency IME support table has a short row")
+        ime = row[ime_index]
+        if ime in ("Apple Pinyin", "Rime/Squirrel"):
+            if ime in statuses:
+                fail(f"Transparency IME support table repeats {ime}")
+            statuses[ime] = row[status_index]
+    if set(statuses) != {"Apple Pinyin", "Rime/Squirrel"}:
+        fail("Transparency IME support table must contain Apple Pinyin and Rime/Squirrel")
+    return statuses
+
+
+def verify(manifest_path: Path, spec_path: Path, repository_root: Path) -> None:
+    repository_root = repository_root.resolve()
+    evidence_root = (repository_root / ".artifacts/transparency/cjk").resolve()
+    expected_manifest = evidence_root / "cjk-evidence.json"
+    expected_spec = (repository_root / "docs/product/spec.md").resolve()
+    manifest_path = manifest_path.resolve()
+    spec_path = spec_path.resolve()
+    if manifest_path != expected_manifest:
+        fail(f"manifest must be {expected_manifest}, got {manifest_path}")
+    if spec_path != expected_spec:
+        fail(f"spec must be {expected_spec}, got {spec_path}")
+    if not manifest_path.is_file():
+        fail(f"manifest is missing: {manifest_path}")
+    if not spec_path.is_file():
+        fail(f"spec is missing: {spec_path}")
+
+    try:
+        manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"could not read manifest JSON: {error}")
+    manifest = require_object(manifest_value, "manifest")
+
+    renderer_artifacts = require_object(
+        manifest.get("rendererArtifacts"), "rendererArtifacts"
+    )
+    if set(renderer_artifacts) != set(RENDERERS):
+        fail(
+            "rendererArtifacts must contain exactly: " + ", ".join(RENDERERS)
+        )
+    for renderer in RENDERERS:
+        reference = renderer_artifacts[renderer]
+        if not isinstance(reference, str) or not reference.strip():
+            fail(f"rendererArtifacts.{renderer} must be a nonempty path string")
+        require_named_artifact(
+            reference,
+            exact_name=f"transparency-cjk-{renderer}.png",
+            repository_root=repository_root,
+            evidence_root=evidence_root,
+            manifest_path=manifest_path,
+        )
+
+    apple = require_object(manifest.get("applePinyin"), "applePinyin")
+    if apple.get("status") != "passed":
+        fail('applePinyin.status must be exactly "passed"')
+    apple_artifacts = require_artifact_list(
+        apple.get("artifacts"), "applePinyin.artifacts"
+    )
+    if not apple_artifacts:
+        fail("applePinyin.artifacts must be nonempty")
+    for reference in apple_artifacts:
+        require_named_artifact(
+            reference,
+            prefix="transparency-cjk-ime-apple-pinyin.",
+            repository_root=repository_root,
+            evidence_root=evidence_root,
+            manifest_path=manifest_path,
+        )
+
+    rime = require_object(manifest.get("rimeSquirrel"), "rimeSquirrel")
+    rime_status = rime.get("status")
+    if rime_status not in RIME_TABLE_STATUSES:
+        fail('rimeSquirrel.status must be exactly "passed" or "notTested"')
+    rime_artifacts = require_artifact_list(
+        rime.get("artifacts"), "rimeSquirrel.artifacts"
+    )
+    if rime_status == "passed":
+        if not rime_artifacts:
+            fail('rimeSquirrel status "passed" requires nonempty artifacts')
+        if "compatibilityClaimed" in rime and rime["compatibilityClaimed"] is not True:
+            fail('passed rimeSquirrel compatibilityClaimed must be true when present')
+        for reference in rime_artifacts:
+            require_named_artifact(
+                reference,
+                prefix="transparency-cjk-ime-rime-squirrel.",
+                repository_root=repository_root,
+                evidence_root=evidence_root,
+                manifest_path=manifest_path,
+            )
+    else:
+        if rime_artifacts:
+            fail('rimeSquirrel status "notTested" requires an empty artifacts array')
+        if rime.get("compatibilityClaimed") is not False:
+            fail(
+                'rimeSquirrel status "notTested" requires compatibilityClaimed: false'
+            )
+
+    spec_statuses = ime_statuses_from_spec(spec_path)
+    if spec_statuses["Apple Pinyin"] != "passed":
+        fail('Apple Pinyin spec status must be exactly "passed"')
+    expected_rime_status = RIME_TABLE_STATUSES[rime_status]
+    if spec_statuses["Rime/Squirrel"] != expected_rime_status:
+        fail(
+            "Rime/Squirrel spec status does not match manifest: "
+            f"expected {expected_rime_status!r}, got {spec_statuses['Rime/Squirrel']!r}"
+        )
+
+
+def write_self_test_tree(root: Path) -> tuple[Path, Path]:
+    evidence_root = root / ".artifacts/transparency/cjk"
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    for renderer in RENDERERS:
+        (evidence_root / f"transparency-cjk-{renderer}.png").write_bytes(b"png")
+    (evidence_root / "transparency-cjk-ime-apple-pinyin.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    manifest = {
+        "rendererArtifacts": {
+            renderer: f"transparency-cjk-{renderer}.png" for renderer in RENDERERS
+        },
+        "applePinyin": {
+            "status": "passed",
+            "artifacts": ["transparency-cjk-ime-apple-pinyin.json"],
+        },
+        "rimeSquirrel": {
+            "status": "notTested",
+            "artifacts": [],
+            "compatibilityClaimed": False,
+        },
+    }
+    manifest_path = evidence_root / "cjk-evidence.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    spec_path = root / "docs/product/spec.md"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(
+        "# Product\n\n### Transparency IME support\n\n"
+        "| IME | Status |\n| --- | --- |\n"
+        "| Apple Pinyin | passed |\n"
+        "| Rime/Squirrel | not tested - compatibility unclaimed |\n",
+        encoding="utf-8",
+    )
+    return manifest_path, spec_path
+
+
+def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="verify-transparency-cjk-") as temporary:
+        root = Path(temporary)
+        manifest_path, spec_path = write_self_test_tree(root)
+        verify(manifest_path, spec_path, root)
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["rendererArtifacts"]["software"] = "../../../../outside.png"
+        (root / "outside.png").write_bytes(b"png")
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        try:
+            verify(manifest_path, spec_path, root)
+        except EvidenceError as error:
+            if "escapes" not in str(error):
+                raise
+        else:
+            fail("self-test expected path-containment rejection")
+
+        manifest_path, spec_path = write_self_test_tree(root)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del manifest["rendererArtifacts"]["classic"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        try:
+            verify(manifest_path, spec_path, root)
+        except EvidenceError as error:
+            if "exactly" not in str(error):
+                raise
+        else:
+            fail("self-test expected exact-renderer-set rejection")
+
+        manifest_path, spec_path = write_self_test_tree(root)
+        (manifest_path.parent / "transparency-cjk-vectorGlyph.png").write_bytes(b"")
+        try:
+            verify(manifest_path, spec_path, root)
+        except EvidenceError as error:
+            if "empty" not in str(error):
+                raise
+        else:
+            fail("self-test expected empty-artifact rejection")
+
+        manifest_path, spec_path = write_self_test_tree(root)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["rimeSquirrel"]["compatibilityClaimed"] = True
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        try:
+            verify(manifest_path, spec_path, root)
+        except EvidenceError as error:
+            if "compatibilityClaimed" not in str(error):
+                raise
+        else:
+            fail("self-test expected unclaimed-compatibility rejection")
+
+        manifest_path, spec_path = write_self_test_tree(root)
+        spec_path.write_text(
+            spec_path.read_text(encoding="utf-8").replace(
+                "not tested - compatibility unclaimed", "passed"
+            ),
+            encoding="utf-8",
+        )
+        try:
+            verify(manifest_path, spec_path, root)
+        except EvidenceError as error:
+            if "does not match manifest" not in str(error):
+                raise
+        else:
+            fail("self-test expected spec/manifest mismatch rejection")
+
+        manifest_path, spec_path = write_self_test_tree(root)
+        (manifest_path.parent / "transparency-cjk-ime-rime-squirrel.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["rimeSquirrel"] = {
+            "status": "passed",
+            "artifacts": ["transparency-cjk-ime-rime-squirrel.json"],
+            "compatibilityClaimed": True,
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        spec_path.write_text(
+            spec_path.read_text(encoding="utf-8").replace(
+                "not tested - compatibility unclaimed", "passed"
+            ),
+            encoding="utf-8",
+        )
+        verify(manifest_path, spec_path, root)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--spec", type=Path)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+
+    try:
+        if args.self_test:
+            self_test()
+            print("verify-transparency-cjk-evidence: self-test passed")
+            return 0
+        if args.manifest is None or args.spec is None:
+            parser.error("--manifest and --spec are required")
+        repository_root = Path(__file__).resolve().parents[1]
+        verify(args.manifest, args.spec, repository_root)
+    except EvidenceError as error:
+        print(f"verify-transparency-cjk-evidence: {error}", file=sys.stderr)
+        return 1
+
+    print(
+        "verify-transparency-cjk-evidence: verified five renderers, "
+        "Apple Pinyin, Rime/Squirrel status, and product spec"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

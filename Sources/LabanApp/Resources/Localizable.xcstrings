@@ -5391,6 +5391,426 @@
         }
       }
     },
+    "Background opacity:": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景不透明度："
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景不透明度："
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景の不透明度："
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "배경 불투명도:"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacité de l’arrière-plan :"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacidad del fondo:"
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "पृष्ठभूमि अपारदर्शिता:"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Непрозрачность фона:"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hintergrunddeckkraft:"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacidade do fundo:"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacità dello sfondo:"
+          }
+        }
+      }
+    },
+    "Background opacity": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景不透明度"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景不透明度"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景の不透明度"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "배경 불투명도"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacité de l’arrière-plan"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacidad del fondo"
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "पृष्ठभूमि अपारदर्शिता"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Непрозрачность фона"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hintergrunddeckkraft"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacidade do fundo"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacità dello sfondo"
+          }
+        }
+      }
+    },
+    "Background opacity: %lld percent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景不透明度：%lld%%"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景不透明度：%lld%%"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "背景の不透明度：%lld%%"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "배경 불투명도: %lld%%"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacité de l’arrière-plan : %lld %%"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacidad del fondo: %lld %%"
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "पृष्ठभूमि अपारदर्शिता: %lld प्रतिशत"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Непрозрачность фона: %lld %%"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hintergrunddeckkraft: %lld %%"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacidade do fundo: %lld%%"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opacità dello sfondo: %lld%%"
+          }
+        }
+      }
+    },
+    "Choose how much of the default terminal and sidebar background is visible. Text, the cursor, selections, and images remain fully visible. 100% is fully opaque.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择默认终端和侧边栏背景的可见程度。文字、光标、选择区域和图像始终完全可见。100% 表示完全不透明。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選擇預設終端機和側邊欄背景的可見程度。文字、游標、選取範圍和影像始終完全可見。100% 表示完全不透明。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デフォルトのターミナルとサイドバー背景の見え方を調整します。テキスト、カーソル、選択範囲、画像は常に完全に表示されます。100% で完全に不透明になります。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "기본 터미널과 사이드바 배경의 표시 정도를 선택합니다. 텍스트, 커서, 선택 영역 및 이미지는 항상 완전히 표시됩니다. 100%는 완전 불투명입니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réglez la visibilité de l’arrière-plan par défaut du terminal et de la barre latérale. Le texte, le curseur, les sélections et les images restent entièrement visibles. 100 % correspond à une opacité totale."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige la visibilidad del fondo predeterminado del terminal y de la barra lateral. El texto, el cursor, las selecciones y las imágenes permanecen completamente visibles. 100 % es totalmente opaco."
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "चुनें कि डिफ़ॉल्ट टर्मिनल और साइडबार की पृष्ठभूमि कितनी दिखाई दे। टेक्स्ट, कर्सर, चयन और चित्र पूरी तरह दिखाई देते रहते हैं। 100% पूरी तरह अपारदर्शी है।"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Настройте видимость фона терминала и боковой панели по умолчанию. Текст, курсор, выделение и изображения остаются полностью видимыми. 100 % означает полную непрозрачность."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stellen Sie ein, wie sichtbar der Standardhintergrund von Terminal und Seitenleiste ist. Text, Cursor, Auswahl und Bilder bleiben vollständig sichtbar. 100 % bedeutet vollständig deckend."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escolha quanto do fundo padrão do terminal e da barra lateral fica visível. O texto, o cursor, as seleções e as imagens permanecem totalmente visíveis. 100% é totalmente opaco."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli quanto rendere visibile lo sfondo predefinito del terminale e della barra laterale. Testo, cursore, selezioni e immagini restano completamente visibili. 100% corrisponde alla piena opacità."
+          }
+        }
+      }
+    },
+    "Apply opacity to colored cell backgrounds": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将不透明度应用于彩色单元格背景"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "將不透明度套用至彩色單元格背景"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "色付きセルの背景にも不透明度を適用"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "색이 지정된 셀 배경에도 불투명도 적용"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appliquer l’opacité aux arrière-plans colorés des cellules"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aplicar opacidad a los fondos de celda con color"
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "रंगीन सेल पृष्ठभूमि पर भी अपारदर्शिता लागू करें"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Применять непрозрачность к цветному фону ячеек"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deckkraft auf farbige Zellenhintergründe anwenden"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aplicar opacidade aos fundos coloridos das células"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applica opacità agli sfondi colorati delle celle"
+          }
+        }
+      }
+    },
+    "Also applies the selected opacity to background colors set by terminal programs, including inverse video.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还会将所选不透明度应用于终端程序设置的背景颜色，包括反显背景。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "也會將所選不透明度套用至終端機程式設定的背景顏色，包括反相顯示背景。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ターミナルプログラムが設定した背景色（反転表示を含む）にも、選択した不透明度を適用します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "터미널 프로그램이 설정한 배경색(반전 표시 포함)에도 선택한 불투명도를 적용합니다."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applique aussi l’opacité choisie aux couleurs d’arrière-plan définies par les programmes du terminal, y compris en vidéo inversée."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "También aplica la opacidad elegida a los colores de fondo definidos por los programas del terminal, incluido el vídeo inverso."
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "चुनी गई अपारदर्शिता को टर्मिनल प्रोग्राम द्वारा सेट किए गए पृष्ठभूमि रंगों पर भी लागू करता है, जिसमें उलटा वीडियो भी शामिल है।"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Также применяет выбранную непрозрачность к цветам фона, заданным терминальными программами, включая инверсное отображение."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wendet die gewählte Deckkraft auch auf Hintergrundfarben an, die von Terminalprogrammen festgelegt werden, einschließlich inverser Darstellung."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Também aplica a opacidade selecionada às cores de fundo definidas por programas de terminal, incluindo vídeo inverso."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applica l’opacità selezionata anche ai colori di sfondo impostati dai programmi del terminale, inclusa la visualizzazione inversa."
+          }
+        }
+      }
+    },
     "Terminal": {
       "localizations": {
         "zh-Hans": {
