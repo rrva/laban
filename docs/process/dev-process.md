@@ -508,12 +508,29 @@ curl --silent --show-error --unix-socket "$SOCKET" \
   http://laban/debug/transparency | jq
 ```
 
-Register trap/defer cleanup before the first mutation. Cleanup sends
-`setReduceTransparencyOverride` with `null`, exits native full screen when
-needed and polls completion, restores the initial requested opacity/cell
-policy, terminates only the process the test launched, and removes the isolated
-control directory. `scripts/transparency-transition-smoke` implements this
-contract and saves token-free state snapshots under its artifact directory.
+Register trap/defer cleanup before the first mutation. Snapshot the requested
+opacity, explicit-cell policy, source, image scaling, managed identifier, and
+display name before launch. Cleanup sends `setReduceTransparencyOverride` with
+`null`, exits native full screen when needed, terminates only the process the
+test launched, restores that typed preference subset while the app is stopped,
+and removes the isolated control directory. Keeping fixture imports and their
+managed copies under the control root prevents the smoke test from reading,
+replacing, or deleting a production background image. A final fixture relaunch
+must compare the restored requested projection and typed preference subset to
+the initial snapshots.
+
+`scripts/transparency-transition-smoke` implements this lifecycle and saves
+token-free state snapshots under its artifact directory. It exercises
+None/System Blur/Image, 100%/90% opacity, Fill/Fit/Stretch, a physically missing
+managed file and repair, Reduce Transparency, native full screen, and active
+Image relaunch. Every settled transition asserts exact requested/effective
+state and zero-or-one backdrop child of the matching kind; source, opacity,
+Reduce Transparency, import, repair, and removal require exactly one effective
+apply, one render wake, and one settled present. Scaling changes are host-only
+and require zero renderer applies, wakes, presents, decodes, or file reads.
+Two-second idle windows require renderer presents, image decodes, and image
+file reads to remain parked. Full-screen animations may present while AppKit
+transitions, but their post-completion idle windows must also park.
 
 For deterministic debug-server PNG alpha, `laban-agent` accepts equals-form
 `--background-opacity=<0...1>`, `--background-effect=none|system-blur`, and the

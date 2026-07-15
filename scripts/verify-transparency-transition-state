@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Mechanical assertions for the installed transparency transition smoke."""
+
+from __future__ import annotations
+
+import json
+import math
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+FLOAT_KEYS = {"requestedOpacity", "effectiveOpacity"}
+PARKED_IDLE_COUNTERS = (
+    "rendererPresentCount",
+    "backgroundImageDecodeCount",
+    "backgroundImageFileReadCount",
+)
+REQUEST_RESTORATION_KEYS = (
+    "requestedOpacity",
+    "applyToExplicitCellBackgrounds",
+    "requestedBackdropStyle",
+    "backgroundImageScaling",
+    "backgroundImageIdentifier",
+    "backgroundImagePixelWidth",
+    "backgroundImagePixelHeight",
+    "backgroundImageContentDigest",
+)
+OPTIONAL_NULL_KEYS = {
+    "forceOpaqueReason",
+    "backgroundImageIdentifier",
+    "backgroundImagePixelWidth",
+    "backgroundImagePixelHeight",
+    "backgroundImageContentDigest",
+}
+
+
+class ContractFailure(RuntimeError):
+    pass
+
+
+def load_state(path: str | Path) -> dict[str, Any]:
+    with Path(path).open(encoding="utf-8") as handle:
+        state = json.load(handle)
+    if not isinstance(state, dict):
+        raise ContractFailure(f"state must be a JSON object: {path}")
+    return state
+
+
+def decode_expected(raw: str) -> Any:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
+def values_equal(key: str, actual: Any, expected: Any) -> bool:
+    if key in FLOAT_KEYS:
+        try:
+            return math.isclose(float(actual), float(expected), abs_tol=1e-9)
+        except (TypeError, ValueError):
+            return False
+    return actual == expected
+
+
+def assert_expected(state: dict[str, Any], assignments: list[str]) -> None:
+    for assignment in assignments:
+        key, separator, raw = assignment.partition("=")
+        if not separator or not key:
+            raise ContractFailure(f"invalid expectation: {assignment!r}")
+        if key not in state and not (raw == "null" and key in OPTIONAL_NULL_KEYS):
+            raise ContractFailure(f"missing state field: {key}")
+        actual = state.get(key)
+        if raw == "!null":
+            if actual is None:
+                raise ContractFailure(f"state field must not be null: {key}")
+            continue
+        if raw == "!empty":
+            if actual is None or actual == "":
+                raise ContractFailure(f"state field must not be empty: {key}")
+            continue
+        expected = raw.removeprefix("string:") if raw.startswith("string:") else decode_expected(raw)
+        if not values_equal(key, actual, expected):
+            raise ContractFailure(
+                f"state mismatch for {key}: actual={actual!r} expected={expected!r}"
+            )
+
+
+def assert_counters(
+    state: dict[str, Any],
+    accessibility: str,
+    apply: str,
+    wake: str,
+    present: str,
+) -> None:
+    expectations = {
+        "accessibilityRefreshCount": accessibility,
+        "effectiveTransparencyApplyCount": apply,
+        "transparencyRenderWakeCount": wake,
+        "rendererPresentCount": present,
+    }
+    for key, raw in expectations.items():
+        if raw == "any":
+            continue
+        if key not in state:
+            raise ContractFailure(f"missing counter field: {key}")
+        try:
+            expected = int(raw)
+            actual = int(state[key])
+        except (TypeError, ValueError) as error:
+            raise ContractFailure(f"non-integer counter for {key}") from error
+        if actual != expected:
+            raise ContractFailure(
+                f"counter mismatch for {key}: actual={actual} expected={expected}"
+            )
+
+
+def assert_idle(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    backdrop_kind: str,
+    backdrop_count: int,
+) -> None:
+    assert_expected(
+        after,
+        [
+            f"backdropSubviewKind={backdrop_kind}",
+            f"backdropSubviewCount={backdrop_count}",
+        ],
+    )
+    for key in PARKED_IDLE_COUNTERS:
+        if key not in before or key not in after:
+            raise ContractFailure(f"missing idle counter field: {key}")
+        if before[key] != after[key]:
+            raise ContractFailure(
+                f"idle counter advanced for {key}: before={before[key]!r} after={after[key]!r}"
+            )
+
+
+def assert_restored(initial: dict[str, Any], restored: dict[str, Any]) -> None:
+    for key in REQUEST_RESTORATION_KEYS:
+        if key not in OPTIONAL_NULL_KEYS and (key not in initial or key not in restored):
+            raise ContractFailure(f"missing restoration field: {key}")
+        initial_value = initial.get(key)
+        restored_value = restored.get(key)
+        if not values_equal(key, restored_value, initial_value):
+            raise ContractFailure(
+                f"restoration mismatch for {key}: "
+                f"initial={initial_value!r} restored={restored_value!r}"
+            )
+
+
+def self_test() -> None:
+    state = {
+        "requestedOpacity": 0.9,
+        "effectiveOpacity": 0.9,
+        "applyToExplicitCellBackgrounds": False,
+        "requestedBackdropStyle": "image",
+        "effectiveBackdropStyle": "image",
+        "backgroundImageScaling": "fill",
+        "backgroundImageState": "available",
+        "forceOpaqueReason": None,
+        "backgroundImageIdentifier": "image-run.png",
+        "backgroundImagePixelWidth": 1600,
+        "backgroundImagePixelHeight": 900,
+        "backgroundImageContentDigest": "abc123",
+        "backdropSubviewKind": "image",
+        "backdropSubviewCount": 1,
+        "accessibilityRefreshCount": 0,
+        "effectiveTransparencyApplyCount": 1,
+        "transparencyRenderWakeCount": 1,
+        "rendererPresentCount": 1,
+        "backgroundImageDecodeCount": 1,
+        "backgroundImageFileReadCount": 1,
+    }
+    assert_expected(
+        state,
+        [
+            "requestedOpacity=0.9",
+            "requestedBackdropStyle=image",
+            "backgroundImageState=available",
+            "backdropSubviewKind=image",
+            "backdropSubviewCount=1",
+            "forceOpaqueReason=null",
+            "backgroundImageIdentifier=!empty",
+            "backgroundImagePixelWidth=!null",
+        ],
+    )
+    state_without_optional_null = dict(state)
+    state_without_optional_null.pop("forceOpaqueReason")
+    assert_expected(state_without_optional_null, ["forceOpaqueReason=null"])
+    assert_counters(state, "0", "1", "1", "1")
+    assert_idle(state, dict(state), "image", 1)
+    assert_restored(state, dict(state))
+
+    advanced = dict(state)
+    advanced["backgroundImageFileReadCount"] += 1
+    try:
+        assert_idle(state, advanced, "image", 1)
+    except ContractFailure:
+        pass
+    else:
+        raise ContractFailure("idle assertion accepted an advancing file-read counter")
+
+    changed = dict(state)
+    changed["backgroundImageIdentifier"] = "image-other.png"
+    try:
+        assert_restored(state, changed)
+    except ContractFailure:
+        pass
+    else:
+        raise ContractFailure("restoration assertion accepted a changed managed identifier")
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "state.json"
+        path.write_text(json.dumps(state), encoding="utf-8")
+        if load_state(path) != state:
+            raise ContractFailure("state JSON round trip failed")
+
+
+def usage() -> str:
+    return (
+        "usage:\n"
+        "  verify-transparency-transition-state expect STATE KEY=VALUE...\n"
+        "  verify-transparency-transition-state counters STATE ACCESS APPLY WAKE PRESENT\n"
+        "  verify-transparency-transition-state idle BEFORE AFTER KIND COUNT\n"
+        "  verify-transparency-transition-state restore INITIAL RESTORED\n"
+        "  verify-transparency-transition-state --self-test"
+    )
+
+
+def main(arguments: list[str]) -> int:
+    try:
+        if arguments == ["--self-test"]:
+            self_test()
+            print("verify-transparency-transition-state: self-test passed")
+            return 0
+        if len(arguments) >= 3 and arguments[0] == "expect":
+            assert_expected(load_state(arguments[1]), arguments[2:])
+            return 0
+        if len(arguments) == 6 and arguments[0] == "counters":
+            assert_counters(load_state(arguments[1]), *arguments[2:])
+            return 0
+        if len(arguments) == 5 and arguments[0] == "idle":
+            assert_idle(
+                load_state(arguments[1]),
+                load_state(arguments[2]),
+                arguments[3],
+                int(arguments[4]),
+            )
+            return 0
+        if len(arguments) == 3 and arguments[0] == "restore":
+            assert_restored(load_state(arguments[1]), load_state(arguments[2]))
+            return 0
+        print(usage(), file=sys.stderr)
+        return 2
+    except (ContractFailure, ValueError) as error:
+        print(f"verify-transparency-transition-state: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

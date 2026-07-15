@@ -1,19 +1,24 @@
 #!/usr/bin/env sh
 set -eu
 
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+state_verifier="$repo_root/scripts/verify-transparency-transition-state"
 app=
 cycles=5
 artifacts=.artifacts/transparency/transitions
+fixture="$repo_root/fixtures/transparency/background-gradient.png"
 
 for argument in "$@"; do
   case "$argument" in
     --app=*) app=${argument#--app=} ;;
     --cycles=*) cycles=${argument#--cycles=} ;;
     --artifacts=*) artifacts=${argument#--artifacts=} ;;
+    --fixture=*) fixture=${argument#--fixture=} ;;
     --help|-h)
       printf '%s\n' \
         'usage: transparency-transition-smoke --app=$HOME/Laban.app --cycles=5' \
-        '       --artifacts=.artifacts/transparency/transitions'
+        '       --artifacts=.artifacts/transparency/transitions' \
+        '       [--fixture=fixtures/transparency/background-gradient.png]'
       exit 0
       ;;
     *)
@@ -37,21 +42,44 @@ if [ -z "$app" ] || [ ! -x "$app/Contents/MacOS/LabanApp" ]; then
   printf 'transparency-transition-smoke: installed app executable not found: %s\n' "$app" >&2
   exit 2
 fi
+if [ ! -f "$fixture" ]; then
+  printf 'transparency-transition-smoke: image fixture not found: %s\n' "$fixture" >&2
+  exit 2
+fi
+if [ ! -x "$state_verifier" ]; then
+  printf 'transparency-transition-smoke: state verifier is not executable: %s\n' \
+    "$state_verifier" >&2
+  exit 2
+fi
 
 mkdir -p "$artifacts"
 artifacts=$(CDPATH= cd -- "$artifacts" && pwd)
 control_dir="$artifacts/.gui-control-$$"
-mkdir -p "$control_dir"
-run_id="transparency-transition-$$-$(date +%s)"
+fixture_relative_path=fixture-input/background-gradient.png
+fixture_control_dir="$control_dir/fixture-input"
+mkdir -p "$fixture_control_dir"
+cp "$fixture" "$control_dir/$fixture_relative_path"
+
+base_run_id="transparency-transition-$$-$(date +%s)"
 control_json="$control_dir/control.json"
-app_log="$artifacts/installed-app.log"
+preferences_snapshot="$control_dir/initial-preferences.plist"
+preferences_after_restore="$control_dir/preferences-after-restore.plist"
+bundle_id=$(
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist"
+)
+[ -n "$bundle_id" ] || {
+  printf 'transparency-transition-smoke: installed app has no bundle identifier\n' >&2
+  exit 2
+}
+
 app_pid=
 socket=
 app_token=
 diagnostic_token=
 session_token=
-initial_opacity=
-initial_cells=
+launch_count=0
+preferences_restored=false
+run_image_identifier=
 
 fail() {
   printf 'transparency-transition-smoke: %s\n' "$1" >&2
@@ -89,7 +117,7 @@ post_action() {
   body=$1
   output=$2
   status=$(request_status "$diagnostic_token" POST /debug/actions "$body" "$output")
-  [ "$status" = 200 ] || fail "diagnostic action returned HTTP $status"
+  [ "$status" = 200 ] || fail "diagnostic action returned HTTP $status for $body"
 }
 
 read_state() {
@@ -98,50 +126,19 @@ read_state() {
   [ "$status" = 200 ] || return 1
 }
 
-poll_state() {
-  mode=$1
-  value=$2
-  cells=$3
-  output=$4
+poll_expect() {
+  output=$1
+  shift
   attempt=0
-  while [ "$attempt" -lt 200 ]; do
+  while [ "$attempt" -lt 300 ]; do
     attempt=$((attempt + 1))
-    if read_state "$output"; then
-      if python3 - "$mode" "$value" "$cells" "$output" <<'PY'
-import json
-import math
-import sys
-
-mode, value, cells, path = sys.argv[1:]
-with open(path, encoding="utf-8") as handle:
-    state = json.load(handle)
-ok = False
-if mode == "requested":
-    ok = (
-        math.isclose(float(state["requestedOpacity"]), float(value), abs_tol=1e-9)
-        and state["applyToExplicitCellBackgrounds"] == (cells == "true")
-        and math.isclose(float(state["effectiveOpacity"]), float(value), abs_tol=1e-9)
-        and state.get("forceOpaqueReason") is None
-    )
-elif mode == "reduce":
-    ok = (
-        state["effectiveReduceTransparency"] == (value == "true")
-        and state.get("forceOpaqueReason") == ("reduceTransparency" if value == "true" else None)
-    )
-elif mode == "fullscreen":
-    ok = (
-        state["nativeFullscreen"] == (value == "true")
-        and state.get("forceOpaqueReason") == ("nativeFullscreen" if value == "true" else None)
-    )
-sys.exit(0 if ok else 1)
-PY
-      then
-        return 0
-      fi
+    if read_state "$output" && "$state_verifier" expect "$output" "$@" 2>/dev/null; then
+      return 0
     fi
     sleep 0.05
   done
-  fail "timed out polling $mode=$value"
+  "$state_verifier" expect "$output" "$@" || true
+  fail "timed out polling exact transparency state for $(basename "$output")"
 }
 
 require_counters() {
@@ -154,109 +151,170 @@ require_counters() {
   while [ "$attempt" -lt 200 ]; do
     attempt=$((attempt + 1))
     read_state "$output" || true
-    if python3 - "$output" "$accessibility" "$apply" "$wake" "$present" <<'PY'
-import json
-import sys
-
-path, accessibility, apply, wake, present = sys.argv[1:]
-with open(path, encoding="utf-8") as handle:
-    state = json.load(handle)
-expected = tuple(map(int, (accessibility, apply, wake, present)))
-actual = (
-    int(state["accessibilityRefreshCount"]),
-    int(state["effectiveTransparencyApplyCount"]),
-    int(state["transparencyRenderWakeCount"]),
-    int(state["rendererPresentCount"]),
-)
-if any(a > e for a, e in zip(actual, expected)):
-    print(f"counter exceeded expected value: actual={actual} expected={expected}", file=sys.stderr)
-    sys.exit(2)
-sys.exit(0 if actual == expected else 1)
-PY
+    if "$state_verifier" counters "$output" \
+      "$accessibility" "$apply" "$wake" "$present" 2>/dev/null
     then
       sleep 0.2
-      read_state "$output"
-      python3 - "$output" "$accessibility" "$apply" "$wake" "$present" <<'PY'
-import json
-import sys
-with open(sys.argv[1], encoding="utf-8") as handle:
-    state = json.load(handle)
-actual = (
-    state["accessibilityRefreshCount"],
-    state["effectiveTransparencyApplyCount"],
-    state["transparencyRenderWakeCount"],
-    state["rendererPresentCount"],
-)
-expected = tuple(map(int, sys.argv[2:]))
-if actual != expected:
-    raise SystemExit(f"counters did not settle: actual={actual} expected={expected}")
-PY
+      read_state "$output" || fail "could not reread settled transition counters"
+      "$state_verifier" counters "$output" \
+        "$accessibility" "$apply" "$wake" "$present" \
+        || fail "transition counters did not remain settled"
       return 0
-    else
-      code=$?
-      [ "$code" -ne 2 ] || fail "transition counter exceeded its exact bound"
     fi
     sleep 0.05
   done
   fail "transition counters did not reach their exact values"
 }
 
-cleanup() {
-  set +e
-  if [ -n "$socket" ] && [ -n "$diagnostic_token" ] && [ -S "$socket" ]; then
-    tmp="$artifacts/.cleanup.json"
-    request_status "$diagnostic_token" POST /debug/actions \
-      '{"action":"setReduceTransparencyOverride","enabled":null}' "$tmp" >/dev/null 2>&1
-    state="$artifacts/.cleanup-state.json"
-    if read_state "$state" >/dev/null 2>&1; then
-      is_full=$(python3 - "$state" <<'PY'
-import json, sys
-print("true" if json.load(open(sys.argv[1], encoding="utf-8"))["nativeFullscreen"] else "false")
-PY
-)
-      if [ "$is_full" = true ]; then
-        request_status "$diagnostic_token" POST /debug/actions \
-          '{"action":"setNativeFullScreen","enabled":false}' "$tmp" >/dev/null 2>&1
-        n=0
-        while [ "$n" -lt 100 ]; do
-          n=$((n + 1))
-          read_state "$state" >/dev/null 2>&1 || break
-          python3 - "$state" <<'PY' >/dev/null 2>&1 && break
-import json, sys
-raise SystemExit(0 if not json.load(open(sys.argv[1], encoding="utf-8"))["nativeFullscreen"] else 1)
-PY
-          sleep 0.05
-        done
-      fi
-    fi
-    if [ -n "$initial_opacity" ] && [ -n "$initial_cells" ]; then
-      request_status "$diagnostic_token" POST /debug/actions \
-        "{\"action\":\"setBackgroundTransparency\",\"opacity\":$initial_opacity,\"applyToExplicitCellBackgrounds\":$initial_cells}" \
-        "$tmp" >/dev/null 2>&1
-    fi
-    rm -f "$tmp" "$state"
-  fi
-  if [ -n "$app_pid" ] && kill -0 "$app_pid" 2>/dev/null; then
-    kill -TERM "$app_pid" 2>/dev/null
-    wait "$app_pid" 2>/dev/null
-  fi
-  rm -f "$control_json" "$control_dir/control.sock"
-  rmdir "$control_dir" 2>/dev/null
+run_transition() {
+  transition_label=$1
+  transition_body=$2
+  transition_output=$3
+  transition_accessibility=$4
+  transition_apply=$5
+  transition_wake=$6
+  transition_present=$7
+  shift 7
+
+  post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
+  post_action "$transition_body" "$artifacts/.action.json"
+  poll_expect "$transition_output" "$@" 'presentIntervalDeadlineMisses=0'
+  require_counters "$transition_output" "$transition_accessibility" \
+    "$transition_apply" "$transition_wake" "$transition_present"
+  printf 'transparency-transition-smoke: %s passed\n' "$transition_label"
 }
-trap cleanup EXIT HUP INT TERM
 
-LABAN_CONTROL_DIR="$control_dir" \
-LABAN_GUI_FIXTURE_CONTROL=1 \
-LABAN_RUN_ID="$run_id" \
-  "$app/Contents/MacOS/LabanApp" >"$app_log" 2>&1 &
-app_pid=$!
+assert_idle_parked() {
+  label=$1
+  kind=$2
+  count=$3
+  before="$artifacts/.idle-$label-before.json"
+  after="$artifacts/.idle-$label-after.json"
+  read_state "$before" || fail "could not read $label idle baseline"
+  sleep 2
+  read_state "$after" || fail "could not read $label idle result"
+  "$state_verifier" idle "$before" "$after" "$kind" "$count" \
+    || fail "$label did not remain parked"
+  "$state_verifier" expect "$after" 'presentIntervalDeadlineMisses=0' \
+    || fail "$label accumulated a present deadline miss"
+}
 
-attempt=0
-while [ "$attempt" -lt 300 ]; do
-  attempt=$((attempt + 1))
-  kill -0 "$app_pid" 2>/dev/null || fail "installed app exited before readiness; see $app_log"
-  if [ -f "$control_json" ]; then
-    if python3 - "$control_json" "$run_id" "$app_pid" "$control_dir/control.sock" <<'PY'
+json_field() {
+  state=$1
+  field=$2
+  python3 - "$state" "$field" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)[sys.argv[2]]
+if value is None:
+    raise SystemExit(1)
+print(value)
+PY
+}
+
+snapshot_preferences() {
+  if ! /usr/bin/defaults export "$bundle_id" - >"$preferences_snapshot" 2>/dev/null; then
+    python3 - "$preferences_snapshot" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "wb") as handle:
+    plistlib.dump({}, handle)
+PY
+  fi
+}
+
+restore_preferences() {
+  [ -f "$preferences_snapshot" ] || return 0
+  python3 - "$preferences_snapshot" "$bundle_id" <<'PY'
+import plistlib
+import subprocess
+import sys
+
+snapshot_path, domain = sys.argv[1:]
+with open(snapshot_path, "rb") as handle:
+    snapshot = plistlib.load(handle)
+
+typed_keys = {
+    "LabanTerminalBackgroundOpacity": "float",
+    "LabanTerminalApplyOpacityToExplicitCellBackgrounds": "bool",
+    "LabanTerminalBackdropStyle": "string",
+    "LabanTerminalBackgroundImageScaling": "string",
+    "LabanTerminalBackgroundImageIdentifier": "string",
+    "LabanTerminalBackgroundImageDisplayName": "string",
+}
+for key, kind in typed_keys.items():
+    if key not in snapshot:
+        subprocess.run(
+            ["/usr/bin/defaults", "delete", domain, key],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        continue
+    value = snapshot[key]
+    if kind == "bool":
+        arguments = ["-bool", "true" if bool(value) else "false"]
+    elif kind == "float":
+        arguments = ["-float", repr(float(value))]
+    else:
+        arguments = ["-string", str(value)]
+    subprocess.run(
+        ["/usr/bin/defaults", "write", domain, key, *arguments],
+        check=True,
+    )
+PY
+  preferences_restored=true
+}
+
+assert_preferences_restored() {
+  /usr/bin/defaults export "$bundle_id" - >"$preferences_after_restore"
+  python3 - "$preferences_snapshot" "$preferences_after_restore" <<'PY'
+import plistlib
+import sys
+
+keys = (
+    "LabanTerminalBackgroundOpacity",
+    "LabanTerminalApplyOpacityToExplicitCellBackgrounds",
+    "LabanTerminalBackdropStyle",
+    "LabanTerminalBackgroundImageScaling",
+    "LabanTerminalBackgroundImageIdentifier",
+    "LabanTerminalBackgroundImageDisplayName",
+)
+with open(sys.argv[1], "rb") as handle:
+    before = plistlib.load(handle)
+with open(sys.argv[2], "rb") as handle:
+    after = plistlib.load(handle)
+for key in keys:
+    if before.get(key) != after.get(key) or (key in before) != (key in after):
+        raise SystemExit(
+            f"preference restoration mismatch for {key}: "
+            f"before={before.get(key)!r} after={after.get(key)!r}"
+        )
+PY
+}
+
+launch_app() {
+  launch_count=$((launch_count + 1))
+  run_id="$base_run_id-launch-$launch_count"
+  app_log="$artifacts/installed-app-launch-$launch_count.log"
+  rm -f "$control_json" "$control_dir/control.sock"
+
+  LABAN_CONTROL_DIR="$control_dir" \
+  LABAN_GUI_FIXTURE_CONTROL=1 \
+  LABAN_RUN_ID="$run_id" \
+    "$app/Contents/MacOS/LabanApp" >"$app_log" 2>&1 &
+  app_pid=$!
+
+  attempt=0
+  while [ "$attempt" -lt 300 ]; do
+    attempt=$((attempt + 1))
+    kill -0 "$app_pid" 2>/dev/null \
+      || fail "installed app exited before readiness; see $app_log"
+    if [ -f "$control_json" ]; then
+      if python3 - "$control_json" "$run_id" "$app_pid" "$control_dir/control.sock" <<'PY'
 import json
 import os
 import sys
@@ -278,43 +336,84 @@ ok = (
 )
 raise SystemExit(0 if ok else 1)
 PY
-    then
-      break
+      then
+        break
+      fi
     fi
+    sleep 0.05
+  done
+  [ "$attempt" -lt 300 ] || fail "timed out waiting for isolated GUI fixture readiness"
+
+  socket=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$control_json")
+  app_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$control_json")
+  diagnostic_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["diagnosticControlToken"])' "$control_json")
+  session_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["diagnosticSessionObserveToken"])' "$control_json")
+
+  attempt=0
+  while [ "$attempt" -lt 200 ]; do
+    attempt=$((attempt + 1))
+    if read_state "$artifacts/.launch-state.json"; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  fail "transparency endpoint did not become ready after launch $launch_count"
+}
+
+stop_app() {
+  if [ -n "$app_pid" ] && kill -0 "$app_pid" 2>/dev/null; then
+    kill -TERM "$app_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
   fi
-  sleep 0.05
-done
-[ "$attempt" -lt 300 ] || fail "timed out waiting for isolated GUI fixture readiness"
+  app_pid=
+  socket=
+  app_token=
+  diagnostic_token=
+  session_token=
+  rm -f "$control_json" "$control_dir/control.sock"
+}
 
-socket=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$control_json")
-app_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$control_json")
-diagnostic_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["diagnosticControlToken"])' "$control_json")
-session_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["diagnosticSessionObserveToken"])' "$control_json")
+cleanup() {
+  set +e
+  if [ -n "$socket" ] && [ -n "$diagnostic_token" ] && [ -S "$socket" ]; then
+    tmp="$artifacts/.cleanup.json"
+    request_status "$diagnostic_token" POST /debug/actions \
+      '{"action":"setReduceTransparencyOverride","enabled":null}' "$tmp" \
+      >/dev/null 2>&1
+    state="$artifacts/.cleanup-state.json"
+    if read_state "$state" >/dev/null 2>&1; then
+      is_full=$(python3 - "$state" <<'PY'
+import json
+import sys
 
-attempt=0
-while [ "$attempt" -lt 200 ]; do
-  attempt=$((attempt + 1))
-  if read_state "$artifacts/transparency-initial.json"; then
-    break
-  fi
-  sleep 0.05
-done
-[ "$attempt" -lt 200 ] || fail 'transparency endpoint did not become ready'
-initial_opacity=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["requestedOpacity"])' "$artifacts/transparency-initial.json")
-initial_cells=$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["applyToExplicitCellBackgrounds"]).lower())' "$artifacts/transparency-initial.json")
-
-target_opacity=$(python3 - "$initial_opacity" <<'PY'
-import math, sys
-initial = float(sys.argv[1])
-print("0.71" if math.isclose(initial, 0.70, abs_tol=1e-9) else "0.70")
+print("true" if json.load(open(sys.argv[1], encoding="utf-8"))["nativeFullscreen"] else "false")
 PY
 )
-target_cells=false
-if [ "$initial_cells" = false ] && [ "$target_opacity" = "$initial_opacity" ]; then
-  target_cells=true
-fi
+      if [ "$is_full" = true ]; then
+        request_status "$diagnostic_token" POST /debug/actions \
+          '{"action":"setNativeFullScreen","enabled":false}' "$tmp" \
+          >/dev/null 2>&1
+      fi
+    fi
+    rm -f "$tmp" "$state"
+  fi
+  stop_app
+  if [ "$preferences_restored" != true ]; then
+    restore_preferences >/dev/null 2>&1
+  fi
+  rm -rf "$control_dir"
+}
+trap cleanup EXIT HUP INT TERM
 
-denial_bodies='{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false}
+snapshot_preferences
+launch_app
+cp "$artifacts/.launch-state.json" "$artifacts/transparency-initial.json"
+
+denial_bodies='{"action":"setBackgroundTransparency","opacity":0.9,"applyToExplicitCellBackgrounds":false}
+{"action":"setBackgroundSource","source":"systemBlur"}
+{"action":"setBackgroundImageScaling","scaling":"fit"}
+{"action":"importBackgroundImage","path":"fixture-input/background-gradient.png","scaling":"fill"}
+{"action":"removeBackgroundImage"}
 {"action":"resetTransparencyDiagnostics"}
 {"action":"setReduceTransparencyOverride","enabled":false}
 {"action":"setNativeFullScreen","enabled":false}'
@@ -327,76 +426,317 @@ printf '%s\n' "$denial_bodies" | while IFS= read -r body; do
 done
 rm -f "$artifacts/.denied.json"
 
-post_action '{"action":"setReduceTransparencyOverride","enabled":false}' "$artifacts/.action.json"
-poll_state requested "$initial_opacity" "$initial_cells" "$artifacts/.precondition.json" || true
-
-post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
-post_action \
-  "{\"action\":\"setBackgroundTransparency\",\"opacity\":$target_opacity,\"applyToExplicitCellBackgrounds\":$target_cells}" \
+# Establish one deterministic starting point without treating setup writes as
+# measured transitions. The private preference snapshot above remains the sole
+# restoration authority.
+post_action '{"action":"setReduceTransparencyOverride","enabled":false}' \
   "$artifacts/.action.json"
-poll_state requested "$target_opacity" "$target_cells" "$artifacts/transparency-requested.json"
-require_counters "$artifacts/transparency-requested.json" 0 1 1 1
+if python3 - "$artifacts/.launch-state.json" <<'PY'
+import json
+import sys
+
+raise SystemExit(0 if json.load(open(sys.argv[1], encoding="utf-8"))["nativeFullscreen"] else 1)
+PY
+then
+  post_action '{"action":"setNativeFullScreen","enabled":false}' "$artifacts/.action.json"
+  poll_expect "$artifacts/.setup-fullscreen.json" \
+    'nativeFullscreen=false' 'forceOpaqueReason=null'
+fi
+post_action '{"action":"setBackgroundSource","source":"none"}' "$artifacts/.action.json"
+post_action '{"action":"setBackgroundImageScaling","scaling":"fill"}' \
+  "$artifacts/.action.json"
+post_action \
+  '{"action":"setBackgroundTransparency","opacity":1.0,"applyToExplicitCellBackgrounds":false}' \
+  "$artifacts/.action.json"
+poll_expect "$artifacts/transparency-setup.json" \
+  'requestedOpacity=1.0' 'effectiveOpacity=1.0' \
+  'applyToExplicitCellBackgrounds=false' \
+  'requestedBackdropStyle=none' 'effectiveBackdropStyle=none' \
+  'backgroundImageScaling=fill' 'forceOpaqueReason=null' \
+  'backdropSubviewKind=none' 'backdropSubviewCount=0'
+
+run_transition \
+  direct-90 \
+  '{"action":"setBackgroundTransparency","opacity":0.9,"applyToExplicitCellBackgrounds":false}' \
+  "$artifacts/transparency-direct-90.json" 0 1 1 1 \
+  'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+  'requestedBackdropStyle=none' 'effectiveBackdropStyle=none' \
+  'forceOpaqueReason=null' 'backdropSubviewKind=none' 'backdropSubviewCount=0'
+
+run_transition \
+  system-blur \
+  '{"action":"setBackgroundSource","source":"systemBlur"}' \
+  "$artifacts/transparency-system-blur.json" 0 1 1 1 \
+  'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+  'requestedBackdropStyle=systemBlur' 'effectiveBackdropStyle=systemBlur' \
+  'forceOpaqueReason=null' 'backdropSubviewKind=systemBlur' 'backdropSubviewCount=1'
+
+run_transition \
+  system-blur-opaque \
+  '{"action":"setBackgroundTransparency","opacity":1.0,"applyToExplicitCellBackgrounds":false}' \
+  "$artifacts/transparency-system-blur-opaque.json" 0 1 1 1 \
+  'requestedOpacity=1.0' 'effectiveOpacity=1.0' \
+  'requestedBackdropStyle=systemBlur' 'effectiveBackdropStyle=none' \
+  'forceOpaqueReason=null' 'backdropSubviewKind=none' 'backdropSubviewCount=0'
+
+run_transition \
+  system-blur-90 \
+  '{"action":"setBackgroundTransparency","opacity":0.9,"applyToExplicitCellBackgrounds":false}' \
+  "$artifacts/transparency-system-blur-90.json" 0 1 1 1 \
+  'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+  'requestedBackdropStyle=systemBlur' 'effectiveBackdropStyle=systemBlur' \
+  'forceOpaqueReason=null' 'backdropSubviewKind=systemBlur' 'backdropSubviewCount=1'
+assert_idle_parked system-blur systemBlur 1
+
+run_transition \
+  image-import \
+  "{\"action\":\"importBackgroundImage\",\"path\":\"$fixture_relative_path\",\"scaling\":\"fill\"}" \
+  "$artifacts/transparency-image-import.json" 0 1 1 1 \
+  'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+  'requestedBackdropStyle=image' 'effectiveBackdropStyle=image' \
+  'backgroundImageScaling=fill' 'backgroundImageState=available' \
+  'backgroundImageIdentifier=!empty' 'backgroundImagePixelWidth=!null' \
+  'backgroundImagePixelHeight=!null' 'backgroundImageContentDigest=!empty' \
+  'backgroundImageImportCount=1' 'backgroundImageDecodeCount=1' \
+  'backgroundImageFileReadCount=1' \
+  'forceOpaqueReason=null' 'backdropSubviewKind=image' 'backdropSubviewCount=1'
+run_image_identifier=$(json_field "$artifacts/transparency-image-import.json" backgroundImageIdentifier) \
+  || fail "import did not publish a managed identifier"
+case "$run_image_identifier" in
+  ''|*[!A-Za-z0-9._-]*) fail "managed image identifier is not path-safe" ;;
+esac
+assert_idle_parked image-fill image 1
+
+for scaling in fit stretch fill; do
+  run_transition \
+    "image-scaling-$scaling" \
+    "{\"action\":\"setBackgroundImageScaling\",\"scaling\":\"$scaling\"}" \
+    "$artifacts/transparency-image-scaling-$scaling.json" 0 0 0 0 \
+    'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+    'requestedBackdropStyle=image' 'effectiveBackdropStyle=image' \
+    "backgroundImageScaling=$scaling" 'backgroundImageState=available' \
+    'backgroundImageImportCount=0' 'backgroundImageDecodeCount=0' \
+    'backgroundImageFileReadCount=0' \
+    'forceOpaqueReason=null' 'backdropSubviewKind=image' 'backdropSubviewCount=1'
+  assert_idle_parked "image-$scaling" image 1
+done
 
 cycle=1
 while [ "$cycle" -le "$cycles" ]; do
-  post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
-  post_action '{"action":"setReduceTransparencyOverride","enabled":true}' "$artifacts/.action.json"
-  poll_state reduce true false "$artifacts/transparency-reduce-enter-$cycle.json"
-  require_counters "$artifacts/transparency-reduce-enter-$cycle.json" 1 1 1 1
+  run_transition \
+    "source-none-$cycle" \
+    '{"action":"setBackgroundSource","source":"none"}' \
+    "$artifacts/transparency-source-none-$cycle.json" 0 1 1 1 \
+    'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+    'requestedBackdropStyle=none' 'effectiveBackdropStyle=none' \
+    'backgroundImageState=available' 'backgroundImageDecodeCount=0' \
+    'backgroundImageFileReadCount=0' 'forceOpaqueReason=null' \
+    'backdropSubviewKind=none' 'backdropSubviewCount=0'
 
-  post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
-  post_action '{"action":"setReduceTransparencyOverride","enabled":false}' "$artifacts/.action.json"
-  poll_state reduce false false "$artifacts/transparency-reduce-exit-$cycle.json"
-  require_counters "$artifacts/transparency-reduce-exit-$cycle.json" 1 1 1 1
+  run_transition \
+    "source-blur-$cycle" \
+    '{"action":"setBackgroundSource","source":"systemBlur"}' \
+    "$artifacts/transparency-source-blur-$cycle.json" 0 1 1 1 \
+    'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+    'requestedBackdropStyle=systemBlur' 'effectiveBackdropStyle=systemBlur' \
+    'backgroundImageState=available' 'backgroundImageDecodeCount=0' \
+    'backgroundImageFileReadCount=0' 'forceOpaqueReason=null' \
+    'backdropSubviewKind=systemBlur' 'backdropSubviewCount=1'
+
+  run_transition \
+    "source-image-$cycle" \
+    '{"action":"setBackgroundSource","source":"image"}' \
+    "$artifacts/transparency-source-image-$cycle.json" 0 1 1 1 \
+    'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+    'requestedBackdropStyle=image' 'effectiveBackdropStyle=image' \
+    'backgroundImageState=available' 'backgroundImageDecodeCount=0' \
+    'backgroundImageFileReadCount=0' 'forceOpaqueReason=null' \
+    'backdropSubviewKind=image' 'backdropSubviewCount=1'
+
+  run_transition \
+    "opacity-100-$cycle" \
+    '{"action":"setBackgroundTransparency","opacity":1.0,"applyToExplicitCellBackgrounds":false}' \
+    "$artifacts/transparency-opacity-100-$cycle.json" 0 1 1 1 \
+    'requestedOpacity=1.0' 'effectiveOpacity=1.0' \
+    'requestedBackdropStyle=image' 'effectiveBackdropStyle=none' \
+    'backgroundImageState=available' 'backgroundImageDecodeCount=0' \
+    'backgroundImageFileReadCount=0' 'forceOpaqueReason=null' \
+    'backdropSubviewKind=none' 'backdropSubviewCount=0'
+
+  run_transition \
+    "opacity-90-$cycle" \
+    '{"action":"setBackgroundTransparency","opacity":0.9,"applyToExplicitCellBackgrounds":false}' \
+    "$artifacts/transparency-opacity-90-$cycle.json" 0 1 1 1 \
+    'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+    'requestedBackdropStyle=image' 'effectiveBackdropStyle=image' \
+    'backgroundImageState=available' 'backgroundImageDecodeCount=0' \
+    'backgroundImageFileReadCount=0' 'forceOpaqueReason=null' \
+    'backdropSubviewKind=image' 'backdropSubviewCount=1'
+  cycle=$((cycle + 1))
+done
+assert_idle_parked source-cycle image 1
+
+# Only the generated, run-scoped managed file is removed. Switching to None
+# first makes the following Image request perform a fresh missing-file resolve.
+run_transition \
+  missing-precondition-none \
+  '{"action":"setBackgroundSource","source":"none"}' \
+  "$artifacts/transparency-missing-precondition.json" 0 1 1 1 \
+  'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+  'requestedBackdropStyle=none' 'effectiveBackdropStyle=none' \
+  'backdropSubviewKind=none' 'backdropSubviewCount=0'
+managed_file="$control_dir/background-images/$run_image_identifier"
+[ -f "$managed_file" ] || fail "run-scoped managed image is missing before fallback test"
+rm -f "$managed_file"
+
+run_transition \
+  missing-image-fallback \
+  '{"action":"setBackgroundSource","source":"image"}' \
+  "$artifacts/transparency-image-missing.json" 0 1 1 1 \
+  'requestedOpacity=0.9' 'effectiveOpacity=1.0' \
+  'requestedBackdropStyle=image' 'effectiveBackdropStyle=none' \
+  'backgroundImageState=missing' \
+  'forceOpaqueReason=backgroundImageUnavailable' \
+  'backdropSubviewKind=none' 'backdropSubviewCount=0'
+assert_idle_parked image-missing none 0
+
+run_transition \
+  missing-image-repair \
+  "{\"action\":\"importBackgroundImage\",\"path\":\"$fixture_relative_path\",\"scaling\":\"stretch\"}" \
+  "$artifacts/transparency-image-repaired.json" 0 1 1 1 \
+  'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+  'requestedBackdropStyle=image' 'effectiveBackdropStyle=image' \
+  'backgroundImageScaling=stretch' 'backgroundImageState=available' \
+  'backgroundImageIdentifier=!empty' 'backgroundImagePixelWidth=!null' \
+  'backgroundImagePixelHeight=!null' 'backgroundImageContentDigest=!empty' \
+  'backgroundImageImportCount=1' 'backgroundImageDecodeCount=1' \
+  'backgroundImageFileReadCount=1' \
+  'forceOpaqueReason=null' 'backdropSubviewKind=image' 'backdropSubviewCount=1'
+run_image_identifier=$(json_field "$artifacts/transparency-image-repaired.json" backgroundImageIdentifier) \
+  || fail "repair did not publish a managed identifier"
+assert_idle_parked image-repaired image 1
+
+cycle=1
+while [ "$cycle" -le "$cycles" ]; do
+  run_transition \
+    "reduce-enter-$cycle" \
+    '{"action":"setReduceTransparencyOverride","enabled":true}' \
+    "$artifacts/transparency-reduce-enter-$cycle.json" 1 1 1 1 \
+    'requestedOpacity=0.9' 'effectiveOpacity=1.0' \
+    'requestedBackdropStyle=image' 'effectiveBackdropStyle=none' \
+    'backgroundImageState=available' 'effectiveReduceTransparency=true' \
+    'forceOpaqueReason=reduceTransparency' \
+    'backdropSubviewKind=none' 'backdropSubviewCount=0'
+
+  run_transition \
+    "reduce-exit-$cycle" \
+    '{"action":"setReduceTransparencyOverride","enabled":false}' \
+    "$artifacts/transparency-reduce-exit-$cycle.json" 1 1 1 1 \
+    'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+    'requestedBackdropStyle=image' 'effectiveBackdropStyle=image' \
+    'backgroundImageState=available' 'effectiveReduceTransparency=false' \
+    'forceOpaqueReason=null' 'backdropSubviewKind=image' 'backdropSubviewCount=1'
   cycle=$((cycle + 1))
 done
 cp "$artifacts/transparency-reduce-enter-$cycles.json" \
   "$artifacts/transparency-reduce-transparency.json"
+assert_idle_parked reduce-restored image 1
 
 cycle=1
 while [ "$cycle" -le "$cycles" ]; do
-  post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
-  post_action '{"action":"setNativeFullScreen","enabled":true}' "$artifacts/.action.json"
-  poll_state fullscreen true false "$artifacts/transparency-fullscreen-enter-$cycle.json"
-  cp "$artifacts/transparency-fullscreen-enter-$cycle.json" "$artifacts/.idle-before.json"
-  sleep 2
-  read_state "$artifacts/.idle-after.json"
-  python3 - "$artifacts/.idle-before.json" "$artifacts/.idle-after.json" <<'PY'
-import json, sys
-before = json.load(open(sys.argv[1], encoding="utf-8"))
-after = json.load(open(sys.argv[2], encoding="utf-8"))
-if after["backdropSubviewCount"] != 0:
-    raise SystemExit("backdropSubviewCount must stay zero")
-if before["rendererPresentCount"] != after["rendererPresentCount"]:
-    raise SystemExit("rendererPresentCount changed during post-full-screen idle window")
-PY
+  run_transition \
+    "fullscreen-enter-$cycle" \
+    '{"action":"setNativeFullScreen","enabled":true}' \
+    "$artifacts/transparency-fullscreen-enter-$cycle.json" 0 1 1 any \
+    'requestedOpacity=0.9' 'requestedBackdropStyle=image' \
+    'effectiveOpacity=1.0' 'effectiveBackdropStyle=none' \
+    'nativeFullscreen=true' 'forceOpaqueReason=nativeFullscreen' \
+    'backdropSubviewKind=none' 'backdropSubviewCount=0'
+  assert_idle_parked "fullscreen-enter-$cycle" none 0
 
-  post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
-  post_action '{"action":"setNativeFullScreen","enabled":false}' "$artifacts/.action.json"
-  poll_state fullscreen false false "$artifacts/transparency-fullscreen-exit-$cycle.json"
-  cp "$artifacts/transparency-fullscreen-exit-$cycle.json" "$artifacts/.idle-before.json"
-  sleep 2
-  read_state "$artifacts/.idle-after.json"
-  python3 - "$artifacts/.idle-before.json" "$artifacts/.idle-after.json" <<'PY'
-import json, sys
-before = json.load(open(sys.argv[1], encoding="utf-8"))
-after = json.load(open(sys.argv[2], encoding="utf-8"))
-if after["backdropSubviewCount"] != 0:
-    raise SystemExit("backdropSubviewCount must stay zero")
-if before["rendererPresentCount"] != after["rendererPresentCount"]:
-    raise SystemExit("rendererPresentCount changed during post-full-screen idle window")
-PY
+  run_transition \
+    "fullscreen-exit-$cycle" \
+    '{"action":"setNativeFullScreen","enabled":false}' \
+    "$artifacts/transparency-fullscreen-exit-$cycle.json" 0 1 1 any \
+    'requestedOpacity=0.9' 'requestedBackdropStyle=image' \
+    'effectiveOpacity=0.9' 'effectiveBackdropStyle=image' \
+    'nativeFullscreen=false' 'forceOpaqueReason=null' \
+    'backdropSubviewKind=image' 'backdropSubviewCount=1'
+  assert_idle_parked "fullscreen-exit-$cycle" image 1
   cycle=$((cycle + 1))
 done
 cp "$artifacts/transparency-fullscreen-enter-$cycles.json" \
   "$artifacts/transparency-fullscreen.json"
 
-post_action '{"action":"setReduceTransparencyOverride","enabled":null}' "$artifacts/.action.json"
-post_action \
-  "{\"action\":\"setBackgroundTransparency\",\"opacity\":$initial_opacity,\"applyToExplicitCellBackgrounds\":$initial_cells}" \
-  "$artifacts/.action.json"
-poll_state requested "$initial_opacity" "$initial_cells" "$artifacts/transparency-restored.json"
-rm -f "$artifacts/.action.json" \
-  "$artifacts/.precondition.json" "$artifacts/.idle-before.json" "$artifacts/.idle-after.json"
+# Relaunch with the managed image active. The identifier/configuration must
+# survive; exactly one startup file read/decode is allowed, and all three idle
+# counters must park after a diagnostics reset.
+read_state "$artifacts/transparency-pre-relaunch.json" \
+  || fail "could not capture pre-relaunch state"
+relaunch_identifier=$(json_field "$artifacts/transparency-pre-relaunch.json" backgroundImageIdentifier)
+relaunch_digest=$(json_field "$artifacts/transparency-pre-relaunch.json" backgroundImageContentDigest)
+relaunch_width=$(json_field "$artifacts/transparency-pre-relaunch.json" backgroundImagePixelWidth)
+relaunch_height=$(json_field "$artifacts/transparency-pre-relaunch.json" backgroundImagePixelHeight)
+stop_app
+launch_app
+poll_expect "$artifacts/transparency-post-relaunch.json" \
+  'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+  'applyToExplicitCellBackgrounds=false' \
+  'requestedBackdropStyle=image' 'effectiveBackdropStyle=image' \
+  'backgroundImageScaling=stretch' 'backgroundImageState=available' \
+  "backgroundImageIdentifier=string:$relaunch_identifier" \
+  "backgroundImagePixelWidth=$relaunch_width" \
+  "backgroundImagePixelHeight=$relaunch_height" \
+  "backgroundImageContentDigest=string:$relaunch_digest" \
+  'backgroundImageImportCount=0' 'backgroundImageDecodeCount=1' \
+  'backgroundImageFileReadCount=1' \
+  'forceOpaqueReason=null' 'backdropSubviewKind=image' 'backdropSubviewCount=1'
+"$state_verifier" restore \
+  "$artifacts/transparency-pre-relaunch.json" \
+  "$artifacts/transparency-post-relaunch.json" \
+  || fail "relaunch changed the requested image configuration"
+post_action '{"action":"resetTransparencyDiagnostics"}' "$artifacts/.action.json"
+poll_expect "$artifacts/transparency-relaunch-reset.json" \
+  'backgroundImageImportCount=0' 'backgroundImageDecodeCount=0' \
+  'backgroundImageFileReadCount=0' 'rendererPresentCount=0' \
+  'backdropSubviewKind=image' 'backdropSubviewCount=1'
+assert_idle_parked relaunch image 1
 
-printf 'transparency-transition-smoke: passed %s Reduce Transparency and native full-screen cycles\n' "$cycles"
+run_transition \
+  remove-run-image \
+  '{"action":"removeBackgroundImage"}' \
+  "$artifacts/transparency-image-removed.json" 0 1 1 1 \
+  'requestedOpacity=0.9' 'effectiveOpacity=0.9' \
+  'requestedBackdropStyle=none' 'effectiveBackdropStyle=none' \
+  'backgroundImageScaling=stretch' 'backgroundImageState=none' \
+  'backgroundImageIdentifier=null' 'backgroundImagePixelWidth=null' \
+  'backgroundImagePixelHeight=null' 'backgroundImageContentDigest=null' \
+  'forceOpaqueReason=null' 'backdropSubviewKind=none' 'backdropSubviewCount=0'
+[ ! -f "$control_dir/background-images/$relaunch_identifier" ] \
+  || fail "removeBackgroundImage left the run-scoped managed file behind"
+
+# Preference restoration happens only after this process exits, preventing a
+# stale UserDefaults cache from republishing the run-scoped identifier. A final
+# fixture relaunch verifies both the exact requested projection and the six-key
+# typed preference subset, including the user-visible managed display name.
+stop_app
+restore_preferences
+assert_preferences_restored
+launch_app
+read_state "$artifacts/transparency-restored.json" \
+  || fail "could not read restored transparency state"
+"$state_verifier" restore \
+  "$artifacts/transparency-initial.json" \
+  "$artifacts/transparency-restored.json" \
+  || fail "final relaunch did not restore the initial transparency request"
+assert_preferences_restored
+
+rm -f "$artifacts/.action.json" \
+  "$artifacts/.launch-state.json" \
+  "$artifacts/.setup-fullscreen.json" \
+  "$artifacts"/.idle-*-before.json \
+  "$artifacts"/.idle-*-after.json 2>/dev/null || true
+
+printf '%s\n' \
+  "transparency-transition-smoke: passed $cycles source/opacity cycles" \
+  "transparency-transition-smoke: passed Fill/Fit/Stretch, missing repair, relaunch, Reduce Transparency, and native full-screen coverage"
