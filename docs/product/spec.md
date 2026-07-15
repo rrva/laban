@@ -270,7 +270,7 @@ included in compatibility claims.
 
 | IME | Status |
 | --- | --- |
-| Apple Pinyin | passed |
+| Apple Pinyin | not tested - compatibility unclaimed |
 | Rime/Squirrel | not tested - compatibility unclaimed |
 
 `System Blur` and a theme-neutral `Frosted` preset are approved follow-up
