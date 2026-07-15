@@ -532,6 +532,19 @@ Two-second idle windows require renderer presents, image decodes, and image
 file reads to remain parked. Full-screen animations may present while AppKit
 transitions, but their post-completion idle windows must also park.
 
+`scripts/verify-system-blur-composition` is the visual oracle for the native
+material. It launches checked-in fixture code that orders known black/white
+stripes immediately behind an isolated installed Laban window, applies exact
+30% None and System Blur states through the credential above, and captures the
+complete main display with `SCContentFilter(display:excludingWindows:)`. Do not
+replace that display filter with Laban's app screenshot or a window-only
+ScreenCaptureKit filter: those capture paths suppress behind-window material
+composition. The oracle locates the live terminal rectangle, requires the
+blurred output to remain correlated with the stripe source, and requires lower
+stripe-edge energy than direct transparency. It restores the typed transparency
+preference subset and terminates only its owned processes on every exit path.
+Screen Recording access and a closed existing Laban instance are prerequisites.
+
 For deterministic debug-server PNG alpha, `laban-agent` accepts equals-form
 `--background-opacity=<0...1>`, `--background-effect=none|system-blur`, and the
 boolean `--background-opacity-cells`. The headless projection preserves a
