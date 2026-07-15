@@ -10,6 +10,110 @@ final class FrameProducerTransparencyTests: XCTestCase {
   private let explicitBackground: UInt32 = 0xCC_22_11_FF
   private let inverseBackground: UInt32 = 0x22_44_CC_FF
 
+  func testFirstSettingsChangeFrameRoutesOptionsThroughLocalAndRemoteRequests() throws {
+    var size = LabanTerminalSize()
+    size.rows = 2
+    size.cols = 10
+    let model = try AppModel(initialSize: size)
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+
+    func request(frame: Int, opacity: UInt8) -> TerminalSurfaceFrameRequest {
+      TerminalSurfaceFrameRequest(
+        frame: frame,
+        viewportWidth: 360,
+        viewportHeight: 64,
+        backgroundCompositingOptions: TerminalBackgroundCompositingOptions(
+          opacity: opacity,
+          applyToExplicitCellBackgrounds: false),
+        snapshotBackgroundCapability: .supported,
+        includeTerminalAreaBackground: true,
+        requireActiveSnapshot: true,
+        surfaceWidth: 360,
+        surfaceHeight: 64,
+        surfaceScale: 1)
+    }
+
+    func assertBaseAlpha(
+      _ frame: TerminalSurfaceFrame,
+      equals expected: UInt32,
+      file: StaticString = #filePath,
+      line: UInt = #line
+    ) {
+      let baseRects = frame.commands.compactMap { command -> (FrameSource, UInt32)? in
+        guard case .rect(_, let color, let source, .replace) = command else { return nil }
+        return (source, color)
+      }
+      XCTAssertTrue(
+        baseRects.contains { $0.0 == .sidebar && ($0.1 & 0xFF) == expected },
+        "sidebar must use the request alpha on its first changed frame",
+        file: file,
+        line: line)
+      XCTAssertTrue(
+        baseRects.contains { $0.0 == .terminal && ($0.1 & 0xFF) == expected },
+        "terminal must use the request alpha on its first changed frame",
+        file: file,
+        line: line)
+    }
+
+    _ = try XCTUnwrap(controller.makeFrame(request(frame: 1, opacity: 255)))
+    let firstChangedLocalFrame = try XCTUnwrap(
+      controller.makeFrame(request(frame: 2, opacity: 91)))
+    assertBaseAlpha(firstChangedLocalFrame, equals: 91)
+
+    let sessionId = try XCTUnwrap(model.activeTab?.sessionId)
+    let firstChangedRemoteFrame = try XCTUnwrap(
+      controller.makeFrame(
+        request(frame: 3, opacity: 73),
+        remoteSnapshot: snapshot(),
+        sessionId: sessionId))
+    assertBaseAlpha(firstChangedRemoteFrame, equals: 73)
+  }
+
+  func testSidebarMemoInvalidatesOnFirstCompositingChangeThenReuses() throws {
+    var size = LabanTerminalSize()
+    size.rows = 2
+    size.cols = 10
+    let model = try AppModel(initialSize: size)
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let activeTabId = try XCTUnwrap(model.activeTab?.id)
+
+    _ = controller.sidebarCommands(
+      activeTabId: activeTabId,
+      viewportHeight: 100,
+      backgroundCompositingOptions: .opaque)
+    let opaqueBuildCount = controller.sidebarRebuildCountForTesting
+    let translucent = TerminalBackgroundCompositingOptions(
+      opacity: 123,
+      applyToExplicitCellBackgrounds: false)
+    let changed = controller.sidebarCommands(
+      activeTabId: activeTabId,
+      viewportHeight: 100,
+      backgroundCompositingOptions: translucent)
+
+    XCTAssertEqual(controller.sidebarRebuildCountForTesting, opaqueBuildCount + 1)
+    guard case .rect(_, let color, .sidebar, .replace)? = changed.first else {
+      return XCTFail("expected replace-composited sidebar base")
+    }
+    XCTAssertEqual(color & 0xFF, 123)
+
+    _ = controller.sidebarCommands(
+      activeTabId: activeTabId,
+      viewportHeight: 100,
+      backgroundCompositingOptions: translucent)
+    XCTAssertEqual(
+      controller.sidebarRebuildCountForTesting,
+      opaqueBuildCount + 1,
+      "equal compositing options should hit the sidebar memo")
+  }
+
   func testRemoteCanvasInheritedAndExplicitBackgroundSemantics() throws {
     let producer = FrameProducer(
       cellWidth: 8,

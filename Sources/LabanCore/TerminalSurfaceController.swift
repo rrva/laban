@@ -335,6 +335,8 @@ public enum TerminalSnapshotText {
 /// part of the key automatically, so a new metadata field cannot silently go
 /// stale.
 private struct SidebarCacheSignature: Equatable {
+  var backgroundCompositingOptions: TerminalBackgroundCompositingOptions
+
   struct Entry: Equatable {
     var id: Tab.ID
     var position: Int
@@ -350,7 +352,6 @@ private struct SidebarCacheSignature: Equatable {
   var hoveredTabId: Tab.ID?
   var dragIndicator: SidebarProducer.DragIndicator?
   var reduceMotion: Bool
-  var backgroundCompositingOptions: TerminalBackgroundCompositingOptions
   var sidebarWidth: CGFloat
   var cellWidth: CGFloat
   var cellHeight: CGFloat
@@ -896,6 +897,7 @@ public final class TerminalSurfaceController {
     // (and re-resolving every tab title) at the display rate to animate one
     // dot is what saturated the main thread under streaming load.
     let signature = SidebarCacheSignature(
+      backgroundCompositingOptions: backgroundCompositingOptions,
       tabs: tabs.map {
         SidebarCacheSignature.Entry(
           id: $0.id,
@@ -911,7 +913,6 @@ public final class TerminalSurfaceController {
       hoveredTabId: hoveredTabId,
       dragIndicator: dragIndicator,
       reduceMotion: reduceMotion,
-      backgroundCompositingOptions: backgroundCompositingOptions,
       sidebarWidth: sidebarWidth,
       cellWidth: sidebarCellWidth,
       cellHeight: sidebarCellHeight,

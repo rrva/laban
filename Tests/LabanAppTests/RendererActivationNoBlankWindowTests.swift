@@ -111,7 +111,98 @@ final class RendererActivationNoBlankWindowTests: XCTestCase {
     XCTAssertEqual(vector.renderedDamages, [.full])
   }
 
-  func testTransparencyIsAppliedBeforeWarmSwapFrameAndLayerInstallation() throws {
+  private func makeView(
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) throws -> TerminalBitmapView {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 20
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let sidebarFontAtlas = FontAtlas(pointSize: 11)
+    let view = TerminalBitmapView(
+      model: model,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas,
+      cellWidth: Int(fontAtlas.cellSize.width),
+      cellHeight: Int(fontAtlas.cellSize.height))
+    view.frame = NSRect(x: 0, y: 0, width: 640, height: 360)
+    return view
+  }
+
+  private func drainMainQueue(
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    let expectation = expectation(description: "main queue drained")
+    DispatchQueue.main.async {
+      expectation.fulfill()
+    }
+    wait(for: [expectation], timeout: 1)
+  }
+}
+
+final class FrameProducerTransparencyTests: XCTestCase {
+  private var oldRendererEnv: String?
+
+  override func setUp() {
+    super.setUp()
+    oldRendererEnv = getenv("LABAN_RENDERER").map { String(cString: $0) }
+    unsetenv("LABAN_RENDERER")
+    UserDefaults.standard.removeObject(forKey: RendererSelection.defaultsKey)
+    TerminalBitmapView.backendFactoryForTesting = nil
+  }
+
+  override func tearDown() {
+    TerminalBitmapView.backendFactoryForTesting = nil
+    UserDefaults.standard.removeObject(forKey: RendererSelection.defaultsKey)
+    if let oldRendererEnv {
+      setenv("LABAN_RENDERER", oldRendererEnv, 1)
+    } else {
+      unsetenv("LABAN_RENDERER")
+    }
+    oldRendererEnv = nil
+    super.tearDown()
+  }
+
+  func testCurrentRendererFirstSettingsChangeFrameUsesNewTransparencyRequest() throws {
+    let harness = BackendHarness()
+    let classic = ControlledBackend(selection: .classic)
+    harness.enqueue(classic)
+    TerminalBitmapView.backendFactoryForTesting = harness.makeBackend
+    RendererSelection.set(.classic)
+    let view = try makeView()
+
+    view.advanceFrame()
+    let framesBeforeSettingsChange = classic.renderedCommandFrames.count
+    XCTAssertGreaterThan(framesBeforeSettingsChange, 0, "test must establish an opaque frame first")
+
+    applyNonopaqueTransparency(to: view)
+    XCTAssertEqual(
+      classic.renderedCommandFrames.count,
+      framesBeforeSettingsChange,
+      "wake: false must leave the changed frame pending until the caller advances")
+
+    view.advanceFrame()
+
+    XCTAssertFalse(classic.surfaceTransparency.isOpaque)
+    XCTAssertFalse(classic.layer.isOpaque)
+    let firstChangedFrame = try XCTUnwrap(
+      classic.renderedCommandFrames.dropFirst(framesBeforeSettingsChange).first)
+    for source in [FrameSource.terminal, .sidebar] {
+      XCTAssertTrue(
+        firstChangedFrame.contains { command in
+          guard case .rect(_, let color, let commandSource, .replace) = command else {
+            return false
+          }
+          return commandSource == source && (color & 0xFF) == 179
+        },
+        "the current renderer's first post-change frame must use alpha 179 for \(source)")
+    }
+  }
+
+  func testWarmRendererSwapFirstFrameUsesCurrentTransparencyRequest() throws {
     let harness = BackendHarness()
     let classic = ControlledBackend(selection: .classic)
     let slug = ControlledBackend(selection: .slugGlyph)
@@ -120,18 +211,7 @@ final class RendererActivationNoBlankWindowTests: XCTestCase {
     TerminalBitmapView.backendFactoryForTesting = harness.makeBackend
     RendererSelection.set(.classic)
     let view = try makeView()
-    let requested = TerminalTransparencyConfiguration(
-      backgroundOpacity: 0.7,
-      applyToExplicitCellBackgrounds: false,
-      backdropStyle: .none)
-    let effective = TerminalTransparencyPolicy.resolve(
-      requested: requested,
-      reduceTransparency: false,
-      nativeFullscreen: false,
-      supportsBehindWindowBlur: false,
-      snapshotBackgroundCapability: .supported,
-      headless: false)
-    view.applyTransparency(requested: requested, effective: effective, wake: false)
+    applyNonopaqueTransparency(to: view)
 
     view.applyRendererSelection(.slugGlyph)
 
@@ -153,6 +233,21 @@ final class RendererActivationNoBlankWindowTests: XCTestCase {
     drainMainQueue()
     XCTAssertTrue(view.layer === slug.layer)
     XCTAssertFalse(view.debugBackendSurfaceIsOpaque ?? true)
+  }
+
+  private func applyNonopaqueTransparency(to view: TerminalBitmapView) {
+    let requested = TerminalTransparencyConfiguration(
+      backgroundOpacity: 0.7,
+      applyToExplicitCellBackgrounds: false,
+      backdropStyle: .none)
+    let effective = TerminalTransparencyPolicy.resolve(
+      requested: requested,
+      reduceTransparency: false,
+      nativeFullscreen: false,
+      supportsBehindWindowBlur: false,
+      snapshotBackgroundCapability: .supported,
+      headless: false)
+    view.applyTransparency(requested: requested, effective: effective, wake: false)
   }
 
   private func makeView(
