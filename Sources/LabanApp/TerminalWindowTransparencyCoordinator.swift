@@ -11,9 +11,7 @@ struct TerminalWindowTransparencyStatus: Equatable, Sendable {
   var snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
   var reduceTransparency: Bool
   var nativeFullscreen: Bool
-
-  /// Direct opacity deliberately creates no AppKit backdrop-effect host.
-  var backdropSubviewCount: Int { 0 }
+  var backdropSubviewCount: Int
 }
 
 struct TerminalTransparencyDiagnostics: Equatable, Sendable {
@@ -33,6 +31,7 @@ struct TerminalTransparencyDiagnostics: Equatable, Sendable {
 final class TerminalWindowTransparencyCoordinator {
   private weak var window: NSWindow?
   private weak var terminalView: TerminalBitmapView?
+  private weak var backgroundEffectHost: TerminalBackgroundEffectHost?
   private let defaults: UserDefaults
   private let notificationCenter: NotificationCenter
   private var observerTokens: [NSObjectProtocol] = []
@@ -49,10 +48,12 @@ final class TerminalWindowTransparencyCoordinator {
     defaults: UserDefaults = .standard,
     notificationCenter: NotificationCenter = .default,
     reduceTransparency: Bool,
-    snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
+    snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability,
+    backgroundEffectHost: TerminalBackgroundEffectHost? = nil
   ) {
     self.window = window
     self.terminalView = terminalView
+    self.backgroundEffectHost = backgroundEffectHost
     self.defaults = defaults
     self.notificationCenter = notificationCenter
     self.requested = TerminalTransparencySettings.requestedConfiguration(defaults: defaults)
@@ -63,7 +64,7 @@ final class TerminalWindowTransparencyCoordinator {
       requested: requested,
       reduceTransparency: reduceTransparency,
       nativeFullscreen: nativeFullscreen,
-      supportsBehindWindowBlur: false,
+      supportsBehindWindowBlur: backgroundEffectHost?.supportsBehindWindowBlur == true,
       snapshotBackgroundCapability: snapshotBackgroundCapability,
       headless: false)
 
@@ -84,7 +85,8 @@ final class TerminalWindowTransparencyCoordinator {
       effective: effective,
       snapshotBackgroundCapability: snapshotBackgroundCapability,
       reduceTransparency: reduceTransparency,
-      nativeFullscreen: nativeFullscreen)
+      nativeFullscreen: nativeFullscreen,
+      backdropSubviewCount: backgroundEffectHost?.backdropSubviewCount ?? 0)
   }
 
   /// Cached accessibility input from TerminalBitmapView's sole workspace
@@ -163,7 +165,7 @@ final class TerminalWindowTransparencyCoordinator {
       requested: requested,
       reduceTransparency: reduceTransparency,
       nativeFullscreen: nativeFullscreen,
-      supportsBehindWindowBlur: false,
+      supportsBehindWindowBlur: backgroundEffectHost?.supportsBehindWindowBlur == true,
       snapshotBackgroundCapability: snapshotBackgroundCapability,
       headless: false)
     guard resolved != effective else {
@@ -181,6 +183,7 @@ final class TerminalWindowTransparencyCoordinator {
     // of the themed tint in both opaque and translucent modes.
     window.backgroundColor = .clear
     window.isOpaque = effective.isSurfaceOpaque
+    backgroundEffectHost?.apply(effective.backdropStyle)
     terminalView.applyTransparency(
       requested: requested,
       effective: effective,

@@ -507,15 +507,6 @@ final class MainWindowController: NSWindowController {
     // (⌃⌘F) take the terminal fullscreen, which a terminal is a prime
     // candidate for. Without fullScreenPrimary AppKit disables toggleFullScreen.
     window.collectionBehavior.insert(.fullScreenPrimary)
-    // Resolve and apply window/surface policy before the window is ever
-    // presented. This prevents AppKit's default opaque background from
-    // flashing through a translucent first frame or cold-launch backend swap.
-    let transparencyCoordinator = TerminalWindowTransparencyCoordinator(
-      window: window,
-      terminalView: termView,
-      reduceTransparency: termView.accessibilityDisplayOptionsForTesting.reduceTransparency,
-      snapshotBackgroundCapability:
-        sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess)
     // Container view hosts the terminal plus a small overlay badge. The
     // terminal stays the full size; the badge floats in the bottom-left,
     // sized to its content. Using a sibling instead of a TerminalBitmapView
@@ -523,6 +514,10 @@ final class MainWindowController: NSWindowController {
     // terminal layer.
     let containerView = NSView(frame: NSRect(x: 0, y: 0, width: viewW, height: viewH))
     containerView.autoresizesSubviews = true
+    let backgroundEffectHost = TerminalBackgroundEffectHost(frame: .zero)
+    backgroundEffectHost.install(
+      in: containerView,
+      terminalLeadingInset: SidebarLayout.defaultWidth)
     termView.autoresizingMask = [.width, .height]
     containerView.addSubview(termView)
     let updateBadge = UpdateBadgeView(
@@ -562,6 +557,17 @@ final class MainWindowController: NSWindowController {
     }
 
     window.contentView = containerView
+    // Resolve and apply window/surface policy after the terminal-only material
+    // host is installed but before the window is presented. This prevents
+    // AppKit's default opaque background from flashing through a translucent
+    // first frame or cold-launch backend swap.
+    let transparencyCoordinator = TerminalWindowTransparencyCoordinator(
+      window: window,
+      terminalView: termView,
+      reduceTransparency: termView.accessibilityDisplayOptionsForTesting.reduceTransparency,
+      snapshotBackgroundCapability:
+        sessionCoordinator?.terminalSnapshotBackgroundCapability ?? .inProcess,
+      backgroundEffectHost: backgroundEffectHost)
     window.center()
     window.makeKeyAndOrderFront(nil)
 
