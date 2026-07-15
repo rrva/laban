@@ -21,7 +21,8 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 - [x] (2026-07-14) Descope `System Blur` and the `Frosted` preset to a documented follow-up; this plan ships direct opacity only (see `Deferred Follow-Up: System Blur and Frosted Preset`).
 - [x] (2026-07-14) Address the second independent plan review: define an authenticated installed-GUI control path, correct the software compositing seam, distinguish full-frame canvas overwrite from partial transparent erasure, and replace interpretive source/performance/IME review checks with executable verifiers.
 - [x] (2026-07-15) Add the direct-opacity product contract, approved deferred System Blur/Frosted direction, and accepted ADR 0028 before implementation changes.
-- [ ] Implement the shared settings, effective-policy resolver, and explicit-background snapshot bit with unit tests.
+- [x] (2026-07-15) Implement the shared requested/effective policy, notification-backed settings, explicit-background snapshot bit, ABI-1 transport, and negotiated helper capability with focused tests.
+- [x] (2026-07-15) Capture the immutable pre-renderer opaque Slug/vector release baseline at commit `0779195` with all 4,800 samples accepted across ten independent processes.
 - [ ] Deliver the first end-to-end Slug implementation, including AppKit window transparency and the grayscale antialiasing fallback.
 - [ ] Add equivalent software, classic Metal, GPU-driven Metal, and vector glyph support.
 - [ ] Add live settings UI, full-screen and accessibility policy, debug/headless control, screenshots, alpha probes, and performance evidence.
@@ -43,6 +44,12 @@ The shipped default remains exactly as it is today: 100% opacity, no background 
 
 - Observation: `SoftwareBackend.render` delegates command drawing to `SoftwareRenderer.render`; compositing-mode dispatch and `CGBlendMode.copy` therefore belong in `SoftwareRenderer`, while the backend owns bitmap reset/invalidation and presentation state.
   Evidence: `Sources/LabanRenderer/SoftwareBackend.swift` and `Sources/LabanRenderer/SoftwareRenderer.swift` inspected on 2026-07-14.
+
+- Observation: `swift test -c release --filter ...` still compiles unrelated test targets, and the current tree has test-only control-server APIs available only in debug configuration, so a release XCTest benchmark cannot be isolated mechanically with `--filter`.
+  Evidence: the first clean-worktree baseline attempt failed while compiling `LabanControlTests` because `skipExecutableVerificationForTests`, `mintSessionObserveToken`, and `testListenerFD` are absent in release builds. The replacement `transparency-renderer-bench` executable depends only on `LabanCore`, `LabanRenderer`, and `LabanTerminalCore` and builds in release without compiling unrelated tests.
+
+- Observation: vector rendering intentionally permits only one content frame in flight, so an immediate asynchronous second submission can return `false` while the prior command buffer completes; that is backpressure, not a failed timing sample.
+  Evidence: the first isolated vector baseline stopped at CPU-encode warmup frame 1. The final harness waits outside the timed interval for the next accepted submission, bounds the retry at five seconds, and accepted exactly 240 measured CPU and 240 measured wall frames in each of five processes per renderer.
 
 ## Research Snapshot: July 2026 State of the Art
 
@@ -131,6 +138,10 @@ Laban has one additional correctness constraint. `Sources/LabanRenderer/VectorGl
 - Decision: Ship direct opacity only (the slider plus the explicit-cell opt-in); defer `System Blur`, the `Frosted` preset, the effect host, the `--background-effect` agent flag, and the 120 Hz macOS 27 seed compositor lane to a follow-up ExecPlan seeded by `Deferred Follow-Up: System Blur and Frosted Preset`.
   Rationale: The deferral removes the two riskiest external dependencies, WindowServer material-cost budgets and beta-OS compositor behavior, from the critical path of an otherwise renderer-internal change. `TerminalBackdropStyle`, the resolver inputs, and the debug vocabulary are retained so the follow-up is purely additive and cannot change resolver semantics.
   Date/Author: 2026-07-14 / Devin (plan review)
+
+- Decision: Run the renderer baseline and compare phases through a dedicated `transparency-renderer-bench` release executable rather than release XCTest.
+  Rationale: SwiftPM's test filter selects execution but does not isolate compilation, so unrelated debug-only test APIs make a release XCTest bundle unavailable. A dedicated executable preserves release optimization, uses only the renderer/core dependency boundary, and lets the wrapper prove ten distinct processes and hash the exact measured binary.
+  Date/Author: 2026-07-15 / Codex (implementation)
 
 ## Context and Orientation
 
@@ -690,5 +701,16 @@ Keep these artifacts for final review under the exact ignored root `.artifacts/t
 - immutable `opaque-baseline.json` plus `renderer-comparison.json`, each containing five-run p50/p95/p99 data, renderer, scale, AA mode, CJK font, thresholds, and OS/build/hardware identity;
 - `compositor/stable-base-m1-8gb-60hz/summary.json` and its trace paths for five 60-second runs of each opaque and direct static and animated scenario on the required hardware/OS lane, reporting app and WindowServer cost separately;
 - `idle/telemetry.json` showing a one-time wake followed by the parked state.
+
+Milestone 0 baseline evidence was captured from the clean detached worktree at
+commit `0779195be3c2c75b2ffe51fe5fb7f4ac8b0026aa` and copied to
+`.artifacts/transparency/opaque-baseline.json` (SHA-256
+`3962153a80a40b9a05633903ab93566d91dcd29617fead06d5d7517087fea121`). The
+release executable hash is
+`c9f796f2d519b461c152737e09107a3b261565d530eb7461b78c824cc742b348` on
+macOS 26.5.1 build 25F80, Macmini9,1 / Apple M1 / 16 GiB, Swift 6.3.3. All
+4,800 measured samples were accepted. Median-of-five timings were Slug CPU
+p50/p95/p99 `0.931/1.105/1.494 ms`, Slug wall `1.040/1.530/1.679 ms`, vector
+CPU `1.235/1.549/1.846 ms`, and vector wall `1.270/1.669/2.027 ms`.
 
 When implementation reveals a non-obvious compositing, AppKit, shader, or WindowServer behavior, add a short `Surprises & Discoveries` entry with the smallest evidence excerpt that proves it. At the end of each milestone, update `Progress` and add an `Outcomes & Retrospective` entry if the result or remaining risk differs materially from this plan.
