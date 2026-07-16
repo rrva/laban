@@ -535,7 +535,11 @@ transitions, but their post-completion idle windows must also park.
 `scripts/verify-system-blur-composition` is the visual oracle for the native
 material. For each scenario it launches a fresh checked-in fixture process
 that orders known black/white stripes immediately before launching the isolated
-installed Laban window. It runs two
+installed Laban window. Before ScreenCaptureKit runs, the fixture resolves that
+exact PID as an `NSRunningApplication`, requests public all-window activation,
+and polls the same strict window-stack validator for at most ten seconds. This
+is a readiness barrier only; it never retries captures or composition metrics.
+The oracle runs two
 non-substitutable scenarios: Selenized Light with Aqua and Selenized Dark with
 Dark Aqua, both pinned to configured/effective Slug. For each scenario it
 applies exact 30% None and System Blur states through the credential above,

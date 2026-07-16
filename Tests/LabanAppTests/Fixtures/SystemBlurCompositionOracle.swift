@@ -87,6 +87,7 @@ private struct CaptureMetadata: Codable, Equatable {
   var backdropPID: pid_t
   var labanWindowID: CGWindowID
   var backdropWindowID: CGWindowID
+  var labanActivationRequested = true
   var windowStackValidatedBeforeCapture = true
   var windowStackValidatedBeforePNGEncoding = true
 }
@@ -125,6 +126,14 @@ private enum WindowStackValidationError: Error, CustomStringConvertible {
     case .backdropDoesNotCoverSample:
       return "stripe backdrop does not cover the complete terminal sample"
     }
+  }
+}
+
+private struct WindowStackReadinessError: Error, CustomStringConvertible {
+  var lastValidationError: String
+
+  var description: String {
+    "timed out waiting for activated Laban and stripe backdrop ordering: \(lastValidationError)"
   }
 }
 
@@ -174,7 +183,7 @@ private func captureFullDisplay(to path: String, labanPID: pid_t, backdropPID: p
   guard CGPreflightScreenCaptureAccess() else {
     fail("Screen Recording access is required for full-display capture")
   }
-  let initialWindowStack = liveWindowStack(labanPID: labanPID, backdropPID: backdropPID)
+  let initialWindowStack = waitForLiveWindowStack(labanPID: labanPID, backdropPID: backdropPID)
 
   let shareableBox = ShareableContentBox()
   let shareableSemaphore = DispatchSemaphore(value: 0)
@@ -337,13 +346,40 @@ private func validateWindowStack(
     sampleBounds: sample)
 }
 
-private func liveWindowStack(labanPID: pid_t, backdropPID: pid_t) -> WindowStackAttestation {
+private func waitForWindowStackReadiness(
+  labanPID: pid_t,
+  backdropPID: pid_t,
+  maximumAttempts: Int,
+  activate: () -> Void,
+  readRecords: () -> [WindowStackRecord]?,
+  waitBetweenAttempts: () -> Void
+) throws -> WindowStackAttestation {
+  precondition(maximumAttempts > 0)
+  var lastValidationError = "on-screen window enumeration unavailable"
+  for attempt in 0..<maximumAttempts {
+    activate()
+    if let records = readRecords() {
+      do {
+        return try validateWindowStack(
+          records, labanPID: labanPID, backdropPID: backdropPID)
+      } catch {
+        lastValidationError = String(describing: error)
+      }
+    }
+    if attempt + 1 < maximumAttempts {
+      waitBetweenAttempts()
+    }
+  }
+  throw WindowStackReadinessError(lastValidationError: lastValidationError)
+}
+
+private func currentWindowStackRecords() -> [WindowStackRecord]? {
   guard
     let records = CGWindowListCopyWindowInfo(
       [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
-  else { fail("could not enumerate on-screen windows") }
+  else { return nil }
 
-  let parsed: [WindowStackRecord] = records.compactMap { record in
+  return records.compactMap { record in
     guard let windowID = (record[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
       let ownerPID = (record[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
       let layer = (record[kCGWindowLayer as String] as? NSNumber)?.intValue,
@@ -356,8 +392,38 @@ private func liveWindowStack(labanPID: pid_t, backdropPID: pid_t) -> WindowStack
       layer: layer,
       bounds: bounds)
   }
+}
+
+private func waitForLiveWindowStack(
+  labanPID: pid_t,
+  backdropPID: pid_t
+) -> WindowStackAttestation {
+  guard let application = NSRunningApplication(processIdentifier: labanPID) else {
+    fail("could not locate the launched Laban application for activation")
+  }
   do {
-    return try validateWindowStack(parsed, labanPID: labanPID, backdropPID: backdropPID)
+    return try waitForWindowStackReadiness(
+      labanPID: labanPID,
+      backdropPID: backdropPID,
+      maximumAttempts: 200,
+      activate: {
+        _ = application.activate(options: [.activateAllWindows])
+      },
+      readRecords: currentWindowStackRecords,
+      waitBetweenAttempts: {
+        Thread.sleep(forTimeInterval: 0.05)
+      })
+  } catch {
+    fail("unsafe full-display capture readiness: \(error)")
+  }
+}
+
+private func liveWindowStack(labanPID: pid_t, backdropPID: pid_t) -> WindowStackAttestation {
+  guard let records = currentWindowStackRecords() else {
+    fail("could not enumerate on-screen windows")
+  }
+  do {
+    return try validateWindowStack(records, labanPID: labanPID, backdropPID: backdropPID)
   } catch {
     fail("unsafe full-display capture window stack: \(error)")
   }
@@ -676,6 +742,60 @@ private func selfTest() {
     bounds: CGRect(x: 0, y: 0, width: 600, height: 1080))
   var wrongProcessBackdrop = backdrop
   wrongProcessBackdrop.ownerPID = 999
+
+  var readinessActivations = 0
+  var readinessReads = 0
+  var readinessWaits = 0
+  let settledStack = try? waitForWindowStackReadiness(
+    labanPID: labanPID,
+    backdropPID: backdropPID,
+    maximumAttempts: 2,
+    activate: {
+      readinessActivations += 1
+    },
+    readRecords: {
+      defer { readinessReads += 1 }
+      if readinessReads == 0 {
+        return [overlappingOtherWindow, laban, backdrop]
+      }
+      return [laban, backdrop]
+    },
+    waitBetweenAttempts: {
+      readinessWaits += 1
+    })
+  guard settledStack?.labanWindowID == laban.windowID,
+    readinessActivations == 2,
+    readinessReads == 2,
+    readinessWaits == 1
+  else { fail("window stack activation/readiness self-test did not settle") }
+
+  var timeoutActivations = 0
+  var timeoutWaits = 0
+  let timedOut: Bool
+  do {
+    _ = try waitForWindowStackReadiness(
+      labanPID: labanPID,
+      backdropPID: backdropPID,
+      maximumAttempts: 3,
+      activate: {
+        timeoutActivations += 1
+      },
+      readRecords: {
+        [overlappingOtherWindow, laban, backdrop]
+      },
+      waitBetweenAttempts: {
+        timeoutWaits += 1
+      })
+    timedOut = false
+  } catch is WindowStackReadinessError {
+    timedOut = true
+  } catch {
+    fail("window stack readiness self-test returned an unexpected error: \(error)")
+  }
+  guard timedOut, timeoutActivations == 3, timeoutWaits == 2 else {
+    fail("unsafe window stack readiness did not time out at the exact bound")
+  }
+
   expectWindowStackFailure(
     [overlappingOtherWindow, laban, backdrop], "other application ahead of Laban")
   expectWindowStackFailure(

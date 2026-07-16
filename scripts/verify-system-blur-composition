@@ -430,6 +430,7 @@ def capture(
         or value.get("captureKind") != "fullDisplayCroppedInMemory"
         or value.get("labanPID") != pid
         or value.get("backdropPID") != backdrop_pid
+        or value.get("labanActivationRequested") is not True
         or value.get("windowStackValidatedBeforeCapture") is not True
         or value.get("windowStackValidatedBeforePNGEncoding") is not True
         or type(value.get("labanWindowID")) is not int
