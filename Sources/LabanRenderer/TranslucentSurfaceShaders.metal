@@ -33,6 +33,29 @@ inline float translucent_linear_to_srgb(float c) {
     return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
 }
 
+// ColorGlyphAtlas is populated by a premultiplied-first Core Graphics bitmap,
+// then uploaded unchanged into a nonsRGB BGRA texture. Recover its straight
+// encoded-sRGB color before linearizing, then premultiply exactly once in the
+// linear working representation. The opaque fragment intentionally remains in
+// VectorGlyphShaders.metal so this correction cannot alter the shipped path.
+fragment float4 translucentVectorColorGlyphFragment(
+    TranslucentVectorVertexOut in [[stage_in]],
+    texture2d<float> atlas [[texture(0)]],
+    sampler atlasSampler [[sampler(0)]]
+) {
+    float4 encodedPremultiplied = saturate(atlas.sample(atlasSampler, in.uv));
+    float alpha = encodedPremultiplied.a;
+    if (alpha <= 0.0) {
+        return float4(0.0);
+    }
+    float3 straightSRGB = saturate(encodedPremultiplied.rgb / alpha);
+    float3 straightLinear = float3(
+        translucent_srgb_to_linear(straightSRGB.r),
+        translucent_srgb_to_linear(straightSRGB.g),
+        translucent_srgb_to_linear(straightSRGB.b));
+    return float4(straightLinear * alpha, alpha);
+}
+
 // Resolve a linear-premultiplied working target into the encoded-sRGB-
 // premultiplied storage Core Animation requires for a nonopaque surface. The
 // destination is bgra8Unorm_srgb, so return linear(sRGB * alpha); the attachment

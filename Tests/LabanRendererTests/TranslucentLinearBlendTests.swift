@@ -157,6 +157,72 @@ final class TranslucentLinearBlendTests: XCTestCase {
     }
   }
 
+  func testVectorAndSlugColorGlyphEdgesBlendFromPremultipliedAtlasSource() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("Metal-backed renderer unavailable")
+    }
+    let savedMode = EmojiRenderingSettings.current()
+    EmojiRenderingSettings.set(.color)
+    defer { EmojiRenderingSettings.set(savedMode) }
+
+    let fontAtlas = FontAtlas(pointSize: 32)
+    let source = try colorGlyphSource(device: device, fontAtlas: fontAtlas, character: "😀")
+    let origin = CGPoint(x: 40, y: 20)
+    let destinationX = Int(origin.x * scale)
+    let destinationY = height - Int(origin.y * scale) - source.height
+    let commands: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: 450, height: 100),
+        color: canvas,
+        source: .terminal,
+        compositing: .replace),
+      .glyphRun(
+        origin: origin,
+        text: "😀",
+        foreground: 0xFFFF_FFFF,
+        background: canvas,
+        attributes: [],
+        source: .terminal),
+    ]
+
+    for selection in [RendererSelection.vectorGlyph, .slugGlyph] {
+      let actual = try render(makeBackend(selection), commands: commands)
+      var partialColorPixels = 0
+      var maxRGBError = 0
+      var maxAlphaError = 0
+      for sourceY in 0..<source.height {
+        for sourceX in 0..<source.width {
+          let atlasPixel = source.pixel(x: sourceX, y: sourceY)
+          guard atlasPixel.a >= 24, atlasPixel.a <= 231 else { continue }
+          guard max(atlasPixel.r, atlasPixel.g, atlasPixel.b) >= 12 else { continue }
+          let expected = expectedColorGlyphSourceOver(
+            destination: canvas,
+            encodedPremultipliedSource: atlasPixel)
+          let pixel = actual.pixel(
+            x: destinationX + sourceX,
+            y: destinationY + sourceY)
+          maxRGBError = max(
+            maxRGBError,
+            abs(Int(pixel.r) - expected.r),
+            abs(Int(pixel.g) - expected.g),
+            abs(Int(pixel.b) - expected.b))
+          maxAlphaError = max(maxAlphaError, abs(Int(pixel.a) - expected.a))
+          partialColorPixels += 1
+        }
+      }
+
+      XCTAssertGreaterThan(
+        partialColorPixels, 20,
+        "\(selection.rawValue) probe must contain partial-alpha color-glyph texels")
+      XCTAssertLessThanOrEqual(
+        maxRGBError, 4,
+        "\(selection.rawValue) color glyph must unpremultiply its encoded atlas sample once")
+      XCTAssertLessThanOrEqual(
+        maxAlphaError, 2,
+        "\(selection.rawValue) color glyph source-over alpha")
+    }
+  }
+
   private func makeBackend(_ selection: RendererSelection) throws -> RendererBackend {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("Metal-backed renderer unavailable")
@@ -239,6 +305,75 @@ final class TranslucentLinearBlendTests: XCTestCase {
       channel(8),
       Int((outputAlpha * 255).rounded())
     )
+  }
+
+  private func expectedColorGlyphSourceOver(
+    destination: UInt32,
+    encodedPremultipliedSource source: (r: UInt8, g: UInt8, b: UInt8, a: UInt8)
+  ) -> (r: Int, g: Int, b: Int, a: Int) {
+    let destinationAlpha = Double(destination & 0xFF) / 255
+    let sourceAlpha = Double(source.a) / 255
+    let outputAlpha = sourceAlpha + destinationAlpha * (1 - sourceAlpha)
+
+    func channel(_ destinationShift: UInt32, _ sourceValue: UInt8) -> Int {
+      let destinationSRGB = Double((destination >> destinationShift) & 0xFF) / 255
+      let encodedSourcePremultiplied = Double(sourceValue) / 255
+      let sourceSRGB = min(1, encodedSourcePremultiplied / sourceAlpha)
+      let linearPremultiplied =
+        linearize(sourceSRGB) * sourceAlpha
+        + linearize(destinationSRGB) * destinationAlpha * (1 - sourceAlpha)
+      let encodedPremultiplied = encode(linearPremultiplied / outputAlpha) * outputAlpha
+      return Int((encodedPremultiplied * 255).rounded())
+    }
+
+    return (
+      channel(24, source.r),
+      channel(16, source.g),
+      channel(8, source.b),
+      Int((outputAlpha * 255).rounded())
+    )
+  }
+
+  private func colorGlyphSource(
+    device: MTLDevice,
+    fontAtlas: FontAtlas,
+    character: Character
+  ) throws -> TestRGBAImage {
+    let atlas = try XCTUnwrap(
+      ColorGlyphAtlas(
+        device: device,
+        cellWidth: fontAtlas.cellSize.width,
+        cellHeight: fontAtlas.cellSize.height,
+        descent: fontAtlas.descent,
+        scale: scale,
+        textureSize: 256))
+    let entry = try XCTUnwrap(
+      atlas.entry(
+        character: character,
+        font: fontAtlas.font,
+        boldFallback: false,
+        italicFallback: false))
+    var bgra = [UInt8](repeating: 0, count: entry.pixelWidth * entry.pixelHeight * 4)
+    bgra.withUnsafeMutableBytes { raw in
+      guard let base = raw.baseAddress else { return }
+      atlas.texture.getBytes(
+        base,
+        bytesPerRow: entry.pixelWidth * 4,
+        from: MTLRegionMake2D(
+          entry.originX,
+          entry.originY,
+          entry.pixelWidth,
+          entry.pixelHeight),
+        mipmapLevel: 0)
+    }
+    var rgba = [UInt8](repeating: 0, count: bgra.count)
+    for index in stride(from: 0, to: bgra.count, by: 4) {
+      rgba[index] = bgra[index + 2]
+      rgba[index + 1] = bgra[index + 1]
+      rgba[index + 2] = bgra[index]
+      rgba[index + 3] = bgra[index + 3]
+    }
+    return TestRGBAImage(width: entry.pixelWidth, height: entry.pixelHeight, bytes: rgba)
   }
 
   private func linearize(_ value: Double) -> Double {

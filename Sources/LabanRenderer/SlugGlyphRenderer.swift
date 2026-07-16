@@ -127,11 +127,13 @@ private enum SlugTranslucentPipelineCache {
     }
     lock.unlock()
 
-    guard let solidVertex = library.makeFunction(name: "vectorSolidVertex"),
+    guard let translucentLibrary = VectorGlyphShaderCache.translucentLibrary(device: device),
+      let solidVertex = library.makeFunction(name: "vectorSolidVertex"),
       let solidFragment = library.makeFunction(name: "vectorSolidFragment"),
       let textureVertex = library.makeFunction(name: "vectorGlyphVertex"),
       let rasterGlyphFragment = library.makeFunction(name: "vectorRasterGlyphFragment"),
-      let colorGlyphFragment = library.makeFunction(name: "vectorColorGlyphFragment"),
+      let colorGlyphFragment = translucentLibrary.makeFunction(
+        name: "translucentVectorColorGlyphFragment"),
       let glyphVertex = library.makeFunction(name: "slugGlyphVertex"),
       let glyphAlphaFragment = library.makeFunction(name: "slugGlyphAlphaFragment")
     else { return nil }

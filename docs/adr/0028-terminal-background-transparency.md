@@ -141,7 +141,10 @@ overlays wrong.
 Every nonopaque Vector and Slug frame instead composites completely into a
 private `rgba16Float` linear-premultiplied working target. Replacement
 backgrounds, clears, glyph coverage, semantic alpha, and source-over blending
-all operate there. A single full-frame resolve then unpremultiplies in linear
+all operate there. Color-glyph atlas texels arrive as encoded-sRGB-premultiplied
+Core Graphics bytes, so the translucent fragment first recovers straight
+encoded color, then linearizes and premultiplies once for the working target.
+A single full-frame resolve then unpremultiplies in linear
 light, encodes the straight color to sRGB, premultiplies in encoded sRGB, and
 writes the existing final `bgra8Unorm_srgb` bytes. Only that final target is
 published, presented, read back, or encoded as PNG. A retained partial redraw

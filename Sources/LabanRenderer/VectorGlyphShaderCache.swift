@@ -99,7 +99,7 @@ enum VectorGlyphShaderCache {
   /// surfaces. It is intentionally loaded and compiled only from the lazy
   /// translucent pipeline accessors below, keeping opaque activation on the
   /// original VectorGlyphShaders source and PSO set.
-  private static func translucentLibrary(device: MTLDevice) -> MTLLibrary? {
+  static func translucentLibrary(device: MTLDevice) -> MTLLibrary? {
     let key = ObjectIdentifier(device)
     lock.lock()
     if let cached = translucentLibraryCache[key] {
@@ -249,7 +249,8 @@ enum VectorGlyphShaderCache {
       let glyphAlphaFragment = translucentLibrary.makeFunction(
         name: "translucentVectorGlyphAlphaFragment"),
       let rasterGlyphFragment = library.makeFunction(name: "vectorRasterGlyphFragment"),
-      let colorGlyphFragment = library.makeFunction(name: "vectorColorGlyphFragment")
+      let colorGlyphFragment = translucentLibrary.makeFunction(
+        name: "translucentVectorColorGlyphFragment")
     else { return nil }
 
     func descriptor(
