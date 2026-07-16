@@ -59,6 +59,9 @@ THEME_SCENARIOS = (
 # startup alert.
 DARWIN_UNIX_SOCKET_PATH_CAPACITY = 104
 CONTROL_SOCKET_BASENAME = "control.sock"
+DOCK_BUNDLE_IDENTIFIER = "com.apple.dock"
+DOCK_BUNDLE_PATH = "/System/Library/CoreServices/Dock.app"
+DOCK_FULL_DISPLAY_OVERLAY_LAYER = 20
 
 
 def fail(message: str) -> NoReturn:
@@ -424,15 +427,45 @@ def capture(
     except json.JSONDecodeError as error:
         destination.unlink(missing_ok=True)
         fail(f"capture metadata is invalid: {error}")
+    overlays = value.get("excludedSystemOverlays") if isinstance(value, dict) else None
+    overlays_valid = isinstance(overlays, list) and len(overlays) <= 1
+    if overlays_valid:
+        for overlay in overlays:
+            overlays_valid = (
+                isinstance(overlay, dict)
+                and type(overlay.get("windowID")) is int
+                and overlay["windowID"] > 0
+                and overlay["windowID"]
+                not in (value.get("labanWindowID"), value.get("backdropWindowID"))
+                and type(overlay.get("ownerPID")) is int
+                and overlay["ownerPID"] > 0
+                and overlay["ownerPID"] not in (pid, backdrop_pid)
+                and overlay.get("ownerBundleIdentifier") == DOCK_BUNDLE_IDENTIFIER
+                and overlay.get("ownerBundlePath") == DOCK_BUNDLE_PATH
+                and overlay.get("layer") == DOCK_FULL_DISPLAY_OVERLAY_LAYER
+                and overlay.get("coversMainDisplay") is True
+                and set(overlay) == {
+                    "windowID",
+                    "ownerPID",
+                    "ownerBundleIdentifier",
+                    "ownerBundlePath",
+                    "layer",
+                    "coversMainDisplay",
+                }
+            )
+            if not overlays_valid:
+                break
     if (
         not isinstance(value, dict)
-        or value.get("schemaVersion") != 2
+        or value.get("schemaVersion") != 3
         or value.get("captureKind") != "fullDisplayCroppedInMemory"
         or value.get("labanPID") != pid
         or value.get("backdropPID") != backdrop_pid
         or value.get("labanActivationRequested") is not True
         or value.get("windowStackValidatedBeforeCapture") is not True
         or value.get("windowStackValidatedBeforePNGEncoding") is not True
+        or value.get("screenCaptureKitExclusionsValidated") is not True
+        or not overlays_valid
         or type(value.get("labanWindowID")) is not int
         or value["labanWindowID"] <= 0
         or type(value.get("backdropWindowID")) is not int

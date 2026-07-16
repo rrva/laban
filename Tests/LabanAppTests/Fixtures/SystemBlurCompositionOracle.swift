@@ -3,6 +3,9 @@ import CoreGraphics
 import ScreenCaptureKit
 
 private let stripeWidth: CGFloat = 80
+private let dockBundleIdentifier = "com.apple.dock"
+private let dockBundlePath = "/System/Library/CoreServices/Dock.app"
+private let dockFullDisplayOverlayLayer = 20
 
 private func fail(_ message: String) -> Never {
   FileHandle.standardError.write(Data("system-blur-composition-oracle: \(message)\n".utf8))
@@ -75,8 +78,17 @@ private struct Analysis: Codable {
   var failures: [String]
 }
 
+private struct CaptureSystemOverlayExclusion: Codable, Equatable {
+  var windowID: CGWindowID
+  var ownerPID: pid_t
+  var ownerBundleIdentifier: String
+  var ownerBundlePath: String
+  var layer: Int
+  var coversMainDisplay = true
+}
+
 private struct CaptureMetadata: Codable, Equatable {
-  var schemaVersion = 2
+  var schemaVersion = 3
   var captureKind = "fullDisplayCroppedInMemory"
   var sampleOriginXPoints: Double
   var sampleOriginYPoints: Double
@@ -87,6 +99,8 @@ private struct CaptureMetadata: Codable, Equatable {
   var backdropPID: pid_t
   var labanWindowID: CGWindowID
   var backdropWindowID: CGWindowID
+  var excludedSystemOverlays: [CaptureSystemOverlayExclusion]
+  var screenCaptureKitExclusionsValidated = true
   var labanActivationRequested = true
   var windowStackValidatedBeforeCapture = true
   var windowStackValidatedBeforePNGEncoding = true
@@ -97,6 +111,25 @@ private struct WindowStackRecord: Equatable {
   var ownerPID: pid_t
   var layer: Int
   var bounds: CGRect
+  var ownerBundleIdentifier: String? = nil
+  var ownerBundlePath: String? = nil
+}
+
+private struct SystemOverlayExclusion: Equatable {
+  var windowID: CGWindowID
+  var ownerPID: pid_t
+  var ownerBundleIdentifier: String
+  var ownerBundlePath: String
+  var layer: Int
+  var bounds: CGRect
+}
+
+private struct ShareableWindowRecord: Equatable {
+  var windowID: CGWindowID
+  var ownerPID: pid_t
+  var ownerBundleIdentifier: String?
+  var layer: Int
+  var bounds: CGRect
 }
 
 private struct WindowStackAttestation: Equatable {
@@ -104,6 +137,7 @@ private struct WindowStackAttestation: Equatable {
   var backdropWindowID: CGWindowID
   var labanBounds: CGRect
   var sampleBounds: CGRect
+  var excludedSystemOverlays: [SystemOverlayExclusion]
 }
 
 private enum WindowStackValidationError: Error, CustomStringConvertible {
@@ -112,6 +146,7 @@ private enum WindowStackValidationError: Error, CustomStringConvertible {
   case labanNotFrontmost
   case backdropNotImmediate
   case backdropDoesNotCoverSample
+  case multipleSystemOverlayExclusions
 
   var description: String {
     switch self {
@@ -125,6 +160,26 @@ private enum WindowStackValidationError: Error, CustomStringConvertible {
       return "stripe backdrop is not immediately behind the Laban terminal sample"
     case .backdropDoesNotCoverSample:
       return "stripe backdrop does not cover the complete terminal sample"
+    case .multipleSystemOverlayExclusions:
+      return "more than one eligible full-display Dock system overlay "
+        + "intersects the terminal sample"
+    }
+  }
+}
+
+private enum ShareableWindowValidationError: Error, CustomStringConvertible {
+  case missingExactSystemOverlay(CGWindowID)
+  case duplicateExactSystemOverlay(CGWindowID)
+  case systemOverlayIdentityMismatch(CGWindowID)
+
+  var description: String {
+    switch self {
+    case .missingExactSystemOverlay(let windowID):
+      return "ScreenCaptureKit omitted attested system overlay window \(windowID)"
+    case .duplicateExactSystemOverlay(let windowID):
+      return "ScreenCaptureKit returned duplicate system overlay window \(windowID)"
+    case .systemOverlayIdentityMismatch(let windowID):
+      return "ScreenCaptureKit system overlay identity changed for window \(windowID)"
     }
   }
 }
@@ -183,7 +238,14 @@ private func captureFullDisplay(to path: String, labanPID: pid_t, backdropPID: p
   guard CGPreflightScreenCaptureAccess() else {
     fail("Screen Recording access is required for full-display capture")
   }
-  let initialWindowStack = waitForLiveWindowStack(labanPID: labanPID, backdropPID: backdropPID)
+  guard let screen = NSScreen.main, screen.frame.origin == .zero else {
+    fail("the main screen must have a zero origin for deterministic capture")
+  }
+  let displayBounds = screen.frame
+  let initialWindowStack = waitForLiveWindowStack(
+    labanPID: labanPID,
+    backdropPID: backdropPID,
+    displayBounds: displayBounds)
 
   let shareableBox = ShareableContentBox()
   let shareableSemaphore = DispatchSemaphore(value: 0)
@@ -202,8 +264,17 @@ private func captureFullDisplay(to path: String, labanPID: pid_t, backdropPID: p
   guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
     fail("main display is absent from ScreenCaptureKit shareable content")
   }
+  let excludedWindows: [SCWindow]
+  do {
+    excludedWindows = try validatedShareableSystemOverlayWindows(
+      content.windows,
+      expected: initialWindowStack.excludedSystemOverlays,
+      displayBounds: displayBounds)
+  } catch {
+    fail("unsafe ScreenCaptureKit system overlay exclusion: \(error)")
+  }
 
-  let filter = SCContentFilter(display: display, excludingWindows: [])
+  let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
   let configuration = SCStreamConfiguration()
   configuration.width = display.width
   configuration.height = display.height
@@ -226,9 +297,6 @@ private func captureFullDisplay(to path: String, labanPID: pid_t, backdropPID: p
     fail("full-display ScreenCaptureKit capture failed: \(String(describing: captureError))")
   }
 
-  guard let screen = NSScreen.main, screen.frame.origin == .zero else {
-    fail("the main screen must have a zero origin for deterministic capture")
-  }
   let scaleX = Double(image.width) / screen.frame.width
   let scaleY = Double(image.height) / screen.frame.height
   guard abs(scaleX - scaleY) < 0.01, scaleX >= 1 else {
@@ -255,7 +323,10 @@ private func captureFullDisplay(to path: String, labanPID: pid_t, backdropPID: p
   // WindowServer stack before even encoding PNG bytes: if another app, alert,
   // IME panel, or popover overlaps the crop or sits between Laban and the
   // expected stripe process, no pixel artifact may be persisted.
-  let finalWindowStack = liveWindowStack(labanPID: labanPID, backdropPID: backdropPID)
+  let finalWindowStack = liveWindowStack(
+    labanPID: labanPID,
+    backdropPID: backdropPID,
+    displayBounds: displayBounds)
   guard finalWindowStack == initialWindowStack else {
     fail("window stack changed during full-display capture")
   }
@@ -277,7 +348,15 @@ private func captureFullDisplay(to path: String, labanPID: pid_t, backdropPID: p
     labanPID: labanPID,
     backdropPID: backdropPID,
     labanWindowID: finalWindowStack.labanWindowID,
-    backdropWindowID: finalWindowStack.backdropWindowID)
+    backdropWindowID: finalWindowStack.backdropWindowID,
+    excludedSystemOverlays: finalWindowStack.excludedSystemOverlays.map {
+      CaptureSystemOverlayExclusion(
+        windowID: $0.windowID,
+        ownerPID: $0.ownerPID,
+        ownerBundleIdentifier: $0.ownerBundleIdentifier,
+        ownerBundlePath: $0.ownerBundlePath,
+        layer: $0.layer)
+    })
   let encoder = JSONEncoder()
   encoder.outputFormatting = [.sortedKeys]
   FileHandle.standardOutput.write(try! encoder.encode(metadata))
@@ -306,10 +385,30 @@ private func completelyContains(_ outer: CGRect, _ inner: CGRect) -> Bool {
     && outer.maxX >= inner.maxX && outer.maxY >= inner.maxY
 }
 
+private func eligibleDockSystemOverlay(
+  _ record: WindowStackRecord,
+  displayBounds: CGRect
+) -> SystemOverlayExclusion? {
+  guard record.ownerPID > 0,
+    record.ownerBundleIdentifier == dockBundleIdentifier,
+    record.ownerBundlePath == dockBundlePath,
+    record.layer == dockFullDisplayOverlayLayer,
+    record.bounds == displayBounds
+  else { return nil }
+  return SystemOverlayExclusion(
+    windowID: record.windowID,
+    ownerPID: record.ownerPID,
+    ownerBundleIdentifier: dockBundleIdentifier,
+    ownerBundlePath: dockBundlePath,
+    layer: dockFullDisplayOverlayLayer,
+    bounds: record.bounds)
+}
+
 private func validateWindowStack(
   _ records: [WindowStackRecord],
   labanPID: pid_t,
-  backdropPID: pid_t
+  backdropPID: pid_t,
+  displayBounds: CGRect
 ) throws -> WindowStackAttestation {
   let candidates = records.filter {
     $0.ownerPID == labanPID && $0.layer == 0
@@ -322,17 +421,29 @@ private func validateWindowStack(
   else { throw WindowStackValidationError.missingLabanWindow }
 
   let sample = try terminalSampleBounds(for: laban.bounds)
-  // CGWindowList is ordered front-to-back. Deliberately include every layer:
-  // a panel or IME candidate window can disclose unrelated pixels just as an
-  // ordinary layer-zero application window can.
+  // CGWindowList is ordered front-to-back. Deliberately include every layer.
+  // The sole exception is an exact, full-main-display layer-20 system surface
+  // owned by the SIP-protected com.apple.dock bundle. Its exact SCWindow is
+  // excluded from the capture filter below. No other Dock or nonzero-layer
+  // window is ignored.
   let overlapping = records.filter { hasPositiveIntersection($0.bounds, sample) }
-  guard overlapping.first?.windowID == laban.windowID else {
+  let leadingSystemOverlays = overlapping.prefix {
+    eligibleDockSystemOverlay($0, displayBounds: displayBounds) != nil
+  }
+  guard leadingSystemOverlays.count <= 1 else {
+    throw WindowStackValidationError.multipleSystemOverlayExclusions
+  }
+  let systemOverlays = leadingSystemOverlays.compactMap {
+    eligibleDockSystemOverlay($0, displayBounds: displayBounds)
+  }
+  let captureOverlapping = Array(overlapping.dropFirst(systemOverlays.count))
+  guard captureOverlapping.first?.windowID == laban.windowID else {
     throw WindowStackValidationError.labanNotFrontmost
   }
-  guard overlapping.count >= 2 else {
+  guard captureOverlapping.count >= 2 else {
     throw WindowStackValidationError.backdropNotImmediate
   }
-  let backdrop = overlapping[1]
+  let backdrop = captureOverlapping[1]
   guard backdrop.ownerPID == backdropPID, backdrop.layer == 0 else {
     throw WindowStackValidationError.backdropNotImmediate
   }
@@ -343,12 +454,74 @@ private func validateWindowStack(
     labanWindowID: laban.windowID,
     backdropWindowID: backdrop.windowID,
     labanBounds: laban.bounds,
-    sampleBounds: sample)
+    sampleBounds: sample,
+    excludedSystemOverlays: systemOverlays)
+}
+
+private func validateShareableSystemOverlayRecords(
+  _ records: [ShareableWindowRecord],
+  expected: [SystemOverlayExclusion],
+  displayBounds: CGRect
+) throws -> [CGWindowID] {
+  var validated: [CGWindowID] = []
+  for overlay in expected {
+    let matches = records.filter { $0.windowID == overlay.windowID }
+    guard !matches.isEmpty else {
+      throw ShareableWindowValidationError.missingExactSystemOverlay(overlay.windowID)
+    }
+    guard matches.count == 1 else {
+      throw ShareableWindowValidationError.duplicateExactSystemOverlay(overlay.windowID)
+    }
+    let candidate = matches[0]
+    guard overlay.ownerPID > 0,
+      overlay.ownerBundleIdentifier == dockBundleIdentifier,
+      overlay.ownerBundlePath == dockBundlePath,
+      overlay.layer == dockFullDisplayOverlayLayer,
+      overlay.bounds == displayBounds,
+      candidate.ownerPID == overlay.ownerPID,
+      candidate.ownerBundleIdentifier == dockBundleIdentifier,
+      candidate.layer == dockFullDisplayOverlayLayer,
+      candidate.bounds == overlay.bounds,
+      candidate.bounds == displayBounds
+    else {
+      throw ShareableWindowValidationError.systemOverlayIdentityMismatch(overlay.windowID)
+    }
+    validated.append(candidate.windowID)
+  }
+  return validated
+}
+
+@available(macOS 14.0, *)
+private func validatedShareableSystemOverlayWindows(
+  _ windows: [SCWindow],
+  expected: [SystemOverlayExclusion],
+  displayBounds: CGRect
+) throws -> [SCWindow] {
+  let records = windows.map {
+    ShareableWindowRecord(
+      windowID: $0.windowID,
+      ownerPID: $0.owningApplication?.processID ?? 0,
+      ownerBundleIdentifier: $0.owningApplication?.bundleIdentifier,
+      layer: $0.windowLayer,
+      bounds: $0.frame)
+  }
+  let validatedIDs = try validateShareableSystemOverlayRecords(
+    records,
+    expected: expected,
+    displayBounds: displayBounds)
+  let windowsByID = Dictionary(grouping: windows, by: \.windowID)
+  return try validatedIDs.map { windowID in
+    guard let matches = windowsByID[windowID], matches.count == 1, let window = matches.first else {
+      throw ShareableWindowValidationError.missingExactSystemOverlay(windowID)
+    }
+    return window
+  }
 }
 
 private func waitForWindowStackReadiness(
   labanPID: pid_t,
   backdropPID: pid_t,
+  displayBounds: CGRect,
   maximumAttempts: Int,
   activate: () -> Void,
   readRecords: () -> [WindowStackRecord]?,
@@ -361,7 +534,10 @@ private func waitForWindowStackReadiness(
     if let records = readRecords() {
       do {
         return try validateWindowStack(
-          records, labanPID: labanPID, backdropPID: backdropPID)
+          records,
+          labanPID: labanPID,
+          backdropPID: backdropPID,
+          displayBounds: displayBounds)
       } catch {
         lastValidationError = String(describing: error)
       }
@@ -386,17 +562,21 @@ private func currentWindowStackRecords() -> [WindowStackRecord]? {
       let dictionary = record[kCGWindowBounds as String] as? NSDictionary,
       let bounds = CGRect(dictionaryRepresentation: dictionary as CFDictionary)
     else { return nil }
+    let ownerApplication = NSRunningApplication(processIdentifier: ownerPID)
     return WindowStackRecord(
       windowID: windowID,
       ownerPID: ownerPID,
       layer: layer,
-      bounds: bounds)
+      bounds: bounds,
+      ownerBundleIdentifier: ownerApplication?.bundleIdentifier,
+      ownerBundlePath: ownerApplication?.bundleURL?.path)
   }
 }
 
 private func waitForLiveWindowStack(
   labanPID: pid_t,
-  backdropPID: pid_t
+  backdropPID: pid_t,
+  displayBounds: CGRect
 ) -> WindowStackAttestation {
   guard let application = NSRunningApplication(processIdentifier: labanPID) else {
     fail("could not locate the launched Laban application for activation")
@@ -405,6 +585,7 @@ private func waitForLiveWindowStack(
     return try waitForWindowStackReadiness(
       labanPID: labanPID,
       backdropPID: backdropPID,
+      displayBounds: displayBounds,
       maximumAttempts: 200,
       activate: {
         _ = application.activate(options: [.activateAllWindows])
@@ -418,12 +599,20 @@ private func waitForLiveWindowStack(
   }
 }
 
-private func liveWindowStack(labanPID: pid_t, backdropPID: pid_t) -> WindowStackAttestation {
+private func liveWindowStack(
+  labanPID: pid_t,
+  backdropPID: pid_t,
+  displayBounds: CGRect
+) -> WindowStackAttestation {
   guard let records = currentWindowStackRecords() else {
     fail("could not enumerate on-screen windows")
   }
   do {
-    return try validateWindowStack(records, labanPID: labanPID, backdropPID: backdropPID)
+    return try validateWindowStack(
+      records,
+      labanPID: labanPID,
+      backdropPID: backdropPID,
+      displayBounds: displayBounds)
   } catch {
     fail("unsafe full-display capture window stack: \(error)")
   }
@@ -692,6 +881,8 @@ private func selfTest() {
 
   let labanPID: pid_t = 101
   let backdropPID: pid_t = 202
+  let dockPID: pid_t = 303
+  let displayBounds = CGRect(x: 0, y: 0, width: 1920, height: 1080)
   let laban = WindowStackRecord(
     windowID: 1,
     ownerPID: labanPID,
@@ -701,7 +892,14 @@ private func selfTest() {
     windowID: 2,
     ownerPID: backdropPID,
     layer: 0,
-    bounds: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+    bounds: displayBounds)
+  let dockOverlay = WindowStackRecord(
+    windowID: 7,
+    ownerPID: dockPID,
+    layer: dockFullDisplayOverlayLayer,
+    bounds: displayBounds,
+    ownerBundleIdentifier: dockBundleIdentifier,
+    ownerBundlePath: dockBundlePath)
   let nonoverlappingFrontWindow = WindowStackRecord(
     windowID: 3,
     ownerPID: 303,
@@ -709,20 +907,52 @@ private func selfTest() {
     bounds: CGRect(x: 1500, y: 0, width: 300, height: 300))
   guard
     let validStack = try? validateWindowStack(
-      [nonoverlappingFrontWindow, laban, backdrop],
+      [dockOverlay, nonoverlappingFrontWindow, laban, backdrop],
       labanPID: labanPID,
-      backdropPID: backdropPID),
+      backdropPID: backdropPID,
+      displayBounds: displayBounds),
     validStack.labanWindowID == laban.windowID,
-    validStack.backdropWindowID == backdrop.windowID
+    validStack.backdropWindowID == backdrop.windowID,
+    validStack.excludedSystemOverlays.map(\.windowID) == [dockOverlay.windowID]
   else { fail("valid deterministic window stack self-test failed") }
+
+  let shareableDockOverlay = ShareableWindowRecord(
+    windowID: dockOverlay.windowID,
+    ownerPID: dockPID,
+    ownerBundleIdentifier: dockBundleIdentifier,
+    layer: dockFullDisplayOverlayLayer,
+    bounds: displayBounds)
+  guard
+    let validatedShareableIDs = try? validateShareableSystemOverlayRecords(
+      [shareableDockOverlay],
+      expected: validStack.excludedSystemOverlays,
+      displayBounds: displayBounds),
+    validatedShareableIDs == [dockOverlay.windowID]
+  else { fail("exact ScreenCaptureKit system overlay self-test failed") }
 
   func expectWindowStackFailure(_ records: [WindowStackRecord], _ label: String) {
     do {
-      _ = try validateWindowStack(records, labanPID: labanPID, backdropPID: backdropPID)
+      _ = try validateWindowStack(
+        records,
+        labanPID: labanPID,
+        backdropPID: backdropPID,
+        displayBounds: displayBounds)
     } catch {
       return
     }
     fail("unsafe window stack was accepted: \(label)")
+  }
+
+  func expectShareableOverlayFailure(_ records: [ShareableWindowRecord], _ label: String) {
+    do {
+      _ = try validateShareableSystemOverlayRecords(
+        records,
+        expected: validStack.excludedSystemOverlays,
+        displayBounds: displayBounds)
+    } catch {
+      return
+    }
+    fail("unsafe ScreenCaptureKit system overlay was accepted: \(label)")
   }
 
   let overlappingOtherWindow = WindowStackRecord(
@@ -735,6 +965,11 @@ private func selfTest() {
     ownerPID: labanPID,
     layer: 25,
     bounds: CGRect(x: 300, y: 200, width: 500, height: 300))
+  let overlappingIMEPanel = WindowStackRecord(
+    windowID: 8,
+    ownerPID: 808,
+    layer: 101,
+    bounds: CGRect(x: 300, y: 200, width: 500, height: 300))
   let partialBackdrop = WindowStackRecord(
     windowID: 6,
     ownerPID: backdropPID,
@@ -743,12 +978,35 @@ private func selfTest() {
   var wrongProcessBackdrop = backdrop
   wrongProcessBackdrop.ownerPID = 999
 
+  var wrongBundleDockOverlay = dockOverlay
+  wrongBundleDockOverlay.ownerBundleIdentifier = "com.example.dock"
+  var wrongPathDockOverlay = dockOverlay
+  wrongPathDockOverlay.ownerBundlePath = "/Applications/Dock.app"
+  var wrongLayerDockOverlay = dockOverlay
+  wrongLayerDockOverlay.layer = 19
+  var partialDockOverlay = dockOverlay
+  partialDockOverlay.bounds.size.width -= 1
+  var oversizedDockOverlay = dockOverlay
+  oversizedDockOverlay.bounds = displayBounds.insetBy(dx: -1, dy: -1)
+
+  var wrongOwnerShareableOverlay = shareableDockOverlay
+  wrongOwnerShareableOverlay.ownerPID += 1
+  var wrongBundleShareableOverlay = shareableDockOverlay
+  wrongBundleShareableOverlay.ownerBundleIdentifier = "com.example.dock"
+  var wrongLayerShareableOverlay = shareableDockOverlay
+  wrongLayerShareableOverlay.layer -= 1
+  var partialShareableOverlay = shareableDockOverlay
+  partialShareableOverlay.bounds.size.height -= 1
+  var oversizedShareableOverlay = shareableDockOverlay
+  oversizedShareableOverlay.bounds = displayBounds.insetBy(dx: -1, dy: -1)
+
   var readinessActivations = 0
   var readinessReads = 0
   var readinessWaits = 0
   let settledStack = try? waitForWindowStackReadiness(
     labanPID: labanPID,
     backdropPID: backdropPID,
+    displayBounds: displayBounds,
     maximumAttempts: 2,
     activate: {
       readinessActivations += 1
@@ -776,6 +1034,7 @@ private func selfTest() {
     _ = try waitForWindowStackReadiness(
       labanPID: labanPID,
       backdropPID: backdropPID,
+      displayBounds: displayBounds,
       maximumAttempts: 3,
       activate: {
         timeoutActivations += 1
@@ -803,10 +1062,35 @@ private func selfTest() {
   expectWindowStackFailure(
     [laban, overlappingPanel, backdrop], "same-owner panel between Laban and backdrop")
   expectWindowStackFailure(
+    [laban, overlappingIMEPanel, backdrop], "IME panel between Laban and backdrop")
+  expectWindowStackFailure(
+    [laban, dockOverlay, backdrop], "eligible Dock overlay between Laban and backdrop")
+  expectWindowStackFailure(
     [laban, partialBackdrop], "backdrop does not cover the complete sample")
   expectWindowStackFailure(
     [laban, wrongProcessBackdrop],
     "wrong expected backdrop process")
+  expectWindowStackFailure(
+    [wrongBundleDockOverlay, laban, backdrop], "wrong Dock bundle identifier")
+  expectWindowStackFailure(
+    [wrongPathDockOverlay, laban, backdrop], "wrong Dock bundle path")
+  expectWindowStackFailure(
+    [wrongLayerDockOverlay, laban, backdrop], "wrong Dock overlay layer")
+  expectWindowStackFailure(
+    [partialDockOverlay, laban, backdrop], "partial Dock overlay bounds")
+  expectWindowStackFailure(
+    [oversizedDockOverlay, laban, backdrop], "oversized Dock overlay bounds")
+  expectWindowStackFailure(
+    [dockOverlay, dockOverlay, laban, backdrop], "duplicate Dock system overlays")
+
+  expectShareableOverlayFailure([], "missing exact window ID")
+  expectShareableOverlayFailure(
+    [shareableDockOverlay, shareableDockOverlay], "duplicate exact window ID")
+  expectShareableOverlayFailure([wrongOwnerShareableOverlay], "wrong owner process")
+  expectShareableOverlayFailure([wrongBundleShareableOverlay], "wrong owner bundle")
+  expectShareableOverlayFailure([wrongLayerShareableOverlay], "wrong layer")
+  expectShareableOverlayFailure([partialShareableOverlay], "partial bounds")
+  expectShareableOverlayFailure([oversizedShareableOverlay], "oversized bounds")
   print("system-blur-composition-oracle: self-test passed")
 }
 

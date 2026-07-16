@@ -558,11 +558,21 @@ ScreenCaptureKit filter: those capture paths suppress behind-window material
 composition. The full display exists only in fixture-process memory. Before any
 PNG is encoded or written, the fixture re-enumerates the complete on-screen
 WindowServer stack in front-to-back order. Every window layer intersecting the
-text-free terminal crop participates: the exact Laban terminal window must be
-first, and the exact expected stripe-process window must be the next window,
-must be layer zero, and must cover the complete crop. The same stack is required
-before capture and before PNG encoding. An overlapping alert, IME panel,
-popover, or unrelated application therefore fails without persisting pixels.
+text-free terminal crop participates. The only permitted removal is at most one
+leading layer-20 surface with bounds exactly equal to the main display whose
+live process resolves to exact bundle identifier `com.apple.dock` at the
+SIP-protected path
+`/System/Library/CoreServices/Dock.app`. The fixture must find the same window
+ID in `SCShareableContent`, revalidate its exact PID, bundle identifier, layer,
+and frame, then pass that exact `SCWindow` to the display filter's
+`excludingWindows`; a missing or changed match fails before capture. After
+removing only that leading system surface, the exact Laban terminal window must
+be first, and the exact expected stripe-process window must be next, layer zero,
+and cover the complete crop. An otherwise eligible Dock surface between Laban
+and the backdrop is not removable. The same stack is required before capture
+and before PNG encoding. An overlapping alert, IME panel, popover, unrelated
+application, other Dock surface, or other nonzero-layer window therefore fails
+without persisting pixels.
 No menu bar, Dock, other window, sidebar, title bar, or shell row is persisted.
 Laban launches with an empty fixture home, `/bin/sh`, and an explicit minimal
 environment.
@@ -578,7 +588,10 @@ value and absent domain restoration, independent cleanup-error aggregation,
 deferred SIGHUP/SIGINT/SIGTERM delivery, and a surviving descendant process group that
 requires SIGKILL while its direct child is reaped. The Swift fixture self-test
 also rejects a front occluder, any-layer intervening window, partial backdrop,
-and wrong backdrop process. Runtime cleanup always tries
+wrong backdrop process, wrong Dock owner identity/layer, undersized or
+oversized Dock bounds, missing or
+duplicate ScreenCaptureKit IDs, and an eligible Dock surface between Laban and
+the backdrop. Runtime cleanup always tries
 to reset the Reduce Transparency override to `null`, terminate/reap every owned
 process group, and restore the complete exported preference domain byte-for-
 byte with exact plist types, even when a peer cleanup fails.
@@ -592,8 +605,10 @@ exact tracked bytes at the recorded HEAD; a dirty or substituted oracle
 cannot produce evidence. The summary requires both named scenario keys and
 keeps their metrics, state hashes, crop hashes, theme/appearance identity, and
 renderer identity separate. Each capture additionally records the attested
-Laban/backdrop process and WindowServer window IDs plus the two stack-validation
-phases; one dark result can never stand in for the light result. A non-current
+Laban/backdrop process and WindowServer window IDs, the two stack-validation
+phases, and any exact system-overlay exclusion's window ID, PID, bundle
+identifier/path, layer, and full-display coverage without recording window
+titles; one dark result can never stand in for the light result. A non-current
 installed commit is accepted only when
 it is an ancestor of HEAD and `Package.swift`, `Package.resolved`, and
 `Sources/` are unchanged since that commit. Screen Recording access, a closed
