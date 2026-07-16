@@ -64,6 +64,7 @@ final class LiveIntentRouter: IntentRouter {
   private var importBackgroundImageHandler:
     ((String, TerminalBackgroundImageScaling) throws -> Void)?
   private var removeBackgroundImageHandler: (() -> Void)?
+  private var fixtureWindowFocusHandler: (() -> Bool)?
   weak var proposalPresenter: CommandProposalReviewPresenting?
 
   init(
@@ -127,6 +128,16 @@ final class LiveIntentRouter: IntentRouter {
     performOnMain { self.notificationTestHandler = handler }
   }
 
+  func bindFixtureWindowFocusHandler(_ handler: @escaping @MainActor () -> Bool) {
+    performOnMain {
+      self.fixtureWindowFocusHandler = {
+        MainActor.assumeIsolated {
+          handler()
+        }
+      }
+    }
+  }
+
   func bindTransparencyControl(
     state: @escaping () -> TerminalTransparencyDebugResponse?,
     setBackground: @escaping (Double, Bool, TerminalBackdropStyle?) -> Void,
@@ -167,6 +178,8 @@ final class LiveIntentRouter: IntentRouter {
         case "commandProposal.cancel":
           return commandProposalCancelAction(
             body: input.body, scopedSessionID: input.scopedSessionID)
+        case "fixture.windowFocus":
+          return fixtureWindowFocusAction(body: input.body)
         case "transparency.setBackground":
           return setBackgroundTransparencyAction(body: input.body)
         case "transparency.diagnostics.reset":
@@ -439,6 +452,22 @@ final class LiveIntentRouter: IntentRouter {
       return .error(400, "invalid removeBackgroundImage request")
     }
     handler()
+    return diagnosticActionOK()
+  }
+
+  private func fixtureWindowFocusAction(body: Data) -> ControlResponse {
+    guard let request = try? JSONDecoder().decode(WindowFocusActionRequest.self, from: body) else {
+      return .error(400, "invalid windowFocus request")
+    }
+    guard request.focused ?? true else {
+      return .error(400, "live windowFocus supports focused=true only")
+    }
+    guard let handler = fixtureWindowFocusHandler else {
+      return .error(503, "live windowFocus unavailable")
+    }
+    guard handler() else {
+      return .error(503, "live windowFocus window unavailable")
+    }
     return diagnosticActionOK()
   }
 

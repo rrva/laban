@@ -680,6 +680,11 @@ final class MainWindowController: NSWindowController {
         window: window,
         including: controller?.windowScreenshotAuxiliaryWindowsProvider() ?? [])
     }
+    liveRouter.bindFixtureWindowFocusHandler { [weak controller] in
+      guard let window = controller?.window else { return false }
+      window.orderFrontRegardless()
+      return true
+    }
     liveRouter.bindTransparencyControl(
       state: { [weak controller] in
         controller?.terminalTransparencyDebugResponse()

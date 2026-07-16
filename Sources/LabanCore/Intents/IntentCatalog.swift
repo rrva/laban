@@ -1303,9 +1303,10 @@ public struct IntentCatalog: Sendable {
     descriptor(
       id: "fixture.windowFocus",
       category: "fixture",
-      summary: "Drive terminal focus reporting in headless runs.",
-      requiredCapability: .fixture,
+      summary: "Drive headless focus reporting or raise an isolated GUI fixture window.",
+      requiredCapability: .diagnosticControl,
       dataSensitivity: .nonSensitiveState,
+      availability: guiObserve,
       inputSchema: WindowFocusActionRequest.jsonSchema),
     descriptor(
       id: "fixture.control",

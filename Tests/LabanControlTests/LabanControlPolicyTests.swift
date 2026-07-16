@@ -167,6 +167,55 @@ final class LabanControlPolicyTests: XCTestCase {
     XCTAssertEqual(router.legacyQueries(), [LegacyDebugQueryInput(intentID: "clipboard.read")])
   }
 
+  func testGUIWindowFocusIsAuthorizedOnlyByFixtureTier() throws {
+    let descriptor = try XCTUnwrap(IntentCatalog.all.descriptor(id: "fixture.windowFocus"))
+    XCTAssertTrue(descriptor.availability.gui)
+    XCTAssertEqual(descriptor.requiredCapability, .diagnosticControl)
+    XCTAssertFalse(
+      LabanControlPolicy.authorize(
+        intentID: descriptor.id,
+        catalog: .all,
+        granted: LabanControlPolicy.grants(for: .appObserve),
+        targetSession: nil,
+        tokenScope: .wholeApp,
+        tokenTier: .appObserve))
+    XCTAssertFalse(
+      LabanControlPolicy.authorize(
+        intentID: descriptor.id,
+        catalog: .all,
+        granted: LabanControlPolicy.grants(for: .sessionObserve(sessionID: "session")),
+        targetSession: nil,
+        tokenScope: .session("session"),
+        tokenTier: .sessionObserve(sessionID: "session")))
+    XCTAssertTrue(
+      LabanControlPolicy.authorize(
+        intentID: descriptor.id,
+        catalog: .all,
+        granted: LabanControlPolicy.grants(for: .fixture),
+        targetSession: nil,
+        tokenScope: .wholeApp,
+        tokenTier: .fixture))
+
+    let router = SpyPolicyRouter()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let socketPath = try makeTempSocketPath()
+    let readiness = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let response = try request(
+      socketPath: socketPath,
+      path: "/debug/actions",
+      method: "POST",
+      token: readiness.debugToken,
+      body: Data(#"{"action":"windowFocus","focused":true}"#.utf8))
+    XCTAssertEqual(response.0, 200)
+    guard case .legacyDebugAction(let input) = try XCTUnwrap(router.intents().first) else {
+      return XCTFail("GUI fixture windowFocus did not reach the legacy action router")
+    }
+    XCTAssertEqual(input.intentID, "fixture.windowFocus")
+    XCTAssertEqual(input.action, "windowFocus")
+  }
+
   func testSessionObserveTokenDeniesOtherSessionForPlainObserveTarget() throws {
     let catalog = IntentCatalog.all
     let granted = LabanControlPolicy.grants(for: .sessionObserve(sessionID: "own"))

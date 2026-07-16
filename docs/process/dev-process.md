@@ -539,6 +539,13 @@ installed Laban window. Before ScreenCaptureKit runs, the fixture resolves that
 exact PID as an `NSRunningApplication`, requests public all-window activation,
 and polls the same strict window-stack validator for at most ten seconds. This
 is a readiness barrier only; it never retries captures or composition metrics.
+Immediately before each direct and System Blur capture, the verifier also sends
+the existing `windowFocus` action with `focused: true` through the isolated GUI
+fixture credential. Its live MainActor handler calls `orderFrontRegardless()`
+on that exact `MainWindowController` window. Live GUI `focused: false` is
+rejected and never hides or reorders the window. This app-bound request only
+initiates ordering; the external helper's strict WindowServer stack remains the
+acceptance authority.
 The oracle runs two
 non-substitutable scenarios: Selenized Light with Aqua and Selenized Dark with
 Dark Aqua, both pinned to configured/effective Slug. For each scenario it

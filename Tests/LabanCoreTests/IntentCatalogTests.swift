@@ -46,13 +46,18 @@ final class IntentCatalogTests: XCTestCase {
     }
   }
 
-  func testFixtureCatalogIsHeadlessOnlyAndFixtureCapabilitiesCannotBeGUIAvailable() {
+  func testFixtureCatalogLimitsGUIToDiagnosticWindowFocus() throws {
     XCTAssertEqual(
       IntentCatalog.fixture.ids,
       ["fixture.advanceFrames", "fixture.control", "fixture.feedOutput", "fixture.windowFocus"])
     for descriptor in IntentCatalog.fixture.descriptors {
-      XCTAssertFalse(descriptor.availability.gui, descriptor.id)
       XCTAssertTrue(descriptor.availability.headless, descriptor.id)
+      if descriptor.id == "fixture.windowFocus" {
+        XCTAssertTrue(descriptor.availability.gui)
+        XCTAssertEqual(descriptor.requiredCapability, .diagnosticControl)
+      } else {
+        XCTAssertFalse(descriptor.availability.gui, descriptor.id)
+      }
     }
     XCTAssertNoThrow(try IntentCatalog.fixture.validate())
 

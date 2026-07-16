@@ -639,6 +639,7 @@ def measure_theme_scenario(
         write_json(direct_state_path, direct_state)
         time.sleep(0.5)
         direct_capture = scenario_artifacts / "direct-terminal-crop.png"
+        client.action("windowFocus", focused=True)
         direct_metadata = capture(helper, direct_capture, laban.pid, backdrop.pid)
 
         client.action("setBackgroundSource", source="systemBlur")
@@ -647,6 +648,7 @@ def measure_theme_scenario(
         write_json(blur_state_path, blur_state)
         time.sleep(0.5)
         blur_capture = scenario_artifacts / "system-blur-terminal-crop.png"
+        client.action("windowFocus", focused=True)
         blur_metadata = capture(helper, blur_capture, laban.pid, backdrop.pid)
         if blur_metadata != direct_metadata:
             fail(

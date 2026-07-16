@@ -33,6 +33,7 @@ final class ControlAvailabilityParityTests: XCTestCase {
     "debug.discovery",
     "debug.capabilities",
     "debug.health",
+    "fixture.windowFocus",
     "transparency.state",
     "transparency.setBackground",
     "transparency.diagnostics.reset",
