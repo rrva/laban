@@ -533,8 +533,9 @@ file reads to remain parked. Full-screen animations may present while AppKit
 transitions, but their post-completion idle windows must also park.
 
 `scripts/verify-system-blur-composition` is the visual oracle for the native
-material. It launches checked-in fixture code that orders known black/white
-stripes immediately behind an isolated installed Laban window. It runs two
+material. For each scenario it launches a fresh checked-in fixture process
+that orders known black/white stripes immediately before launching the isolated
+installed Laban window. It runs two
 non-substitutable scenarios: Selenized Light with Aqua and Selenized Dark with
 Dark Aqua, both pinned to configured/effective Slug. For each scenario it
 applies exact 30% None and System Blur states through the credential above,
@@ -544,10 +545,16 @@ captures the complete main display with
 replace that display filter with Laban's app screenshot or a window-only
 ScreenCaptureKit filter: those capture paths suppress behind-window material
 composition. The full display exists only in fixture-process memory. Before any
-PNG is written, the fixture crops to a text-free interior of the terminal
-canvas; no menu bar, Dock, other window, sidebar, title bar, or shell row is
-persisted. Laban launches with an empty fixture home, `/bin/sh`, and an explicit
-minimal environment.
+PNG is encoded or written, the fixture re-enumerates the complete on-screen
+WindowServer stack in front-to-back order. Every window layer intersecting the
+text-free terminal crop participates: the exact Laban terminal window must be
+first, and the exact expected stripe-process window must be the next window,
+must be layer zero, and must cover the complete crop. The same stack is required
+before capture and before PNG encoding. An overlapping alert, IME panel,
+popover, or unrelated application therefore fails without persisting pixels.
+No menu bar, Dock, other window, sidebar, title bar, or shell row is persisted.
+Laban launches with an empty fixture home, `/bin/sh`, and an explicit minimal
+environment.
 
 The oracle requires the blurred crop to remain correlated with the stripe
 source and compares edge sharpness after normalizing by each crop's retained
@@ -558,7 +565,9 @@ identity, effective AppKit appearance, and configured/effective Slug renderer
 for both scenarios. Its self-test includes that negative, malformed plist
 value and absent domain restoration, independent cleanup-error aggregation,
 deferred SIGHUP/SIGINT/SIGTERM delivery, and a surviving descendant process group that
-requires SIGKILL while its direct child is reaped. Runtime cleanup always tries
+requires SIGKILL while its direct child is reaped. The Swift fixture self-test
+also rejects a front occluder, any-layer intervening window, partial backdrop,
+and wrong backdrop process. Runtime cleanup always tries
 to reset the Reduce Transparency override to `null`, terminate/reap every owned
 process group, and restore the complete exported preference domain byte-for-
 byte with exact plist types, even when a peer cleanup fails.
@@ -571,8 +580,10 @@ hashes, and token-free state hashes. All three oracle sources must match their
 exact tracked bytes at the recorded HEAD; a dirty or substituted oracle
 cannot produce evidence. The summary requires both named scenario keys and
 keeps their metrics, state hashes, crop hashes, theme/appearance identity, and
-renderer identity separate; one dark result can never stand in for the light
-result. A non-current installed commit is accepted only when
+renderer identity separate. Each capture additionally records the attested
+Laban/backdrop process and WindowServer window IDs plus the two stack-validation
+phases; one dark result can never stand in for the light result. A non-current
+installed commit is accepted only when
 it is an ancestor of HEAD and `Package.swift`, `Package.resolved`, and
 `Sources/` are unchanged since that commit. Screen Recording access, a closed
 existing Laban instance, and a zero-origin main display are prerequisites.

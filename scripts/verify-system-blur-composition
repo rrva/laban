@@ -394,18 +394,50 @@ def wait_for_state(
     fail(f"{source} state did not settle exactly: " + ", ".join(mismatches))
 
 
-def capture(executable: Path, destination: Path, pid: int) -> dict[str, Any]:
-    completed = run(
-        [str(executable), "capture", str(destination), str(pid)],
-        "full-display in-memory crop",
-    )
+def capture(
+    executable: Path,
+    destination: Path,
+    pid: int,
+    backdrop_pid: int,
+) -> dict[str, Any]:
+    if destination.exists():
+        fail("full-display crop destination was not fresh")
+    try:
+        completed = run(
+            [
+                str(executable),
+                "capture",
+                str(destination),
+                str(pid),
+                str(backdrop_pid),
+            ],
+            "full-display in-memory crop",
+        )
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
     if not destination.is_file() or destination.stat().st_size == 0:
+        destination.unlink(missing_ok=True)
         fail("in-memory terminal crop did not create a PNG")
     try:
         value = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
+        destination.unlink(missing_ok=True)
         fail(f"capture metadata is invalid: {error}")
-    if not isinstance(value, dict) or value.get("captureKind") != "fullDisplayCroppedInMemory":
+    if (
+        not isinstance(value, dict)
+        or value.get("schemaVersion") != 2
+        or value.get("captureKind") != "fullDisplayCroppedInMemory"
+        or value.get("labanPID") != pid
+        or value.get("backdropPID") != backdrop_pid
+        or value.get("windowStackValidatedBeforeCapture") is not True
+        or value.get("windowStackValidatedBeforePNGEncoding") is not True
+        or type(value.get("labanWindowID")) is not int
+        or value["labanWindowID"] <= 0
+        or type(value.get("backdropWindowID")) is not int
+        or value["backdropWindowID"] <= 0
+    ):
+        destination.unlink(missing_ok=True)
         fail("capture did not attest full-display in-memory cropping")
     return value
 
@@ -537,7 +569,6 @@ def measure_theme_scenario(
     scenario: ThemeScenario,
     executable: Path,
     helper: Path,
-    geometry: dict[str, Any],
     control_root: Path,
     artifacts: Path,
     domain: str,
@@ -562,6 +593,23 @@ def measure_theme_scenario(
     primary_error: BaseException | None = None
     completed: dict[str, Any] | None = None
     try:
+        backdrop_log = scenario_artifacts / "backdrop.stdout.log"
+        backdrop_output = backdrop_log.open("w", encoding="utf-8")
+        backdrop_error = (scenario_artifacts / "backdrop.stderr.log").open(
+            "w", encoding="utf-8"
+        )
+        try:
+            backdrop = processes.start(
+                [str(helper), "backdrop"],
+                stdout=backdrop_output,
+                stderr=backdrop_error,
+                text=True,
+            )
+        finally:
+            backdrop_output.close()
+            backdrop_error.close()
+        geometry = wait_for_backdrop(backdrop, backdrop_log)
+
         run_id = (
             f"system-blur-composition-{scenario.key}-{os.getpid()}-{time.time_ns()}"
         )
@@ -590,7 +638,7 @@ def measure_theme_scenario(
         write_json(direct_state_path, direct_state)
         time.sleep(0.5)
         direct_capture = scenario_artifacts / "direct-terminal-crop.png"
-        direct_metadata = capture(helper, direct_capture, laban.pid)
+        direct_metadata = capture(helper, direct_capture, laban.pid, backdrop.pid)
 
         client.action("setBackgroundSource", source="systemBlur")
         blur_state = wait_for_state(client, "systemBlur", scenario)
@@ -598,7 +646,7 @@ def measure_theme_scenario(
         write_json(blur_state_path, blur_state)
         time.sleep(0.5)
         blur_capture = scenario_artifacts / "system-blur-terminal-crop.png"
-        blur_metadata = capture(helper, blur_capture, laban.pid)
+        blur_metadata = capture(helper, blur_capture, laban.pid, backdrop.pid)
         if blur_metadata != direct_metadata:
             fail(
                 f"{scenario.name}: direct and System Blur terminal crops "
@@ -695,7 +743,6 @@ def verify(
         fail("installed app has no bundle identifier")
     identity = provenance(app, executable, info)
     preference_snapshot = read_preferences(domain)
-    backdrop_processes = OwnedProcesses(termination_guard)
     primary_error: BaseException | None = None
     completed_summary: dict[str, Any] | None = None
 
@@ -710,26 +757,11 @@ def verify(
         helper = work / "system-blur-composition-oracle"
         compile_fixture(helper)
         try:
-            backdrop_log = artifacts / "backdrop.stdout.log"
-            backdrop_output = backdrop_log.open("w", encoding="utf-8")
-            backdrop_error = (artifacts / "backdrop.stderr.log").open("w", encoding="utf-8")
-            try:
-                backdrop = backdrop_processes.start(
-                    [str(helper), "backdrop"],
-                    stdout=backdrop_output,
-                    stderr=backdrop_error,
-                    text=True,
-                )
-            finally:
-                backdrop_output.close()
-                backdrop_error.close()
-            geometry = wait_for_backdrop(backdrop, backdrop_log)
             scenario_results = {
                 scenario.key: measure_theme_scenario(
                     scenario=scenario,
                     executable=executable,
                     helper=helper,
-                    geometry=geometry,
                     control_root=control_root,
                     artifacts=artifacts,
                     domain=domain,
@@ -765,7 +797,6 @@ def verify(
         with termination_guard.defer():
             cleanup_errors = cleanup_all(
                 [
-                    ("backdrop process cleanup", backdrop_processes.close),
                     ("preference restoration", lambda: restore_preferences(domain, preference_snapshot)),
                 ]
             )

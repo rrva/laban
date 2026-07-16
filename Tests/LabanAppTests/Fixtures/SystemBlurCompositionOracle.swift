@@ -76,13 +76,56 @@ private struct Analysis: Codable {
 }
 
 private struct CaptureMetadata: Codable, Equatable {
-  var schemaVersion = 1
+  var schemaVersion = 2
   var captureKind = "fullDisplayCroppedInMemory"
   var sampleOriginXPoints: Double
   var sampleOriginYPoints: Double
   var captureScale: Double
   var terminalSampleWidth: Int
   var terminalSampleHeight: Int
+  var labanPID: pid_t
+  var backdropPID: pid_t
+  var labanWindowID: CGWindowID
+  var backdropWindowID: CGWindowID
+  var windowStackValidatedBeforeCapture = true
+  var windowStackValidatedBeforePNGEncoding = true
+}
+
+private struct WindowStackRecord: Equatable {
+  var windowID: CGWindowID
+  var ownerPID: pid_t
+  var layer: Int
+  var bounds: CGRect
+}
+
+private struct WindowStackAttestation: Equatable {
+  var labanWindowID: CGWindowID
+  var backdropWindowID: CGWindowID
+  var labanBounds: CGRect
+  var sampleBounds: CGRect
+}
+
+private enum WindowStackValidationError: Error, CustomStringConvertible {
+  case missingLabanWindow
+  case invalidTerminalSample
+  case labanNotFrontmost
+  case backdropNotImmediate
+  case backdropDoesNotCoverSample
+
+  var description: String {
+    switch self {
+    case .missingLabanWindow:
+      return "could not locate the live Laban terminal window"
+    case .invalidTerminalSample:
+      return "live Laban window does not provide a valid terminal sample"
+    case .labanNotFrontmost:
+      return "Laban is not the frontmost on-screen window intersecting the terminal sample"
+    case .backdropNotImmediate:
+      return "stripe backdrop is not immediately behind the Laban terminal sample"
+    case .backdropDoesNotCoverSample:
+      return "stripe backdrop does not cover the complete terminal sample"
+    }
+  }
 }
 
 private final class ShareableContentBox: @unchecked Sendable {
@@ -127,10 +170,11 @@ private final class CaptureBox: @unchecked Sendable {
 /// window-only ScreenCaptureKit filter suppresses behind-window composition,
 /// so substituting an app/window screenshot would invalidate this oracle.
 @available(macOS 14.0, *)
-private func captureFullDisplay(to path: String, labanPID: pid_t) {
+private func captureFullDisplay(to path: String, labanPID: pid_t, backdropPID: pid_t) {
   guard CGPreflightScreenCaptureAccess() else {
     fail("Screen Recording access is required for full-display capture")
   }
+  let initialWindowStack = liveWindowStack(labanPID: labanPID, backdropPID: backdropPID)
 
   let shareableBox = ShareableContentBox()
   let shareableSemaphore = DispatchSemaphore(value: 0)
@@ -181,7 +225,7 @@ private func captureFullDisplay(to path: String, labanPID: pid_t) {
   guard abs(scaleX - scaleY) < 0.01, scaleX >= 1 else {
     fail("full-display capture dimensions do not match the main screen")
   }
-  let window = labanWindowBounds(pid: labanPID)
+  let window = initialWindowStack.labanBounds
   let sampleMinX = Int(((window.minX + 220) * scaleX).rounded(.up))
   let sampleMaxX = Int(((window.maxX - 30) * scaleX).rounded(.down))
   let sampleMinY = Int(((window.minY + 90) * scaleY).rounded(.up))
@@ -198,8 +242,14 @@ private func captureFullDisplay(to path: String, labanPID: pid_t) {
   else { fail("live Laban window does not provide a valid terminal crop") }
 
   // The complete display exists only in this process's memory. Persist only
-  // the deterministic terminal crop so unrelated desktop content cannot enter
-  // the evidence bundle.
+  // the deterministic terminal crop. Re-attest the complete front-to-back
+  // WindowServer stack before even encoding PNG bytes: if another app, alert,
+  // IME panel, or popover overlaps the crop or sits between Laban and the
+  // expected stripe process, no pixel artifact may be persisted.
+  let finalWindowStack = liveWindowStack(labanPID: labanPID, backdropPID: backdropPID)
+  guard finalWindowStack == initialWindowStack else {
+    fail("window stack changed during full-display capture")
+  }
   let bitmap = NSBitmapImageRep(cgImage: cropped)
   guard let png = bitmap.representation(using: .png, properties: [:]) else {
     fail("could not encode the in-memory terminal crop")
@@ -214,33 +264,103 @@ private func captureFullDisplay(to path: String, labanPID: pid_t) {
     sampleOriginYPoints: Double(sampleMinY) / scaleY,
     captureScale: scaleX,
     terminalSampleWidth: cropped.width,
-    terminalSampleHeight: cropped.height)
+    terminalSampleHeight: cropped.height,
+    labanPID: labanPID,
+    backdropPID: backdropPID,
+    labanWindowID: finalWindowStack.labanWindowID,
+    backdropWindowID: finalWindowStack.backdropWindowID)
   let encoder = JSONEncoder()
   encoder.outputFormatting = [.sortedKeys]
   FileHandle.standardOutput.write(try! encoder.encode(metadata))
   FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
-private func labanWindowBounds(pid: pid_t) -> CGRect {
+private func terminalSampleBounds(for window: CGRect) throws -> CGRect {
+  let sample = CGRect(
+    x: window.minX + 220,
+    y: window.minY + 90,
+    width: window.width - 250,
+    height: window.height - 150)
+  guard sample.width > 0, sample.height > 0 else {
+    throw WindowStackValidationError.invalidTerminalSample
+  }
+  return sample
+}
+
+private func hasPositiveIntersection(_ first: CGRect, _ second: CGRect) -> Bool {
+  let intersection = first.intersection(second)
+  return !intersection.isNull && intersection.width > 0 && intersection.height > 0
+}
+
+private func completelyContains(_ outer: CGRect, _ inner: CGRect) -> Bool {
+  outer.minX <= inner.minX && outer.minY <= inner.minY
+    && outer.maxX >= inner.maxX && outer.maxY >= inner.maxY
+}
+
+private func validateWindowStack(
+  _ records: [WindowStackRecord],
+  labanPID: pid_t,
+  backdropPID: pid_t
+) throws -> WindowStackAttestation {
+  let candidates = records.filter {
+    $0.ownerPID == labanPID && $0.layer == 0
+      && $0.bounds.width >= 400 && $0.bounds.height >= 300
+  }
+  guard
+    let laban = candidates.max(by: {
+      $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height
+    })
+  else { throw WindowStackValidationError.missingLabanWindow }
+
+  let sample = try terminalSampleBounds(for: laban.bounds)
+  // CGWindowList is ordered front-to-back. Deliberately include every layer:
+  // a panel or IME candidate window can disclose unrelated pixels just as an
+  // ordinary layer-zero application window can.
+  let overlapping = records.filter { hasPositiveIntersection($0.bounds, sample) }
+  guard overlapping.first?.windowID == laban.windowID else {
+    throw WindowStackValidationError.labanNotFrontmost
+  }
+  guard overlapping.count >= 2 else {
+    throw WindowStackValidationError.backdropNotImmediate
+  }
+  let backdrop = overlapping[1]
+  guard backdrop.ownerPID == backdropPID, backdrop.layer == 0 else {
+    throw WindowStackValidationError.backdropNotImmediate
+  }
+  guard completelyContains(backdrop.bounds, sample) else {
+    throw WindowStackValidationError.backdropDoesNotCoverSample
+  }
+  return WindowStackAttestation(
+    labanWindowID: laban.windowID,
+    backdropWindowID: backdrop.windowID,
+    labanBounds: laban.bounds,
+    sampleBounds: sample)
+}
+
+private func liveWindowStack(labanPID: pid_t, backdropPID: pid_t) -> WindowStackAttestation {
   guard
     let records = CGWindowListCopyWindowInfo(
       [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
   else { fail("could not enumerate on-screen windows") }
 
-  let candidates: [CGRect] = records.compactMap { record in
-    guard (record[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
-      (record[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+  let parsed: [WindowStackRecord] = records.compactMap { record in
+    guard let windowID = (record[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+      let ownerPID = (record[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+      let layer = (record[kCGWindowLayer as String] as? NSNumber)?.intValue,
       let dictionary = record[kCGWindowBounds as String] as? NSDictionary,
-      let bounds = CGRect(dictionaryRepresentation: dictionary as CFDictionary),
-      bounds.width >= 400,
-      bounds.height >= 300
+      let bounds = CGRect(dictionaryRepresentation: dictionary as CFDictionary)
     else { return nil }
-    return bounds
+    return WindowStackRecord(
+      windowID: windowID,
+      ownerPID: ownerPID,
+      layer: layer,
+      bounds: bounds)
   }
-  guard let bounds = candidates.max(by: { $0.width * $0.height < $1.width * $1.height }) else {
-    fail("could not locate the live Laban terminal window")
+  do {
+    return try validateWindowStack(parsed, labanPID: labanPID, backdropPID: backdropPID)
+  } catch {
+    fail("unsafe full-display capture window stack: \(error)")
   }
-  return bounds
 }
 
 private func bitmap(at path: String) -> NSBitmapImageRep {
@@ -503,6 +623,70 @@ private func selfTest() {
     flat.failures.contains(where: { $0.contains("blur source amplitude") }),
     (try? JSONEncoder().encode(flat)) != nil
   else { fail("flat-capture failure was not reported as finite JSON") }
+
+  let labanPID: pid_t = 101
+  let backdropPID: pid_t = 202
+  let laban = WindowStackRecord(
+    windowID: 1,
+    ownerPID: labanPID,
+    layer: 0,
+    bounds: CGRect(x: 100, y: 100, width: 900, height: 700))
+  let backdrop = WindowStackRecord(
+    windowID: 2,
+    ownerPID: backdropPID,
+    layer: 0,
+    bounds: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+  let nonoverlappingFrontWindow = WindowStackRecord(
+    windowID: 3,
+    ownerPID: 303,
+    layer: 7,
+    bounds: CGRect(x: 1500, y: 0, width: 300, height: 300))
+  guard
+    let validStack = try? validateWindowStack(
+      [nonoverlappingFrontWindow, laban, backdrop],
+      labanPID: labanPID,
+      backdropPID: backdropPID),
+    validStack.labanWindowID == laban.windowID,
+    validStack.backdropWindowID == backdrop.windowID
+  else { fail("valid deterministic window stack self-test failed") }
+
+  func expectWindowStackFailure(_ records: [WindowStackRecord], _ label: String) {
+    do {
+      _ = try validateWindowStack(records, labanPID: labanPID, backdropPID: backdropPID)
+    } catch {
+      return
+    }
+    fail("unsafe window stack was accepted: \(label)")
+  }
+
+  let overlappingOtherWindow = WindowStackRecord(
+    windowID: 4,
+    ownerPID: 404,
+    layer: 0,
+    bounds: CGRect(x: 300, y: 200, width: 500, height: 300))
+  let overlappingPanel = WindowStackRecord(
+    windowID: 5,
+    ownerPID: labanPID,
+    layer: 25,
+    bounds: CGRect(x: 300, y: 200, width: 500, height: 300))
+  let partialBackdrop = WindowStackRecord(
+    windowID: 6,
+    ownerPID: backdropPID,
+    layer: 0,
+    bounds: CGRect(x: 0, y: 0, width: 600, height: 1080))
+  var wrongProcessBackdrop = backdrop
+  wrongProcessBackdrop.ownerPID = 999
+  expectWindowStackFailure(
+    [overlappingOtherWindow, laban, backdrop], "other application ahead of Laban")
+  expectWindowStackFailure(
+    [laban, overlappingOtherWindow, backdrop], "other application between Laban and backdrop")
+  expectWindowStackFailure(
+    [laban, overlappingPanel, backdrop], "same-owner panel between Laban and backdrop")
+  expectWindowStackFailure(
+    [laban, partialBackdrop], "backdrop does not cover the complete sample")
+  expectWindowStackFailure(
+    [laban, wrongProcessBackdrop],
+    "wrong expected backdrop process")
   print("system-blur-composition-oracle: self-test passed")
 }
 
@@ -516,11 +700,13 @@ case "backdrop":
 case "analyze":
   analyze(arguments: Array(CommandLine.arguments.dropFirst(2)))
 case "capture":
-  guard CommandLine.arguments.count == 4,
-    let pid = pid_t(CommandLine.arguments[3])
-  else { fail("capture expects OUTPUT_PNG LABAN_PID") }
+  guard CommandLine.arguments.count == 5,
+    let pid = pid_t(CommandLine.arguments[3]),
+    let backdropPID = pid_t(CommandLine.arguments[4])
+  else { fail("capture expects OUTPUT_PNG LABAN_PID BACKDROP_PID") }
   if #available(macOS 14.0, *) {
-    captureFullDisplay(to: CommandLine.arguments[2], labanPID: pid)
+    captureFullDisplay(
+      to: CommandLine.arguments[2], labanPID: pid, backdropPID: backdropPID)
   } else {
     fail("full-display ScreenCaptureKit capture requires macOS 14 or newer")
   }
