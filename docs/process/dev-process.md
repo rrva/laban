@@ -534,10 +534,13 @@ transitions, but their post-completion idle windows must also park.
 
 `scripts/verify-system-blur-composition` is the visual oracle for the native
 material. It launches checked-in fixture code that orders known black/white
-stripes immediately behind an isolated installed Laban window, applies exact
-30% None and System Blur states through the credential above, forces the
-diagnostic Reduce Transparency override off for measurement, and captures the
-complete main display with `SCContentFilter(display:excludingWindows:)`. Do not
+stripes immediately behind an isolated installed Laban window. It runs two
+non-substitutable scenarios: Selenized Light with Aqua and Selenized Dark with
+Dark Aqua, both pinned to configured/effective Slug. For each scenario it
+applies exact 30% None and System Blur states through the credential above,
+forces the diagnostic Reduce Transparency override off for measurement, and
+captures the complete main display with
+`SCContentFilter(display:excludingWindows:)`. Do not
 replace that display filter with Laban's app screenshot or a window-only
 ScreenCaptureKit filter: those capture paths suppress behind-window material
 composition. The full display exists only in fixture-process memory. Before any
@@ -549,9 +552,12 @@ minimal environment.
 The oracle requires the blurred crop to remain correlated with the stripe
 source and compares edge sharpness after normalizing by each crop's retained
 stripe amplitude. This rejects a sharp low-contrast tint as well as an opaque
-surface. Its self-test includes that negative, malformed plist value and absent
-domain restoration, independent cleanup-error aggregation, deferred
-SIGHUP/SIGINT/SIGTERM delivery, and a surviving descendant process group that
+surface. A flat capture produces finite failed metrics rather than aborting JSON
+serialization. `/debug/transparency` attests the exact theme name, dark/light
+identity, effective AppKit appearance, and configured/effective Slug renderer
+for both scenarios. Its self-test includes that negative, malformed plist
+value and absent domain restoration, independent cleanup-error aggregation,
+deferred SIGHUP/SIGINT/SIGTERM delivery, and a surviving descendant process group that
 requires SIGKILL while its direct child is reaped. Runtime cleanup always tries
 to reset the Reduce Transparency override to `null`, terminate/reap every owned
 process group, and restore the complete exported preference domain byte-for-
@@ -563,7 +569,10 @@ oracle-source git blob IDs,
 `LABANBuildCommit`, repository HEAD/ancestry, OS version/build, cropped PNG
 hashes, and token-free state hashes. All three oracle sources must match their
 exact tracked bytes at the recorded HEAD; a dirty or substituted oracle
-cannot produce evidence. A non-current installed commit is accepted only when
+cannot produce evidence. The summary requires both named scenario keys and
+keeps their metrics, state hashes, crop hashes, theme/appearance identity, and
+renderer identity separate; one dark result can never stand in for the light
+result. A non-current installed commit is accepted only when
 it is an ancestor of HEAD and `Package.swift`, `Package.resolved`, and
 `Sources/` are unchanged since that commit. Screen Recording access, a closed
 existing Laban instance, and a zero-origin main display are prerequisites.

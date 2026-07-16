@@ -254,6 +254,13 @@ opaque or uninitialized flash. Headless mode uses the same frame-command
 semantics, and its PNG output preserves alpha so deterministic pixel probes can
 verify the behavior without a visible window.
 
+Bright translucent canvases must preserve their original straight sRGB color
+after WindowServer composition. Vector and Slug sRGB targets store
+alpha-bearing replacement backgrounds as encoded-sRGB premultiplied pixels; a
+light theme such as Selenized Light must not clip to white and hide a selected
+backdrop. Opaque colors, glyphs, and ordinary source-over content keep their
+existing gamma-correct linear-light behavior.
+
 The persisted setting is the user's request. macOS Reduce Transparency, native
 full screen, or a remote helper that cannot identify explicitly colored cell
 backgrounds may temporarily resolve that request to a fully opaque effective
@@ -323,6 +330,12 @@ never combines blur and Image. A missing or corrupt managed image preserves the
 requested Image choice but resolves the visible window fully opaque with
 `backgroundImageUnavailable`, never silently falling through to direct desktop
 transparency.
+
+Installed System Blur acceptance runs both Selenized Light with Aqua and
+Selenized Dark with Dark Aqua using the Slug renderer. A single-theme run cannot
+substitute: `/debug/transparency` must attest the exact theme, appearance,
+configured renderer, and effective renderer for each direct/System Blur pair,
+and both full-display in-memory composition measurements must pass.
 
 Reduce Transparency, native full screen, and legacy snapshot writers continue
 to force the effective surface opaque without discarding the requested source,

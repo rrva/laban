@@ -5,7 +5,8 @@ Date: 2026-07-15
 ## Status
 
 Accepted; amended 2026-07-15 after installed-app validation and again for
-user-imported background images. Implementation is tracked in
+user-imported background images, then amended 2026-07-16 for encoded-sRGB
+premultiplication on translucent renderer targets. Implementation is tracked in
 `execplans/active/terminal-background-transparency.md`.
 
 ## Context
@@ -124,6 +125,18 @@ replays intersecting commands. Scroll blits copy existing premultiplied pixels
 without modification, and newly exposed regions follow the same erase-and-
 replay rule. Core Graphics implements replace with `CGBlendMode.copy`; Metal
 uses a no-blend pipeline equivalent to source one and destination zero.
+
+For Vector and Slug, the final `bgra8Unorm_srgb` presentation target has an
+additional storage boundary. Metal encodes linear RGB when storing, while Core
+Animation and Core Graphics consume the resulting bytes as encoded-sRGB
+premultiplied color. Alpha-bearing replacement backgrounds therefore
+premultiply in encoded sRGB and then linearize that premultiplied value for the
+target write. Computing `linear(sRGB) * alpha` would encode to RGB bytes greater
+than alpha for bright themes, so WindowServer unpremultiplication would clip
+them toward white and erase visible backdrop contrast. This special conversion
+applies only to translucent replace-background pixels and their matching clear;
+opaque colors, glyph rendering, and source-over blending retain linear-light
+behavior.
 
 The themed background is applied exactly once. `NSWindow`, permanent AppKit
 views/layers, and renderer presentation surfaces contribute no second tint. A
