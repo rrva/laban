@@ -10,6 +10,8 @@ import os
 import plistlib
 import runpy
 import signal
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -50,6 +52,13 @@ THEME_SCENARIOS = (
     ThemeScenario("selenized-light-aqua", "Selenized Light", False, "aqua"),
     ThemeScenario("selenized-dark-dark-aqua", "Selenized Dark", True, "darkAqua"),
 )
+
+# Darwin's sockaddr_un.sun_path is 104 bytes including the trailing NUL.
+# Keep this oracle's fixture path check aligned with LabanControl's bind guard
+# so a configuration failure is reported before AppKit can present a modal
+# startup alert.
+DARWIN_UNIX_SOCKET_PATH_CAPACITY = 104
+CONTROL_SOCKET_BASENAME = "control.sock"
 
 
 def fail(message: str) -> NoReturn:
@@ -255,6 +264,7 @@ def wait_for_control(
     process: subprocess.Popen[str], control_dir: Path, run_id: str
 ) -> dict[str, Any]:
     advertisement = control_dir / "control.json"
+    expected_socket = expected_control_socket_path(control_dir)
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -263,16 +273,47 @@ def wait_for_control(
             value = json.loads(advertisement.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             value = None
-        if (
-            isinstance(value, dict)
-            and value.get("runId") == run_id
-            and value.get("pid") == process.pid
-            and isinstance(value.get("diagnosticControlToken"), str)
-            and Path(str(value.get("url", ""))).is_socket()
+        if validated_control_advertisement(
+            value,
+            expected_pid=process.pid,
+            expected_run_id=run_id,
+            expected_socket=expected_socket,
         ):
             return value
         time.sleep(0.05)
     fail("timed out waiting for installed-app fixture control")
+
+
+def expected_control_socket_path(control_dir: Path) -> Path:
+    path = control_dir / CONTROL_SOCKET_BASENAME
+    byte_count = len(os.fsencode(path)) + 1
+    if byte_count > DARWIN_UNIX_SOCKET_PATH_CAPACITY:
+        fail(
+            "fixture control socket path exceeds Darwin sockaddr_un capacity: "
+            f"{byte_count} > {DARWIN_UNIX_SOCKET_PATH_CAPACITY} bytes"
+        )
+    return path
+
+
+def validated_control_advertisement(
+    value: Any,
+    *,
+    expected_pid: int,
+    expected_run_id: str,
+    expected_socket: Path,
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("runId") != expected_run_id or value.get("pid") != expected_pid:
+        return False
+    if not isinstance(value.get("diagnosticControlToken"), str):
+        return False
+    if Path(str(value.get("url", ""))) != expected_socket:
+        return False
+    try:
+        return stat.S_ISSOCK(expected_socket.stat().st_mode)
+    except OSError:
+        return False
 
 
 class Client:
@@ -508,14 +549,22 @@ def measure_theme_scenario(
     )
     scenario_artifacts = artifacts / scenario.key
     scenario_artifacts.mkdir()
-    control_dir = control_root / scenario.key
+    # The artifact name remains descriptive, but fixture IPC lives below a
+    # short per-run root. Descriptive scenario names can exceed Darwin's
+    # sockaddr_un path capacity after tempfile prefixes are included.
+    control_dir = control_root / ("l" if not scenario.is_dark else "d")
     control_dir.mkdir(mode=0o700)
+    if any(control_dir.iterdir()):
+        fail(f"{scenario.name}: fixture control directory was not fresh")
+    expected_control_socket_path(control_dir)
     processes = OwnedProcesses(termination_guard)
     client: Client | None = None
     primary_error: BaseException | None = None
     completed: dict[str, Any] | None = None
     try:
-        run_id = f"system-blur-composition-{scenario.key}-{os.getpid()}"
+        run_id = (
+            f"system-blur-composition-{scenario.key}-{os.getpid()}-{time.time_ns()}"
+        )
         app_log = (scenario_artifacts / "app.log").open("w", encoding="utf-8")
         try:
             laban = processes.start(
@@ -652,10 +701,12 @@ def verify(
 
     with tempfile.TemporaryDirectory(
         prefix="system-blur-composition-", dir=REPOSITORY_ROOT / ".tmp"
-    ) as raw_work:
+    ) as raw_work, tempfile.TemporaryDirectory(
+        prefix=f"lbo-{os.getpid()}-", dir="/tmp"
+    ) as raw_control:
         work = Path(raw_work)
-        control_root = work / "control"
-        control_root.mkdir(mode=0o700)
+        control_root = Path(raw_control)
+        expected_control_socket_path(control_root / "d")
         helper = work / "system-blur-composition-oracle"
         compile_fixture(helper)
         try:
@@ -799,6 +850,57 @@ def self_test_cleanup_aggregation() -> None:
     )
     if called != ["first", "second", "third"] or len(errors) != 2:
         fail("cleanup aggregation did not run every independent cleanup step")
+
+
+def self_test_control_path_and_advertisement() -> None:
+    short = Path("/tmp/lbo-self/d")
+    if expected_control_socket_path(short) != short / CONTROL_SOCKET_BASENAME:
+        fail("short fixture control socket path did not pass its path budget")
+    expect_oracle_failure(
+        lambda: expected_control_socket_path(Path("/tmp") / ("x" * 100)),
+        "an over-capacity fixture control socket path",
+    )
+
+    with tempfile.TemporaryDirectory(
+        prefix="lbo-self-", dir="/tmp"
+    ) as raw_control:
+        control_dir = Path(raw_control) / "d"
+        control_dir.mkdir(mode=0o700)
+        expected_socket = expected_control_socket_path(control_dir)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            listener.bind(str(expected_socket))
+            valid: dict[str, Any] = {
+                "runId": "fresh-run",
+                "pid": 1234,
+                "url": str(expected_socket),
+                "diagnosticControlToken": "fixture-token",
+            }
+            if not validated_control_advertisement(
+                valid,
+                expected_pid=1234,
+                expected_run_id="fresh-run",
+                expected_socket=expected_socket,
+            ):
+                fail("fresh fixture control advertisement was rejected")
+            stale_variants = (
+                {**valid, "runId": "stale-run"},
+                {**valid, "pid": 4321},
+                {**valid, "url": str(control_dir / "stale.sock")},
+                {key: value for key, value in valid.items() if key != "diagnosticControlToken"},
+            )
+            if any(
+                validated_control_advertisement(
+                    value,
+                    expected_pid=1234,
+                    expected_run_id="fresh-run",
+                    expected_socket=expected_socket,
+                )
+                for value in stale_variants
+            ):
+                fail("stale fixture control advertisement was accepted")
+        finally:
+            listener.close()
 
 
 def expect_oracle_failure(action: Callable[[], None], label: str) -> None:
@@ -1024,6 +1126,7 @@ def self_test() -> None:
     self_test_real_signal_cleanup()
     self_test_preferences()
     self_test_cleanup_aggregation()
+    self_test_control_path_and_advertisement()
     self_test_http_and_override_validation()
     self_test_oracle_source_identity()
 
