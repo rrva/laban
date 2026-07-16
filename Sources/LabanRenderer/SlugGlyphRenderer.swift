@@ -100,6 +100,111 @@ private struct SlugGlyphEntry {
   var glyphIndex: Int
 }
 
+private struct SlugTranslucentPipelines {
+  let solid: MTLRenderPipelineState
+  let replaceSolid: MTLRenderPipelineState
+  let glyphAlpha: MTLRenderPipelineState
+  let rasterGlyph: MTLRenderPipelineState
+  let colorGlyph: MTLRenderPipelineState
+}
+
+/// Lazily builds only the rgba16Float pipelines Slug's forced-grayscale
+/// translucent path can use. Keeping this separate from `init` means an
+/// always-opaque renderer compiles exactly its shipped pipeline set.
+private enum SlugTranslucentPipelineCache {
+  private static let lock = NSLock()
+  private static var cache: [ObjectIdentifier: SlugTranslucentPipelines] = [:]
+
+  static func pipelines(
+    device: MTLDevice,
+    library: MTLLibrary
+  ) -> SlugTranslucentPipelines? {
+    let key = ObjectIdentifier(device)
+    lock.lock()
+    if let cached = cache[key] {
+      lock.unlock()
+      return cached
+    }
+    lock.unlock()
+
+    guard let solidVertex = library.makeFunction(name: "vectorSolidVertex"),
+      let solidFragment = library.makeFunction(name: "vectorSolidFragment"),
+      let textureVertex = library.makeFunction(name: "vectorGlyphVertex"),
+      let rasterGlyphFragment = library.makeFunction(name: "vectorRasterGlyphFragment"),
+      let colorGlyphFragment = library.makeFunction(name: "vectorColorGlyphFragment"),
+      let glyphVertex = library.makeFunction(name: "slugGlyphVertex"),
+      let glyphAlphaFragment = library.makeFunction(name: "slugGlyphAlphaFragment")
+    else { return nil }
+
+    func descriptor(
+      label: String,
+      vertex: MTLFunction,
+      fragment: MTLFunction,
+      blended: Bool
+    ) -> MTLRenderPipelineDescriptor {
+      let value = MTLRenderPipelineDescriptor()
+      value.label = label
+      value.vertexFunction = vertex
+      value.fragmentFunction = fragment
+      value.colorAttachments[0]?.pixelFormat = .rgba16Float
+      if blended {
+        configureSlugAlphaBlend(value.colorAttachments[0])
+      } else {
+        value.colorAttachments[0]?.isBlendingEnabled = false
+      }
+      return value
+    }
+
+    guard
+      let solid = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.slug.translucent-solid",
+          vertex: solidVertex,
+          fragment: solidFragment,
+          blended: true)),
+      let replaceSolid = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.slug.translucent-solid-replace",
+          vertex: solidVertex,
+          fragment: solidFragment,
+          blended: false)),
+      let glyphAlpha = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.slug.translucent-glyph-alpha",
+          vertex: glyphVertex,
+          fragment: glyphAlphaFragment,
+          blended: true)),
+      let rasterGlyph = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.slug.translucent-raster-glyph",
+          vertex: textureVertex,
+          fragment: rasterGlyphFragment,
+          blended: true)),
+      let colorGlyph = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.slug.translucent-color-glyph",
+          vertex: textureVertex,
+          fragment: colorGlyphFragment,
+          blended: true))
+    else { return nil }
+
+    let pipelines = SlugTranslucentPipelines(
+      solid: solid,
+      replaceSolid: replaceSolid,
+      glyphAlpha: glyphAlpha,
+      rasterGlyph: rasterGlyph,
+      colorGlyph: colorGlyph)
+    lock.lock()
+    if let existing = cache[key] {
+      lock.unlock()
+      return existing
+    }
+    cache[key] = pipelines
+    lock.unlock()
+    return pipelines
+  }
+}
+
 /// Analytic, atlas-free glyph renderer based on Lengyel's Slug fragment path.
 ///
 /// Ordinary outline glyphs use reference-size curve geometry plus horizontal and
@@ -190,6 +295,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   private let device: MTLDevice
   private let queue: MTLCommandQueue
+  private let shaderLibrary: MTLLibrary
   private let solidPipeline: MTLRenderPipelineState
   private let replaceSolidPipeline: MTLRenderPipelineState
   private let glyphAlphaPipeline: MTLRenderPipelineState
@@ -200,6 +306,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private let subpixelCompositeAdditivePipeline: MTLRenderPipelineState
   private let rasterGlyphPipeline: MTLRenderPipelineState
   private let colorGlyphPipeline: MTLRenderPipelineState
+  /// Nil for an always-opaque renderer so default activation compiles no extra
+  /// translucent PSOs.
+  private var translucentPipelines: SlugTranslucentPipelines?
+  private var linearPremultipliedResolvePipeline: MTLRenderPipelineState?
   private let sampler: MTLSamplerState
   public let layer: CAMetalLayer
 
@@ -331,9 +441,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// this rationale.
   private let frameInFlight = DispatchSemaphore(value: 1)
   private var targetRing: [MTLTexture] = []
+  private var translucentWorkingRing: [MTLTexture] = []
   private var targetRingCursor = 0
 
   private var targetTexture: MTLTexture?
+  private var translucentWorkingTexture: MTLTexture?
+  var hasTranslucentPipelinesForTesting: Bool {
+    translucentPipelines != nil && linearPremultipliedResolvePipeline != nil
+  }
+  var hasTranslucentWorkingTargetForTesting: Bool { translucentWorkingTexture != nil }
   private var lastCommandBuffer: MTLCommandBuffer?
   private var rasterAtlas: MetalGlyphAtlas?
   /// A prewarmed raster atlas supplied by a background cold-launch prewarm
@@ -573,8 +689,25 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let sampler = device.makeSamplerState(descriptor: samplerDescriptor)
     else { return nil }
 
+    let initialTranslucentPipelines: SlugTranslucentPipelines?
+    let initialResolvePipeline: MTLRenderPipelineState?
+    if surfaceTransparency.isOpaque {
+      initialTranslucentPipelines = nil
+      initialResolvePipeline = nil
+    } else {
+      guard
+        let content = SlugTranslucentPipelineCache.pipelines(
+          device: device, library: library),
+        let resolve = VectorGlyphShaderCache.linearPremultipliedResolvePipeline(
+          device: device, destinationPixelFormat: layer.pixelFormat)
+      else { return nil }
+      initialTranslucentPipelines = content
+      initialResolvePipeline = resolve
+    }
+
     self.device = device
     self.queue = queue
+    self.shaderLibrary = library
     self.solidPipeline = solidPipeline
     self.replaceSolidPipeline = replaceSolidPipeline
     self.glyphAlphaPipeline = glyphAlphaPipeline
@@ -585,6 +718,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     self.subpixelCompositeAdditivePipeline = subpixelCompositeAdditivePipeline
     self.rasterGlyphPipeline = rasterGlyphPipeline
     self.colorGlyphPipeline = colorGlyphPipeline
+    self.translucentPipelines = initialTranslucentPipelines
+    self.linearPremultipliedResolvePipeline = initialResolvePipeline
     self.sampler = sampler
     self.layer = layer
     self.fontAtlas = fontAtlas
@@ -662,6 +797,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     // Retire the publish handler before removing the current target; otherwise
     // an old-policy frame could be republished after this method returns.
     lastCommandBuffer?.waitUntilCompleted()
+    if !transparency.isOpaque {
+      _ = ensureTranslucentPipelines()
+    }
     let priorEffectiveSubpixelLayout = effectiveSubpixelLayout
     surfaceTransparency = transparency
     if effectiveSubpixelLayout != priorEffectiveSubpixelLayout {
@@ -672,7 +810,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     layer.isOpaque = transparency.isOpaque
     targetTexture = nil
+    translucentWorkingTexture = nil
     targetRing.removeAll(keepingCapacity: true)
+    translucentWorkingRing.removeAll(keepingCapacity: true)
     targetRingCursor = 0
     subpixelCoverageAccum = nil
     subpixelColorAccum = nil
@@ -804,7 +944,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     layer.contentsScale = newScale
     layer.drawableSize = CGSize(width: pw, height: ph)
     targetTexture = nil
+    translucentWorkingTexture = nil
     targetRing.removeAll(keepingCapacity: true)
+    translucentWorkingRing.removeAll(keepingCapacity: true)
     targetRingCursor = 0
     subpixelCoverageAccum = nil
     subpixelColorAccum = nil
@@ -1024,9 +1166,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       }
     }
 
-    guard let target = commitRingSlot(slot, rebuild: ringRebuild),
+    guard let frameTargets = commitRingSlot(slot, rebuild: ringRebuild),
       let commandBuffer = queue.makeCommandBuffer()
     else { return false }
+    let target = frameTargets.final
+    let contentTarget = frameTargets.content
 
     let scissorPlan = self.scissorPlan(for: effectiveDamage)
 
@@ -1073,7 +1217,27 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     var retainedBuffers: [MTLBuffer] = []
 
-    let useSubpixel = effectiveSubpixelLayout != .grayscale
+    let isOpaque = surfaceTransparency.isOpaque
+    let activeSolidPipeline: MTLRenderPipelineState
+    let activeReplaceSolidPipeline: MTLRenderPipelineState
+    let activeGlyphAlphaPipeline: MTLRenderPipelineState
+    let activeRasterGlyphPipeline: MTLRenderPipelineState
+    let activeColorGlyphPipeline: MTLRenderPipelineState
+    if isOpaque {
+      activeSolidPipeline = solidPipeline
+      activeReplaceSolidPipeline = replaceSolidPipeline
+      activeGlyphAlphaPipeline = glyphAlphaPipeline
+      activeRasterGlyphPipeline = rasterGlyphPipeline
+      activeColorGlyphPipeline = colorGlyphPipeline
+    } else {
+      guard let pipelines = translucentPipelines else { return false }
+      activeSolidPipeline = pipelines.solid
+      activeReplaceSolidPipeline = pipelines.replaceSolid
+      activeGlyphAlphaPipeline = pipelines.glyphAlpha
+      activeRasterGlyphPipeline = pipelines.rasterGlyph
+      activeColorGlyphPipeline = pipelines.colorGlyph
+    }
+    let useSubpixel = isOpaque && effectiveSubpixelLayout != .grayscale
     let slugInstanceBuffer = makeBuffer(slugGlyphs)
     if let slugInstanceBuffer { retainedBuffers.append(slugInstanceBuffer) }
     let slugCurveBuffer = curveBuffer
@@ -1148,7 +1312,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     // effectively free and correctness only depends on the content pass's
     // load action here).
     let descriptor = MTLRenderPassDescriptor()
-    descriptor.colorAttachments[0].texture = target
+    descriptor.colorAttachments[0].texture = contentTarget
     descriptor.colorAttachments[0].storeAction = .store
     switch scissorPlan {
     case .full:
@@ -1183,7 +1347,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         var eraseUniforms = SlugVectorUniforms(
           surfaceSizePixels: SIMD2<Float>(Float(pixelWidth), Float(pixelHeight)),
           scale: Float(scale))
-        encoder.setRenderPipelineState(replaceSolidPipeline)
+        encoder.setRenderPipelineState(activeReplaceSolidPipeline)
         encoder.setVertexBuffer(eraseBuffer, offset: 0, index: 0)
         encoder.setVertexBytes(
           &eraseUniforms,
@@ -1201,7 +1365,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     if !replaceSolids.isEmpty, let replaceSolidBuffer = makeBuffer(replaceSolids) {
       retainedBuffers.append(replaceSolidBuffer)
-      encoder.setRenderPipelineState(replaceSolidPipeline)
+      encoder.setRenderPipelineState(activeReplaceSolidPipeline)
       encoder.setVertexBuffer(replaceSolidBuffer, offset: 0, index: 0)
       encoder.setVertexBytes(
         &vectorUniforms,
@@ -1218,7 +1382,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     if !solids.isEmpty, let solidBuffer = makeBuffer(solids) {
       retainedBuffers.append(solidBuffer)
-      encoder.setRenderPipelineState(solidPipeline)
+      encoder.setRenderPipelineState(activeSolidPipeline)
       encoder.setVertexBuffer(solidBuffer, offset: 0, index: 0)
       encoder.setVertexBytes(
         &vectorUniforms,
@@ -1248,7 +1412,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         encoder.setFragmentBuffer(slugGlyphBuffer, offset: 0, index: 1)
         encoder.setFragmentBuffer(slugBandBuffer, offset: 0, index: 2)
         encoder.setFragmentBuffer(slugBandIndexBuffer, offset: 0, index: 3)
-        encoder.setRenderPipelineState(glyphAlphaPipeline)
+        encoder.setRenderPipelineState(activeGlyphAlphaPipeline)
         repeatingBands(scissorPlan, on: encoder) {
           encoder.drawPrimitives(
             type: .triangle,
@@ -1328,7 +1492,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let rasterBuffer = makeBuffer(rasterGlyphs)
     {
       retainedBuffers.append(rasterBuffer)
-      encoder.setRenderPipelineState(rasterGlyphPipeline)
+      encoder.setRenderPipelineState(activeRasterGlyphPipeline)
       encoder.setVertexBuffer(rasterBuffer, offset: 0, index: 0)
       encoder.setVertexBytes(
         &vectorUniforms,
@@ -1350,7 +1514,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let colorBuffer = makeBuffer(colorGlyphs)
     {
       retainedBuffers.append(colorBuffer)
-      encoder.setRenderPipelineState(colorGlyphPipeline)
+      encoder.setRenderPipelineState(activeColorGlyphPipeline)
       encoder.setVertexBuffer(colorBuffer, offset: 0, index: 0)
       encoder.setVertexBytes(
         &vectorUniforms,
@@ -1368,6 +1532,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
 
     encoder.endEncoding()
+
+    if !surfaceTransparency.isOpaque {
+      guard
+        encodeLinearPremultipliedResolve(
+          from: contentTarget, to: target, commandBuffer: commandBuffer)
+      else { return false }
+    }
 
     let completion = onFrameCompleted
     if #available(macOS 14.0, *), presentDisplayLink != nil {
@@ -2224,7 +2395,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     SlugSolidInstance(
       origin: SIMD2<Float>(Float(rect.minX * scale), Float(rect.minY * scale)),
       size: SIMD2<Float>(Float(rect.width * scale), Float(rect.height * scale)),
-      color: SRGBRenderTargetColor.linearizedEncodedPremultipliedSolidRGBA(color))
+      color: slugColor(color))
   }
 
   @inline(__always)
@@ -2242,7 +2413,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   private static func linearizedClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
-    SRGBRenderTargetColor.linearizedEncodedPremultipliedClearColor(commands)
+    SRGBRenderTargetColor.linearPremultipliedClearColor(commands)
   }
 
   private static func makeColorGlyphAtlas(
@@ -2337,6 +2508,42 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       destinationLevel: 0,
       destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
     blit.endEncoding()
+  }
+
+  private func ensureTranslucentPipelines() -> Bool {
+    if translucentPipelines != nil, linearPremultipliedResolvePipeline != nil {
+      return true
+    }
+    guard
+      let content = SlugTranslucentPipelineCache.pipelines(
+        device: device, library: shaderLibrary),
+      let resolve = VectorGlyphShaderCache.linearPremultipliedResolvePipeline(
+        device: device, destinationPixelFormat: layer.pixelFormat)
+    else { return false }
+    translucentPipelines = content
+    linearPremultipliedResolvePipeline = resolve
+    return true
+  }
+
+  private func encodeLinearPremultipliedResolve(
+    from source: MTLTexture,
+    to destination: MTLTexture,
+    commandBuffer: MTLCommandBuffer
+  ) -> Bool {
+    guard let pipeline = linearPremultipliedResolvePipeline else { return false }
+    let descriptor = MTLRenderPassDescriptor()
+    descriptor.colorAttachments[0].texture = destination
+    descriptor.colorAttachments[0].loadAction = .dontCare
+    descriptor.colorAttachments[0].storeAction = .store
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+      return false
+    }
+    encoder.label = "laban.slug.linear-premultiplied-resolve"
+    encoder.setRenderPipelineState(pipeline)
+    encoder.setFragmentTexture(source, index: 0)
+    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+    encoder.endEncoding()
+    return true
   }
 
   /// Present-thread-only decision: should `presentLatestTarget` actually
@@ -2447,6 +2654,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         targetRing.count == Self.targetRingDepth
         && targetRing[0].width == pixelWidth
         && targetRing[0].height == pixelHeight
+        && (surfaceTransparency.isOpaque
+          || (translucentWorkingRing.count == Self.targetRingDepth
+            && translucentWorkingRing[0].width == pixelWidth
+            && translucentWorkingRing[0].height == pixelHeight))
       guard ringValid else { return (0, true) }
       return ((targetRingCursor + 1) % Self.targetRingDepth, false)
     }
@@ -2454,47 +2665,81 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       targetTexture != nil
       && targetTexture!.width == pixelWidth
       && targetTexture!.height == pixelHeight
+      && (surfaceTransparency.isOpaque
+        || (translucentWorkingTexture != nil
+          && translucentWorkingTexture!.width == pixelWidth
+          && translucentWorkingTexture!.height == pixelHeight))
     return (0, !legacyValid)
   }
 
   /// Mutating counterpart to `peekNextRingSlot()`: actually rotates the ring
   /// cursor (or (re)allocates textures) to `slot`. Must be called with the
   /// exact result `peekNextRingSlot()` returned for this frame.
-  private func commitRingSlot(_ slot: Int, rebuild: Bool) -> MTLTexture? {
+  private func commitRingSlot(
+    _ slot: Int, rebuild: Bool
+  ) -> (content: MTLTexture, final: MTLTexture)? {
+    let needsWorking = !surfaceTransparency.isOpaque
+    if needsWorking, !ensureTranslucentPipelines() { return nil }
     if presentQueue != nil {
       if rebuild {
-        targetRing.removeAll(keepingCapacity: true)
+        var finalRing: [MTLTexture] = []
+        var workingRing: [MTLTexture] = []
+        finalRing.reserveCapacity(Self.targetRingDepth)
+        if needsWorking { workingRing.reserveCapacity(Self.targetRingDepth) }
         for i in 0..<Self.targetRingDepth {
-          guard
-            let texture = makeTexture(
-              pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
-          else { return nil }
-          texture.label = "laban.slug.target.\(i)"
-          targetRing.append(texture)
+          guard let final = makeFinalTargetTexture() else { return nil }
+          final.label = "laban.slug.target.\(i)"
+          finalRing.append(final)
+          if needsWorking {
+            guard let working = makeTranslucentWorkingTexture() else { return nil }
+            working.label = "laban.slug.linear-working.\(i)"
+            workingRing.append(working)
+          }
         }
+        targetRing = finalRing
+        translucentWorkingRing = workingRing
         targetRingCursor = 0
-        targetTexture = targetRing[0]
-        return targetRing[0]
+        let final = finalRing[0]
+        targetTexture = final
+        if needsWorking {
+          let content = workingRing[0]
+          translucentWorkingTexture = content
+          return (content, final)
+        }
+        translucentWorkingTexture = nil
+        return (final, final)
       }
       targetRingCursor = slot
-      let texture = targetRing[slot]
-      targetTexture = texture
-      return texture
+      let final = targetRing[slot]
+      targetTexture = final
+      if needsWorking {
+        let content = translucentWorkingRing[slot]
+        translucentWorkingTexture = content
+        return (content, final)
+      }
+      translucentWorkingTexture = nil
+      return (final, final)
     }
 
     if rebuild {
-      let texture = makeTexture(
-        pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
-      texture?.label = "laban.slug.target"
-      targetTexture = texture
-      return texture
+      guard let final = makeFinalTargetTexture() else { return nil }
+      final.label = "laban.slug.target"
+      targetTexture = final
+      if needsWorking {
+        guard let content = makeTranslucentWorkingTexture() else { return nil }
+        content.label = "laban.slug.linear-working"
+        translucentWorkingTexture = content
+        return (content, final)
+      }
+      translucentWorkingTexture = nil
+      return (final, final)
     }
-    return targetTexture
-  }
-
-  private func ensureTargetTexture() -> MTLTexture? {
-    let (slot, rebuild) = peekNextRingSlot()
-    return commitRingSlot(slot, rebuild: rebuild)
+    guard let final = targetTexture else { return nil }
+    if needsWorking {
+      guard let content = translucentWorkingTexture else { return nil }
+      return (content, final)
+    }
+    return (final, final)
   }
 
   /// Resizes `slotDamageAccumulators`/`slotNeedsForceFull` to `ringDepth`
@@ -2604,6 +2849,21 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       mipmapped: false)
     descriptor.usage = [.renderTarget, .shaderRead, .shaderWrite]
     descriptor.storageMode = storageMode
+    return device.makeTexture(descriptor: descriptor)
+  }
+
+  private func makeFinalTargetTexture() -> MTLTexture? {
+    makeTexture(pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
+  }
+
+  private func makeTranslucentWorkingTexture() -> MTLTexture? {
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .rgba16Float,
+      width: pixelWidth,
+      height: pixelHeight,
+      mipmapped: false)
+    descriptor.usage = [.renderTarget, .shaderRead]
+    descriptor.storageMode = .private
     return device.makeTexture(descriptor: descriptor)
   }
 

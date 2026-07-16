@@ -123,6 +123,11 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   /// read/write race on a single shared target. `targetTexture` is the content
   /// thread's current slot; `latestPresentedTarget` is a finished slot.
   private var targetRing: [MTLTexture] = []
+  /// Linear-premultiplied working textures paired 1:1 with `targetRing` for
+  /// nonopaque surfaces. The final ring remains the sole published/read-back
+  /// storage; each completed frame resolves its working slot into that final
+  /// slot exactly once.
+  private var translucentWorkingRing: [MTLTexture] = []
   private var targetRingCursor = 0
   private static let targetRingDepth = 3
   private let solidPipeline: MTLRenderPipelineState
@@ -131,6 +136,11 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   private let glyphColorPipeline: MTLRenderPipelineState
   private let rasterGlyphPipeline: MTLRenderPipelineState
   private let colorGlyphPipeline: MTLRenderPipelineState
+  /// Lazily compiled on the first nonopaque policy. Keeping these nil for an
+  /// always-opaque renderer preserves the shipped activation cost as well as
+  /// its per-frame target/pass path.
+  private var translucentPipelines: VectorGlyphShaderCache.TranslucentRenderPipelines?
+  private var linearPremultipliedResolvePipeline: MTLRenderPipelineState?
   private let sampler: MTLSamplerState
   /// Bilinear sampler for the vector glyph atlas. Fluid smooth-scroll places the
   /// quad at a fractional device-pixel position, so the mask must interpolate to
@@ -145,6 +155,11 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   private var scale: CGFloat
   public private(set) var surfaceTransparency: RendererSurfaceTransparency
   private var targetTexture: MTLTexture?
+  private var translucentWorkingTexture: MTLTexture?
+  var hasTranslucentPipelinesForTesting: Bool {
+    translucentPipelines != nil && linearPremultipliedResolvePipeline != nil
+  }
+  var hasTranslucentWorkingTargetForTesting: Bool { translucentWorkingTexture != nil }
   private var atlasTexture: MTLTexture?
   private var accumTexture: MTLTexture?
   public private(set) var subpixelLayout: VectorSubpixelLayout = .grayscale
@@ -313,6 +328,21 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         device: device, pixelFormat: layer.pixelFormat)
     else { return nil }
 
+    let initialTranslucentPipelines: VectorGlyphShaderCache.TranslucentRenderPipelines?
+    let initialResolvePipeline: MTLRenderPipelineState?
+    if surfaceTransparency.isOpaque {
+      initialTranslucentPipelines = nil
+      initialResolvePipeline = nil
+    } else {
+      guard
+        let content = VectorGlyphShaderCache.translucentRenderPipelines(device: device),
+        let resolve = VectorGlyphShaderCache.linearPremultipliedResolvePipeline(
+          device: device, destinationPixelFormat: layer.pixelFormat)
+      else { return nil }
+      initialTranslucentPipelines = content
+      initialResolvePipeline = resolve
+    }
+
     let samplerDescriptor = MTLSamplerDescriptor()
     samplerDescriptor.minFilter = .nearest
     samplerDescriptor.magFilter = .nearest
@@ -340,6 +370,8 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     self.glyphColorPipeline = pipelines.glyphColor
     self.rasterGlyphPipeline = pipelines.rasterGlyph
     self.colorGlyphPipeline = pipelines.colorGlyph
+    self.translucentPipelines = initialTranslucentPipelines
+    self.linearPremultipliedResolvePipeline = initialResolvePipeline
     self.sampler = sampler
     self.linearSampler = linearSampler
     self.scratchRasterizer = scratchRasterizer
@@ -436,6 +468,13 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     // retire it before clearing publication state so an old-policy target
     // cannot become visible after this transition returns.
     lastCommandBuffer?.waitUntilCompleted()
+    if !transparency.isOpaque {
+      // Compile on the policy transition, never during an opaque activation or
+      // frame. Failure remains fail-closed: the nonopaque render cannot acquire
+      // a working target and will return false rather than blend into sRGB
+      // storage with the wrong transfer function.
+      _ = ensureTranslucentPipelines()
+    }
     let priorEffectiveSubpixelLayout = effectiveSubpixelLayout
     surfaceTransparency = transparency
     if effectiveSubpixelLayout != priorEffectiveSubpixelLayout {
@@ -443,7 +482,9 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     }
     layer.isOpaque = transparency.isOpaque
     targetTexture = nil
+    translucentWorkingTexture = nil
     targetRing.removeAll(keepingCapacity: true)
+    translucentWorkingRing.removeAll(keepingCapacity: true)
     targetRingCursor = 0
     presentTargetLock.lock()
     latestPresentedTarget = nil
@@ -713,7 +754,9 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     layer.contentsScale = newScale
     layer.drawableSize = CGSize(width: pw, height: ph)
     targetTexture = nil
+    translucentWorkingTexture = nil
     targetRing.removeAll(keepingCapacity: true)
+    translucentWorkingRing.removeAll(keepingCapacity: true)
     // The present link must not blit a stale-sized target into a new-sized
     // drawable; clear it under the lock so the present thread skips until the
     // next render publishes a correctly-sized target.
@@ -999,12 +1042,14 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       return false
     }
 
-    guard let target = ensureTargetTexture(),
+    guard let frameTargets = ensureFrameTargets(),
       let commandBuffer = queue.makeCommandBuffer()
     else {
       scheduledFrame.finish()
       return false
     }
+    let target = frameTargets.final
+    let contentTarget = frameTargets.content
 
     var retainedInstanceBuffers: [MTLBuffer] = []
     maskAtlas.beginFrame()
@@ -1029,11 +1074,25 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     // Free masks not referenced for a while (mostly scroll sub-pixel phases that
     // churn through the atlas); static glyphs are touched every frame and survive.
     maskAtlas.evictUnused(olderThan: Self.maskEvictionTTLFrames)
-    encode(
-      commands: commands,
-      into: target,
-      commandBuffer: commandBuffer,
-      retainedInstanceBuffers: &retainedInstanceBuffers)
+    guard
+      encode(
+        commands: commands,
+        into: contentTarget,
+        commandBuffer: commandBuffer,
+        retainedInstanceBuffers: &retainedInstanceBuffers)
+    else {
+      scheduledFrame.finish()
+      return false
+    }
+    if !surfaceTransparency.isOpaque {
+      guard
+        encodeLinearPremultipliedResolve(
+          from: contentTarget, to: target, commandBuffer: commandBuffer)
+      else {
+        scheduledFrame.finish()
+        return false
+      }
+    }
     lastFrameQuadHeights = frameQuadHeights.sorted()
 
     // Fast path (macOS 14+): presentation is owned by an internal
@@ -1167,7 +1226,27 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     into target: MTLTexture,
     commandBuffer: MTLCommandBuffer,
     retainedInstanceBuffers: inout [MTLBuffer]
-  ) {
+  ) -> Bool {
+    let isOpaque = surfaceTransparency.isOpaque
+    let activeSolidPipeline: MTLRenderPipelineState
+    let activeReplaceSolidPipeline: MTLRenderPipelineState
+    let activeGlyphAlphaPipeline: MTLRenderPipelineState?
+    let activeRasterGlyphPipeline: MTLRenderPipelineState
+    let activeColorGlyphPipeline: MTLRenderPipelineState
+    if isOpaque {
+      activeSolidPipeline = solidPipeline
+      activeReplaceSolidPipeline = replaceSolidPipeline
+      activeGlyphAlphaPipeline = nil
+      activeRasterGlyphPipeline = rasterGlyphPipeline
+      activeColorGlyphPipeline = colorGlyphPipeline
+    } else {
+      guard let pipelines = translucentPipelines else { return false }
+      activeSolidPipeline = pipelines.solid
+      activeReplaceSolidPipeline = pipelines.replaceSolid
+      activeGlyphAlphaPipeline = pipelines.glyphAlpha
+      activeRasterGlyphPipeline = pipelines.rasterGlyph
+      activeColorGlyphPipeline = pipelines.colorGlyph
+    }
     let descriptor = MTLRenderPassDescriptor()
     descriptor.colorAttachments[0].texture = target
     descriptor.colorAttachments[0].loadAction = .clear
@@ -1178,15 +1257,12 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     // there reads as a void; the terminal background reads as intentional empty
     // space until the gesture-end SIGWINCH reflow fills the new cells.
     //
-    // The target is an sRGB texture, so a clear-color component is treated as
-    // LINEAR and hardware-encoded to sRGB on store — the same convention the
-    // solid background rect honors by running its color through `vectorColor`'s
-    // `srgbToLinear`. The shared `fullRedrawClearColor` returns the raw sRGB
-    // value (correct for MetalRenderer's non-sRGB target); linearize it here or a
-    // themed background (e.g. selenized-light cream) double-encodes toward white.
+    // Both targets consume linear values: the opaque sRGB attachment encodes
+    // them on store, while the translucent rgba16Float working target retains
+    // them directly. The clear is linear-premultiplied in either case.
     descriptor.colorAttachments[0].clearColor = Self.linearizedClearColor(commands)
     guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
-      return
+      return false
     }
     encoder.label = "laban.vector.content"
     // New frame: hand out pooled instance buffers from the start. Safe because
@@ -1230,7 +1306,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         gestureZoom: Float(gestureZoom),
         gestureZoomAnchor: SIMD2<Float>(Float(gestureZoomAnchor.x), Float(gestureZoomAnchor.y)))
       if !replaceSolids.isEmpty {
-        encoder.setRenderPipelineState(replaceSolidPipeline)
+        encoder.setRenderPipelineState(activeReplaceSolidPipeline)
         if setVertexInstances(
           replaceSolids, encoder: encoder, retainedBuffers: &retainedInstanceBuffers)
         {
@@ -1244,7 +1320,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         replaceSolids.removeAll(keepingCapacity: true)
       }
       if !solids.isEmpty {
-        encoder.setRenderPipelineState(solidPipeline)
+        encoder.setRenderPipelineState(activeSolidPipeline)
         if setVertexInstances(solids, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
           encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
           encoder.drawPrimitives(
@@ -1260,18 +1336,31 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
           encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
           encoder.setFragmentTexture(atlasTexture, index: 0)
           encoder.setFragmentSamplerState(linearSampler, index: 0)
-          encoder.setRenderPipelineState(glyphCoveragePipeline)
-          encoder.drawPrimitives(
-            type: .triangle,
-            vertexStart: 0,
-            vertexCount: 6,
-            instanceCount: glyphs.count)
-          encoder.setRenderPipelineState(glyphColorPipeline)
-          encoder.drawPrimitives(
-            type: .triangle,
-            vertexStart: 0,
-            vertexCount: 6,
-            instanceCount: glyphs.count)
+          if let activeGlyphAlphaPipeline {
+            // A translucent destination needs genuine source-over alpha. The
+            // opaque subpixel two-pass deliberately preserves destination alpha
+            // and therefore cannot represent grayscale glyph coverage here.
+            encoder.setRenderPipelineState(activeGlyphAlphaPipeline)
+            encoder.drawPrimitives(
+              type: .triangle,
+              vertexStart: 0,
+              vertexCount: 6,
+              instanceCount: glyphs.count)
+          } else {
+            // Byte-for-byte shipped opaque path.
+            encoder.setRenderPipelineState(glyphCoveragePipeline)
+            encoder.drawPrimitives(
+              type: .triangle,
+              vertexStart: 0,
+              vertexCount: 6,
+              instanceCount: glyphs.count)
+            encoder.setRenderPipelineState(glyphColorPipeline)
+            encoder.drawPrimitives(
+              type: .triangle,
+              vertexStart: 0,
+              vertexCount: 6,
+              instanceCount: glyphs.count)
+          }
         }
         glyphs.removeAll(keepingCapacity: true)
       }
@@ -1279,18 +1368,21 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         &rasterGlyphs,
         atlas: rasterAtlas,
         encoder: encoder,
+        pipeline: activeRasterGlyphPipeline,
         uniforms: &uniforms,
         retainedInstanceBuffers: &retainedInstanceBuffers)
       drawRasterGlyphs(
         &sidebarRasterGlyphs,
         atlas: sidebarRasterAtlas,
         encoder: encoder,
+        pipeline: activeRasterGlyphPipeline,
         uniforms: &uniforms,
         retainedInstanceBuffers: &retainedInstanceBuffers)
       drawColorGlyphs(
         &colorGlyphs,
         atlas: colorGlyphAtlas,
         encoder: encoder,
+        pipeline: activeColorGlyphPipeline,
         uniforms: &uniforms,
         retainedInstanceBuffers: &retainedInstanceBuffers)
     }
@@ -1344,12 +1436,14 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     }
     flush()
     encoder.endEncoding()
+    return true
   }
 
   private func drawRasterGlyphs(
     _ glyphs: inout [VectorGlyphInstance],
     atlas: MetalGlyphAtlas?,
     encoder: MTLRenderCommandEncoder,
+    pipeline: MTLRenderPipelineState,
     uniforms: inout VectorUniforms,
     retainedInstanceBuffers: inout [MTLBuffer]
   ) {
@@ -1357,7 +1451,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       glyphs.removeAll(keepingCapacity: true)
       return
     }
-    encoder.setRenderPipelineState(rasterGlyphPipeline)
+    encoder.setRenderPipelineState(pipeline)
     if setVertexInstances(glyphs, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
       encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
       encoder.setFragmentTexture(atlas.texture, index: 0)
@@ -1375,6 +1469,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     _ glyphs: inout [VectorGlyphInstance],
     atlas: ColorGlyphAtlas?,
     encoder: MTLRenderCommandEncoder,
+    pipeline: MTLRenderPipelineState,
     uniforms: inout VectorUniforms,
     retainedInstanceBuffers: inout [MTLBuffer]
   ) {
@@ -1382,7 +1477,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       glyphs.removeAll(keepingCapacity: true)
       return
     }
-    encoder.setRenderPipelineState(colorGlyphPipeline)
+    encoder.setRenderPipelineState(pipeline)
     if setVertexInstances(glyphs, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
       encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
       encoder.setFragmentTexture(atlas.texture, index: 0)
@@ -2188,7 +2283,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     VectorSolidInstance(
       origin: SIMD2<Float>(Float(rect.minX * scale), Float(rect.minY * scale)),
       size: SIMD2<Float>(Float(rect.width * scale), Float(rect.height * scale)),
-      color: SRGBRenderTargetColor.linearizedEncodedPremultipliedSolidRGBA(color))
+      color: vectorColor(color))
   }
 
   @inline(__always)
@@ -2437,45 +2532,141 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     blit.endEncoding()
   }
 
-  private func ensureTargetTexture() -> MTLTexture? {
+  /// Converts one completed linear-premultiplied working frame into the byte
+  /// representation required by Core Animation: encoded-sRGB RGB already
+  /// premultiplied by alpha. This is a full-frame storage resolve even when a
+  /// retained renderer repaired only part of its working surface.
+  private func encodeLinearPremultipliedResolve(
+    from source: MTLTexture,
+    to destination: MTLTexture,
+    commandBuffer: MTLCommandBuffer
+  ) -> Bool {
+    guard let pipeline = linearPremultipliedResolvePipeline else { return false }
+    let descriptor = MTLRenderPassDescriptor()
+    descriptor.colorAttachments[0].texture = destination
+    descriptor.colorAttachments[0].loadAction = .dontCare
+    descriptor.colorAttachments[0].storeAction = .store
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+      return false
+    }
+    encoder.label = "laban.vector.linear-premultiplied-resolve"
+    encoder.setRenderPipelineState(pipeline)
+    encoder.setFragmentTexture(source, index: 0)
+    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+    encoder.endEncoding()
+    return true
+  }
+
+  private func ensureTranslucentPipelines() -> Bool {
+    if translucentPipelines != nil, linearPremultipliedResolvePipeline != nil {
+      return true
+    }
+    guard
+      let content = VectorGlyphShaderCache.translucentRenderPipelines(device: device),
+      let resolve = VectorGlyphShaderCache.linearPremultipliedResolvePipeline(
+        device: device, destinationPixelFormat: layer.pixelFormat)
+    else { return false }
+    translucentPipelines = content
+    linearPremultipliedResolvePipeline = resolve
+    return true
+  }
+
+  /// Returns the target that content encodes into and the final
+  /// encoded-sRGB-premultiplied target that is published, presented, and read
+  /// back. Opaque surfaces return the same texture for both values. Nonopaque
+  /// surfaces pair every final ring slot with one rgba16Float working slot.
+  private func ensureFrameTargets() -> (content: MTLTexture, final: MTLTexture)? {
+    let needsWorking = !surfaceTransparency.isOpaque
+    if needsWorking, !ensureTranslucentPipelines() { return nil }
+
     // Fast path (present link active): rotate through a small ring so the content
     // thread renders into a different texture than the present thread is blitting.
     // A single shared target would race read-vs-write across the two threads.
     if presentQueue != nil {
-      if targetRing.count == Self.targetRingDepth,
-        targetRing[0].width == pixelWidth,
-        targetRing[0].height == pixelHeight
-      {
+      let finalRingValid =
+        targetRing.count == Self.targetRingDepth
+        && targetRing[0].width == pixelWidth
+        && targetRing[0].height == pixelHeight
+      let workingRingValid =
+        !needsWorking
+        || (translucentWorkingRing.count == Self.targetRingDepth
+          && translucentWorkingRing[0].width == pixelWidth
+          && translucentWorkingRing[0].height == pixelHeight)
+      if finalRingValid, workingRingValid {
         targetRingCursor = (targetRingCursor + 1) % Self.targetRingDepth
-        let texture = targetRing[targetRingCursor]
-        targetTexture = texture
-        return texture
+        let final = targetRing[targetRingCursor]
+        targetTexture = final
+        if needsWorking {
+          let content = translucentWorkingRing[targetRingCursor]
+          translucentWorkingTexture = content
+          return (content, final)
+        }
+        translucentWorkingTexture = nil
+        return (final, final)
       }
-      // (Re)build the ring at the current size.
-      targetRing.removeAll(keepingCapacity: true)
+
+      // (Re)build both sides of the paired ring at the current size. Build into
+      // locals first so an allocation failure cannot leave mismatched arrays.
+      var finalRing: [MTLTexture] = []
+      var workingRing: [MTLTexture] = []
+      finalRing.reserveCapacity(Self.targetRingDepth)
+      if needsWorking { workingRing.reserveCapacity(Self.targetRingDepth) }
       for i in 0..<Self.targetRingDepth {
-        guard let texture = makeTargetTexture() else { return nil }
-        texture.label = "laban.vector.target.\(i)"
-        targetRing.append(texture)
+        guard let final = makeFinalTargetTexture() else { return nil }
+        final.label = "laban.vector.target.\(i)"
+        finalRing.append(final)
+        if needsWorking {
+          guard let working = makeTranslucentWorkingTexture() else { return nil }
+          working.label = "laban.vector.linear-working.\(i)"
+          workingRing.append(working)
+        }
       }
+      targetRing = finalRing
+      translucentWorkingRing = workingRing
       targetRingCursor = 0
-      targetTexture = targetRing[0]
-      return targetRing[0]
+      let final = finalRing[0]
+      targetTexture = final
+      if needsWorking {
+        let content = workingRing[0]
+        translucentWorkingTexture = content
+        return (content, final)
+      }
+      translucentWorkingTexture = nil
+      return (final, final)
     }
 
+    let final: MTLTexture
     if let targetTexture,
       targetTexture.width == pixelWidth,
       targetTexture.height == pixelHeight
     {
-      return targetTexture
+      final = targetTexture
+    } else {
+      guard let fresh = makeFinalTargetTexture() else { return nil }
+      fresh.label = "laban.vector.target"
+      targetTexture = fresh
+      final = fresh
     }
-    let texture = makeTargetTexture()
-    texture?.label = "laban.vector.target"
-    targetTexture = texture
-    return texture
+    guard needsWorking else {
+      translucentWorkingTexture = nil
+      return (final, final)
+    }
+    let content: MTLTexture
+    if let translucentWorkingTexture,
+      translucentWorkingTexture.width == pixelWidth,
+      translucentWorkingTexture.height == pixelHeight
+    {
+      content = translucentWorkingTexture
+    } else {
+      guard let fresh = makeTranslucentWorkingTexture() else { return nil }
+      fresh.label = "laban.vector.linear-working"
+      translucentWorkingTexture = fresh
+      content = fresh
+    }
+    return (content, final)
   }
 
-  private func makeTargetTexture() -> MTLTexture? {
+  private func makeFinalTargetTexture() -> MTLTexture? {
     let descriptor = MTLTextureDescriptor.texture2DDescriptor(
       pixelFormat: layer.pixelFormat,
       width: pixelWidth,
@@ -2483,6 +2674,17 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       mipmapped: false)
     descriptor.usage = [.renderTarget, .shaderRead, .shaderWrite]
     descriptor.storageMode = .shared
+    return device.makeTexture(descriptor: descriptor)
+  }
+
+  private func makeTranslucentWorkingTexture() -> MTLTexture? {
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .rgba16Float,
+      width: pixelWidth,
+      height: pixelHeight,
+      mipmapped: false)
+    descriptor.usage = [.renderTarget, .shaderRead]
+    descriptor.storageMode = .private
     return device.makeTexture(descriptor: descriptor)
   }
 
@@ -2571,12 +2773,11 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     SRGBRenderTargetColor.linearizedStraightRGBA(rgba)
   }
 
-  /// The terminal-background clear color for the sRGB target: the same sRGB value
-  /// `MetalRenderer.fullRedrawClearColor` derives, but linearized (the sRGB
-  /// texture re-encodes the clear on store, so a raw sRGB value would
-  /// double-encode). Alpha stays linear.
+  /// The terminal-background clear in linear-premultiplied color. The opaque
+  /// sRGB target re-encodes it on store; the translucent float target retains
+  /// it directly until the final storage resolve.
   static func linearizedClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
-    SRGBRenderTargetColor.linearizedEncodedPremultipliedClearColor(commands)
+    SRGBRenderTargetColor.linearPremultipliedClearColor(commands)
   }
 }
 

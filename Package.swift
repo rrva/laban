@@ -80,6 +80,7 @@ let package = Package(
         .copy("Resources/JetBrainsMono-OFL.txt"),
         .process("Shaders.metal"),
         .process("VectorGlyphShaders.metal"),
+        .process("TranslucentSurfaceShaders.metal"),
       ],
       swiftSettings: _releaseExclusivity + _fastProfile
     ),

@@ -6,7 +6,7 @@ import Metal
 ///
 /// Before this cache existed, both initializers independently re-read the
 /// bundle resource and called `device.makeLibrary(source:options:)` on the
-/// identical 799-line source, and every renderer activation rebuilt all 5
+/// identical 799-line source, and every renderer activation rebuilt all 6
 /// render + 2 compute pipeline states from zero — even the Nth time a session
 /// toggled back to the vector renderer. None of that work depends on the
 /// per-activation parameters (`fontAtlas`, `scale`, `pixelWidth/Height`): the
@@ -31,6 +31,14 @@ enum VectorGlyphShaderCache {
     let colorGlyph: MTLRenderPipelineState
   }
 
+  struct TranslucentRenderPipelines {
+    let solid: MTLRenderPipelineState
+    let replaceSolid: MTLRenderPipelineState
+    let glyphAlpha: MTLRenderPipelineState
+    let rasterGlyph: MTLRenderPipelineState
+    let colorGlyph: MTLRenderPipelineState
+  }
+
   struct ComputePipelines {
     let scratch: MTLComputePipelineState
     let accum: MTLComputePipelineState
@@ -43,7 +51,11 @@ enum VectorGlyphShaderCache {
 
   private static let lock = NSLock()
   private static var libraryCache: [ObjectIdentifier: MTLLibrary] = [:]
+  private static var translucentLibraryCache: [ObjectIdentifier: MTLLibrary] = [:]
   private static var renderPipelineCache: [CacheKey: RenderPipelines] = [:]
+  private static var translucentRenderPipelineCache:
+    [ObjectIdentifier: TranslucentRenderPipelines] = [:]
+  private static var resolvePipelineCache: [CacheKey: MTLRenderPipelineState] = [:]
   private static var computePipelineCache: [ObjectIdentifier: ComputePipelines] = [:]
 
   /// The compiled `VectorGlyphShaders.metal` library for `device`, building it
@@ -83,7 +95,44 @@ enum VectorGlyphShaderCache {
     return library
   }
 
-  /// The 5 render pipeline states `VectorGlyphRenderer` needs, built at most
+  /// Small library containing only the fragments needed by nonopaque curve
+  /// surfaces. It is intentionally loaded and compiled only from the lazy
+  /// translucent pipeline accessors below, keeping opaque activation on the
+  /// original VectorGlyphShaders source and PSO set.
+  private static func translucentLibrary(device: MTLDevice) -> MTLLibrary? {
+    let key = ObjectIdentifier(device)
+    lock.lock()
+    if let cached = translucentLibraryCache[key] {
+      lock.unlock()
+      return cached
+    }
+    lock.unlock()
+
+    let options = MTLCompileOptions()
+    if #available(macOS 15.0, *) {
+      options.mathMode = .safe
+    } else {
+      options.fastMathEnabled = false
+    }
+    guard
+      let url = LabanRendererResources.bundle?.url(
+        forResource: "TranslucentSurfaceShaders",
+        withExtension: "metal"),
+      let source = try? String(contentsOf: url, encoding: .utf8),
+      let library = try? device.makeLibrary(source: source, options: options)
+    else { return nil }
+
+    lock.lock()
+    if let existing = translucentLibraryCache[key] {
+      lock.unlock()
+      return existing
+    }
+    translucentLibraryCache[key] = library
+    lock.unlock()
+    return library
+  }
+
+  /// The 6 render pipeline states `VectorGlyphRenderer` needs, built at most
   /// once per (device, pixelFormat) pair for the lifetime of the process.
   static func renderPipelines(
     device: MTLDevice, pixelFormat: MTLPixelFormat
@@ -178,6 +227,140 @@ enum VectorGlyphShaderCache {
     renderPipelineCache[key] = pipelines
     lock.unlock()
     return pipelines
+  }
+
+  /// The exact five PSOs used only by Vector's nonopaque, forced-grayscale
+  /// content pass. This separate lazy cache keeps the default opaque activation
+  /// on its original pipeline set.
+  static func translucentRenderPipelines(device: MTLDevice) -> TranslucentRenderPipelines? {
+    let key = ObjectIdentifier(device)
+    lock.lock()
+    if let cached = translucentRenderPipelineCache[key] {
+      lock.unlock()
+      return cached
+    }
+    lock.unlock()
+
+    guard let library = library(device: device),
+      let translucentLibrary = translucentLibrary(device: device),
+      let solidVertex = library.makeFunction(name: "vectorSolidVertex"),
+      let solidFragment = library.makeFunction(name: "vectorSolidFragment"),
+      let glyphVertex = library.makeFunction(name: "vectorGlyphVertex"),
+      let glyphAlphaFragment = translucentLibrary.makeFunction(
+        name: "translucentVectorGlyphAlphaFragment"),
+      let rasterGlyphFragment = library.makeFunction(name: "vectorRasterGlyphFragment"),
+      let colorGlyphFragment = library.makeFunction(name: "vectorColorGlyphFragment")
+    else { return nil }
+
+    func descriptor(
+      label: String,
+      vertex: MTLFunction,
+      fragment: MTLFunction,
+      blended: Bool
+    ) -> MTLRenderPipelineDescriptor {
+      let value = MTLRenderPipelineDescriptor()
+      value.label = label
+      value.vertexFunction = vertex
+      value.fragmentFunction = fragment
+      value.colorAttachments[0]?.pixelFormat = .rgba16Float
+      if blended {
+        configureAlphaBlend(value.colorAttachments[0])
+      } else {
+        value.colorAttachments[0]?.isBlendingEnabled = false
+      }
+      return value
+    }
+
+    guard
+      let solid = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.vector.translucent-solid",
+          vertex: solidVertex,
+          fragment: solidFragment,
+          blended: true)),
+      let replaceSolid = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.vector.translucent-solid-replace",
+          vertex: solidVertex,
+          fragment: solidFragment,
+          blended: false)),
+      let glyphAlpha = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.vector.translucent-glyph-alpha",
+          vertex: glyphVertex,
+          fragment: glyphAlphaFragment,
+          blended: true)),
+      let rasterGlyph = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.vector.translucent-raster-glyph",
+          vertex: glyphVertex,
+          fragment: rasterGlyphFragment,
+          blended: true)),
+      let colorGlyph = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.vector.translucent-color-glyph",
+          vertex: glyphVertex,
+          fragment: colorGlyphFragment,
+          blended: true))
+    else { return nil }
+
+    let pipelines = TranslucentRenderPipelines(
+      solid: solid,
+      replaceSolid: replaceSolid,
+      glyphAlpha: glyphAlpha,
+      rasterGlyph: rasterGlyph,
+      colorGlyph: colorGlyph)
+    lock.lock()
+    if let existing = translucentRenderPipelineCache[key] {
+      lock.unlock()
+      return existing
+    }
+    translucentRenderPipelineCache[key] = pipelines
+    lock.unlock()
+    return pipelines
+  }
+
+  /// Pipeline for the single storage-boundary pass used by nonopaque Vector
+  /// and Slug surfaces. The source is linear-premultiplied rgba16Float; the
+  /// destination is the renderer's encoded-sRGB-premultiplied presentation
+  /// target. It is cached separately because the content pipelines are also
+  /// built for rgba16Float while this pipeline is keyed only by its final
+  /// destination format.
+  static func linearPremultipliedResolvePipeline(
+    device: MTLDevice, destinationPixelFormat: MTLPixelFormat
+  ) -> MTLRenderPipelineState? {
+    let key = CacheKey(device: ObjectIdentifier(device), pixelFormat: destinationPixelFormat)
+    lock.lock()
+    if let cached = resolvePipelineCache[key] {
+      lock.unlock()
+      return cached
+    }
+    lock.unlock()
+
+    guard let library = library(device: device),
+      let translucentLibrary = translucentLibrary(device: device),
+      let vertex = library.makeFunction(name: "vectorFullscreenVertex"),
+      let fragment = translucentLibrary.makeFunction(name: "linearPremultipliedResolveFragment")
+    else { return nil }
+
+    let descriptor = MTLRenderPipelineDescriptor()
+    descriptor.label = "laban.linear-premultiplied-resolve"
+    descriptor.vertexFunction = vertex
+    descriptor.fragmentFunction = fragment
+    descriptor.colorAttachments[0]?.pixelFormat = destinationPixelFormat
+    descriptor.colorAttachments[0]?.isBlendingEnabled = false
+    guard let pipeline = try? device.makeRenderPipelineState(descriptor: descriptor) else {
+      return nil
+    }
+
+    lock.lock()
+    if let existing = resolvePipelineCache[key] {
+      lock.unlock()
+      return existing
+    }
+    resolvePipelineCache[key] = pipeline
+    lock.unlock()
+    return pipeline
   }
 
   /// The 2 compute pipeline states `VectorGlyphScratchRasterizer` needs, built

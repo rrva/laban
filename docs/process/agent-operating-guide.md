@@ -127,6 +127,13 @@ style, workflow, or verification rules.
 - New renderer backends must be wired into every live-settings observer in
   `TerminalBitmapView`; observers that gate on `as? VectorGlyphRenderer` will
   silently drop other backends.
+- A nonopaque Vector or Slug surface must composite the complete frame into a
+  linear-premultiplied `rgba16Float` working target and resolve once into the
+  encoded-sRGB-premultiplied presentation target. Pair retained working/final
+  ring slots, repair the working slot for partial damage, publish only the final
+  slot, and keep the opaque shader/target/pass path lazy and unchanged. Guard
+  this boundary with `TranslucentLinearBlendTests` plus the all-five
+  transparency parity and idempotence suites.
 - Slug weight is analytic dilation of glyph coverage. Vector weight is
   bake-time geometric dilation of the mask. Both are color-independent,
   size-aware, and calibrated so weight `1.0` matches software/CoreText while

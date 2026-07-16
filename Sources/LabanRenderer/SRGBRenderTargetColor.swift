@@ -1,16 +1,12 @@
 import Metal
 
-/// Color conversions for renderers whose final target is an sRGB Metal texture.
+/// Color conversions for curve renderers that composite in linear light.
 ///
-/// Metal linearizes RGB on load and encodes it again on store. That is the
-/// right behavior for opaque colors and for source-over blending in linear
-/// light, but a nonopaque texture consumed by Core Animation has one additional
-/// storage constraint: its encoded RGB bytes must be premultiplied by alpha.
-/// Premultiplying *after* linearization stores `encode(linear(sRGB) * alpha)`,
-/// whose bright channels can exceed alpha and are then clipped during Core
-/// Animation's straight-color recovery. Alpha-bearing replacement pixels must
-/// instead store `sRGB * alpha`, expressed to Metal as
-/// `linear(sRGB * alpha)`.
+/// Opaque Vector/Slug surfaces render directly into an sRGB target, whose store
+/// conversion preserves these linear values and whose fixed-function blends run
+/// in linear light. Nonopaque surfaces instead retain these values in a
+/// linear-premultiplied float target; a separate final resolve owns the one
+/// encoded-sRGB-premultiplication boundary needed by Core Animation.
 enum SRGBRenderTargetColor {
   @inline(__always)
   static func linearizedStraightRGBA(_ rgba: UInt32) -> SIMD4<Float> {
@@ -21,31 +17,23 @@ enum SRGBRenderTargetColor {
       Float(rgba & 0xFF) / 255)
   }
 
-  /// Instance color for `vectorSolidFragment`, which multiplies RGB by alpha.
-  /// The returned straight-like RGB makes that fragment emit
-  /// `linear(sRGB * alpha)` for encoded-premultiplied target storage.
-  @inline(__always)
-  static func linearizedEncodedPremultipliedSolidRGBA(_ rgba: UInt32) -> SIMD4<Float> {
-    let alpha = Float(rgba & 0xFF) / 255
-    guard alpha > 0 else { return .zero }
-    return SIMD4<Float>(
-      linearize(Float((rgba >> 24) & 0xFF) / 255 * alpha) / alpha,
-      linearize(Float((rgba >> 16) & 0xFF) / 255 * alpha) / alpha,
-      linearize(Float((rgba >> 8) & 0xFF) / 255 * alpha) / alpha,
-      alpha)
-  }
-
-  /// Clear value matching the encoded-premultiplied terminal canvas. The
-  /// shared clear already contains `sRGB * alpha`; an sRGB attachment expects
-  /// its clear components in linear space, so linearize those values directly.
-  static func linearizedEncodedPremultipliedClearColor(
+  /// Linear-premultiplied clear matching the first terminal replace canvas.
+  /// `MetalRenderer.fullRedrawClearColor` already returns encoded-sRGB values
+  /// premultiplied by alpha; recover its straight encoded color, linearize it,
+  /// then premultiply in the working space. The alpha-one case reduces to the
+  /// exact shipped opaque clear conversion.
+  static func linearPremultipliedClearColor(
     _ commands: [FrameCommand]
   ) -> MTLClearColor {
     let color = MetalRenderer.fullRedrawClearColor(commands)
+    guard color.alpha > 0 else {
+      return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+    }
+    let alpha = Float(color.alpha)
     return MTLClearColor(
-      red: Double(linearize(Float(color.red))),
-      green: Double(linearize(Float(color.green))),
-      blue: Double(linearize(Float(color.blue))),
+      red: Double(linearize(Float(color.red) / alpha) * alpha),
+      green: Double(linearize(Float(color.green) / alpha) * alpha),
+      blue: Double(linearize(Float(color.blue) / alpha) * alpha),
       alpha: color.alpha)
   }
 

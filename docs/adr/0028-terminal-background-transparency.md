@@ -5,8 +5,9 @@ Date: 2026-07-15
 ## Status
 
 Accepted; amended 2026-07-15 after installed-app validation and again for
-user-imported background images, then amended 2026-07-16 for encoded-sRGB
-premultiplication on translucent renderer targets. Implementation is tracked in
+user-imported background images, then amended 2026-07-16 for the complete
+linear-premultiplied working-space and encoded-sRGB storage boundary on
+translucent curve-renderer targets. Implementation is tracked in
 `execplans/active/terminal-background-transparency.md`.
 
 ## Context
@@ -102,8 +103,11 @@ resolving its AppKit-only effective backdrop to `none`.
 ### Background pixels replace; semantic content composites source-over
 
 Frame-command colors remain in Laban's existing straight-RGBA representation.
-Each renderer converts them to premultiplied RGBA exactly once at its existing
-Core Graphics or shader boundary. Producers do not premultiply colors.
+Each renderer converts them to its active target's premultiplied representation
+at the existing Core Graphics or shader boundary. Producers do not premultiply
+colors. A storage resolve may convert between linear-premultiplied working color
+and encoded-sRGB-premultiplied presentation color, but it never treats already-
+premultiplied RGB as straight color or multiplies it by the same alpha twice.
 
 Background-establishing primitives use `replace` compositing: the translucent
 terminal base canvas, the fully opaque sidebar base canvas, inherited/default
@@ -127,16 +131,29 @@ replay rule. Core Graphics implements replace with `CGBlendMode.copy`; Metal
 uses a no-blend pipeline equivalent to source one and destination zero.
 
 For Vector and Slug, the final `bgra8Unorm_srgb` presentation target has an
-additional storage boundary. Metal encodes linear RGB when storing, while Core
-Animation and Core Graphics consume the resulting bytes as encoded-sRGB
-premultiplied color. Alpha-bearing replacement backgrounds therefore
-premultiply in encoded sRGB and then linearize that premultiplied value for the
-target write. Computing `linear(sRGB) * alpha` would encode to RGB bytes greater
-than alpha for bright themes, so WindowServer unpremultiplication would clip
-them toward white and erase visible backdrop contrast. This special conversion
-applies only to translucent replace-background pixels and their matching clear;
-opaque colors, glyph rendering, and source-over blending retain linear-light
-behavior.
+additional storage boundary. Metal decodes the existing encoded-sRGB-
+premultiplied destination bytes before fixed-function blending, which produces
+`linear(sRGB * alpha)` rather than the `linear(sRGB) * alpha` representation
+required for correct linear-light source-over. Correcting only replacement
+backgrounds therefore leaves bright antialiased glyph edges and semantic
+overlays wrong.
+
+Every nonopaque Vector and Slug frame instead composites completely into a
+private `rgba16Float` linear-premultiplied working target. Replacement
+backgrounds, clears, glyph coverage, semantic alpha, and source-over blending
+all operate there. A single full-frame resolve then unpremultiplies in linear
+light, encodes the straight color to sRGB, premultiplies in encoded sRGB, and
+writes the existing final `bgra8Unorm_srgb` bytes. Only that final target is
+published, presented, read back, or encoded as PNG. A retained partial redraw
+loads and repairs the working target paired with the same final ring slot, then
+resolves the complete frame once. Allocation or pipeline failure is fail-closed;
+the render does not fall back to blending directly into encoded-premultiplied
+sRGB storage.
+
+An always-opaque Vector or Slug surface preserves the shipped direct path: it
+compiles no translucent shader library or pipeline, allocates no working
+texture, and adds no resolve pass. Its existing sRGB target continues to provide
+linear-light blending with alpha fixed at one.
 
 The themed background is applied exactly once. `NSWindow`, permanent AppKit
 views/layers, and renderer presentation surfaces contribute no second tint. A
@@ -228,6 +245,10 @@ contracts unchanged.
   feature.
 - Retained full frames, repeated damage, and scroll blits remain alpha-stable;
   repeated drawing cannot make a 70% background drift toward opaque.
+- Nonopaque Vector and Slug frames retain one private `rgba16Float` working
+  texture per final ring slot (8 additional bytes per pixel per slot) and add
+  one full-surface resolve pass. Always-opaque activation, memory use, shader
+  compilation, and frame encoding remain on the original direct path.
 - Semantic foreground and application-selected background content remains
   legible by default. Users can separately opt explicit and inverse cell
   backgrounds into opacity.
