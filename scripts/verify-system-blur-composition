@@ -38,6 +38,20 @@ class PreferenceSnapshot:
     canonical: bytes
 
 
+@dataclass(frozen=True)
+class ThemeScenario:
+    key: str
+    name: str
+    is_dark: bool
+    effective_appearance: str
+
+
+THEME_SCENARIOS = (
+    ThemeScenario("selenized-light-aqua", "Selenized Light", False, "aqua"),
+    ThemeScenario("selenized-dark-dark-aqua", "Selenized Dark", True, "darkAqua"),
+)
+
+
 def fail(message: str) -> NoReturn:
     raise OracleError(message)
 
@@ -142,6 +156,33 @@ def restore_preferences(domain: str, snapshot: PreferenceSnapshot) -> None:
     restored = read_preferences(domain)
     if restored != snapshot:
         fail("installed-app preference domain did not restore byte-for-byte with exact types")
+
+
+def pinned_scenario_preferences(
+    snapshot: PreferenceSnapshot, scenario: ThemeScenario
+) -> bytes:
+    if snapshot.existed:
+        try:
+            values = plistlib.loads(snapshot.exported)
+        except plistlib.InvalidFileException as error:
+            fail(f"installed-app preference snapshot is invalid: {error}")
+        if not isinstance(values, dict):
+            fail("installed-app preference snapshot is not a dictionary")
+    else:
+        values = {}
+    # Pin the exact renderer, theme, and app appearance that this visual
+    # regression covers. ThemeMenuController maps a manually selected light or
+    # dark theme to Aqua or Dark Aqua before the terminal window is created.
+    values.update(
+        {
+            "LabanRendererMode": "slugGlyph",
+            "LabanThemeDark": "Selenized Dark",
+            "LabanThemeLight": "Selenized Light",
+            "LabanThemeCurrent": scenario.name,
+            "LabanThemeFollowsSystem": False,
+        }
+    )
+    return plistlib.dumps(values, fmt=plistlib.FMT_XML, sort_keys=True)
 
 
 def cleanup_all(steps: list[tuple[str, Callable[[], None]]]) -> list[str]:
@@ -280,7 +321,9 @@ class Client:
         return self.request("GET", "/debug/transparency")
 
 
-def wait_for_state(client: Client, source: str) -> dict[str, Any]:
+def wait_for_state(
+    client: Client, source: str, scenario: ThemeScenario
+) -> dict[str, Any]:
     expected = {
         "requestedOpacity": 0.3,
         "effectiveOpacity": 0.3,
@@ -293,6 +336,11 @@ def wait_for_state(client: Client, source: str) -> dict[str, Any]:
         "backdropSubviewCount": 1 if source == "systemBlur" else 0,
         "effectiveReduceTransparency": False,
         "reduceTransparencyOverride": False,
+        "configuredRenderer": "slugGlyph",
+        "effectiveRenderer": "slugGlyph",
+        "themeName": scenario.name,
+        "themeIsDark": scenario.is_dark,
+        "effectiveAppearance": scenario.effective_appearance,
     }
     deadline = time.monotonic() + 15
     state: dict[str, Any] = {}
@@ -443,6 +491,139 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def measure_theme_scenario(
+    *,
+    scenario: ThemeScenario,
+    executable: Path,
+    helper: Path,
+    geometry: dict[str, Any],
+    control_root: Path,
+    artifacts: Path,
+    domain: str,
+    preference_snapshot: PreferenceSnapshot,
+    termination_guard: Any,
+) -> dict[str, Any]:
+    import_preference_domain(
+        domain, pinned_scenario_preferences(preference_snapshot, scenario)
+    )
+    scenario_artifacts = artifacts / scenario.key
+    scenario_artifacts.mkdir()
+    control_dir = control_root / scenario.key
+    control_dir.mkdir(mode=0o700)
+    processes = OwnedProcesses(termination_guard)
+    client: Client | None = None
+    primary_error: BaseException | None = None
+    completed: dict[str, Any] | None = None
+    try:
+        run_id = f"system-blur-composition-{scenario.key}-{os.getpid()}"
+        app_log = (scenario_artifacts / "app.log").open("w", encoding="utf-8")
+        try:
+            laban = processes.start(
+                [str(executable), "--no-persistence", "--terminal-backend=in-process"],
+                env=sanitized_environment(control_dir, run_id),
+                cwd=control_dir / "home",
+                stdout=app_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        finally:
+            app_log.close()
+        client = Client(wait_for_control(laban, control_dir, run_id))
+        client.action("setReduceTransparencyOverride", enabled=False)
+        client.action(
+            "setBackgroundTransparency",
+            opacity=0.3,
+            applyToExplicitCellBackgrounds=False,
+        )
+        client.action("setBackgroundSource", source="none")
+        direct_state = wait_for_state(client, "none", scenario)
+        direct_state_path = scenario_artifacts / "direct-state.json"
+        write_json(direct_state_path, direct_state)
+        time.sleep(0.5)
+        direct_capture = scenario_artifacts / "direct-terminal-crop.png"
+        direct_metadata = capture(helper, direct_capture, laban.pid)
+
+        client.action("setBackgroundSource", source="systemBlur")
+        blur_state = wait_for_state(client, "systemBlur", scenario)
+        blur_state_path = scenario_artifacts / "system-blur-state.json"
+        write_json(blur_state_path, blur_state)
+        time.sleep(0.5)
+        blur_capture = scenario_artifacts / "system-blur-terminal-crop.png"
+        blur_metadata = capture(helper, blur_capture, laban.pid)
+        if blur_metadata != direct_metadata:
+            fail(
+                f"{scenario.name}: direct and System Blur terminal crops "
+                "have different metadata"
+            )
+
+        analyzed = subprocess.run(
+            [
+                str(helper),
+                "analyze",
+                str(direct_capture),
+                str(blur_capture),
+                str(direct_metadata["sampleOriginXPoints"]),
+                str(direct_metadata["captureScale"]),
+                str(direct_metadata["terminalSampleHeight"]),
+                str(geometry["stripeWidth"]),
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        try:
+            summary = json.loads(analyzed.stdout)
+        except json.JSONDecodeError as error:
+            fail(f"{scenario.name}: composition summary is invalid: {error}")
+        if analyzed.returncode != 0:
+            failures = summary.get("failures") if isinstance(summary, dict) else None
+            fail(
+                analyzed.stderr.strip()
+                or f"{scenario.name}: full-display composition gates failed: {failures}"
+            )
+        if not isinstance(summary, dict):
+            fail(f"{scenario.name}: composition summary is not an object")
+        summary.update(
+            {
+                "theme": {
+                    "name": scenario.name,
+                    "isDark": scenario.is_dark,
+                    "effectiveAppearance": scenario.effective_appearance,
+                },
+                "renderer": {"configured": "slugGlyph", "effective": "slugGlyph"},
+                "capture": direct_metadata,
+                "artifacts": {
+                    "directCropSHA256": sha256(direct_capture),
+                    "systemBlurCropSHA256": sha256(blur_capture),
+                    "directStateSHA256": sha256(direct_state_path),
+                    "systemBlurStateSHA256": sha256(blur_state_path),
+                },
+            }
+        )
+        completed = summary
+    except BaseException as error:
+        primary_error = error
+
+    with termination_guard.defer():
+        cleanup_errors = cleanup_all(
+            [
+                (
+                    f"{scenario.name} Reduce Transparency override reset",
+                    lambda: reset_reduce_transparency_override(client),
+                ),
+                (f"{scenario.name} owned process cleanup", processes.close),
+            ]
+        )
+    if cleanup_errors:
+        prefix = f"{primary_error}; " if primary_error is not None else ""
+        fail(prefix + "cleanup failures: " + "; ".join(cleanup_errors))
+    if primary_error is not None:
+        raise primary_error
+    if completed is None:
+        fail(f"{scenario.name}: composition completed without a summary")
+    return completed
+
+
 def verify(
     app: Path,
     artifacts: Path,
@@ -465,8 +646,7 @@ def verify(
         fail("installed app has no bundle identifier")
     identity = provenance(app, executable, info)
     preference_snapshot = read_preferences(domain)
-    processes = OwnedProcesses(termination_guard)
-    client: Client | None = None
+    backdrop_processes = OwnedProcesses(termination_guard)
     primary_error: BaseException | None = None
     completed_summary: dict[str, Any] | None = None
 
@@ -474,8 +654,8 @@ def verify(
         prefix="system-blur-composition-", dir=REPOSITORY_ROOT / ".tmp"
     ) as raw_work:
         work = Path(raw_work)
-        control_dir = work / "control"
-        control_dir.mkdir(mode=0o700)
+        control_root = work / "control"
+        control_root.mkdir(mode=0o700)
         helper = work / "system-blur-composition-oracle"
         compile_fixture(helper)
         try:
@@ -483,7 +663,7 @@ def verify(
             backdrop_output = backdrop_log.open("w", encoding="utf-8")
             backdrop_error = (artifacts / "backdrop.stderr.log").open("w", encoding="utf-8")
             try:
-                backdrop = processes.start(
+                backdrop = backdrop_processes.start(
                     [str(helper), "backdrop"],
                     stdout=backdrop_output,
                     stderr=backdrop_error,
@@ -493,93 +673,48 @@ def verify(
                 backdrop_output.close()
                 backdrop_error.close()
             geometry = wait_for_backdrop(backdrop, backdrop_log)
-
-            run_id = f"system-blur-composition-{os.getpid()}"
-            app_log = (artifacts / "app.log").open("w", encoding="utf-8")
-            try:
-                laban = processes.start(
-                    [str(executable), "--no-persistence", "--terminal-backend=in-process"],
-                    env=sanitized_environment(control_dir, run_id),
-                    cwd=control_dir / "home",
-                    stdout=app_log,
-                    stderr=subprocess.STDOUT,
-                    text=True,
+            scenario_results = {
+                scenario.key: measure_theme_scenario(
+                    scenario=scenario,
+                    executable=executable,
+                    helper=helper,
+                    geometry=geometry,
+                    control_root=control_root,
+                    artifacts=artifacts,
+                    domain=domain,
+                    preference_snapshot=preference_snapshot,
+                    termination_guard=termination_guard,
                 )
-            finally:
-                app_log.close()
-            client = Client(wait_for_control(laban, control_dir, run_id))
-            client.action("setReduceTransparencyOverride", enabled=False)
-            client.action(
-                "setBackgroundTransparency",
-                opacity=0.3,
-                applyToExplicitCellBackgrounds=False,
-            )
-            client.action("setBackgroundSource", source="none")
-            direct_state = wait_for_state(client, "none")
-            direct_state_path = artifacts / "direct-state.json"
-            write_json(direct_state_path, direct_state)
-            time.sleep(0.5)
-            direct_capture = artifacts / "direct-terminal-crop.png"
-            direct_metadata = capture(helper, direct_capture, laban.pid)
-
-            client.action("setBackgroundSource", source="systemBlur")
-            blur_state = wait_for_state(client, "systemBlur")
-            blur_state_path = artifacts / "system-blur-state.json"
-            write_json(blur_state_path, blur_state)
-            time.sleep(0.5)
-            blur_capture = artifacts / "system-blur-terminal-crop.png"
-            blur_metadata = capture(helper, blur_capture, laban.pid)
-            if blur_metadata != direct_metadata:
-                fail("direct and System Blur terminal crops have different metadata")
-
-            analyzed = subprocess.run(
-                [
-                    str(helper),
-                    "analyze",
-                    str(direct_capture),
-                    str(blur_capture),
-                    str(direct_metadata["sampleOriginXPoints"]),
-                    str(direct_metadata["captureScale"]),
-                    str(direct_metadata["terminalSampleHeight"]),
-                    str(geometry["stripeWidth"]),
+                for scenario in THEME_SCENARIOS
+            }
+            if set(scenario_results) != {scenario.key for scenario in THEME_SCENARIOS}:
+                fail("the required light and dark scenarios were not both measured")
+            completed_summary = {
+                "schemaVersion": 3,
+                "passed": all(result.get("passed") is True for result in scenario_results.values()),
+                "requiredScenarios": [
+                    {
+                        "key": scenario.key,
+                        "themeName": scenario.name,
+                        "themeIsDark": scenario.is_dark,
+                        "effectiveAppearance": scenario.effective_appearance,
+                        "configuredRenderer": "slugGlyph",
+                        "effectiveRenderer": "slugGlyph",
+                    }
+                    for scenario in THEME_SCENARIOS
                 ],
-                check=False,
-                text=True,
-                capture_output=True,
-            )
-            try:
-                summary = json.loads(analyzed.stdout)
-            except json.JSONDecodeError as error:
-                fail(f"composition summary is invalid: {error}")
-            if analyzed.returncode != 0:
-                failures = summary.get("failures") if isinstance(summary, dict) else None
-                fail(analyzed.stderr.strip() or f"full-display composition gates failed: {failures}")
-            if not isinstance(summary, dict):
-                fail("composition summary is not an object")
-            summary.update(
-                {
-                    "capture": direct_metadata,
-                    "provenance": identity,
-                    "artifacts": {
-                        "directCropSHA256": sha256(direct_capture),
-                        "systemBlurCropSHA256": sha256(blur_capture),
-                        "directStateSHA256": sha256(direct_state_path),
-                        "systemBlurStateSHA256": sha256(blur_state_path),
-                    },
-                }
-            )
-            completed_summary = summary
+                "scenarioResults": scenario_results,
+                "provenance": identity,
+            }
+            if completed_summary["passed"] is not True:
+                fail("one or more required theme scenarios did not pass")
         except BaseException as error:
             primary_error = error
 
         with termination_guard.defer():
             cleanup_errors = cleanup_all(
                 [
-                    (
-                        "Reduce Transparency override reset",
-                        lambda: reset_reduce_transparency_override(client),
-                    ),
-                    ("owned process cleanup", processes.close),
+                    ("backdrop process cleanup", backdrop_processes.close),
                     ("preference restoration", lambda: restore_preferences(domain, preference_snapshot)),
                 ]
             )
@@ -593,7 +728,7 @@ def verify(
         completed_summary["cleanup"] = {
             "ownedProcessGroupsReaped": True,
             "preferenceDomainRestoredByteForByte": True,
-            "reduceTransparencyOverrideRestoredToSystem": True,
+            "reduceTransparencyOverrideRestoredToSystemForEveryScenario": True,
         }
         write_json(artifacts / "summary.json", completed_summary)
 
@@ -615,6 +750,22 @@ def self_test_preferences() -> None:
             fail("preference self-test domain unexpectedly existed")
         import_preference_domain(domain, plistlib.dumps(malformed, fmt=plistlib.FMT_XML))
         snapshot = read_preferences(domain)
+        pinned = []
+        for scenario in THEME_SCENARIOS:
+            scenario_values = plistlib.loads(
+                pinned_scenario_preferences(snapshot, scenario)
+            )
+            if (
+                scenario_values.get("UnrelatedBinary") != malformed["UnrelatedBinary"]
+                or scenario_values.get("UnrelatedInteger") != malformed["UnrelatedInteger"]
+                or scenario_values.get("LabanRendererMode") != "slugGlyph"
+                or scenario_values.get("LabanThemeCurrent") != scenario.name
+                or scenario_values.get("LabanThemeFollowsSystem") is not False
+            ):
+                fail("pinned scenario preferences changed unrelated values or lost identity")
+            pinned.append(scenario_values["LabanThemeCurrent"])
+        if pinned != ["Selenized Light", "Selenized Dark"]:
+            fail("light and dark scenario preferences are not distinct and ordered")
         import_preference_domain(domain, plistlib.dumps({"replacement": True}))
         restore_preferences(domain, snapshot)
         restored = read_preferences(domain)

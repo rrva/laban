@@ -66,6 +66,9 @@ final class MainWindowController: NSWindowController {
       let diagnostics = terminalTransparencyDiagnostics(),
       let rendererStatus = terminalView?.transparencyRendererStatus
     else { return nil }
+    let effectiveAppearance =
+      NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+      ? "darkAqua" : "aqua"
     return TerminalTransparencyDebugResponse(
       requestedOpacity: status.requested.backgroundOpacity,
       effectiveOpacity: status.effective.backgroundOpacity,
@@ -90,6 +93,9 @@ final class MainWindowController: NSWindowController {
       snapshotExplicitBackgroundCapability: status.snapshotBackgroundCapability.rawValue,
       configuredRenderer: rendererStatus.configuredRenderer,
       effectiveRenderer: rendererStatus.effectiveRenderer,
+      themeName: Theme.current.name,
+      themeIsDark: Theme.current.isDark,
+      effectiveAppearance: effectiveAppearance,
       backdropSubviewCount: status.backdropSubviewCount,
       backdropSubviewKind: status.backdropSubviewKind.rawValue,
       systemReduceTransparency:

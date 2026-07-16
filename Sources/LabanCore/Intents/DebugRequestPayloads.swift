@@ -403,6 +403,9 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     case snapshotExplicitBackgroundCapability
     case configuredRenderer
     case effectiveRenderer
+    case themeName
+    case themeIsDark
+    case effectiveAppearance
     case backdropSubviewCount
     case backdropSubviewKind
     case systemReduceTransparency
@@ -439,6 +442,9 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
   public var snapshotExplicitBackgroundCapability: String
   public var configuredRenderer: String
   public var effectiveRenderer: String
+  public var themeName: String
+  public var themeIsDark: Bool
+  public var effectiveAppearance: String
   public var backdropSubviewCount: Int
   public var backdropSubviewKind: String
   public var systemReduceTransparency: Bool
@@ -475,6 +481,9 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     snapshotExplicitBackgroundCapability: String,
     configuredRenderer: String,
     effectiveRenderer: String,
+    themeName: String,
+    themeIsDark: Bool,
+    effectiveAppearance: String,
     backdropSubviewCount: Int,
     backdropSubviewKind: String,
     systemReduceTransparency: Bool,
@@ -510,6 +519,9 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     self.snapshotExplicitBackgroundCapability = snapshotExplicitBackgroundCapability
     self.configuredRenderer = configuredRenderer
     self.effectiveRenderer = effectiveRenderer
+    self.themeName = themeName
+    self.themeIsDark = themeIsDark
+    self.effectiveAppearance = effectiveAppearance
     self.backdropSubviewCount = backdropSubviewCount
     self.backdropSubviewKind = backdropSubviewKind
     self.systemReduceTransparency = systemReduceTransparency
@@ -554,6 +566,9 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
       forKey: .snapshotExplicitBackgroundCapability)
     try container.encode(configuredRenderer, forKey: .configuredRenderer)
     try container.encode(effectiveRenderer, forKey: .effectiveRenderer)
+    try container.encode(themeName, forKey: .themeName)
+    try container.encode(themeIsDark, forKey: .themeIsDark)
+    try container.encode(effectiveAppearance, forKey: .effectiveAppearance)
     try container.encode(backdropSubviewCount, forKey: .backdropSubviewCount)
     try container.encode(backdropSubviewKind, forKey: .backdropSubviewKind)
     try container.encode(systemReduceTransparency, forKey: .systemReduceTransparency)
@@ -617,6 +632,10 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
           format: nil, pattern: nil),
         "configuredRenderer": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
         "effectiveRenderer": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "themeName": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "themeIsDark": .boolean,
+        "effectiveAppearance": .string(
+          enumValues: ["aqua", "darkAqua", "headless"], const: nil, format: nil, pattern: nil),
         "backdropSubviewCount": .integer(min: 0, max: 1),
         "backdropSubviewKind": .string(
           enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
@@ -639,7 +658,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
         "backgroundImageFileReadCount", "backgroundImageApplyCount", "backgroundImageRedrawCount",
         "applyToExplicitCellBackgrounds", "surfaceOpaque",
         "effectiveGlyphAntialiasing", "snapshotExplicitBackgroundCapability",
-        "configuredRenderer", "effectiveRenderer", "backdropSubviewCount",
+        "configuredRenderer", "effectiveRenderer", "themeName", "themeIsDark",
+        "effectiveAppearance", "backdropSubviewCount",
         "backdropSubviewKind",
         "systemReduceTransparency", "effectiveReduceTransparency", "nativeFullscreen",
         "accessibilityRefreshCount", "effectiveTransparencyApplyCount",
