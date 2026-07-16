@@ -1566,7 +1566,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         if !surfaceTransparency.isOpaque
           && replacesDestination(compositing, color: color)
         {
-          replaceSolids.append(solid(rect: rect, color: color))
+          replaceSolids.append(replaceSolid(rect: rect, color: color))
         } else {
           solids.append(solid(rect: rect, color: color))
         }
@@ -2220,6 +2220,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       color: slugColor(color))
   }
 
+  private func replaceSolid(rect: CGRect, color: UInt32) -> SlugSolidInstance {
+    SlugSolidInstance(
+      origin: SIMD2<Float>(Float(rect.minX * scale), Float(rect.minY * scale)),
+      size: SIMD2<Float>(Float(rect.width * scale), Float(rect.height * scale)),
+      color: SRGBRenderTargetColor.linearizedEncodedPremultipliedSolidRGBA(color))
+  }
+
   @inline(__always)
   private func replacesDestination(
     _ compositing: FrameCompositingMode,
@@ -2231,31 +2238,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   private func slugColor(_ rgba: UInt32) -> SIMD4<Float> {
-    SIMD4<Float>(
-      Self.srgbToLinear(Float((rgba >> 24) & 0xFF) / 255),
-      Self.srgbToLinear(Float((rgba >> 16) & 0xFF) / 255),
-      Self.srgbToLinear(Float((rgba >> 8) & 0xFF) / 255),
-      Float(rgba & 0xFF) / 255)
+    SRGBRenderTargetColor.linearizedStraightRGBA(rgba)
   }
 
   private static func linearizedClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
-    let c = MetalRenderer.fullRedrawClearColor(commands)
-    guard c.alpha > 0 else {
-      return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-    }
-    if c.alpha == 1 {
-      return MTLClearColor(
-        red: Double(srgbToLinear(Float(c.red))),
-        green: Double(srgbToLinear(Float(c.green))),
-        blue: Double(srgbToLinear(Float(c.blue))),
-        alpha: 1)
-    }
-    let alpha = Float(c.alpha)
-    return MTLClearColor(
-      red: Double(srgbToLinear(Float(c.red) / alpha) * alpha),
-      green: Double(srgbToLinear(Float(c.green) / alpha) * alpha),
-      blue: Double(srgbToLinear(Float(c.blue) / alpha) * alpha),
-      alpha: c.alpha)
+    SRGBRenderTargetColor.linearizedEncodedPremultipliedClearColor(commands)
   }
 
   private static func makeColorGlyphAtlas(
@@ -2304,10 +2291,6 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     else { return nil }
     prewarmedRasterAtlas = nil
     return atlas
-  }
-
-  private static func srgbToLinear(_ c: Float) -> Float {
-    c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
   }
 
   private func glyphUniforms(

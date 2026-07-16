@@ -7,6 +7,8 @@ import XCTest
 enum RendererTransparencyTestSupport {
   static let alpha70 = UInt8(179)
   static let canvas: UInt32 = 0x2040_60B3
+  static let frostedAlpha = UInt8(77)
+  static let brightFrostedCanvas: UInt32 = 0xFBF3_DB4D
   static let opaqueCell: UInt32 = 0xD020_30FF
 
   static func commands(
@@ -57,6 +59,16 @@ enum RendererTransparencyTestSupport {
     return backend
   }
 
+  static func brightFrostedCommands() -> [FrameCommand] {
+    [
+      .rect(
+        CGRect(x: 0, y: 0, width: 16, height: 16),
+        color: brightFrostedCanvas,
+        source: .terminal,
+        compositing: .replace)
+    ]
+  }
+
   static func renderImage(
     _ backend: RendererBackend,
     commands: [FrameCommand],
@@ -85,5 +97,25 @@ enum RendererTransparencyTestSupport {
       file: file,
       line: line)
     XCTAssertEqual(image.pixel(x: 5, y: 12).a, 255, file: file, line: line)
+  }
+
+  static func assertBrightFrostedCanvas(
+    _ image: TestRGBAImage,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    let pixel = image.pixel(x: 1, y: 12)
+    let alpha = Int(frostedAlpha)
+    XCTAssertEqual(Int(pixel.a), alpha, accuracy: 1, file: file, line: line)
+
+    // PNG decode exposes encoded-sRGB premultiplied bytes. Bright channels
+    // must remain <= alpha, and unpremultiplying them must recover the
+    // Selenized Light canvas rather than clipped white.
+    let expectedStraight = [0xFB, 0xF3, 0xDB]
+    for (channel, expected) in zip([pixel.r, pixel.g, pixel.b], expectedStraight) {
+      XCTAssertLessThanOrEqual(Int(channel), Int(pixel.a), file: file, line: line)
+      let straight = Int((Double(channel) * 255 / Double(max(1, pixel.a))).rounded())
+      XCTAssertEqual(straight, expected, accuracy: 4, file: file, line: line)
+    }
   }
 }

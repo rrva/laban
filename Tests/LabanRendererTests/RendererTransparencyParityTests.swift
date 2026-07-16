@@ -13,4 +13,15 @@ final class RendererTransparencyParityTests: XCTestCase {
       RendererTransparencyTestSupport.assertSemanticAlpha(image)
     }
   }
+
+  func testAllFiveSelectorsRoundTripBrightFrostedCanvasWithoutClipping() throws {
+    for selection in RendererSelection.allCases {
+      let backend = try RendererTransparencyTestSupport.makeBackend(selection)
+      let image = try RendererTransparencyTestSupport.renderImage(
+        backend,
+        commands: RendererTransparencyTestSupport.brightFrostedCommands(),
+        damage: .full)
+      RendererTransparencyTestSupport.assertBrightFrostedCanvas(image)
+    }
+  }
 }

@@ -1302,13 +1302,12 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         currentClip = rect
 
       case .rect(let rect, let color, _, let compositing):
-        let instance = solid(rect: rect, color: color)
         if needsReplaceCompositing
           && replacesDestination(compositing, color: color)
         {
-          replaceSolids.append(instance)
+          replaceSolids.append(replaceSolid(rect: rect, color: color))
         } else {
-          solids.append(instance)
+          solids.append(solid(rect: rect, color: color))
         }
 
       case .cursor(let rect, let color),
@@ -2185,6 +2184,13 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       color: vectorColor(color))
   }
 
+  private func replaceSolid(rect: CGRect, color: UInt32) -> VectorSolidInstance {
+    VectorSolidInstance(
+      origin: SIMD2<Float>(Float(rect.minX * scale), Float(rect.minY * scale)),
+      size: SIMD2<Float>(Float(rect.width * scale), Float(rect.height * scale)),
+      color: SRGBRenderTargetColor.linearizedEncodedPremultipliedSolidRGBA(color))
+  }
+
   @inline(__always)
   private func replacesDestination(
     _ compositing: FrameCompositingMode,
@@ -2562,15 +2568,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   private func vectorColor(_ rgba: UInt32) -> SIMD4<Float> {
     // Linearize RGB so colors stored into the sRGB target round-trip correctly
     // and blends happen in linear light. Alpha stays linear.
-    SIMD4<Float>(
-      Self.srgbToLinear(Float((rgba >> 24) & 0xFF) / 255),
-      Self.srgbToLinear(Float((rgba >> 16) & 0xFF) / 255),
-      Self.srgbToLinear(Float((rgba >> 8) & 0xFF) / 255),
-      Float(rgba & 0xFF) / 255)
-  }
-
-  private static func srgbToLinear(_ c: Float) -> Float {
-    c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+    SRGBRenderTargetColor.linearizedStraightRGBA(rgba)
   }
 
   /// The terminal-background clear color for the sRGB target: the same sRGB value
@@ -2578,25 +2576,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   /// texture re-encodes the clear on store, so a raw sRGB value would
   /// double-encode). Alpha stays linear.
   static func linearizedClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
-    let c = MetalRenderer.fullRedrawClearColor(commands)
-    guard c.alpha > 0 else {
-      return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-    }
-    if c.alpha == 1 {
-      return MTLClearColor(
-        red: Double(srgbToLinear(Float(c.red))),
-        green: Double(srgbToLinear(Float(c.green))),
-        blue: Double(srgbToLinear(Float(c.blue))),
-        alpha: 1)
-    }
-    // The shared non-sRGB clear is premultiplied in encoded sRGB. Recover the
-    // straight channel, linearize it, then premultiply once for the sRGB target.
-    let alpha = Float(c.alpha)
-    return MTLClearColor(
-      red: Double(srgbToLinear(Float(c.red) / alpha) * alpha),
-      green: Double(srgbToLinear(Float(c.green) / alpha) * alpha),
-      blue: Double(srgbToLinear(Float(c.blue) / alpha) * alpha),
-      alpha: c.alpha)
+    SRGBRenderTargetColor.linearizedEncodedPremultipliedClearColor(commands)
   }
 }
 

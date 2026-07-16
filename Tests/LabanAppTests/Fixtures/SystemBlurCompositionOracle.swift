@@ -335,6 +335,7 @@ private func edgeEnergy(
     guard lower <= upper else { continue }
     maxima.append((lower...upper).map { abs(profile[$0] - profile[$0 - 1]) }.max() ?? 0)
   }
+  guard !maxima.isEmpty else { return 0 }
   return maxima.reduce(0, +) / Double(maxima.count)
 }
 
@@ -360,9 +361,13 @@ private func evaluate(
     captureScale: captureScale,
     sampleOriginX: sampleOriginX,
     stripeWidthPoints: stripeWidthPoints)
-  let directSharpness = directAmplitude > 0 ? directEdges / directAmplitude : .infinity
-  let blurSharpness = blurAmplitude > 0 ? blurEdges / blurAmplitude : .infinity
-  let normalizedRatio = directSharpness > 0 ? blurSharpness / directSharpness : .infinity
+  // Keep failed measurements JSON-encodable. A flat capture has zero source
+  // amplitude; representing its undefined normalized metric as infinity makes
+  // JSONEncoder abort before the oracle can report the actionable amplitude
+  // and correlation failures.
+  let directSharpness = directAmplitude > 0 ? directEdges / directAmplitude : 0
+  let blurSharpness = blurAmplitude > 0 ? blurEdges / blurAmplitude : 0
+  let normalizedRatio = directSharpness > 0 ? blurSharpness / directSharpness : 0
 
   var failures: [String] = []
   if directCorrelation < 0.50 {
@@ -486,6 +491,18 @@ private func selfTest() {
   guard !invalid.passed,
     invalid.failures.contains(where: { $0.contains("normalized edge ratio") })
   else { fail("sharp low-contrast no-blur negative self-test was accepted") }
+
+  let flat = evaluate(
+    directProfile: direct,
+    blurProfile: [Double](repeating: 255, count: width),
+    expected: expected,
+    captureScale: scale,
+    sampleOriginX: 0,
+    stripeWidthPoints: Double(stripeWidth))
+  guard !flat.passed,
+    flat.failures.contains(where: { $0.contains("blur source amplitude") }),
+    (try? JSONEncoder().encode(flat)) != nil
+  else { fail("flat-capture failure was not reported as finite JSON") }
   print("system-blur-composition-oracle: self-test passed")
 }
 
