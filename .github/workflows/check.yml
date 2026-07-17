@@ -109,3 +109,52 @@ jobs:
 
       - name: Build
         run: swift build
+
+      - name: Test
+        run: swift test
+
+      # The stress suite is intentionally skipped by a plain `swift test`.
+      # Keep one deterministic bounded soak in CI so the real C writer's
+      # wraparound, heartbeat, client churn, and teardown paths are gated.
+      - name: Labpty stress
+        env:
+          LABPTY_STRESS: "1"
+          LABPTY_STRESS_DURATION_S: "10"
+          LABPTY_STRESS_MIN_CYCLES: "500"
+          LABPTY_STRESS_SEED: "20260717"
+        run: swift test --filter LabptyStressTests
+
+  labpty-verification:
+    name: labpty verification
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install CBMC
+        run: brew install cbmc
+
+      - name: Fetch checksum-pinned TLA+ tools
+        env:
+          TLA_TOOLS_SHA1: 9416f74257aa50f250776db34964db7ec99e9883
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.1/tla2tools.jar \
+            --output "$RUNNER_TEMP/tla2tools.jar"
+          printf '%s  %s\n' "$TLA_TOOLS_SHA1" "$RUNNER_TEMP/tla2tools.jar" \
+            | shasum -a 1 --check
+          echo "TLA_JAR=$RUNNER_TEMP/tla2tools.jar" >> "$GITHUB_ENV"
+
+      - name: Check formal wiring
+        run: ./scripts/check-anchors
+
+      - name: Check TLA+ state machines
+        run: ./scripts/check-specs
+
+      - name: Check CBMC decoder proofs
+        run: ./scripts/check-cbmc
+
+      - name: Check runtime trace conformance
+        run: ./scripts/check-trace
+
+      - name: Check trace model coverage
+        run: ./scripts/check-model-coverage
