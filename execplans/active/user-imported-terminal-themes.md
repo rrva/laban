@@ -18,7 +18,7 @@ Users can now import their own terminal color themes into Laban from a JSON them
 - [x] Create JSON schema at `schemas/theme/laban-theme.schema.json`.
 - [x] Add a JSON export of every bundled theme to `schemas/theme/examples/`.
 - [x] Add `schemas/theme/README.md` explaining the file format.
-- [x] Ship example themes inside the app bundle via `Sources/LabanApp/Resources/ThemeExamples`.
+- [x] Ship example themes inside the app bundle via `Sources/LabanApp/Resources/ThemeExamples` (real directory, kept in sync with `schemas/theme/examples` by `scripts/sync-theme-examples`).
 - [x] Open the Import Theme file dialog at the bundled examples directory.
 - [x] Add localized strings and regenerate `Localizable.xcstrings`.
 - [x] Write `TerminalThemeStoreTests` in `LabanCoreTests`.
@@ -52,8 +52,9 @@ Users can now import their own terminal color themes into Laban from a JSON them
 - `Sources/LabanApp/AppDelegate.swift` — injects `themeMenuController.importedThemeStore` into `SettingsWindowController` so both controllers share one store instance.
 - `schemas/theme/laban-theme.schema.json` — JSON Schema for theme files.
 - `schemas/theme/README.md` — user-facing guide to the file format.
-- `schemas/theme/examples/*.laban-theme.json` — working JSON copies of every bundled theme.
-- `Sources/LabanApp/Resources/ThemeExamples` — bundle resource that ships the example themes so the Import Theme dialog shows them immediately.
+- `schemas/theme/examples/*.laban-theme.json` — canonical JSON copies of every bundled theme.
+- `Sources/LabanApp/Resources/ThemeExamples/*.laban-theme.json` — bundle resource copies of the examples; refresh with `scripts/sync-theme-examples`.
+- `scripts/sync-theme-examples` — copies canonical examples into the bundle resource directory.
 - `Sources/LabanApp/SettingsWindowController.swift` — configures the file open panel to start at the bundled examples directory.
 - `Sources/LabanApp/Resources/Localizable.xcstrings` — localized strings for the new UI.
 
@@ -68,7 +69,7 @@ Users can now import their own terminal color themes into Laban from a JSON them
 7. Create `schemas/theme/laban-theme.schema.json`.
 8. Export every bundled theme to `schemas/theme/examples/*.laban-theme.json`.
 9. Add `schemas/theme/README.md` explaining the format and pointing to examples.
-10. Symlink `schemas/theme/examples` into `Sources/LabanApp/Resources/ThemeExamples` and add it to `Package.swift` as a copied bundle resource.
+10. Copy `schemas/theme/examples` into `Sources/LabanApp/Resources/ThemeExamples` (a real directory, not a symlink, so SwiftPM copies actual files into the resource bundle) and add it to `Package.swift` as a copied bundle resource. Add `scripts/sync-theme-examples` to refresh the copies.
 11. Update `SettingsWindowController` so the Import Theme `NSOpenPanel` opens at `Bundle.main.url(forResource:"ThemeExamples", withExtension:nil)`.
 12. Add localized strings, run `python3 scripts/gen-localizable-xcstrings.py`.
 13. Add `Tests/LabanCoreTests/TerminalThemeStoreTests.swift` and `Tests/LabanAppTests/ThemeMenuControllerImportTests.swift`.
@@ -82,6 +83,7 @@ Run from the repository root (`/Users/rrj/wrk/laban`):
 swift build
 ./scripts/format
 ./scripts/lint
+./scripts/sync-theme-examples
 python3 scripts/gen-localizable-xcstrings.py
 find schemas fixtures -name '*.json' -print0 | xargs -0 jq empty
 swift test --filter TerminalThemeStoreTests

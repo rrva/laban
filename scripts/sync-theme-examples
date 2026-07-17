@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+src="schemas/theme/examples"
+dst="Sources/LabanApp/Resources/ThemeExamples"
+
+mkdir -p "$dst"
+rm -f "$dst"/*.laban-theme.json
+cp "$src"/*.laban-theme.json "$dst/"
+
+echo "Synced $(ls "$dst"/*.laban-theme.json | wc -l | tr -d ' ') theme examples from $src to $dst"

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "Selenized Dark",
+  "isDark": true,
+  "colors": {
+    "bg0": "#103C48FF",
+    "bg1": "#174956FF",
+    "bg2": "#2D5B69FF",
+    "fg0": "#ADBCBCFF",
+    "fg1": "#CAD8D9FF",
+    "dim0": "#72898FFF",
+    "red": "#FA5750FF",
+    "blue": "#4695F7FF",
+    "cursor": "#ADBCBCFF",
+    "selectionBg": "#325B6680",
+    "ansi16": [
+      "#174956FF",
+      "#FA5750FF",
+      "#75B938FF",
+      "#DBB32DFF",
+      "#4695F7FF",
+      "#F275BEFF",
+      "#41C7B9FF",
+      "#72898FFF",
+      "#325B66FF",
+      "#FF665CFF",
+      "#84C747FF",
+      "#EBC13DFF",
+      "#58A3FFFF",
+      "#FF84CDFF",
+      "#53D6C7FF",
+      "#CAD8D9FF"
+    ]
+  }
+}

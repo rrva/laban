@@ -118,6 +118,20 @@ final class ThemeMenuControllerImportTests: XCTestCase {
       themes[lightGroupStart...].contains { $0.name == "Imported Light" })
   }
 
+  func testImportThemeFilePickerOpensAtBundledExamples() throws {
+    let panel = NSOpenPanel()
+    SettingsWindowController.configureThemeFileOpenPanel(panel)
+
+    let directoryURL = try XCTUnwrap(panel.directoryURL)
+    let resourceValues = try directoryURL.resourceValues(forKeys: [.isDirectoryKey])
+    XCTAssertTrue(resourceValues.isDirectory ?? false)
+
+    let contents = try FileManager.default.contentsOfDirectory(atPath: directoryURL.path)
+    XCTAssertTrue(
+      contents.contains { $0.hasSuffix(".laban-theme.json") },
+      "Expected bundled theme examples in \(directoryURL)")
+  }
+
   // MARK: Helpers
 
   private struct Context {

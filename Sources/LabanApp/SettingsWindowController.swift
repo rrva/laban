@@ -1552,7 +1552,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   }
 
   private static func bundledThemeExamplesDirectoryURL() -> URL? {
-    Bundle.main.url(forResource: "ThemeExamples", withExtension: nil)
+    LabanAppResources.bundle.url(forResource: "ThemeExamples", withExtension: nil)
   }
 
   private static func presentThemeFilePicker(
