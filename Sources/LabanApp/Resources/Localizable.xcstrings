@@ -6091,6 +6091,30 @@
         }
       }
     },
+    "Import Theme…": {
+      "localizations": {}
+    },
+    "Remove Theme": {
+      "localizations": {}
+    },
+    "Import a Laban theme file (.laban-theme.json). See schemas/theme/examples/ for reference themes.": {
+      "localizations": {}
+    },
+    "Choose a Laban Theme": {
+      "localizations": {}
+    },
+    "Couldn’t Import Theme": {
+      "localizations": {}
+    },
+    "The selected file is not a valid Laban theme. Check the version, name, and color values and try again.": {
+      "localizations": {}
+    },
+    "Couldn’t Remove Theme": {
+      "localizations": {}
+    },
+    "The selected theme could not be removed.": {
+      "localizations": {}
+    },
     "Font:": {
       "localizations": {
         "zh-Hans": {

@@ -1,4 +1,5 @@
 import AppKit
+import LabanCore
 import LabanRenderer
 
 /// Owns the View → Theme menu and its persisted user choice.
@@ -7,6 +8,11 @@ import LabanRenderer
 /// immediately applies it. Follow-system stays on by default — the user's
 /// dark pick is what gets restored when macOS goes dark, the user's light
 /// pick when it goes light.
+///
+/// Imported themes live in `TerminalThemeStore` and are merged into the menu
+/// and Settings popup alongside bundled themes. Bundled themes keep their
+/// existing order; imported themes are appended alphabetically within each
+/// brightness group.
 final class ThemeMenuController: NSObject, NSMenuItemValidation {
 
   private static let darkKey = "LabanThemeDark"
@@ -14,21 +20,43 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
   private static let currentKey = "LabanThemeCurrent"
   private static let followsKey = "LabanThemeFollowsSystem"
 
+  private let themeStore: TerminalThemeStore
+
   /// Stable order shown in the menu. Item tag is the index here.
-  private let themes: [ThemeData] = Theme.allDarkThemes + Theme.allLightThemes
+  private lazy var themes: [ThemeData] = Self.mergeImportedThemes(
+    store: themeStore,
+    bundledDark: Theme.allDarkThemes,
+    bundledLight: Theme.allLightThemes,
+    imported: (try? themeStore.allManagedThemes()) ?? [])
+
+  init(themeStore: TerminalThemeStore = TerminalThemeStore()) {
+    self.themeStore = themeStore
+    super.init()
+  }
+
+  /// Reloads imported themes from the store. Called after an import or removal
+  /// so the menu and Settings popup stay in sync with the on-disk set.
+  func reloadImportedThemes() {
+    themes = Self.mergeImportedThemes(
+      store: themeStore,
+      bundledDark: Theme.allDarkThemes,
+      bundledLight: Theme.allLightThemes,
+      imported: (try? themeStore.allManagedThemes()) ?? [])
+  }
 
   /// Loads persisted choices into `Theme` so the first appearance KVO firing
   /// already uses the user's last picks. Call before AppDelegate installs
   /// the appearance observation.
   func loadPersistedChoices() {
+    reloadImportedThemes()
     let d = UserDefaults.standard
     if let darkName = d.string(forKey: Self.darkKey),
-      let theme = Theme.allDarkThemes.first(where: { $0.name == darkName })
+      let theme = themes.first(where: { $0.name == darkName })
     {
       Theme.darkVariant = theme
     }
     if let lightName = d.string(forKey: Self.lightKey),
-      let theme = Theme.allLightThemes.first(where: { $0.name == lightName })
+      let theme = themes.first(where: { $0.name == lightName })
     {
       Theme.lightVariant = theme
     }
@@ -87,6 +115,10 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
 
   /// Whether the app is currently following the system dark/light appearance.
   var followsSystemAppearance: Bool { Theme.followsSystemAppearance }
+
+  /// The store backing imported themes. Exposed so the Settings window can
+  /// import and remove themes through the same controller.
+  var importedThemeStore: TerminalThemeStore { themeStore }
 
   // MARK: Actions
 
@@ -163,5 +195,26 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
       return
     }
     NSApp.appearance = NSAppearance(named: Theme.current.isDark ? .darkAqua : .aqua)
+  }
+
+  private static func mergeImportedThemes(
+    store: TerminalThemeStore,
+    bundledDark: [ThemeData],
+    bundledLight: [ThemeData],
+    imported: [TerminalManagedTheme]
+  ) -> [ThemeData] {
+    let importedDark =
+      imported
+      .filter(\.isDark)
+      .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    let importedLight =
+      imported
+      .filter { !$0.isDark }
+      .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+
+    let resolvedDark = importedDark.compactMap { store.resolveTheme($0) }
+    let resolvedLight = importedLight.compactMap { store.resolveTheme($0) }
+
+    return bundledDark + resolvedDark + bundledLight + resolvedLight
   }
 }

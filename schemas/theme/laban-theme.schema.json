@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "laban-theme",
+  "title": "Laban Terminal Theme",
+  "description": "User-imported color theme for the Laban terminal emulator.",
+  "type": "object",
+  "required": ["version", "name", "isDark", "colors"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version. Must be 1."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "Display name for the theme. Must not collide with a bundled theme name or another imported theme name."
+    },
+    "isDark": {
+      "type": "boolean",
+      "description": "True when the theme is intended for dark ambient lighting."
+    },
+    "colors": {
+      "type": "object",
+      "required": [
+        "bg0",
+        "bg1",
+        "bg2",
+        "fg0",
+        "fg1",
+        "dim0",
+        "red",
+        "blue",
+        "cursor",
+        "selectionBg",
+        "ansi16"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "bg0": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Terminal canvas background."
+        },
+        "bg1": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Sidebar background."
+        },
+        "bg2": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Active tab pill background."
+        },
+        "fg0": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Default foreground for chrome text."
+        },
+        "fg1": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Strong foreground for active chrome."
+        },
+        "dim0": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Dim foreground for secondary chrome text."
+        },
+        "red": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Status badge/error accent."
+        },
+        "blue": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Active tab accent and link underline."
+        },
+        "cursor": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Terminal cursor color."
+        },
+        "selectionBg": {
+          "$ref": "#/$defs/hexColor",
+          "description": "Selection background. May include alpha."
+        },
+        "ansi16": {
+          "type": "array",
+          "minItems": 16,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/hexColor" },
+          "description": "16-color ANSI palette in OSC 4 order: black, red, green, yellow, blue, magenta, cyan, white, then bright equivalents."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hexColor": {
+      "type": "string",
+      "pattern": "^(#|0x)?([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+      "description": "Hex color string. Six-digit forms are treated as fully opaque; eight-digit forms encode alpha."
+    }
+  }
+}

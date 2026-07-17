@@ -115,6 +115,7 @@ let package = Package(
       resources: [
         .copy("Resources/AppIcon.icns"),
         .process("Resources/Localizable.xcstrings"),
+        .copy("Resources/ThemeExamples"),
       ],
       swiftSettings: _releaseExclusivity + _fastProfile
     ),

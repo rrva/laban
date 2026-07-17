@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "Gruvbox Dark",
+  "isDark": true,
+  "colors": {
+    "bg0": "#282828FF",
+    "bg1": "#3C3836FF",
+    "bg2": "#504945FF",
+    "fg0": "#EBDBB2FF",
+    "fg1": "#FBF1C7FF",
+    "dim0": "#928374FF",
+    "red": "#CC241DFF",
+    "blue": "#458588FF",
+    "cursor": "#EBDBB2FF",
+    "selectionBg": "#50494580",
+    "ansi16": [
+      "#282828FF",
+      "#CC241DFF",
+      "#98971AFF",
+      "#D79921FF",
+      "#458588FF",
+      "#B16286FF",
+      "#689D6AFF",
+      "#A89984FF",
+      "#928374FF",
+      "#FB4934FF",
+      "#B8BB26FF",
+      "#FABD2FFF",
+      "#83A598FF",
+      "#D3869BFF",
+      "#8EC07CFF",
+      "#EBDBB2FF"
+    ]
+  }
+}

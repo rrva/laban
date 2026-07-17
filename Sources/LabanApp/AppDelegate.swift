@@ -49,7 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     },
     onControlServerEnabledChanged: { [weak self] enabled in
       self?.windowController?.applyControlServerEnabled(enabled)
-    }
+    },
+    themeStore: themeMenuController.importedThemeStore
   )
   private var updateCheckInFlight = false
   private static let secureKeyboardEntryDefaultsKey = "LabanSecureKeyboardEntry"

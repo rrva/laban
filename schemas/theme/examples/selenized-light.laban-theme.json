@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "Selenized Light",
+  "isDark": false,
+  "colors": {
+    "bg0": "#FBF3DBFF",
+    "bg1": "#ECE3CCFF",
+    "bg2": "#D5CDB6FF",
+    "fg0": "#53676DFF",
+    "fg1": "#3A4D53FF",
+    "dim0": "#909995FF",
+    "red": "#D2212DFF",
+    "blue": "#0072D4FF",
+    "cursor": "#53676DFF",
+    "selectionBg": "#C4B89A80",
+    "ansi16": [
+      "#3A4D53FF",
+      "#D2212DFF",
+      "#489100FF",
+      "#AD8900FF",
+      "#0072D4FF",
+      "#CA4898FF",
+      "#009C8FFF",
+      "#909995FF",
+      "#53676DFF",
+      "#CC1729FF",
+      "#428B00FF",
+      "#A78300FF",
+      "#006DCEFF",
+      "#C44392FF",
+      "#00978AFF",
+      "#53676DFF"
+    ]
+  }
+}

@@ -40,6 +40,36 @@ public struct ThemeData: Equatable, Sendable {
   /// 8–15: bright equivalents.
   public let ansi16: [UInt32]
 
+  public init(
+    name: String,
+    isDark: Bool,
+    bg0: UInt32,
+    bg1: UInt32,
+    bg2: UInt32,
+    fg0: UInt32,
+    fg1: UInt32,
+    dim0: UInt32,
+    red: UInt32,
+    blue: UInt32,
+    cursor: UInt32,
+    selectionBg: UInt32,
+    ansi16: [UInt32]
+  ) {
+    self.name = name
+    self.isDark = isDark
+    self.bg0 = bg0
+    self.bg1 = bg1
+    self.bg2 = bg2
+    self.fg0 = fg0
+    self.fg1 = fg1
+    self.dim0 = dim0
+    self.red = red
+    self.blue = blue
+    self.cursor = cursor
+    self.selectionBg = selectionBg
+    self.ansi16 = ansi16
+  }
+
   /// Attention accent for needsAction chrome: the palette's bright yellow.
   /// Deliberately not `red` — red already means *failure* in the sidebar
   /// (exited process, failed command), and a tab waiting for input is an

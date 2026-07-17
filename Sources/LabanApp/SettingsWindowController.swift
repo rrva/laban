@@ -14,6 +14,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     (NSWindow?, @escaping (URL?) -> Void) -> Void
   typealias BackgroundImageErrorPresenter =
     (NSWindow?, String, String) -> Void
+  typealias ThemeFilePicker =
+    (NSWindow?, @escaping (URL?) -> Void) -> Void
+  typealias ThemeImportErrorPresenter =
+    (NSWindow?, String, String) -> Void
 
   static let windowIdentifier = NSUserInterfaceItemIdentifier("LabanSettings")
   private let themeController: ThemeMenuController
@@ -31,8 +35,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let backgroundImageStore: TerminalBackgroundImageStore
   private let backgroundImagePicker: BackgroundImagePicker
   private let backgroundImageErrorPresenter: BackgroundImageErrorPresenter
+  private let themeStore: TerminalThemeStore
+  private let themeFilePicker: ThemeFilePicker
+  private let themeImportErrorPresenter: ThemeImportErrorPresenter
 
   private let themePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let themeImportButton = NSButton(
+    title: L10n.tr("Import Theme…"), target: nil, action: nil)
+  private let themeRemoveButton = NSButton(
+    title: L10n.tr("Remove Theme"), target: nil, action: nil)
   private let followSystemCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Follow system appearance"), target: nil, action: nil)
   private let backgroundPresetPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -157,7 +168,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     transparencyNotificationCenter: NotificationCenter = .default,
     backgroundImageStore: TerminalBackgroundImageStore? = nil,
     backgroundImagePicker: BackgroundImagePicker? = nil,
-    backgroundImageErrorPresenter: BackgroundImageErrorPresenter? = nil
+    backgroundImageErrorPresenter: BackgroundImageErrorPresenter? = nil,
+    themeStore: TerminalThemeStore? = nil,
+    themeFilePicker: ThemeFilePicker? = nil,
+    themeImportErrorPresenter: ThemeImportErrorPresenter? = nil
   ) {
     self.themeController = theme
     self.rendererController = renderer
@@ -181,6 +195,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     self.backgroundImagePicker = backgroundImagePicker ?? Self.presentBackgroundImagePicker
     self.backgroundImageErrorPresenter =
       backgroundImageErrorPresenter ?? Self.presentBackgroundImageImportError
+    self.themeStore = themeStore ?? TerminalThemeStore()
+    self.themeFilePicker = themeFilePicker ?? Self.presentThemeFilePicker
+    self.themeImportErrorPresenter =
+      themeImportErrorPresenter ?? Self.presentThemeImportError
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 460, height: 10),
       styleMask: [.titled, .closable],
@@ -206,6 +224,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       self,
       selector: #selector(transparencySettingsDidChange(_:)),
       name: TerminalTransparencySettings.didChangeNotification,
+      object: nil)
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(themeStoreDidChange(_:)),
+      name: TerminalThemeStore.didChangeNotification,
       object: nil)
     window.delegate = self
     buildLayout()
@@ -245,6 +268,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     themePopUp.target = self
     themePopUp.action = #selector(themeChanged(_:))
     populateThemePopUp()
+
+    themeImportButton.target = self
+    themeImportButton.action = #selector(importThemeClicked(_:))
+    themeImportButton.bezelStyle = .rounded
+    themeImportButton.toolTip = L10n.tr(
+      "Import a Laban theme file (.laban-theme.json). See schemas/theme/examples/ for reference themes."
+    )
+    themeImportButton.setAccessibilityLabel(L10n.tr("Import Theme"))
+
+    themeRemoveButton.target = self
+    themeRemoveButton.action = #selector(removeThemeClicked(_:))
+    themeRemoveButton.bezelStyle = .rounded
+    themeRemoveButton.toolTip = L10n.tr(
+      "Remove the selected imported theme. Bundled themes cannot be removed.")
+    themeRemoveButton.setAccessibilityLabel(L10n.tr("Remove Theme"))
 
     followSystemCheckbox.target = self
     followSystemCheckbox.action = #selector(followSystemChanged(_:))
@@ -558,8 +596,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     approvalsStackView.alignment = .leading
     approvalsStackView.spacing = 8
 
+    let themeActionsRow = NSStackView(views: [
+      themeImportButton,
+      themeRemoveButton,
+    ])
+    themeActionsRow.orientation = .horizontal
+    themeActionsRow.spacing = 8
+    themeActionsRow.alignment = .firstBaseline
+
     let appearanceGrid = makeSettingsGrid([
       [makeLabel(L10n.tr("Theme:")), themePopUp],
+      [NSGridCell.emptyContentView, themeActionsRow],
       [NSGridCell.emptyContentView, followSystemCheckbox],
       [makeLabel(L10n.tr("Preset:")), backgroundPresetPopUp],
       [makeLabel(L10n.tr("Background source:")), backgroundSourcePopUp],
@@ -630,6 +677,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   private func populateThemePopUp() {
     themeRowIndices.removeAll()
+    themePopUp.removeAllItems()
     let themes = themeController.orderedThemes
     for (i, theme) in themes.enumerated() {
       themePopUp.addItem(withTitle: theme.name)
@@ -814,6 +862,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       themePopUp.selectItem(at: row)
     }
     followSystemCheckbox.state = themeController.followsSystemAppearance ? .on : .off
+    let importedNames = Set((try? themeStore.allManagedThemes().map(\.name)) ?? [])
+    let selectedThemeName: String? = {
+      let row = themePopUp.indexOfSelectedItem
+      guard row >= 0, row < themeRowIndices.count else { return nil }
+      let index = themeRowIndices[row]
+      guard index >= 0, index < themeController.orderedThemes.count else { return nil }
+      return themeController.orderedThemes[index].name
+    }()
+    themeRemoveButton.isEnabled = selectedThemeName.map(importedNames.contains) ?? false
     refreshTransparencyControls()
     fontLabel.stringValue = currentFontDisplayName()
     refreshCJKFontControls()
@@ -884,6 +941,53 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   @objc private func followSystemChanged(_ sender: NSButton) {
     themeController.setFollowsSystem(sender.state == .on)
+    refresh()
+  }
+
+  @objc private func themeStoreDidChange(_ notification: Notification) {
+    themeController.reloadImportedThemes()
+    populateThemePopUp()
+    refresh()
+  }
+
+  @objc private func importThemeClicked(_ sender: Any?) {
+    themeFilePicker(window) { [weak self] selectedURL in
+      guard let self else { return }
+      guard let selectedURL else {
+        self.refresh()
+        return
+      }
+      do {
+        _ = try self.themeStore.importTheme(from: selectedURL)
+      } catch {
+        self.themeImportErrorPresenter(
+          self.window,
+          L10n.tr("Couldn’t Import Theme"),
+          L10n.tr(
+            "The selected file is not a valid Laban theme. Check the version, name, and color values and try again."
+          ))
+      }
+      // The store posts a did-change notification on success, which reloads
+      // the popup. Refresh regardless so a cancelled picker restores selection.
+      self.refresh()
+    }
+  }
+
+  @objc private func removeThemeClicked(_ sender: Any?) {
+    let row = themePopUp.indexOfSelectedItem
+    guard row >= 0, row < themeRowIndices.count else { return }
+    let themeIndex = themeRowIndices[row]
+    guard themeIndex >= 0 else { return }
+    let theme = themeController.orderedThemes[themeIndex]
+    do {
+      try themeStore.removeManagedTheme(named: theme.name)
+    } catch {
+      themeImportErrorPresenter(
+        window,
+        L10n.tr("Couldn’t Remove Theme"),
+        L10n.tr("The selected theme could not be removed."))
+    }
+    // The store posts a did-change notification on success. Refresh regardless.
     refresh()
   }
 
@@ -1420,6 +1524,54 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   }
 
   private static func presentBackgroundImageImportError(
+    _ window: NSWindow?,
+    title: String,
+    message: String
+  ) {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = title
+    alert.informativeText = message
+    alert.addButton(withTitle: L10n.tr("OK"))
+    if let window {
+      alert.beginSheetModal(for: window)
+    } else {
+      alert.runModal()
+    }
+  }
+
+  static func configureThemeFileOpenPanel(_ panel: NSOpenPanel) {
+    panel.allowsMultipleSelection = false
+    panel.canChooseDirectories = false
+    panel.canChooseFiles = true
+    panel.resolvesAliases = true
+    panel.allowedContentTypes = [UTType.json]
+    panel.title = L10n.tr("Choose a Laban Theme")
+    panel.prompt = L10n.tr("Import Theme")
+    panel.directoryURL = bundledThemeExamplesDirectoryURL()
+  }
+
+  private static func bundledThemeExamplesDirectoryURL() -> URL? {
+    Bundle.main.url(forResource: "ThemeExamples", withExtension: nil)
+  }
+
+  private static func presentThemeFilePicker(
+    _ window: NSWindow?,
+    completion: @escaping (URL?) -> Void
+  ) {
+    let panel = NSOpenPanel()
+    configureThemeFileOpenPanel(panel)
+    let finish: (NSApplication.ModalResponse) -> Void = { response in
+      completion(response == .OK ? panel.url : nil)
+    }
+    if let window {
+      panel.beginSheetModal(for: window, completionHandler: finish)
+    } else {
+      panel.begin(completionHandler: finish)
+    }
+  }
+
+  private static func presentThemeImportError(
     _ window: NSWindow?,
     title: String,
     message: String
