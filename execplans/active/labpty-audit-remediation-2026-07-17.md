@@ -36,7 +36,8 @@ test names rather than only an RPC echo or daemon liveness.
 - [x] (2026-07-17) Added Swift, stress, TLC, CBMC, and trace-conformance gates to GitHub Actions and corrected the formal-process documentation.
 - [x] (2026-07-17) Ran targeted tests, formal checks, formatting/lint, builds, deterministic stress, and the proportional repository check suite.
 - [x] (2026-07-17) Committed correctness fixes and regression/formal coverage as `05b999f`.
-- [ ] Commit mandatory verification changes, push `agent/labpty-audit-fixes`, and record the pushed commits here.
+- [x] (2026-07-17) Committed mandatory verification changes as `2aa80d3`
+  and pushed both focused commits to `origin/agent/labpty-audit-fixes`.
 
 ## Decision Log
 
