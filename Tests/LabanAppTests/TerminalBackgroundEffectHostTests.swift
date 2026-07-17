@@ -44,6 +44,48 @@ final class TerminalBackgroundEffectHostTests: XCTestCase {
     XCTAssertNil(effectView.superview)
   }
 
+  func testSystemBlurInstalledAtZeroBoundsReinstallsAtFirstRealLayout() throws {
+    // The persisted-backdrop launch path applies System Blur from coordinator
+    // init, before any layout pass, so the material view is created at zero
+    // bounds. The first layout with real geometry must reinstall the material
+    // once, or the behind-window backdrop never engages.
+    let host = TerminalBackgroundEffectHost(frame: .zero)
+    host.apply(.systemBlur)
+    let zeroBoundsEffectView = try XCTUnwrap(host.subviews.first as? NSVisualEffectView)
+    XCTAssertTrue(host.bounds.isEmpty)
+
+    host.setFrameSize(NSSize(width: 640, height: 360))
+    host.layoutSubtreeIfNeeded()
+
+    let reinstalled = try XCTUnwrap(host.subviews.first as? NSVisualEffectView)
+    XCTAssertFalse(reinstalled === zeroBoundsEffectView)
+    XCTAssertNil(zeroBoundsEffectView.superview)
+    XCTAssertEqual(reinstalled.material, .underWindowBackground)
+    XCTAssertEqual(reinstalled.blendingMode, .behindWindow)
+    XCTAssertEqual(reinstalled.state, .active)
+    XCTAssertFalse(reinstalled.frame.isEmpty)
+    XCTAssertEqual(host.backdropSubviewCount, 1)
+    XCTAssertEqual(host.backdropSubviewKind, .systemBlur)
+
+    // Later layouts must not churn the material view.
+    host.setFrameSize(NSSize(width: 800, height: 500))
+    host.layoutSubtreeIfNeeded()
+    XCTAssertTrue(host.subviews.first === reinstalled)
+    XCTAssertEqual(host.backdropSubviewCount, 1)
+  }
+
+  func testSystemBlurInstalledAtRealBoundsIsNotReinstalledAtLayout() throws {
+    let host = TerminalBackgroundEffectHost(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+    host.apply(.systemBlur)
+    let effectView = try XCTUnwrap(host.subviews.first as? NSVisualEffectView)
+
+    host.setFrameSize(NSSize(width: 800, height: 500))
+    host.layoutSubtreeIfNeeded()
+
+    XCTAssertTrue(host.subviews.first === effectView)
+    XCTAssertEqual(host.backdropSubviewCount, 1)
+  }
+
   func testPlacementExcludesOpaqueSidebarAndTracksContainerResize() {
     let container = NSView(frame: NSRect(x: 0, y: 0, width: 1_000, height: 500))
     let host = TerminalBackgroundEffectHost(frame: .zero)

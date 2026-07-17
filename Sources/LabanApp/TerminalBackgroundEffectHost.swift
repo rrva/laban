@@ -118,6 +118,11 @@ final class TerminalBackgroundEffectHost: NSView {
   private var semanticChildConstraints: [NSLayoutConstraint] = []
   private var placementConstraints: [NSLayoutConstraint] = []
   private var retiredImageRedrawCount = 0
+  /// Set when the material view was installed before the host had real
+  /// geometry. A behind-window material created at zero bounds can render
+  /// only its flat tint — the WindowServer backdrop never engages — so the
+  /// material is reinstalled once at the first layout with real bounds.
+  private var needsBlurReinstallForRealGeometry = false
 
   private(set) var backgroundImageApplyCount = 0
 
@@ -149,6 +154,23 @@ final class TerminalBackgroundEffectHost: NSView {
   required init?(coder: NSCoder) {
     super.init(coder: coder)
     isHidden = true
+  }
+
+  override func layout() {
+    super.layout()
+    reinstallSystemBlurForRealGeometryIfNeeded()
+  }
+
+  /// The persisted-backdrop launch path applies System Blur before the first
+  /// layout pass (coordinator init precedes order-in), so the material view is
+  /// created at zero bounds. Reinstall it once real geometry exists — the
+  /// state the post-order install path reaches directly.
+  private func reinstallSystemBlurForRealGeometryIfNeeded() {
+    guard needsBlurReinstallForRealGeometry, appliedStyle == .systemBlur, !bounds.isEmpty
+    else { return }
+    needsBlurReinstallForRealGeometry = false
+    removeSemanticChild()
+    installSystemBlurIfNeeded()
   }
 
   /// Installs this host behind the terminal plane and pins it to the portion
@@ -215,6 +237,7 @@ final class TerminalBackgroundEffectHost: NSView {
     addSubview(effectView)
     self.effectView = effectView
     pinSemanticChild(effectView)
+    needsBlurReinstallForRealGeometry = bounds.isEmpty
   }
 
   private func installImageIfNeeded(
