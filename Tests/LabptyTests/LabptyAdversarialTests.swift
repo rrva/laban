@@ -473,6 +473,18 @@ final class LabptyAdversarialTests: XCTestCase {
     XCTAssertNotEqual(
       response.header.responseCode, .ok,
       "unknown op must produce a non-OK response code")
+
+    let helloPayload = try LabptyHelloRequest(clientId: "unknown-op-survivor").encode()
+    let helloFrame = try LabptyFraming.encodeRequest(
+      operation: .hello,
+      sequence: 8,
+      payload: helloPayload)
+    try writeAllRaw(fd: fd, data: helloFrame)
+    let helloResponse = try readFrameRaw(fd: fd)
+    XCTAssertEqual(helloResponse.header.sequence, 8)
+    XCTAssertEqual(helloResponse.header.operationRaw, LabptyFrameHeader.responseOperation)
+    XCTAssertEqual(helloResponse.header.responseCode, .ok)
+    XCTAssertNoThrow(try LabptyHelloResponse.decode(from: helloResponse.payload))
     XCTAssertTrue(harness.process.isRunning)
   }
 

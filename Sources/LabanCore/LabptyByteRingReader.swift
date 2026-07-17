@@ -148,9 +148,18 @@ public final class LabptyByteRingReader {
   }
 
   public func readSince(_ lastOffset: UInt64) -> LabptyByteRingReadResult {
+    readSince(lastOffset, confirmingWith: outputWriteOffset)
+  }
+
+  func readSince(
+    _ lastOffset: UInt64,
+    confirmingWith loadConfirmationOffset: () -> UInt64
+  ) -> LabptyByteRingReadResult {
     var result = readStableRangeSince(lastOffset)
+    var lastConfirmedOffset = result.newOffset
     for _ in 0..<3 {
-      let confirmed = outputWriteOffset()
+      let confirmed = loadConfirmationOffset()
+      lastConfirmedOffset = confirmed
       if confirmed == result.newOffset {
         return result
       }
@@ -161,7 +170,14 @@ public final class LabptyByteRingReader {
       }
       result = readStableRangeSince(lastOffset)
     }
-    return result
+    // The writer advanced far enough to threaten the copied window on every
+    // confirmation attempt. No bytes in the last copy are trustworthy: drop
+    // through the last offset we observed and force the caller's existing
+    // overflow/parser-reset path instead of feeding potentially torn data.
+    return LabptyByteRingReadResult(
+      bytes: Data(),
+      newOffset: max(lastConfirmedOffset, result.newOffset),
+      overflowed: true)
   }
 
   private func readStableRangeSince(_ lastOffset: UInt64) -> LabptyByteRingReadResult {

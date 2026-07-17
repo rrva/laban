@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <poll.h>
+#include <sys/file.h>
 
 #define LABPTY_MAX_POLL_WATCHES (1 + LABPTY_MAX_CLIENTS + LABPTY_MAX_SESSIONS)
 
@@ -251,11 +252,40 @@ static int bind_unix_socket_private(int fd, const struct sockaddr_un *addr) {
     return status;
 }
 
-/* Modelled by specs/labpty/LabptyStartup.tla::Listen_Fixed. The
- * probe → bind → stale-unlink retry sequence is the b5e7819 fix; the
- * companion MC_StartupPreFix.cfg with UnconditionalUnlink=TRUE pins the
- * stranded-daemon counter-example without it. */
-static int listen_unix_socket(const char *path) {
+static int acquire_startup_lock(const char *socket_path) {
+    assert(socket_path != NULL);
+    assert(socket_path[0] != '\0');
+    char lock_path[LABPTY_PATH_BYTES + 6];
+    int written = snprintf(lock_path, sizeof(lock_path), "%s.lock", socket_path);
+    if (written < 0 || (size_t)written >= sizeof(lock_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 0022) != 0) {
+        close(fd);
+        errno = EACCES;
+        return -1;
+    }
+    while (flock(fd, LOCK_EX) != 0) {
+        if (errno == EINTR) continue;
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    return fd;
+}
+
+static int listen_unix_socket_locked(const char *path) {
     assert(path != NULL);
     assert(path[0] != '\0');
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -320,6 +350,27 @@ static int listen_unix_socket(const char *path) {
         return -1;
     }
     return fd;
+}
+
+/* Modelled by specs/labpty/LabptyStartup.tla's AcquireStartup,
+ * ProbeAndBind, and PublishListen actions. Binding publishes the socket path
+ * before listen(2) makes connect(2) succeed, so the stale-path probe must not
+ * run concurrently with another daemon in that window. Hold a persistent
+ * advisory lock-file inode over the complete probe/bind/listen sequence. The
+ * file is intentionally not unlinked: removing it while another process waits
+ * on the old inode would let a third process lock a new inode concurrently.
+ * MC_StartupBindListenRace.cfg removes the serialization and pins the stranded
+ * bound-not-yet-listening daemon counter-example. */
+static int listen_unix_socket(const char *path) {
+    assert(path != NULL);
+    assert(path[0] != '\0');
+    int lock_fd = acquire_startup_lock(path);
+    if (lock_fd < 0) return -1;
+    int listen_fd = listen_unix_socket_locked(path);
+    int saved_errno = listen_fd < 0 ? errno : 0;
+    close(lock_fd);
+    if (listen_fd < 0) errno = saved_errno;
+    return listen_fd;
 }
 
 static int configure_client_fd(int fd) {
@@ -686,6 +737,15 @@ static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *
      * terminate; both racing terminators see the slot as gone. */
     if (session->close_pending) return LABPTY_E_SESSION_NOT_FOUND;
     labpty_descriptor_view_t descriptor = labpty_session_descriptor(session);
+    /* labpty_session_descriptor is a borrowed view. request_close clears the
+     * logical id and unlinks (and clears) the ring path before this response is
+     * encoded, so snapshot both strings while the session still owns them. */
+    char logical_id[LABPTY_LOGICAL_ID_BYTES + 1];
+    char ring_path[LABPTY_PATH_BYTES + 1];
+    snprintf(logical_id, sizeof(logical_id), "%s", descriptor.logical_id);
+    snprintf(ring_path, sizeof(ring_path), "%s", descriptor.ring_path);
+    descriptor.logical_id = logical_id;
+    descriptor.ring_path = ring_path;
     if (session->alive) {
         /* The hot path: dispatch SIGHUP, defer reap to the next
          * event-loop tick. Returns immediately so the single-threaded
@@ -1049,15 +1109,51 @@ static void arm_output_wake_clients(labpty_daemon_t *daemon, const char *client_
      * request's handles[] is sized to it and the decoder is CBMC-proven), the
      * same trust the park loops above rely on. */
     assert(count <= LABPTY_MAX_SESSIONS);
+    int matching_wake_clients = 0;
+    for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
+        labpty_client_t *client = &daemon->clients[i];
+        if (client->in_use && client->output_wake && client_id_matches(client, client_id)) {
+            matching_wake_clients++;
+        }
+    }
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
         labpty_client_t *client = &daemon->clients[i];
         if (!client->in_use || !client->output_wake) continue;
         if (!client_id_matches(client, client_id)) continue;
-        /* Record the watch set so notify_output_wake_clients can deliver wakes
-         * for these handles independently of any control connection's
-         * attachment, surviving a control-socket reconnect (R2). */
-        client->wake_watch_count = count;
-        for (uint32_t h = 0; h < count; h++) client->wake_watch_handles[h] = handles[h];
+        /* A client_id may own more than one persistent wake fd. The park RPC
+         * travels on a sibling control connection and carries no wake-fd id,
+         * so replacing every same-id watch set makes a later fd's park erase
+         * the sessions an earlier fd was waiting on. With one wake fd, retain
+         * the protocol's exact replacement semantics so a detached-but-live
+         * session stops causing spurious wakes. With multiple ambiguous fds,
+         * preserve each set, prune handles whose registry slots are gone, then
+         * union the new handles. At most LABPTY_MAX_SESSIONS distinct live
+         * handles exist. */
+        uint64_t merged[LABPTY_MAX_SESSIONS];
+        uint32_t merged_count = 0;
+        if (matching_wake_clients > 1) {
+            for (uint32_t h = 0; h < client->wake_watch_count; h++) {
+                uint64_t existing = client->wake_watch_handles[h];
+                if (labpty_registry_find(&daemon->registry, existing) == NULL) continue;
+                int duplicate = 0;
+                for (uint32_t m = 0; m < merged_count; m++) {
+                    if (merged[m] == existing) duplicate = 1;
+                }
+                if (!duplicate) merged[merged_count++] = existing;
+            }
+        }
+        for (uint32_t h = 0; h < count; h++) {
+            int duplicate = 0;
+            for (uint32_t m = 0; m < merged_count; m++) {
+                if (merged[m] == handles[h]) duplicate = 1;
+            }
+            if (!duplicate) {
+                assert(merged_count < LABPTY_MAX_SESSIONS);
+                merged[merged_count++] = handles[h];
+            }
+        }
+        client->wake_watch_count = merged_count;
+        for (uint32_t h = 0; h < merged_count; h++) client->wake_watch_handles[h] = merged[h];
         if (!client->wake_armed) {
             client->wake_armed = 1;
             daemon->output_wake_armed_count++;

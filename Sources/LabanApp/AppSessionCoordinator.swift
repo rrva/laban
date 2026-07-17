@@ -1245,7 +1245,7 @@ private final class LabptyParserFeed {
     // finished handling yet.
     publishedLastOffset.withLock { $0 = result.newOffset }
     IdleCounters.shared.noteLabptyPoll(byteCount: result.bytes.count)
-    guard !result.bytes.isEmpty else { return }
+    guard result.overflowed || !result.bytes.isEmpty else { return }
     // The first read positions the cursor from offset 0, so its span covers the
     // session's whole lifetime, not output we dropped live: on a restart
     // reconnect to a session that has emitted more than a window of output it
@@ -1263,6 +1263,13 @@ private final class LabptyParserFeed {
           "labpty byte ring join repaint from window tail for pty handle \(self.ptyHandle)")
       }
       _ = session.feedOutput([0x1B, 0x63])
+    }
+    // Exhausted byte-ring confirmation retries deliberately return no bytes:
+    // the uncertain range was dropped, but the RIS above still changed parser
+    // and render state and must become visible immediately.
+    guard !result.bytes.isEmpty else {
+      onDirty(session.id)
+      return
     }
     let diagBefore =
       ScrollDiagnostics.shared.isEnabled ? session.viewportState() : nil

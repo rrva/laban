@@ -4,6 +4,9 @@ import XCTest
 
 @testable import LabanCore
 
+@_silgen_name("flock")
+private func labptyTestFlock(_ fd: Int32, _ operation: Int32) -> Int32
+
 final class LabptyDaemonTests: XCTestCase {
   private let highInheritedFDCount = 1100
   private var launched: [Process] = []
@@ -39,7 +42,11 @@ final class LabptyDaemonTests: XCTestCase {
     let listed = try client.listLabptySessions()
     XCTAssertTrue(listed.contains { $0.ptyHandle == descriptor.ptyHandle && $0.alive })
 
-    _ = try client.terminate(handle: descriptor.ptyHandle)
+    let terminated = try client.terminate(handle: descriptor.ptyHandle)
+    XCTAssertEqual(terminated.ptyHandle, descriptor.ptyHandle)
+    XCTAssertEqual(terminated.logicalSessionId, descriptor.logicalSessionId)
+    XCTAssertEqual(terminated.byteRingShmPath, descriptor.byteRingShmPath)
+    XCTAssertFalse(terminated.alive)
     try waitForDead(pid: pid_t(descriptor.childPid))
   }
 
@@ -157,6 +164,58 @@ final class LabptyDaemonTests: XCTestCase {
     let output = try waitForOutput(reader: reader, contains: "after-reconnect-wake")
     XCTAssertTrue(output.contains("after-reconnect-wake"))
     _ = try client.terminate(handle: descriptor.ptyHandle)
+  }
+
+  func testMultipleOutputWakeFileDescriptorsKeepEarlierWatchSets() throws {
+    let harness = try launchHarness()
+    let owner = try waitForClient(socketPath: harness.socketPath)
+    let first = try owner.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/cat"], logicalSessionId: "wake-multi-a"))
+    let second = try owner.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/cat"], logicalSessionId: "wake-multi-b"))
+    let firstReader = try LabptyByteRingReader(path: first.byteRingShmPath)
+    let secondReader = try LabptyByteRingReader(path: second.byteRingShmPath)
+    let firstWakeFD = try XCTUnwrap(owner.openOutputWakeFileDescriptor())
+    defer { Darwin.close(firstWakeFD) }
+
+    XCTAssertTrue(
+      try owner.parkOutputWake(
+        entries: [
+          LabptyOutputWakeParkEntry(
+            ptyHandle: first.ptyHandle,
+            observedOutputOffset: firstReader.outputWriteOffset())
+        ]
+      ).parked)
+
+    let secondWakeFD = try XCTUnwrap(owner.openOutputWakeFileDescriptor())
+    defer { Darwin.close(secondWakeFD) }
+    XCTAssertTrue(
+      try owner.parkOutputWake(
+        entries: [
+          LabptyOutputWakeParkEntry(
+            ptyHandle: second.ptyHandle,
+            observedOutputOffset: secondReader.outputWriteOffset())
+        ]
+      ).parked)
+
+    // Remove the sibling control connection's attachment bits. From here on,
+    // delivery depends only on the watch set stored on each persistent wake fd.
+    owner.close()
+    usleep(150_000)
+
+    let writer = try waitForClient(socketPath: harness.socketPath)
+    defer { writer.close() }
+    try writer.writeInput(handle: first.ptyHandle, bytes: Array("first\n".utf8))
+    XCTAssertEqual(try readExactRaw(fd: firstWakeFD, count: 1).count, 1)
+    try assertNoWake(fd: secondWakeFD, duration: 0.15)
+
+    try writer.writeInput(handle: second.ptyHandle, bytes: Array("second\n".utf8))
+    XCTAssertEqual(try readExactRaw(fd: secondWakeFD, count: 1).count, 1)
+
+    _ = try writer.terminate(handle: first.ptyHandle)
+    _ = try writer.terminate(handle: second.ptyHandle)
   }
 
   func testParkedWakeSurvivesControlDropBeforeRepark() throws {
@@ -423,11 +482,18 @@ final class LabptyDaemonTests: XCTestCase {
       LabptyOpenSessionRequest(
         rows: 24,
         cols: 80,
-        argv: ["/bin/sh", "-c", "while true; do sleep 1; done"],
+        argv: ["/bin/sh", "-c", "sleep 30 & echo child:$!; wait"],
         logicalSessionId: "signal-test"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+    let output = try waitForOutput(reader: reader, contains: "child:")
+    let childLine = try XCTUnwrap(
+      output.split(whereSeparator: \.isNewline).first { $0.hasPrefix("child:") })
+    let descendantPid = try XCTUnwrap(pid_t(String(childLine.dropFirst("child:".count))))
+    defer { _ = Darwin.kill(descendantPid, SIGKILL) }
 
     _ = try client.signal(handle: descriptor.ptyHandle, signal: Int32(SIGKILL))
     try waitForDead(pid: pid_t(descriptor.childPid))
+    try waitForDead(pid: descendantPid)
   }
 
   func testResizeUpdatesWinsize() throws {
@@ -439,12 +505,19 @@ final class LabptyDaemonTests: XCTestCase {
       LabptyOpenSessionRequest(
         rows: 24,
         cols: 80,
-        argv: ["/bin/sleep", "30"],
+        argv: [
+          "/bin/sh", "-c",
+          "trap 'stty size' WINCH; printf ready; while true; do sleep 1; done",
+        ],
         logicalSessionId: "resize-test"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+    _ = try waitForOutput(reader: reader, contains: "ready")
 
     let resized = try client.resize(handle: descriptor.ptyHandle, rows: 41, cols: 132)
     XCTAssertEqual(resized.rows, 41)
     XCTAssertEqual(resized.cols, 132)
+    let output = try waitForOutput(reader: reader, contains: "41 132")
+    XCTAssertTrue(output.contains("41 132"), "the child must observe TIOCSWINSZ, not only RPC echo")
     _ = try client.terminate(handle: descriptor.ptyHandle)
   }
 
@@ -593,6 +666,38 @@ final class LabptyDaemonTests: XCTestCase {
     let attrs = try FileManager.default.attributesOfItem(atPath: harness.socketPath)
     let permissions = try XCTUnwrap(attrs[.posixPermissions] as? NSNumber)
     XCTAssertEqual(permissions.intValue & 0o777, 0o600)
+  }
+
+  func testStartupLockIsHeldUntilSocketCanBePublishedListening() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let tempRoot = ".tmp/labpty-start-lock-\(UUID().uuidString)"
+    let shmDir = "\(tempRoot)/shm"
+    tempRoots.append(root.appendingPathComponent(tempRoot, isDirectory: true))
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent(shmDir),
+      withIntermediateDirectories: true)
+    let socketPath = "\(tempRoot)/s.sock"
+    let lockPath = "\(socketPath).lock"
+    let lockFD = Darwin.open(lockPath, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+    guard lockFD >= 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    defer { Darwin.close(lockFD) }
+    guard labptyTestFlock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+
+    let harness = try launchReplacementHarness(socketPath: socketPath, shmDir: shmDir)
+    usleep(150_000)
+    XCTAssertTrue(harness.process.isRunning)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: socketPath),
+      "a daemon waiting for the startup lock must not publish a bound non-listening socket")
+
+    XCTAssertEqual(labptyTestFlock(lockFD, LOCK_UN), 0)
+    let client = try waitForClient(socketPath: socketPath)
+    defer { client.close() }
+    XCTAssertNoThrow(try client.hello())
   }
 
   func testSecondDaemonCannotStealLiveSocket() throws {
@@ -1290,6 +1395,27 @@ final class LabptyDaemonTests: XCTestCase {
 
     XCTAssertEqual(String(data: result.bytes, encoding: .utf8), "hello labpty")
     XCTAssertFalse(result.overflowed)
+  }
+
+  func testByteRingReaderDropsUnconfirmedCopyAfterRetryExhaustion() throws {
+    let url = try temporaryRingURL()
+    let capacity = UInt64(LabptyByteRingLayout.minimumOutputRingCapacity)
+    let writer = try LabptyByteRingWriter(path: url.path, outputRingCapacity: capacity)
+    let reader = try LabptyByteRingReader(path: url.path)
+    writer.write(Data("untrusted-copy".utf8))
+
+    let copiedOffset = reader.outputWriteOffset()
+    let unsafeAdvance = capacity - reader.readableOutputWindow + 1
+    var confirmations = 0
+    let result = reader.readSince(0) {
+      confirmations += 1
+      return copiedOffset + unsafeAdvance + UInt64(confirmations)
+    }
+
+    XCTAssertEqual(confirmations, 3)
+    XCTAssertTrue(result.bytes.isEmpty, "an unconfirmed shared-memory copy must be discarded")
+    XCTAssertEqual(result.newOffset, copiedOffset + unsafeAdvance + 3)
+    XCTAssertTrue(result.overflowed, "discarding uncertain bytes must reset parser continuity")
   }
 
   func testByteRingWrapDetection() throws {
