@@ -153,7 +153,7 @@ tests, runtime smoke test, and a headless end-to-end scenario):
 
 ```sh
 ./scripts/test     # swift test only
-./scripts/check    # the full local gate; CI runs its per-PR test/formal subset
+./scripts/check    # the full local gate; the pre-push hook runs its fast subset
 ```
 
 ## License

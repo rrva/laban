@@ -18,9 +18,9 @@ does not execute the tests and formal checks which are described as required.
 
 After this plan, each defect has a regression test, concurrent daemon startup is
 serialized and represented by the TLA+ startup model, large terminal input is
-split into ordered protocol-sized writes, and pull requests run Swift tests,
-the gated stress test, TLC state-machine checks, CBMC decoder proofs, and runtime
-trace conformance. The three audit-identified tests for process-group signals,
+split into ordered protocol-sized writes, and verification is enforced by the
+local `scripts/pre-push` gate (with `scripts/check` as the manual pre-release
+gate) rather than per-PR CI. The three audit-identified tests for process-group signals,
 PTY resize, and connection survival also assert the behavior named by their
 test names rather than only an RPC echo or daemon liveness.
 
@@ -38,6 +38,10 @@ test names rather than only an RPC echo or daemon liveness.
 - [x] (2026-07-17) Committed correctness fixes and regression/formal coverage as `05b999f`.
 - [x] (2026-07-17) Committed mandatory verification changes as `2aa80d3`
   and pushed both focused commits to `origin/agent/labpty-audit-fixes`.
+- [x] (2026-07-18) Removed the CI verification gate again: restored
+  `.github/workflows/check.yml` to lint+build, corrected the README and audit
+  doc, and installed `scripts/pre-push` in this checkout so the local gate
+  actually runs.
 
 ## Decision Log
 
@@ -66,6 +70,15 @@ test names rather than only an RPC echo or daemon liveness.
   uncertain range and forcing the existing parser-continuity reset is safer than
   feeding potentially torn bytes to the VT parser.
   Date/Author: 2026-07-17 / Codex
+
+- Decision: enforce verification with the local `scripts/pre-push` hook, not
+  GitHub Actions; keep CI at lint+build.
+  Rationale: the repo is private on the free GitHub tier and macOS runner
+  minutes are too expensive for per-PR test/stress/TLC/CBMC/trace runs — the
+  same reasoning already documented in the `scripts/pre-push` header. The CI
+  gate added as `2aa80d3` also had never executed (no PR ever opened), so
+  removing it drops an unverified gate, not a working one.
+  Date/Author: 2026-07-18 / Claude
 
 - Decision: keep the 64 KiB wire limit and chunk in
   `LabptyTerminalSessionClient.writeInput`.
