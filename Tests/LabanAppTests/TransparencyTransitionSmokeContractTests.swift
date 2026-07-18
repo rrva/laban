@@ -54,6 +54,7 @@ final class TransparencyTransitionSmokeContractTests: XCTestCase {
     let restoredURL = directory.appendingPathComponent("restored.json")
     let initial: [String: Any] = [
       "requestedOpacity": 0.63,
+      "requestedBlur": 0.2,
       "applyToExplicitCellBackgrounds": true,
       "requestedBackdropStyle": "image",
       "backgroundImageScaling": "fit",
