@@ -254,7 +254,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   public var debugSidebarRasterAtlasForTesting: MetalGlyphAtlas? { sidebarRasterAtlas }
   private var emojiRenderingMode: EmojiRenderingMode = EmojiRenderingSettings.current()
   private var textWeight: Double = VectorTextWeightSettings.current()
-  private var smoothScrollMode: VectorSmoothScrollMode = VectorSmoothScrollSettings.current()
+  private var smoothScrollMode: VectorSmoothScrollMode
 
   public var onFrameCompleted: (() -> Void)?
   /// Set by the host view for the next frame only: when true, a frame whose
@@ -290,6 +290,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     scale: CGFloat = 1,
     surfaceTransparency: RendererSurfaceTransparency = RendererSurfaceTransparency(
       isOpaque: true),
+    smoothScrollMode: VectorSmoothScrollMode = VectorSmoothScrollSettings.current(),
     prebuiltRasterAtlas: MetalGlyphAtlas? = nil,
     prebuiltSidebarRasterAtlas: MetalGlyphAtlas? = nil
   ) {
@@ -381,6 +382,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     self.pixelHeight = max(1, pixelHeight)
     self.scale = max(scale, 1)
     self.surfaceTransparency = surfaceTransparency
+    self.smoothScrollMode = smoothScrollMode
     self.prewarmedRasterAtlas = prebuiltRasterAtlas
     self.prewarmedSidebarRasterAtlas = prebuiltSidebarRasterAtlas
     let sidebarSource = sidebarFontAtlas ?? fontAtlas
@@ -1896,9 +1898,11 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     }
     let px = quantize(Double(pointOffset.x) * Double(scale))
     let py = quantize(Double(pointOffset.y) * Double(scale))
-    // Kernel pixelBase is Y-down within the mask; FrameProducer point Y is Y-up,
-    // so the y sample bias is negated to keep bake and on-screen placement aligned.
-    return (px.q, py.q, CGPoint(x: px.frac, y: -py.frac))
+    // Sampling the outline at `pixel + phase` moves the resulting coverage in
+    // the opposite direction, so negate X to match the fluid quad-placement
+    // path. Kernel pixelBase is Y-down while FrameProducer point Y is Y-up, so
+    // Y is also negated to keep both modes aligned on screen.
+    return (px.q, py.q, CGPoint(x: -px.frac, y: -py.frac))
   }
 
   private func cachedMask(

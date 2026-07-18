@@ -20,6 +20,11 @@ final class VectorSmoothScrollTests: XCTestCase {
     XCTAssertEqual(pos.qy, 64)
     XCTAssertEqual(pos.sampleOffset.y, -64.0 / 256.0, accuracy: 1e-9)  // Y negated (kernel Y-down)
 
+    let horizontal = VectorGlyphRenderer.quantizedPhase(
+      pointOffset: CGPoint(x: 0.125, y: 0), scale: 2)
+    XCTAssertEqual(horizontal.qx, 64)
+    XCTAssertEqual(horizontal.sampleOffset.x, -64.0 / 256.0, accuracy: 1e-9)
+
     // A negative remainder must stay negative (NOT wrap to +0.75 px).
     let neg = VectorGlyphRenderer.quantizedPhase(pointOffset: CGPoint(x: 0, y: -0.125), scale: 2)
     XCTAssertEqual(neg.qy, -64)
@@ -50,7 +55,8 @@ final class VectorSmoothScrollTests: XCTestCase {
     let renderer = try XCTUnwrap(
       VectorGlyphRenderer(
         fontAtlas: atlas, sidebarFontAtlas: atlas,
-        pixelWidth: width, pixelHeight: height, scale: scale))
+        pixelWidth: width, pixelHeight: height, scale: scale,
+        smoothScrollMode: .fluid))
 
     let commands: [FrameCommand] = [
       .rect(
@@ -107,11 +113,6 @@ final class VectorSmoothScrollTests: XCTestCase {
     let width = 256
     let height = 120
     let atlas = FontAtlas(pointSize: 28, fontName: nil)
-    let renderer = try XCTUnwrap(
-      VectorGlyphRenderer(
-        fontAtlas: atlas, sidebarFontAtlas: atlas,
-        pixelWidth: width, pixelHeight: height, scale: scale))
-
     let commands: [FrameCommand] = [
       .rect(
         CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale),
@@ -130,29 +131,42 @@ final class VectorSmoothScrollTests: XCTestCase {
     // image X increases to the right while image Y increases downward. A positive
     // horizontal phase therefore moves the centroid toward larger coordinates.
     let phaseDevicePixels: [CGFloat] = [-0.5, -0.25, 0.0, 0.25, 0.5]
-    var centroids: [Double] = []
-    for devpx in phaseDevicePixels {
-      renderer.setScrollPhaseOffset(CGPoint(x: devpx / scale, y: 0))
-      var png: Data?
-      for _ in 0..<6 {
-        XCTAssertTrue(renderer.render(commands, damage: .full))
-        png = renderer.pngData
+    for mode in VectorSmoothScrollMode.allCases {
+      let renderer = try XCTUnwrap(
+        VectorGlyphRenderer(
+          fontAtlas: atlas, sidebarFontAtlas: atlas,
+          pixelWidth: width, pixelHeight: height, scale: scale,
+          smoothScrollMode: mode))
+      var centroids: [Double] = []
+      for devpx in phaseDevicePixels {
+        renderer.setScrollPhaseOffset(CGPoint(x: devpx / scale, y: 0))
+        var png: Data?
+        for _ in 0..<6 {
+          XCTAssertTrue(renderer.render(commands, damage: .full))
+          png = renderer.pngData
+        }
+        XCTAssertEqual(
+          renderer.lastRasterFallbackGlyphs, 0,
+          "vector backend fell back to raster in \(mode.rawValue) mode")
+        centroids.append(try inkCentroidX(png: XCTUnwrap(png)))
       }
-      XCTAssertEqual(renderer.lastRasterFallbackGlyphs, 0, "vector backend fell back to raster")
-      centroids.append(try inkCentroidX(png: XCTUnwrap(png)))
-    }
 
-    let totalShift = abs(centroids.last! - centroids.first!)
-    XCTAssertGreaterThan(totalShift, 0.5, "phase sweep produced too little motion: \(centroids)")
-    XCTAssertLessThan(totalShift, 2.0, "phase sweep jumped more than a pixel — snapped, not smooth")
-    // Monotonic in the expected direction (+phase -> increasing X). The vertical
-    // assertion decreases because its point-space axis is inverted in the image.
-    for i in 1..<centroids.count {
-      XCTAssertGreaterThanOrEqual(
-        centroids[i] - centroids[i - 1], -0.06,
-        "centroid moved the wrong way (non-monotonic): \(centroids)")
+      let totalShift = abs(centroids.last! - centroids.first!)
+      XCTAssertGreaterThan(
+        totalShift, 0.5,
+        "phase sweep produced too little motion in \(mode.rawValue) mode: \(centroids)")
+      XCTAssertLessThan(
+        totalShift, 2.0,
+        "phase sweep jumped more than a pixel in \(mode.rawValue) mode: \(centroids)")
+      // Monotonic in the expected direction (+phase -> increasing X). The vertical
+      // assertion decreases because its point-space axis is inverted in the image.
+      for i in 1..<centroids.count {
+        XCTAssertGreaterThanOrEqual(
+          centroids[i] - centroids[i - 1], -0.06,
+          "centroid moved the wrong way in \(mode.rawValue) mode: \(centroids)")
+      }
+      XCTAssertNotEqual(centroids.first!, centroids.last!)
     }
-    XCTAssertNotEqual(centroids.first!, centroids.last!)
   }
 
   // MARK: - Helpers

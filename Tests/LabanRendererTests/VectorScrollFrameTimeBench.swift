@@ -73,13 +73,12 @@ final class VectorScrollFrameTimeBench: XCTestCase {
   private func measureVector(
     mode: VectorSmoothScrollMode, fontAtlas: FontAtlas, pixelW: Int, pixelH: Int
   ) throws -> (p50: Double, p95: Double, p99: Double) {
-    VectorSmoothScrollSettings.setCurrent(mode)
     guard
       let renderer = VectorGlyphRenderer(
         fontAtlas: fontAtlas, sidebarFontAtlas: fontAtlas,
-        pixelWidth: pixelW, pixelHeight: pixelH, scale: scale)
+        pixelWidth: pixelW, pixelHeight: pixelH, scale: scale,
+        smoothScrollMode: mode)
     else { throw XCTSkip("VectorGlyphRenderer unavailable") }
-    renderer.refreshSmoothScrollMode()
     return sweep { offsetPoints in
       renderer.setScrollPhaseOffset(CGPoint(x: 0, y: offsetPoints))
       _ = renderer.render(commands(offsetPoints: offsetPoints), damage: .full)
