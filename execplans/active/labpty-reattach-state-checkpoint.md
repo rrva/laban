@@ -27,9 +27,11 @@ The daemon also records a tagged `answeredThrough` state atomically with each
 successfully accepted parser-generated terminal response. When its provenance
 is known, reattach suppresses regenerated replies at or below that offset and
 forwards replies above it. When an older or competing client made provenance
-unknown, reattach keeps today's coarse catch-up suppression. This distinguishes
-queries already answered by the old app from detached-period queries without
-treating a missing trailer as a valid zero watermark.
+unknown, or when any response write was rejected or had an ambiguous transport
+outcome, reattach keeps today's coarse catch-up suppression. A later successful
+write can never advance past that loss of provenance. This distinguishes queries
+known to have been answered by the old app from detached-period queries without
+treating a missing trailer or a failed earlier response as a valid watermark.
 
 How to see it working: run the end-to-end test
 `testReattachedLabptySessionRestoresCheckpointAndReplaysBoundedTail`. It starts
@@ -66,6 +68,11 @@ that the exact-watermark work did not introduce a repeating timer.
   an explicit known/unknown response watermark, self-upgrade continuity,
   single-component sidecar names, failure-safe cleanup, and mechanical
   regressions for each issue. Implementation has not started.
+- [x] (2026-07-18) Follow-up review corrections make every failed or
+  transport-ambiguous terminal-response write poison exact watermark
+  provenance, correct the ring-header ownership and Milestone 0 wording, name
+  the feasibility round-trip test, label measurement geometry, and make the
+  fd-handoff continuity gate section-specific. Implementation has not started.
 - [x] Recorded baseline prerequisite:
   `BASELINE_SHA=afb90fdf1f3aa83a810a05e3ee966f2261f73b7f`.
 - [ ] Milestone 0: prove lossless terminal-state export/import and finalize
@@ -111,7 +118,10 @@ Key terms for a reader new to this repository:
   a query; it is a conservative boundary below which any regenerated response
   is historical. The value always has an explicit validity state: `known(0)`
   means a capable sole attachment has not yet sent a response, while `unknown`
-  means an older or competing parser may have answered bytes without a trailer.
+  means an older or competing parser may have answered bytes without a trailer,
+  or a response write was rejected or lost its acknowledgement so the daemon
+  cannot prove which query replies reached the child. Once unknown, it remains
+  unknown for the rest of that session incarnation.
 - **Checkpoint epoch** is a daemon-owned monotonic counter for terminal state
   changes that cannot be reconstructed from raw output bytes. It starts at 1
   for each session incarnation and advances on every successful daemon resize.
@@ -177,11 +187,17 @@ new optional capability and storage lifetime.
 6. `answeredThrough` advances only in the same daemon operation that accepts
    the corresponding terminal-response bytes. Two independent RPCs would
    create a crash window that can neither prevent duplicate replies nor unblock
-   an unanswered child. Its validity is never inferred from the numeric value:
-   any attachment that did not negotiate `answered-through/v1`, any competing
-   parser attachment, or any self-upgrade that cannot carry the watermark marks
-   it `unknown` for the rest of that incarnation. Unknown catch-up uses the
-   baseline coarse suppression path and never forwards replay-generated replies.
+   an unanswered child. A non-OK response-write result, an incomplete request,
+   or a connection drop that leaves acceptance ambiguous marks the watermark
+   `unknown` before any later response can be accepted; no later successful
+   write may advance a known offset past the failed response. The existing ADR
+   0008 partial-master-write path is still a complete acceptance because the
+   daemon owns and drains the staged tail. Validity is never inferred from the
+   numeric value: any attachment that did not negotiate `answered-through/v1`,
+   any competing parser attachment, any failed or ambiguous response write, or
+   any self-upgrade that cannot carry the watermark marks it `unknown` for the
+   rest of that incarnation. Unknown catch-up uses the baseline coarse
+   suppression path and never forwards replay-generated replies.
 7. Checkpoint work is event-driven: publish after activity becomes quiet and
    during clean detach. Do not add a repeating checkpoint timer.
 8. Dirty detection uses a terminal-state revision, not only the output offset.
@@ -230,10 +246,14 @@ palette and OSC host state, hyperlinks, title, synchronized output, grapheme
 mode, mouse/focus/bracketed-paste modes, kitty keyboard state, cursor style,
 and viewport state. Identify which state is owned by Laban and which can be
 read or set only through libghostty APIs. The non-goal is a raw memory dump of
-libghostty internals, not faithful restoration of their observable state.
+libghostty internals; the goal is faithful restoration of their observable
+state.
 
 Add `LabptyCheckpointFeasibilityTests` under
-`Tests/LabanTerminalCoreTests/` and a test-only export/import prototype:
+`Tests/LabanTerminalCoreTests/` and a test-only export/import prototype. Name
+the principal equivalence test
+`testCheckpointRoundTripPreservesSubsequentTerminalBehavior` so the Review Gate
+targets the exact promotion test introduced by this milestone:
 
 1. Feed session A a prefix that exercises primary and alternate screens,
    scrollback overflow, DECSET/DECRST, saved cursor, custom tab stops, palette,
@@ -258,7 +278,8 @@ Add `LabptyCheckpointFeasibilityTests` under
    partially changing B. Prove a wrong session incarnation, future offset,
    wrong checkpoint epoch, and mismatched terminal size are rejected.
 6. Measure serialized size and export/import duration for the default
-   scrollback limit and representative 24x80, 80x240, and scrollback-heavy
+   scrollback limit and representative 24 rows by 80 columns, 80 rows by 240
+   columns (a deliberately large and wide stress case), and scrollback-heavy
    sessions. Record the transcript in `Surprises & Discoveries`.
 
 Promotion requires zero unexplained divergence after the probe suffix, a
@@ -320,10 +341,19 @@ Keep every control frame below the existing 128 KiB limit:
   exact replay provenance unknown. The daemon advances a known watermark only
   while that connection is the session's sole attachment, only when the offset
   is monotonic and no greater than the current ring write offset, and only after
-  the complete response payload has been accepted. Backpressure or rejection
-  leaves it unchanged. Ordinary keyboard input sends no trailer. A non-capable
-  or competing attachment marks the session watermark unknown rather than
-  assigning a numeric sentinel.
+  the complete response payload has been accepted under ADR 0008. A partial
+  write to the PTY master is accepted only when the daemon has staged and owns
+  the entire unsent tail. After recognizing an answered-through trailer, any
+  non-OK result instead marks the session watermark unknown before returning
+  the error. If the control socket closes without a successful explicit detach,
+  `client_release` marks the watermark unknown for every session still attached
+  to that capable connection; this conservatively covers a truncated request or
+  a lost acknowledgement whose acceptance outcome cannot be reconstructed. A
+  successful explicit detach removes the attachment first and therefore
+  preserves known provenance. Once unknown, later response bytes remain
+  accepted under ADR 0008 but cannot advance an exact offset. Ordinary keyboard
+  input sends no trailer. A non-capable or competing attachment likewise marks
+  the session watermark unknown rather than assigning a numeric sentinel.
 
 Implement the metadata encoders/decoders in
 `Sources/Labpty/labpty_protocol.{c,h}` and
@@ -386,11 +416,15 @@ Model publication, fetch, close, and handle reuse in
 `ClosedSessionHasNoPublishedCheckpoint`, and
 `AnsweredThroughNeverDecreasesOrExceedsOutput`, plus
 `PublishedCheckpointHasSingleWriter`, `PublishedCheckpointMatchesCurrentEpoch`,
-and `UnknownAnsweredThroughNeverEnablesExactReplay`. Add negative-control
-configs that omit cleanup during handle reuse and that accept a pre-resize
-publication after the resize epoch advances; both must produce counterexamples.
-Add runtime trace events and trace-conformance mapping for the new state
-transitions.
+`UnknownAnsweredThroughNeverEnablesExactReplay`, and
+`FailedResponseWriteMakesAnsweredThroughUnknown`. Model both a definite
+response-write rejection and an unclean connection release; neither transition
+may be followed by a known watermark advance in the same incarnation. Add
+negative-control configs that omit cleanup during handle reuse, accept a
+pre-resize publication after the resize epoch advances, and leave the watermark
+known after a failed response before accepting a later response; all must
+produce counterexamples. Add runtime trace events and trace-conformance mapping
+for the new state transitions.
 
 Add golden and additive-trailer tests, property tests, daemon tests, CBMC
 decoder proofs, and a negative proof control. Name the principal tests:
@@ -402,6 +436,11 @@ decoder proofs, and a negative proof control. Name the principal tests:
 - `testCheckpointSidecarsStayInsideDaemonShmDirectory`
 - `testCheckpointPublishRejectedWithMultipleAttachedClients`
 - `testWriteInputAnsweredThroughAdvancesOnlyAfterAcceptedResponse`
+- `testFailedResponseWriteMakesAnsweredThroughUnknown`: force the first of two
+  increasing-offset parser-response writes to return non-OK, accept the second
+  response bytes, and assert replay state remains `unknown` rather than
+  advancing to the second batch's offset. Repeat with an unacknowledged partial
+  control-frame write followed by connection release.
 - `testOldClientOnNewDaemonLeavesAnsweredThroughUnknown`
 - `testCompetingAttachmentMakesAnsweredThroughUnknown`
 - `testCheckpointPublishCapturedBeforeResizeIsRejectedAfterResize`
@@ -449,8 +488,14 @@ Extend `LabptyParserFeed` in
   Failure removes the abandoned temporary file and leaves the prior valid
   checkpoint in place.
 - Replace parser-response calls to plain `writeInput` with
-  `writeTerminalResponse(...answeredThrough: result.newOffset)`. Suppress or
-  advance nothing when that operation fails. If replay state is unknown, retain
+  `writeTerminalResponse(...answeredThrough: result.newOffset)`. Return its
+  result to the feed instead of swallowing the error in the coordinator. On any
+  non-OK or transport-ambiguous result, mark the feed's exact-response state
+  unknown and never send a later known trailer for that incarnation. The daemon
+  must have made the same transition atomically with a rejection or through the
+  unclean connection-release rule; subsequent parser-response bytes may still
+  be accepted under ADR 0008, but they cannot skip a known watermark over the
+  failed batch. If replay state is unknown, retain
   `catchUpResponseSuppressionPending` for the entire initial catch-up; do not
   reinterpret numeric zero as a known watermark.
 
@@ -458,8 +503,12 @@ Clean detach needs an explicit lifetime barrier. Add
 `LabptyParserFeed.stopAndPublishCheckpoint(completion:)` and
 `AppSessionCoordinator.detach(completion:)`. Stop new polling, perform one
 final poll, capture/publish if dirty, and invoke completion after success or a
-bounded failure. Keep the captured `LabptyTerminalSessionClient` alive until
-all feed completions finish; close it only afterward.
+bounded failure. After the final response and checkpoint operations finish,
+send the existing explicit `detachLabptySession` operation for each handle so a
+successful clean detach preserves known watermark provenance. Keep the captured
+`LabptyTerminalSessionClient` alive until all feed and detach completions finish;
+close it only afterward. A deadline-forced socket close is deliberately unclean
+and therefore makes the watermark unknown.
 
 Move app-quit coordination from the too-late
 `AppDelegate.applicationWillTerminate` detach call into
@@ -511,7 +560,10 @@ On the existing-session branch of `ensureLabptyDescriptor` /
    watermark is unknown, suppress generated replies for the entire initial
    retained-window catch-up exactly as the baseline implementation does; this
    deliberately forgoes answering detached-period queries rather than risking
-   duplicate historical input.
+   duplicate historical input. If a terminal-response write fails during exact
+   catch-up or later live parsing, immediately abandon exact routing for the
+   incarnation; no later response may advance a known watermark past that
+   failed batch.
 6. After catch-up reaches `attachCutoff`, use normal live forwarding. Only then
    apply the current UI resize to the viewer and daemon. Mark the tab dirty so
    the restored frame is autonomously observable.
@@ -587,6 +639,13 @@ Add real-daemon end-to-end tests in
   "an older client may have sent responses without trailers"; exact replay is
   unsafe without provenance.
   Date/Author: 2026-07-18, review correction.
+- Decision: A failed or transport-ambiguous parser-response write permanently
+  makes `answeredThrough` unknown for the session incarnation.
+  Rationale: poll-level offsets can cover multiple queries. Leaving the old
+  watermark known would let a later successful batch advance past a response
+  that never reached the child, falsely suppressing it on reattach. Explicit
+  clean detach preserves known state; unclean connection release fails closed.
+  Date/Author: 2026-07-18, follow-up review correction.
 - Decision: Bind checkpoint publication to a daemon-owned resize epoch and
   classify every blob field by replayability.
   Rationale: an asynchronous pre-resize capture can arrive after resize
@@ -631,6 +690,7 @@ that commit SHA in `Progress`; do not review a dirty implementation tree.
   `testCheckpointFilesAreRemovedOnTerminateAndReuse`,
   `testCheckpointSidecarsStayInsideDaemonShmDirectory`,
   `testCheckpointPublishRejectedWithMultipleAttachedClients`,
+  `testFailedResponseWriteMakesAnsweredThroughUnknown`,
   `testOldClientOnNewDaemonLeavesAnsweredThroughUnknown`,
   `testCheckpointPublishCapturedBeforeResizeIsRejectedAfterResize`,
   `testCheckpointPublishRejectsResizeABAEpoch`,
@@ -653,9 +713,9 @@ that commit SHA in `Progress`; do not review a dirty implementation tree.
   created by a non-capable client emits no historical replay response.
 - [ ] If `rtk proxy rg -q 'LABPTY_OP_UPGRADE' Sources/Labpty`, run
   `rtk swift test --filter testCheckpointStateSurvivesSelfUpgradeOrAdoptsAsUnknown`
-  and expect exactly one test to pass. Otherwise run
-  `rtk rg -n 'checkpoint_epoch|answered_through_known' execplans/active/labpty-fd-handoff-self-upgrade.md`
-  and expect both fields in its catalog, M2, acceptance, and decision sections.
+  and expect exactly one test to pass. If the operation is absent, expect no
+  implementation test yet and use the section-specific fd-handoff plan check
+  below as the compatibility gate.
 - [ ] Run
   `rtk swift test --filter testCheckpointEventsExposeOutcomeWithoutPayloadOrPath`;
   expect pass and an event containing outcome/reason/offset/bytes/duration but
@@ -666,17 +726,21 @@ that commit SHA in `Progress`; do not review a dirty implementation tree.
 - [ ] Run `rtk ./scripts/check-specs`, `rtk ./scripts/check-cbmc`,
   `rtk ./scripts/check-cbmc-contracts`, `rtk ./scripts/check-trace`, `rtk ./scripts/check-model-coverage`,
   `rtk ./scripts/check-anchors`, and `rtk ./scripts/check-fd-hygiene`; every command
-  must exit 0. Confirm both checkpoint negative-control configs report their
-  expected counterexamples rather than verification success.
+  must exit 0. Confirm all three checkpoint negative-control configs report
+  their expected counterexamples rather than verification success, including
+  the control that incorrectly leaves `answeredThrough` known after a failed
+  response write.
 - [ ] Run `rtk ./scripts/check`; expect exit 0 with no skipped checkpoint tests.
 - [ ] Run
   `rtk rg -n '128 KiB|optional capability|out-of-band|daemon crash|exec-in-place self-upgrade' docs/adr/0030-labpty-state-checkpoint-cache.md`;
   expect five hits, one for each required compatibility/lifetime statement.
 - [ ] Run
-  `for field in checkpoint_epoch answered_through_known; do rtk proxy rg -q "$field" execplans/active/labpty-fd-handoff-self-upgrade.md || exit 1; if rtk proxy rg -q 'LABPTY_OP_UPGRADE' Sources/Labpty; then rtk proxy rg -q "$field" Sources/Labpty || exit 1; fi; done`;
-  expect exit 0, proving the active handoff plan—and implemented handoff source,
-  when present—carry both continuity fields. Also confirm the preceding-minor
-  handoff test named above passes rather than silently defaulting to known zero.
+  `file=execplans/active/labpty-fd-handoff-self-upgrade.md; for pattern in '(?s)^### Handoff sequence \(exec-in-place\).*?checkpoint_epoch.*?answered_through_known.*?^### The trigger' '(?s)^### M2 — full session-state continuity.*?checkpoint_epoch.*?answered_through_known.*?^### M3 ' '(?s)^## Validation and Acceptance.*?checkpoint_epoch.*?answered_through_known.*?^## Decision Log' '(?s)^## Decision Log.*?checkpoint_epoch.*?answered_through_known.*?^## Surprises'; do rtk proxy rg -Uq "$pattern" "$file" || exit 1; done; if rtk proxy rg -q 'LABPTY_OP_UPGRADE' Sources/Labpty; then for field in checkpoint_epoch answered_through_known; do rtk proxy rg -q "$field" Sources/Labpty || exit 1; done; fi`;
+  expect exit 0, proving the active handoff plan carries both continuity fields
+  specifically in its catalog, M2, acceptance, and decision sections—and that
+  implemented handoff source carries them when present. Also confirm the
+  preceding-minor handoff test named above passes rather than silently
+  defaulting to known zero.
 
 Review status: NOT REVIEWED
 
@@ -713,6 +777,12 @@ Review status: NOT REVIEWED
   evolution.
   Evidence: a new daemon accepts Phase 1 `writeInput` from an older client but
   receives no trailer identifying parser-generated response writes.
+- Observation: a poll-level `result.newOffset` can cover more than one terminal
+  query, so a later successful response must not advance past an earlier failed
+  response write.
+  Evidence: without a sticky transition to unknown, reattach would suppress the
+  earlier regenerated reply as already answered even though it never reached
+  the child.
 
 ## Concrete Steps
 
@@ -772,6 +842,9 @@ Acceptance is behavioral:
    query emitted while the app is detached receives a reply after reattach.
    With an unknown watermark caused by an older or competing client, the whole
    initial catch-up is coarsely suppressed and no historical reply is injected.
+   A rejected or transport-ambiguous terminal-response write makes the
+   watermark unknown before any later successful response; the test proves a
+   later batch cannot skip the exact watermark over the failed query.
 5. Missing, stale, wrong-incarnation, wrong-epoch, future-offset, truncated,
    oversized, and checksum-invalid checkpoints expose no partial restored frame
    and fall back to retained-window replay. A capture prepared before resize is
@@ -811,8 +884,11 @@ fallback. A delayed pre-resize publisher cannot commit because the daemon
 compares its captured epoch and size against the live registry. Old clients and
 daemons continue using the frozen Phase 1 behavior because the new capability
 is optional and all new payload fields are additive; any session touched by a
-non-capable parser retains an unknown watermark and therefore the baseline
-coarse-suppression behavior.
+non-capable parser or failed/ambiguous response write retains an unknown
+watermark and therefore the baseline coarse-suppression behavior. A clean
+detach is retryable and preserves known provenance only after the explicit
+detach response succeeds; closing the socket first intentionally fails closed
+to unknown.
 
 If Milestone 0 fails, revert only its prototype code, keep the evidence and
 decision in this plan, mark the checkpoint milestones blocked by feasibility,
@@ -829,9 +905,10 @@ End-state interfaces:
   `unknown`/`known(UInt64)` value; it never uses a numeric sentinel. Use
   CryptoKit SHA-256 for corruption detection; no new package dependency is
   required on macOS.
-- `Sources/LabanCore/LabptyByteRingReader.swift` exposes read-only
-  `sessionIdHash` and `createdAtUnixNs` fields already present in the ring
-  header.
+- `Sources/LabanCore/LabptyByteRingLayout.swift` defines the
+  `sessionIdHash` and `createdAtUnixNs` fields in the ring header.
+  `Sources/LabanCore/LabptyByteRingReader.swift` adds read-only properties for
+  those values, populated from and validated against the mapped header.
 - `Sources/LabanCore/Session.swift` exposes the export/import/revision methods
   finalized by Milestone 0. All three use the existing recursive handle lock.
 - `Sources/LabanCore/PTYLabClient.swift` exposes optional capability state,

@@ -352,9 +352,10 @@ The feature is done when all of the following hold:
   survives; a short note added to ADR 0006 (or a new ADR if the policy is
   judged durable enough to record separately).
 - When `execplans/active/labpty-reattach-state-checkpoint.md` has landed, current
-  handoff records preserve checkpoint epoch/metadata and tagged
-  answered-through state; a preceding-minor fixture proves fail-closed adopt to
-  no checkpoint plus unknown.
+  handoff records preserve checkpoint epoch/metadata (`checkpoint_epoch`) and
+  tagged answered-through state (`answered_through_known` and
+  `answered_through`); a preceding-minor fixture proves fail-closed adopt to no
+  checkpoint plus unknown.
 
 ## Decision Log
 
@@ -381,10 +382,11 @@ The feature is done when all of the following hold:
   Carrying stale masks across handoff would overcount departed connections.
 - **Carry exact-replay provenance or discard it explicitly.** Exec-in-place
   preserves the session incarnation even though daemon memory is replaced.
-  Therefore current catalogs carry checkpoint epoch/metadata and the tagged
-  answered-through state. Older or invalid records fail closed to no checkpoint
-  plus unknown; treating a missing watermark field as known zero could inject
-  historical replies into the child.
+  Therefore current catalogs carry checkpoint epoch/metadata
+  (`checkpoint_epoch`) and the tagged answered-through state
+  (`answered_through_known` and `answered_through`). Older or invalid records
+  fail closed to no checkpoint plus unknown; treating a missing watermark field
+  as known zero could inject historical replies into the child.
 - **Trigger via control RPC carrying the binary path, gated by hello version.**
   The app knows where its bundled `labpty` is and when it differs from the
   running daemon's build; an explicit, validated RPC is safer and clearer than
