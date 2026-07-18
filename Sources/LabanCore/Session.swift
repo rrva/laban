@@ -598,7 +598,11 @@ public final class Session {
   /// for a parser-only viewer session (labpty/laband tier) this buffer is the
   /// ONLY copy — the feed loop must forward the drained bytes to the daemon as
   /// input, or a child blocking on a query reply (gh auth login's ESC[6n size
-  /// probe) hangs forever.
+  /// probe) hangs forever. Exception: replies regenerated while replaying
+  /// historical byte-ring output (reattach catch-up or overflow re-feed) must
+  /// be drained but NOT forwarded — the child stopped waiting for those
+  /// queries long ago and would echo the replies as garbage input (see
+  /// LabptyParserFeed in AppSessionCoordinator).
   public func drainResponse() -> [UInt8] {
     handleLock.lock()
     defer { handleLock.unlock() }

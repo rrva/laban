@@ -651,6 +651,104 @@ final class LabanAppTests: XCTestCase {
         """)
   }
 
+  func testReattachedLabptySessionDoesNotReplayHistoricalQueryResponses() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-replay-query")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let tabId = "replay-query-tab"
+    // A child that ran before any app attached: it probed the terminal with
+    // termenv-style queries (OSC 10;?, DSR-CPR) whose bytes now sit in the
+    // retained byte-ring window. While blocked on input it echoes every byte
+    // it receives with ESC escaped, so any query reply the reattaching app
+    // forwards becomes visible text — the post-restart garbage-input bug.
+    // Five seconds in it emits a fresh CPR probe and prints the reply,
+    // proving live queries after the catch-up read still get forwarded.
+    let command = [
+      "/bin/sh", "-lc",
+      """
+      python3 -c '
+      import os, sys, tty, time, select
+      os.write(1, b"\\x1b]10;?\\x1b\\\\\\x1b[6nHIST-QUERIES\\r\\n")
+      tty.setraw(sys.stdin.fileno())
+      end = time.time() + 5
+      while time.time() < end:
+          r, _, _ = select.select([sys.stdin], [], [], 0.1)
+          if r:
+              b = os.read(0, 1)
+              os.write(1, b"^[" if b == b"\\x1b" else b)
+      os.write(1, b"\\x1b[6n")
+      reply = b""
+      while not reply.endswith(b"R"):
+          reply += os.read(0, 1)
+      os.write(1, b"LIVE:" + reply + b"\\r\\n")
+      '
+      exec cat
+      """,
+    ]
+
+    let seedClient = try waitForLabptyClient(socketPath: socketPath)
+    let seedDescriptor = try seedClient.openSession(
+      LabptyOpenSessionRequest(
+        rows: UInt32(size.rows),
+        cols: UInt32(size.cols),
+        outputRingCapacity: UInt64(LabptyByteRingLayout.minimumOutputRingCapacity),
+        argv: command,
+        cwd: FileManager.default.currentDirectoryPath,
+        logicalSessionId: tabId))
+    let reader = try LabptyByteRingReader(path: seedDescriptor.byteRingShmPath)
+    try waitForByteRingOffset(reader, atLeast: 26)
+    seedClient.close()
+
+    let model = try parserModel(tabId: tabId, size: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+
+    _ = try coordinator.ensureSession(for: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "HIST-QUERIES")
+
+    let garbageDeadline = Date().addingTimeInterval(2)
+    var visible = ""
+    while Date() < garbageDeadline {
+      visible = try localSnapshotText(model: model, tab: tab)
+      if visible.contains("rgb:") { break }
+      usleep(50_000)
+    }
+    XCTAssertFalse(
+      visible.contains("rgb:"),
+      """
+      reattaching must not forward replies the viewer regenerates while \
+      replaying the retained byte-ring window; the child long stopped waiting \
+      for them, so they land as garbage input; visible=\(visible)
+      """)
+
+    _ = try waitForLocalSnapshotText(
+      model: model,
+      tab: tab,
+      text: "LIVE:",
+      message: """
+        a query the child emits after the reattach catch-up read is live and \
+        its reply must still be forwarded, or the child blocks forever
+        """)
+  }
+
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?

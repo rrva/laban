@@ -502,7 +502,10 @@ final class AppSessionCoordinator {
       let descriptor = labptyDescriptorByTabId[tab.id]
     {
       if labptyFeedByTabId[tab.id] == nil, let session {
-        try startLabptyFeed(descriptor: descriptor, tab: tab, session: session)
+        // The feed is gone but the session outlived it: a new feed re-reads
+        // the byte ring from offset 0, i.e. replays historical output.
+        try startLabptyFeed(
+          descriptor: descriptor, tab: tab, session: session, isReattach: true)
       }
       return descriptor
     }
@@ -526,7 +529,10 @@ final class AppSessionCoordinator {
     }
     storeLabpty(descriptor, for: tab)
     if let session {
-      try startLabptyFeed(descriptor: descriptor, tab: tab, session: session)
+      // A session we claimed (rather than opened) has historical output in
+      // its byte ring; the feed's first read replays it.
+      try startLabptyFeed(
+        descriptor: descriptor, tab: tab, session: session, isReattach: existing != nil)
     }
     return descriptor
   }
@@ -534,7 +540,8 @@ final class AppSessionCoordinator {
   private func startLabptyFeed(
     descriptor: LabptySessionDescriptor,
     tab: Tab,
-    session: Session
+    session: Session,
+    isReattach: Bool
   ) throws {
     if labptyFeedByTabId[tab.id]?.ptyHandle == descriptor.ptyHandle {
       return
@@ -547,6 +554,7 @@ final class AppSessionCoordinator {
       ptyHandle: descriptor.ptyHandle,
       reader: reader,
       session: session,
+      isReattach: isReattach,
       onDirty: { [weak self] sessionId in
         self?.noteLabptyOutputActivity()
         self?.onSessionDirty?(sessionId)
@@ -1136,6 +1144,13 @@ private final class LabptyParserFeed {
   private let lock = NSLock()
   private var lastOffset: UInt64 = 0
   private var stopped = false
+  // True while the feed's first non-empty read is still ahead of it. A
+  // reattach feed starts from offset 0, so that read spans historical output
+  // the child was already answered for (or long gave up on): query replies
+  // the parser regenerates while replaying it must not be forwarded, or they
+  // land in the child's input as garbage (post-restart "10;rgb:..." paste).
+  // Touched only from `poll()` on the serial timer queue, like `lastOffset`.
+  private var catchUpResponseSuppressionPending: Bool
   // Touched only from `poll()` on the serial timer queue, like `lastOffset`.
   private var overflowGate = LabptyByteRingOverflowGate()
   // Lock-guarded mirror of `lastOffset`, written by `poll()` right after it
@@ -1149,6 +1164,7 @@ private final class LabptyParserFeed {
     ptyHandle: UInt64,
     reader: LabptyByteRingReader,
     session: Session,
+    isReattach: Bool,
     onDirty: @escaping @Sendable (Session.ID) -> Void,
     onOverflow: @escaping @Sendable () -> Void,
     onResponse: @escaping @Sendable ([UInt8]) -> Void
@@ -1156,6 +1172,7 @@ private final class LabptyParserFeed {
     self.ptyHandle = ptyHandle
     self.reader = reader
     self.session = session
+    self.catchUpResponseSuppressionPending = isReattach
     self.onDirty = onDirty
     self.onOverflow = onOverflow
     self.onResponse = onResponse
@@ -1257,7 +1274,18 @@ private final class LabptyParserFeed {
     // finished handling yet.
     publishedLastOffset.withLock { $0 = result.newOffset }
     IdleCounters.shared.noteLabptyPoll(byteCount: result.bytes.count)
+    // Replay reads re-answer every historical query still in the window (OSC
+    // color probes, CPR, DA): the reattach catch-up read from offset 0, and
+    // any overflow read whose re-fed window tail was already parsed and
+    // answered live. Replies regenerated from such bytes are drained below
+    // but must not be forwarded — the child is not waiting for them and
+    // would echo them as garbage input. Accepted trade-off: a child that
+    // emitted a query while no client was attached and is still blocked on
+    // the reply does not get it from the replay (it got no reply while
+    // detached either).
+    let replayRead = catchUpResponseSuppressionPending || result.overflowed
     guard result.overflowed || !result.bytes.isEmpty else { return }
+    catchUpResponseSuppressionPending = false
     // The first read positions the cursor from offset 0, so its span covers the
     // session's whole lifetime, not output we dropped live: on a restart
     // reconnect to a session that has emitted more than a window of output it
@@ -1300,9 +1328,12 @@ private final class LabptyParserFeed {
     // The daemon owns the PTY, so replies the parser generated while consuming
     // this chunk (CPR/DA/OSC color queries) exist only in the session's
     // response buffer. Ship them back over the daemon socket or the querying
-    // child blocks forever (gh auth login's survey size probe).
+    // child blocks forever (gh auth login's survey size probe) — unless this
+    // read replayed historical bytes, whose queries were answered (or
+    // abandoned) long ago; forwarding those replies is the post-restart
+    // garbage-input bug.
     let responses = session.drainResponse()
-    if !responses.isEmpty {
+    if !responses.isEmpty && !replayRead {
       onResponse(responses)
     }
     onDirty(session.id)
