@@ -149,11 +149,23 @@ def verify_source_state(state: dict[str, object], source: str) -> None:
     for field in ("requestedOpacity", "effectiveOpacity"):
         if abs(require_number(state.get(field), f"{source} state.{field}") - 0.90) > 0.0001:
             fail(f"{source} state.{field} must be exactly 0.90")
-    for field in ("requestedBackdropStyle", "effectiveBackdropStyle", "backdropSubviewKind"):
+    for field in ("requestedBackdropStyle", "effectiveBackdropStyle"):
         if state.get(field) != expected_style:
             fail(f"{source} state.{field} must be exactly {expected_style!r}")
-    if state.get("backdropSubviewCount") != 1:
-        fail(f"{source} state.backdropSubviewCount must be exactly 1")
+    if source == "systemBlur":
+        if state.get("backdropSubviewKind") != "none":
+            fail("systemBlur state.backdropSubviewKind must be none on the private window-blur path")
+        if state.get("backdropSubviewCount") != 0:
+            fail("systemBlur state.backdropSubviewCount must be exactly 0")
+        if state.get("windowBlurAvailable") is not True:
+            fail("systemBlur state.windowBlurAvailable must be true")
+        if state.get("windowBlurRadius") != 0:
+            fail("systemBlur state.windowBlurRadius must be 0 without a requested blur")
+    else:
+        if state.get("backdropSubviewKind") != "image":
+            fail("image state.backdropSubviewKind must be exactly 'image'")
+        if state.get("backdropSubviewCount") != 1:
+            fail("image state.backdropSubviewCount must be exactly 1")
     if state.get("surfaceOpaque") is not False:
         fail(f"{source} state.surfaceOpaque must be false")
     if state.get("applyToExplicitCellBackgrounds") is not False:
@@ -495,8 +507,10 @@ def write_state(path: Path, source: str) -> None:
         "surfaceOpaque": False,
         "configuredRenderer": "slugGlyph",
         "effectiveRenderer": "slugGlyph",
-        "backdropSubviewCount": 1,
-        "backdropSubviewKind": style,
+        "backdropSubviewCount": 0 if source == "systemBlur" else 1,
+        "backdropSubviewKind": "none" if source == "systemBlur" else "image",
+        "windowBlurAvailable": True,
+        "windowBlurRadius": 0,
         "effectiveReduceTransparency": False,
         "nativeFullscreen": False,
     }
@@ -614,7 +628,7 @@ def self_test() -> None:
         state_record = manifest["nativeSourceEvidence"]["systemBlur"]["stateArtifact"]
         state_path = manifest_path.parent / state_record["path"]
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["backdropSubviewKind"] = "none"
+        state["backdropSubviewKind"] = "image"
         state_path.write_text(json.dumps(state), encoding="utf-8")
         state_record["sha256"] = hashlib.sha256(state_path.read_bytes()).hexdigest()
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")

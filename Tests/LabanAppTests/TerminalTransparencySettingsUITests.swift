@@ -11,6 +11,7 @@ final class TerminalTransparencySettingsUITests: XCTestCase {
   override func tearDown() {
     for key in [
       TerminalTransparencySettings.backgroundOpacityKey,
+      TerminalTransparencySettings.backgroundBlurKey,
       TerminalTransparencySettings.applyToExplicitCellBackgroundsKey,
       TerminalTransparencySettings.backdropStyleKey,
     ] {
@@ -28,9 +29,11 @@ final class TerminalTransparencySettingsUITests: XCTestCase {
       TerminalTransparencyConfiguration(
         backgroundOpacity: 0.73,
         applyToExplicitCellBackgrounds: true,
-        backdropStyle: .none))
+        backdropStyle: .none,
+        backgroundBlur: 0.21))
     let controller = makeController()
     let controls = controller.transparencyControlsForTesting
+    let blurControls = controller.backgroundBlurControlsForTesting
 
     XCTAssertEqual(controls.slider.minValue, 0)
     XCTAssertEqual(controls.slider.maxValue, 100)
@@ -42,16 +45,32 @@ final class TerminalTransparencySettingsUITests: XCTestCase {
     XCTAssertEqual(
       controls.slider.accessibilityValueDescription(),
       String(format: L10n.tr("Background opacity: %lld percent"), Int64(73)))
+    XCTAssertEqual(blurControls.slider.minValue, 0)
+    XCTAssertEqual(blurControls.slider.maxValue, 100)
+    XCTAssertTrue(blurControls.slider.isContinuous)
+    XCTAssertEqual(blurControls.slider.doubleValue, 21)
+    XCTAssertEqual(blurControls.valueLabel.stringValue, "21%")
+    XCTAssertEqual(blurControls.slider.accessibilityLabel(), L10n.tr("Background blur"))
+    XCTAssertEqual(
+      blurControls.slider.accessibilityValueDescription(),
+      String(format: L10n.tr("Background blur: %lld percent"), Int64(21)))
   }
 
   func testSliderAndCheckboxDriveRequestedSettings() {
     let controller = makeController()
     let controls = controller.transparencyControlsForTesting
+    let blurControls = controller.backgroundBlurControlsForTesting
     controls.slider.doubleValue = 42
     controls.slider.sendAction(controls.slider.action, to: controls.slider.target)
+    blurControls.slider.doubleValue = 21
+    blurControls.slider.sendAction(
+      blurControls.slider.action,
+      to: blurControls.slider.target)
     XCTAssertEqual(controls.valueLabel.stringValue, "42%")
+    XCTAssertEqual(blurControls.valueLabel.stringValue, "21%")
     controller.flushPendingTransparencyPersistenceForTesting()
     XCTAssertEqual(TerminalTransparencySettings.requestedConfiguration.backgroundOpacity, 0.42)
+    XCTAssertEqual(TerminalTransparencySettings.requestedConfiguration.backgroundBlur, 0.21)
 
     controls.explicitCellCheckbox.state = .on
     controls.explicitCellCheckbox.sendAction(
@@ -79,7 +98,9 @@ final class TerminalTransparencySettingsUITests: XCTestCase {
     defer { notifications.removeObserver(token) }
 
     persistence.scheduleBackgroundOpacity(0.91)
+    persistence.scheduleBackgroundBlur(0.11)
     persistence.scheduleBackgroundOpacity(0.72)
+    persistence.scheduleBackgroundBlur(0.21)
     persistence.scheduleBackgroundOpacity(0.43)
     RunLoop.main.run(until: Date().addingTimeInterval(0.08))
 
@@ -88,6 +109,10 @@ final class TerminalTransparencySettingsUITests: XCTestCase {
       TerminalTransparencySettings.requestedConfiguration(defaults: defaults)
         .backgroundOpacity,
       0.43)
+    XCTAssertEqual(
+      TerminalTransparencySettings.requestedConfiguration(defaults: defaults)
+        .backgroundBlur,
+      0.21)
   }
 
   private func makeController() -> SettingsWindowController {

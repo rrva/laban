@@ -384,6 +384,8 @@ report `0`.
 {
   "requestedOpacity": 0.7,
   "effectiveOpacity": 1,
+  "requestedBlur": 0.2,
+  "effectiveBlur": 0,
   "requestedBackdropStyle": "none",
   "effectiveBackdropStyle": "none",
   "backgroundImageScaling": "fill",
@@ -407,6 +409,8 @@ report `0`.
   "effectiveRenderer": "slugGlyph",
   "backdropSubviewCount": 0,
   "backdropSubviewKind": "none",
+  "windowBlurAvailable": true,
+  "windowBlurRadius": 0,
   "systemReduceTransparency": false,
   "reduceTransparencyOverride": true,
   "effectiveReduceTransparency": true,
@@ -424,7 +428,7 @@ actions. They require `diagnosticControl`, which only the whole-app fixture
 token grants:
 
 ```json
-{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false,"backdropStyle":"systemBlur"}
+{"action":"setBackgroundTransparency","opacity":0.8,"blur":0.2,"applyToExplicitCellBackgrounds":false,"backdropStyle":"systemBlur"}
 {"action":"resetTransparencyDiagnostics"}
 {"action":"setReduceTransparencyOverride","enabled":true}
 {"action":"setReduceTransparencyOverride","enabled":null}
@@ -436,9 +440,9 @@ token grants:
 ```
 
 `setBackgroundTransparency` persists through the same requested-settings path
-as Appearance. Its optional `backdropStyle` accepts `none` or `systemBlur`; when
-omitted, the current requested style is preserved for backward compatibility.
-Opacity is clamped to `0...1`. The Reduce Transparency override
+as Appearance. Its optional `blur` and `backdropStyle` preserve the current
+requested values when omitted for backward compatibility. Opacity and blur are
+clamped to `0...1`. The Reduce Transparency override
 runs the same cached accessibility/coalesced-wake path as the workspace
 notification; `null` removes it and immediately rereads the real workspace
 value. `/debug/accessibility` remains read-only. `setNativeFullScreen` starts

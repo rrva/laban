@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "Rosé Pine Dawn",
+  "isDark": false,
+  "colors": {
+    "bg0": "#FAF4EDFF",
+    "bg1": "#F2E9E1FF",
+    "bg2": "#DFDAD9FF",
+    "fg0": "#797593FF",
+    "fg1": "#575279FF",
+    "dim0": "#9893A5FF",
+    "red": "#B4637AFF",
+    "blue": "#56949FFF",
+    "cursor": "#575279FF",
+    "selectionBg": "#DFDAD980",
+    "ansi16": [
+      "#575279FF",
+      "#B4637AFF",
+      "#286983FF",
+      "#EA9D34FF",
+      "#56949FFF",
+      "#907AA9FF",
+      "#D7827EFF",
+      "#9893A5FF",
+      "#797593FF",
+      "#B4637AFF",
+      "#286983FF",
+      "#EA9D34FF",
+      "#56949FFF",
+      "#907AA9FF",
+      "#D7827EFF",
+      "#797593FF"
+    ]
+  }
+}

@@ -7,7 +7,7 @@ import XCTest
 final class TransparencyDiagnosticsTests: XCTestCase {
   func testLiveRouterBindsAllTypedTransparencyHandlers() throws {
     let router = LiveIntentRouter(model: nil)
-    var backgrounds: [(Double, Bool, TerminalBackdropStyle?)] = []
+    var backgrounds: [(Double, Double?, Bool, TerminalBackdropStyle?)] = []
     var resetCount = 0
     var overrideValues: [Bool?] = []
     var fullscreenValues: [Bool] = []
@@ -18,7 +18,7 @@ final class TransparencyDiagnosticsTests: XCTestCase {
     let state = sampleState()
     router.bindTransparencyControl(
       state: { state },
-      setBackground: { backgrounds.append(($0, $1, $2)) },
+      setBackground: { backgrounds.append(($0, $1, $2, $3)) },
       resetDiagnostics: { resetCount += 1 },
       setReduceTransparencyOverride: { overrideValues.append($0) },
       setNativeFullScreen: { fullscreenValues.append($0) },
@@ -30,13 +30,14 @@ final class TransparencyDiagnosticsTests: XCTestCase {
     XCTAssertEqual(
       router.route(
         action(
-          #"{"action":"setBackgroundTransparency","opacity":2,"applyToExplicitCellBackgrounds":true,"backdropStyle":"systemBlur"}"#
+          #"{"action":"setBackgroundTransparency","opacity":2,"blur":2,"applyToExplicitCellBackgrounds":true,"backdropStyle":"systemBlur"}"#
         )
       ).status,
       200)
     XCTAssertEqual(backgrounds[0].0, 1)
-    XCTAssertEqual(backgrounds[0].1, true)
-    XCTAssertEqual(backgrounds[0].2, .systemBlur)
+    XCTAssertEqual(backgrounds[0].1, 1)
+    XCTAssertEqual(backgrounds[0].2, true)
+    XCTAssertEqual(backgrounds[0].3, .systemBlur)
     XCTAssertEqual(
       router.route(
         action(
@@ -45,8 +46,9 @@ final class TransparencyDiagnosticsTests: XCTestCase {
       ).status,
       200)
     XCTAssertEqual(backgrounds[1].0, 0.4)
-    XCTAssertEqual(backgrounds[1].1, false)
-    XCTAssertNil(backgrounds[1].2)
+    XCTAssertNil(backgrounds[1].1)
+    XCTAssertEqual(backgrounds[1].2, false)
+    XCTAssertNil(backgrounds[1].3)
     XCTAssertEqual(
       router.route(
         action(
@@ -126,7 +128,7 @@ final class TransparencyDiagnosticsTests: XCTestCase {
     var state = sampleState()
     router.bindTransparencyControl(
       state: { state },
-      setBackground: { _, _, _ in },
+      setBackground: { _, _, _, _ in },
       resetDiagnostics: {},
       setReduceTransparencyOverride: { state.reduceTransparencyOverride = $0 },
       setNativeFullScreen: { _ in },
@@ -166,6 +168,8 @@ final class TransparencyDiagnosticsTests: XCTestCase {
     TerminalTransparencyDebugResponse(
       requestedOpacity: 0.7,
       effectiveOpacity: 0.7,
+      requestedBlur: 0.2,
+      effectiveBlur: 0,
       requestedBackdropStyle: "none",
       effectiveBackdropStyle: "none",
       backgroundImageScaling: "fill",
@@ -183,6 +187,8 @@ final class TransparencyDiagnosticsTests: XCTestCase {
       effectiveAppearance: "aqua",
       backdropSubviewCount: 0,
       backdropSubviewKind: TerminalBackdropStyle.none.rawValue,
+      windowBlurAvailable: true,
+      windowBlurRadius: 0,
       systemReduceTransparency: false,
       reduceTransparencyOverride: nil,
       effectiveReduceTransparency: false,

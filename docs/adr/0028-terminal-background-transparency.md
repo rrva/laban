@@ -7,7 +7,9 @@ Date: 2026-07-15
 Accepted; amended 2026-07-15 after installed-app validation and again for
 user-imported background images, then amended 2026-07-16 for the complete
 linear-premultiplied working-space and encoded-sRGB storage boundary on
-translucent curve-renderer targets. Implementation is tracked in
+translucent curve-renderer targets, then amended 2026-07-17 to make the
+`Frosted` preset theme-aware. ADR 0029 supplements this decision for
+configurable window blur radius. Implementation is tracked in
 `execplans/active/terminal-background-transparency.md`.
 
 ## Context
@@ -221,22 +223,24 @@ the source image composite over the same opaque black backing. Image decoding
 is cached and never occurs in a renderer path or per-frame loop; selection,
 scaling changes, and resize may invalidate the host once.
 
-`System Blur` and the localized, theme-neutral `Frosted` preset are active work
-in the same ExecPlan. `Frosted` is fixed at 30% terminal background opacity
-with System Blur and opaque explicit cell backgrounds. Applying it preserves an
-imported image and scaling mode for a later switch back to Image. Selecting
-Image or changing an individual control produces custom preset state; Frosted
-never combines System Blur and Image. It never changes the active theme and is
-never selected from locale, language, region, input source, or CJK font. The
-opaque sidebar remains outside every backdrop-backed content plane.
+`System Blur` and the localized `Frosted` preset are active work
+in the same ExecPlan. As amended by ADR 0029, `Frosted` pairs System Blur and
+opaque explicit cell backgrounds with 80% terminal background opacity and a
+20% tint-free window blur. Applying it preserves an imported image and scaling
+mode for a later switch back to Image. Selecting Image or changing an
+individual control produces custom preset state; Frosted never combines System
+Blur and Image. It never changes the active theme and is never selected from
+locale, language, region, input source, or CJK font. The opaque sidebar
+remains visually opaque over the window-level blur.
 
-The effect host must use a public semantic behind-window AppKit material hosted
-below terminal content. It must not put Liquid Glass behind terminal content,
-use private Core Animation filters, capture the screen as a feedback loop,
-implement blur in a renderer shader, or expose a configurable blur radius.
-Public native material keeps blur and power behavior in AppKit/WindowServer,
-adapts to system appearance and accessibility, and leaves all five renderer
-contracts unchanged.
+ADR 0029 narrowly supersedes this paragraph's original fixed public-material
+and no-configurable-radius rule. System Blur primarily uses runtime-resolved
+private CGS window blur; the public semantic behind-window AppKit material
+below terminal content remains the compatibility fallback. Laban still must
+not put Liquid Glass behind terminal content, capture the screen as a
+feedback loop, implement blur in a renderer shader, or expose another blur
+mechanism. Keeping blur in AppKit/WindowServer preserves all five renderer
+contracts.
 
 ## Consequences
 

@@ -79,11 +79,12 @@ final class DebugActionDecodingTests: XCTestCase {
   func testSetBackgroundTransparencyDecodesOptionalBackdropStyle() throws {
     guard
       case .setBackgroundTransparency(let request) = try decode(
-        #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false,"backdropStyle":"systemBlur"}"#
+        #"{"action":"setBackgroundTransparency","opacity":0.7,"blur":0.2,"applyToExplicitCellBackgrounds":false,"backdropStyle":"systemBlur"}"#
       )
     else {
       return XCTFail("Expected setBackgroundTransparency action")
     }
+    XCTAssertEqual(request.blur, 0.2)
     XCTAssertEqual(request.backdropStyle, .systemBlur)
 
     guard
@@ -102,6 +103,7 @@ final class DebugActionDecodingTests: XCTestCase {
     else {
       return XCTFail("Expected legacy setBackgroundTransparency action")
     }
+    XCTAssertNil(legacyRequest.blur)
     XCTAssertNil(legacyRequest.backdropStyle)
     XCTAssertThrowsError(
       try decode(
@@ -114,7 +116,11 @@ final class DebugActionDecodingTests: XCTestCase {
     let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
     let backdropStyle = try XCTUnwrap(properties["backdropStyle"] as? [String: Any])
     XCTAssertEqual(backdropStyle["enum"] as? [String], ["none", "systemBlur", "image"])
+    let blur = try XCTUnwrap(properties["blur"] as? [String: Any])
+    XCTAssertEqual(blur["minimum"] as? Double, 0)
+    XCTAssertEqual(blur["maximum"] as? Double, 1)
     let required = try XCTUnwrap(schema["required"] as? [String])
+    XCTAssertFalse(required.contains("blur"))
     XCTAssertFalse(required.contains("backdropStyle"))
   }
 

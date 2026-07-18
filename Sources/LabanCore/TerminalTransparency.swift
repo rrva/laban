@@ -31,12 +31,20 @@ public enum TerminalBackgroundImageAvailability: String, CaseIterable, Codable, 
 /// `EffectiveTerminalTransparency` instead.
 public struct TerminalTransparencyConfiguration: Equatable, Sendable {
   private var storedBackgroundOpacity: Double
+  private var storedBackgroundBlur: Double
 
   /// A stable unit-interval value. NaN falls back to the shipped opaque
   /// default rather than allowing invalid alpha into rendering.
   public var backgroundOpacity: Double {
     get { storedBackgroundOpacity }
-    set { storedBackgroundOpacity = Self.clamp(newValue) }
+    set { storedBackgroundOpacity = Self.clamp(newValue, invalidValue: 1) }
+  }
+
+  /// Requested window-background blur as a stable unit interval. It has no
+  /// renderer effect; the AppKit window layer maps it to a native blur radius.
+  public var backgroundBlur: Double {
+    get { storedBackgroundBlur }
+    set { storedBackgroundBlur = Self.clamp(newValue, invalidValue: 0) }
   }
 
   public var applyToExplicitCellBackgrounds: Bool
@@ -47,19 +55,21 @@ public struct TerminalTransparencyConfiguration: Equatable, Sendable {
     backgroundOpacity: Double,
     applyToExplicitCellBackgrounds: Bool,
     backdropStyle: TerminalBackdropStyle,
-    backgroundImageScaling: TerminalBackgroundImageScaling = .default
+    backgroundImageScaling: TerminalBackgroundImageScaling = .default,
+    backgroundBlur: Double = 0
   ) {
-    self.storedBackgroundOpacity = Self.clamp(backgroundOpacity)
+    self.storedBackgroundOpacity = Self.clamp(backgroundOpacity, invalidValue: 1)
+    self.storedBackgroundBlur = Self.clamp(backgroundBlur, invalidValue: 0)
     self.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
     self.backdropStyle = backdropStyle
     self.backgroundImageScaling = backgroundImageScaling
   }
 
-  private static func clamp(_ opacity: Double) -> Double {
-    guard !opacity.isNaN else { return 1 }
-    if opacity <= 0 { return 0 }
-    if opacity >= 1 { return 1 }
-    return opacity
+  private static func clamp(_ value: Double, invalidValue: Double) -> Double {
+    guard !value.isNaN else { return invalidValue }
+    if value <= 0 { return 0 }
+    if value >= 1 { return 1 }
+    return value
   }
 }
 
@@ -72,6 +82,7 @@ public enum TerminalTransparencyForceOpaqueReason: String, Codable, Sendable {
 
 public struct EffectiveTerminalTransparency: Equatable, Sendable {
   public var backgroundOpacity: Double
+  public var backgroundBlur: Double
   public var applyToExplicitCellBackgrounds: Bool
   public var backdropStyle: TerminalBackdropStyle
   public var forceOpaqueReason: TerminalTransparencyForceOpaqueReason?
@@ -79,12 +90,14 @@ public struct EffectiveTerminalTransparency: Equatable, Sendable {
 
   public init(
     backgroundOpacity: Double,
+    backgroundBlur: Double = 0,
     applyToExplicitCellBackgrounds: Bool,
     backdropStyle: TerminalBackdropStyle,
     forceOpaqueReason: TerminalTransparencyForceOpaqueReason?,
     isSurfaceOpaque: Bool
   ) {
     self.backgroundOpacity = backgroundOpacity
+    self.backgroundBlur = backgroundBlur
     self.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
     self.backdropStyle = backdropStyle
     self.forceOpaqueReason = forceOpaqueReason
@@ -125,6 +138,7 @@ public enum TerminalTransparencyPolicy {
     if let forceOpaqueReason {
       return EffectiveTerminalTransparency(
         backgroundOpacity: 1,
+        backgroundBlur: 0,
         applyToExplicitCellBackgrounds: requested.applyToExplicitCellBackgrounds,
         backdropStyle: .none,
         forceOpaqueReason: forceOpaqueReason,
@@ -133,21 +147,32 @@ public enum TerminalTransparencyPolicy {
 
     let backgroundOpacity = requested.backgroundOpacity
     let backdropStyle: TerminalBackdropStyle
+    let backgroundBlur: Double
     if backgroundOpacity == 1 {
       backdropStyle = .none
+      backgroundBlur = 0
     } else {
       switch requested.backdropStyle {
       case .none:
         backdropStyle = .none
+        backgroundBlur = 0
       case .systemBlur:
-        backdropStyle = supportsBehindWindowBlur && !headless ? .systemBlur : .none
+        if supportsBehindWindowBlur && !headless {
+          backdropStyle = .systemBlur
+          backgroundBlur = requested.backgroundBlur
+        } else {
+          backdropStyle = .none
+          backgroundBlur = 0
+        }
       case .image:
         backdropStyle = !headless && backgroundImageAvailability == .available ? .image : .none
+        backgroundBlur = 0
       }
     }
 
     return EffectiveTerminalTransparency(
       backgroundOpacity: backgroundOpacity,
+      backgroundBlur: backgroundBlur,
       applyToExplicitCellBackgrounds: requested.applyToExplicitCellBackgrounds,
       backdropStyle: backdropStyle,
       forceOpaqueReason: nil,

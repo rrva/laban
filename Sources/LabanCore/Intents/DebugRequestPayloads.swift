@@ -172,17 +172,20 @@ public struct SetBackgroundTransparencyActionRequest: Codable, Sendable, Equatab
 {
   public var action: String?
   public var opacity: Double
+  public var blur: Double?
   public var applyToExplicitCellBackgrounds: Bool
   public var backdropStyle: TerminalBackdropStyle?
 
   public init(
     action: String? = "setBackgroundTransparency",
     opacity: Double,
+    blur: Double? = nil,
     applyToExplicitCellBackgrounds: Bool,
     backdropStyle: TerminalBackdropStyle? = nil
   ) {
     self.action = action
     self.opacity = opacity
+    self.blur = blur
     self.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
     self.backdropStyle = backdropStyle
   }
@@ -193,6 +196,7 @@ public struct SetBackgroundTransparencyActionRequest: Codable, Sendable, Equatab
         "action": .string(
           enumValues: nil, const: "setBackgroundTransparency", format: nil, pattern: nil),
         "opacity": .number(min: 0, max: 1),
+        "blur": .optional(.number(min: 0, max: 1)),
         "applyToExplicitCellBackgrounds": .boolean,
         "backdropStyle": .string(
           enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
@@ -382,6 +386,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
   private enum CodingKeys: String, CodingKey {
     case requestedOpacity
     case effectiveOpacity
+    case requestedBlur
+    case effectiveBlur
     case requestedBackdropStyle
     case effectiveBackdropStyle
     case backgroundImageScaling
@@ -408,6 +414,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     case effectiveAppearance
     case backdropSubviewCount
     case backdropSubviewKind
+    case windowBlurAvailable
+    case windowBlurRadius
     case systemReduceTransparency
     case reduceTransparencyOverride
     case effectiveReduceTransparency
@@ -421,6 +429,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
 
   public var requestedOpacity: Double
   public var effectiveOpacity: Double
+  public var requestedBlur: Double
+  public var effectiveBlur: Double
   public var requestedBackdropStyle: String
   public var effectiveBackdropStyle: String
   public var backgroundImageScaling: String
@@ -447,6 +457,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
   public var effectiveAppearance: String
   public var backdropSubviewCount: Int
   public var backdropSubviewKind: String
+  public var windowBlurAvailable: Bool
+  public var windowBlurRadius: Int
   public var systemReduceTransparency: Bool
   public var reduceTransparencyOverride: Bool?
   public var effectiveReduceTransparency: Bool
@@ -460,6 +472,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
   public init(
     requestedOpacity: Double,
     effectiveOpacity: Double,
+    requestedBlur: Double,
+    effectiveBlur: Double,
     requestedBackdropStyle: String,
     effectiveBackdropStyle: String,
     backgroundImageScaling: String,
@@ -486,6 +500,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     effectiveAppearance: String,
     backdropSubviewCount: Int,
     backdropSubviewKind: String,
+    windowBlurAvailable: Bool,
+    windowBlurRadius: Int,
     systemReduceTransparency: Bool,
     reduceTransparencyOverride: Bool?,
     effectiveReduceTransparency: Bool,
@@ -498,6 +514,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
   ) {
     self.requestedOpacity = requestedOpacity
     self.effectiveOpacity = effectiveOpacity
+    self.requestedBlur = requestedBlur
+    self.effectiveBlur = effectiveBlur
     self.requestedBackdropStyle = requestedBackdropStyle
     self.effectiveBackdropStyle = effectiveBackdropStyle
     self.backgroundImageScaling = backgroundImageScaling
@@ -524,6 +542,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     self.effectiveAppearance = effectiveAppearance
     self.backdropSubviewCount = backdropSubviewCount
     self.backdropSubviewKind = backdropSubviewKind
+    self.windowBlurAvailable = windowBlurAvailable
+    self.windowBlurRadius = windowBlurRadius
     self.systemReduceTransparency = systemReduceTransparency
     self.reduceTransparencyOverride = reduceTransparencyOverride
     self.effectiveReduceTransparency = effectiveReduceTransparency
@@ -539,6 +559,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(requestedOpacity, forKey: .requestedOpacity)
     try container.encode(effectiveOpacity, forKey: .effectiveOpacity)
+    try container.encode(requestedBlur, forKey: .requestedBlur)
+    try container.encode(effectiveBlur, forKey: .effectiveBlur)
     try container.encode(requestedBackdropStyle, forKey: .requestedBackdropStyle)
     try container.encode(effectiveBackdropStyle, forKey: .effectiveBackdropStyle)
     try container.encode(backgroundImageScaling, forKey: .backgroundImageScaling)
@@ -571,6 +593,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
     try container.encode(effectiveAppearance, forKey: .effectiveAppearance)
     try container.encode(backdropSubviewCount, forKey: .backdropSubviewCount)
     try container.encode(backdropSubviewKind, forKey: .backdropSubviewKind)
+    try container.encode(windowBlurAvailable, forKey: .windowBlurAvailable)
+    try container.encode(windowBlurRadius, forKey: .windowBlurRadius)
     try container.encode(systemReduceTransparency, forKey: .systemReduceTransparency)
     // The reset state is observable evidence, not an absent projection field.
     // Encode nil as JSON null so clients can distinguish "system value" from
@@ -590,6 +614,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
       [
         "requestedOpacity": .number(min: 0, max: 1),
         "effectiveOpacity": .number(min: 0, max: 1),
+        "requestedBlur": .number(min: 0, max: 1),
+        "effectiveBlur": .number(min: 0, max: 1),
         "requestedBackdropStyle": .string(
           enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
           pattern: nil),
@@ -640,6 +666,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
         "backdropSubviewKind": .string(
           enumValues: TerminalBackdropStyle.allCases.map(\.rawValue), const: nil, format: nil,
           pattern: nil),
+        "windowBlurAvailable": .boolean,
+        "windowBlurRadius": .integer(min: 0, max: 100),
         "systemReduceTransparency": .boolean,
         "reduceTransparencyOverride": .optional(.boolean),
         "effectiveReduceTransparency": .boolean,
@@ -651,7 +679,8 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
         "presentIntervalDeadlineMisses": .integer(min: 0, max: nil),
       ],
       required: [
-        "requestedOpacity", "effectiveOpacity", "requestedBackdropStyle",
+        "requestedOpacity", "effectiveOpacity", "requestedBlur", "effectiveBlur",
+        "requestedBackdropStyle",
         "effectiveBackdropStyle", "backgroundImageScaling", "backgroundImageState",
         "backgroundImageIdentifier", "backgroundImagePixelWidth", "backgroundImagePixelHeight",
         "backgroundImageContentDigest", "backgroundImageImportCount", "backgroundImageDecodeCount",
@@ -660,7 +689,7 @@ public struct TerminalTransparencyDebugResponse: Codable, Sendable, Equatable,
         "effectiveGlyphAntialiasing", "snapshotExplicitBackgroundCapability",
         "configuredRenderer", "effectiveRenderer", "themeName", "themeIsDark",
         "effectiveAppearance", "backdropSubviewCount",
-        "backdropSubviewKind",
+        "backdropSubviewKind", "windowBlurAvailable", "windowBlurRadius",
         "systemReduceTransparency", "effectiveReduceTransparency", "nativeFullscreen",
         "accessibilityRefreshCount", "effectiveTransparencyApplyCount",
         "transparencyRenderWakeCount", "rendererPresentCount",

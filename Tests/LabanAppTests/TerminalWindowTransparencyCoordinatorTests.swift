@@ -151,15 +151,86 @@ final class TerminalWindowTransparencyCoordinatorTests: XCTestCase {
     XCTAssertFalse(window.isOpaque)
   }
 
-  func testSystemBlurChildFollowsAllTemporaryForceOpaqueTransitions() throws {
+  func testPrivateSystemBlurRadiusFollowsAllTemporaryForceOpaqueTransitions() throws {
     let defaults = try makeDefaults()
     let notifications = NotificationCenter()
     let requested = TerminalTransparencyConfiguration(
       backgroundOpacity: 0.72,
       applyToExplicitCellBackgrounds: false,
-      backdropStyle: .systemBlur)
+      backdropStyle: .systemBlur,
+      backgroundBlur: 0.20)
     TerminalTransparencySettings.setRequestedConfiguration(
       requested,
+      defaults: defaults,
+      notificationCenter: notifications)
+    let view = try makeView()
+    let window = NSWindow()
+    let container = NSView(frame: view.bounds)
+    let host = TerminalBackgroundEffectHost(frame: .zero)
+    host.install(in: container, terminalLeadingInset: SidebarLayout.defaultWidth)
+    var blurCalls: [Int32] = []
+    let blurController = TerminalWindowBlurController { _, radius in
+      blurCalls.append(radius)
+      return 0
+    }
+    let coordinator = TerminalWindowTransparencyCoordinator(
+      window: window,
+      terminalView: view,
+      defaults: defaults,
+      notificationCenter: notifications,
+      reduceTransparency: false,
+      snapshotBackgroundCapability: .supported,
+      backgroundEffectHost: host,
+      windowBlurController: blurController)
+
+    assertActivePrivateSystemBlur(coordinator: coordinator, host: host, radius: 20)
+
+    notifications.post(name: NSWindow.didEnterFullScreenNotification, object: window)
+    assertInactivePrivateSystemBlur(
+      coordinator: coordinator,
+      host: host,
+      forceOpaqueReason: .nativeFullscreen)
+
+    notifications.post(name: NSWindow.didExitFullScreenNotification, object: window)
+    assertActivePrivateSystemBlur(coordinator: coordinator, host: host, radius: 20)
+
+    coordinator.updateReduceTransparency(true)
+    assertInactivePrivateSystemBlur(
+      coordinator: coordinator,
+      host: host,
+      forceOpaqueReason: .reduceTransparency)
+
+    coordinator.updateReduceTransparency(false)
+    assertActivePrivateSystemBlur(coordinator: coordinator, host: host, radius: 20)
+
+    coordinator.updateSnapshotBackgroundCapability(.legacy)
+    assertInactivePrivateSystemBlur(
+      coordinator: coordinator,
+      host: host,
+      forceOpaqueReason: .legacySnapshotWriter)
+
+    coordinator.updateSnapshotBackgroundCapability(.supported)
+    assertActivePrivateSystemBlur(coordinator: coordinator, host: host, radius: 20)
+
+    var updated = requested
+    updated.backgroundBlur = 0.21
+    TerminalTransparencySettings.setRequestedConfiguration(
+      updated,
+      defaults: defaults,
+      notificationCenter: notifications)
+    assertActivePrivateSystemBlur(coordinator: coordinator, host: host, radius: 21)
+    XCTAssertEqual(blurCalls, [20, 0, 20, 0, 20, 0, 20, 21])
+  }
+
+  func testUnavailablePrivateBlurUsesPublicMaterialFallback() throws {
+    let defaults = try makeDefaults()
+    let notifications = NotificationCenter()
+    TerminalTransparencySettings.setRequestedConfiguration(
+      TerminalTransparencyConfiguration(
+        backgroundOpacity: 0.72,
+        applyToExplicitCellBackgrounds: false,
+        backdropStyle: .systemBlur,
+        backgroundBlur: 0.20),
       defaults: defaults,
       notificationCenter: notifications)
     let view = try makeView()
@@ -174,42 +245,18 @@ final class TerminalWindowTransparencyCoordinatorTests: XCTestCase {
       notificationCenter: notifications,
       reduceTransparency: false,
       snapshotBackgroundCapability: .supported,
-      backgroundEffectHost: host)
+      backgroundEffectHost: host,
+      windowBlurController: TerminalWindowBlurController(setBlurRadius: nil))
 
     assertActiveSystemBlur(coordinator: coordinator, host: host)
-
-    notifications.post(name: NSWindow.didEnterFullScreenNotification, object: window)
-    assertInactiveSystemBlur(
-      coordinator: coordinator,
-      host: host,
-      forceOpaqueReason: .nativeFullscreen)
-
-    notifications.post(name: NSWindow.didExitFullScreenNotification, object: window)
-    assertActiveSystemBlur(coordinator: coordinator, host: host)
+    XCTAssertFalse(coordinator.status.windowBlurAvailable)
+    XCTAssertEqual(coordinator.status.windowBlurRadius, 0)
 
     coordinator.updateReduceTransparency(true)
     assertInactiveSystemBlur(
       coordinator: coordinator,
       host: host,
       forceOpaqueReason: .reduceTransparency)
-
-    coordinator.updateReduceTransparency(false)
-    assertActiveSystemBlur(coordinator: coordinator, host: host)
-
-    coordinator.updateSnapshotBackgroundCapability(.legacy)
-    assertInactiveSystemBlur(
-      coordinator: coordinator,
-      host: host,
-      forceOpaqueReason: .legacySnapshotWriter)
-
-    coordinator.updateSnapshotBackgroundCapability(.supported)
-    assertActiveSystemBlur(coordinator: coordinator, host: host)
-
-    TerminalTransparencySettings.setRequestedConfiguration(
-      requested,
-      defaults: defaults,
-      notificationCenter: notifications)
-    assertActiveSystemBlur(coordinator: coordinator, host: host)
   }
 
   func testFullScreenForcesOpaqueThenRestoresRequestedValues() throws {
@@ -344,6 +391,40 @@ final class TerminalWindowTransparencyCoordinatorTests: XCTestCase {
     let suiteName = "TerminalWindowTransparencyCoordinatorTests-\(UUID().uuidString)"
     suiteNames.append(suiteName)
     return try XCTUnwrap(UserDefaults(suiteName: suiteName))
+  }
+
+  private func assertActivePrivateSystemBlur(
+    coordinator: TerminalWindowTransparencyCoordinator,
+    host: TerminalBackgroundEffectHost,
+    radius: Int,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    XCTAssertEqual(
+      coordinator.status.effective.backdropStyle, .systemBlur, file: file, line: line)
+    XCTAssertNil(coordinator.status.effective.forceOpaqueReason, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewCount, 0, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewKind, .none, file: file, line: line)
+    XCTAssertTrue(host.subviews.isEmpty, file: file, line: line)
+    XCTAssertTrue(coordinator.status.windowBlurAvailable, file: file, line: line)
+    XCTAssertEqual(coordinator.status.windowBlurRadius, radius, file: file, line: line)
+  }
+
+  private func assertInactivePrivateSystemBlur(
+    coordinator: TerminalWindowTransparencyCoordinator,
+    host: TerminalBackgroundEffectHost,
+    forceOpaqueReason: TerminalTransparencyForceOpaqueReason,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    XCTAssertEqual(coordinator.status.effective.backdropStyle, .none, file: file, line: line)
+    XCTAssertEqual(
+      coordinator.status.effective.forceOpaqueReason, forceOpaqueReason, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewCount, 0, file: file, line: line)
+    XCTAssertEqual(coordinator.status.backdropSubviewKind, .none, file: file, line: line)
+    XCTAssertTrue(host.subviews.isEmpty, file: file, line: line)
+    XCTAssertTrue(coordinator.status.windowBlurAvailable, file: file, line: line)
+    XCTAssertEqual(coordinator.status.windowBlurRadius, 0, file: file, line: line)
   }
 
   private func assertActiveSystemBlur(

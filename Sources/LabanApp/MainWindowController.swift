@@ -72,6 +72,8 @@ final class MainWindowController: NSWindowController {
     return TerminalTransparencyDebugResponse(
       requestedOpacity: status.requested.backgroundOpacity,
       effectiveOpacity: status.effective.backgroundOpacity,
+      requestedBlur: status.requested.backgroundBlur,
+      effectiveBlur: status.effective.backgroundBlur,
       requestedBackdropStyle: status.requested.backdropStyle.rawValue,
       effectiveBackdropStyle: status.effective.backdropStyle.rawValue,
       backgroundImageScaling: status.requested.backgroundImageScaling.rawValue,
@@ -98,6 +100,8 @@ final class MainWindowController: NSWindowController {
       effectiveAppearance: effectiveAppearance,
       backdropSubviewCount: status.backdropSubviewCount,
       backdropSubviewKind: status.backdropSubviewKind.rawValue,
+      windowBlurAvailable: status.windowBlurAvailable,
+      windowBlurRadius: status.windowBlurRadius,
       systemReduceTransparency:
         NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
       reduceTransparencyOverride: debugReduceTransparencyOverride,
@@ -112,12 +116,16 @@ final class MainWindowController: NSWindowController {
 
   func setBackgroundTransparency(
     opacity: Double,
+    blur: Double?,
     applyToExplicitCellBackgrounds: Bool,
     backdropStyle: TerminalBackdropStyle?
   ) {
     guard let transparencyCoordinator else { return }
     var requested = transparencyCoordinator.status.requested
     requested.backgroundOpacity = opacity
+    if let blur {
+      requested.backgroundBlur = blur
+    }
     requested.applyToExplicitCellBackgrounds = applyToExplicitCellBackgrounds
     if let backdropStyle {
       requested.backdropStyle = backdropStyle
@@ -640,6 +648,7 @@ final class MainWindowController: NSWindowController {
       backgroundEffectHost: backgroundEffectHost)
     window.center()
     window.makeKeyAndOrderFront(nil)
+    transparencyCoordinator.reapplyWindowEffects()
 
     // "+" new-tab button as a titlebar accessory next to the traffic
     // lights. Frees a full row from the sidebar without sacrificing
@@ -689,9 +698,10 @@ final class MainWindowController: NSWindowController {
       state: { [weak controller] in
         controller?.terminalTransparencyDebugResponse()
       },
-      setBackground: { [weak controller] opacity, cells, backdropStyle in
+      setBackground: { [weak controller] opacity, blur, cells, backdropStyle in
         controller?.setBackgroundTransparency(
           opacity: opacity,
+          blur: blur,
           applyToExplicitCellBackgrounds: cells,
           backdropStyle: backdropStyle)
       },

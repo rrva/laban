@@ -40,6 +40,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let themeImportErrorPresenter: ThemeImportErrorPresenter
 
   private let themePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  /// Per-appearance selectors shown instead of `themePopUp` while Follow
+  /// System Appearance is on, so both pinned variants are visible at once.
+  private let darkThemePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let lightThemePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let themeImportButton = NSButton(
     title: L10n.tr("Import Theme…"), target: nil, action: nil)
   private let themeRemoveButton = NSButton(
@@ -57,6 +61,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let backgroundOpacitySlider = NSSlider(
     value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
   private let backgroundOpacityValueLabel = NSTextField(labelWithString: "100%")
+  private let backgroundBlurSlider = NSSlider(
+    value: 0, minValue: 0, maxValue: 100, target: nil, action: nil)
+  private let backgroundBlurValueLabel = NSTextField(labelWithString: "0%")
   private let explicitCellBackgroundOpacityCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Apply opacity to colored cell backgrounds"),
     target: nil,
@@ -134,6 +141,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   /// Theme index (into `themeController.orderedThemes`) behind each popup row,
   /// or -1 for the dark/light separator. Maps a popup selection back to a theme.
   private var themeRowIndices: [Int] = []
+  /// Same mapping for the per-appearance popups; each lists only themes of its
+  /// own brightness, so no separator rows exist here.
+  private var darkThemeRowIndices: [Int] = []
+  private var lightThemeRowIndices: [Int] = []
+  /// Appearance-grid rows for the single theme popup and the two per-appearance
+  /// popups; exactly one shape is visible depending on Follow System Appearance.
+  private var singleThemeGridRow: NSGridRow?
+  private var darkThemeGridRow: NSGridRow?
+  private var lightThemeGridRow: NSGridRow?
   private let rendererOptions: [RendererSelection] = RendererSelection.allCases
   private let backendOptions: [TerminalSessionBackend] = [.inProcess, .labpty, .laband]
   private let identityOptions: [TerminalIdentity] = [.laban, .ghosttyCompat]
@@ -267,6 +283,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     themePopUp.target = self
     themePopUp.action = #selector(themeChanged(_:))
+    darkThemePopUp.target = self
+    darkThemePopUp.action = #selector(darkThemeChanged(_:))
+    lightThemePopUp.target = self
+    lightThemePopUp.action = #selector(lightThemeChanged(_:))
     populateThemePopUp()
 
     themeImportButton.target = self
@@ -361,6 +381,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     backgroundOpacityValueLabel.alignment = .right
     backgroundOpacityValueLabel.widthAnchor.constraint(equalToConstant: 42).isActive = true
 
+    backgroundBlurSlider.isContinuous = true
+    backgroundBlurSlider.numberOfTickMarks = 11
+    backgroundBlurSlider.allowsTickMarkValuesOnly = false
+    backgroundBlurSlider.target = self
+    backgroundBlurSlider.action = #selector(backgroundBlurChanged(_:))
+    backgroundBlurSlider.toolTip = L10n.tr(
+      "Choose how strongly macOS blurs content behind the terminal. 0% shows the content directly; 100% applies the strongest available window blur."
+    )
+    backgroundBlurSlider.setAccessibilityLabel(L10n.tr("Background blur"))
+    backgroundBlurSlider.widthAnchor.constraint(equalToConstant: 190).isActive = true
+    backgroundBlurValueLabel.font = .monospacedDigitSystemFont(
+      ofSize: NSFont.smallSystemFontSize,
+      weight: .regular)
+    backgroundBlurValueLabel.alignment = .right
+    backgroundBlurValueLabel.widthAnchor.constraint(equalToConstant: 42).isActive = true
+
     explicitCellBackgroundOpacityCheckbox.target = self
     explicitCellBackgroundOpacityCheckbox.action =
       #selector(explicitCellBackgroundOpacityChanged(_:))
@@ -375,6 +411,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     backgroundOpacityRow.orientation = .horizontal
     backgroundOpacityRow.spacing = 8
     backgroundOpacityRow.alignment = .firstBaseline
+
+    let backgroundBlurRow = NSStackView(views: [
+      backgroundBlurSlider,
+      backgroundBlurValueLabel,
+    ])
+    backgroundBlurRow.orientation = .horizontal
+    backgroundBlurRow.spacing = 8
+    backgroundBlurRow.alignment = .firstBaseline
 
     fontLabel.lineBreakMode = .byTruncatingTail
     let changeFontButton = NSButton(
@@ -606,6 +650,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     let appearanceGrid = makeSettingsGrid([
       [makeLabel(L10n.tr("Theme:")), themePopUp],
+      [makeLabel(L10n.tr("Dark theme:")), darkThemePopUp],
+      [makeLabel(L10n.tr("Light theme:")), lightThemePopUp],
       [NSGridCell.emptyContentView, themeActionsRow],
       [NSGridCell.emptyContentView, followSystemCheckbox],
       [makeLabel(L10n.tr("Preset:")), backgroundPresetPopUp],
@@ -614,6 +660,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [NSGridCell.emptyContentView, backgroundImageActionsRow],
       [makeLabel(L10n.tr("Image scaling:")), backgroundImageScalingPopUp],
       [makeLabel(L10n.tr("Background opacity:")), backgroundOpacityRow],
+      [makeLabel(L10n.tr("Background blur:")), backgroundBlurRow],
       [NSGridCell.emptyContentView, explicitCellBackgroundOpacityCheckbox],
       [makeLabel(L10n.tr("Font:")), fontRow],
       [makeLabel(L10n.tr("CJK font:")), cjkFontRow],
@@ -621,6 +668,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel(L10n.tr("Cursor:")), cursorStylePopUp],
       [NSGridCell.emptyContentView, blinkCheckbox],
     ])
+    singleThemeGridRow = appearanceGrid.row(at: 0)
+    darkThemeGridRow = appearanceGrid.row(at: 1)
+    lightThemeGridRow = appearanceGrid.row(at: 2)
     let terminalGrid = makeSettingsGrid([
       [makeLabel(L10n.tr("Scroll:")), scrollModePopUp],
       [makeLabel(L10n.tr("Unicode width:")), graphemeWidthPopUp],
@@ -678,6 +728,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private func populateThemePopUp() {
     themeRowIndices.removeAll()
     themePopUp.removeAllItems()
+    darkThemeRowIndices.removeAll()
+    darkThemePopUp.removeAllItems()
+    lightThemeRowIndices.removeAll()
+    lightThemePopUp.removeAllItems()
     let themes = themeController.orderedThemes
     for (i, theme) in themes.enumerated() {
       themePopUp.addItem(withTitle: theme.name)
@@ -687,6 +741,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       if theme.isDark, i + 1 < themes.count, !themes[i + 1].isDark {
         themePopUp.menu?.addItem(.separator())
         themeRowIndices.append(-1)
+      }
+      if theme.isDark {
+        darkThemePopUp.addItem(withTitle: theme.name)
+        darkThemeRowIndices.append(i)
+      } else {
+        lightThemePopUp.addItem(withTitle: theme.name)
+        lightThemeRowIndices.append(i)
       }
     }
   }
@@ -855,22 +916,32 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private func refresh() {
     let rendererSelection = rendererController.currentSelection
     let vectorAA = rendererSelection == .vectorGlyph || rendererSelection == .slugGlyph
+    let followsSystem = themeController.followsSystemAppearance
     let current = themeController.currentThemeName
     if let row = themeRowIndices.firstIndex(where: {
       $0 >= 0 && themeController.orderedThemes[$0].name == current
     }) {
       themePopUp.selectItem(at: row)
     }
-    followSystemCheckbox.state = themeController.followsSystemAppearance ? .on : .off
+    if let row = darkThemeRowIndices.firstIndex(where: {
+      $0 >= 0 && themeController.orderedThemes[$0].name == themeController.darkVariantName
+    }) {
+      darkThemePopUp.selectItem(at: row)
+    }
+    if let row = lightThemeRowIndices.firstIndex(where: {
+      $0 >= 0 && themeController.orderedThemes[$0].name == themeController.lightVariantName
+    }) {
+      lightThemePopUp.selectItem(at: row)
+    }
+    // While following the system, both pinned variants are editable at once;
+    // the single combined popup only makes sense for a manual pick.
+    singleThemeGridRow?.isHidden = followsSystem
+    darkThemeGridRow?.isHidden = !followsSystem
+    lightThemeGridRow?.isHidden = !followsSystem
+    followSystemCheckbox.state = followsSystem ? .on : .off
     let importedNames = Set((try? themeStore.allManagedThemes().map(\.name)) ?? [])
-    let selectedThemeName: String? = {
-      let row = themePopUp.indexOfSelectedItem
-      guard row >= 0, row < themeRowIndices.count else { return nil }
-      let index = themeRowIndices[row]
-      guard index >= 0, index < themeController.orderedThemes.count else { return nil }
-      return themeController.orderedThemes[index].name
-    }()
-    themeRemoveButton.isEnabled = selectedThemeName.map(importedNames.contains) ?? false
+    themeRemoveButton.isEnabled = themeRemovalCandidates(followsSystem: followsSystem)
+      .contains { $0.map(importedNames.contains) ?? false }
     refreshTransparencyControls()
     fontLabel.stringValue = currentFontDisplayName()
     refreshCJKFontControls()
@@ -939,6 +1010,45 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     refresh()
   }
 
+  @objc private func darkThemeChanged(_ sender: NSPopUpButton) {
+    pinVariant(from: sender, indices: darkThemeRowIndices)
+  }
+
+  @objc private func lightThemeChanged(_ sender: NSPopUpButton) {
+    pinVariant(from: sender, indices: lightThemeRowIndices)
+  }
+
+  /// Per-appearance picks pin the dark/light variant and stay in follow-system
+  /// mode; the controller applies immediately only when the system is already
+  /// in that appearance.
+  private func pinVariant(from popup: NSPopUpButton, indices: [Int]) {
+    let row = popup.indexOfSelectedItem
+    guard row >= 0, row < indices.count else { return }
+    themeController.pinVariant(at: indices[row])
+    refresh()
+  }
+
+  /// Names currently selected in the visible theme popup(s), in removal
+  /// priority order. Following the system exposes both variants, so Remove can
+  /// target either one.
+  private func themeRemovalCandidates(followsSystem: Bool) -> [String?] {
+    if followsSystem {
+      return [
+        selectedThemeName(in: darkThemePopUp, indices: darkThemeRowIndices),
+        selectedThemeName(in: lightThemePopUp, indices: lightThemeRowIndices),
+      ]
+    }
+    return [selectedThemeName(in: themePopUp, indices: themeRowIndices)]
+  }
+
+  private func selectedThemeName(in popup: NSPopUpButton, indices: [Int]) -> String? {
+    let row = popup.indexOfSelectedItem
+    guard row >= 0, row < indices.count else { return nil }
+    let index = indices[row]
+    guard index >= 0, index < themeController.orderedThemes.count else { return nil }
+    return themeController.orderedThemes[index].name
+  }
+
   @objc private func followSystemChanged(_ sender: NSButton) {
     themeController.setFollowsSystem(sender.state == .on)
     refresh()
@@ -974,13 +1084,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   }
 
   @objc private func removeThemeClicked(_ sender: Any?) {
-    let row = themePopUp.indexOfSelectedItem
-    guard row >= 0, row < themeRowIndices.count else { return }
-    let themeIndex = themeRowIndices[row]
-    guard themeIndex >= 0 else { return }
-    let theme = themeController.orderedThemes[themeIndex]
+    let importedNames = Set((try? themeStore.allManagedThemes().map(\.name)) ?? [])
+    guard
+      let name = themeRemovalCandidates(
+        followsSystem: themeController.followsSystemAppearance
+      )
+      .compactMap({ $0 })
+      .first(where: importedNames.contains)
+    else { return }
     do {
-      try themeStore.removeManagedTheme(named: theme.name)
+      try themeStore.removeManagedTheme(named: name)
     } catch {
       themeImportErrorPresenter(
         window,
@@ -1002,7 +1115,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       refreshTransparencyControls()
       return
     }
-    transparencyPersistence.applyPreset(preset)
+    transparencyPersistence.applyPreset(preset, themeIsDark: Theme.current.isDark)
     refreshTransparencyControls()
   }
 
@@ -1064,6 +1177,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     selectBackgroundPreset(.custom)
   }
 
+  @objc private func backgroundBlurChanged(_ sender: NSSlider) {
+    let percent = min(100, max(0, Int(sender.doubleValue.rounded())))
+    sender.doubleValue = Double(percent)
+    updateBackgroundBlurValueLabel(percent: percent)
+    transparencyPersistence.scheduleBackgroundBlur(Double(percent) / 100)
+    selectBackgroundPreset(.custom)
+  }
+
   @objc private func explicitCellBackgroundOpacityChanged(_ sender: NSButton) {
     transparencyPersistence.updateRequestedConfiguration { configuration in
       configuration.applyToExplicitCellBackgrounds = sender.state == .on
@@ -1094,11 +1215,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let requested = TerminalTransparencySettings.requestedSettings(
       defaults: transparencyDefaults)
     let configuration = requested.configuration
-    let percent = min(100, max(0, Int((configuration.backgroundOpacity * 100).rounded())))
-    backgroundOpacitySlider.doubleValue = Double(percent)
+    let opacityPercent = min(
+      100, max(0, Int((configuration.backgroundOpacity * 100).rounded())))
+    let blurPercent = min(
+      100, max(0, Int((configuration.backgroundBlur * 100).rounded())))
+    backgroundOpacitySlider.doubleValue = Double(opacityPercent)
+    backgroundBlurSlider.doubleValue = Double(blurPercent)
     explicitCellBackgroundOpacityCheckbox.state =
       configuration.applyToExplicitCellBackgrounds ? .on : .off
-    updateBackgroundOpacityValueLabel(percent: percent)
+    updateBackgroundOpacityValueLabel(percent: opacityPercent)
+    updateBackgroundBlurValueLabel(percent: blurPercent)
 
     selectBackgroundPreset(TerminalTransparencyPreset.derive(from: configuration))
     if let row = backgroundSourceOptions.firstIndex(of: configuration.backdropStyle) {
@@ -1187,6 +1313,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         Int64(percent)))
   }
 
+  private func updateBackgroundBlurValueLabel(percent: Int) {
+    backgroundBlurValueLabel.stringValue = "\(percent)%"
+    backgroundBlurSlider.setAccessibilityValueDescription(
+      String(
+        format: L10n.tr("Background blur: %lld percent"),
+        Int64(percent)))
+  }
+
   var transparencyControlsForTesting:
     (
       slider: NSSlider,
@@ -1195,6 +1329,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     )
   {
     (backgroundOpacitySlider, backgroundOpacityValueLabel, explicitCellBackgroundOpacityCheckbox)
+  }
+
+  var backgroundBlurControlsForTesting: (slider: NSSlider, valueLabel: NSTextField) {
+    (backgroundBlurSlider, backgroundBlurValueLabel)
   }
 
   var backgroundSourceControlsForTesting:

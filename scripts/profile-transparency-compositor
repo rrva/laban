@@ -795,6 +795,8 @@ def validate_scenario_state(
     expected: dict[str, Any] = {
         "requestedOpacity": opacity,
         "effectiveOpacity": opacity,
+        "requestedBlur": 0,
+        "effectiveBlur": 0,
         "requestedBackdropStyle": source,
         "effectiveBackdropStyle": effective_source,
         "backgroundImageScaling": scaling,
@@ -802,8 +804,10 @@ def validate_scenario_state(
         "applyToExplicitCellBackgrounds": False,
         "forceOpaqueReason": None,
         "surfaceOpaque": opacity == 1.0,
-        "backdropSubviewCount": 0 if effective_source == "none" else 1,
-        "backdropSubviewKind": effective_source,
+        "backdropSubviewCount": 1 if effective_source == "image" else 0,
+        "backdropSubviewKind": "image" if effective_source == "image" else "none",
+        "windowBlurAvailable": True,
+        "windowBlurRadius": 0,
     }
     mismatches = [field for field, value in expected.items() if state.get(field) != value]
     if mismatches:
@@ -848,6 +852,7 @@ def configure_scenario(
     client.action(
         "setBackgroundTransparency",
         opacity=opacity,
+        blur=0,
         applyToExplicitCellBackgrounds=False,
     )
     client.action("setBackgroundImageScaling", scaling=scaling)
@@ -1592,18 +1597,23 @@ def self_test() -> None:
         fail("self-test accepted a missing image lifecycle counter")
     scenarios: dict[str, list[dict[str, Any]]] = {}
     for name, opacity, source, scaling, animated in SCENARIOS:
+        effective_source = "none" if opacity == 1.0 else source
         state = {
             "requestedOpacity": opacity,
             "effectiveOpacity": opacity,
+            "requestedBlur": 0,
+            "effectiveBlur": 0,
             "requestedBackdropStyle": source,
-            "effectiveBackdropStyle": "none" if opacity == 1.0 else source,
+            "effectiveBackdropStyle": effective_source,
             "backgroundImageScaling": scaling,
             "backgroundImageState": "available",
             "applyToExplicitCellBackgrounds": False,
             "forceOpaqueReason": None,
             "surfaceOpaque": opacity == 1.0,
-            "backdropSubviewCount": 0 if opacity == 1.0 or source == "none" else 1,
-            "backdropSubviewKind": "none" if opacity == 1.0 else source,
+            "backdropSubviewCount": 1 if effective_source == "image" else 0,
+            "backdropSubviewKind": "image" if effective_source == "image" else "none",
+            "windowBlurAvailable": True,
+            "windowBlurRadius": 0,
             "backgroundImageIdentifier": "image-self-test.png",
             "backgroundImagePixelWidth": 1920,
             "backgroundImagePixelHeight": 1080,

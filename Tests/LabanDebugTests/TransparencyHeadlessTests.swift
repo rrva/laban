@@ -82,8 +82,16 @@ final class TransparencyHeadlessTests: XCTestCase {
   }
 
   func testHeadlessPreservesRequestedBlurAndLegacyActionOmission() throws {
-    let runtime = try makeRuntime(opacity: 0.7, cells: false, effect: .systemBlur)
+    let runtime = try makeRuntime(
+      opacity: 0.7,
+      cells: false,
+      effect: .systemBlur,
+      blur: 0.2)
     var state = try decode(runtime.transparencyState())
+    XCTAssertEqual(state.requestedBlur, 0.2, accuracy: 0.0001)
+    XCTAssertEqual(state.effectiveBlur, 0, accuracy: 0.0001)
+    XCTAssertEqual(state.windowBlurRadius, 0)
+    XCTAssertFalse(state.windowBlurAvailable)
     XCTAssertEqual(state.requestedBackdropStyle, "systemBlur")
     XCTAssertEqual(state.effectiveBackdropStyle, "none")
     XCTAssertEqual(state.backdropSubviewCount, 0)
@@ -94,9 +102,20 @@ final class TransparencyHeadlessTests: XCTestCase {
           .utf8))
     XCTAssertEqual(legacyResponse.status, 200)
     state = try decode(runtime.transparencyState())
+    XCTAssertEqual(state.requestedBlur, 0.2, accuracy: 0.0001)
+    XCTAssertEqual(state.effectiveBlur, 0, accuracy: 0.0001)
     XCTAssertEqual(state.requestedBackdropStyle, "systemBlur")
     XCTAssertEqual(state.effectiveBackdropStyle, "none")
     XCTAssertEqual(state.backdropSubviewCount, 0)
+
+    let blurResponse = runtime.applyAction(
+      Data(
+        #"{"action":"setBackgroundTransparency","opacity":0.6,"blur":0.3,"applyToExplicitCellBackgrounds":true}"#
+          .utf8))
+    XCTAssertEqual(blurResponse.status, 200)
+    state = try decode(runtime.transparencyState())
+    XCTAssertEqual(state.requestedBlur, 0.3, accuracy: 0.0001)
+    XCTAssertEqual(state.effectiveBlur, 0, accuracy: 0.0001)
 
     let disableResponse = runtime.applyAction(
       Data(
@@ -236,6 +255,7 @@ final class TransparencyHeadlessTests: XCTestCase {
     opacity: Double,
     cells: Bool,
     effect: TerminalBackdropStyle = .none,
+    blur: Double = 0,
     scaling: TerminalBackgroundImageScaling = .default,
     fixtureRootURL: URL? = nil,
     artifactsURL: URL? = nil
@@ -252,6 +272,7 @@ final class TransparencyHeadlessTests: XCTestCase {
       sessionMode: .fixture,
       rendererSelection: .software,
       backgroundOpacity: opacity,
+      backgroundBlur: blur,
       backgroundEffect: effect,
       backgroundImageScaling: scaling,
       applyTransparencyToExplicitCellBackgrounds: cells,

@@ -314,17 +314,56 @@ final class TerminalTransparencyPolicyTests: XCTestCase {
     XCTAssertFalse(supported.isSurfaceOpaque)
   }
 
+  func testConfigurationClampsBlurAtInitializationAndMutation() {
+    XCTAssertEqual(configuration(opacity: 0.8, blur: -0.25).backgroundBlur, 0)
+    XCTAssertEqual(configuration(opacity: 0.8, blur: 1.25).backgroundBlur, 1)
+    XCTAssertEqual(configuration(opacity: 0.8, blur: .nan).backgroundBlur, 0)
+
+    var requested = configuration(opacity: 0.8, blur: 0.2)
+    requested.backgroundBlur = 2
+    XCTAssertEqual(requested.backgroundBlur, 1)
+    requested.backgroundBlur = -2
+    XCTAssertEqual(requested.backgroundBlur, 0)
+  }
+
+  func testEffectiveBlurAppliesOnlyToVisibleSystemBlur() {
+    let requested = configuration(
+      opacity: 0.8,
+      backdropStyle: .systemBlur,
+      blur: 0.2)
+
+    let blurred = resolve(requested, supportsBehindWindowBlur: true)
+    XCTAssertEqual(blurred.backdropStyle, .systemBlur)
+    XCTAssertEqual(blurred.backgroundBlur, 0.2)
+
+    for effective in [
+      resolve(requested, supportsBehindWindowBlur: false),
+      resolve(requested, supportsBehindWindowBlur: true, headless: true),
+      resolve(requested, reduceTransparency: true, supportsBehindWindowBlur: true),
+      resolve(
+        configuration(opacity: 1, backdropStyle: .systemBlur, blur: 0.2),
+        supportsBehindWindowBlur: true),
+      resolve(
+        configuration(opacity: 0.8, backdropStyle: .image, blur: 0.2),
+        backgroundImageAvailability: .available),
+    ] {
+      XCTAssertEqual(effective.backgroundBlur, 0)
+    }
+  }
+
   private func configuration(
     opacity: Double,
     applyToExplicitCellBackgrounds: Bool = false,
     backdropStyle: TerminalBackdropStyle = .none,
-    backgroundImageScaling: TerminalBackgroundImageScaling = .default
+    backgroundImageScaling: TerminalBackgroundImageScaling = .default,
+    blur: Double = 0
   ) -> TerminalTransparencyConfiguration {
     TerminalTransparencyConfiguration(
       backgroundOpacity: opacity,
       applyToExplicitCellBackgrounds: applyToExplicitCellBackgrounds,
       backdropStyle: backdropStyle,
-      backgroundImageScaling: backgroundImageScaling)
+      backgroundImageScaling: backgroundImageScaling,
+      backgroundBlur: blur)
   }
 
   private func resolve(

@@ -283,10 +283,138 @@ public enum Theme {
     ]
   )
 
+  /// Tokyo Night Storm — https://github.com/folke/tokyonight.nvim
+  /// Deep blue-violet canvas with high-luminance accents: at Frosted's 80%
+  /// canvas opacity the composed blur stays dark and saturated instead of
+  /// turning muddy, and the bright palette keeps its contrast over the
+  /// lightly blurred background.
+  public static let tokyoNightStorm = ThemeData(
+    name: "Tokyo Night Storm",
+    isDark: true,
+    bg0: 0x2428_3BFF, bg1: 0x292E_42FF, bg2: 0x4148_68FF,
+    fg0: 0xA9B1_D6FF, fg1: 0xC0CA_F5FF, dim0: 0x565F_89FF,
+    red: 0xF776_8EFF, blue: 0x7AA2_F7FF,
+    cursor: 0xC0CA_F5FF, selectionBg: 0x2E3C_6480,
+    ansi16: [
+      0x1D20_2FFF,  // 0  black
+      0xF776_8EFF,  // 1  red
+      0x9ECE_6AFF,  // 2  green
+      0xE0AF_68FF,  // 3  yellow
+      0x7AA2_F7FF,  // 4  blue
+      0xBB9A_F7FF,  // 5  magenta
+      0x7DCF_FFFF,  // 6  cyan
+      0xA9B1_D6FF,  // 7  white     (fg0)
+      0x4148_68FF,  // 8  bright black
+      0xFF89_9DFF,  // 9  bright red
+      0x9FE0_44FF,  // 10 bright green
+      0xFABA_4AFF,  // 11 bright yellow
+      0x8DB0_FFFF,  // 12 bright blue
+      0xC7A9_FFFF,  // 13 bright magenta
+      0xA4DA_FFFF,  // 14 bright cyan
+      0xC0CA_F5FF,  // 15 bright white (fg1)
+    ]
+  )
+
+  /// Rosé Pine — https://rosepinetheme.com (muted soho purple-grey).
+  /// The low-contrast, deep purple base composites beautifully over the
+  /// system blur: the 80% Frosted canvas keeps the theme present while the
+  /// lightly blurred backdrop glows through and the soft foreground stays calm.
+  public static let rosePine = ThemeData(
+    name: "Rosé Pine",
+    isDark: true,
+    bg0: 0x1917_24FF, bg1: 0x2623_3AFF, bg2: 0x403D_52FF,
+    fg0: 0x908C_AAFF, fg1: 0xE0DE_F4FF, dim0: 0x6E6A_86FF,
+    red: 0xEB6F_92FF, blue: 0x9CCF_D8FF,
+    cursor: 0xE0DE_F4FF, selectionBg: 0x403D_5280,
+    ansi16: [
+      0x2623_3AFF,  // 0  black     (overlay)
+      0xEB6F_92FF,  // 1  red       (love)
+      0x3174_8FFF,  // 2  green     (pine)
+      0xF6C1_77FF,  // 3  yellow    (gold)
+      0x9CCF_D8FF,  // 4  blue      (foam)
+      0xC4A7_E7FF,  // 5  magenta   (iris)
+      0xEBBC_BAFF,  // 6  cyan      (rose)
+      0xE0DE_F4FF,  // 7  white     (text)
+      0x6E6A_86FF,  // 8  bright black (muted)
+      0xEB6F_92FF,  // 9  bright red
+      0x3174_8FFF,  // 10 bright green
+      0xF6C1_77FF,  // 11 bright yellow
+      0x9CCF_D8FF,  // 12 bright blue
+      0xC4A7_E7FF,  // 13 bright magenta
+      0xEBBC_BAFF,  // 14 bright cyan
+      0xE0DE_F4FF,  // 15 bright white
+    ]
+  )
+
+  /// Rosé Pine Dawn — light pair to Rosé Pine. The warm cream base keeps its
+  /// hue at Frosted's 80% opacity while the light, tint-free blur preserves
+  /// background detail; ANSI black stays dark per the light-theme palette rule.
+  public static let rosePineDawn = ThemeData(
+    name: "Rosé Pine Dawn",
+    isDark: false,
+    bg0: 0xFAF4_EDFF, bg1: 0xF2E9_E1FF, bg2: 0xDFDA_D9FF,
+    fg0: 0x7975_93FF, fg1: 0x5752_79FF, dim0: 0x9893_A5FF,
+    red: 0xB463_7AFF, blue: 0x5694_9FFF,
+    cursor: 0x5752_79FF, selectionBg: 0xDFDA_D980,
+    ansi16: [
+      0x5752_79FF,  // 0  black     (text — stays dark on the light canvas)
+      0xB463_7AFF,  // 1  red       (love)
+      0x2869_83FF,  // 2  green     (pine)
+      0xEA9D_34FF,  // 3  yellow    (gold)
+      0x5694_9FFF,  // 4  blue      (foam)
+      0x907A_A9FF,  // 5  magenta   (iris)
+      0xD782_7EFF,  // 6  cyan      (rose)
+      0x9893_A5FF,  // 7  white     (muted)
+      0x7975_93FF,  // 8  bright black (subtle)
+      0xB463_7AFF,  // 9  bright red
+      0x2869_83FF,  // 10 bright green
+      0xEA9D_34FF,  // 11 bright yellow
+      0x5694_9FFF,  // 12 bright blue
+      0x907A_A9FF,  // 13 bright magenta
+      0xD782_7EFF,  // 14 bright cyan
+      0x7975_93FF,  // 15 bright white (matches bright black, as in Selenized Light)
+    ]
+  )
+
+  /// Terminal Basic — the macOS Terminal.app default look: black text on a
+  /// pure white canvas with Terminal.app's canonical ANSI palette (dark
+  /// normals at 0.6 luminance, vivid brights). ANSI white/bright white are
+  /// intentionally light, matching Terminal.app's own white-on-white behavior.
+  /// Selection is Terminal.app's light blue.
+  public static let terminalBasic = ThemeData(
+    name: "Terminal Basic",
+    isDark: false,
+    bg0: 0xFFFF_FFFF, bg1: 0xF2F2_F2FF, bg2: 0xE5E5_E5FF,
+    fg0: 0x0000_00FF, fg1: 0x0000_00FF, dim0: 0x6666_66FF,
+    red: 0x9900_00FF, blue: 0x0000_B2FF,
+    cursor: 0x4D4D_4DFF, selectionBg: 0xB5D5_FF80,
+    ansi16: [
+      0x0000_00FF,  // 0  black
+      0x9900_00FF,  // 1  red
+      0x00A6_00FF,  // 2  green
+      0x9999_00FF,  // 3  yellow
+      0x0000_B2FF,  // 4  blue
+      0xB200_B2FF,  // 5  magenta
+      0x00A6_B2FF,  // 6  cyan
+      0xBFBF_BFFF,  // 7  white     (light by design, as in Terminal.app)
+      0x6666_66FF,  // 8  bright black
+      0xE500_00FF,  // 9  bright red
+      0x00D9_00FF,  // 10 bright green
+      0xE5E5_00FF,  // 11 bright yellow
+      0x0000_FFFF,  // 12 bright blue
+      0xE500_E5FF,  // 13 bright magenta
+      0x00E5_E5FF,  // 14 bright cyan
+      0xE5E5_E5FF,  // 15 bright white (light by design, as in Terminal.app)
+    ]
+  )
+
   public static let allDarkThemes: [ThemeData] = [
     selenizedDark, catppuccinMocha, gruvboxDark, dracula, nord,
+    tokyoNightStorm, rosePine,
   ]
-  public static let allLightThemes: [ThemeData] = [selenizedLight, catppuccinLatte]
+  public static let allLightThemes: [ThemeData] = [
+    selenizedLight, catppuccinLatte, rosePineDawn, terminalBasic,
+  ]
 
   // MARK: Runtime state
 

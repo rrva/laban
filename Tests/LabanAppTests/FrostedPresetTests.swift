@@ -1,5 +1,6 @@
 import Foundation
 import LabanCore
+import LabanRenderer
 import XCTest
 
 @testable import LabanApp
@@ -28,10 +29,11 @@ final class FrostedPresetTests: XCTestCase {
     XCTAssertEqual(
       TerminalTransparencyPreset.derive(
         from: TerminalTransparencyConfiguration(
-          backgroundOpacity: 0.30,
+          backgroundOpacity: 0.80,
           applyToExplicitCellBackgrounds: false,
           backdropStyle: .systemBlur,
-          backgroundImageScaling: .fit)),
+          backgroundImageScaling: .fit,
+          backgroundBlur: 0.20)),
       .frosted)
 
     for configuration in [
@@ -48,13 +50,24 @@ final class FrostedPresetTests: XCTestCase {
         applyToExplicitCellBackgrounds: false,
         backdropStyle: .systemBlur),
       TerminalTransparencyConfiguration(
-        backgroundOpacity: 0.30,
-        applyToExplicitCellBackgrounds: true,
+        backgroundOpacity: 0.80,
+        applyToExplicitCellBackgrounds: false,
         backdropStyle: .systemBlur),
       TerminalTransparencyConfiguration(
-        backgroundOpacity: 0.30,
+        backgroundOpacity: 0.80,
+        applyToExplicitCellBackgrounds: true,
+        backdropStyle: .systemBlur,
+        backgroundBlur: 0.20),
+      TerminalTransparencyConfiguration(
+        backgroundOpacity: 0.80,
         applyToExplicitCellBackgrounds: false,
-        backdropStyle: .none),
+        backdropStyle: .none,
+        backgroundBlur: 0.20),
+      TerminalTransparencyConfiguration(
+        backgroundOpacity: 0.80,
+        applyToExplicitCellBackgrounds: false,
+        backdropStyle: .systemBlur,
+        backgroundBlur: 0.21),
       TerminalTransparencyConfiguration(
         backgroundOpacity: 0.90,
         applyToExplicitCellBackgrounds: false,
@@ -91,6 +104,7 @@ final class FrostedPresetTests: XCTestCase {
 
     TerminalTransparencySettings.applyPreset(
       .frosted,
+      themeIsDark: true,
       defaults: defaults,
       notificationCenter: notifications)
 
@@ -99,10 +113,11 @@ final class FrostedPresetTests: XCTestCase {
       TerminalTransparencySettings.requestedSettings(defaults: defaults),
       TerminalTransparencyRequestedSettings(
         configuration: TerminalTransparencyConfiguration(
-          backgroundOpacity: 0.30,
+          backgroundOpacity: 0.80,
           applyToExplicitCellBackgrounds: false,
           backdropStyle: .systemBlur,
-          backgroundImageScaling: .stretch),
+          backgroundImageScaling: .stretch,
+          backgroundBlur: 0.20),
         managedBackgroundImage: managedImage))
     XCTAssertEqual(TerminalTransparencySettings.preset(defaults: defaults), .frosted)
   }
@@ -123,17 +138,18 @@ final class FrostedPresetTests: XCTestCase {
     defer { notifications.removeObserver(token) }
 
     persistence.scheduleBackgroundOpacity(0.42)
-    persistence.applyPreset(.frosted)
+    persistence.applyPreset(.frosted, themeIsDark: true)
     RunLoop.main.run(until: Date().addingTimeInterval(0.08))
 
     XCTAssertEqual(notificationCount, 1)
     XCTAssertEqual(
       TerminalTransparencySettings.requestedConfiguration(defaults: defaults),
       TerminalTransparencyConfiguration(
-        backgroundOpacity: 0.30,
+        backgroundOpacity: 0.80,
         applyToExplicitCellBackgrounds: false,
         backdropStyle: .systemBlur,
-        backgroundImageScaling: .fill))
+        backgroundImageScaling: .fill,
+        backgroundBlur: 0.20))
   }
 
   func testOpaquePresetIsAtomicAndThemeNeutral() throws {
@@ -152,6 +168,7 @@ final class FrostedPresetTests: XCTestCase {
 
     TerminalTransparencySettings.applyPreset(
       .opaque,
+      themeIsDark: true,
       defaults: defaults,
       notificationCenter: notifications)
 
@@ -180,6 +197,177 @@ final class FrostedPresetTests: XCTestCase {
     XCTAssertEqual(
       TerminalTransparencySettings.requestedConfiguration(defaults: defaults).backdropStyle,
       .none)
+  }
+
+  func testFrostedDerivationRequiresTerminalLikeOpacityAndBlur() {
+    XCTAssertEqual(
+      TerminalTransparencyPreset.derive(
+        from: TerminalTransparencyConfiguration(
+          backgroundOpacity: 0.80,
+          applyToExplicitCellBackgrounds: false,
+          backdropStyle: .systemBlur,
+          backgroundBlur: 0.20)),
+      .frosted)
+    XCTAssertEqual(
+      TerminalTransparencyPreset.derive(
+        from: TerminalTransparencyConfiguration(
+          backgroundOpacity: 0.80,
+          applyToExplicitCellBackgrounds: false,
+          backdropStyle: .systemBlur)),
+      .custom)
+    XCTAssertEqual(
+      TerminalTransparencyPreset.derive(
+        from: TerminalTransparencyConfiguration(
+          backgroundOpacity: 0.80,
+          applyToExplicitCellBackgrounds: true,
+          backdropStyle: .systemBlur,
+          backgroundBlur: 0.20)),
+      .custom)
+  }
+
+  func testFrostedAppliesLightThemeOpacityAtomically() throws {
+    let defaults = try makeDefaults()
+    let notifications = NotificationCenter()
+    var notificationCount = 0
+    let token = notifications.addObserver(
+      forName: TerminalTransparencySettings.didChangeNotification,
+      object: nil,
+      queue: nil
+    ) { _ in notificationCount += 1 }
+    defer { notifications.removeObserver(token) }
+
+    TerminalTransparencySettings.applyPreset(
+      .frosted,
+      themeIsDark: false,
+      defaults: defaults,
+      notificationCenter: notifications)
+
+    XCTAssertEqual(notificationCount, 1)
+    XCTAssertEqual(
+      TerminalTransparencySettings.requestedConfiguration(defaults: defaults),
+      TerminalTransparencyConfiguration(
+        backgroundOpacity: 0.80,
+        applyToExplicitCellBackgrounds: false,
+        backdropStyle: .systemBlur,
+        backgroundImageScaling: .fill,
+        backgroundBlur: 0.20))
+    XCTAssertEqual(TerminalTransparencySettings.preset(defaults: defaults), .frosted)
+  }
+
+  func testReresolveKeepsUniformTerminalLikeFrostedWithoutNotifications() throws {
+    let defaults = try makeDefaults()
+    let notifications = NotificationCenter()
+    TerminalTransparencySettings.applyPreset(
+      .frosted,
+      themeIsDark: true,
+      defaults: defaults,
+      notificationCenter: notifications)
+    var notificationCount = 0
+    let token = notifications.addObserver(
+      forName: TerminalTransparencySettings.didChangeNotification,
+      object: nil,
+      queue: nil
+    ) { _ in notificationCount += 1 }
+    defer { notifications.removeObserver(token) }
+
+    TerminalTransparencySettings.reresolveFrostedOpacityIfNeeded(
+      themeIsDark: false,
+      defaults: defaults,
+      notificationCenter: notifications)
+    TerminalTransparencySettings.reresolveFrostedOpacityIfNeeded(
+      themeIsDark: true,
+      defaults: defaults,
+      notificationCenter: notifications)
+
+    XCTAssertEqual(notificationCount, 0)
+    XCTAssertEqual(
+      TerminalTransparencySettings.requestedConfiguration(defaults: defaults),
+      TerminalTransparencyConfiguration(
+        backgroundOpacity: 0.80,
+        applyToExplicitCellBackgrounds: false,
+        backdropStyle: .systemBlur,
+        backgroundBlur: 0.20))
+    XCTAssertEqual(TerminalTransparencySettings.preset(defaults: defaults), .frosted)
+  }
+
+  func testReresolveLeavesOpaqueAndCustomConfigurationsUntouched() throws {
+    let defaults = try makeDefaults()
+    let notifications = NotificationCenter()
+    var notificationCount = 0
+    let token = notifications.addObserver(
+      forName: TerminalTransparencySettings.didChangeNotification,
+      object: nil,
+      queue: nil
+    ) { _ in notificationCount += 1 }
+    defer { notifications.removeObserver(token) }
+
+    // Default (opaque) state.
+    TerminalTransparencySettings.reresolveFrostedOpacityIfNeeded(
+      themeIsDark: false,
+      defaults: defaults,
+      notificationCenter: notifications)
+    XCTAssertEqual(notificationCount, 0)
+    XCTAssertEqual(
+      TerminalTransparencySettings.requestedConfiguration(defaults: defaults)
+        .backgroundOpacity,
+      1)
+
+    // Custom state: System Blur with a non-Frosted opacity.
+    TerminalTransparencySettings.setRequestedConfiguration(
+      TerminalTransparencyConfiguration(
+        backgroundOpacity: 0.42,
+        applyToExplicitCellBackgrounds: false,
+        backdropStyle: .systemBlur,
+        backgroundImageScaling: .fill),
+      defaults: defaults,
+      notificationCenter: notifications)
+    XCTAssertEqual(notificationCount, 1)
+    TerminalTransparencySettings.reresolveFrostedOpacityIfNeeded(
+      themeIsDark: false,
+      defaults: defaults,
+      notificationCenter: notifications)
+    XCTAssertEqual(notificationCount, 1)
+    XCTAssertEqual(
+      TerminalTransparencySettings.requestedConfiguration(defaults: defaults)
+        .backgroundOpacity,
+      0.42)
+  }
+
+  func testThemeFollowerLeavesUniformTerminalLikeFrostedUnchanged() throws {
+    let defaults = try makeDefaults()
+    let notifications = NotificationCenter()
+    TerminalTransparencySettings.applyPreset(
+      .frosted,
+      themeIsDark: true,
+      defaults: defaults,
+      notificationCenter: notifications)
+
+    let follower = FrostedPresetThemeFollower(
+      defaults: defaults,
+      notificationCenter: notifications)
+    var notificationCount = 0
+    let token = notifications.addObserver(
+      forName: TerminalTransparencySettings.didChangeNotification,
+      object: nil,
+      queue: nil
+    ) { _ in notificationCount += 1 }
+    defer { notifications.removeObserver(token) }
+
+    let priorTheme = Theme.current
+    defer { Theme.apply(priorTheme) }
+    Theme.apply(Theme.catppuccinLatte)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+    _ = follower
+    XCTAssertEqual(notificationCount, 0)
+    XCTAssertEqual(
+      TerminalTransparencySettings.requestedConfiguration(defaults: defaults),
+      TerminalTransparencyConfiguration(
+        backgroundOpacity: 0.80,
+        applyToExplicitCellBackgrounds: false,
+        backdropStyle: .systemBlur,
+        backgroundBlur: 0.20))
+    XCTAssertEqual(TerminalTransparencySettings.preset(defaults: defaults), .frosted)
   }
 
   private func makeDefaults(

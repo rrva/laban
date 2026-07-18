@@ -15,7 +15,7 @@ final class TranslucentLinearBlendTests: XCTestCase {
   private let height = 200
   private let scale: CGFloat = 2
   private let probe = "Hglo08B/N"
-  private let canvas: UInt32 = 0xFBF3_DB4D
+  private let canvas: UInt32 = 0xFBF3_DBCC
 
   func testOpaqueCurveRendererActivationDoesNotPrepareTranslucentResources() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {

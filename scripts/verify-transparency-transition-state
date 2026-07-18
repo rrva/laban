@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-FLOAT_KEYS = {"requestedOpacity", "effectiveOpacity"}
+FLOAT_KEYS = {"requestedOpacity", "effectiveOpacity", "requestedBlur", "effectiveBlur"}
 PARKED_IDLE_COUNTERS = (
     "rendererPresentCount",
     "backgroundImageDecodeCount",
@@ -19,6 +19,7 @@ PARKED_IDLE_COUNTERS = (
 )
 REQUEST_RESTORATION_KEYS = (
     "requestedOpacity",
+    "requestedBlur",
     "applyToExplicitCellBackgrounds",
     "requestedBackdropStyle",
     "backgroundImageScaling",
@@ -155,6 +156,8 @@ def self_test() -> None:
     state = {
         "requestedOpacity": 0.9,
         "effectiveOpacity": 0.9,
+        "requestedBlur": 0.2,
+        "effectiveBlur": 0,
         "applyToExplicitCellBackgrounds": False,
         "requestedBackdropStyle": "image",
         "effectiveBackdropStyle": "image",

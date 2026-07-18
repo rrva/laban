@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "Terminal Basic",
+  "isDark": false,
+  "colors": {
+    "bg0": "#FFFFFFFF",
+    "bg1": "#F2F2F2FF",
+    "bg2": "#E5E5E5FF",
+    "fg0": "#000000FF",
+    "fg1": "#000000FF",
+    "dim0": "#666666FF",
+    "red": "#990000FF",
+    "blue": "#0000B2FF",
+    "cursor": "#4D4D4DFF",
+    "selectionBg": "#B5D5FF80",
+    "ansi16": [
+      "#000000FF",
+      "#990000FF",
+      "#00A600FF",
+      "#999900FF",
+      "#0000B2FF",
+      "#B200B2FF",
+      "#00A6B2FF",
+      "#BFBFBFFF",
+      "#666666FF",
+      "#E50000FF",
+      "#00D900FF",
+      "#E5E500FF",
+      "#0000FFFF",
+      "#E500E5FF",
+      "#00E5E5FF",
+      "#E5E5E5FF"
+    ]
+  }
+}

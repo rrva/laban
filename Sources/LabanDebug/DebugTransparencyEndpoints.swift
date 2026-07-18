@@ -16,6 +16,8 @@ extension HeadlessDebugRuntime {
     return TerminalTransparencyDebugResponse(
       requestedOpacity: requestedTransparency.backgroundOpacity,
       effectiveOpacity: effectiveTransparency.backgroundOpacity,
+      requestedBlur: requestedTransparency.backgroundBlur,
+      effectiveBlur: effectiveTransparency.backgroundBlur,
       requestedBackdropStyle: requestedTransparency.backdropStyle.rawValue,
       effectiveBackdropStyle: effectiveTransparency.backdropStyle.rawValue,
       backgroundImageScaling: requestedTransparency.backgroundImageScaling.rawValue,
@@ -47,6 +49,8 @@ extension HeadlessDebugRuntime {
       effectiveAppearance: "headless",
       backdropSubviewCount: 0,
       backdropSubviewKind: TerminalBackdropStyle.none.rawValue,
+      windowBlurAvailable: false,
+      windowBlurRadius: 0,
       systemReduceTransparency: false,
       reduceTransparencyOverride: reduceTransparencyOverride,
       effectiveReduceTransparency: accessibilityDisplayFlags.reduceTransparency,
@@ -61,14 +65,15 @@ extension HeadlessDebugRuntime {
   func setBackgroundTransparencyUnlocked(
     _ request: SetBackgroundTransparencyActionRequest
   ) -> DebugResponse {
-    guard request.opacity.isFinite else {
-      return jsonError("opacity must be finite")
+    guard request.opacity.isFinite, request.blur?.isFinite != false else {
+      return jsonError("opacity and blur must be finite")
     }
     let next = TerminalTransparencyConfiguration(
       backgroundOpacity: request.opacity,
       applyToExplicitCellBackgrounds: request.applyToExplicitCellBackgrounds,
       backdropStyle: request.backdropStyle ?? requestedTransparency.backdropStyle,
-      backgroundImageScaling: requestedTransparency.backgroundImageScaling)
+      backgroundImageScaling: requestedTransparency.backgroundImageScaling,
+      backgroundBlur: request.blur ?? requestedTransparency.backgroundBlur)
     guard next != requestedTransparency else { return actionResult(ok: true) }
     requestedTransparency = next
     resolveTransparencyAndRenderUnlocked()

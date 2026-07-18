@@ -7,8 +7,8 @@ import XCTest
 enum RendererTransparencyTestSupport {
   static let alpha70 = UInt8(179)
   static let canvas: UInt32 = 0x2040_60B3
-  static let frostedAlpha = UInt8(77)
-  static let brightFrostedCanvas: UInt32 = 0xFBF3_DB4D
+  static let frostedAlpha = UInt8(204)
+  static let brightFrostedCanvas: UInt32 = 0xFBF3_DBCC
   static let opaqueCell: UInt32 = 0xD020_30FF
 
   static func commands(

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import runpy
 import signal
 import socket
@@ -368,16 +369,21 @@ class Client:
 def wait_for_state(
     client: Client, source: str, scenario: ThemeScenario
 ) -> dict[str, Any]:
+    is_blur = source == "systemBlur"
     expected = {
-        "requestedOpacity": 0.3,
-        "effectiveOpacity": 0.3,
+        "requestedOpacity": 0.8,
+        "effectiveOpacity": 0.8,
+        "requestedBlur": 0.2,
+        "effectiveBlur": 0.2 if is_blur else 0,
         "requestedBackdropStyle": source,
         "effectiveBackdropStyle": source,
         "applyToExplicitCellBackgrounds": False,
         "forceOpaqueReason": None,
         "surfaceOpaque": False,
-        "backdropSubviewKind": source,
-        "backdropSubviewCount": 1 if source == "systemBlur" else 0,
+        "backdropSubviewKind": "none",
+        "backdropSubviewCount": 0,
+        "windowBlurAvailable": True,
+        "windowBlurRadius": 20 if is_blur else 0,
         "effectiveReduceTransparency": False,
         "reduceTransparencyOverride": False,
         "configuredRenderer": "slugGlyph",
@@ -512,11 +518,24 @@ def tracked_oracle_identity(
     }
 
 
-def provenance(app: Path, executable: Path, info: dict[str, Any]) -> dict[str, Any]:
+def provenance(
+    app: Path,
+    executable: Path,
+    info: dict[str, Any],
+    *,
+    allow_dirty_build: bool,
+) -> dict[str, Any]:
     raw_commit = info.get("LABANBuildCommit")
     if not isinstance(raw_commit, str) or not raw_commit:
         fail("installed app is missing LABANBuildCommit")
-    installed_commit = git_output(["rev-parse", f"{raw_commit}^{{commit}}"], "build commit")
+    commit_match = re.fullmatch(r"([0-9a-f]{7,40})(\+dirty)?", raw_commit)
+    if commit_match is None:
+        fail(f"installed LABANBuildCommit has an unexpected shape: {raw_commit}")
+    dirty_build = commit_match.group(2) is not None
+    if dirty_build and not allow_dirty_build:
+        fail("installed LABANBuildCommit is dirty; pass --allow-dirty-build for local diagnostics")
+    installed_commit = git_output(
+        ["rev-parse", f"{commit_match.group(1)}^{{commit}}"], "build commit")
     repository_head = git_output(["rev-parse", "HEAD"], "repository HEAD")
     verifier_identity = tracked_oracle_identity(
         repository_head, "scripts/verify-system-blur-composition")
@@ -548,7 +567,7 @@ def provenance(app: Path, executable: Path, info: dict[str, Any]) -> dict[str, A
         if not unchanged:
             fail("installed app is stale relative to current app sources")
         relation = "ancestorWithNoAppSourceChanges"
-    if subprocess.run(
+    if not allow_dirty_build and subprocess.run(
         ["git", "diff", "--quiet", "HEAD", "--", "Package.swift", "Package.resolved", "Sources"],
         check=False,
     ).returncode != 0:
@@ -563,6 +582,8 @@ def provenance(app: Path, executable: Path, info: dict[str, Any]) -> dict[str, A
         "labanBuildCommitResolved": installed_commit,
         "repositoryHead": repository_head,
         "installedCommitRelation": relation,
+        "dirtyBuild": dirty_build,
+        "dirtyBuildAccepted": allow_dirty_build,
         "oracleSources": {
             "fixture": fixture_identity,
             "processSupport": process_support_identity,
@@ -663,7 +684,8 @@ def measure_theme_scenario(
         client.action("setReduceTransparencyOverride", enabled=False)
         client.action(
             "setBackgroundTransparency",
-            opacity=0.3,
+            opacity=0.8,
+            blur=0.2,
             applyToExplicitCellBackgrounds=False,
         )
         client.action("setBackgroundSource", source="none")
@@ -761,6 +783,8 @@ def verify(
     app: Path,
     artifacts: Path,
     termination_guard: Any,
+    *,
+    allow_dirty_build: bool,
 ) -> None:
     executable = app / "Contents/MacOS/LabanApp"
     if not executable.is_file() or not os.access(executable, os.X_OK):
@@ -777,7 +801,11 @@ def verify(
     domain = info.get("CFBundleIdentifier")
     if not isinstance(domain, str) or not domain:
         fail("installed app has no bundle identifier")
-    identity = provenance(app, executable, info)
+    identity = provenance(
+        app,
+        executable,
+        info,
+        allow_dirty_build=allow_dirty_build)
     preference_snapshot = read_preferences(domain)
     primary_error: BaseException | None = None
     completed_summary: dict[str, Any] | None = None
@@ -1207,6 +1235,11 @@ def parse_arguments() -> argparse.Namespace:
         default=REPOSITORY_ROOT / ".artifacts/transparency/system-blur-composition",
     )
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--allow-dirty-build",
+        action="store_true",
+        help="accept a local +dirty app build and mark the result diagnostic rather than formal evidence",
+    )
     parser.add_argument("--signal-cleanup-child", type=Path, help=argparse.SUPPRESS)
     arguments = parser.parse_args()
     if arguments.signal_cleanup_child is not None:
@@ -1229,7 +1262,11 @@ def main() -> int:
             print("verify-system-blur-composition: self-test passed")
         else:
             with ProfileTerminationSignalGuard() as termination_guard:
-                verify(arguments.app.resolve(), arguments.artifacts.resolve(), termination_guard)
+                verify(
+                    arguments.app.resolve(),
+                    arguments.artifacts.resolve(),
+                    termination_guard,
+                    allow_dirty_build=arguments.allow_dirty_build)
         return 0
     except (OracleError, ProfileError, ValueError) as error:
         print(f"verify-system-blur-composition: {error}", file=sys.stderr)

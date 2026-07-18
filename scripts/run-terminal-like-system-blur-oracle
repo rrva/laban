@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+app=${LABAN_APP_PATH:-"$HOME/Laban.app"}
+artifacts=${LABAN_SYSTEM_BLUR_ARTIFACTS:-".artifacts/transparency/system-blur-composition-terminal-like"}
+
+if [ ! -d "$app" ]; then
+  printf 'error: app bundle does not exist: %s\n' "$app" >&2
+  exit 1
+fi
+
+scripts/build-app --profile
+scripts/install-app
+
+if pgrep -x LabanApp >/dev/null 2>&1; then
+  osascript -e 'tell application "Laban" to quit' >/dev/null 2>&1 || true
+fi
+
+for _ in $(seq 1 100); do
+  if ! pgrep -x LabanApp >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+
+if pgrep -x LabanApp >/dev/null 2>&1; then
+  printf 'error: LabanApp did not quit; the visual oracle requires an exclusive app process\n' >&2
+  exit 1
+fi
+
+if [ -e "$artifacts" ]; then
+  backup="$artifacts.bak.$(date +%Y%m%d%H%M%S)"
+  printf 'preserving existing artifacts as %s\n' "$backup"
+  mv "$artifacts" "$backup"
+fi
+
+scripts/verify-system-blur-composition --self-test
+scripts/verify-system-blur-composition \
+  --app "$app" \
+  --artifacts "$artifacts" \
+  --allow-dirty-build
+
+printf 'system blur composition summary: %s\n' "$artifacts/summary.json"
+open "$app"

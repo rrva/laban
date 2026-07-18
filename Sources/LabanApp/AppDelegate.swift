@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   private var windowController: MainWindowController?
   private var appearanceObservation: NSKeyValueObservation?
   private let themeMenuController = ThemeMenuController()
+  private let frostedPresetThemeFollower = FrostedPresetThemeFollower()
   private let terminalBackendMenuController = TerminalBackendMenuController()
   private let notificationStateRefresher = NativeNotificationStateRefresher.shared
   private lazy var settingsNotificationPoster = AgentNotificationPoster(
@@ -85,6 +86,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     // would overwrite that user-provided palette shortly after zsh starts.
     themeMenuController.loadPersistedChoices()
     Self.applyTheme(for: NSApp.effectiveAppearance)
+    // Settle the Frosted canvas tint for the active theme before the first
+    // window reads transparency settings; a no-op for opaque/custom state.
+    frostedPresetThemeFollower.reconcileNow()
     let terminalBackendSelection: TerminalBackendLaunchConfiguration
     do {
       terminalBackendSelection = try MainWindowController.configuredAppTerminalBackend()

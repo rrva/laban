@@ -64,22 +64,30 @@ final class TerminalBackgroundSourceSettingsUITests: XCTestCase {
     let controller = makeController(context: context, themeController: themeController)
     let background = controller.backgroundSourceControlsForTesting
     let opacity = controller.transparencyControlsForTesting
+    let blur = controller.backgroundBlurControlsForTesting
 
     background.preset.selectItem(at: 1)
     sendAction(background.preset)
     XCTAssertEqual(
       TerminalTransparencySettings.requestedConfiguration(defaults: context.defaults),
       TerminalTransparencyConfiguration(
-        backgroundOpacity: 0.30,
+        backgroundOpacity: 0.80,
         applyToExplicitCellBackgrounds: false,
         backdropStyle: .systemBlur,
-        backgroundImageScaling: .fill))
+        backgroundImageScaling: .fill,
+        backgroundBlur: 0.20))
     XCTAssertEqual(background.preset.titleOfSelectedItem, L10n.tr("Frosted"))
     XCTAssertEqual(themeController.currentThemeName, originalThemeName)
     XCTAssertEqual(themeController.followsSystemAppearance, originalFollowsSystem)
 
     opacity.slider.doubleValue = 72
     sendAction(opacity.slider)
+    XCTAssertEqual(background.preset.titleOfSelectedItem, L10n.tr("Custom"))
+
+    background.preset.selectItem(at: 1)
+    sendAction(background.preset)
+    blur.slider.doubleValue = 33
+    sendAction(blur.slider)
     XCTAssertEqual(background.preset.titleOfSelectedItem, L10n.tr("Custom"))
 
     background.preset.selectItem(at: 1)

@@ -132,6 +132,51 @@ final class ThemeMenuControllerImportTests: XCTestCase {
       "Expected bundled theme examples in \(directoryURL)")
   }
 
+  func testPinVariantKeepsFollowSystemAndAppliesOnlyMatchingAppearance() throws {
+    let controller = ThemeMenuController(
+      themeStore: TerminalThemeStore(
+        baseURL: FileManager.default.temporaryDirectory))
+    Theme.followsSystemAppearance = true
+    Theme.apply(Theme.selenizedDark)
+    let darkIndex = try XCTUnwrap(
+      controller.orderedThemes.firstIndex { $0.name == Theme.dracula.name })
+    let lightIndex = try XCTUnwrap(
+      controller.orderedThemes.firstIndex { $0.name == Theme.catppuccinLatte.name })
+
+    // Pinning a light theme while the system is dark must not flash it.
+    controller.pinVariant(at: lightIndex)
+    XCTAssertTrue(Theme.followsSystemAppearance)
+    XCTAssertEqual(Theme.lightVariant.name, Theme.catppuccinLatte.name)
+    XCTAssertEqual(Theme.current.name, Theme.selenizedDark.name)
+    XCTAssertEqual(
+      UserDefaults.standard.string(forKey: "LabanThemeLight"), Theme.catppuccinLatte.name)
+
+    // Pinning a dark theme while the system is dark applies immediately.
+    controller.pinVariant(at: darkIndex)
+    XCTAssertTrue(Theme.followsSystemAppearance)
+    XCTAssertEqual(Theme.darkVariant.name, Theme.dracula.name)
+    XCTAssertEqual(Theme.current.name, Theme.dracula.name)
+    XCTAssertEqual(
+      UserDefaults.standard.string(forKey: "LabanThemeDark"), Theme.dracula.name)
+  }
+
+  func testPinVariantSurvivesAppearanceFlip() throws {
+    let controller = ThemeMenuController(
+      themeStore: TerminalThemeStore(
+        baseURL: FileManager.default.temporaryDirectory))
+    Theme.followsSystemAppearance = true
+    Theme.apply(Theme.selenizedDark)
+    let lightIndex = try XCTUnwrap(
+      controller.orderedThemes.firstIndex { $0.name == Theme.catppuccinLatte.name })
+    controller.pinVariant(at: lightIndex)
+
+    // A later system-appearance flip picks up the pinned light variant.
+    Theme.applyForAppearance(isDark: false)
+    XCTAssertEqual(Theme.current.name, Theme.catppuccinLatte.name)
+    XCTAssertEqual(controller.lightVariantName, Theme.catppuccinLatte.name)
+    XCTAssertEqual(controller.darkVariantName, Theme.selenizedDark.name)
+  }
+
   // MARK: Helpers
 
   private struct Context {

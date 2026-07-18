@@ -41,6 +41,8 @@ final class TerminalTransparencySettingsTests: XCTestCase {
 
     TerminalTransparencySettings.setBackgroundOpacity(
       0.7, defaults: defaults, notificationCenter: notifications)
+    TerminalTransparencySettings.setBackgroundBlur(
+      0.2, defaults: defaults, notificationCenter: notifications)
     TerminalTransparencySettings.setApplyToExplicitCellBackgrounds(
       true, defaults: defaults, notificationCenter: notifications)
     TerminalTransparencySettings.setBackdropStyle(
@@ -54,9 +56,12 @@ final class TerminalTransparencySettingsTests: XCTestCase {
         backgroundOpacity: 0.7,
         applyToExplicitCellBackgrounds: true,
         backdropStyle: .systemBlur,
-        backgroundImageScaling: .stretch))
+        backgroundImageScaling: .stretch,
+        backgroundBlur: 0.2))
     XCTAssertEqual(
       defaults.double(forKey: TerminalTransparencySettings.backgroundOpacityKey), 0.7)
+    XCTAssertEqual(
+      defaults.double(forKey: TerminalTransparencySettings.backgroundBlurKey), 0.2)
     XCTAssertEqual(
       defaults.object(
         forKey: TerminalTransparencySettings.applyToExplicitCellBackgroundsKey) as? Bool,
@@ -222,6 +227,15 @@ final class TerminalTransparencySettingsTests: XCTestCase {
       1)
   }
 
+  func testMalformedStoredBlurUsesSafeZeroValue() throws {
+    let defaults = try makeDefaults()
+
+    defaults.set("not-a-blur", forKey: TerminalTransparencySettings.backgroundBlurKey)
+    XCTAssertEqual(
+      TerminalTransparencySettings.requestedConfiguration(defaults: defaults).backgroundBlur,
+      0)
+  }
+
   func testSetterClampsBeforePersistence() throws {
     let defaults = try makeDefaults()
     let notifications = NotificationCenter()
@@ -235,6 +249,15 @@ final class TerminalTransparencySettingsTests: XCTestCase {
       2, defaults: defaults, notificationCenter: notifications)
     XCTAssertEqual(
       defaults.double(forKey: TerminalTransparencySettings.backgroundOpacityKey), 1)
+
+    TerminalTransparencySettings.setBackgroundBlur(
+      2, defaults: defaults, notificationCenter: notifications)
+    XCTAssertEqual(
+      defaults.double(forKey: TerminalTransparencySettings.backgroundBlurKey), 1)
+    TerminalTransparencySettings.setBackgroundBlur(
+      -1, defaults: defaults, notificationCenter: notifications)
+    XCTAssertEqual(
+      defaults.double(forKey: TerminalTransparencySettings.backgroundBlurKey), 0)
   }
 
   func testAtomicConfigurationChangePostsExactlyOneNotification() throws {
@@ -342,6 +365,7 @@ final class TerminalTransparencySettingsTests: XCTestCase {
 
     XCTAssertEqual(count, 0)
     XCTAssertNotNil(defaults.object(forKey: TerminalTransparencySettings.backgroundOpacityKey))
+    XCTAssertNotNil(defaults.object(forKey: TerminalTransparencySettings.backgroundBlurKey))
     XCTAssertNotNil(
       defaults.object(
         forKey: TerminalTransparencySettings.applyToExplicitCellBackgroundsKey))

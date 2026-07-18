@@ -406,6 +406,26 @@ SUPPLEMENT_DE_PT_IT: dict[str, dict[str, str]] = {
         "pt-BR": "Opacidade do fundo: %lld%%",
         "it": "Opacità dello sfondo: %lld%%",
     },
+    "Background blur:": {
+        "de": "Hintergrundunschärfe:",
+        "pt-BR": "Desfoque do fundo:",
+        "it": "Sfocatura dello sfondo:",
+    },
+    "Background blur": {
+        "de": "Hintergrundunschärfe",
+        "pt-BR": "Desfoque do fundo",
+        "it": "Sfocatura dello sfondo",
+    },
+    "Background blur: %lld percent": {
+        "de": "Hintergrundunschärfe: %lld %%",
+        "pt-BR": "Desfoque do fundo: %lld%%",
+        "it": "Sfocatura dello sfondo: %lld%%",
+    },
+    "Choose how strongly macOS blurs content behind the terminal. 0% shows the content directly; 100% applies the strongest available window blur.": {
+        "de": "Wählen Sie, wie stark macOS Inhalte hinter dem Terminal unscharf darstellt. 0 % zeigt den Inhalt direkt; 100 % wendet die stärkste verfügbare Fensterunschärfe an.",
+        "pt-BR": "Escolha a intensidade com que o macOS desfoca o conteúdo atrás do terminal. 0% mostra o conteúdo diretamente; 100% aplica o desfoque de janela mais forte disponível.",
+        "it": "Scegli quanto macOS sfoca il contenuto dietro il terminale. 0% mostra il contenuto direttamente; 100% applica la sfocatura della finestra più intensa disponibile.",
+    },
     "Choose how much of the default terminal background is visible. The sidebar remains opaque; text, the cursor, selections, and images remain fully visible. 100% is fully opaque.": {
         "de": "Stellen Sie ein, wie sichtbar der Standardhintergrund des Terminals ist. Die Seitenleiste bleibt deckend; Text, Cursor, Auswahl und Bilder bleiben vollständig sichtbar. 100 % bedeutet vollständig deckend.",
         "pt-BR": "Escolha quanto do fundo padrão do terminal fica visível. A barra lateral permanece opaca; o texto, o cursor, as seleções e as imagens permanecem totalmente visíveis. 100% é totalmente opaco.",
@@ -440,6 +460,16 @@ SUPPLEMENT_DE_PT_IT: dict[str, dict[str, str]] = {
         "de": "Design:",
         "pt-BR": "Tema:",
         "it": "Tema:",
+    },
+    "Dark theme:": {
+        "de": "Dunkles Design:",
+        "pt-BR": "Tema escuro:",
+        "it": "Tema scuro:",
+    },
+    "Light theme:": {
+        "de": "Helles Design:",
+        "pt-BR": "Tema claro:",
+        "it": "Tema chiaro:",
     },
     "Font:": {
         "de": "Schrift:",

@@ -23,6 +23,8 @@ struct TerminalWindowTransparencyStatus: Equatable, Sendable {
   var backgroundImageRedrawCount: Int
   var backdropSubviewCount: Int
   var backdropSubviewKind: TerminalBackdropStyle
+  var windowBlurAvailable: Bool
+  var windowBlurRadius: Int
 }
 
 struct TerminalTransparencyDiagnostics: Equatable, Sendable {
@@ -44,6 +46,7 @@ final class TerminalWindowTransparencyCoordinator {
   private weak var terminalView: TerminalBitmapView?
   private weak var backgroundEffectHost: TerminalBackgroundEffectHost?
   private let backgroundImageStore: TerminalBackgroundImageStore?
+  private let windowBlurController: TerminalWindowBlurController
   private let defaults: UserDefaults
   private let notificationCenter: NotificationCenter
   private var observerTokens: [NSObjectProtocol] = []
@@ -66,12 +69,14 @@ final class TerminalWindowTransparencyCoordinator {
     snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability,
     backgroundImageAvailability: TerminalBackgroundImageAvailability = .none,
     backgroundImageStore: TerminalBackgroundImageStore? = nil,
-    backgroundEffectHost: TerminalBackgroundEffectHost? = nil
+    backgroundEffectHost: TerminalBackgroundEffectHost? = nil,
+    windowBlurController: TerminalWindowBlurController? = nil
   ) {
     self.window = window
     self.terminalView = terminalView
     self.backgroundEffectHost = backgroundEffectHost
     self.backgroundImageStore = backgroundImageStore
+    self.windowBlurController = windowBlurController ?? TerminalWindowBlurController()
     self.defaults = defaults
     self.notificationCenter = notificationCenter
     let requestedSettings = TerminalTransparencySettings.requestedSettings(defaults: defaults)
@@ -129,7 +134,9 @@ final class TerminalWindowTransparencyCoordinator {
       backgroundImageApplyCount: backgroundEffectHost?.backgroundImageApplyCount ?? 0,
       backgroundImageRedrawCount: backgroundEffectHost?.backgroundImageRedrawCount ?? 0,
       backdropSubviewCount: backgroundEffectHost?.backdropSubviewCount ?? 0,
-      backdropSubviewKind: backgroundEffectHost?.backdropSubviewKind ?? .none)
+      backdropSubviewKind: backgroundEffectHost?.backdropSubviewKind ?? .none,
+      windowBlurAvailable: windowBlurController.isAvailable,
+      windowBlurRadius: windowBlurController.appliedRadius ?? 0)
   }
 
   func resetBackgroundImageDiagnostics() {
@@ -309,10 +316,31 @@ final class TerminalWindowTransparencyCoordinator {
       force: force)
   }
 
+  /// Window numbers can become useful to WindowServer only after order-in.
+  /// Reapply the cheap idempotent backdrop once presentation completes so a
+  /// persisted-at-launch System Blur request does not strand on the fallback.
+  func reapplyWindowEffects() {
+    applyResolvedBackdrop()
+  }
+
   private func applyResolvedBackdrop() {
-    backgroundEffectHost?.apply(
-      effective.backdropStyle,
-      imageAsset: effective.backdropStyle == .image ? backgroundImageAsset : nil,
-      imageScaling: requested.backgroundImageScaling)
+    guard let window else { return }
+    guard effective.backdropStyle == .systemBlur else {
+      _ = windowBlurController.apply(radius: 0, to: window)
+      backgroundEffectHost?.apply(
+        effective.backdropStyle,
+        imageAsset: effective.backdropStyle == .image ? backgroundImageAsset : nil,
+        imageScaling: requested.backgroundImageScaling)
+      return
+    }
+
+    let radius = Int((effective.backgroundBlur * 100).rounded())
+    if windowBlurController.apply(radius: radius, to: window) {
+      backgroundEffectHost?.apply(.none)
+    } else {
+      // Older or changed systems keep the measured public-material behavior
+      // rather than silently falling through to unblurred transparency.
+      backgroundEffectHost?.apply(.systemBlur)
+    }
   }
 }

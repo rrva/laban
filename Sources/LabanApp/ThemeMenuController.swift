@@ -113,6 +113,11 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
   /// Name of the theme currently applied — used to preselect the popup.
   var currentThemeName: String { Theme.current.name }
 
+  /// Names of the pinned dark/light variants — used to preselect the
+  /// per-appearance popups shown while following the system appearance.
+  var darkVariantName: String { Theme.darkVariant.name }
+  var lightVariantName: String { Theme.lightVariant.name }
+
   /// Whether the app is currently following the system dark/light appearance.
   var followsSystemAppearance: Bool { Theme.followsSystemAppearance }
 
@@ -145,6 +150,25 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
 
   @objc func toggleFollowsSystemAppearance(_ sender: NSMenuItem) {
     setFollowsSystem(!Theme.followsSystemAppearance)
+  }
+
+  /// Pins a theme as the dark or light variant without leaving follow-system
+  /// mode. Applies immediately only when the system is currently in that
+  /// appearance, so picking the other appearance's theme never flashes it on
+  /// screen. Unlike `applyTheme(at:)`, this never turns following off.
+  func pinVariant(at index: Int) {
+    guard index >= 0, index < themes.count else { return }
+    let theme = themes[index]
+    if theme.isDark {
+      Theme.darkVariant = theme
+    } else {
+      Theme.lightVariant = theme
+    }
+    if Theme.followsSystemAppearance, theme.isDark == Theme.current.isDark {
+      Theme.apply(theme)
+    }
+    applyAppAppearanceChoice()
+    persist()
   }
 
   /// Turn system-appearance following on or off. When turning on, snap the

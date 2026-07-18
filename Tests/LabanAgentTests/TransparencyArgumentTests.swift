@@ -38,9 +38,33 @@ final class TransparencyArgumentTests: XCTestCase {
     }
   }
 
+  func testBackgroundBlurDefaultsParsesAndValidatesUnitInterval() {
+    let defaults = parseArgs([])
+    XCTAssertEqual(defaults.backgroundBlur, 0)
+    XCTAssertNil(defaults.argumentError)
+
+    let args = parseArgs(["--background-blur=0.2"])
+    XCTAssertEqual(args.backgroundBlur, 0.2)
+    XCTAssertNil(args.argumentError)
+
+    for spelling in [
+      "--background-blur=",
+      "--background-blur=-0.1",
+      "--background-blur=1.1",
+      "--background-blur=nan",
+    ] {
+      let invalid = parseArgs([spelling])
+      XCTAssertEqual(
+        invalid.argumentError,
+        "--background-blur must be a finite value in 0...1",
+        spelling)
+    }
+  }
+
   func testUsageDescribesHeadlessEffectScope() {
     let text = usage()
 
+    XCTAssertTrue(text.contains("--background-blur=VALUE"))
     XCTAssertTrue(text.contains("--background-effect=MODE"))
     XCTAssertTrue(text.contains("records system-blur but resolves no AppKit material"))
   }
