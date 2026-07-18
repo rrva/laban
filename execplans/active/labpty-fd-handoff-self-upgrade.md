@@ -118,9 +118,13 @@ A novice should read these before starting. All paths are repository-relative.
 - **catalog / state file**: a small file the daemon writes just before exec,
   recording everything about each live session that is *not* recoverable from
   the kernel or the ring file alone (handles, pids, rows/cols, teardown
-  deadlines, the integer fd number of each master, which fd is the listener,
-  `next_handle`, the shm dir, the socket identity). The successor reads it to
-  rebuild its in-memory registry.
+  deadlines, checkpoint epoch, optional checkpoint sidecar metadata, tagged
+  answered-through state, the integer fd number of each master, which fd is the
+  listener, `next_handle`, the shm dir, the socket identity). The successor
+  reads it to rebuild its in-memory registry. These checkpoint fields are
+  defined by `execplans/active/labpty-reattach-state-checkpoint.md`; if an older
+  catalog does not contain them, adopt must use no checkpoint plus an unknown
+  response watermark, never a valid-looking zero.
 - **adopt mode**: the successor `labpty` is launched (by the predecessor's
   exec) with a flag telling it "do not bind a fresh socket or open new PTYs;
   instead read the state file and resume the inherited fds."
@@ -178,10 +182,13 @@ first poll. Steps:
    for each `used` session — `handle`, `child_pid`, `master_fd` (integer),
    `rows`, `cols`, `alive`, `close_pending`, `sigkill_sent`,
    `terminate_deadline_ns`, `canonical_pending_estimate`, `logical_id`,
-   `ring_path`; plus `next_handle`, `shm_dir`, the listener fd number, and the
-   bound socket dev/ino identity. Versioned with a magic + ABI byte. Write to
-   a temp name and `rename()` into place so a crash mid-write never leaves a
-   half file.
+   `ring_path`, and—when the checkpoint capability exists—`checkpoint_epoch`,
+   optional canonical checkpoint metadata, `answered_through_known`, and
+   `answered_through`; plus `next_handle`, `shm_dir`, the listener fd number,
+   and the bound socket dev/ino identity. Version with magic plus major/minor
+   and length-delimited session records so a newer reader can treat absent
+   appended fields as no checkpoint plus an unknown watermark. Write to a temp
+   name and `rename()` into place so a crash mid-write never leaves a half file.
 4. **Clear `FD_CLOEXEC`** on every live `master_fd` and on the listen socket
    fd. Leave it set on everything else: client connection fds, ring fds,
    `slave_inspect_fd` — these are meant to close (clients reconnect; rings and
@@ -203,10 +210,14 @@ The successor in `--adopt` mode:
    *existing* ring (`O_RDWR`, no `O_CREAT|O_EXCL`) and re-derives the writer's
    offsets from the ring header rather than reinitialising it.
 3. Restores `next_handle`, `terminate_deadline_ns` (see below), and the other
-   scalar fields. **Resets `attached_clients` to 0 for every session** — all
-   control connections dropped across the exec; clients reconnect and
-   re-attach via the ADR 0010 attach path, so the connected-client count
-   re-derives itself within the reconnect window.
+   scalar fields. If checkpoint fields are present, revalidate the canonical
+   sidecar against the preserved ring incarnation, epoch, size, length, and
+   checksum before restoring its metadata and tagged watermark. If they are
+   absent or invalid, unlink/forget the checkpoint and set
+   `answered_through_known = 0`. **Resets `attached_clients` to 0 for every
+   session** — all control connections dropped across the exec; clients
+   reconnect and re-attach via the ADR 0010 attach path, so the connected-client
+   count re-derives itself within the reconnect window.
 4. Resumes ownership of the inherited listen socket fd (does **not** rebind),
    unlinks the state file once the registry is rebuilt, and enters the normal
    event loop. Existing children are still its children (same pid) so
@@ -241,6 +252,12 @@ contract re-establishes it and re-attaches sessions.
   tested. No new client recovery behavior is invented.
 - **ADR 0008 write backpressure**: depends on `slave_inspect_fd`, re-opened on
   adopt; if re-open fails the documented degradation applies.
+- **Reattach checkpoint and response watermark**: when
+  `state-checkpoint/v1`/`answered-through/v1` exist, carry `checkpoint_epoch`,
+  validated canonical metadata, `answered_through_known`, and
+  `answered_through` across adopt. An older state-file record safely degrades to
+  no checkpoint plus unknown; resetting to numeric zero as known is forbidden
+  because it would resend historical terminal replies.
 
 ## Milestones
 
@@ -273,13 +290,19 @@ Carry the harder state across handoff: `close_pending`/`terminate_deadline_ns`
 (a session mid-terminate keeps escalating to SIGKILL on its original deadline),
 `canonical_pending_estimate` (ADR 0008 preflight stays accurate),
 `slave_inspect_fd` re-open, `next_handle` (a post-handoff `openSession` gets a
-fresh non-colliding handle), and `attached_clients` reset-to-0 + re-attach.
+fresh non-colliding handle), `attached_clients` reset-to-0 + re-attach, and—if
+the checkpoint plan has landed—`checkpoint_epoch`, validated canonical
+checkpoint metadata, `answered_through_known`, and `answered_through`.
 
 Acceptance: a test that calls `terminate` then immediately upgrades, and
 asserts the child is still SIGKILL'd within the deadline window; a test that
 opens a new session after handoff and asserts its handle does not collide; a
 test that re-attaches after handoff and asserts `connected_clients` returns to
-the pre-handoff value.
+the pre-handoff value. When checkpoint support exists, add
+`testCheckpointStateSurvivesSelfUpgradeOrAdoptsAsUnknown`: a current catalog
+preserves epoch/metadata/tagged watermark, while a fixture using the preceding
+catalog minor adopts the same session with no checkpoint and an unknown
+watermark.
 
 ### M3 — dry-run-adopt validation gate
 
@@ -328,6 +351,10 @@ The feature is done when all of the following hold:
   session dies" is updated to reflect that with the fd-handoff, the session
   survives; a short note added to ADR 0006 (or a new ADR if the policy is
   judged durable enough to record separately).
+- When `execplans/active/labpty-reattach-state-checkpoint.md` has landed, current
+  handoff records preserve checkpoint epoch/metadata and tagged
+  answered-through state; a preceding-minor fixture proves fail-closed adopt to
+  no checkpoint plus unknown.
 
 ## Decision Log
 
@@ -352,6 +379,12 @@ The feature is done when all of the following hold:
 - **Reset `attached_clients` to 0 on adopt.** Control connections drop across
   the exec; clients re-attach via the ADR 0010 path, so the count re-derives.
   Carrying stale masks across handoff would overcount departed connections.
+- **Carry exact-replay provenance or discard it explicitly.** Exec-in-place
+  preserves the session incarnation even though daemon memory is replaced.
+  Therefore current catalogs carry checkpoint epoch/metadata and the tagged
+  answered-through state. Older or invalid records fail closed to no checkpoint
+  plus unknown; treating a missing watermark field as known zero could inject
+  historical replies into the child.
 - **Trigger via control RPC carrying the binary path, gated by hello version.**
   The app knows where its bundled `labpty` is and when it differs from the
   running daemon's build; an explicit, validated RPC is safer and clearer than
@@ -384,7 +417,7 @@ The feature is done when all of the following hold:
 ## Progress
 
 - [ ] M1 — exec-in-place mechanism + `testSelfUpgradePreservesSessions`
-- [ ] M2 — full session-state continuity (teardown deadlines, handles, inspect fd, attachment reset)
+- [ ] M2 — full session-state continuity (teardown deadlines, handles, inspect fd, attachment reset, checkpoint/watermark provenance when present)
 - [ ] M3 — dry-run-adopt validation gate + path validation
 - [ ] M4 — hello build identity + `LABPTY_OP_UPGRADE` + app-side detection
 - [ ] M5 — `LabptyHandoff.tla` + MC configs wired into `check-specs`; docs updated
