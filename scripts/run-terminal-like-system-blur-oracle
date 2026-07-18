@@ -41,10 +41,10 @@ scripts/verify-system-blur-composition --self-test
 
 # When launched through Terminal.app's `do script`, Terminal remains frontmost
 # and the strict WindowServer adjacency gate rejects the capture before Laban
-# can order itself forward. Minimizing this window keeps Terminal as the TCC
-# responsible process while removing it from the on-screen stack.
+# can order itself forward. Minimizing every Terminal window keeps Terminal as
+# the TCC responsible process while removing it from the on-screen stack.
 if [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ]; then
-  osascript -e 'tell application "Terminal" to set miniaturized of front window to true' \
+  osascript -e 'tell application "Terminal" to set miniaturized of every window to true' \
     >/dev/null 2>&1 || true
   sleep 0.5
 fi
