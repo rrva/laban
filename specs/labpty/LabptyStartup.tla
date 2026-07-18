@@ -1,242 +1,195 @@
 -------------------------- MODULE LabptyStartup --------------------------
 (****************************************************************************
- Labpty multi-daemon startup race on a shared Unix-domain socket path.
+ Labpty multi-daemon startup and cleanup races on one Unix-domain socket path.
 
- What this spec covers
-   Two (or more) labpty processes contending for the same `--socket`
-   path. Each daemon walks an `init -> listening -> (dead)` lifecycle
-   driven by Listen/Stop/Crash/Restart. The filesystem entry at the
-   path is modelled as `dir_entry`: either NONE or pointing to one
-   daemon's bound socket. A daemon's `bound` flag captures the
-   in-kernel fact "this process holds a bind() to that path"; clients
-   connecting to the path reach `dir_entry`'s daemon, not `bound`'s -
-   and the bug is exactly that those two can diverge.
+ Binding an AF_UNIX pathname publishes its directory entry before listen(2)
+ makes connect(2) succeed. The production startup therefore has three visible
+ phases: acquire an advisory lock, probe and bind, then publish a listening
+ socket and release the lock. A second un-serialized daemon can probe the
+ bound-not-listening entry, receive ECONNREFUSED, misclassify it as stale,
+ unlink it, and strand the first daemon's bound socket.
 
-   The spec is parametrised by `UnconditionalUnlink`:
+ Constants select three permanent negative-control bug shapes:
 
-     FALSE -> probe-first (post-b5e7819): a daemon refuses to start if
-              the path holds a live socket, and unlinks only stale
-              sockets before binding.
-     TRUE  -> unconditional (pre-b5e7819): every Listen() unlinks
-              whatever is at the path before binding. A second daemon
-              strands the first: its bind stays in-kernel but the path
-              now resolves to the second daemon's socket, so existing
-              sessions become unreachable via the path.
+   UnconditionalUnlink = TRUE
+       Pre-b5e7819 startup removes a live daemon's socket without probing.
 
- Why TLA+ here
-   This is a textbook concurrency bug: two processes against a shared
-   filesystem name. The pathology is invisible in single-process
-   testing because the second daemon's startup looks fine; it's the
-   first daemon that gets stranded. Two-daemon interleavings on the
-   shared (dir_entry, bound) pair are exactly what TLC enumerates.
+   SerializedStartup = FALSE
+       Probe-first startup has no lock across bind -> listen, exposing the
+       bound-not-listening stale-probe race.
 
- Companion module
-   MC_StartupPreFix.cfg sets UnconditionalUnlink = TRUE and demonstrates
-   that, without the b5e7819 fix, TLC finds the stranded-daemon
-   counterexample. Same role as LabptyLifecyclePreF2 plays for the
-   registry slot-leak.
+   InodeValidatedCleanup = FALSE
+       A closing predecessor unlinks a successor's newly rebound socket.
+
+ The positive model sets all fixes: probe-first, serialized startup, and
+ inode-validated cleanup.
  ****************************************************************************)
 
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS
-    Daemons,             \* finite set of daemon process IDs (~ 2 is enough)
-    MaxLifecycles,       \* per-daemon Listen-count bound for TLC finiteness
-    UnconditionalUnlink, \* BOOLEAN; TRUE = pre-b5e7819 bug, FALSE = fix
-    InodeValidatedCleanup \* BOOLEAN; FALSE = pre-cleanup-TOCTOU bug
-                          \* (cleanup_daemon unconditionally unlinked the
-                          \* path); TRUE = post-fix (cleanup_daemon
-                          \* lstats the path and unlinks only if the
-                          \* on-disk inode matches what we bound).
+    Daemons,
+    MaxLifecycles,
+    UnconditionalUnlink,
+    SerializedStartup,
+    InodeValidatedCleanup
 
 ASSUME UnconditionalUnlink   \in BOOLEAN
+ASSUME SerializedStartup     \in BOOLEAN
 ASSUME InodeValidatedCleanup \in BOOLEAN
 ASSUME MaxLifecycles \in 1..5
 
 VARIABLES
-    daemons,    \* Daemons -> {"init", "listening", "dead"}
-    dir_entry,  \* Daemons \cup {"none"} - current owner of the path
-    bound,      \* Daemons -> BOOLEAN     - daemon holds a bind() fd
-    lifecycles  \* Daemons -> 0..MaxLifecycles - per-daemon Listen count
+    daemons,      \* Daemons -> lifecycle state
+    dir_entry,    \* Daemons \cup {"none"}; pathname's current socket inode
+    bound,        \* Daemons -> BOOLEAN; process holds a bound socket fd
+    lifecycles,   \* Daemons -> startup-attempt count
+    startup_lock  \* Daemons \cup {"none"}; advisory lock-file owner
 
-vars == << daemons, dir_entry, bound, lifecycles >>
+vars == << daemons, dir_entry, bound, lifecycles, startup_lock >>
 
-\* "closing" sits between "listening" and "dead": the in-kernel bind
-\* has been dropped (CloseListen) but the directory entry on disk
-\* hasn't been removed yet (UnlinkPath has not fired).
-DaemonStates == { "init", "listening", "closing", "dead" }
+DaemonStates == { "init", "starting", "bound", "listening", "closing", "dead" }
 DirEntries   == Daemons \cup { "none" }
 
 TypeOK ==
-    /\ daemons    \in [ Daemons -> DaemonStates ]
-    /\ dir_entry  \in DirEntries
-    /\ bound      \in [ Daemons -> BOOLEAN ]
-    /\ lifecycles \in [ Daemons -> 0..MaxLifecycles ]
+    /\ daemons     \in [ Daemons -> DaemonStates ]
+    /\ dir_entry   \in DirEntries
+    /\ bound       \in [ Daemons -> BOOLEAN ]
+    /\ lifecycles  \in [ Daemons -> 0..MaxLifecycles ]
+    /\ startup_lock \in DirEntries
 
 Init ==
-    /\ daemons    = [ d \in Daemons |-> "init" ]
-    /\ dir_entry  = "none"
-    /\ bound      = [ d \in Daemons |-> FALSE ]
-    /\ lifecycles = [ d \in Daemons |-> 0 ]
+    /\ daemons     = [ d \in Daemons |-> "init" ]
+    /\ dir_entry   = "none"
+    /\ bound       = [ d \in Daemons |-> FALSE ]
+    /\ lifecycles  = [ d \in Daemons |-> 0 ]
+    /\ startup_lock = "none"
 
-\* ----------------------------------------------------------------------
-\* Helpers
-\* ----------------------------------------------------------------------
-
-\* The C probe (connect(2)) succeeds iff some daemon is currently
-\* listening *and* holds a kernel bind to that path. A stale dir_entry
-\* (process crashed without unlink) yields ECONNREFUSED on probe, which
-\* the fix correctly treats as "unlinkable, then re-bind".
 SocketIsLive(owner) ==
     /\ owner # "none"
     /\ daemons[owner] = "listening"
     /\ bound[owner] = TRUE
 
-\* ----------------------------------------------------------------------
-\* Listen actions - one per spec variant. Listen selects via the
-\* UnconditionalUnlink constant.
-\* ----------------------------------------------------------------------
+ReleasedLock(d) ==
+    IF SerializedStartup /\ startup_lock = d THEN "none" ELSE startup_lock
 
-\* Buggy: unconditional unlink + bind. Whatever was at the path is gone;
-\* the new daemon owns dir_entry. The previous daemon's `bound` flag is
-\* untouched - that's the stranding.
-Listen_Buggy(d) ==
+AcquireStartup(d) ==
     /\ daemons[d] = "init"
     /\ lifecycles[d] < MaxLifecycles
-    /\ daemons'    = [ daemons    EXCEPT ![d] = "listening" ]
-    /\ bound'      = [ bound      EXCEPT ![d] = TRUE ]
-    /\ dir_entry'  = d
+    /\ (~SerializedStartup \/ startup_lock = "none")
+    /\ daemons' = [ daemons EXCEPT ![d] = "starting" ]
     /\ lifecycles' = [ lifecycles EXCEPT ![d] = lifecycles[d] + 1 ]
+    /\ startup_lock' = IF SerializedStartup THEN d ELSE startup_lock
+    /\ UNCHANGED << dir_entry, bound >>
 
-\* Fixed: probe-first.
-\*   (a) Path is empty: clean bind.
-\*   (b) Path holds a live socket: refuse to start.
-\*   (c) Path holds a stale socket: unlink then bind.
-Listen_Fixed(d) ==
-    /\ daemons[d] = "init"
-    /\ lifecycles[d] < MaxLifecycles
-    /\ \/ \* (a) clean bind
-          /\ dir_entry = "none"
-          /\ daemons'    = [ daemons    EXCEPT ![d] = "listening" ]
-          /\ bound'      = [ bound      EXCEPT ![d] = TRUE ]
-          /\ dir_entry'  = d
-          /\ lifecycles' = [ lifecycles EXCEPT ![d] = lifecycles[d] + 1 ]
-       \/ \* (b) refuse - someone is already serving
-          /\ dir_entry # "none"
+ProbeAndBind_Buggy(d) ==
+    /\ daemons[d] = "starting"
+    /\ daemons'   = [ daemons EXCEPT ![d] = "bound" ]
+    /\ bound'     = [ bound EXCEPT ![d] = TRUE ]
+    /\ dir_entry' = d
+    /\ UNCHANGED << lifecycles, startup_lock >>
+
+ProbeAndBind_Fixed(d) ==
+    /\ daemons[d] = "starting"
+    /\ \/ /\ dir_entry = "none"
+          /\ daemons'   = [ daemons EXCEPT ![d] = "bound" ]
+          /\ bound'     = [ bound EXCEPT ![d] = TRUE ]
+          /\ dir_entry' = d
+          /\ UNCHANGED << lifecycles, startup_lock >>
+       \/ /\ dir_entry # "none"
           /\ SocketIsLive(dir_entry)
           /\ daemons' = [ daemons EXCEPT ![d] = "dead" ]
-          /\ lifecycles' = [ lifecycles EXCEPT ![d] = lifecycles[d] + 1 ]
-          /\ UNCHANGED << bound, dir_entry >>
-       \/ \* (c) stale entry - unlink + bind
-          /\ dir_entry # "none"
+          /\ startup_lock' = ReleasedLock(d)
+          /\ UNCHANGED << dir_entry, bound, lifecycles >>
+       \/ /\ dir_entry # "none"
           /\ ~SocketIsLive(dir_entry)
-          /\ daemons'    = [ daemons    EXCEPT ![d] = "listening" ]
-          /\ bound'      = [ bound      EXCEPT ![d] = TRUE ]
-          /\ dir_entry'  = d
-          /\ lifecycles' = [ lifecycles EXCEPT ![d] = lifecycles[d] + 1 ]
+          /\ daemons'   = [ daemons EXCEPT ![d] = "bound" ]
+          /\ bound'     = [ bound EXCEPT ![d] = TRUE ]
+          /\ dir_entry' = d
+          /\ UNCHANGED << lifecycles, startup_lock >>
 
-Listen(d) ==
-    IF UnconditionalUnlink THEN Listen_Buggy(d) ELSE Listen_Fixed(d)
+ProbeAndBind(d) ==
+    IF UnconditionalUnlink THEN ProbeAndBind_Buggy(d) ELSE ProbeAndBind_Fixed(d)
 
-\* ----------------------------------------------------------------------
-\* Other lifecycle actions - identical between variants.
-\* ----------------------------------------------------------------------
+PublishListen(d) ==
+    /\ daemons[d] = "bound"
+    /\ bound[d] = TRUE
+    /\ daemons' = [ daemons EXCEPT ![d] = "listening" ]
+    /\ startup_lock' = ReleasedLock(d)
+    /\ UNCHANGED << dir_entry, bound, lifecycles >>
 
-\* Graceful shutdown happens in two steps in the C code:
-\* (1) close(listen_fd): the kernel drops our bind, so SocketIsLive
-\*     for this daemon becomes FALSE immediately, even though the
-\*     directory entry still points at our (now-stale) socket file.
-\* (2) unlink(socket_path): the directory entry goes away.
-\* The gap between these two operations is the TOCTOU window that
-\* lets a successor daemon probe the path as stale, unlink+rebind,
-\* and then have us clobber its fresh socket in step (2). Modelling
-\* Stop as a single atomic transition hides the bug; splitting into
-\* CloseListen + UnlinkPath exposes it for TLC.
 CloseListen(d) ==
     /\ daemons[d] = "listening"
     /\ bound[d] = TRUE
     /\ daemons' = [ daemons EXCEPT ![d] = "closing" ]
-    /\ bound'   = [ bound   EXCEPT ![d] = FALSE ]
-    /\ UNCHANGED << dir_entry, lifecycles >>
+    /\ bound'   = [ bound EXCEPT ![d] = FALSE ]
+    /\ UNCHANGED << dir_entry, lifecycles, startup_lock >>
 
-\* The unlink at cleanup_daemon. InodeValidatedCleanup = TRUE models
-\* the post-fix behaviour: we check whether the path still resolves
-\* to our socket before removing it. dir_entry # d means a successor
-\* unlinked and rebound; we skip the unlink. InodeValidatedCleanup =
-\* FALSE removes unconditionally, which is the cleanup-TOCTOU bug.
 UnlinkPath(d) ==
     /\ daemons[d] = "closing"
-    /\ daemons'   = [ daemons EXCEPT ![d] = "dead" ]
+    /\ daemons' = [ daemons EXCEPT ![d] = "dead" ]
     /\ dir_entry' =
-            IF InodeValidatedCleanup /\ dir_entry # d THEN dir_entry
-            ELSE IF dir_entry = d THEN "none"
-            ELSE "none"
-    /\ UNCHANGED << bound, lifecycles >>
+          IF InodeValidatedCleanup /\ dir_entry # d THEN dir_entry
+          ELSE "none"
+    /\ UNCHANGED << bound, lifecycles, startup_lock >>
 
-\* Legacy single-step Stop used by the original startup spec callers;
-\* still emitted by Crash-then-Stop sequences where there is no
-\* in-process cleanup to split.
 Stop(d) ==
     /\ daemons[d] = "listening"
-    /\ daemons'   = [ daemons EXCEPT ![d] = "dead" ]
-    /\ bound'     = [ bound   EXCEPT ![d] = FALSE ]
+    /\ daemons' = [ daemons EXCEPT ![d] = "dead" ]
+    /\ bound'   = [ bound EXCEPT ![d] = FALSE ]
     /\ dir_entry' = IF dir_entry = d THEN "none" ELSE dir_entry
-    /\ UNCHANGED lifecycles
+    /\ UNCHANGED << lifecycles, startup_lock >>
 
-\* Crash: ungraceful - the kernel reclaims the bind, but the directory
-\* entry on disk persists (no unlink). The path becomes stale.
-Crash(d) ==
+CrashListening(d) ==
     /\ daemons[d] = "listening"
-    /\ daemons'   = [ daemons EXCEPT ![d] = "dead" ]
-    /\ bound'     = [ bound   EXCEPT ![d] = FALSE ]
+    /\ daemons' = [ daemons EXCEPT ![d] = "dead" ]
+    /\ bound'   = [ bound EXCEPT ![d] = FALSE ]
+    /\ UNCHANGED << dir_entry, lifecycles, startup_lock >>
+
+CrashStartup(d) ==
+    /\ daemons[d] \in { "starting", "bound" }
+    /\ daemons' = [ daemons EXCEPT ![d] = "dead" ]
+    /\ bound'   = [ bound EXCEPT ![d] = FALSE ]
+    /\ startup_lock' = ReleasedLock(d)
     /\ UNCHANGED << dir_entry, lifecycles >>
 
-\* Restart: a dead daemon can return to init so TLC explores multi-cycle
-\* interleavings within the MaxLifecycles bound. A daemon stuck in
-\* "closing" must complete its UnlinkPath before it can Restart.
 Restart(d) ==
     /\ daemons[d] = "dead"
     /\ lifecycles[d] < MaxLifecycles
     /\ daemons' = [ daemons EXCEPT ![d] = "init" ]
-    /\ UNCHANGED << dir_entry, bound, lifecycles >>
+    /\ UNCHANGED << dir_entry, bound, lifecycles, startup_lock >>
 
 Next ==
-    \/ \E d \in Daemons : Listen(d)
+    \/ \E d \in Daemons : AcquireStartup(d)
+    \/ \E d \in Daemons : ProbeAndBind(d)
+    \/ \E d \in Daemons : PublishListen(d)
     \/ \E d \in Daemons : CloseListen(d)
     \/ \E d \in Daemons : UnlinkPath(d)
     \/ \E d \in Daemons : Stop(d)
-    \/ \E d \in Daemons : Crash(d)
+    \/ \E d \in Daemons : CrashListening(d)
+    \/ \E d \in Daemons : CrashStartup(d)
     \/ \E d \in Daemons : Restart(d)
 
 Spec == Init /\ [][Next]_vars
 
-\* ----------------------------------------------------------------------
-\* Safety invariants
-\* ----------------------------------------------------------------------
-
-\* If a daemon is "listening" with a bound fd, the path on disk must
-\* point at that daemon's socket. Otherwise the daemon is *serving but
-\* unreachable via the path* - exactly the b5e7819 strand-the-live-
-\* session bug. This is the invariant the fix restores.
 ServingDaemonOwnsPath ==
     \A d \in Daemons :
         (daemons[d] = "listening" /\ bound[d] = TRUE) => dir_entry = d
 
-\* No two daemons may both hold a live bind to the same path. Whether
-\* the kernel would enforce this is irrelevant; the question is whether
-\* the model lets two daemons believe they own the path simultaneously.
 AtMostOneServing ==
     Cardinality({ d \in Daemons :
         daemons[d] = "listening" /\ bound[d] = TRUE }) <= 1
 
-\* A bound fd implies the owning daemon is currently listening. Crash,
-\* Stop, and CloseListen all clear `bound`, so this should always
-\* hold (CloseListen transitions the daemon to "closing" in the same
-\* atomic step).
-BoundImpliesListening ==
-    \A d \in Daemons : bound[d] = TRUE => daemons[d] = "listening"
+AtMostOneBoundSocket ==
+    Cardinality({ d \in Daemons : bound[d] = TRUE }) <= 1
 
-\* `lifecycles` is monotonic by construction.
+BoundImpliesStartupOrListening ==
+    \A d \in Daemons : bound[d] = TRUE => daemons[d] \in { "bound", "listening" }
+
+SerializedLockMatchesStarter ==
+    SerializedStartup /\ startup_lock # "none"
+        => daemons[startup_lock] \in { "starting", "bound" }
+
 LifecyclesBounded ==
     \A d \in Daemons : lifecycles[d] \in 0..MaxLifecycles
 

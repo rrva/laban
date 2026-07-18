@@ -82,7 +82,9 @@ run_tlc MC_ControlChannelMidFrameLeak.cfg MC_ControlChannelMidFrameLeak fail
 run_tlc MC_AttachmentPreFix.cfg           MC_AttachmentPreFix           fail
 run_tlc MC_OutputWakeWakeWhileActive.cfg  MC_OutputWake                 fail
 run_tlc MC_OutputWakeStalePark.cfg        MC_OutputWake                 fail
+run_tlc MC_OutputWakeWatchReplace.cfg     MC_OutputWake                 fail
 run_tlc MC_StartupPreFix.cfg              MC_StartupPreFix              fail
+run_tlc MC_StartupBindListenRace.cfg      MC_Startup                    fail
 run_tlc MC_StartupCleanupTOCTOU.cfg       MC_StartupCleanupTOCTOU       fail
 run_tlc MC_ReusePreFix.cfg                MC_Reuse                      fail
 

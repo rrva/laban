@@ -153,7 +153,7 @@ tests, runtime smoke test, and a headless end-to-end scenario):
 
 ```sh
 ./scripts/test     # swift test only
-./scripts/check    # the full gate CI must pass
+./scripts/check    # the full local gate; the pre-push hook runs its fast subset
 ```
 
 ## License
@@ -168,4 +168,3 @@ in full in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md):
   statically linked.
 - JetBrains Mono — SIL Open Font License 1.1; see
   [`Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt`](Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt).
-

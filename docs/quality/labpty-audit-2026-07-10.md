@@ -68,13 +68,22 @@ Run locally on this checkout:
 - `scripts/check-anchors` — passes.
 - `scripts/check-fd-hygiene` — passes.
 
-The formal layer is healthy locally. The risk is that CI does not run any of these gates.
+The formal layer was healthy locally. At audit time, the risk was that no
+automation ran these gates; the 2026-07-17 remediation enforces the fast
+subset in `scripts/pre-push` (installed by `scripts/install-git-hooks`), with
+the full `scripts/check` run manually before releases. CI stays lint+build
+only to conserve free-tier macOS minutes.
 
 ---
 
 ## Recommendations
 
-1. **CI expansion** — add a job to `.github/workflows/check.yml` that runs `swift test` and at least `scripts/check-specs`, `scripts/check-cbmc`, and `scripts/check-trace`. These are fast enough for per-PR gating.
+1. **Verification enforcement (resolved 2026-07-17, revised)** — a CI gate was
+   briefly added, then removed in favor of the local `scripts/pre-push` hook:
+   the repo is on the free GitHub tier and macOS CI minutes are too expensive
+   for per-PR `swift test`, stress, TLC, CBMC, and trace runs. The push hook
+   gates lint and build on every push (`PRE_PUSH_TEST=1` adds `swift test`);
+   `scripts/check` remains the mandatory pre-release gate.
 2. **Restore output-wake trace binding** — either bring the historical `TraceOutputWake.tla`/`trace_output_wake.c` binding onto `HEAD` or remove/adjust the `// Modelled by` claim in `main.c` so it does not overstate trace coverage.
 3. **Model park-reconnect attach** — add the `parkOutputWake` re-attach action to `LabptyAttachment.tla` and exercise it in `trace_attachment.c`.
 4. **Harden `LabptyByteRingWriter`** — even though it is test-only today, it should mirror the daemon's `O_EXCL|O_NOFOLLOW` + `F_PREALLOCATE` contract so it cannot become a footgun if adopted for production use.

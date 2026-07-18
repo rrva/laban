@@ -5960,6 +5960,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         EventLog.shared.log(
           "paste.failed",
           ["bytes": sent.bytes.count, "error": String(describing: error)])
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = L10n.tr("Paste failed")
+        alert.informativeText = L10n.tr(
+          "Laban could not send the complete paste to the active terminal. The terminal may have received only part of it."
+        )
+        alert.addButton(withTitle: L10n.tr("OK"))
+        alert.runModal()
+        return
       }
     }
     EventLog.shared.log(

@@ -73,6 +73,49 @@ final class LabptyClientTransportTests: XCTestCase {
     XCTAssertThrowsError(try client.hello())
   }
 
+  func testClientChunksLargeWriteInputInOrder() throws {
+    let chunkSize = LabptyProtocolLimits.maxWriteInputBytes
+    let payload = (0..<(chunkSize * 2 + 37)).map { UInt8(truncatingIfNeeded: $0) }
+    let capturedLock = NSLock()
+    var captured: [LabptyWriteInputRequest] = []
+    let server = try FakeLabptyServer(root: temporaryDirectory()) { fd in
+      let helloRequest = try Self.readFrameRaw(fd: fd)
+      XCTAssertEqual(helloRequest.header.operation, .hello)
+      let helloPayload = try LabptyHelloResponse().encode()
+      try Self.writeAllRaw(
+        fd: fd,
+        data: try LabptyFraming.encodeResponse(
+          sequence: helloRequest.header.sequence,
+          code: .ok,
+          payload: helloPayload))
+
+      for _ in 0..<3 {
+        let frame = try Self.readFrameRaw(fd: fd)
+        XCTAssertEqual(frame.header.operation, .writeInput)
+        let request = try LabptyWriteInputRequest.decode(from: frame.payload)
+        capturedLock.withLock { captured.append(request) }
+        try Self.writeAllRaw(
+          fd: fd,
+          data: try LabptyFraming.encodeResponse(
+            sequence: frame.header.sequence,
+            code: .ok,
+            payload: Data()))
+      }
+    }
+    try server.start()
+    let client = try LabptyTerminalSessionClient(
+      socketPath: server.socketPath,
+      rpcTimeoutMilliseconds: 500)
+    defer { client.close() }
+
+    try client.writeInput(handle: 42, bytes: payload)
+
+    let requests = capturedLock.withLock { captured }
+    XCTAssertEqual(requests.map(\.ptyHandle), [42, 42, 42])
+    XCTAssertEqual(requests.map(\.bytes.count), [chunkSize, chunkSize, 37])
+    XCTAssertEqual(requests.reduce(into: Data()) { $0.append($1.bytes) }, Data(payload))
+  }
+
   private func temporaryDirectory() throws -> URL {
     let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
       .appendingPathComponent("lpt-client-\(UUID().uuidString.prefix(8))", isDirectory: true)

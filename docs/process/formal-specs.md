@@ -27,8 +27,8 @@ the `proofs/labpty/coverage/*_cov.c` assertion harnesses.
 | `LabptyLifecycle.tla` | `Sources/Labpty/labpty_registry.c` session-slot state machine. | `EventualReleaseOfClosePending` (F2 fix), `DeadLeakNotPermanent` (commit 5420964 fix), `EventualReapOfZombie`. |
 | `LabptyByteRing.tla` | `Sources/Labpty/labpty_byte_ring.c` single-producer / single-consumer ring with safety margin. | `NoTornRead`, `WindowDoesNotContainFutureWrites`. |
 | `LabptyControlChannel.tla` | `Sources/Labpty/main.c` per-connection state machine (`labpty_client_t` slots, hello negotiation, slowloris reaper). | `EstablishedImpliesNegotiated` and `UnnegotiatedIdleIsNotPermanent` (commit 2aac41a fix). |
-| `LabptyOutputWake.tla` | `Sources/Labpty/main.c` output-wake parked/active readiness protocol (`output_wake`, `wake_armed`, `wake_pending`, `parkOutputWake`). | `ParkedImpliesObservedCurrent` and `NoMoreWakesThanBursts` — no stale-offset lost wake and no wake-per-drain churn while active. |
-| `LabptyStartup.tla` | `Sources/Labpty/main.c::listen_unix_socket` multi-daemon race on the `--socket` path. | `ServingDaemonOwnsPath`, `AtMostOneServing` (commit b5e7819 fix). |
+| `LabptyOutputWake.tla` | `Sources/Labpty/main.c` output-wake parked/active readiness protocol (`output_wake`, `wake_armed`, `wake_pending`, `parkOutputWake`) and same-client multi-wake watch retention. | `ParkedImpliesObservedCurrent`, `NoMoreWakesThanBursts`, and `EarlierWakeRetainsItsHandle` — no stale-offset lost wake, wake-per-drain churn, or later-fd watch clobber. |
+| `LabptyStartup.tla` | `Sources/Labpty/main.c::listen_unix_socket` multi-daemon probe/bind/listen and cleanup races on the `--socket` path. | `ServingDaemonOwnsPath`, `AtMostOneServing`, and `AtMostOneBoundSocket` — including the advisory lock across bind-before-listen publication. |
 | `LabptyAttachment.tla` | `Sources/Labpty/main.c` per-session connected-client mask (`attached_clients`, `ATTACH`/`DETACH`, opener auto-attach, `client_release` scrub). | `AttachmentImpliesInUse` — no mask retains a departed client, so the count never overcounts an owner (ADR 0010). |
 | `LabptyReuse.tla` | `Sources/Labpty/labpty_registry.c` `logical_id` reuse: `labpty_session_request_close` relinquishes the id at terminate; `labpty_registry_open` rejects only a still-held id. | `NotAliveImpliesIdRelinquished` (mechanism) and `TerminatedIdIsReusable` (contract) — a terminated logical_id is immediately reusable, not just eventually. `LabptyLifecycle.tla` has no `logical_id`, so it could not state this. |
 
@@ -36,17 +36,21 @@ Each module is paired with one or more `MC_*.tla` / `MC_*.cfg` harnesses
 that constrain the state space for TLC. Configs come in two shapes:
 
 - **Positive** (`MC.cfg`, `MC_Larger.cfg`, `MC_ControlChannel.cfg`,
-  `MC_Attachment.cfg`, `MC_Startup.cfg`, `MC_Reuse.cfg`, `MC_ByteRing.cfg`,
-  `MC_ByteRing_Larger.cfg`): the fix is in. TLC verifies the spec.
+  `MC_Attachment.cfg`, `MC_OutputWake.cfg`, `MC_Startup.cfg`,
+  `MC_Reuse.cfg`, `MC_ByteRing.cfg`, `MC_ByteRing_Larger.cfg`): the fix is in.
+  TLC verifies the spec.
 - **Negative-control** (`MC_PreF2.cfg`, `MC_PreSlotReclaim.cfg`,
-  `MC_ControlChannelPreFix.cfg`, `MC_AttachmentPreFix.cfg`,
-  `MC_StartupPreFix.cfg`, `MC_ReusePreFix.cfg`,
-  `MC_ByteRingTorn.cfg`, `MC_ByteRing_Boundary.cfg`): the fix is not in
-  (or a parameter is set unsafely — `MC_Reuse` and `MC_ReusePreFix` share
-  one module and flip the `Fixed` constant). TLC is **required to find a
-  counter-example**. The negative configs are permanent regression
-  tests — if one silently starts passing, the bug-shape it documented
-  is gone and someone has accidentally fixed the wrong thing.
+  `MC_ControlChannelPreFix.cfg`, `MC_ControlChannelMidFrameLeak.cfg`,
+  `MC_AttachmentPreFix.cfg`, `MC_OutputWakeWakeWhileActive.cfg`,
+  `MC_OutputWakeStalePark.cfg`, `MC_OutputWakeWatchReplace.cfg`,
+  `MC_StartupPreFix.cfg`,
+  `MC_StartupBindListenRace.cfg`, `MC_StartupCleanupTOCTOU.cfg`,
+  `MC_ReusePreFix.cfg`, `MC_ByteRingTorn.cfg`, and
+  `MC_ByteRing_Boundary.cfg`): the fix is not in (or a parameter is set
+  unsafely). TLC is **required to find a counter-example**. The negative
+  configs are permanent regression tests — if one silently starts passing,
+  the bug-shape it documented is gone and someone has accidentally fixed the
+  wrong thing.
 
 ## When to update a spec
 
@@ -77,9 +81,10 @@ When you fix a bug that lives inside a modelled state machine:
 2. If the existing spec doesn't catch it, the spec was wrong or
    incomplete. Update the spec until it does, then make sure the
    counter-example matches the field-observed shape.
-3. Ship a `LabptyXxxPre<descriptor>.tla` companion module that
-   reproduces the bug. Wire its config into `scripts/check-specs`
-   under the negative-control list.
+3. Ship a companion module that reproduces the bug, or an explicit model
+   constant which selects the broken transition when the fixed and broken
+   shapes can stay legible in one module. Wire its config into
+   `scripts/check-specs` under the negative-control list.
 
 The negative-control pattern is what keeps the proof honest. Without
 it, future refactors can silently weaken the model.
@@ -114,7 +119,8 @@ TLA_JAR=/path/to/tla2tools.jar ./scripts/check-specs
 ```
 
 If the jar is absent, `scripts/check` skips the spec run with a notice.
-CI sets `TLA_JAR` explicitly, so missing-jar there is a hard failure.
+The `labpty verification` CI job downloads a checksum-pinned jar and sets
+`TLA_JAR` explicitly, so a missing or corrupt jar there is a hard failure.
 
 Each config runs in under a second on the existing parameters; the full
 sweep finishes in well under a minute.

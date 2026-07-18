@@ -158,8 +158,15 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
 
   public func writeInput(handle: UInt64, bytes: [UInt8]) throws {
     guard !bytes.isEmpty else { return }
-    let request = LabptyWriteInputRequest(ptyHandle: handle, bytes: Data(bytes))
-    try sendNoPayload(operation: .writeInput, payload: try request.encode())
+    var start = 0
+    while start < bytes.count {
+      let end = min(start + LabptyProtocolLimits.maxWriteInputBytes, bytes.count)
+      let request = LabptyWriteInputRequest(
+        ptyHandle: handle,
+        bytes: Data(bytes[start..<end]))
+      try sendNoPayload(operation: .writeInput, payload: try request.encode())
+      start = end
+    }
   }
 
   public func resize(handle: UInt64, rows: Int, cols: Int) throws -> LabptySessionDescriptor {
