@@ -263,4 +263,70 @@ final class TerminalIdlePolicyTests: XCTestCase {
         idleFloorEnabled: false),
       TerminalIdlePolicy.idleDisplayLinkFramesPerSecond)
   }
+
+  // MARK: - Glyph-effect animation channel (per-glyph-animation-channel M0)
+
+  func testGlyphEffectKeepsLinkRunningWhenFloorOff() {
+    XCTAssertTrue(
+      TerminalIdlePolicy.displayLinkShouldRun(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        terminalOutputActive: false,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false,
+        glyphEffectAnimating: true))
+  }
+
+  func testGlyphEffectDoesNotRunWhenNotVisible() {
+    XCTAssertFalse(
+      TerminalIdlePolicy.displayLinkShouldRun(
+        windowVisibleToUser: false,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        terminalOutputActive: false,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false,
+        glyphEffectAnimating: true))
+  }
+
+  func testGlyphEffectOnlyPrefersAnimationBudgetFrameRate() {
+    // Decorative, short-lived motion: same 30 fps budget as the attention
+    // pulse, not the 120 Hz live-output rate.
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        terminalOutputActive: false,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false,
+        glyphEffectAnimating: true),
+      TerminalIdlePolicy.animationDisplayLinkFramesPerSecond)
+  }
+
+  func testGlyphEffectWithActiveOutputPrefersActiveFrameRate() {
+    // Live output outranks the decorative budget: the stream keeps 120.
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        terminalOutputActive: true,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false,
+        glyphEffectAnimating: true),
+      TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
+  }
+
+  func testShimsKeepGlyphEffectOff() {
+    // The compatibility shims model the pre-channel world: no glyph effects.
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        terminalOutputActive: false),
+      TerminalIdlePolicy.idleDisplayLinkFramesPerSecond)
+  }
 }

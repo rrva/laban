@@ -1412,7 +1412,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
 
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, _, _
+        let underlineStyle, let underlineColor, _, _, _
       ):
         let atlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
         appendGlyphRun(
@@ -1562,7 +1562,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
           _,
           _,
           _,
-          _
+          _, _
         ) = command
       else {
         continue

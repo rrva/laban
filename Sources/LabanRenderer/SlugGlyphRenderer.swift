@@ -48,6 +48,11 @@ private struct SlugGlyphGPUBand {
   var indexCount: UInt32
 }
 
+// Per-glyph animation channel (execplans/active/per-glyph-animation-channel.md):
+// `effectKind`/`effectStart` ride the two former pad words, so the instance
+// stride stays 64 B and kind 0 (none) is byte-identical to the pre-channel
+// layout. The Metal mirror in VectorGlyphShaders.metal must stay
+// byte-identical with this struct.
 private struct SlugGlyphGPUInstance {
   var originPx: SIMD2<Float>
   var sizePx: SIMD2<Float>
@@ -56,8 +61,8 @@ private struct SlugGlyphGPUInstance {
   var color: SIMD4<Float>
   var glyphIndex: UInt32
   var dilation: Float = 0
-  var pad1: UInt32 = 0
-  var pad2: UInt32 = 0
+  var effectKind: UInt32 = 0
+  var effectStart: Float = 0
 }
 
 private struct SlugGlyphGPUUniforms {
@@ -70,9 +75,9 @@ private struct SlugGlyphGPUUniforms {
   var subpixelGBounds: SIMD4<Float>
   var subpixelBBounds: SIMD4<Float>
   var subpixelMode: UInt32
-  var pad1: UInt32 = 0
-  var pad2: UInt32 = 0
-  var pad3: UInt32 = 0
+  var timeSeconds: Float = 0
+  var bellAmplitudePx: Float = 0
+  var bellDirection: Float = 0
 }
 
 private struct SlugGlyphGeometryKey: Hashable {
@@ -356,6 +361,82 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var lastFrameSlugGlyphsCount = 0
   private var lastFrameRasterGlyphsCount = 0
   private var lastFrameColorGlyphsCount = 0
+
+  // MARK: - Glyph-effect animation channel (M0 substrate)
+
+  /// Monotonic seconds clock driving the `timeSeconds` uniform. Defaults to
+  /// the shared mach_absolute_time-based `MonotonicClock`; tests and headless
+  /// runs substitute a virtual clock so effect evaluation is deterministic.
+  public var glyphEffectClock: () -> Double = MonotonicClock.seconds
+  /// Epoch subtracted from `glyphEffectClock` so the shader-side Float stays
+  /// precise over long uptimes. Captured lazily on the first `render()`.
+  private var glyphEffectEpochSeconds: Double?
+  /// `timeSeconds` for the frame currently being built; read by
+  /// `glyphUniforms` and by effectStart conversion.
+  private var frameTimeSeconds: Float = 0
+  /// DEBUG-only trigger (M0 acceptance hook): when non-zero, glyph runs
+  /// stamped with a fresh output timestamp are emitted with this `effectKind`
+  /// so the kind≠0 shader path can be exercised before M1 wires real kind
+  /// assignment. Default 0 (no effect); settable in tests or via the
+  /// `LABAN_GLYPH_EFFECT_DEBUG_TRIGGER` environment variable.
+  public var debugGlyphEffectKind: UInt32 = {
+    guard
+      let raw = ProcessInfo.processInfo.environment["LABAN_GLYPH_EFFECT_DEBUG_TRIGGER"],
+      let kind = UInt32(raw)
+    else { return 0 }
+    return kind
+  }()
+
+  // MARK: - Glyph-effect live state (M1)
+
+  // Effect-kind and decay constants mirrored from `GlyphEffectTimeline`
+  // (LabanCore), the documented source of truth; LabanRenderer cannot import
+  // LabanCore (dependency direction), so keep these in sync manually — same
+  // shared-source pattern as the Metal shader constants.
+  public static let glyphEffectKindNone: UInt32 = 0
+  public static let glyphEffectKindInkBloom: UInt32 = 1
+  public static let glyphEffectKindBellShake: UInt32 = 2
+  private static let glyphEffectInkBloomDecaySeconds: Double = 0.150
+  private static let glyphEffectBellShakeDecaySeconds: Double = 0.300
+
+  private static func glyphEffectDecaySeconds(kind: UInt32) -> Double {
+    switch kind {
+    case glyphEffectKindInkBloom: return glyphEffectInkBloomDecaySeconds
+    case glyphEffectKindBellShake: return glyphEffectBellShakeDecaySeconds
+    default: return 0
+    }
+  }
+
+  /// Whether freshly output glyph runs are emitted with a real `effectKind`
+  /// (ink-bloom today). Set by the view every frame from
+  /// `GlyphEffectSettings.enabled && !reduceMotion`; default off.
+  public var glyphEffectsEnabled = false
+
+  /// A glyph run carrying a live effect, tracked at the run level so bands
+  /// stay in the same CG-point y-up space as `RenderDamage`.
+  private struct LiveGlyphEffect {
+    var band: DirtyYRange
+    var effectStart: Float
+    var kind: UInt32
+  }
+  /// Live effects from the most recently built frame; their bands are
+  /// re-damaged at the next `render()` entry (frame pumping + settle
+  /// repaint).
+  private var liveGlyphEffects: [LiveGlyphEffect] = []
+  /// Accumulator rebuilt by `buildInstances` each frame.
+  private var frameLiveGlyphEffects: [LiveGlyphEffect] = []
+  /// Live effect runs in the last built frame (0 once every effect decayed
+  /// and the settle repaint landed).
+  public private(set) var glyphEffectLiveCount = 0
+  /// Most recent non-zero effect kind seen (0 = none yet).
+  public private(set) var lastGlyphEffectKind: UInt32 = 0
+  /// Seconds until the last live effect decays (renderer clock domain); the
+  /// view converts this into its `glyphEffectAnimatingUntil` deadline so the
+  /// display link runs at the animation budget while effects move pixels.
+  public private(set) var glyphEffectAnimatingRemainingSeconds: Double = 0
+  /// Frames rendered with at least one live effect — the pumping evidence
+  /// counter surfaced as `glyphEffects.wakeCount` in `/debug/state`.
+  public private(set) var glyphEffectFrameCount: UInt64 = 0
 
   // MARK: - M2 damage-aware rendering state
   //
@@ -876,6 +957,25 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     return PNGEncoder.encode(image)
   }
 
+  /// Debug readback for headless pixel probes: raw premultiplied BGRA bytes
+  /// of the current target texture (row 0 = top scanline), or nil before the
+  /// first render. Same pixels `pngData` encodes, without the PNG round-trip.
+  public func readbackBGRA() -> (width: Int, height: Int, bytes: [UInt8])? {
+    lastCommandBuffer?.waitUntilCompleted()
+    guard let targetTexture else { return nil }
+    let bytesPerRow = targetTexture.width * 4
+    var bytes = [UInt8](repeating: 0, count: bytesPerRow * targetTexture.height)
+    bytes.withUnsafeMutableBytes { raw in
+      guard let base = raw.baseAddress else { return }
+      targetTexture.getBytes(
+        base,
+        bytesPerRow: bytesPerRow,
+        from: MTLRegionMake2D(0, 0, targetTexture.width, targetTexture.height),
+        mipmapLevel: 0)
+    }
+    return (targetTexture.width, targetTexture.height, bytes)
+  }
+
   public func reconfigureFonts(fontAtlas: FontAtlas, sidebarFontAtlas: FontAtlas? = nil) {
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
@@ -1090,6 +1190,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
     let signposter = RenderEncodeSignpost.signposter
+    // Sample the glyph-effect clock once per frame so every instance and the
+    // `timeSeconds` uniform share one time base. The epoch keeps the Float
+    // handed to the shader small (precision) across long uptimes.
+    let effectNowSeconds = glyphEffectClock()
+    if glyphEffectEpochSeconds == nil { glyphEffectEpochSeconds = effectNowSeconds }
+    frameTimeSeconds = Float(effectNowSeconds - (glyphEffectEpochSeconds ?? effectNowSeconds))
     let incomingShape: String
     if case .partial(let yRanges) = damage {
       incomingShape = "bands:\(yRanges.count)"
@@ -1115,6 +1221,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     let clearColor = Self.linearizedClearColor(commands)
     let currentCursorRects = cursorRects(in: commands)
+    // M1 frame pumping: while glyph effects animate, their bands must be
+    // redrawn every frame (and once more after decay for the settle repaint),
+    // defeating the empty-effective-damage skip below. The live set is
+    // recomputed after buildInstances; this unions the previous frame's set.
+    let damage = unionLiveGlyphEffectBands(into: damage)
     let outcome = resolveEffectiveDamage(
       damage: damage,
       currentCursorRects: currentCursorRects,
@@ -1204,6 +1315,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       rasterGlyphs: &rasterGlyphs,
       colorGlyphs: &colorGlyphs,
       damageBands: damageBands)
+    updateLiveGlyphEffectState()
     lastFrameSolidsCount = solids.count + replaceSolids.count
     lastFrameSlugGlyphsCount = slugGlyphs.count
     lastFrameRasterGlyphsCount = rasterGlyphs.count
@@ -1631,7 +1743,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       localMin: SIMD2<Float>(Float(origin.x), Float(origin.y)),
       localMax: SIMD2<Float>(Float(origin.x + CGFloat(width)), Float(origin.y + CGFloat(height))),
       color: SIMD4<Float>(1, 1, 1, 1),
-      glyphIndex: UInt32(entry.glyphIndex))
+      glyphIndex: UInt32(entry.glyphIndex),
+      effectKind: 0,
+      effectStart: 0)
     guard let instanceBuffer = makeBuffer([instance]) else { return nil }
 
     let pass = MTLRenderPassDescriptor()
@@ -1730,6 +1844,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       if case .rect(let rect, _, .preedit, _) = command { return rect }
       return nil
     }
+    frameLiveGlyphEffects.removeAll(keepingCapacity: true)
     for command in commands {
       switch command {
       case .rect(let rect, let color, _, let compositing):
@@ -1755,7 +1870,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, _, _
+        let underlineStyle, let underlineColor, _, _, let outputTimestampSeconds
       ):
         let activeAtlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
         let cellHeight = activeAtlas.cellSize.height
@@ -1763,6 +1878,18 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           intersectsDamage(
             minY: origin.y - cellHeight, maxY: origin.y + 2 * cellHeight, bands: damageBands)
         else { continue }
+        let effectKind = resolvedGlyphEffectKind(outputTimestampSeconds: outputTimestampSeconds)
+        let effectStart = effectStartSeconds(for: outputTimestampSeconds)
+        if effectKind != Self.glyphEffectKindNone {
+          // Track at the run level, in the same CG-point y-up space
+          // RenderDamage uses, so render() can re-damage these bands while
+          // the effect animates.
+          frameLiveGlyphEffects.append(
+            LiveGlyphEffect(
+              band: DirtyYRange(y: origin.y - cellHeight, height: 3 * cellHeight),
+              effectStart: effectStart,
+              kind: effectKind))
+        }
         appendGlyphRun(
           text,
           origin: origin,
@@ -1772,6 +1899,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           underlineStyle: underlineStyle,
           underlineColor: underlineColor,
           source: source,
+          effectKind: effectKind,
+          effectStart: effectStart,
           preeditMaskRects: preeditMaskRects,
           solids: &solids,
           glyphs: &glyphs,
@@ -1784,6 +1913,60 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
   }
 
+  /// Effect kind for a glyph run: kind 0 unless the run carries a fresh
+  /// output timestamp. Kind assignment for stamped runs: the debug trigger
+  /// wins when set, otherwise ink-bloom while `glyphEffectsEnabled` is on
+  /// (the view already applied the reduceMotion gate).
+  private func resolvedGlyphEffectKind(outputTimestampSeconds: Double?) -> UInt32 {
+    guard outputTimestampSeconds != nil else { return Self.glyphEffectKindNone }
+    if debugGlyphEffectKind != 0 { return debugGlyphEffectKind }
+    return glyphEffectsEnabled ? Self.glyphEffectKindInkBloom : Self.glyphEffectKindNone
+  }
+
+  /// Converts a stamp (controller clock domain) into the renderer-relative
+  /// Float the shader compares against `timeSeconds`; 0 when unstamped.
+  private func effectStartSeconds(for outputTimestampSeconds: Double?) -> Float {
+    guard let outputTimestampSeconds, let epoch = glyphEffectEpochSeconds else { return 0 }
+    return Float(outputTimestampSeconds - epoch)
+  }
+
+  /// Unions the previous frame's live-effect bands into incoming damage so
+  /// animating (and just-decayed, for the settle repaint) bands are always
+  /// redrawn. With no live effects this is identity.
+  private func unionLiveGlyphEffectBands(into damage: RenderDamage) -> RenderDamage {
+    guard !liveGlyphEffects.isEmpty else { return damage }
+    switch damage {
+    case .full:
+      return .full
+    case .partial(let ranges):
+      return .partial(yRanges: ranges + liveGlyphEffects.map(\.band))
+    }
+  }
+
+  /// Recomputes the public live-effect state after a frame's instances were
+  /// built. Called once per `render()` that reached `buildInstances`. Runs
+  /// whose age already exceeds their kind's decay are dropped: the shader
+  /// clamps them to the settled state, so only the previous frame's band
+  /// union (the settle repaint) still needs them.
+  private func updateLiveGlyphEffectState() {
+    liveGlyphEffects = frameLiveGlyphEffects.filter { effect in
+      Double(effect.effectStart) + Self.glyphEffectDecaySeconds(kind: effect.kind)
+        > Double(frameTimeSeconds)
+    }
+    glyphEffectLiveCount = liveGlyphEffects.count
+    var remaining = 0.0
+    for effect in liveGlyphEffects {
+      lastGlyphEffectKind = effect.kind
+      let decay = Self.glyphEffectDecaySeconds(kind: effect.kind)
+      remaining = max(
+        remaining, Double(effect.effectStart) + decay - Double(frameTimeSeconds))
+    }
+    glyphEffectAnimatingRemainingSeconds = max(0, remaining)
+    if !liveGlyphEffects.isEmpty {
+      glyphEffectFrameCount += 1
+    }
+  }
+
   private func appendGlyphRun(
     _ text: String,
     origin: CGPoint,
@@ -1793,6 +1976,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     underlineStyle: UnderlineStyle,
     underlineColor: UInt32?,
     source: FrameSource,
+    effectKind: UInt32,
+    effectStart: Float,
     preeditMaskRects: [CGRect],
     solids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
@@ -1910,7 +2095,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           localMax: localMax,
           color: foregroundColor,
           glyphIndex: UInt32(entry.glyphIndex),
-          dilation: perSideDilatePx))
+          dilation: perSideDilatePx,
+          effectKind: effectKind,
+          effectStart: effectStart))
     }
 
     appendDecorations(
@@ -2484,7 +2671,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       subpixelRBounds: resolved.rBounds,
       subpixelGBounds: resolved.gBounds,
       subpixelBBounds: resolved.bBounds,
-      subpixelMode: resolved == .grayscale ? 0 : 1)
+      subpixelMode: resolved == .grayscale ? 0 : 1,
+      timeSeconds: frameTimeSeconds)
   }
 
   private func encodeBlit(

@@ -185,10 +185,10 @@ struct DebugRenderTraceBuilder {
         summary.terminalBackgroundRects += 1
         summary.terminalFirst = summary.terminalFirst ?? index
         summary.terminalLast = index
-      case .glyphRun(_, _, _, _, _, let source, _, _, _, _) where source == .sidebar:
+      case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _) where source == .sidebar:
         summary.sidebarFirst = summary.sidebarFirst ?? index
         summary.sidebarLast = index
-      case .glyphRun(_, _, _, _, _, let source, _, _, _, _) where source == .terminal:
+      case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _) where source == .terminal:
         summary.terminalGlyphs += 1
         summary.terminalFirst = summary.terminalFirst ?? index
         summary.terminalLast = index

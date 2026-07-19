@@ -1,4 +1,22 @@
 import CoreGraphics
+import Darwin
+
+/// Shared monotonic seconds clock (mach_absolute_time-based) for the
+/// per-glyph animation channel. `TerminalSurfaceController` stamps
+/// `FrameCommand.glyphRun.outputTimestampSeconds` in this domain and the
+/// Slug renderer converts both the stamp and its `timeSeconds` uniform to a
+/// renderer-relative Float, so stamp and uniform always share one time base.
+public enum MonotonicClock {
+  private static let timebase: mach_timebase_info_data_t = {
+    var info = mach_timebase_info_data_t()
+    mach_timebase_info(&info)
+    return info
+  }()
+
+  public static func seconds() -> Double {
+    Double(mach_absolute_time()) * Double(timebase.numer) / Double(timebase.denom) / 1e9
+  }
+}
 
 public enum FrameSource: String, Sendable {
   case sidebar
@@ -147,7 +165,12 @@ public enum FrameCommand: Sendable {
     underlineStyle: UnderlineStyle = .none,
     underlineColor: UInt32? = nil,
     hyperlink: String? = nil,
-    displayCellCount: Int? = nil
+    displayCellCount: Int? = nil,
+    /// Monotonic seconds (`MonotonicClock` domain) at which this run was first
+    /// emitted after PTY output; nil = not fresh. Feeds the glyph-effect
+    /// animation channel (`effectStart`); re-emissions caused by scroll,
+    /// selection, or relayout damage keep nil so effects never restart.
+    outputTimestampSeconds: Double? = nil
   )
   case cursor(CGRect, color: UInt32)
   case selection(CGRect, color: UInt32)

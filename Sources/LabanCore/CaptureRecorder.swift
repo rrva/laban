@@ -776,7 +776,7 @@ public enum FrameCommandCaptureCodec {
           compositing: compositing == .sourceOver ? nil : compositing.rawValue)
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, let hyperlink, let displayCellCount
+        let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _
       ):
         let attrNames = attributes.names
         return CapturedFrameCommand(

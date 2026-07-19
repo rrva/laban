@@ -88,6 +88,9 @@ final class RenderJournal {
     var terminalOutputActive: Bool
     var attentionAnimating: Bool
     var scrollAnimating: Bool
+    /// Whether a per-glyph effect was animating (the `"glyphEffect"` reason
+    /// rung). Optional so old journal dumps still decode.
+    var glyphEffectAnimating: Bool? = nil
     var lastTickIntervalMs: Double?
   }
 

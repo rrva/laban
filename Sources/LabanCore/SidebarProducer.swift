@@ -114,7 +114,7 @@ public struct SidebarProducer {
       guard
         case .glyphRun(
           let origin, let text, _, let background, let attributes, let source,
-          let underlineStyle, let underlineColor, let hyperlink, let displayCellCount) = cmds[
+          let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _) = cmds[
             marker.commandIndex]
       else { continue }
       let color = AttentionPulse.applyAlpha(

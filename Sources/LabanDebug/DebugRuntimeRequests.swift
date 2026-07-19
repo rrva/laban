@@ -18,6 +18,8 @@ enum DebugAction: Decodable {
   case typeText(TextActionRequest)
   case feedOutput(TextActionRequest)
   case advanceFrames(AdvanceFramesActionRequest)
+  case advanceTime(AdvanceTimeActionRequest)
+  case setGlyphEffectsEnabled(SetGlyphEffectsEnabledActionRequest)
   case setVectorSubpixelLayout(VectorSubpixelLayoutActionRequest)
   case setClipboardText(TextActionRequest)
   case setSelection(SelectionActionRequest)
@@ -84,6 +86,10 @@ enum DebugAction: Decodable {
       self = .feedOutput(try TextActionRequest(from: decoder))
     case "advanceFrames":
       self = .advanceFrames(try AdvanceFramesActionRequest(from: decoder))
+    case "advanceTime":
+      self = .advanceTime(try AdvanceTimeActionRequest(from: decoder))
+    case "setGlyphEffectsEnabled":
+      self = .setGlyphEffectsEnabled(try SetGlyphEffectsEnabledActionRequest(from: decoder))
     case "setVectorSubpixelLayout":
       self = .setVectorSubpixelLayout(try VectorSubpixelLayoutActionRequest(from: decoder))
     case "setClipboardText":
@@ -181,6 +187,10 @@ extension DebugAction {
       return legacyIntent(action: "feedOutput")
     case .advanceFrames:
       return legacyIntent(action: "advanceFrames")
+    case .advanceTime:
+      return legacyIntent(action: "advanceTime")
+    case .setGlyphEffectsEnabled:
+      return legacyIntent(action: "setGlyphEffectsEnabled")
     case .setVectorSubpixelLayout:
       return legacyIntent(action: "setVectorSubpixelLayout")
     case .setClipboardText:
@@ -265,6 +275,8 @@ typealias SetFontSizeActionRequest = LabanCore.SetFontSizeActionRequest
 typealias SetRendererActionRequest = LabanCore.SetRendererActionRequest
 typealias TextActionRequest = LabanCore.TextActionRequest
 typealias AdvanceFramesActionRequest = LabanCore.AdvanceFramesActionRequest
+typealias AdvanceTimeActionRequest = LabanCore.AdvanceTimeActionRequest
+typealias SetGlyphEffectsEnabledActionRequest = LabanCore.SetGlyphEffectsEnabledActionRequest
 typealias WindowFocusActionRequest = LabanCore.WindowFocusActionRequest
 typealias DebugKeyActionRequest = LabanCore.DebugKeyActionRequest
 typealias MouseWheelActionRequest = LabanCore.MouseWheelActionRequest

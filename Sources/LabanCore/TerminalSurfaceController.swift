@@ -396,6 +396,33 @@ public final class TerminalSurfaceController {
   // invalidateSessionSyncCache() (tab open/close/restore).
   private var lastSyncedGeneration: [Session.ID: UInt64] = [:]
 
+  // Glyph-effect channel (execplans/active/per-glyph-animation-channel.md):
+  // remembers, per session, the dirty_generation at which terminal glyph runs
+  // were last stamped with `outputTimestampSeconds`, the monotonic stamp
+  // itself, and the damage bands that were fresh at that moment. The stamp is
+  // re-applied to the same bands while the freshness window
+  // (`GlyphEffectTimeline.maxDecaySeconds`) is open so rebuilds of a run keep
+  // an identical effectStart; frames driven by scroll, selection, or blink
+  // leave the generation unchanged and never create a new stamp, so their
+  // re-emitted runs keep nil and effects never restart. Pruned together with
+  // lastSyncedGeneration.
+  private struct OutputStampRecord {
+    var generation: UInt64
+    var stamp: Double
+    /// Fresh bands (CG-point y-up) at stamp time. Always non-empty when a
+    /// record exists: unknown/ambiguous dirty state must not invent
+    /// whole-grid freshness (that was the ink-bloom flicker — blooming every
+    /// scrollback glyph for one frame whenever `damage()` collapsed to
+    /// `.full`).
+    var bands: [DirtyYRange]
+  }
+  private var lastOutputStamp: [Session.ID: OutputStampRecord] = [:]
+
+  /// Clock for glyph-effect output stamps (monotonic seconds). Defaults to
+  /// the shared `MonotonicClock`; headless deterministic runs substitute a
+  /// virtual clock so effect ages are exactly controlled.
+  public var outputStampClock: () -> Double = MonotonicClock.seconds
+
   // Counts per-tab metadata sync runs; lets tests assert gating correctness
   // without relying on side effects visible only via model state.
   private(set) var metadataSyncCountForTesting = 0
@@ -539,6 +566,7 @@ public final class TerminalSurfaceController {
   /// generation and cause sync work to be incorrectly skipped.
   public func invalidateSessionSyncCache() {
     lastSyncedGeneration.removeAll()
+    lastOutputStamp.removeAll()
   }
 
   /// Returns true if any tracked session has a dirty generation that
@@ -669,11 +697,18 @@ public final class TerminalSurfaceController {
       accessibilityVisualOptions: request.accessibilityVisualOptions,
       backgroundCompositingOptions: request.backgroundCompositingOptions
     )
-    let damage = Self.damage(
+    // Natural (unforced) damage feeds glyph-effect stamping so freshly
+    // output rows are identified precisely even on force-full frames;
+    // `damage` itself keeps the pre-change forced semantics.
+    let naturalDamage = Self.damage(
       snapshot: UnsafePointer(snap),
-      forceFull: request.forceFullDamage,
+      forceFull: false,
       cellHeight: CGFloat(cellHeight),
       originY: gridOriginY)
+    let damage =
+      request.forceFullDamage
+      ? RenderDamage.full
+      : naturalDamage
     // Pre-resolve cursor for use in both cell-payload and overlay paths below.
     let preResolvedCursor = CursorStyleResolver.resolve(
       userStyle: request.userCursorStyle,
@@ -733,6 +768,11 @@ public final class TerminalSurfaceController {
         preeditCaretCells: request.preeditCaretCells,
         resolvedCursor: preResolvedCursor)
     }
+    commands = stampFreshOutputTimestamps(
+      commands,
+      session: session,
+      snapshot: UnsafePointer(snap),
+      originY: gridOriginY)
 
     snapshotCommandsHook?(UnsafePointer(snap), commands)
     recordFrameCommands(request, commands: commands)
@@ -993,6 +1033,47 @@ public final class TerminalSurfaceController {
     return .partial(yRanges: ranges)
   }
 
+  /// Row-local freshness bands for the glyph-effect stamp channel.
+  ///
+  /// Unlike `damage(snapshot:forceFull:...)`, this never collapses ambiguous
+  /// dirty state into "the whole grid is fresh". A globally-dirty snapshot
+  /// with no row bits (or a missing dirty-row bitmap) returns `nil` — the
+  /// stamp path must skip rather than bloom every scrollback glyph. When
+  /// every row bit is set, the returned bands cover the full grid so a
+  /// true full-grid rewrite still blooms once.
+  public static func freshnessBands(
+    snapshot snap: UnsafePointer<LabanSnapshot>,
+    cellHeight: CGFloat,
+    originY: CGFloat
+  ) -> [DirtyYRange]? {
+    let snapshot = snap.pointee
+    let rows = Int(snapshot.rows)
+    guard rows > 0, snapshot.dirty_row_count == rows, let dirty = snapshot.dirty_rows else {
+      return nil
+    }
+
+    var ranges: [DirtyYRange] = []
+    var dirtyRowCount = 0
+    var row = 0
+    while row < rows {
+      if dirty[row] != 0 {
+        var end = row
+        while end < rows, dirty[end] != 0 { end += 1 }
+        dirtyRowCount += end - row
+        let yBottom = originY + CGFloat(rows - end) * cellHeight
+        let height = CGFloat(end - row) * cellHeight
+        ranges.append(DirtyYRange(y: yBottom, height: height))
+        row = end
+      } else {
+        row += 1
+      }
+    }
+    // No row-local bits: either the snapshot is clean, or it is only
+    // globally dirty. Neither case is a precise freshness signal.
+    guard dirtyRowCount > 0 else { return nil }
+    return ranges
+  }
+
   public static func payloadRows(
     snapshot snap: UnsafePointer<LabanSnapshot>,
     damage: RenderDamage
@@ -1199,6 +1280,83 @@ public final class TerminalSurfaceController {
       surfaceHeight: request.surfaceHeight,
       scale: request.surfaceScale,
       backend: request.captureBackend)
+  }
+
+  /// Glyph-effect channel: when the session's dirty generation advanced
+  /// since the last frame built here, PTY output landed — stamp the
+  /// terminal-source glyph runs intersecting the fresh damage bands with the
+  /// monotonic now so the renderer can treat them as freshly output. While
+  /// the freshness window stays open the same stamp is re-applied to the same
+  /// bands, so a run rebuilt across animation frames keeps an identical
+  /// effectStart; frames driven by scroll, selection, or blink leave the
+  /// generation unchanged and their re-emitted runs keep a nil timestamp, so
+  /// effects never restart.
+  ///
+  /// Freshness comes from `freshnessBands` (row-local dirty bits), never from
+  /// `RenderDamage.full`. Collapsing ambiguous dirty state into stamp-all was
+  /// the grid-wide ink-bloom flicker: one keystroke bloomed every scrollback
+  /// glyph for a frame whenever libghostty reported global dirty without
+  /// row bits (or every row was marked dirty via the damage full-collapse).
+  private func stampFreshOutputTimestamps(
+    _ commands: [FrameCommand],
+    session: Session,
+    snapshot: UnsafePointer<LabanSnapshot>,
+    originY: CGFloat
+  ) -> [FrameCommand] {
+    let generation = session.dirtyGeneration()
+    guard generation != 0 else { return commands }
+    let now = outputStampClock()
+    let stamp: Double
+    let bands: [DirtyYRange]
+    if let record = lastOutputStamp[session.id], record.generation == generation {
+      guard now - record.stamp < GlyphEffectTimeline.maxDecaySeconds
+      else { return commands }
+      stamp = record.stamp
+      bands = record.bands
+    } else {
+      guard
+        let freshBands = Self.freshnessBands(
+          snapshot: snapshot,
+          cellHeight: CGFloat(cellHeight),
+          originY: originY),
+        !freshBands.isEmpty
+      else { return commands }
+      stamp = now
+      bands = freshBands
+      lastOutputStamp[session.id] = OutputStampRecord(
+        generation: generation, stamp: stamp, bands: bands)
+    }
+    let ch = CGFloat(cellHeight)
+    var stamped = commands
+    for index in stamped.indices {
+      guard
+        case .glyphRun(
+          let origin, let text, let foreground, let background, let attributes, let source,
+          let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _
+        ) = stamped[index],
+        source == .terminal
+      else { continue }
+      // Exact cell extent (NOT the renderer damage filter's ±1 cell
+      // expansion): bands and runs are both row-aligned, and expanding here
+      // would falsely stamp the clean row above/below a dirty one.
+      let minY = origin.y
+      let maxY = origin.y + ch
+      let fresh = bands.contains { $0.y < maxY && minY < $0.y + $0.height }
+      guard fresh else { continue }
+      stamped[index] = .glyphRun(
+        origin: origin,
+        text: text,
+        foreground: foreground,
+        background: background,
+        attributes: attributes,
+        source: source,
+        underlineStyle: underlineStyle,
+        underlineColor: underlineColor,
+        hyperlink: hyperlink,
+        displayCellCount: displayCellCount,
+        outputTimestampSeconds: stamp)
+    }
+    return stamped
   }
 
   private static func elapsedMs(since start: DispatchTime) -> Double {

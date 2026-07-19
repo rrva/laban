@@ -47,6 +47,10 @@ extension HeadlessDebugRuntime {
       return DebugWindowActions(runtime: self).setRenderer(request)
     case .advanceFrames(let request):
       return DebugWindowActions(runtime: self).advanceFrames(request)
+    case .advanceTime(let request):
+      return DebugWindowActions(runtime: self).advanceTime(request)
+    case .setGlyphEffectsEnabled(let request):
+      return DebugWindowActions(runtime: self).setGlyphEffectsEnabled(request)
     case .setVectorSubpixelLayout(let request):
       return DebugWindowActions(runtime: self).setVectorSubpixelLayout(request)
     case .windowFocus(let request):

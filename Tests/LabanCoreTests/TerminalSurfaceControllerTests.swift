@@ -62,7 +62,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       return "rect|\(rectKey(rect))|\(color)|\(source.rawValue)|\(compositing.rawValue)"
     case .glyphRun(
       let origin, let text, let foreground, let background, let attributes, let source,
-      let underlineStyle, let underlineColor, let hyperlink, _):
+      let underlineStyle, let underlineColor, let hyperlink, _, _):
       let scalars = text.unicodeScalars.map { String($0.value, radix: 16) }.joined(separator: ".")
       return
         "glyph|\(pointKey(origin))|chars=\(text.count)|scalars=\(scalars)|fg=\(foreground)"
@@ -134,7 +134,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(hasSidebarRect)
 
     let terminalText = frame.commands.compactMap { command -> String? in
-      if case .glyphRun(_, let text, _, _, _, let source, _, _, _, _) = command,
+      if case .glyphRun(_, let text, _, _, _, let source, _, _, _, _, _) = command,
         source == .terminal
       {
         return text
@@ -158,7 +158,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
 
     func sidebarTexts(_ cmds: [FrameCommand]) -> [String] {
       cmds.compactMap { cmd in
-        if case .glyphRun(_, let text, _, _, _, let source, _, _, _, _) = cmd, source == .sidebar {
+        if case .glyphRun(_, let text, _, _, _, let source, _, _, _, _, _) = cmd, source == .sidebar {
           return text
         }
         return nil
@@ -259,7 +259,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
 
     func markerAlpha(_ cmds: [FrameCommand]) -> UInt32? {
       cmds.compactMap { cmd -> UInt32? in
-        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _) = cmd, text == "◆" {
+        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _) = cmd, text == "◆" {
           return fg & 0xFF
         }
         return nil
@@ -332,7 +332,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(
       payload.glyphs.contains { $0.scalarValue == Character("h").unicodeScalars.first?.value })
     let terminalGlyphCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _) = command {
         return source == .terminal
       }
       return false
@@ -522,7 +522,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(payload.glyphs.contains { $0.attributes.contains(.strikethrough) })
     XCTAssertTrue(payload.glyphs.contains { $0.attributes.contains(.overline) })
     let terminalGlyphCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _) = command {
         return source == .terminal
       }
       return false
@@ -564,7 +564,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let terminalCommands = frame.commands.filter { command in
       switch command {
       case .rect(_, _, let source, _),
-        .glyphRun(_, _, _, _, _, let source, _, _, _, _):
+        .glyphRun(_, _, _, _, _, let source, _, _, _, _, _):
         return source == .terminal
       default:
         return false
@@ -612,7 +612,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(payload.glyphs.contains { $0.hasHyperlink })
     XCTAssertTrue(payload.glyphs.contains { $0.hasHyperlink && $0.attributes.contains(.underline) })
     let terminalCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _) = command {
         return source == .terminal
       }
       return false
@@ -773,7 +773,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertNil(payload.fallbackReason)
     XCTAssertTrue(payload.glyphs.contains { $0.wide == UInt8(LABAN_CELL_WIDE_WIDE) })
     let terminalGlyphCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _) = command {
         return source == .terminal
       }
       return false
@@ -862,7 +862,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let terminalCommands = frame.commands.filter { command in
       switch command {
       case .rect(_, _, let source, _),
-        .glyphRun(_, _, _, _, _, let source, _, _, _, _):
+        .glyphRun(_, _, _, _, _, let source, _, _, _, _, _):
         return source == .terminal
       default:
         return false
@@ -912,7 +912,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
         return false
       })
     let terminalGlyphCommands = frame.commands.filter { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _) = command {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _) = command {
         return source == .terminal
       }
       return false
@@ -1067,6 +1067,51 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       damage,
       .full,
       "a globally dirty snapshot with no row-local bits cannot safely preserve a Metal target")
+  }
+
+  func testFreshnessBandsIgnoreGloballyDirtySnapshotsWithNoRowBits() {
+    let dirtyRows: [UInt8] = [0, 0, 0, 0]
+    var snapshot = LabanSnapshot()
+    snapshot.rows = 4
+    snapshot.dirty = 1
+    snapshot.dirty_row_count = 4
+
+    let bands = dirtyRows.withUnsafeBufferPointer { buffer -> [DirtyYRange]? in
+      snapshot.dirty_rows = buffer.baseAddress
+      return withUnsafePointer(to: &snapshot) { ptr in
+        TerminalSurfaceController.freshnessBands(
+          snapshot: ptr,
+          cellHeight: 5,
+          originY: 10)
+      }
+    }
+
+    XCTAssertNil(
+      bands,
+      "ambiguous global dirty must not invent whole-grid freshness for ink-bloom")
+  }
+
+  func testFreshnessBandsCoverEveryRowWhenAllRowBitsAreSet() {
+    let dirtyRows: [UInt8] = [1, 1, 1, 1]
+    var snapshot = LabanSnapshot()
+    snapshot.rows = 4
+    snapshot.dirty = 1
+    snapshot.dirty_row_count = 4
+
+    let bands = dirtyRows.withUnsafeBufferPointer { buffer -> [DirtyYRange]? in
+      snapshot.dirty_rows = buffer.baseAddress
+      return withUnsafePointer(to: &snapshot) { ptr in
+        TerminalSurfaceController.freshnessBands(
+          snapshot: ptr,
+          cellHeight: 5,
+          originY: 10)
+      }
+    }
+
+    XCTAssertEqual(
+      bands,
+      [DirtyYRange(y: 10, height: 20)],
+      "a true full-grid rewrite still exposes freshness bands covering every row")
   }
 
   func testRemoteDirtyRangesMapTopDownRowsToBottomUpYRanges() {
@@ -1271,5 +1316,173 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       model.tabs.first?.status, .exited(code: 7),
       "a zero-output child exit must flip the tab's exit state within one "
         + "gated syncSessions call (exit → generation bump → sync runs)")
+  }
+
+  // MARK: - Glyph-effect output stamping (per-glyph-animation-channel M1)
+
+  private func terminalGlyphRunTimestamps(
+    _ frame: TerminalSurfaceFrame
+  ) -> [(text: String, stamp: Double?)] {
+    frame.commands.compactMap { command in
+      guard
+        case .glyphRun(
+          _, let text, _, _, _, let source, _, _, _, _, let stamp) = command,
+        source == .terminal
+      else { return nil }
+      return (text, stamp)
+    }
+  }
+
+  func testOutputStampingMarksOnlyFreshRowsWithStableTimestamp() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    guard let tab = model.activeTab,
+      let session = model.session(forTab: tab.id)
+    else {
+      XCTFail("missing active fixture session")
+      return
+    }
+    _ = session.write(Array("one\r\n".utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    var now = 1.0
+    controller.outputStampClock = { now }
+    func makeFrame(_ index: Int) -> TerminalSurfaceFrame? {
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: index,
+          viewportWidth: 360,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 360,
+          surfaceHeight: 64,
+          surfaceScale: 1))
+    }
+
+    // First frame after output: the fresh run is stamped at the clock's now.
+    guard let frame1 = makeFrame(1) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps1 = terminalGlyphRunTimestamps(frame1)
+    XCTAssertEqual(stamps1.first(where: { $0.text == "one" })?.stamp ?? nil, 1.0)
+    session.markRendered()
+
+    // New output on the next row: only that row is stamped (exact-extent
+    // band filter — the clean row above must not be re-stamped), at the new
+    // clock time.
+    _ = session.write(Array("two\r\n".utf8))
+    _ = session.poll()
+    now = 2.0
+    guard let frame2 = makeFrame(2) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps2 = terminalGlyphRunTimestamps(frame2)
+    XCTAssertEqual(
+      stamps2.first(where: { $0.text == "one" })?.stamp ?? nil, nil,
+      "a row untouched by the new output must keep a nil timestamp")
+    XCTAssertEqual(stamps2.first(where: { $0.text == "two" })?.stamp ?? nil, 2.0)
+    session.markRendered()
+
+    // No new output, still inside the freshness window: the same stamp is
+    // re-applied (effectStart stability across rebuilds).
+    now = 2.1
+    guard let frame3 = makeFrame(3) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps3 = terminalGlyphRunTimestamps(frame3)
+    XCTAssertEqual(
+      stamps3.first(where: { $0.text == "two" })?.stamp ?? nil, 2.0,
+      "rebuilds inside the window must re-apply the original stamp")
+
+    // Past the freshness window (maxDecaySeconds): stamping stops, so
+    // re-emitted runs can never restart an effect.
+    now = 2.1 + GlyphEffectTimeline.maxDecaySeconds + 0.01
+    guard let frame4 = makeFrame(4) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps4 = terminalGlyphRunTimestamps(frame4)
+    XCTAssertEqual(
+      stamps4.first(where: { $0.text == "two" })?.stamp ?? nil, nil,
+      "after the freshness window the stamp must expire")
+  }
+
+  func testForceFullDamageDoesNotStampSettledScrollback() throws {
+    var size = LabanTerminalSize()
+    size.rows = 6
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    guard let tab = model.activeTab,
+      let session = model.session(forTab: tab.id)
+    else {
+      XCTFail("missing active fixture session")
+      return
+    }
+    _ = session.write(Array("alpha\r\nbeta\r\ngamma\r\n".utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    var now = 10.0
+    controller.outputStampClock = { now }
+    func makeFrame(_ index: Int, forceFull: Bool) -> TerminalSurfaceFrame? {
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: index,
+          viewportWidth: 360,
+          viewportHeight: 96,
+          requireActiveSnapshot: true,
+          forceFullDamage: forceFull,
+          surfaceWidth: 360,
+          surfaceHeight: 96,
+          surfaceScale: 1))
+    }
+
+    // Settle the first screenful so later frames only see the new row as fresh.
+    guard let settle = makeFrame(1, forceFull: true) else {
+      XCTFail("expected a settle frame")
+      return
+    }
+    XCTAssertFalse(
+      terminalGlyphRunTimestamps(settle).isEmpty,
+      "expected terminal glyph runs on the settle frame")
+    session.markRendered()
+
+    _ = session.write(Array("delta\r\n".utf8))
+    _ = session.poll()
+    now = 11.0
+    // forceFullDamage is the live path when renderInvalidated is set (effect
+    // pumping, tab change, …). Freshness must still come from row bits — a
+    // full redraw must not re-bloom settled scrollback.
+    guard let frame = makeFrame(2, forceFull: true) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps = terminalGlyphRunTimestamps(frame)
+    XCTAssertEqual(
+      stamps.first(where: { $0.text == "alpha" })?.stamp ?? nil, nil,
+      "settled scrollback must stay unstamped on a force-full redraw")
+    XCTAssertEqual(
+      stamps.first(where: { $0.text == "beta" })?.stamp ?? nil, nil,
+      "settled scrollback must stay unstamped on a force-full redraw")
+    XCTAssertEqual(
+      stamps.first(where: { $0.text == "gamma" })?.stamp ?? nil, nil,
+      "settled scrollback must stay unstamped on a force-full redraw")
+    XCTAssertEqual(
+      stamps.first(where: { $0.text == "delta" })?.stamp ?? nil, 11.0,
+      "only the freshly output row may receive the ink-bloom stamp")
   }
 }

@@ -79,7 +79,7 @@ final class CaptureRenderBisect: XCTestCase {
     // share the row.
     print("---- glyph runs containing 'bypass' (rows=\(rows), cellH=\(cellH)) ----")
     for cmd in cmds {
-      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _) = cmd, text.contains("bypass")
+      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _) = cmd, text.contains("bypass")
       {
         print("  bypass-run: y=\(origin.y) x=\(origin.x) text=\"\(text)\"")
       }
@@ -87,7 +87,7 @@ final class CaptureRenderBisect: XCTestCase {
     print("---- glyph runs sharing the y of the 'bypass' run ----")
     var bypassY: CGFloat? = nil
     for cmd in cmds {
-      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _) = cmd, text.contains("bypass")
+      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _) = cmd, text.contains("bypass")
       {
         bypassY = origin.y
         break
@@ -95,7 +95,7 @@ final class CaptureRenderBisect: XCTestCase {
     }
     if let by = bypassY {
       for cmd in cmds {
-        if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _) = cmd, origin.y == by {
+        if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _) = cmd, origin.y == by {
           print("  y=\(origin.y) x=\(origin.x) text=\"\(text)\"")
         }
       }

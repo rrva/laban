@@ -88,6 +88,8 @@ public enum DebugActionIntentID {
     "typeText",
     "feedOutput",
     "advanceFrames",
+    "advanceTime",
+    "setGlyphEffectsEnabled",
     "setVectorSubpixelLayout",
     "setPreedit",
     "setClipboardText",
@@ -135,6 +137,8 @@ public enum DebugActionIntentID {
     case "typeText": return "terminal.typeText"
     case "feedOutput": return "fixture.feedOutput"
     case "advanceFrames": return "fixture.advanceFrames"
+    case "advanceTime": return "fixture.advanceTime"
+    case "setGlyphEffectsEnabled": return "glyphEffects.setEnabled"
     case "setVectorSubpixelLayout": return "vector.subpixelLayout.set"
     case "setPreedit": return "preedit.set"
     case "setClipboardText": return "clipboard.setText"
@@ -1204,6 +1208,32 @@ public struct AdvanceFramesActionRequest: Codable, Sendable, Equatable, JSONSche
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object(["count": SchemaNode.integer(min: 1, max: nil)])
+  }
+}
+
+public struct AdvanceTimeActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var ms: Int?
+
+  public init(ms: Int? = nil) {
+    self.ms = ms
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(["ms": SchemaNode.integer(min: 1, max: nil)])
+  }
+}
+
+public struct SetGlyphEffectsEnabledActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var enabled: Bool?
+
+  public init(enabled: Bool? = nil) {
+    self.enabled = enabled
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(["enabled": DebugPayloadSchema.boolean], required: ["enabled"])
   }
 }
 

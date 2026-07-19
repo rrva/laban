@@ -40,7 +40,7 @@ final class FrameProducerPreeditTests: XCTestCase {
     -> (origin: CGPoint, text: String, attrs: TextAttributes, underline: UnderlineStyle)?
   {
     for cmd in cmds {
-      if case .glyphRun(let origin, let text, _, _, let attrs, .preedit, let uStyle, _, _, _) = cmd
+      if case .glyphRun(let origin, let text, _, _, let attrs, .preedit, let uStyle, _, _, _, _) = cmd
       {
         return (origin, text, attrs, uStyle)
       }
@@ -67,7 +67,7 @@ final class FrameProducerPreeditTests: XCTestCase {
   {
     cmds.compactMap { cmd in
       if case .glyphRun(
-        let origin, let text, _, _, _, .preedit, _, _, _, let displayCellCount
+        let origin, let text, _, _, _, .preedit, _, _, _, let displayCellCount, _
       ) = cmd {
         return (origin, text, displayCellCount)
       }
@@ -77,7 +77,7 @@ final class FrameProducerPreeditTests: XCTestCase {
 
   private func preeditDisplayCellCount(in cmds: [FrameCommand]) -> Int? {
     for cmd in cmds {
-      if case .glyphRun(_, _, _, _, _, .preedit, _, _, _, let count) = cmd { return count }
+      if case .glyphRun(_, _, _, _, _, .preedit, _, _, _, let count, _) = cmd { return count }
     }
     return nil
   }
@@ -302,7 +302,7 @@ final class FrameProducerPreeditTests: XCTestCase {
   private func lastPreeditIndex(in cmds: [FrameCommand]) -> Int? {
     cmds.lastIndex {
       switch $0 {
-      case .rect(_, _, .preedit, _), .glyphRun(_, _, _, _, _, .preedit, _, _, _, _): return true
+      case .rect(_, _, .preedit, _), .glyphRun(_, _, _, _, _, .preedit, _, _, _, _, _): return true
       default: return false
       }
     }

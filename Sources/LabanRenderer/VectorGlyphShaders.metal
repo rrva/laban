@@ -586,6 +586,11 @@ struct SlugGlyphBand {
     uint indexCount;
 };
 
+// Byte-identical mirror of SlugGlyphGPUInstance in SlugGlyphRenderer.swift
+// (64 B stride). `effectKind`/`effectStart` ride the two former pad words —
+// the per-glyph animation channel (execplans/active/
+// per-glyph-animation-channel.md). Kind 0 = none and must stay bit-identical
+// to the pre-channel output.
 struct SlugGlyphInstance {
     float2 originPx;
     float2 sizePx;
@@ -594,10 +599,13 @@ struct SlugGlyphInstance {
     float4 color;
     uint glyphIndex;
     float dilation;
-    uint pad1;
-    uint pad2;
+    uint effectKind;
+    float effectStart;
 };
 
+// Byte-identical mirror of SlugGlyphGPUUniforms in SlugGlyphRenderer.swift
+// (96 B stride). `timeSeconds` drives the glyph-effect channel;
+// `bellAmplitudePx`/`bellDirection` are the M2 grid-shake parameters.
 struct SlugGlyphUniforms {
     float2 surfaceSizePixels;
     float scale;
@@ -608,9 +616,9 @@ struct SlugGlyphUniforms {
     float4 subpixelGBounds;
     float4 subpixelBBounds;
     uint subpixelMode;
-    uint _pad1;
-    uint _pad2;
-    uint _pad3;
+    float timeSeconds;
+    float bellAmplitudePx;
+    float bellDirection;
 };
 
 struct SlugGlyphVertexOut {
@@ -625,6 +633,41 @@ inline float2 slugGlyphApplyGestureZoom(float2 px, constant SlugGlyphUniforms &u
     return (px - uniforms.gestureZoomAnchor) * uniforms.gestureZoom + uniforms.gestureZoomAnchor;
 }
 
+// Per-glyph animation channel. Evaluates the instance's `effectKind` at
+// `uniforms.timeSeconds - instance.effectStart` seconds of age and applies
+// the effect to the quad position, color, and dilation.
+// Kind 0 = none: this function must perform no arithmetic so the output is
+// bit-identical to the pre-channel tree. The easing/decay source of truth is
+// GlyphEffectTimeline in LabanCore (same shared-source pattern as the
+// dilation table) — keep these constants in sync with it.
+constant float kSlugGlyphEffectInkBloomDecay = 0.150;  // inkBloomDecaySeconds
+constant float kSlugGlyphEffectInkBloomInitialAlpha = 0.35;  // inkBloomInitialAlpha
+
+inline void slugGlyphEvaluateEffect(
+    SlugGlyphInstance instance,
+    constant SlugGlyphUniforms &uniforms,
+    thread float2 &px,
+    thread float4 &color,
+    thread float &dilation
+) {
+    if (instance.effectKind == 0u) { return; }
+    if (instance.effectKind == 1u) {
+        // Kind 1 = ink-bloom type-in: ease-out cubic from thin/faint to the
+        // run's normal dilation and full alpha over 150 ms. At age >= decay
+        // (and at exactly the decay boundary) t clamps to 1, progress is
+        // exactly 1, and multiplying by 1.0 leaves both values bit-identical
+        // to the no-effect render.
+        float age = uniforms.timeSeconds - instance.effectStart;
+        float t = clamp(age / kSlugGlyphEffectInkBloomDecay, 0.0, 1.0);
+        float u = 1.0 - t;
+        float progress = 1.0 - u * u * u;
+        dilation *= progress;
+        color.a *= mix(kSlugGlyphEffectInkBloomInitialAlpha, 1.0, progress);
+        return;
+    }
+    // Kind 2 (bell shake) lands in M2; unknown kinds no-op.
+}
+
 vertex SlugGlyphVertexOut slugGlyphVertex(
     uint vertexId [[vertex_id]],
     uint instanceId [[instance_id]],
@@ -635,13 +678,16 @@ vertex SlugGlyphVertexOut slugGlyphVertex(
     float2 unit = kVectorQuadVertices[vertexId];
     float2 px = instance.originPx + unit * instance.sizePx;
     px = slugGlyphApplyGestureZoom(px, uniforms);
+    float4 color = instance.color;
+    float dilation = instance.dilation;
+    slugGlyphEvaluateEffect(instance, uniforms, px, color, dilation);
 
     SlugGlyphVertexOut out;
     out.position = float4(vector_to_ndc(px, uniforms.surfaceSizePixels), 0.0, 1.0);
     out.glyphPoint = mix(instance.localMin, instance.localMax, unit);
-    out.color = instance.color;
+    out.color = color;
     out.glyphIndex = float(instance.glyphIndex);
-    out.dilation = instance.dilation;
+    out.dilation = dilation;
     return out;
 }
 

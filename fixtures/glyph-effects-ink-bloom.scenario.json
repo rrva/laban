@@ -1,0 +1,173 @@
+{
+  "name": "glyph-effects-ink-bloom",
+  "description": "Ink-bloom type-in (M1): a freshly output row renders thin/faint at age 0, eases toward settled over 150 ms of virtual time, and is pixel-identical to a never-restamped control row once settled. Fails on the pre-channel tree (advanceTime/setGlyphEffectsEnabled actions missing). Requires slugGlyph (the effect is evaluated in the Slug vertex shader) and --deterministic (virtual clock).",
+  "fixture": "fixtures/glyph-effects-ink-bloom.fixture.json",
+  "renderer": "slugGlyph",
+  "deterministic": true,
+  "steps": [
+    {
+      "op": "discover",
+      "expectEndpoints": [
+        "POST /debug/actions",
+        "POST /debug/pixel-probe",
+        "GET /debug/state"
+      ],
+      "expectActions": ["feedOutput", "advanceFrames", "advanceTime", "setGlyphEffectsEnabled"]
+    },
+    {
+      "op": "action",
+      "label": "enable glyph effects",
+      "body": {"action": "setGlyphEffectsEnabled", "enabled": true}
+    },
+    {
+      "op": "action",
+      "label": "settle initial fixture rows past the stamping window",
+      "body": {"action": "advanceTime", "ms": 300}
+    },
+    {
+      "op": "post",
+      "label": "baseline probe: control settled, fresh row empty",
+      "path": "/debug/pixel-probe",
+      "body": {
+        "regions": [
+          {"name": "control", "x": 201, "y": 439, "width": 198, "height": 15},
+          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15}
+        ]
+      },
+      "expectJson": [
+        {"path": "regions[0].nonBackgroundPixels", "greaterThan": 0}
+      ],
+      "saveAs": "probe-baseline.json"
+    },
+    {
+      "op": "action",
+      "label": "fresh output on the next row",
+      "body": {"action": "feedOutput", "text": "ink bloom control text\r\n"}
+    },
+    {
+      "op": "action",
+      "label": "render the age-0 frame",
+      "body": {"action": "advanceFrames", "count": 1}
+    },
+    {
+      "op": "post",
+      "label": "age 0: fresh row is fainter and thinner than settled control",
+      "path": "/debug/pixel-probe",
+      "body": {
+        "regions": [
+          {"name": "control", "x": 201, "y": 439, "width": 198, "height": 15},
+          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15}
+        ]
+      },
+      "expectJson": [
+        {"path": "regions[0].averageRgba[0]", "greaterThanPath": "regions[1].averageRgba[0]"},
+        {"path": "regions[1].nonBackgroundPixels", "lessThanPath": "regions[0].nonBackgroundPixels"}
+      ],
+      "saveAs": "probe-age0.json"
+    },
+    {
+      "op": "get",
+      "label": "state: effect live at age 0",
+      "path": "/debug/state",
+      "expectJson": [
+        {"path": "glyphEffects.active", "equals": true},
+        {"path": "glyphEffects.lastKind", "equals": 1},
+        {"path": "glyphEffects.liveCount", "greaterThan": 0},
+        {"path": "glyphEffects.wakeCount", "greaterThan": 0}
+      ],
+      "saveAs": "state-age0.json"
+    },
+    {
+      "op": "action",
+      "label": "advance into mid-bloom (age 40 ms)",
+      "body": {"action": "advanceTime", "ms": 40}
+    },
+    {
+      "op": "post",
+      "label": "mid-bloom: fresh row still fainter than settled control",
+      "path": "/debug/pixel-probe",
+      "body": {
+        "regions": [
+          {"name": "control", "x": 201, "y": 439, "width": 198, "height": 15},
+          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15}
+        ]
+      },
+      "expectJson": [
+        {"path": "regions[1].averageRgba[0]", "lessThanPath": "regions[0].averageRgba[0]"}
+      ],
+      "saveAs": "probe-mid.json"
+    },
+    {
+      "op": "get",
+      "label": "state: effect still live mid-bloom",
+      "path": "/debug/state",
+      "expectJson": [
+        {"path": "glyphEffects.active", "equals": true}
+      ]
+    },
+    {
+      "op": "action",
+      "label": "advance past the 150 ms decay (age 240 ms)",
+      "body": {"action": "advanceTime", "ms": 200}
+    },
+    {
+      "op": "post",
+      "label": "settled: fresh row is pixel-identical to control",
+      "path": "/debug/pixel-probe",
+      "body": {
+        "regions": [
+          {"name": "control", "x": 201, "y": 439, "width": 198, "height": 15},
+          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15}
+        ]
+      },
+      "expectJson": [
+        {"path": "regions[1].averageRgba", "equalsPath": "regions[0].averageRgba"},
+        {"path": "regions[1].nonBackgroundPixels", "equalsPath": "regions[0].nonBackgroundPixels"}
+      ],
+      "saveAs": "probe-settled.json"
+    },
+    {
+      "op": "get",
+      "label": "state: parked after decay",
+      "path": "/debug/state",
+      "expectJson": [
+        {"path": "glyphEffects.active", "equals": false},
+        {"path": "glyphEffects.liveCount", "equals": 0}
+      ],
+      "saveAs": "state-settled.json"
+    },
+    {
+      "op": "action",
+      "label": "idle re-renders do not restart the effect",
+      "body": {"action": "advanceFrames", "count": 3}
+    },
+    {
+      "op": "post",
+      "label": "post-idle: still pixel-identical to control",
+      "path": "/debug/pixel-probe",
+      "body": {
+        "regions": [
+          {"name": "control", "x": 201, "y": 439, "width": 198, "height": 15},
+          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15}
+        ]
+      },
+      "expectJson": [
+        {"path": "regions[1].averageRgba", "equalsPath": "regions[0].averageRgba"},
+        {"path": "regions[1].nonBackgroundPixels", "equalsPath": "regions[0].nonBackgroundPixels"}
+      ]
+    },
+    {
+      "op": "get",
+      "label": "state: still parked after idle re-renders",
+      "path": "/debug/state",
+      "expectJson": [
+        {"path": "glyphEffects.active", "equals": false},
+        {"path": "glyphEffects.liveCount", "equals": 0}
+      ]
+    },
+    {
+      "op": "screenshot",
+      "label": "settled"
+    }
+  ]
+}

@@ -42,17 +42,23 @@ public enum TerminalIdlePolicy {
   ///     keeps the legacy blink floor while the feature is on.
   ///   - idleFloorEnabled: the `LabanDisplayLinkIdleFloor` parachute — restores
   ///     the pre-park 8 Hz visible-idle floor with no rebuild.
+  ///   - glyphEffectAnimating: a per-glyph effect (ink-bloom type-in, bell
+  ///     shake) is live. Decorative, so it rides the 30 fps animation budget
+  ///     like the attention pulse and parks the moment the last effect decays
+  ///     (ADR 0018: the link is a transient animation timer).
   public static func displayLinkShouldRun(
     windowVisibleToUser: Bool,
     scrollAnimating: Bool,
     attentionAnimating: Bool,
     terminalOutputActive: Bool,
     cursorBlinkActive: Bool,
-    idleFloorEnabled: Bool
+    idleFloorEnabled: Bool,
+    glyphEffectAnimating: Bool = false
   ) -> Bool {
     if scrollAnimating { return true }
     return windowVisibleToUser
-      && (terminalOutputActive || attentionAnimating || cursorBlinkActive || idleFloorEnabled)
+      && (terminalOutputActive || attentionAnimating || cursorBlinkActive || idleFloorEnabled
+        || glyphEffectAnimating)
   }
 
   /// Compatibility shim with the pre-park two-argument semantics
@@ -69,20 +75,22 @@ public enum TerminalIdlePolicy {
       attentionAnimating: false,
       terminalOutputActive: false,
       cursorBlinkActive: false,
-      idleFloorEnabled: true)
+      idleFloorEnabled: true,
+      glyphEffectAnimating: false)
   }
 
   /// Preferred frame rate while the link runs: the active rate for scroll and
-  /// live output, the animation budget rate for attention-only frames, the
-  /// idle rate for blink-only or floor-only operation (and as the don't-care
-  /// value while parked).
+  /// live output, the animation budget rate for attention-only or
+  /// glyph-effect-only frames, the idle rate for blink-only or floor-only
+  /// operation (and as the don't-care value while parked).
   public static func preferredDisplayLinkFramesPerSecond(
     windowVisibleToUser: Bool,
     scrollAnimating: Bool,
     attentionAnimating: Bool,
     terminalOutputActive: Bool,
     cursorBlinkActive: Bool,
-    idleFloorEnabled: Bool
+    idleFloorEnabled: Bool,
+    glyphEffectAnimating: Bool = false
   ) -> Int {
     guard
       displayLinkShouldRun(
@@ -91,14 +99,15 @@ public enum TerminalIdlePolicy {
         attentionAnimating: attentionAnimating,
         terminalOutputActive: terminalOutputActive,
         cursorBlinkActive: cursorBlinkActive,
-        idleFloorEnabled: idleFloorEnabled)
+        idleFloorEnabled: idleFloorEnabled,
+        glyphEffectAnimating: glyphEffectAnimating)
     else {
       return idleDisplayLinkFramesPerSecond
     }
     if scrollAnimating || terminalOutputActive {
       return activeDisplayLinkFramesPerSecond
     }
-    if attentionAnimating {
+    if attentionAnimating || glyphEffectAnimating {
       return animationDisplayLinkFramesPerSecond
     }
     return idleDisplayLinkFramesPerSecond
@@ -119,6 +128,7 @@ public enum TerminalIdlePolicy {
       attentionAnimating: attentionAnimating,
       terminalOutputActive: terminalOutputActive,
       cursorBlinkActive: false,
-      idleFloorEnabled: true)
+      idleFloorEnabled: true,
+      glyphEffectAnimating: false)
   }
 }

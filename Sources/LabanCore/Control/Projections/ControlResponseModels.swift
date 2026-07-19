@@ -175,6 +175,23 @@ public struct AttentionNotificationDecisionResponse: Encodable {
   }
 }
 
+public struct GlyphEffectsStateResponse: Encodable {
+  public var active: Bool
+  public var liveCount: Int
+  public var lastKind: Int
+  /// Frames rendered while at least one effect was live — the pumping
+  /// evidence counter (headless `/debug/state`; the app-side display-link
+  /// wake counter arrives with the M3 `/debug/glyph-effects` endpoint).
+  public var wakeCount: Int
+
+  public init(active: Bool, liveCount: Int, lastKind: Int, wakeCount: Int) {
+    self.active = active
+    self.liveCount = liveCount
+    self.lastKind = lastKind
+    self.wakeCount = wakeCount
+  }
+}
+
 public struct StateResponse: Encodable {
   public var mode: String
   public var frame: Int
@@ -186,6 +203,9 @@ public struct StateResponse: Encodable {
   public var cursorSettings: CursorSettingsResponse
   public var emojiRendering: EmojiRenderingSettingsResponse
   public var attentionNotifications: [AttentionNotificationDecisionResponse]
+  /// Per-glyph animation channel state (nil when the serving runtime has no
+  /// renderer to report — e.g. the GUI control server).
+  public var glyphEffects: GlyphEffectsStateResponse?
 
   public init(
     mode: String,
@@ -197,7 +217,8 @@ public struct StateResponse: Encodable {
     findStateBySession: [String: FindStateResponse],
     cursorSettings: CursorSettingsResponse,
     emojiRendering: EmojiRenderingSettingsResponse,
-    attentionNotifications: [AttentionNotificationDecisionResponse]
+    attentionNotifications: [AttentionNotificationDecisionResponse],
+    glyphEffects: GlyphEffectsStateResponse? = nil
   ) {
     self.mode = mode
     self.frame = frame
@@ -209,6 +230,7 @@ public struct StateResponse: Encodable {
     self.cursorSettings = cursorSettings
     self.emojiRendering = emojiRendering
     self.attentionNotifications = attentionNotifications
+    self.glyphEffects = glyphEffects
   }
 }
 

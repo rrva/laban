@@ -158,6 +158,24 @@ extension HeadlessDebugRuntime {
     }
 
     return withRuntimeLock {
+      // Slug (and any future GPU-only backend) renders into a Metal target,
+      // not the software `surface` — sample its readback in the same
+      // 0xRRGGBBAA / CG-coordinate convention BitmapSurface.pixel uses.
+      if let slug = rendererBackend as? SlugGlyphRenderer,
+        let readback = slug.readbackBGRA()
+      {
+        let sampler = DebugPixelProbeSampler(
+          width: readback.width, height: readback.height
+        ) { x, y in
+          guard x >= 0, y >= 0, x < readback.width, y < readback.height else { return nil }
+          let i = ((readback.height - 1 - y) * readback.width + x) * 4
+          return (UInt32(readback.bytes[i + 2]) << 24)  // R
+            | (UInt32(readback.bytes[i + 1]) << 16)  // G
+            | (UInt32(readback.bytes[i + 0]) << 8)  // B
+            | UInt32(readback.bytes[i + 3])  // A
+        }
+        return jsonEncode(sampler.response(frame: currentFrame, request: request))
+      }
       let sampler = DebugPixelProbeSampler(surface: surface)
       return jsonEncode(sampler.response(frame: currentFrame, request: request))
     }
@@ -168,7 +186,7 @@ extension HeadlessDebugRuntime {
     var missing = Set<String>()
 
     for command in lastFrameCommands {
-      guard case .glyphRun(_, let text, _, _, _, _, _, _, _, _) = command else { continue }
+      guard case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _) = command else { continue }
       for scalar in text.unicodeScalars {
         let label = codepointLabel(scalar)
         if fontHasGlyph(for: scalar) {

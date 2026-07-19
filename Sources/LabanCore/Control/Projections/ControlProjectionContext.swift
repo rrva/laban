@@ -20,6 +20,9 @@ public struct ControlProjectionContext {
   public var readRedaction: ControlReadRedaction
   public var clientSnapshotProvider: (@Sendable (Session.ID) -> LabandSnapshotResponse?)?
   public var accessibilityValueProvider: (@Sendable (Tab) -> String)?
+  /// Reports the per-glyph animation channel state for `/debug/state`; nil
+  /// when the serving runtime has no renderer to report (GUI control server).
+  public var glyphEffectsProvider: (() -> GlyphEffectsStateResponse?)?
 
   public init(
     model: AppModel,
@@ -37,7 +40,8 @@ public struct ControlProjectionContext {
     scopedSessionID: String? = nil,
     readRedaction: ControlReadRedaction = .none,
     clientSnapshotProvider: (@Sendable (Session.ID) -> LabandSnapshotResponse?)? = nil,
-    accessibilityValueProvider: (@Sendable (Tab) -> String)? = nil
+    accessibilityValueProvider: (@Sendable (Tab) -> String)? = nil,
+    glyphEffectsProvider: (() -> GlyphEffectsStateResponse?)? = nil
   ) {
     self.model = model
     self.mode = mode
@@ -55,5 +59,6 @@ public struct ControlProjectionContext {
     self.readRedaction = readRedaction
     self.clientSnapshotProvider = clientSnapshotProvider
     self.accessibilityValueProvider = accessibilityValueProvider
+    self.glyphEffectsProvider = glyphEffectsProvider
   }
 }

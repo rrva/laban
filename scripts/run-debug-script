@@ -172,6 +172,8 @@ def start_server(repo_root, scenario, artifacts_dir, temp_dir, agent_bin):
     ]
     if scenario.get("deterministic", True):
         cmd.append("--deterministic")
+    if scenario.get("renderer"):
+        cmd.append(f"--renderer={scenario['renderer']}")
     if scenario.get("fixture"):
         cmd.append(f"--fixture={resolve_path(repo_root, scenario['fixture'])}")
     capture = scenario.get("capture")
@@ -276,6 +278,34 @@ def assert_json_expectations(response, expectations):
                 raise ScriptError(
                     f"expected {path} > {expectation['greaterThan']!r}, got {value!r}"
                 )
+        if "lessThan" in expectation:
+            try:
+                ok = value < expectation["lessThan"]
+            except TypeError as exc:
+                raise ScriptError(f"expected {path} to be comparable, got {value!r}") from exc
+            if not ok:
+                raise ScriptError(
+                    f"expected {path} < {expectation['lessThan']!r}, got {value!r}"
+                )
+        for comparator, op in (
+            ("greaterThanPath", lambda a, b: a > b),
+            ("lessThanPath", lambda a, b: a < b),
+            ("equalsPath", lambda a, b: a == b),
+            ("notEqualsPath", lambda a, b: a != b),
+        ):
+            if comparator in expectation:
+                other = json_path(response, expectation[comparator])
+                try:
+                    ok = op(value, other)
+                except TypeError as exc:
+                    raise ScriptError(
+                        f"expected {path} to be comparable, got {value!r}"
+                    ) from exc
+                if not ok:
+                    raise ScriptError(
+                        f"expected {path} {comparator.removesuffix('Path')} "
+                        f"{expectation[comparator]} ({other!r}), got {value!r}"
+                    )
 
 
 def execute_step(server_url, token, artifacts_dir, index, step):

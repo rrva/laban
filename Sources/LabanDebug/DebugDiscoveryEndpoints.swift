@@ -40,6 +40,12 @@ public enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(name: "typeText", summary: "Send text through terminal input."),
     DebugDiscoveryControl(name: "feedOutput", summary: "Inject fixture terminal output bytes."),
     DebugDiscoveryControl(name: "advanceFrames", summary: "Render one or more additional frames."),
+    DebugDiscoveryControl(
+      name: "advanceTime",
+      summary: "Advance the deterministic virtual clock (glyph-effect channel) and render."),
+    DebugDiscoveryControl(
+      name: "setGlyphEffectsEnabled",
+      summary: "Enable or disable per-glyph effects (ink-bloom, bell shake)."),
     DebugDiscoveryControl(name: "key", summary: "Send a structured key event."),
     DebugDiscoveryControl(name: "mouseWheel", summary: "Send a mouse wheel event."),
     DebugDiscoveryControl(name: "mouseDrag", summary: "Send a mouse press-drag-release gesture."),

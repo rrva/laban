@@ -1,5 +1,6 @@
 import Foundation
 import LabanCore
+import LabanRenderer
 import LabanTerminalCore
 
 extension HeadlessDebugRuntime {
@@ -23,6 +24,14 @@ extension HeadlessDebugRuntime {
         guard runtime.terminalSessionClient != nil else { return nil }
         return runtime.terminalClientSnapshotUnlocked(sessionId: sessionId)
       },
-      accessibilityValueProvider: nil)
+      accessibilityValueProvider: nil,
+      glyphEffectsProvider: {
+        guard let slug = runtime.rendererBackend as? SlugGlyphRenderer else { return nil }
+        return GlyphEffectsStateResponse(
+          active: slug.glyphEffectLiveCount > 0,
+          liveCount: slug.glyphEffectLiveCount,
+          lastKind: Int(slug.lastGlyphEffectKind),
+          wakeCount: Int(slug.glyphEffectFrameCount))
+      })
   }
 }

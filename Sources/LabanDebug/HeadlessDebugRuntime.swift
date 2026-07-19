@@ -98,6 +98,28 @@ public final class HeadlessDebugRuntime {
   var lastCaptureRunId: String?
   var lastCaptureDirectory: String?
   private var cjkFontSettingsObserver: NSObjectProtocol?
+  /// Deterministic virtual time (seconds) driving the glyph-effect channel —
+  /// the controller's output stamps and the Slug renderer's `timeSeconds`.
+  /// Advanced only by the `advanceTime` debug action; non-deterministic runs
+  /// fall back to the shared monotonic clock.
+  var virtualTimeSeconds: Double = 0
+
+  /// The clock handed to the glyph-effect channel: virtual time under
+  /// `--deterministic`, the shared monotonic clock otherwise.
+  func effectClockSeconds() -> Double {
+    deterministic ? virtualTimeSeconds : MonotonicClock.seconds()
+  }
+
+  /// (Re)wires the glyph-effect channel onto the current renderer backend:
+  /// the deterministic clock and the live enabled flag. Called after backend
+  /// creation/rebuild and by the `setGlyphEffectsEnabled` action.
+  func wireGlyphEffectChannelUnlocked() {
+    guard let slug = rendererBackend as? SlugGlyphRenderer else { return }
+    slug.glyphEffectClock = { [weak self] in
+      self?.effectClockSeconds() ?? MonotonicClock.seconds()
+    }
+    slug.glyphEffectsEnabled = GlyphEffectSettings.enabled
+  }
   var accessibilityDisplayFlags = AccessibilityDisplayFlagsResponse(
     increaseContrast: false,
     differentiateWithoutColor: false,
@@ -149,6 +171,7 @@ public final class HeadlessDebugRuntime {
     enableBackendReadbackIfNeededUnlocked()
     rendererBackend.setSurfaceTransparency(
       RendererSurfaceTransparency(isOpaque: effectiveTransparency.isSurfaceOpaque))
+    wireGlyphEffectChannelUnlocked()
     syncSoftwareRendererIfNeededUnlocked()
   }
 
@@ -421,6 +444,10 @@ public final class HeadlessDebugRuntime {
     self.enableBackendReadbackIfNeededUnlocked()
     self.rendererBackend.setSurfaceTransparency(
       RendererSurfaceTransparency(isOpaque: effectiveTransparency.isSurfaceOpaque))
+    self.surfaceController.outputStampClock = { [weak self] in
+      self?.effectClockSeconds() ?? MonotonicClock.seconds()
+    }
+    self.wireGlyphEffectChannelUnlocked()
 
     if terminalBackend == .laband {
       try configureLabandBackendUnlocked()
@@ -858,6 +885,12 @@ public final class HeadlessDebugRuntime {
       snapshotMs: snapshotMs,
       commandExtractionMs: commandExtractionMs
     )
+    // Parity with TerminalBitmapView.advanceFrame: mark the active session
+    // rendered so the next frame's dirty rows (and therefore the glyph-effect
+    // stamp bands) describe only what changed since this frame.
+    if let activeTab = model.activeTab, let session = model.session(forTab: activeTab.id) {
+      session.markRendered()
+    }
   }
 
   private func renderCommandsUnlocked(

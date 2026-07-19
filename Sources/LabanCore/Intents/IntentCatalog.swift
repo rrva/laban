@@ -1314,6 +1314,20 @@ public struct IntentCatalog: Sendable {
       dataSensitivity: .trace,
       inputSchema: AdvanceFramesActionRequest.jsonSchema),
     descriptor(
+      id: "fixture.advanceTime",
+      category: "fixture",
+      summary: "Advance the deterministic virtual clock (glyph-effect channel) and render a frame.",
+      requiredCapability: .fixture,
+      dataSensitivity: .trace,
+      inputSchema: AdvanceTimeActionRequest.jsonSchema),
+    descriptor(
+      id: "glyphEffects.setEnabled",
+      category: "fixture",
+      summary: "Enable or disable per-glyph effects (ink-bloom, bell shake).",
+      requiredCapability: .fixture,
+      dataSensitivity: .nonSensitiveState,
+      inputSchema: SetGlyphEffectsEnabledActionRequest.jsonSchema),
+    descriptor(
       id: "fixture.windowFocus",
       category: "fixture",
       summary: "Drive headless focus reporting or raise an isolated GUI fixture window.",

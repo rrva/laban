@@ -138,6 +138,30 @@ struct DebugWindowActions {
     return runtime.actionResult(ok: true)
   }
 
+  /// Advances the deterministic virtual clock that drives the glyph-effect
+  /// channel (controller output stamps + Slug `timeSeconds`), then renders a
+  /// frame so the new age is observable. Deterministic runs only —
+  /// wall-clock runs have no virtual time to advance.
+  func advanceTime(_ request: AdvanceTimeActionRequest) -> DebugResponse {
+    guard runtime.deterministic else {
+      return jsonError("advanceTime requires --deterministic")
+    }
+    let ms = max(request.ms ?? 0, 1)
+    runtime.virtualTimeSeconds += Double(ms) / 1000.0
+    runtime.renderFrameUnlocked()
+    return runtime.actionResult(ok: true)
+  }
+
+  func setGlyphEffectsEnabled(_ request: SetGlyphEffectsEnabledActionRequest) -> DebugResponse {
+    guard let enabled = request.enabled else {
+      return jsonError("setGlyphEffectsEnabled requires enabled")
+    }
+    GlyphEffectSettings.setEnabled(enabled)
+    runtime.wireGlyphEffectChannelUnlocked()
+    runtime.renderFrameUnlocked()
+    return runtime.actionResult(ok: true)
+  }
+
   func setVectorSubpixelLayout(_ request: VectorSubpixelLayoutActionRequest) -> DebugResponse {
     guard let vectorRenderer = runtime.rendererBackend as? VectorGlyphRenderer else {
       return jsonError("setVectorSubpixelLayout requires vectorGlyph renderer")

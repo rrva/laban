@@ -36,7 +36,8 @@ public enum ControlStateProjections {
         activeTab: scopedActiveTab ?? (ctx.scopedSessionID == nil ? activeTab : nil), ctx: ctx),
       emojiRendering: emojiRenderingSettingsResponse(),
       attentionNotifications: filteredAttentionNotifications(ctx).map(
-        attentionNotificationDecisionResponse)
+        attentionNotificationDecisionResponse),
+      glyphEffects: ctx.glyphEffectsProvider?()
     )
   }
 

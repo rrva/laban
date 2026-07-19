@@ -49,7 +49,10 @@ final class IntentCatalogTests: XCTestCase {
   func testFixtureCatalogLimitsGUIToDiagnosticWindowFocus() throws {
     XCTAssertEqual(
       IntentCatalog.fixture.ids,
-      ["fixture.advanceFrames", "fixture.control", "fixture.feedOutput", "fixture.windowFocus"])
+      [
+        "fixture.advanceFrames", "fixture.advanceTime", "fixture.control",
+        "fixture.feedOutput", "fixture.windowFocus", "glyphEffects.setEnabled",
+      ])
     for descriptor in IntentCatalog.fixture.descriptors {
       XCTAssertTrue(descriptor.availability.headless, descriptor.id)
       if descriptor.id == "fixture.windowFocus" {

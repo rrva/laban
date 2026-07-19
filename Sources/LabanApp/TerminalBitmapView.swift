@@ -351,6 +351,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private(set) var transparencyRenderWakeCount = 0
   private var transparencyRendererPresentBaseline = 0
   private var terminalOutputActiveUntil = Date.distantPast
+  /// Glyph-effect animation channel (M0 substrate): while non-expired, a
+  /// per-glyph effect (ink-bloom, bell shake) is live and the display link
+  /// runs at the 30 fps animation budget. M1/M2 stamp this when an effect
+  /// starts; the natural `advanceFrame` reconcile parks the link on decay.
+  private var glyphEffectAnimatingUntil = Date.distantPast
+  /// Trailing-frame latch mirroring `attentionWasAnimating`: after the last
+  /// live-effect frame reports `remaining == 0`, one more advanceFrame must
+  /// still reach the renderer so the settle repaint lands (and so skipped
+  /// display-link ticks cannot freeze the first bloom frame on glass).
+  private var glyphEffectWasAnimating = false
+  /// Times the link was woken from parked by a live glyph effect
+  /// (observability; surfaced via the M3 `/debug/glyph-effects` endpoint).
+  private(set) var glyphEffectWakeCount = 0
   /// While a precise scroll stream is flowing, the display link paces
   /// rendering at the panel rate instead of a synchronous render per wheel
   /// event: per-event full-damage renders saturate the main loop at larger
@@ -1634,11 +1647,37 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     damage: RenderDamage,
     rendererFallbackReason: String?
   ) -> Bool {
-    targetBackend.render(
+    // Live every frame (no observer needed: the flag is only consulted while
+    // building instances, and any frame that matters renders through here).
+    // Reduce Motion force-off per GlyphEffectTimeline.effectiveKind.
+    (targetBackend as? SlugGlyphRenderer)?.glyphEffectsEnabled =
+      GlyphEffectSettings.enabled && !reduceMotion
+    return targetBackend.render(
       commands,
       cellPayload: surfaceFrame.cellPayload,
       damage: damage,
       rendererFallbackReason: rendererFallbackReason)
+  }
+
+  /// Glyph-effect frame pumping (M1): while the Slug renderer reports live
+  /// per-glyph effects, extend `glyphEffectAnimatingUntil` so the
+  /// display-link policy keeps the link at the 30 fps animation budget. When
+  /// the renderer reports settled (`remaining == 0`), clear the deadline
+  /// immediately so a stale `max()`-extended until cannot keep the decorative
+  /// rung alive; the `glyphEffectWasAnimating` strip frame still lands the
+  /// settle repaint on the next tick.
+  private func syncGlyphEffectAnimatingState(now: Date = Date()) {
+    guard let slug = backend as? SlugGlyphRenderer else { return }
+    let remaining = slug.glyphEffectAnimatingRemainingSeconds
+    if remaining <= 0 {
+      glyphEffectAnimatingUntil = .distantPast
+      return
+    }
+    if glyphEffectAnimatingUntil <= now {
+      glyphEffectWakeCount += 1
+    }
+    glyphEffectAnimatingUntil = max(
+      glyphEffectAnimatingUntil, now.addingTimeInterval(remaining))
   }
 
   /// Emit a Points-of-Interest signpost segment for the active renderer config,
@@ -2304,6 +2343,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     var scrollAnimating: Bool
     var cursorBlinkActive: Bool
     var idleFloorEnabled: Bool
+    var glyphEffectAnimating: Bool
     var shouldRun: Bool
     var preferredFramesPerSecond: Int
     var reason: String
@@ -2317,6 +2357,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let attentionAnimating =
       windowVisibleToUser && !reduceMotion
       && TabAttentionClassifier.anyNeedsAction(tabs: model.tabs, activeTabId: model.activeTab?.id)
+    // A live glyph effect (M1/M2 stamp `glyphEffectAnimatingUntil`) is
+    // decorative motion: gated on Reduce Motion like the attention pulse.
+    let glyphEffectAnimating =
+      windowVisibleToUser && !reduceMotion && glyphEffectAnimatingUntil > now
     // The owned blink timer (Stage 1) runs only while blink is enabled in
     // Settings AND the window is visible AND the cursor is visible — exactly
     // the legacy-blink condition the policy's blink floor carries. Blink off
@@ -2335,14 +2379,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       attentionAnimating: attentionAnimating,
       terminalOutputActive: terminalOutputActive,
       cursorBlinkActive: cursorBlinkActive,
-      idleFloorEnabled: displayLinkIdleFloorEnabled)
+      idleFloorEnabled: displayLinkIdleFloorEnabled,
+      glyphEffectAnimating: glyphEffectAnimating)
     let preferred = TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
       windowVisibleToUser: windowVisibleToUser,
       scrollAnimating: scrollLinkActive,
       attentionAnimating: attentionAnimating,
       terminalOutputActive: terminalOutputActive,
       cursorBlinkActive: cursorBlinkActive,
-      idleFloorEnabled: displayLinkIdleFloorEnabled)
+      idleFloorEnabled: displayLinkIdleFloorEnabled,
+      glyphEffectAnimating: glyphEffectAnimating)
     let reason: String
     if scrollAnimating {
       reason = "scroll"
@@ -2354,6 +2400,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       reason = "attention"
     } else if terminalOutputActive {
       reason = "terminalOutputActive"
+    } else if glyphEffectAnimating {
+      reason = "glyphEffect"
     } else if !windowVisibleToUser {
       reason = "notVisible"
     } else if cursorBlinkActive {
@@ -2370,6 +2418,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       scrollAnimating: scrollAnimating,
       cursorBlinkActive: cursorBlinkActive,
       idleFloorEnabled: displayLinkIdleFloorEnabled,
+      glyphEffectAnimating: glyphEffectAnimating,
       shouldRun: shouldRun,
       preferredFramesPerSecond: preferred,
       reason: reason)
@@ -2562,6 +2611,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case synchronizedOutputWake
     case renderRetry
     case blinkTimer
+    case glyphEffect
     case safetyNet
     case other
   }
@@ -2897,10 +2947,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let attentionStripFrame = attentionAnimating || attentionWasAnimating
     attentionWasAnimating = attentionAnimating
 
+    // Same strip-frame contract for per-glyph effects: the display-link
+    // policy keeps the link alive while `glyphEffectAnimatingUntil` is in
+    // the future, but without this latch those ticks early-return here
+    // (no terminalDirty / renderInvalidated) and never call the Slug
+    // renderer — so the bloom freezes on its first faint frame and
+    // `syncGlyphEffectAnimatingState` never sees decay. Mirror attention.
+    let glyphEffectAnimating =
+      windowVisibleToUser && !reduceMotion && glyphEffectAnimatingUntil > attentionNow
+    let glyphEffectStripFrame = glyphEffectAnimating || glyphEffectWasAnimating
+    glyphEffectWasAnimating = glyphEffectAnimating
+
     // Return early when nothing changed
     guard
       terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame
-        || attentionStripFrame || sidebarScrollAnimating
+        || attentionStripFrame || sidebarScrollAnimating || glyphEffectStripFrame
     else {
       recordParkedFrameIfInteresting(
         frame: captureFrame,
@@ -3240,6 +3301,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       commands: cmds,
       rendered: true)
     renderedFrameCount = captureFrame
+    syncGlyphEffectAnimatingState()
     if let recorder = captureRecorder {
       // Both software and Metal flow through the same recorder entry now.
       // Pulling pngData triggers a CGImage realisation on software and a
@@ -3684,6 +3746,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         terminalOutputActive: policy.terminalOutputActive,
         attentionAnimating: policy.attentionAnimating,
         scrollAnimating: policy.scrollAnimating,
+        glyphEffectAnimating: policy.glyphEffectAnimating,
         lastTickIntervalMs: lastDisplayLinkTickIntervalMs)
     }
     return RenderJournal.DisplayLinkSnapshot(
@@ -3696,6 +3759,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       terminalOutputActive: policy.terminalOutputActive,
       attentionAnimating: policy.attentionAnimating,
       scrollAnimating: policy.scrollAnimating,
+      glyphEffectAnimating: policy.glyphEffectAnimating,
       lastTickIntervalMs: lastDisplayLinkTickIntervalMs)
   }
 
