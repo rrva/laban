@@ -311,7 +311,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     if item.action == #selector(captureProfile(_:)) {
       guard !ProfileSessionRecorder.shared.isRecording else { return false }
       let capturing = windowController?.terminalView?.isProfileCaptureActive == true
-      return !capturing && ProfileRecorderSettings.findProfilerSocket() != nil
+      return !capturing && ProfileRecorderSampler.isSupportedPlatform
+        && ProfileRecorderSettings.resolve().isEnabled
     }
     if item.action == #selector(toggleProfileSessionRecording(_:)) {
       let recording = ProfileSessionRecorder.shared.isRecording
@@ -320,7 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
       let captureActive = windowController?.terminalView?.isProfileCaptureActive == true
       return recording
         || (ProfileRecorderSampler.isSupportedPlatform
-          && ProfileRecorderSettings.resolve().pattern != nil && !captureActive)
+          && ProfileRecorderSettings.resolve().isEnabled && !captureActive)
     }
     if item.action == #selector(exportProfileSession(_:)) {
       return ProfileSessionRecorder.shared.hasExportableData
@@ -385,7 +386,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   /// Debug-menu entry: sample the in-process profiler and open the result in a
   /// web flame-graph viewer.
   @objc func captureProfile(_ sender: Any?) {
-    guard ProfileRecorderSettings.findProfilerSocket() != nil else {
+    guard ProfileRecorderSampler.isSupportedPlatform,
+      ProfileRecorderSettings.resolve().isEnabled
+    else {
       showProfileAlert(
         title: "Profiler not running",
         message: ProfileCaptureError.profilerNotRunning.localizedDescription)

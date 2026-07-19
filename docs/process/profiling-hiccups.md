@@ -161,10 +161,10 @@ Laban has two complementary profilers. Pick by what you are measuring.
 
 - Use the in-process sampling profiler (swift-profile-recorder; enable via the
   Settings toggle / `--profile-recorder` / `PROFILE_RECORDER_SERVER_URL[_PATTERN]`,
-  capture with `scripts/capture-profile`) for CPU and host-side work: main-thread
-  hotspots, cell/glyph build, PTY drain, and off-CPU waits (locks, sleeps,
-  blocking syscalls — it records waiting threads too). It needs no ptrace
-  privileges and works headless. `Package.swift` allows only the documented
+  capture with Debug → Capture CPU Profile… or Start CPU Recording) for CPU and
+  host-side work: main-thread hotspots, cell/glyph build, PTY drain, and off-CPU
+  waits (locks, sleeps, blocking syscalls — it records waiting threads too). It
+  needs no ptrace privileges. `Package.swift` allows only the documented
   `https://github.com/apple/swift-profile-recorder.git` dependency, pinned by
   `Package.resolved` at version `0.3.18` / revision
   `e110ba85da7d43a47b0e964726e84fddcf720192`.
@@ -179,8 +179,16 @@ take a Metal System Trace.
 
 ## Sampler baseline overhead
 
-Idle in-process profiles are dominated by the profiler's own SwiftNIO threads,
-which sit in `kevent` inside `Selector.whenReady0`. That is the sampler waiting
-for the next `/sample` request, not your app. Do not read it as "NIO is 80% of
-my app". When analysing, either filter those NIO selector threads out, or
-compare against an idle baseline captured the same way and look at the delta.
+Enabling CPU profile capture is now only a gate: Laban opens no profiler socket,
+starts no listener, and does no sampling while idle. During a capture, the
+sampler and CoreSymbolication work are part of the measured process and can
+appear in the profile. Compare against an idle baseline captured with the same
+sample count and interval, and focus on the application threads or delta that
+motivated the measurement.
+
+The older `ProfileRecorderServer` integration was removed after a recoverable
+Darwin accept error could end its async accept sequence while leaving the
+listening channel alive. The next connection then destroyed an undelivered
+`NIOAsyncChannel` child with an unfinished writer and trapped the app. See
+`docs/upstream/swift-profile-recorder-recoverable-accept-error-crash.md` for the
+upstream-ready report and source-level analysis.

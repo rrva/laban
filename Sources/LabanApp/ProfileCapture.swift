@@ -12,7 +12,7 @@ enum ProfileCaptureError: LocalizedError {
     switch self {
     case .profilerNotRunning:
       return
-        "The sampling profiler is not running. Enable it in Settings and relaunch, or use --profile-recorder."
+        "CPU sampling is disabled. Enable it in Settings or use --profile-recorder."
     case .captureFailed(let detail):
       return "Profile capture failed: \(detail)"
     case .viewerServerFailed(let detail):
@@ -30,62 +30,28 @@ enum ProfileCapture {
   private static let viewerLock = NSLock()
 
   static func capture(
-    socketPath: String? = ProfileRecorderSettings.findProfilerSocket(),
     samples: Int = 1000,
-    interval: String = "10 ms"
+    intervalMilliseconds: Int64 = 10
   ) throws -> URL {
-    let data = try sampleData(socketPath: socketPath, samples: samples, interval: interval)
+    guard ProfileRecorderSettings.resolve().isEnabled else {
+      throw ProfileCaptureError.profilerNotRunning
+    }
+    let data = try sampleData(
+      samples: samples, intervalMilliseconds: intervalMilliseconds)
     let outURL = try newExportURL()
     try data.write(to: outURL)
     return outURL
   }
 
   static func sampleData(
-    socketPath: String? = ProfileRecorderSettings.findProfilerSocket(),
     samples: Int,
-    interval: String
+    intervalMilliseconds: Int64,
+    sampler: @escaping ProfileSamplerCapture.Sampler = ProfileSamplerCapture.liveSampler
   ) throws -> Data {
-    guard let socketPath else { throw ProfileCaptureError.profilerNotRunning }
-
-    let pipe = Pipe()
-    let outPipe = Pipe()
-
-    let demangle = Process()
-    demangle.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
-    demangle.arguments = ["demangle", "--compact"]
-    demangle.standardInput = pipe
-    demangle.standardOutput = outPipe
-
-    let curl = Process()
-    curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-    curl.arguments = [
-      "--fail", "--silent", "--show-error",
-      "--unix-socket", socketPath,
-      "-d", "{\"numberOfSamples\":\(samples),\"timeInterval\":\"\(interval)\"}",
-      "http://localhost/sample",
-    ]
-    curl.standardOutput = pipe
-
-    let stderrPipe = Pipe()
-    curl.standardError = stderrPipe
-
-    try demangle.run()
-    try curl.run()
-
-    // Read the output from the pipe before waiting, to prevent buffer-saturation deadlocks
-    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-
-    curl.waitUntilExit()
-    demangle.waitUntilExit()
-
-    guard curl.terminationStatus == 0, demangle.terminationStatus == 0 else {
-      let detail = String(
-        data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      throw ProfileCaptureError.captureFailed(
-        detail?.isEmpty == false ? detail! : "curl or demangle failed")
-    }
-    return data
+    try ProfileSamplerCapture.captureBlocking(
+      sampleCount: samples,
+      intervalMilliseconds: intervalMilliseconds,
+      sampler: sampler)
   }
 
   static func newExportURL(prefix: String = "") throws -> URL {

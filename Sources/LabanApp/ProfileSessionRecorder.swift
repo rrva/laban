@@ -1,8 +1,6 @@
 import Foundation
-import Logging
 import NIO
 import ProfileRecorder
-import _ProfileRecorderSampleConversion
 
 enum ProfileSessionRecorderError: LocalizedError {
   case profilerNotRunning
@@ -37,7 +35,6 @@ final class ProfileSessionRecorder: @unchecked Sendable {
   private static let chunkSamples = 500
   private static let chunkInterval = TimeAmount.milliseconds(10)
   private static let minimumExportBytes = 64
-  private static let profilerLogger = Logging.Logger(label: "laban.profile-session-recorder")
 
   private let lock = NSLock()
   private let recordingQueue = DispatchQueue(label: "laban.cpu-profile-session", qos: .utility)
@@ -62,7 +59,7 @@ final class ProfileSessionRecorder: @unchecked Sendable {
 
   func start() throws {
     guard ProfileRecorderSampler.isSupportedPlatform,
-      ProfileRecorderSettings.resolve().pattern != nil
+      ProfileRecorderSettings.resolve().isEnabled
     else {
       throw ProfileSessionRecorderError.profilerNotRunning
     }
@@ -151,65 +148,9 @@ final class ProfileSessionRecorder: @unchecked Sendable {
   }
 
   private func captureChunk() throws -> Data {
-    let box = ChunkResultBox()
-    let semaphore = DispatchSemaphore(value: 0)
-    Task.detached(priority: .utility) {
-      do {
-        let data = try await Self.captureChunkAsync()
-        box.set(.success(data))
-      } catch {
-        box.set(.failure(error))
-      }
-      semaphore.signal()
-    }
-    semaphore.wait()
-    return try box.get().get()
-  }
-
-  private static func captureChunkAsync() async throws -> Data {
-    try await ProfileRecorderSampler.sharedInstance.withSymbolizedSamplesInPerfScriptFormat(
-      sampleCount: chunkSamples,
-      timeBetweenSamples: chunkInterval,
-      logger: profilerLogger
-    ) { path in
-      try demangleProfileFile(at: URL(fileURLWithPath: path))
-    }
-  }
-
-  private static func demangleProfileFile(at inputURL: URL) throws -> Data {
-    let outputURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("laban-profile-session-\(UUID().uuidString).perf")
-    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-    defer { try? FileManager.default.removeItem(at: outputURL) }
-
-    let inputHandle = try FileHandle(forReadingFrom: inputURL)
-    let outputHandle = try FileHandle(forWritingTo: outputURL)
-    defer {
-      try? inputHandle.close()
-      try? outputHandle.close()
-    }
-
-    let demangle = Process()
-    demangle.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
-    demangle.arguments = ["demangle", "--compact"]
-    demangle.standardInput = inputHandle
-    demangle.standardOutput = outputHandle
-
-    let stderrPipe = Pipe()
-    demangle.standardError = stderrPipe
-
-    try demangle.run()
-    demangle.waitUntilExit()
-
-    guard demangle.terminationStatus == 0 else {
-      let detail = String(
-        data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      throw ProfileCaptureError.captureFailed(
-        detail?.isEmpty == false ? detail! : "swift demangle failed")
-    }
-    let demangledData = try Data(contentsOf: outputURL)
-    return demangledData.isEmpty ? try Data(contentsOf: inputURL) : demangledData
+    try ProfileSamplerCapture.captureBlocking(
+      sampleCount: Self.chunkSamples,
+      intervalMilliseconds: Self.chunkInterval.nanoseconds / 1_000_000)
   }
 
   private func appendChunk(_ chunk: Data, to sessionURL: URL) throws {
@@ -225,22 +166,5 @@ final class ProfileSessionRecorder: @unchecked Sendable {
     guard let sessionFileURL else { return 0 }
     let attrs = try? FileManager.default.attributesOfItem(atPath: sessionFileURL.path)
     return attrs?[.size] as? Int ?? 0
-  }
-}
-
-private final class ChunkResultBox: @unchecked Sendable {
-  private let lock = NSLock()
-  private var result: Result<Data, Error>?
-
-  func set(_ result: Result<Data, Error>) {
-    lock.lock()
-    self.result = result
-    lock.unlock()
-  }
-
-  func get() -> Result<Data, Error> {
-    lock.lock()
-    defer { lock.unlock() }
-    return result ?? .failure(ProfileCaptureError.captureFailed("profile chunk did not finish"))
   }
 }

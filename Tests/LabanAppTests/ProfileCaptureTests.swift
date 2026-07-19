@@ -1,8 +1,48 @@
+import ProfileRecorder
 import XCTest
 
 @testable import LabanApp
 
 final class ProfileCaptureTests: XCTestCase {
+
+  func testInternalSamplerProducesPerfData() async throws {
+    guard ProfileRecorderSampler.isSupportedPlatform else { return }
+
+    let data = try await ProfileSamplerCapture.capture(
+      sampleCount: 3, intervalMilliseconds: 1)
+
+    XCTAssertFalse(data.isEmpty)
+  }
+
+  func testOneShotCaptureUsesInternalSamplerResult() throws {
+    let expected = Data("internal-profile-data".utf8)
+    let actual = try ProfileCapture.sampleData(
+      samples: 7,
+      intervalMilliseconds: 3,
+      sampler: { samples, intervalMilliseconds in
+        XCTAssertEqual(samples, 7)
+        XCTAssertEqual(intervalMilliseconds, 3)
+        return expected
+      })
+
+    XCTAssertEqual(actual, expected)
+  }
+
+  func testLabanAppDoesNotLinkOrStartProfileRecorderServer() throws {
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let package = try String(
+      contentsOf: repositoryRoot.appendingPathComponent("Package.swift"), encoding: .utf8)
+    let main = try String(
+      contentsOf: repositoryRoot.appendingPathComponent("Sources/LabanApp/main.swift"),
+      encoding: .utf8)
+
+    XCTAssertFalse(package.contains("ProfileRecorderServer"))
+    XCTAssertFalse(main.contains("ProfileRecorderServer"))
+    XCTAssertFalse(main.contains("withProfileRecordingServer"))
+  }
 
   private func runRespondWithProfile(
     request: String, fileData: Data = Data("test-profile-data".utf8)

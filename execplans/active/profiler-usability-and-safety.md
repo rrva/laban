@@ -39,6 +39,10 @@ Non-goals (explicitly deferred, consistent with the prior plan):
 - [x] M5 — Add a read-only Settings line showing the default socket path and a sample `curl`.
 - [x] M6 — Add "CPU sampling vs GPU tracing" and "Sampler baseline overhead" notes to `docs/process/profiling-hiccups.md`.
 - [x] Review Gate passed (see `Review Gate`) against the final commit SHA.
+- [x] M7 — Remove the failure-prone upstream async listener from `LabanApp`,
+  route both capture modes through one internal sampler helper, add real and
+  policy-level regression coverage, and write the upstream-ready report at
+  `docs/upstream/swift-profile-recorder-recoverable-accept-error-crash.md`.
 
 ## Decision Log
 
@@ -53,6 +57,39 @@ Non-goals (explicitly deferred, consistent with the prior plan):
 - Decision: Default socket directory is `~/Library/Application Support/Laban/profiling/`, created mode `0700`; `/tmp` is allowed only via explicit override, with a warning.
   Rationale: On macOS, connecting to a UNIX-domain socket is **not** gated by the socket file's own permission bits, so a socket in world-reachable `/tmp` lets any local account sample this process's stacks (which can leak source paths, symbols, and timing). The enforceable control is the *parent directory's* permissions. A per-user `0700` directory restricts path traversal to the owning user. `NSTemporaryDirectory()` is used as a fallback when the Application Support path would exceed the `sun_path` length limit (~104 bytes on macOS); it is already a per-user `0700` directory. Alternative considered: keep `/tmp` and only document the risk — rejected because a safe default is cheap here and "profiling socket readable by other users" is a poor default even for a dev tool.
   Date/Author: 2026-07-06 / ExecPlan author.
+
+- Decision: Keep Apple's sampler and sample-conversion products, but remove the
+  dedicated `ProfileRecorderServer` listener from `LabanApp`.
+  Rationale: On Darwin, SwiftNIO deliberately keeps a server channel open after
+  `NIOFcntlFailedError`, but also forwards the error into `NIOAsyncChannel`.
+  `swift-profile-recorder` then permanently ends its accept sequence while its
+  caller body remains alive. A subsequent accepted child is discarded with an
+  unfinished `NIOAsyncWriter`, which traps the whole application. A caller-side
+  retry cannot run because `withProfileRecordingServer` has not returned, and a
+  logging-based supervisor would leave a crash race. Laban's in-app capture and
+  recording features can call `ProfileRecorderSampler` directly. The
+  socket-only `scripts/capture-profile` helper is retired; any future external
+  automation belongs on Laban's existing authenticated control plane rather
+  than on a second profiler-specific listener. This removes the failing
+  transport without carrying a private fork or reimplementing an HTTP server.
+  Date/Author: 2026-07-19 / Codex.
+
+## M7 Result — Listener-free sampling
+
+M7 supersedes the earlier plan sections that preserve the HTTP-over-UDS
+workflow. `LabanApp` now links `ProfileRecorder` and
+`_ProfileRecorderSampleConversion`, not `ProfileRecorderServer`. One-shot
+capture and session recording share `ProfileSamplerCapture`, which calls
+`ProfileRecorderSampler.sharedInstance.withSymbolizedSamplesInPerfScriptFormat`
+and demangles the resulting file internally. The Settings toggle and legacy
+CLI/environment gates remain enable switches, but their URL values are ignored
+and take effect immediately; no listener or socket is created.
+
+The socket-discovery code, startup task, curl subprocess, and
+`scripts/capture-profile` were removed. `ProfileCaptureTests` contains both a
+real three-sample capture test and a source-policy regression that rejects a
+future `ProfileRecorderServer` dependency/startup block. The original crash and
+the full two-stage causal chain are recorded in the upstream report.
 
 ## Context and Orientation
 
@@ -388,7 +425,25 @@ Append to `docs/process/profiling-hiccups.md`:
 
 ## Validation and Acceptance
 
-Acceptance is behavioral.
+M1-M6 acceptance below is the historical record for the former listener-based
+implementation. M7 supersedes its socket-specific expectations.
+
+### M7 — Listener-free internal capture
+
+Run:
+
+    swift test --filter 'ProfileCaptureTests|ProfileRecorderSettingsTests'
+    rg 'ProfileRecorderServer|withProfileRecordingServer' Package.swift Sources/LabanApp/main.swift
+    test ! -e scripts/capture-profile
+
+Expected: the focused tests pass, including a real low-level sampler capture;
+the source search has no hits; and the socket-only script is absent. With an
+installed app launched using `--profile-recorder`, no
+`laban-samples-<PID>.sock` appears under Application Support, `$TMPDIR`, or
+`/tmp`. Debug → Capture CPU Profile… still writes a non-empty `.perf` file.
+
+The following A-F sections are retained only to explain what M1-M6 originally
+validated and must not be used as current acceptance criteria.
 
 ### A. Startup logs the real path (M1)
 
@@ -441,39 +496,45 @@ Expected: `Executed 7 tests, with 0 failures`; both headings present.
 
 ## Idempotence and Recovery
 
-- All edits are additive; `swift build`/`swift test` and `scripts/capture-profile` are safe to re-run.
-- `prepareDefaultDirectoryIfNeeded` and the script's `mkdir -p` are no-ops when the directory already exists.
-- Sockets are per-PID; stale ones are harmless. Clean with `rm -f "$HOME/Library/Application Support/Laban/profiling/"*.sock /tmp/laban-*samples-*.sock`.
-- Full revert: restore the prior `main.swift` launch block (`runIgnoringFailures`), restore the `.environment` source case and static `defaultURLPattern` in `ProfileRecorderSettings.swift`, drop the two new tests, delete `scripts/capture-profile`, remove the Settings line and the two doc sections. Because the feature stays opt-in and off by default, reverting changes no shipped behavior.
+- `swift build`, `swift test`, and internal captures are safe to re-run. Each
+  capture uses upstream temporary storage and writes a new timestamped export.
+- M7 creates no profiler socket and needs no stale-socket cleanup.
+- Reverting M7 would restore a known host-process crash. Prefer fixing the
+  upstream async-server lifecycle before restoring any profiler listener.
 
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this ExecPlan is complete. The executing agent must not mark the plan done until this gate passes. See "Review gate and review-fix loop" in `PLANS.md`. Run every check from the repository root.
 
-- [ ] `grep -n 'withProfileRecordingServer' Sources/LabanApp/main.swift` prints ≥ 1 hit and `grep -n 'runIgnoringFailures' Sources/LabanApp/main.swift` prints nothing (M1 switched APIs).
-- [ ] `grep -n 'socketPath' Sources/LabanApp/main.swift` shows the resolved-path log line (M1).
-- [ ] `grep -n 'directEnvKey\|environmentDirectURL' Sources/LabanApp/ProfileRecorderSettings.swift` shows the new key and source case, and the direct-URL check precedes the pattern check (M2). Verify order: `awk '/environment\[directEnvKey\]/{d=NR} /environment\[envKey\]/{p=NR} END{exit !(d>0 && p>0 && d<p)}' Sources/LabanApp/ProfileRecorderSettings.swift` exits 0.
-- [ ] `grep -n 'Application Support/Laban/profiling\|defaultProfilingDirectory\|posixPermissions' Sources/LabanApp/ProfileRecorderSettings.swift` shows the per-user directory and `0700` attribute (M3); `grep -n 'unix:///tmp/laban-samples-{PID}.sock' Sources/LabanApp/ProfileRecorderSettings.swift` prints nothing (the hard-coded `/tmp` default is gone).
-- [ ] `test -x scripts/capture-profile && bash -n scripts/capture-profile` exits 0 (M4: present, executable, parses).
-- [ ] `grep -n 'sampling profiler' Sources/LabanApp/SettingsWindowController.swift` still shows the checkbox, and a new selectable label referencing `swift demangle` or the socket path is present: `grep -n 'demangle\|socket' Sources/LabanApp/SettingsWindowController.swift` prints ≥ 1 hit (M5).
-- [ ] `grep -n 'CPU sampling vs GPU tracing' docs/process/profiling-hiccups.md` and `grep -n 'Sampler baseline overhead' docs/process/profiling-hiccups.md` each print 1 hit (M6).
-- [ ] `swift build 2>&1 | tail -1` prints `Build complete!`.
-- [ ] `swift test --filter ProfileRecorderSettingsTests 2>&1 | grep -q 'Executed 7 tests, with 0 failures'` succeeds.
+- [ ] `Package.swift` links `ProfileRecorder` and sample conversion, not
+  `ProfileRecorderServer`.
+- [ ] `Sources/LabanApp/main.swift` contains no profiler startup task, bind, or
+  listener lifecycle.
+- [ ] `ProfileCapture` and `ProfileSessionRecorder` both route sampling through
+  `ProfileSamplerCapture`.
+- [ ] The enable resolver contains no socket discovery/probing and legacy URL
+  inputs affect only `isEnabled`.
+- [ ] The focused tests include a real sampler capture and a policy test that
+  rejects reintroducing `ProfileRecorderServer`; they pass.
+- [ ] The upstream report accurately follows the pinned source and does not
+  overstate the intermittent first-stage reproduction.
+- [ ] The full repository gate passes, or every unrelated/pre-existing failure
+  is recorded with evidence.
 
-The live `/health`, `/sample`, and Settings-window behaviors need a graphical session and are verified by the executing agent as behavioral acceptance (sections A–E), not by the fresh review agent.
+Review status: PENDING M7 FRESH REVIEW
 
-Review status: PASS WITH CAVEAT (uncommitted worktree; no commit SHA yet)
+Review findings (M7 reviewer fills this in):
 
-Review findings (filled in by the review agent):
-
-- 9/9 automated checks pass after M5 tooltip mentions `socket` and `swift demangle`.
-- M1–M6 implementation matches the plan; 7 resolver tests pass.
-- Build succeeds; toolchain may print `ok (build complete)` instead of `Build complete!`.
-- Behavioral acceptance A–E verified by executing agent where noted below.
+- Pending.
 
 ## Interfaces and Dependencies
 
-No new package dependencies. Uses existing upstream API from `swift-profile-recorder` (already pinned by the prior plan): `ProfileRecorderServer.withProfileRecordingServer(logger:_:)`, `ProfileRecorderServer.ServerInfo.ServerStartResult`, and NIO's `SocketAddress.pathname`. New Laban surface: `ProfileRecorderSettings.directEnvKey`, computed `defaultURLPattern`, `defaultProfilingDirectory`, `prepareDefaultDirectoryIfNeeded(for:)`, source cases `.environmentDirectURL`/`.environmentPattern`; `scripts/capture-profile`; one selectable label in `SettingsWindowController`; two sections in `docs/process/profiling-hiccups.md`.
+No new package dependency. M7 replaces the `ProfileRecorderServer` product with
+the existing package's low-level `ProfileRecorder` product and keeps
+`_ProfileRecorderSampleConversion`. The shared Laban interface is
+`ProfileSamplerCapture.capture` / `captureBlocking`. The legacy CLI and
+environment URL-shaped gates remain source-compatible enable signals but no
+longer select a transport endpoint.
 
 ## Artifacts and Notes
 

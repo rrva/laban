@@ -109,7 +109,7 @@ let package = Package(
       name: "LabanApp",
       dependencies: [
         "LabanCore", "LabanRenderer", "LabanTerminalCore", "LabanControl",
-        .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
+        .product(name: "ProfileRecorder", package: "swift-profile-recorder"),
         .product(name: "_ProfileRecorderSampleConversion", package: "swift-profile-recorder"),
       ],
       resources: [

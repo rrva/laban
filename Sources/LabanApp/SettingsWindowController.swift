@@ -129,8 +129,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let blinkCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Blink cursor"), target: nil, action: nil)
   private let profileRecorderCheckbox = NSButton(
-    checkboxWithTitle: L10n.tr("Enable sampling profiler (applies on next launch)"), target: nil,
-    action: nil)
+    checkboxWithTitle: L10n.tr("Enable CPU profile capture"), target: nil, action: nil)
   private let profileRecorderHelpLabel = NSTextField(wrappingLabelWithString: "")
   private let approvalStore = ControlAttachApprovalStore(
     signer: ControlAttachApprovalStore.defaultSigner())
@@ -520,8 +519,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     profileRecorderCheckbox.target = self
     profileRecorderCheckbox.action = #selector(profileRecorderChanged(_:))
     profileRecorderCheckbox.toolTip =
-      "Starts an in-process sampling profiler on the next launch. Copy the socket "
-      + "path below, use Debug → Capture CPU Profile…, or run scripts/capture-profile."
+      "Allows Debug-menu CPU captures immediately. Sampling runs only during a capture; "
+      + "Laban does not open a profiler listener."
 
     profileRecorderHelpLabel.isEditable = false
     profileRecorderHelpLabel.isSelectable = true
