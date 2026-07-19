@@ -38,7 +38,8 @@
     {"$ref": "#/$defs/setBackgroundSource"},
     {"$ref": "#/$defs/setBackgroundImageScaling"},
     {"$ref": "#/$defs/importBackgroundImage"},
-    {"$ref": "#/$defs/removeBackgroundImage"}
+    {"$ref": "#/$defs/removeBackgroundImage"},
+    {"$ref": "#/$defs/captureProfile"}
   ],
   "$defs": {
     "newTab": {
@@ -430,6 +431,17 @@
       "required": ["action"],
       "properties": {
         "action": {"const": "removeBackgroundImage"}
+      },
+      "additionalProperties": false
+    },
+    "captureProfile": {
+      "type": "object",
+      "required": ["action", "samples", "intervalMilliseconds"],
+      "properties": {
+        "action": {"const": "captureProfile"},
+        "samples": {"type": "integer", "minimum": 1, "maximum": 1200},
+        "intervalMilliseconds": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "expectedPID": {"type": "integer", "minimum": 1}
       },
       "additionalProperties": false
     },

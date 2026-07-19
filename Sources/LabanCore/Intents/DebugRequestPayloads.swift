@@ -116,6 +116,7 @@ public enum DebugActionIntentID {
     "setBackgroundImageScaling",
     "importBackgroundImage",
     "removeBackgroundImage",
+    "captureProfile",
   ]
 
   public static func intentID(forAction action: String) -> String? {
@@ -162,6 +163,7 @@ public enum DebugActionIntentID {
     case "setBackgroundImageScaling": return "transparency.backgroundImageScaling.set"
     case "importBackgroundImage": return "transparency.backgroundImage.import"
     case "removeBackgroundImage": return "transparency.backgroundImage.remove"
+    case "captureProfile": return "profile.capture"
     default: return nil
     }
   }
@@ -374,6 +376,73 @@ public struct RemoveBackgroundImageActionRequest: Codable, Sendable, Equatable,
           enumValues: nil, const: "removeBackgroundImage", format: nil, pattern: nil)
       ],
       required: ["action"],
+      additionalProperties: false)
+  }
+}
+
+public struct CaptureProfileActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var action: String?
+  public var samples: Int
+  public var intervalMilliseconds: Int
+  public var expectedPID: Int?
+
+  public init(
+    action: String? = "captureProfile",
+    samples: Int,
+    intervalMilliseconds: Int,
+    expectedPID: Int? = nil
+  ) {
+    self.action = action
+    self.samples = samples
+    self.intervalMilliseconds = intervalMilliseconds
+    self.expectedPID = expectedPID
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "action": .string(
+          enumValues: nil, const: "captureProfile", format: nil, pattern: nil),
+        "expectedPID": .integer(min: 1, max: nil),
+        "intervalMilliseconds": .integer(min: 1, max: 1_000),
+        "samples": .integer(min: 1, max: 1_200),
+      ],
+      required: ["action", "samples", "intervalMilliseconds"],
+      additionalProperties: false)
+  }
+}
+
+public struct CaptureProfileActionResponse: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var ok: Bool
+  public var format: String
+  public var profileBase64: String
+  public var byteCount: Int
+  public var pid: Int
+
+  public init(profileData: Data, pid: Int) {
+    self.ok = true
+    self.format = "perf-script"
+    self.profileBase64 = profileData.base64EncodedString()
+    self.byteCount = profileData.count
+    self.pid = pid
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "byteCount": .integer(min: 1, max: nil),
+        "format": .string(
+          enumValues: nil, const: "perf-script", format: nil, pattern: nil),
+        "ok": .boolean,
+        "pid": .integer(min: 1, max: nil),
+        "profileBase64": .string(
+          enumValues: nil, const: nil, format: "byte", pattern: nil),
+      ],
+      required: ["ok", "format", "profileBase64", "byteCount", "pid"],
       additionalProperties: false)
   }
 }

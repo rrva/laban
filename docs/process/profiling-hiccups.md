@@ -192,3 +192,10 @@ listening channel alive. The next connection then destroyed an undelivered
 `NIOAsyncChannel` child with an unfinished writer and trapped the app. See
 `docs/upstream/swift-profile-recorder-recoverable-accept-error-crash.md` for the
 upstream-ready report and source-level analysis.
+
+The installed transparency compositor still needs a CPU profile alongside its
+Metal trace. It now starts the bounded `captureProfile` diagnostic control
+action asynchronously with the fixture-only whole-app token it already owns,
+so CPU sampling, Metal tracing, and host CPU measurements overlap without
+restoring a profiler listener. The action is not exposed through session-scoped
+lazy attach because a profile contains stacks from the whole app process.

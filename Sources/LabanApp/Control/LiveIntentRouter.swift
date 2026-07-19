@@ -66,6 +66,7 @@ final class LiveIntentRouter: IntentRouter {
     ((String, TerminalBackgroundImageScaling) throws -> Void)?
   private var removeBackgroundImageHandler: (() -> Void)?
   private var fixtureWindowFocusHandler: (() -> Bool)?
+  private let profileCaptureHandler: (Int, Int64) throws -> Data
   weak var proposalPresenter: CommandProposalReviewPresenting?
 
   init(
@@ -75,12 +76,21 @@ final class LiveIntentRouter: IntentRouter {
     notificationDiagnosticsStore: NativeNotificationDiagnosticsStore = .shared,
     notificationIdentityProvider: @escaping () -> NativeNotificationRuntimeIdentity = {
       NativeNotificationRuntimeIdentityProvider.snapshot()
+    },
+    profileCaptureHandler: @escaping (Int, Int64) throws -> Data = { samples, interval in
+      guard ProfileRecorderSettings.resolve().isEnabled else {
+        throw ProfileCaptureError.profilerNotRunning
+      }
+      return try ProfileSamplerCapture.captureBlocking(
+        sampleCount: samples,
+        intervalMilliseconds: interval)
     }
   ) {
     self.model = model
     self.proposalPresenter = proposalPresenter
     self.notificationDiagnosticsStore = notificationDiagnosticsStore
     self.notificationIdentityProvider = notificationIdentityProvider
+    self.profileCaptureHandler = profileCaptureHandler
     self.notificationStateRefresh = {}
     if let environment {
       self.environment = environment
@@ -164,7 +174,15 @@ final class LiveIntentRouter: IntentRouter {
   }
 
   func route(_ intent: Intent) -> ControlResponse {
-    performOnMain {
+    if case .legacyDebugAction(let input) = intent,
+      input.intentID == "profile.capture"
+    {
+      // Sampling is intentionally handled on the control server's worker
+      // thread. Routing it through performOnMain would freeze AppKit for the
+      // entire capture and distort the profile being collected.
+      return captureProfileAction(body: input.body)
+    }
+    return performOnMain {
       switch intent {
       case .legacyDebugAction(let input):
         switch input.intentID {
@@ -354,6 +372,38 @@ final class LiveIntentRouter: IntentRouter {
     return json(
       NativeNotificationTestAcceptedResponse(accepted: true, eventId: event.id),
       status: 202)
+  }
+
+  private func captureProfileAction(body: Data) -> ControlResponse {
+    guard
+      let request = try? JSONDecoder().decode(CaptureProfileActionRequest.self, from: body),
+      (1...1_200).contains(request.samples),
+      (1...1_000).contains(request.intervalMilliseconds),
+      request.samples * request.intervalMilliseconds <= 120_000
+    else {
+      return .error(400, "invalid captureProfile request")
+    }
+
+    let processID = Int(ProcessInfo.processInfo.processIdentifier)
+    if let expectedPID = request.expectedPID, expectedPID != processID {
+      return .error(409, "profile target process changed")
+    }
+
+    do {
+      let profile = try profileCaptureHandler(
+        request.samples, Int64(request.intervalMilliseconds))
+      guard !profile.isEmpty else {
+        return .error(500, "profile capture returned no samples")
+      }
+      return json(CaptureProfileActionResponse(profileData: profile, pid: processID))
+    } catch ProfileCaptureError.profilerNotRunning {
+      return .error(409, "CPU sampling is disabled")
+    } catch ProfileCaptureError.captureAlreadyInProgress {
+      return .error(409, "CPU profile capture already in progress")
+    } catch {
+      AppLog.app.error("Control-plane CPU profile capture failed: \(String(describing: error))")
+      return .error(500, "CPU profile capture failed")
+    }
   }
 
   private func setBackgroundTransparencyAction(body: Data) -> ControlResponse {
@@ -814,6 +864,7 @@ final class LiveIntentRouter: IntentRouter {
   }
 
   private static let guiDebugActionNames: [String: String] = [
+    "profile.capture": "captureProfile",
     "terminal.scrollViewport": "scrollViewport",
     "command.propose": "propose",
     "transparency.setBackground": "setBackgroundTransparency",

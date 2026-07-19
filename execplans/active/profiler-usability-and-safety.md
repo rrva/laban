@@ -38,11 +38,14 @@ Non-goals (explicitly deferred, consistent with the prior plan):
 - [x] M4 — Add `scripts/capture-profile`.
 - [x] M5 — Add a read-only Settings line showing the default socket path and a sample `curl`.
 - [x] M6 — Add "CPU sampling vs GPU tracing" and "Sampler baseline overhead" notes to `docs/process/profiling-hiccups.md`.
-- [x] Review Gate passed (see `Review Gate`) against the final commit SHA.
+- [x] M1-M6 historical Review Gate passed against their final commit SHA.
 - [x] M7 — Remove the failure-prone upstream async listener from `LabanApp`,
   route both capture modes through one internal sampler helper, add real and
   policy-level regression coverage, and write the upstream-ready report at
   `docs/upstream/swift-profile-recorder-recoverable-accept-error-crash.md`.
+- [x] M7 follow-up — Preserve the installed transparency compositor workflow
+  with a bounded, fixture-authorized `profile.capture` control action that
+  invokes the internal sampler off-main and overlaps the Metal trace.
 
 ## Decision Log
 
@@ -68,10 +71,12 @@ Non-goals (explicitly deferred, consistent with the prior plan):
   retry cannot run because `withProfileRecordingServer` has not returned, and a
   logging-based supervisor would leave a crash race. Laban's in-app capture and
   recording features can call `ProfileRecorderSampler` directly. The
-  socket-only `scripts/capture-profile` helper is retired; any future external
-  automation belongs on Laban's existing authenticated control plane rather
-  than on a second profiler-specific listener. This removes the failing
-  transport without carrying a private fork or reimplementing an HTTP server.
+  socket-only `scripts/capture-profile` helper is retired. The one existing
+  whole-app automation consumer, `scripts/profile-transparency-compositor`,
+  uses Laban's authenticated fixture control plane instead of a second
+  profiler-specific listener. Session-scoped lazy attach is intentionally not
+  widened for whole-process stack data. This removes the failing transport
+  without carrying a private fork or reimplementing an HTTP server.
   Date/Author: 2026-07-19 / Codex.
 
 ## M7 Result — Listener-free sampling
@@ -86,10 +91,21 @@ CLI/environment gates remain enable switches, but their URL values are ignored
 and take effect immediately; no listener or socket is created.
 
 The socket-discovery code, startup task, curl subprocess, and
-`scripts/capture-profile` were removed. `ProfileCaptureTests` contains both a
-real three-sample capture test and a source-policy regression that rejects a
-future `ProfileRecorderServer` dependency/startup block. The original crash and
-the full two-stage causal chain are recorded in the upstream report.
+`scripts/capture-profile` were removed. The isolated installed-app compositor
+now starts `profile.capture` through its existing diagnostic token, concurrently
+with Metal trace and host CPU collection. The action is limited to 120 seconds,
+checks an optional expected PID, rejects overlap, runs outside AppKit's main
+thread, returns counted base64 perf data, and is unavailable to app-observe,
+session, forged approved-session, and lazy-attach grants. The compositor keeps
+both the encoded response and decoded artifact private and deletes the duplicate
+response after decoding.
+
+`ProfileCaptureTests` contains a real three-sample capture test, bounded/PID/
+concurrency action tests, and a source-policy regression that rejects a future
+`ProfileRecorderServer` dependency/startup block. Control authorization tests
+exercise the real UDS policy tiers. The compositor self-test exercises action
+construction and response decoding to a non-empty private `.perf`. The original
+crash and the full two-stage causal chain are recorded in the upstream report.
 
 ## Context and Orientation
 
@@ -435,12 +451,15 @@ Run:
     swift test --filter 'ProfileCaptureTests|ProfileRecorderSettingsTests'
     rg 'ProfileRecorderServer|withProfileRecordingServer' Package.swift Sources/LabanApp/main.swift
     test ! -e scripts/capture-profile
+    scripts/profile-transparency-compositor --self-test
 
 Expected: the focused tests pass, including a real low-level sampler capture;
 the source search has no hits; and the socket-only script is absent. With an
 installed app launched using `--profile-recorder`, no
 `laban-samples-<PID>.sock` appears under Application Support, `$TMPDIR`, or
-`/tmp`. Debug → Capture CPU Profile… still writes a non-empty `.perf` file.
+`/tmp`. The compositor self-test proves its replacement control action and
+private response decoder. Debug → Capture CPU Profile… still writes a non-empty
+`.perf` file.
 
 The following A-F sections are retained only to explain what M1-M6 originally
 validated and must not be used as current acceptance criteria.
@@ -506,33 +525,55 @@ Expected: `Executed 7 tests, with 0 failures`; both headings present.
 
 A separate agent with fresh state must verify the following before this ExecPlan is complete. The executing agent must not mark the plan done until this gate passes. See "Review gate and review-fix loop" in `PLANS.md`. Run every check from the repository root.
 
-- [ ] `Package.swift` links `ProfileRecorder` and sample conversion, not
+- [x] `Package.swift` links `ProfileRecorder` and sample conversion, not
   `ProfileRecorderServer`.
-- [ ] `Sources/LabanApp/main.swift` contains no profiler startup task, bind, or
+- [x] `Sources/LabanApp/main.swift` contains no profiler startup task, bind, or
   listener lifecycle.
-- [ ] `ProfileCapture` and `ProfileSessionRecorder` both route sampling through
+- [x] `ProfileCapture` and `ProfileSessionRecorder` both route sampling through
   `ProfileSamplerCapture`.
-- [ ] The enable resolver contains no socket discovery/probing and legacy URL
+- [x] The enable resolver contains no socket discovery/probing and legacy URL
   inputs affect only `isEnabled`.
-- [ ] The focused tests include a real sampler capture and a policy test that
+- [x] The focused tests include a real sampler capture and a policy test that
   rejects reintroducing `ProfileRecorderServer`; they pass.
-- [ ] The upstream report accurately follows the pinned source and does not
+- [x] `profile.capture` is bounded, off-main, fixture-only, unavailable through
+  lazy attach, and covered by live UDS authorization tests.
+- [x] `scripts/profile-transparency-compositor --self-test` exercises the
+  private action-response-to-`.perf` path, and the production scenario starts
+  it concurrently with Metal/host measurements.
+- [x] The upstream report accurately follows the pinned source and does not
   overstate the intermittent first-stage reproduction.
-- [ ] The full repository gate passes, or every unrelated/pre-existing failure
+- [x] The full repository gate passes, or every unrelated/pre-existing failure
   is recorded with evidence.
 
-Review status: PENDING M7 FRESH REVIEW
+Review status: PASSED FOLLOW-UP REVIEW 2026-07-19
 
-Review findings (M7 reviewer fills this in):
+Review findings:
 
-- Pending.
+- Initial review of `59e1873f` found one P2: the real transparency compositor
+  still launched the deleted `scripts/capture-profile`, while its self-test did
+  not execute that branch. The focused profiler tests and all 2,243 Swift tests
+  passed. The later `coverage-labpty` gate reproducibly aborted at the unrelated
+  pre-existing assertion in `proofs/labpty/coverage/main_cov.c:326`; M7 changes
+  no labpty/proof source. The P2 is addressed by the fixture-only control action
+  above.
+- Follow-up review found and fixed two P2s before passing the gate: the decoded
+  `.perf.tmp` initially inherited ambient umask permissions until a later chmod,
+  and `execplans/active/terminal-background-transparency.md` still named the
+  deleted helper. The decoder now creates the temporary artifact atomically at
+  mode `0600` with failure cleanup, and both active plans describe the bounded
+  fixture-only action. The reviewer then reported no remaining findings after
+  25 focused tests, the debug-contract check, and diff check passed. The frozen-
+  diff autoreview advisory hung in its model-cache process and was terminated
+  after 339 seconds; the required separate-agent manual review and focused gates
+  were complete and ship-clean.
 
 ## Interfaces and Dependencies
 
 No new package dependency. M7 replaces the `ProfileRecorderServer` product with
 the existing package's low-level `ProfileRecorder` product and keeps
 `_ProfileRecorderSampleConversion`. The shared Laban interface is
-`ProfileSamplerCapture.capture` / `captureBlocking`. The legacy CLI and
+`ProfileSamplerCapture.capture` / `captureBlocking`; fixture automation uses
+the `profile.capture` diagnostic action. The legacy CLI and
 environment URL-shaped gates remain source-compatible enable signals but no
 longer select a transport endpoint.
 

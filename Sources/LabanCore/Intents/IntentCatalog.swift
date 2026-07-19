@@ -800,6 +800,19 @@ public struct IntentCatalog: Sendable {
 
   private static let legacyActionDescriptors: [IntentDescriptor] = [
     descriptor(
+      id: "profile.capture",
+      category: "profiling",
+      summary: "Capture a bounded in-process CPU profile from the Laban application.",
+      requiredCapability: .diagnosticControl,
+      dataSensitivity: .trace,
+      risk: .init(
+        level: .medium,
+        reason: "Sampling can perturb performance and returns process stack traces."),
+      audit: .metadataOnly,
+      availability: guiOnly,
+      inputSchema: CaptureProfileActionRequest.jsonSchema,
+      outputSchema: CaptureProfileActionResponse.jsonSchema),
+    descriptor(
       id: "transparency.setBackground",
       category: "transparency",
       summary: "Set requested terminal background opacity, effect, and explicit-cell policy.",

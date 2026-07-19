@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import math
@@ -475,6 +476,50 @@ class ControlClient:
     def action(self, action: str, **fields: Any) -> dict[str, Any]:
         return self.request("POST", "/debug/actions", {"action": action, **fields})
 
+    def profile_capture_arguments(
+        self,
+        *,
+        expected_pid: int,
+        samples: int,
+        interval_milliseconds: int,
+        response_path: Path,
+    ) -> list[str]:
+        try:
+            descriptor = os.open(response_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except OSError as error:
+            fail(f"could not create private CPU profile response: {error}")
+        else:
+            os.close(descriptor)
+        payload = json.dumps(
+            {
+                "action": "captureProfile",
+                "expectedPID": expected_pid,
+                "samples": samples,
+                "intervalMilliseconds": interval_milliseconds,
+            },
+            separators=(",", ":"),
+        )
+        return [
+            "curl",
+            "--config",
+            str(self.config_path),
+            "--unix-socket",
+            str(self.socket_path),
+            "--request",
+            "POST",
+            "--connect-timeout",
+            "5",
+            "--max-time",
+            "180",
+            "--header",
+            "Content-Type: application/json",
+            "--data-binary",
+            payload,
+            "--output",
+            str(response_path),
+            "http://localhost/debug/actions",
+        ]
+
     def transparency(self) -> dict[str, Any]:
         return self.request("GET", "/debug/transparency")
 
@@ -909,6 +954,52 @@ def relative_artifact(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
 
 
+def decode_profile_capture_response(
+    response_path: Path,
+    output_path: Path,
+    *,
+    expected_pid: int,
+) -> None:
+    try:
+        response = load_json(response_path, "CPU profile capture response")
+        if response.get("ok") is not True or response.get("format") != "perf-script":
+            fail("CPU profile capture response has the wrong contract")
+        if response.get("pid") != expected_pid:
+            fail("CPU profile capture response came from the wrong process")
+        encoded = response.get("profileBase64")
+        byte_count = response.get("byteCount")
+        if not isinstance(encoded, str) or isinstance(byte_count, bool) or not isinstance(byte_count, int):
+            fail("CPU profile capture response is missing bounded profile data")
+        try:
+            profile = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error):
+            fail("CPU profile capture response contains invalid base64")
+        if not profile or len(profile) != byte_count:
+            fail("CPU profile capture response byte count does not match")
+
+        temporary = output_path.with_name(output_path.name + ".tmp")
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except OSError as error:
+            fail(f"could not create private CPU profile artifact: {error}")
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = -1
+                handle.write(profile)
+            temporary.replace(output_path)
+        except BaseException:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+            raise
+    finally:
+        response_path.unlink(missing_ok=True)
+
+
 def run_scenario(
     *,
     name: str,
@@ -958,18 +1049,18 @@ def run_scenario(
         before = counters(before_state)
 
         cpu_profile = scenario_dir / "cpu.perf"
+        cpu_response = scenario_dir / "cpu-profile-response.json"
         metal_trace = scenario_dir / "metal.trace"
         metal_analysis = scenario_dir / "metal-analysis.json"
         cpu_log = (scenario_dir / "capture-profile.log").open("w", encoding="utf-8")
         try:
             cpu_capture = processes.start(
-                [
-                    str(REPOSITORY_ROOT / "scripts/capture-profile"),
-                    "--pid", str(app_pid),
-                    "--samples", str(duration * 10),
-                    "--interval", "100 ms",
-                    "--out", str(cpu_profile),
-                ],
+                client.profile_capture_arguments(
+                    expected_pid=app_pid,
+                    samples=duration * 10,
+                    interval_milliseconds=100,
+                    response_path=cpu_response,
+                ),
                 stdout=cpu_log,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -1002,6 +1093,11 @@ def run_scenario(
             fail(f"{name} run {run} trace capture timed out")
         if cpu_status != 0:
             fail(f"{name} run {run} in-process CPU capture failed")
+        decode_profile_capture_response(
+            cpu_response,
+            cpu_profile,
+            expected_pid=app_pid,
+        )
         if metal_status != 0:
             fail(f"{name} run {run} Metal trace capture/analysis failed")
         for path, label in ((cpu_profile, "CPU profile"), (metal_trace, "Metal trace"), (metal_analysis, "Metal analysis")):
@@ -1332,6 +1428,61 @@ def self_test_preference_restoration() -> None:
         )
 
 
+def self_test_profile_capture_control_action() -> None:
+    with tempfile.TemporaryDirectory(prefix="profile-control-self-test-") as temporary:
+        directory = Path(temporary)
+        client = ControlClient(Path("/tmp/mock-laban-control.sock"), "fixture-secret", directory)
+        response_path = directory / "response.json"
+        output_path = directory / "cpu.perf"
+        try:
+            arguments = client.profile_capture_arguments(
+                expected_pid=4321,
+                samples=600,
+                interval_milliseconds=100,
+                response_path=response_path,
+            )
+            if stat.S_IMODE(response_path.stat().st_mode) != 0o600:
+                fail("self-test encoded profile response permissions are not private")
+            if "fixture-secret" in arguments:
+                fail("self-test exposed the diagnostic token in capture arguments")
+            payload_index = arguments.index("--data-binary") + 1
+            payload = json.loads(arguments[payload_index])
+            if payload != {
+                "action": "captureProfile",
+                "expectedPID": 4321,
+                "samples": 600,
+                "intervalMilliseconds": 100,
+            }:
+                fail("self-test built the wrong profile capture action")
+            timeout_index = arguments.index("--max-time") + 1
+            if int(arguments[timeout_index]) <= 60:
+                fail("self-test capture timeout does not exceed the requested duration")
+
+            profile = b"sample stack\n"
+            response_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "format": "perf-script",
+                        "profileBase64": base64.b64encode(profile).decode("ascii"),
+                        "byteCount": len(profile),
+                        "pid": 4321,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            decode_profile_capture_response(response_path, output_path, expected_pid=4321)
+            if output_path.read_bytes() != profile:
+                fail("self-test did not decode the profile capture artifact")
+            if stat.S_IMODE(output_path.stat().st_mode) != 0o600:
+                fail("self-test profile artifact permissions are not private")
+            if response_path.exists():
+                fail("self-test retained the duplicate encoded profile response")
+        finally:
+            client.close()
+    print("profile-transparency-compositor: profile capture control action passed")
+
+
 def self_test_termination_signal_guard() -> None:
     original = {
         signum: signal.getsignal(signum)
@@ -1541,6 +1692,7 @@ def self_test_owned_process_cleanup() -> None:
 
 
 def self_test() -> None:
+    self_test_profile_capture_control_action()
     self_test_termination_signal_guard()
     self_test_owned_process_cleanup()
     self_test_preference_restoration()

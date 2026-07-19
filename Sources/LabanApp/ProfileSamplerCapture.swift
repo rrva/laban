@@ -13,20 +13,39 @@ enum ProfileSamplerCapture {
   typealias Sampler = @Sendable (Int, Int64) async throws -> Data
 
   private static let logger = Logging.Logger(label: "laban.profile-sampler")
+  private static let gate = ProfileSamplerCaptureGate()
   static let liveSampler: Sampler = { sampleCount, intervalMilliseconds in
-    try await capture(
-      sampleCount: sampleCount, intervalMilliseconds: intervalMilliseconds)
+    try await capture(sampleCount: sampleCount, intervalMilliseconds: intervalMilliseconds)
   }
 
   static func capture(sampleCount: Int, intervalMilliseconds: Int64) async throws -> Data {
+    try await capture(
+      sampleCount: sampleCount,
+      intervalMilliseconds: intervalMilliseconds,
+      sampler: rawSampler)
+  }
+
+  static func capture(
+    sampleCount: Int,
+    intervalMilliseconds: Int64,
+    sampler: @escaping Sampler
+  ) async throws -> Data {
     guard ProfileRecorderSampler.isSupportedPlatform else {
       throw ProfileCaptureError.profilerNotRunning
     }
     guard sampleCount > 0, intervalMilliseconds > 0 else {
       throw ProfileCaptureError.captureFailed("sample count and interval must be positive")
     }
+    guard gate.begin() else {
+      throw ProfileCaptureError.captureAlreadyInProgress
+    }
+    defer { gate.end() }
 
-    return try await ProfileRecorderSampler.sharedInstance
+    return try await sampler(sampleCount, intervalMilliseconds)
+  }
+
+  private static let rawSampler: Sampler = { sampleCount, intervalMilliseconds in
+    try await ProfileRecorderSampler.sharedInstance
       .withSymbolizedSamplesInPerfScriptFormat(
         sampleCount: sampleCount,
         timeBetweenSamples: .milliseconds(intervalMilliseconds),
@@ -91,6 +110,25 @@ enum ProfileSamplerCapture {
     }
     let demangledData = try Data(contentsOf: outputURL)
     return demangledData.isEmpty ? try Data(contentsOf: inputURL) : demangledData
+  }
+}
+
+private final class ProfileSamplerCaptureGate: @unchecked Sendable {
+  private let lock = NSLock()
+  private var capturing = false
+
+  func begin() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !capturing else { return false }
+    capturing = true
+    return true
+  }
+
+  func end() {
+    lock.lock()
+    capturing = false
+    lock.unlock()
   }
 }
 

@@ -206,7 +206,7 @@ extension LabanControlServer {
     scopedSessionID: String?
   ) -> ControlResponse {
     switch intentID {
-    case "fixture.windowFocus", "terminal.scrollViewport", "command.propose",
+    case "fixture.windowFocus", "profile.capture", "terminal.scrollViewport", "command.propose",
       "commandProposal.list",
       "commandProposal.get", "commandProposal.cancel", "transparency.setBackground",
       "transparency.diagnostics.reset", "transparency.reduceTransparencyOverride.set",

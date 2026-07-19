@@ -1,7 +1,8 @@
 import Foundation
-import LabanControl
 import LabanCore
 import XCTest
+
+@testable import LabanControl
 
 final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
   func testOnlyFixtureTierGrantsDiagnosticControl() {
@@ -28,6 +29,7 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
 
   func testDiagnosticDescriptorsAreGUIAvailableWithoutBroadeningFixtureDescriptors() throws {
     for id in [
+      "profile.capture",
       "transparency.setBackground",
       "transparency.diagnostics.reset",
       "transparency.reduceTransparencyOverride.set",
@@ -46,12 +48,14 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
         entry.intentID.hasPrefix("transparency.")
       })
     XCTAssertFalse(ControlSessionObserveFamily.capabilities.contains(.diagnosticControl))
+    XCTAssertFalse(
+      ControlLazyAttachAllowlist.entries.contains { $0.intentID == "profile.capture" })
     XCTAssertFalse(ControlSessionObserveFamily.intentIDs.contains { $0.hasPrefix("transparency.") })
     XCTAssertNoThrow(
       try IntentCatalog.all.validate(endpointDescriptors: ControlRouteCatalog.endpoints))
   }
 
-  func testGUIFixtureTokenRoutesAllEightActionsAndProjection() throws {
+  func testGUIFixtureTokenRoutesProfileAndTransparencyActionsAndProjection() throws {
     let router = TransparencySpyRouter()
     let socketPath = "/tmp/laban-transparency-auth-\(UUID().uuidString.prefix(8)).sock"
     let server = LabanControlServer(router: router, surface: .gui)
@@ -59,6 +63,7 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
     defer { server.stop() }
 
     let bodies = [
+      #"{"action":"captureProfile","samples":1,"intervalMilliseconds":1}"#,
       #"{"action":"setBackgroundTransparency","opacity":0.7,"applyToExplicitCellBackgrounds":false,"backdropStyle":"systemBlur"}"#,
       #"{"action":"resetTransparencyDiagnostics"}"#,
       #"{"action":"setReduceTransparencyOverride","enabled":true}"#,
@@ -86,6 +91,7 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
     XCTAssertEqual(
       router.intentIDs,
       [
+        "profile.capture",
         "transparency.setBackground",
         "transparency.diagnostics.reset",
         "transparency.reduceTransparencyOverride.set",
@@ -96,6 +102,55 @@ final class TransparencyDiagnosticAuthorizationTests: XCTestCase {
         "transparency.backgroundImage.remove",
       ])
     XCTAssertEqual(router.queryIDs, ["transparency.state"])
+  }
+
+  func testLiveControlDeniesProfileCaptureToNonFixtureTiers() throws {
+    let router = TransparencySpyRouter()
+    let socketPath = "/tmp/laban-profile-auth-\(UUID().uuidString.prefix(8)).sock"
+    let server = LabanControlServer(router: router, surface: .gui)
+    let readiness = try server.start(socketPath: socketPath)
+    defer { server.stop() }
+
+    let body = Data(
+      #"{"action":"captureProfile","samples":1,"intervalMilliseconds":1}"#.utf8)
+    let constraint = ControlTokenConstraint(
+      method: "POST",
+      path: "/debug/actions",
+      query: "",
+      bodySHA256: nil,
+      resolvedRouteID: "POST /debug/actions",
+      resolvedIntentID: "profile.capture")
+    let deniedTokens: [(String, ControlTokenTier)] = [
+      ("app-observe", .appObserve),
+      ("session-observe", .sessionObserve(sessionID: "s")),
+      (
+        "forged-approved",
+        .approvedSession(
+          sessionID: "s",
+          approvalID: "forged",
+          capabilities: [.diagnosticControl],
+          constraint: constraint)
+      ),
+    ]
+    for (token, tier) in deniedTokens {
+      server.registerToken(token, tier: tier)
+      let response = try ControlUDSClient.request(
+        socketPath: socketPath,
+        method: "POST",
+        path: "/debug/actions",
+        token: token,
+        body: body)
+      XCTAssertEqual(response.0, 403, token)
+    }
+
+    let fixtureResponse = try ControlUDSClient.request(
+      socketPath: socketPath,
+      method: "POST",
+      path: "/debug/actions",
+      token: readiness.debugToken,
+      body: body)
+    XCTAssertEqual(fixtureResponse.0, 200)
+    XCTAssertEqual(router.intentIDs, ["profile.capture"])
   }
 
   func testNativeFullScreenActionIsUnavailableHeadlessly() throws {

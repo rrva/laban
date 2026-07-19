@@ -4,6 +4,7 @@ import Foundation
 
 enum ProfileCaptureError: LocalizedError {
   case profilerNotRunning
+  case captureAlreadyInProgress
   case captureFailed(String)
   case viewerServerFailed(String)
   case nothingToExport
@@ -13,6 +14,8 @@ enum ProfileCaptureError: LocalizedError {
     case .profilerNotRunning:
       return
         "CPU sampling is disabled. Enable it in Settings or use --profile-recorder."
+    case .captureAlreadyInProgress:
+      return "A CPU profile capture is already in progress."
     case .captureFailed(let detail):
       return "Profile capture failed: \(detail)"
     case .viewerServerFailed(let detail):

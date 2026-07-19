@@ -440,9 +440,9 @@ report `0`.
 }
 ```
 
-The aggregate `POST /debug/actions` route accepts eight typed diagnostic
-actions. They require `diagnosticControl`, which only the whole-app fixture
-token grants:
+The aggregate `POST /debug/actions` route accepts eight typed transparency
+actions plus one bounded CPU-profile action. They require
+`diagnosticControl`, which only the whole-app fixture token grants:
 
 ```json
 {"action":"setBackgroundTransparency","opacity":0.8,"blur":0.2,"applyToExplicitCellBackgrounds":false,"backdropStyle":"systemBlur"}
@@ -454,7 +454,24 @@ token grants:
 {"action":"setBackgroundImageScaling","scaling":"fit"}
 {"action":"importBackgroundImage","path":"fixtures/background-gradient.png","scaling":"fill"}
 {"action":"removeBackgroundImage"}
+{"action":"captureProfile","samples":600,"intervalMilliseconds":100,"expectedPID":12345}
 ```
+
+`captureProfile` invokes the same internal low-level sampler used by the Debug
+menu; it does not start or contact a profiler listener. The control request is
+handled on its connection worker rather than the AppKit main thread so the
+sampled UI remains live. Requests are limited to 1...1200 samples,
+1...1000 ms intervals, and at most 120 seconds total. `expectedPID` is optional
+and makes long-running automation fail if the target process changed. The JSON
+response contains `perf-script` bytes as base64 plus their exact byte count and
+PID.
+
+This is deliberately not a lazy-attach operation. A CPU profile contains
+whole-process stacks, while lazy attach grants authority for one terminal
+session and strips `diagnosticControl` from approved tokens. The isolated
+transparency compositor uses its existing fixture-only diagnostic token,
+creates the encoded response file mode `0600`, decodes the private `cpu.perf`
+artifact, and removes the duplicate base64 response.
 
 `setBackgroundTransparency` persists through the same requested-settings path
 as Appearance. Its optional `blur` and `backdropStyle` preserve the current
