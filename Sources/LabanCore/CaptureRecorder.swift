@@ -19,6 +19,25 @@ public enum CaptureRecorderError: Error, Equatable {
   case missingManifest
 }
 
+/// Error sink shared with async I/O blocks so they never touch the
+/// recorder's main lock (finish holds it while sync-draining the queue).
+private final class CaptureIOState: @unchecked Sendable {
+  private let lock = NSLock()
+  private var errors = 0
+
+  func noteError() {
+    lock.lock()
+    errors += 1
+    lock.unlock()
+  }
+
+  var errorCount: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return errors
+  }
+}
+
 public final class CaptureRecorder: TerminalSurfaceCaptureSink {
   public let runId: String
   public let directoryURL: URL
@@ -43,6 +62,15 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
   private var streamHandles: [CaptureByteDirection: FileHandle] = [:]
   private var streamOffsets: [CaptureByteDirection: Int] = [:]
   private var streamHashers: [CaptureByteDirection: SHA256] = [:]
+
+  /// Serial queue that performs all capture file I/O off the caller's
+  /// (usually render) thread. Record methods encode and enqueue only;
+  /// `finish` drains the queue before writing the final manifest so the
+  /// artifact is complete when it returns. Blocks must never take `lock`
+  /// (finish holds it while sync-draining) and must not retain `self`
+  /// (deinit drains via finish); errors go through `ioState`.
+  private let ioQueue = DispatchQueue(label: "laban.capture.recorder.io")
+  private let ioState = CaptureIOState()
 
   public init(
     artifactRoot: URL,
@@ -166,18 +194,21 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
     defer { lock.unlock() }
     guard !finished, let handle = streamHandles[direction] else { return nil }
     let offset = streamOffsets[direction] ?? 0
-    do {
-      try handle.write(contentsOf: data)
-      streamOffsets[direction] = offset + data.count
-      if var hasher = streamHashers[direction] {
-        hasher.update(data: data)
-        streamHashers[direction] = hasher
+    streamOffsets[direction] = offset + data.count
+    if var hasher = streamHashers[direction] {
+      hasher.update(data: data)
+      streamHashers[direction] = hasher
+    }
+    // Enqueued under the lock so stream write order matches event order.
+    // A failed write can no longer fail the ref; it is counted in ioState
+    // and surfaced by finish.
+    let state = ioState
+    ioQueue.async {
+      do {
+        try handle.write(contentsOf: data)
+      } catch {
+        state.noteError()
       }
-    } catch {
-      var event = CaptureTimelineEvent(kind: .captureError, frame: frame, sessionId: sessionId)
-      event.error = "byte stream write failed: \(error)"
-      writeEventLocked(event)
-      return nil
     }
 
     let ref = CaptureByteRef(
@@ -392,11 +423,21 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
     var event = CaptureTimelineEvent(kind: .captureFinished, frame: frame)
     event.interrupted = interrupted
     writeEventLocked(event)
-    for handle in streamHandles.values { try? handle.synchronize() }
-    try? timelineHandle.synchronize()
+    // Drain queued I/O so every stream chunk, sidecar, and timeline line
+    // is on disk before the final manifest is written and returned.
+    ioQueue.sync {
+      for handle in streamHandles.values { try? handle.synchronize() }
+      try? timelineHandle.synchronize()
+    }
     try writeManifestLocked(finishedAt: Date(), interrupted: interrupted, final: true)
-    try? timelineHandle.close()
-    for handle in streamHandles.values { try? handle.close() }
+    ioQueue.sync {
+      try? timelineHandle.close()
+      for handle in streamHandles.values { try? handle.close() }
+    }
+    if ioState.errorCount > 0 {
+      FileHandle.standardError.write(
+        Data("capture \(runId): \(ioState.errorCount) async write(s) failed\n".utf8))
+    }
     finished = true
     return manifestURL
   }
@@ -420,22 +461,41 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
     let enc = JSONEncoder()
     enc.outputFormatting = [.sortedKeys]
     guard let data = try? enc.encode(event) else { return }
-    do {
-      try timelineHandle.write(contentsOf: data)
-      try timelineHandle.write(contentsOf: Data([0x0A]))
-      eventCount += 1
-    } catch {
-      // The recorder must not crash the terminal app. A later manifest will
-      // expose the shorter event count and replay will stop at the last JSON line.
+    eventCount += 1
+    // Enqueued under the lock so timeline write order matches seq order.
+    // A failed write is counted in ioState; the final manifest's event
+    // count may then exceed the line count, and replay stops at the last
+    // complete JSON line.
+    let handle = timelineHandle
+    let state = ioState
+    ioQueue.async {
+      do {
+        try handle.write(contentsOf: data)
+        try handle.write(contentsOf: Data([0x0A]))
+      } catch {
+        state.noteError()
+      }
     }
   }
 
+  /// Hashes synchronously (the hash is part of the returned/timeline
+  /// contract) but performs the file write on the I/O queue. `throws` is
+  /// retained for callers that validate keys up front; write failures are
+  /// counted in ioState instead of propagating.
   private func writeSidecar(data: Data, relativePath: String) throws -> String {
     let url = directoryURL.appendingPathComponent(relativePath)
-    try CaptureRecorder.createPrivateDirectory(url.deletingLastPathComponent())
-    try data.write(to: url, options: [.atomic])
-    chmod(url.path, S_IRUSR | S_IWUSR)
-    return CaptureHash.sha256(data)
+    let hash = CaptureHash.sha256(data)
+    let state = ioState
+    ioQueue.async {
+      do {
+        try CaptureRecorder.createPrivateDirectory(url.deletingLastPathComponent())
+        try data.write(to: url, options: [.atomic])
+        chmod(url.path, S_IRUSR | S_IWUSR)
+      } catch {
+        state.noteError()
+      }
+    }
+    return hash
   }
 
   private func writeManifestLocked(finishedAt: Date?, interrupted: Bool, final: Bool) throws {
