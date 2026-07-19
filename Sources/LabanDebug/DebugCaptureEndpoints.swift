@@ -167,10 +167,10 @@ extension HeadlessDebugRuntime {
     // The active renderer's own PNG (see captureSnapshot() for why `surface`,
     // the internal software-only surface, is the wrong source here).
     let finalPNG: Data?
-    if recorder.screenshots == .none {
-      finalPNG = nil
-    } else {
+    if recorder.needsRenderedPixelReadback {
       finalPNG = rendererBackend.pngData
+    } else {
+      finalPNG = nil
     }
     let manifest = try recorder.finish(
       interrupted: interrupted,
@@ -191,6 +191,7 @@ extension HeadlessDebugRuntime {
     case "final": return .final
     case "all": return .all
     case "none": return .none
+    case "composite": return .composite
     default: return .marked
     }
   }

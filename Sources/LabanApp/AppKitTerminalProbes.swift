@@ -231,3 +231,65 @@ final class AppKitResizeProbe {
 
   deinit { close() }
 }
+
+/// Periodically grabs the composited window image — what actually hit the
+/// screen — without touching the renderer. This is the "observed" half of
+/// the two-channel `.composite` capture: unlike the in-app pixel readback
+/// it never stalls the GPU pipeline, so recording does not pace (and
+/// potentially mask) the present-path races it is meant to diagnose.
+///
+/// Grabs and PNG encoding run on a private serial queue; the sink is the
+/// recorder's thread-safe `recordCompositeGrab`, whose file I/O is itself
+/// async. `CGWindowListCreateImage` of the app's own window needs no
+/// screen-recording permission.
+final class CompositeWindowGrabber {
+  static let defaultGrabHz: Double = 60
+
+  private let windowNumber: CGWindowID
+  private let sink: (Int, Data) -> Void
+  private let queue: DispatchQueue
+  private var timer: DispatchSourceTimer?
+  private var sequence = 0
+
+  init(windowNumber: CGWindowID, sink: @escaping (Int, Data) -> Void) {
+    self.windowNumber = windowNumber
+    self.sink = sink
+    self.queue = DispatchQueue(
+      label: "laban.capture.window-grab", qos: .userInitiated)
+  }
+
+  func start(hz: Double = CompositeWindowGrabber.defaultGrabHz) {
+    guard timer == nil, hz > 0 else { return }
+    let timer = DispatchSource.makeTimerSource(queue: queue)
+    timer.schedule(
+      deadline: .now(),
+      repeating: .milliseconds(Int(1000 / hz)),
+      leeway: .milliseconds(2))
+    timer.setEventHandler { [weak self] in self?.grab() }
+    self.timer = timer
+    timer.resume()
+  }
+
+  func stop() {
+    timer?.cancel()
+    timer = nil
+    // Drain: stop() returns with no grab in flight, so the caller can
+    // finish the recorder knowing every grabbed PNG was handed to it.
+    queue.sync {}
+  }
+
+  private func grab() {
+    guard
+      let image = CGWindowListCreateImage(
+        .null,
+        .optionIncludingWindow,
+        windowNumber,
+        [.boundsIgnoreFraming, .nominalResolution]),
+      let data = PNGEncoder.encode(image)
+    else { return }
+    sequence += 1
+    sink(sequence, data)
+  }
+
+  deinit { timer?.cancel() }
+}

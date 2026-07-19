@@ -569,6 +569,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var lastPixelHeight: Int = 0
   private var lastSurfaceScale: CGFloat = 0
   private var captureRecorder: CaptureRecorder?
+  /// Composited-window grabber, active only while a `.composite` capture
+  /// records. Runs off the render path by design.
+  private var compositeGrabber: CompositeWindowGrabber?
   /// On-surface recording pills for PTY capture and CPU profile sampling.
   private var captureIndicatorView: TerminalCaptureIndicatorView?
   private var profileCaptureIndicatorView: TerminalCaptureIndicatorView?
@@ -3240,10 +3243,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if let recorder = captureRecorder {
       // Both software and Metal flow through the same recorder entry now.
       // Pulling pngData triggers a CGImage realisation on software and a
-      // blit-readback on Metal — equivalent capture sidecars either way.
+      // blit-readback + GPU-pipeline wait on Metal — only pay that when
+      // the policy consumes in-app pixels; `.composite` observes the
+      // composited window instead and leaves the render path alone.
       recorder.recordRenderedFrame(
         frame: captureFrame,
-        pngData: backend.pngData,
+        pngData: recorder.needsRenderedPixelReadback ? backend.pngData : nil,
         width: backend.surfaceWidth,
         height: backend.surfaceHeight,
         scale: Double(backend.surfaceScale),
@@ -7869,7 +7874,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// a user reproducing a bug can locate the capture without opening a save panel.
   @objc func toggleCapture(_ sender: Any?) {
     if let recorder = captureRecorder {
-      let png = backend.pngData
+      // Stop the window channel first so its last grabs are handed to the
+      // recorder before finish drains and closes the artifact.
+      compositeGrabber?.stop()
+      compositeGrabber = nil
+      let png = recorder.needsRenderedPixelReadback ? backend.pngData : nil
       do {
         let manifest = try recorder.finish(
           interrupted: false,
@@ -7895,19 +7904,37 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let stamp = ISO8601DateFormatter().string(from: Date())
       .replacingOccurrences(of: ":", with: "-")
     do {
+      let policy = TerminalBitmapView.captureScreenshotPolicy()
       let recorder = try CaptureRecorder(
         artifactRoot: dir,
         name: "appkit-\(stamp)",
-        screenshots: .final,
+        screenshots: policy,
         executable: "LabanApp"
       )
       captureRecorder = recorder
       surfaceController.captureSink = recorder
       // Capture started: turn on the per-frame drawable→CPU readback so
-      // pngData has bytes to serve. Off-state was the default since boot.
-      (backend as? MetalRenderer)?.captureMode = true
+      // pngData has bytes to serve — but only for policies that consume
+      // in-app pixels. `.composite` keeps the renderer untouched and
+      // observes the composited window from a background grabber instead.
+      if recorder.needsRenderedPixelReadback {
+        (backend as? MetalRenderer)?.captureMode = true
+      }
       model.captureSink = recorder
       model.recordExistingStateForCapture()
+      if policy == .composite, let window {
+        let grabber = CompositeWindowGrabber(
+          windowNumber: CGWindowID(window.windowNumber)
+        ) { [weak self, weak recorder] sequence, data in
+          guard let self, let recorder else { return }
+          // frame is a best-effort correlation label; the event's timeNs
+          // is the precise ordering key against resize/render events.
+          recorder.recordCompositeGrab(
+            sequence: sequence, frame: self.renderedFrameCount, data: data)
+        }
+        grabber.start(hz: TerminalBitmapView.captureGrabHz())
+        compositeGrabber = grabber
+      }
       updateCaptureIndicator()
       AppLog.capture.info("started \(recorder.directoryURL.path)")
       EventLog.shared.log("capture.start", ["path": recorder.directoryURL.path])
@@ -8026,6 +8053,31 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let logs = (library ?? FileManager.default.temporaryDirectory)
       .appendingPathComponent("Logs/Laban/captures", isDirectory: true)
     return logs
+  }
+
+  /// Screenshot policy for the interactive capture toggle, overridable via
+  /// `LABAN_CAPTURE_SCREENSHOTS` (final|all|none|composite). `composite`
+  /// is the two cheap-channel mode: no in-app pixel readback; frame
+  /// commands + snapshots + timeline for offline replay, plus composited
+  /// window grabs for what actually hit the screen.
+  private static func captureScreenshotPolicy() -> CaptureScreenshotPolicy {
+    switch ProcessInfo.processInfo.environment["LABAN_CAPTURE_SCREENSHOTS"]?.lowercased() {
+    case "all": return .all
+    case "none": return .none
+    case "composite": return .composite
+    case "marked": return .marked
+    default: return .final
+    }
+  }
+
+  /// Grab rate for the `.composite` window channel, overridable via
+  /// `LABAN_CAPTURE_GRAB_HZ`.
+  private static func captureGrabHz() -> Double {
+    guard
+      let raw = ProcessInfo.processInfo.environment["LABAN_CAPTURE_GRAB_HZ"],
+      let hz = Double(raw), hz > 0
+    else { return CompositeWindowGrabber.defaultGrabHz }
+    return hz
   }
 }
 

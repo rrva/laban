@@ -885,10 +885,13 @@ public final class HeadlessDebugRuntime {
       renderMs: renderMs,
       screenshotMs: timing.screenshotMs
     )
-    if let pngData = rendererBackend.pngData {
-      captureRecorder?.recordRenderedFrame(
+    if let recorder = captureRecorder {
+      // Keep the frameRendered event and render.json sidecar for every
+      // policy; only the pixel readback (CGImage realisation + PNG encode)
+      // is gated on the policy actually consuming in-app pixels.
+      recorder.recordRenderedFrame(
         frame: frame,
-        pngData: pngData,
+        pngData: recorder.needsRenderedPixelReadback ? rendererBackend.pngData : nil,
         width: rendererBackend.surfaceWidth,
         height: rendererBackend.surfaceHeight,
         scale: Double(rendererBackend.surfaceScale),

@@ -10,6 +10,11 @@ public enum CaptureScreenshotPolicy: String, Codable, Sendable {
   case marked
   case all
   case none
+  /// Two cheap channels: frame commands + terminal snapshots + timeline
+  /// (replayable offline), plus composited window grabs captured outside
+  /// the renderer. No in-app pixel readback, so the render path is not
+  /// perturbed by GPU stalls or PNG encoding.
+  case composite
 }
 
 public enum CaptureRecorderError: Error, Equatable {
@@ -162,6 +167,16 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
 
   public var manifestPath: String { manifestURL.path }
   public var timelinePath: String { timelineURL.path }
+
+  /// Whether callers should pay for an in-app rendered-pixel readback
+  /// (GPU stall + CPU copy + PNG encode on Metal) to feed this recorder.
+  /// Every policy except `.composite` records the per-frame pixelHash as
+  /// the replay-verification contract; `.composite` deliberately skips it:
+  /// its pixels come from composited window grabs captured outside the
+  /// renderer.
+  public var needsRenderedPixelReadback: Bool {
+    screenshots != .composite
+  }
 
   public func nextSequence() -> Int {
     lock.lock()
@@ -380,6 +395,25 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
   @discardableResult
   public func recordScreenshot(frame: Int, data: Data) -> String? {
     let rel = String(format: "frames/frame-%06d.png", frame)
+    guard let hash = try? writeSidecar(data: data, relativePath: rel) else { return nil }
+    lock.lock()
+    defer { lock.unlock() }
+    var event = CaptureTimelineEvent(kind: .screenshotCaptured, frame: frame)
+    event.path = rel
+    event.sha256 = hash
+    event.length = data.count
+    writeEventLocked(event)
+    return rel
+  }
+
+  /// Records a composited window grab (what actually hit the screen),
+  /// captured outside the renderer. Stored under `window/` so renderer
+  /// replay only ever compares the in-app `frames/*.png` channel.
+  /// `frame` is a best-effort correlation label; `timeNs` on the event is
+  /// the precise ordering key against resize and render events.
+  @discardableResult
+  public func recordCompositeGrab(sequence: Int, frame: Int, data: Data) -> String? {
+    let rel = String(format: "window/grab-%06d.png", sequence)
     guard let hash = try? writeSidecar(data: data, relativePath: rel) else { return nil }
     lock.lock()
     defer { lock.unlock() }

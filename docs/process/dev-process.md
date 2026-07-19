@@ -248,6 +248,23 @@ Start and stop recording with `Cmd+Shift+R` or
 the manifest path on stop. A useful manual repro should include typed input,
 resize, scrollback movement, and a TUI when relevant.
 
+`LABAN_CAPTURE_SCREENSHOTS=final|all|none|composite` selects the screenshot
+policy (default `final`). `composite` is the low-perturbation mode for
+timing-sensitive repros (e.g. resize flicker): it records no in-app pixel
+readback — no GPU-pipeline wait, readback, or PNG encode on the render path —
+and instead captures the two cheap channels:
+
+- frame commands + terminal snapshots + timeline, replayable offline via
+  `replay-capture --mode=renderer` (what the terminal meant to show), and
+- composited window grabs written to `window/grab-NNNNNN.png` at
+  `LABAN_CAPTURE_GRAB_HZ` (default 60) from a background queue (what actually
+  hit the screen).
+
+If replayed frames are clean but the window grabs show the defect, the bug is
+in the present/compositing path; if replayed frames are wrong, it is in
+content/resize state. All capture file I/O is async; `finish` drains the queue
+before writing the final manifest.
+
 Replay:
 
 ```sh

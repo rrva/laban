@@ -188,6 +188,30 @@ final class CaptureRecorderTests: XCTestCase {
         atPath: root.appendingPathComponent("snapshot-normal/\(relDir)/b.json").path))
   }
 
+  func testCompositeGrabWritesWindowSidecarAndSkipsPixelReadback() throws {
+    let root = tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let composite = try CaptureRecorder(
+      artifactRoot: root, name: "composite", screenshots: .composite)
+    XCTAssertFalse(composite.needsRenderedPixelReadback)
+
+    let rel = composite.recordCompositeGrab(sequence: 1, frame: 7, data: Data("png-bytes".utf8))
+    XCTAssertEqual(rel, "window/grab-000001.png")
+    _ = try composite.finish()
+
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: root.appendingPathComponent("composite/window/grab-000001.png").path))
+    let events = try timelineEvents(root.appendingPathComponent("composite/timeline.ndjson"))
+    let grab = events.first { $0.kind == CaptureEventKind.screenshotCaptured.rawValue }
+    XCTAssertEqual(grab?.path, "window/grab-000001.png")
+    XCTAssertEqual(grab?.frame, 7)
+
+    let inApp = try CaptureRecorder(artifactRoot: root, name: "in-app", screenshots: .final)
+    XCTAssertTrue(inApp.needsRenderedPixelReadback)
+    _ = try inApp.finish()
+  }
+
   func testSchemaExamplesAreValidJSON() throws {
     let manifest = """
       {"schemaVersion":1,"kind":"laban-capture","runId":"r","createdAt":"now","app":{"gitSha":"unknown","buildConfiguration":"debug","executable":"x"},"privacy":{"containsTerminalBytes":true,"containsScreenshots":false,"redaction":"none"},"timeline":{"path":"timeline.ndjson","events":0},"streams":{},"frames":{"count":0}}

@@ -93,6 +93,7 @@ func parseArgs(_ arguments: [String] = Array(CommandLine.arguments.dropFirst()))
         case "final": a.captureScreenshots = .final
         case "all": a.captureScreenshots = .all
         case "none": a.captureScreenshots = .none
+        case "composite": a.captureScreenshots = .composite
         default: a.captureScreenshots = .marked
         }
       } else if arg.hasPrefix("--renderer=") {
@@ -167,7 +168,8 @@ func usage() -> String {
     --artifacts=PATH                Write screenshots, snapshots, and captures here.
     --temp-dir=PATH                 Use an isolated temp directory.
     --capture=NAME                  Start full capture recording immediately.
-    --capture-screenshots=POLICY    final, all, none, or marked.
+    --capture-screenshots=POLICY    final, all, none, marked, or composite
+                                    (composite: no in-app pixel readback).
     --renderer=NAME                 software, classic, gpuDriven, vectorGlyph, or slugGlyph
                                     for the debug/headless renderer backend.
     --background-opacity=VALUE      Terminal canvas opacity in the closed range 0...1.
