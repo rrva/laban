@@ -640,8 +640,9 @@ inline float2 slugGlyphApplyGestureZoom(float2 px, constant SlugGlyphUniforms &u
 // bit-identical to the pre-channel tree. The easing/decay source of truth is
 // GlyphEffectTimeline in LabanCore (same shared-source pattern as the
 // dilation table) — keep these constants in sync with it.
-constant float kSlugGlyphEffectInkBloomDecay = 0.150;  // inkBloomDecaySeconds
-constant float kSlugGlyphEffectInkBloomInitialAlpha = 0.35;  // inkBloomInitialAlpha
+constant float kSlugGlyphEffectInkBloomDecay = 0.280;  // inkBloomDecaySeconds
+constant float kSlugGlyphEffectInkBloomInitialAlpha = 0.72;  // inkBloomInitialAlpha
+constant float kSlugGlyphEffectInkBloomInitialDilation = 0.82;  // inkBloomInitialDilation
 
 inline void slugGlyphEvaluateEffect(
     SlugGlyphInstance instance,
@@ -652,16 +653,16 @@ inline void slugGlyphEvaluateEffect(
 ) {
     if (instance.effectKind == 0u) { return; }
     if (instance.effectKind == 1u) {
-        // Kind 1 = ink-bloom type-in: ease-out cubic from thin/faint to the
-        // run's normal dilation and full alpha over 150 ms. At age >= decay
-        // (and at exactly the decay boundary) t clamps to 1, progress is
-        // exactly 1, and multiplying by 1.0 leaves both values bit-identical
-        // to the no-effect render.
+        // Kind 1 = ink-bloom type-in: ease-out cubic from slightly thin/faint
+        // to the run's normal dilation and full alpha over ~280 ms. Starts
+        // above zero so age 0 never vanishes (that was the flicker). At age
+        // >= decay, progress is exactly 1 and multiplying by 1.0 leaves both
+        // values bit-identical to the no-effect render.
         float age = uniforms.timeSeconds - instance.effectStart;
         float t = clamp(age / kSlugGlyphEffectInkBloomDecay, 0.0, 1.0);
         float u = 1.0 - t;
         float progress = 1.0 - u * u * u;
-        dilation *= progress;
+        dilation *= mix(kSlugGlyphEffectInkBloomInitialDilation, 1.0, progress);
         color.a *= mix(kSlugGlyphEffectInkBloomInitialAlpha, 1.0, progress);
         return;
     }

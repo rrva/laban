@@ -245,6 +245,8 @@ public struct TerminalSurfaceFrame {
   public var snapshotMs: Double
   public var cellPayload: TerminalCellPayload?
   public var diagnostics: TerminalSurfaceFrameDiagnostics?
+  /// Ink-bloom stamp decision for this frame (render-journal `glyphEffect`).
+  public var glyphEffectStamp: GlyphEffectStampDiagnostics?
 
   public init(
     frame: Int,
@@ -260,7 +262,8 @@ public struct TerminalSurfaceFrame {
     damage: RenderDamage,
     snapshotMs: Double = 0,
     cellPayload: TerminalCellPayload? = nil,
-    diagnostics: TerminalSurfaceFrameDiagnostics? = nil
+    diagnostics: TerminalSurfaceFrameDiagnostics? = nil,
+    glyphEffectStamp: GlyphEffectStampDiagnostics? = nil
   ) {
     self.frame = frame
     self.tabId = tabId
@@ -276,6 +279,7 @@ public struct TerminalSurfaceFrame {
     self.snapshotMs = snapshotMs
     self.cellPayload = cellPayload
     self.diagnostics = diagnostics
+    self.glyphEffectStamp = glyphEffectStamp
   }
 }
 
@@ -356,6 +360,111 @@ private struct SidebarCacheSignature: Equatable {
   var theme: ThemeData
 }
 
+/// How the ink-bloom stamp path chose freshness for a frame. Surfaced in
+/// render-journal `glyphEffect.mode` so dumps can distinguish per-cell typing
+/// blooms from whole-row re-blooms without a PTY capture.
+public enum GlyphEffectStampMode: String, Codable, Equatable, Sendable {
+  /// No stamp applied this frame.
+  case none
+  /// Cell-content diff produced an X strip of changed columns.
+  case cellDiff
+  /// Fallback: single cell (or previous whole row) at the cursor.
+  case cursorCell
+  /// Whole intersecting glyph runs on the fresh Y bands (bulk / multi-row).
+  case wholeRun
+  /// Same dirty generation still inside the freshness window; prior stamp
+  /// re-applied for effectStart stability.
+  case reapply
+}
+
+/// Freshness region for ink-bloom stamping: Y bands always, optional X strip
+/// so only changed character cells bloom (settled prompt text stays put).
+public struct GlyphEffectFreshness: Equatable, Sendable {
+  public var bands: [DirtyYRange]
+  /// When both are set, only the half-open strip `[xMin, xMax)` is fresh and
+  /// intersecting glyph runs are split so settled prefix/suffix stay
+  /// unstamped. When nil, every terminal glyph run intersecting `bands` is
+  /// stamped as a whole (bulk multi-row output).
+  public var xMin: CGFloat?
+  public var xMax: CGFloat?
+  public var mode: GlyphEffectStampMode
+  public var dirtyRows: [Int]
+  /// Inclusive column span of an X strip when `hasCellStrip`.
+  public var stripColMin: Int?
+  public var stripColMax: Int?
+  public var changedCells: Int?
+
+  public init(
+    bands: [DirtyYRange],
+    xMin: CGFloat? = nil,
+    xMax: CGFloat? = nil,
+    mode: GlyphEffectStampMode,
+    dirtyRows: [Int] = [],
+    stripColMin: Int? = nil,
+    stripColMax: Int? = nil,
+    changedCells: Int? = nil
+  ) {
+    self.bands = bands
+    self.xMin = xMin
+    self.xMax = xMax
+    self.mode = mode
+    self.dirtyRows = dirtyRows
+    self.stripColMin = stripColMin
+    self.stripColMax = stripColMax
+    self.changedCells = changedCells
+  }
+
+  public var hasCellStrip: Bool {
+    xMin != nil && xMax != nil
+  }
+}
+
+/// Per-frame ink-bloom stamp decision for render-journal /debug dumps.
+public struct GlyphEffectStampDiagnostics: Codable, Equatable, Sendable {
+  public var mode: GlyphEffectStampMode
+  public var dirtyRows: [Int]
+  public var stripColMin: Int?
+  public var stripColMax: Int?
+  public var changedCells: Int?
+  public var stampedRuns: Int
+  public var stampedGlyphs: Int
+  /// Age of the active stamp in milliseconds (`now - stamp`); 0 on a fresh
+  /// stamp. Nil when `mode == .none`.
+  public var stampAgeMs: Double?
+  public var generation: UInt64?
+  /// Filled by the AppKit layer from the Slug renderer after present.
+  public var liveCount: Int?
+  public var animatingRemainingMs: Double?
+
+  public init(
+    mode: GlyphEffectStampMode,
+    dirtyRows: [Int] = [],
+    stripColMin: Int? = nil,
+    stripColMax: Int? = nil,
+    changedCells: Int? = nil,
+    stampedRuns: Int = 0,
+    stampedGlyphs: Int = 0,
+    stampAgeMs: Double? = nil,
+    generation: UInt64? = nil,
+    liveCount: Int? = nil,
+    animatingRemainingMs: Double? = nil
+  ) {
+    self.mode = mode
+    self.dirtyRows = dirtyRows
+    self.stripColMin = stripColMin
+    self.stripColMax = stripColMax
+    self.changedCells = changedCells
+    self.stampedRuns = stampedRuns
+    self.stampedGlyphs = stampedGlyphs
+    self.stampAgeMs = stampAgeMs
+    self.generation = generation
+    self.liveCount = liveCount
+    self.animatingRemainingMs = animatingRemainingMs
+  }
+
+  public static let none = GlyphEffectStampDiagnostics(mode: .none)
+}
+
 public final class TerminalSurfaceController {
   public typealias SnapshotCommandsHook = (
     _ snapshot: UnsafePointer<LabanSnapshot>,
@@ -399,24 +508,26 @@ public final class TerminalSurfaceController {
   // Glyph-effect channel (execplans/active/per-glyph-animation-channel.md):
   // remembers, per session, the dirty_generation at which terminal glyph runs
   // were last stamped with `outputTimestampSeconds`, the monotonic stamp
-  // itself, and the damage bands that were fresh at that moment. The stamp is
-  // re-applied to the same bands while the freshness window
-  // (`GlyphEffectTimeline.maxDecaySeconds`) is open so rebuilds of a run keep
-  // an identical effectStart; frames driven by scroll, selection, or blink
-  // leave the generation unchanged and never create a new stamp, so their
-  // re-emitted runs keep nil and effects never restart. Pruned together with
-  // lastSyncedGeneration.
+  // itself, and the freshness region at that moment. The stamp is re-applied
+  // to the same region while the freshness window
+  // (`GlyphEffectTimeline.maxDecaySeconds`) is open so rebuilds keep an
+  // identical effectStart; frames driven by scroll, selection, or blink leave
+  // the generation unchanged and never create a new stamp. Pruned together
+  // with lastSyncedGeneration.
   private struct OutputStampRecord {
     var generation: UInt64
     var stamp: Double
-    /// Fresh bands (CG-point y-up) at stamp time. Always non-empty when a
-    /// record exists: unknown/ambiguous dirty state must not invent
-    /// whole-grid freshness (that was the ink-bloom flicker — blooming every
-    /// scrollback glyph for one frame whenever `damage()` collapsed to
-    /// `.full`).
-    var bands: [DirtyYRange]
+    var freshness: GlyphEffectFreshness
   }
   private var lastOutputStamp: [Session.ID: OutputStampRecord] = [:]
+  /// Per-session per-row cell content fingerprints (viewport row → one hash
+  /// per column). Diffed on each stamp so zsh/fish synchronized line redraws
+  /// that mark the whole prompt row dirty only bloom cells that actually
+  /// changed (approach 2).
+  private var lastCellFingerprints: [Session.ID: [Int: [UInt64]]] = [:]
+  /// Stamp decision from the most recent `stampFreshOutputTimestamps` call;
+  /// copied onto `TerminalSurfaceFrame.glyphEffectStamp` for the journal.
+  private var lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics.none
 
   /// Clock for glyph-effect output stamps (monotonic seconds). Defaults to
   /// the shared `MonotonicClock`; headless deterministic runs substitute a
@@ -567,6 +678,7 @@ public final class TerminalSurfaceController {
   public func invalidateSessionSyncCache() {
     lastSyncedGeneration.removeAll()
     lastOutputStamp.removeAll()
+    lastCellFingerprints.removeAll()
   }
 
   /// Returns true if any tracked session has a dirty generation that
@@ -772,6 +884,7 @@ public final class TerminalSurfaceController {
       commands,
       session: session,
       snapshot: UnsafePointer(snap),
+      originX: sidebarWidth + request.insets.left,
       originY: gridOriginY)
 
     snapshotCommandsHook?(UnsafePointer(snap), commands)
@@ -791,7 +904,8 @@ public final class TerminalSurfaceController {
       damage: damage,
       snapshotMs: snapshotMs,
       cellPayload: canSkipTerminalCommands ? cellPayload : nil,
-      diagnostics: diagnostics
+      diagnostics: diagnostics,
+      glyphEffectStamp: lastGlyphEffectStampDiagnostics
     )
   }
 
@@ -1033,45 +1147,310 @@ public final class TerminalSurfaceController {
     return .partial(yRanges: ranges)
   }
 
-  /// Row-local freshness bands for the glyph-effect stamp channel.
-  ///
-  /// Unlike `damage(snapshot:forceFull:...)`, this never collapses ambiguous
-  /// dirty state into "the whole grid is fresh". A globally-dirty snapshot
-  /// with no row bits (or a missing dirty-row bitmap) returns `nil` — the
-  /// stamp path must skip rather than bloom every scrollback glyph. When
-  /// every row bit is set, the returned bands cover the full grid so a
-  /// true full-grid rewrite still blooms once.
-  public static func freshnessBands(
-    snapshot snap: UnsafePointer<LabanSnapshot>,
-    cellHeight: CGFloat,
-    originY: CGFloat
-  ) -> [DirtyYRange]? {
+  /// Dirty row indices from the snapshot bitmap; empty when unavailable.
+  public static func dirtyRowIndices(
+    snapshot snap: UnsafePointer<LabanSnapshot>
+  ) -> [Int] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
-    guard rows > 0, snapshot.dirty_row_count == rows, let dirty = snapshot.dirty_rows else {
+    guard rows > 0, snapshot.dirty_row_count == rows, let dirty = snapshot.dirty_rows
+    else {
+      return []
+    }
+    var result: [Int] = []
+    for row in 0..<rows where dirty[row] != 0 {
+      result.append(row)
+    }
+    return result
+  }
+
+  /// Per-column content hashes for `rows` in the snapshot.
+  public static func cellFingerprints(
+    snapshot snap: UnsafePointer<LabanSnapshot>,
+    rows rowIndices: [Int]
+  ) -> [Int: [UInt64]] {
+    let snapshot = snap.pointee
+    let rows = Int(snapshot.rows)
+    let cols = Int(snapshot.cols)
+    guard rows > 0, cols > 0, let cells = snapshot.cells,
+      snapshot.cell_count >= rows * cols
+    else {
+      return [:]
+    }
+    var result: [Int: [UInt64]] = [:]
+    result.reserveCapacity(rowIndices.count)
+    for row in rowIndices where row >= 0 && row < rows {
+      var hashes = [UInt64](repeating: 0, count: cols)
+      let base = row * cols
+      for col in 0..<cols {
+        hashes[col] = cellContentFingerprint(
+          cell: cells[base + col],
+          storage: snapshot.utf8_storage)
+      }
+      result[row] = hashes
+    }
+    return result
+  }
+
+  /// Stable hash of one grid cell's visible content (text bytes + style).
+  public static func cellContentFingerprint(
+    cell: LabanCell,
+    storage: UnsafePointer<CChar>?
+  ) -> UInt64 {
+    var hasher = Hasher()
+    hasher.combine(cell.foreground_rgba)
+    hasher.combine(cell.background_rgba)
+    hasher.combine(cell.flags)
+    hasher.combine(cell.underline_style)
+    hasher.combine(cell.wide)
+    hasher.combine(cell.hyperlink_id)
+    let length = Int(cell.utf8_length)
+    hasher.combine(length)
+    if length > 0, let storage {
+      let start = Int(cell.utf8_offset)
+      for offset in 0..<length {
+        hasher.combine(UInt8(bitPattern: storage[start + offset]))
+      }
+    }
+    return UInt64(bitPattern: Int64(hasher.finalize()))
+  }
+
+  /// Columns whose fingerprints differ from `previous` on `row`.
+  public static func changedColumns(
+    row: Int,
+    current: [UInt64],
+    previous: [Int: [UInt64]]
+  ) -> [Int] {
+    guard let prior = previous[row] else {
+      // No baseline for this row yet — treat nothing as changed here; the
+      // caller seeds fingerprints and uses a cursor-cell fallback instead of
+      // blooming the entire first-seen row.
+      return []
+    }
+    let cols = min(current.count, prior.count)
+    var changed: [Int] = []
+    for col in 0..<cols where current[col] != prior[col] {
+      changed.append(col)
+    }
+    if current.count > prior.count {
+      for col in prior.count..<current.count where current[col] != 0 {
+        changed.append(col)
+      }
+    }
+    return changed
+  }
+
+  /// Freshness from a cell-content diff on dirty rows (approach 2).
+  ///
+  /// - One dirty row with a small changed-column span → X strip (typing /
+  ///   paste-in-one-wake blooms only those cells; settled prompt stays put).
+  /// - Multi-row changes or a near-full-row rewrite → whole-run bands (bulk).
+  /// - No baseline yet → `nil` so the caller can fall back to cursor-cell.
+  public static func freshnessFromCellDiff(
+    dirtyRows: [Int],
+    currentFingerprints: [Int: [UInt64]],
+    previousFingerprints: [Int: [UInt64]],
+    cols: Int,
+    cellWidth: CGFloat,
+    cellHeight: CGFloat,
+    originX: CGFloat,
+    originY: CGFloat,
+    totalRows: Int
+  ) -> GlyphEffectFreshness? {
+    guard !dirtyRows.isEmpty, cellWidth > 0, cellHeight > 0, totalRows > 0, cols > 0
+    else {
+      return nil
+    }
+    if previousFingerprints.isEmpty {
       return nil
     }
 
-    var ranges: [DirtyYRange] = []
-    var dirtyRowCount = 0
-    var row = 0
-    while row < rows {
-      if dirty[row] != 0 {
-        var end = row
-        while end < rows, dirty[end] != 0 { end += 1 }
-        dirtyRowCount += end - row
-        let yBottom = originY + CGFloat(rows - end) * cellHeight
-        let height = CGFloat(end - row) * cellHeight
-        ranges.append(DirtyYRange(y: yBottom, height: height))
-        row = end
-      } else {
-        row += 1
+    var rowChanges: [(row: Int, columns: [Int])] = []
+    for row in dirtyRows {
+      guard let current = currentFingerprints[row] else { continue }
+      let columns = changedColumns(row: row, current: current, previous: previousFingerprints)
+      if !columns.isEmpty {
+        rowChanges.append((row, columns))
       }
     }
-    // No row-local bits: either the snapshot is clean, or it is only
-    // globally dirty. Neither case is a precise freshness signal.
-    guard dirtyRowCount > 0 else { return nil }
-    return ranges
+    guard !rowChanges.isEmpty else { return nil }
+
+    // Multi-row content change → whole-run bloom of those rows (app dump).
+    if rowChanges.count > 1 {
+      let bands = rowChanges.map { change -> DirtyYRange in
+        let yBottom = originY + CGFloat(totalRows - 1 - change.row) * cellHeight
+        return DirtyYRange(y: yBottom, height: cellHeight)
+      }
+      let changed = rowChanges.reduce(0) { $0 + $1.columns.count }
+      return GlyphEffectFreshness(
+        bands: bands,
+        mode: .wholeRun,
+        dirtyRows: rowChanges.map(\.row),
+        changedCells: changed)
+    }
+
+    let change = rowChanges[0]
+    let minCol = change.columns.first!
+    let maxCol = change.columns.last!
+    let span = maxCol - minCol + 1
+    let yBottom = originY + CGFloat(totalRows - 1 - change.row) * cellHeight
+    let band = DirtyYRange(y: yBottom, height: cellHeight)
+    // Near-full-row rewrite (clear + redraw, or long dump on one line).
+    if span >= max(8, cols / 2) || change.columns.count >= max(8, cols / 2) {
+      return GlyphEffectFreshness(
+        bands: [band],
+        mode: .wholeRun,
+        dirtyRows: [change.row],
+        changedCells: change.columns.count)
+    }
+    let xMin = originX + CGFloat(minCol) * cellWidth
+    let xMax = originX + CGFloat(maxCol + 1) * cellWidth
+    return GlyphEffectFreshness(
+      bands: [band],
+      xMin: xMin,
+      xMax: xMax,
+      mode: .cellDiff,
+      dirtyRows: [change.row],
+      stripColMin: minCol,
+      stripColMax: maxCol,
+      changedCells: change.columns.count)
+  }
+
+  /// Freshness region for the glyph-effect stamp channel.
+  ///
+  /// Prefers cell-diff against `previousFingerprints` so synchronized prompt
+  /// redraws that dirty a whole row only bloom changed cells. Falls back to
+  /// cursor-cell (coarse / no baseline) or whole-run multi-row bands.
+  public static func freshness(
+    snapshot snap: UnsafePointer<LabanSnapshot>,
+    cellWidth: CGFloat,
+    cellHeight: CGFloat,
+    originX: CGFloat,
+    originY: CGFloat,
+    previousFingerprints: [Int: [UInt64]] = [:]
+  ) -> GlyphEffectFreshness? {
+    let snapshot = snap.pointee
+    let rows = Int(snapshot.rows)
+    let cols = Int(snapshot.cols)
+    guard rows > 0, cellWidth > 0, cellHeight > 0 else { return nil }
+    let dirtyRows = dirtyRowIndices(snapshot: snap)
+    guard !dirtyRows.isEmpty else { return nil }
+
+    let current = cellFingerprints(snapshot: snap, rows: dirtyRows)
+    if let diffed = freshnessFromCellDiff(
+      dirtyRows: dirtyRows,
+      currentFingerprints: current,
+      previousFingerprints: previousFingerprints,
+      cols: cols,
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      originX: originX,
+      originY: originY,
+      totalRows: rows)
+    {
+      return diffed
+    }
+
+    // No baseline or no cell content change: coarse all-bits → cursor cell;
+    // precise multi-row without a diff → whole-run; single-row without a
+    // diff → cursor cell when the cursor sits on that row.
+    if dirtyRows.count >= rows {
+      return cursorCellFreshness(
+        cursorRow: Int(snapshot.cursor_row),
+        cursorCol: Int(snapshot.cursor_col),
+        rows: rows,
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        originX: originX,
+        originY: originY)
+    }
+    if dirtyRows.count == 1,
+      dirtyRows[0] == Int(snapshot.cursor_row),
+      snapshot.cursor_col > 0
+    {
+      return cursorCellFreshness(
+        cursorRow: Int(snapshot.cursor_row),
+        cursorCol: Int(snapshot.cursor_col),
+        rows: rows,
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        originX: originX,
+        originY: originY)
+    }
+    var ranges: [DirtyYRange] = []
+    var row = 0
+    while row < dirtyRows.count {
+      let start = dirtyRows[row]
+      var end = start
+      while row + 1 < dirtyRows.count, dirtyRows[row + 1] == end + 1 {
+        row += 1
+        end = dirtyRows[row]
+      }
+      let yBottom = originY + CGFloat(rows - 1 - end) * cellHeight
+      let height = CGFloat(end - start + 1) * cellHeight
+      ranges.append(DirtyYRange(y: yBottom, height: height))
+      row += 1
+    }
+    return ranges.isEmpty
+      ? nil
+      : GlyphEffectFreshness(bands: ranges, mode: .wholeRun, dirtyRows: dirtyRows)
+  }
+
+  /// Y-only view of `freshness` for callers that do not need the X strip.
+  public static func freshnessBands(
+    snapshot snap: UnsafePointer<LabanSnapshot>,
+    cellHeight: CGFloat,
+    originY: CGFloat,
+    cellWidth: CGFloat = 1,
+    originX: CGFloat = 0,
+    previousFingerprints: [Int: [UInt64]] = [:]
+  ) -> [DirtyYRange]? {
+    freshness(
+      snapshot: snap,
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      originX: originX,
+      originY: originY,
+      previousFingerprints: previousFingerprints)?.bands
+  }
+
+  /// Fallback freshness at the cursor when cell-diff has no baseline.
+  ///
+  /// - `cursor_col > 0`: the single cell before the cursor (insert echo).
+  /// - `cursor_col == 0` and `cursor_row > 0`: the previous row as a whole-run
+  ///   band (bulk line that ended in CR/LF).
+  public static func cursorCellFreshness(
+    cursorRow: Int,
+    cursorCol: Int,
+    rows: Int,
+    cellWidth: CGFloat,
+    cellHeight: CGFloat,
+    originX: CGFloat,
+    originY: CGFloat
+  ) -> GlyphEffectFreshness? {
+    guard rows > 0, cellWidth > 0, cellHeight > 0 else { return nil }
+    if cursorCol > 0 {
+      let row = min(max(cursorRow, 0), rows - 1)
+      let col = cursorCol - 1
+      let yBottom = originY + CGFloat(rows - 1 - row) * cellHeight
+      let xMin = originX + CGFloat(col) * cellWidth
+      return GlyphEffectFreshness(
+        bands: [DirtyYRange(y: yBottom, height: cellHeight)],
+        xMin: xMin,
+        xMax: xMin + cellWidth,
+        mode: .cursorCell,
+        dirtyRows: [row],
+        stripColMin: col,
+        stripColMax: col,
+        changedCells: 1)
+    }
+    guard cursorRow > 0 else { return nil }
+    let row = min(cursorRow - 1, rows - 1)
+    let yBottom = originY + CGFloat(rows - 1 - row) * cellHeight
+    return GlyphEffectFreshness(
+      bands: [DirtyYRange(y: yBottom, height: cellHeight)],
+      mode: .cursorCell,
+      dirtyRows: [row])
   }
 
   public static func payloadRows(
@@ -1283,50 +1662,145 @@ public final class TerminalSurfaceController {
   }
 
   /// Glyph-effect channel: when the session's dirty generation advanced
-  /// since the last frame built here, PTY output landed — stamp the
-  /// terminal-source glyph runs intersecting the fresh damage bands with the
-  /// monotonic now so the renderer can treat them as freshly output. While
-  /// the freshness window stays open the same stamp is re-applied to the same
-  /// bands, so a run rebuilt across animation frames keeps an identical
-  /// effectStart; frames driven by scroll, selection, or blink leave the
-  /// generation unchanged and their re-emitted runs keep a nil timestamp, so
-  /// effects never restart.
+  /// since the last frame built here, PTY output landed — stamp fresh
+  /// terminal glyph content with the monotonic now. Freshness prefers a
+  /// cell-content diff so synchronized prompt redraws that dirty a whole
+  /// row only bloom the cells that actually changed; coalesced runs are
+  /// split on an X strip. Multi-row dumps still whole-run stamp.
   ///
-  /// Freshness comes from `freshnessBands` (row-local dirty bits), never from
-  /// `RenderDamage.full`. Collapsing ambiguous dirty state into stamp-all was
-  /// the grid-wide ink-bloom flicker: one keystroke bloomed every scrollback
-  /// glyph for a frame whenever libghostty reported global dirty without
-  /// row bits (or every row was marked dirty via the damage full-collapse).
+  /// Cell fingerprints are refreshed on every call so idle frames seed a
+  /// baseline before the next keystroke. While the freshness window stays
+  /// open the same stamp is re-applied to the same region; scroll /
+  /// selection / blink frames leave the generation unchanged and keep nil.
   private func stampFreshOutputTimestamps(
     _ commands: [FrameCommand],
     session: Session,
     snapshot: UnsafePointer<LabanSnapshot>,
+    originX: CGFloat,
     originY: CGFloat
   ) -> [FrameCommand] {
     let generation = session.dirtyGeneration()
-    guard generation != 0 else { return commands }
+    let dirtyRows = Self.dirtyRowIndices(snapshot: snapshot)
+    let previousFingerprints = lastCellFingerprints[session.id] ?? [:]
+    // Seed/refresh fingerprints so the next generation can cell-diff. Dirty
+    // rows always refresh; clean frames still refresh the cursor row so a
+    // settled prompt is the baseline before the next keystroke.
+    let rowsToFingerprint: [Int] = {
+      let totalRows = Int(snapshot.pointee.rows)
+      guard totalRows > 0 else { return [] }
+      if dirtyRows.isEmpty {
+        let cursorRow = Int(snapshot.pointee.cursor_row)
+        return (0..<totalRows).contains(cursorRow) ? [cursorRow] : []
+      }
+      if dirtyRows.count >= totalRows {
+        return Array(0..<totalRows)
+      }
+      return dirtyRows
+    }()
+    var mergedFingerprints = previousFingerprints
+    if !rowsToFingerprint.isEmpty {
+      for (row, hashes) in Self.cellFingerprints(snapshot: snapshot, rows: rowsToFingerprint) {
+        mergedFingerprints[row] = hashes
+      }
+    }
+    // Write after freshness reads `previousFingerprints`.
+    defer { lastCellFingerprints[session.id] = mergedFingerprints }
+
+    func finishNone() -> [FrameCommand] {
+      lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics(
+        mode: .none,
+        dirtyRows: dirtyRows,
+        generation: generation == 0 ? nil : generation)
+      return commands
+    }
+
+    guard generation != 0 else { return finishNone() }
     let now = outputStampClock()
     let stamp: Double
-    let bands: [DirtyYRange]
+    let freshness: GlyphEffectFreshness
+    let modeOverride: GlyphEffectStampMode?
     if let record = lastOutputStamp[session.id], record.generation == generation {
       guard now - record.stamp < GlyphEffectTimeline.maxDecaySeconds
-      else { return commands }
+      else { return finishNone() }
       stamp = record.stamp
-      bands = record.bands
+      freshness = record.freshness
+      modeOverride = .reapply
     } else {
       guard
-        let freshBands = Self.freshnessBands(
+        let region = Self.freshness(
           snapshot: snapshot,
+          cellWidth: CGFloat(cellWidth),
           cellHeight: CGFloat(cellHeight),
-          originY: originY),
-        !freshBands.isEmpty
-      else { return commands }
+          originX: originX,
+          originY: originY,
+          previousFingerprints: previousFingerprints),
+        !region.bands.isEmpty
+      else { return finishNone() }
       stamp = now
-      bands = freshBands
+      freshness = region
+      modeOverride = nil
       lastOutputStamp[session.id] = OutputStampRecord(
-        generation: generation, stamp: stamp, bands: bands)
+        generation: generation, stamp: stamp, freshness: freshness)
     }
-    let ch = CGFloat(cellHeight)
+    let stamped: [FrameCommand]
+    if let xMin = freshness.xMin, let xMax = freshness.xMax, freshness.hasCellStrip {
+      stamped = Self.applyCellStripStamp(
+        commands,
+        bands: freshness.bands,
+        xMin: xMin,
+        xMax: xMax,
+        cellWidth: CGFloat(cellWidth),
+        cellHeight: CGFloat(cellHeight),
+        gridOriginX: originX,
+        stamp: stamp)
+    } else {
+      stamped = Self.applyWholeRunStamp(
+        commands,
+        bands: freshness.bands,
+        cellHeight: CGFloat(cellHeight),
+        stamp: stamp)
+    }
+    let counts = Self.stampedGlyphCounts(stamped)
+    lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics(
+      mode: modeOverride ?? freshness.mode,
+      dirtyRows: freshness.dirtyRows.isEmpty ? dirtyRows : freshness.dirtyRows,
+      stripColMin: freshness.stripColMin,
+      stripColMax: freshness.stripColMax,
+      changedCells: freshness.changedCells,
+      stampedRuns: counts.runs,
+      stampedGlyphs: counts.glyphs,
+      stampAgeMs: max(0, (now - stamp) * 1000),
+      generation: generation)
+    return stamped
+  }
+
+  /// Count terminal glyph runs (and approximate glyph/cluster count) that
+  /// carry a non-nil `outputTimestampSeconds`.
+  static func stampedGlyphCounts(
+    _ commands: [FrameCommand]
+  ) -> (runs: Int, glyphs: Int) {
+    var runs = 0
+    var glyphs = 0
+    for command in commands {
+      guard
+        case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, let displayCellCount, let stamp) =
+          command,
+        stamp != nil
+      else { continue }
+      runs += 1
+      glyphs += displayCellCount ?? max(1, text.count)
+    }
+    return (runs, glyphs)
+  }
+
+  /// Stamp every terminal glyph run whose exact cell Y extent intersects
+  /// `bands` (precise dirty / bulk output).
+  static func applyWholeRunStamp(
+    _ commands: [FrameCommand],
+    bands: [DirtyYRange],
+    cellHeight: CGFloat,
+    stamp: Double
+  ) -> [FrameCommand] {
     var stamped = commands
     for index in stamped.indices {
       guard
@@ -1336,11 +1810,8 @@ public final class TerminalSurfaceController {
         ) = stamped[index],
         source == .terminal
       else { continue }
-      // Exact cell extent (NOT the renderer damage filter's ±1 cell
-      // expansion): bands and runs are both row-aligned, and expanding here
-      // would falsely stamp the clean row above/below a dirty one.
       let minY = origin.y
-      let maxY = origin.y + ch
+      let maxY = origin.y + cellHeight
       let fresh = bands.contains { $0.y < maxY && minY < $0.y + $0.height }
       guard fresh else { continue }
       stamped[index] = .glyphRun(
@@ -1357,6 +1828,123 @@ public final class TerminalSurfaceController {
         outputTimestampSeconds: stamp)
     }
     return stamped
+  }
+
+  /// Split terminal glyph runs so only the character cells overlapping
+  /// `[xMin, xMax)` on a fresh Y band receive `stamp`.
+  static func applyCellStripStamp(
+    _ commands: [FrameCommand],
+    bands: [DirtyYRange],
+    xMin: CGFloat,
+    xMax: CGFloat,
+    cellWidth: CGFloat,
+    cellHeight: CGFloat,
+    gridOriginX: CGFloat,
+    stamp: Double
+  ) -> [FrameCommand] {
+    guard cellWidth > 0, xMin < xMax else { return commands }
+    var result: [FrameCommand] = []
+    result.reserveCapacity(commands.count + 2)
+    for command in commands {
+      guard
+        case .glyphRun(
+          let origin, let text, let foreground, let background, let attributes, let source,
+          let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _
+        ) = command,
+        source == .terminal
+      else {
+        result.append(command)
+        continue
+      }
+      let minY = origin.y
+      let maxY = origin.y + cellHeight
+      let yFresh = bands.contains { $0.y < maxY && minY < $0.y + $0.height }
+      guard yFresh, !text.isEmpty else {
+        result.append(command)
+        continue
+      }
+
+      let pieces = splitGlyphRunText(
+        text: text,
+        origin: origin,
+        cellWidth: cellWidth,
+        gridOriginX: gridOriginX,
+        freshXMin: xMin,
+        freshXMax: xMax)
+      if pieces.count == 1, pieces[0].stamped == false {
+        result.append(command)
+        continue
+      }
+      for piece in pieces {
+        guard !piece.text.isEmpty else { continue }
+        result.append(
+          .glyphRun(
+            origin: piece.origin,
+            text: piece.text,
+            foreground: foreground,
+            background: background,
+            attributes: attributes,
+            source: source,
+            underlineStyle: underlineStyle,
+            underlineColor: underlineColor,
+            hyperlink: hyperlink,
+            displayCellCount: displayCellCount == nil ? nil : TerminalDisplayWidth.cells(of: piece.text),
+            outputTimestampSeconds: piece.stamped ? stamp : nil))
+      }
+    }
+    return result
+  }
+
+  /// Walk a coalesced run by `Character`, marking cells that overlap the
+  /// fresh X strip. Adjacent same-stamp pieces are coalesced.
+  static func splitGlyphRunText(
+    text: String,
+    origin: CGPoint,
+    cellWidth: CGFloat,
+    gridOriginX: CGFloat,
+    freshXMin: CGFloat,
+    freshXMax: CGFloat
+  ) -> [(text: String, origin: CGPoint, stamped: Bool)] {
+    var pieces: [(text: String, origin: CGPoint, stamped: Bool)] = []
+    var col = Int(((origin.x - gridOriginX) / cellWidth).rounded())
+    var pieceStart = text.startIndex
+    var pieceOriginX = origin.x
+    var pieceStamped: Bool?
+    var index = text.startIndex
+    while index < text.endIndex {
+      let next = text.index(after: index)
+      let cluster = text[index..<next]
+      let width = max(1, TerminalDisplayWidth.cells(of: String(cluster)))
+      let cellMinX = gridOriginX + CGFloat(col) * cellWidth
+      let cellMaxX = cellMinX + CGFloat(width) * cellWidth
+      let stamped = cellMinX < freshXMax && freshXMin < cellMaxX
+      if let current = pieceStamped, current != stamped {
+        pieces.append(
+          (
+            text: String(text[pieceStart..<index]),
+            origin: CGPoint(x: pieceOriginX, y: origin.y),
+            stamped: current
+          ))
+        pieceStart = index
+        pieceOriginX = cellMinX
+        pieceStamped = stamped
+      } else if pieceStamped == nil {
+        pieceStamped = stamped
+        pieceOriginX = cellMinX
+        pieceStart = index
+      }
+      col += width
+      index = next
+    }
+    if let current = pieceStamped, pieceStart < text.endIndex {
+      pieces.append(
+        (
+          text: String(text[pieceStart..<text.endIndex]),
+          origin: CGPoint(x: pieceOriginX, y: origin.y),
+          stamped: current
+        ))
+    }
+    return pieces
   }
 
   private static func elapsedMs(since start: DispatchTime) -> Double {

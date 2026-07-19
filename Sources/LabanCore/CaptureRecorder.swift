@@ -739,6 +739,8 @@ public struct CapturedFrameCommand: Codable, Equatable, Sendable {
   /// renderer-neutral rectangle compositing was recorded. Missing means the
   /// historical source-over behavior.
   public var compositing: UInt8? = nil
+  /// Monotonic ink-bloom stamp when present; omitted when unstamped.
+  public var outputTimestampSeconds: Double? = nil
 }
 
 public struct CapturedRect: Codable, Equatable, Sendable {
@@ -776,7 +778,8 @@ public enum FrameCommandCaptureCodec {
           compositing: compositing == .sourceOver ? nil : compositing.rawValue)
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _
+        let underlineStyle, let underlineColor, let hyperlink, let displayCellCount,
+        let outputTimestampSeconds
       ):
         let attrNames = attributes.names
         return CapturedFrameCommand(
@@ -787,7 +790,8 @@ public enum FrameCommandCaptureCodec {
           underlineStyle: underlineStyle.name,
           underlineColor: underlineColor,
           hyperlink: hyperlink,
-          displayCellCount: displayCellCount)
+          displayCellCount: displayCellCount,
+          outputTimestampSeconds: outputTimestampSeconds)
       case .cursor(let rect, let color):
         return CapturedFrameCommand(
           index: index, kind: "cursor", source: FrameSource.cursor.rawValue,

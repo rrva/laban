@@ -1,6 +1,6 @@
 {
   "name": "glyph-effects-ink-bloom",
-  "description": "Ink-bloom type-in (M1): a freshly output row renders thin/faint at age 0, eases toward settled over 150 ms of virtual time, and is pixel-identical to a never-restamped control row once settled. Fails on the pre-channel tree (advanceTime/setGlyphEffectsEnabled actions missing). Requires slugGlyph (the effect is evaluated in the Slug vertex shader) and --deterministic (virtual clock).",
+  "description": "Ink-bloom type-in (M1): a freshly output row renders slightly thin/faint at age 0, eases toward settled over 280 ms of virtual time, and is pixel-identical to a never-restamped control row once settled. Fails on the pre-channel tree (advanceTime/setGlyphEffectsEnabled actions missing). Requires slugGlyph (the effect is evaluated in the Slug vertex shader) and --deterministic (virtual clock).",
   "fixture": "fixtures/glyph-effects-ink-bloom.fixture.json",
   "renderer": "slugGlyph",
   "deterministic": true,
@@ -107,8 +107,8 @@
     },
     {
       "op": "action",
-      "label": "advance past the 150 ms decay (age 240 ms)",
-      "body": {"action": "advanceTime", "ms": 200}
+      "label": "advance past the 280 ms decay (age 290 ms)",
+      "body": {"action": "advanceTime", "ms": 250}
     },
     {
       "op": "post",

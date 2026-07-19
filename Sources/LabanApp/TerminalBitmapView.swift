@@ -3490,6 +3490,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       overlayCommands: overlayCommands,
       payload: surfaceFrame?.cellPayload,
       diagnostics: surfaceFrame?.diagnostics,
+      glyphEffect: renderJournalGlyphEffectSnapshot(
+        surfaceFrame: surfaceFrame, slugRenderer: slugRenderer),
       metalInstances: metalRenderer?.lastInstanceCounts,
       drawableAcquire: metalRenderer?.lastDrawableAcquireDiagnostic,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
@@ -3497,6 +3499,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       freeze: freeze,
       rendered: rendered)
     renderJournal.record(entry)
+  }
+
+  /// Merge controller stamp diagnostics with live Slug effect counters for
+  /// the render-journal `glyphEffect` block.
+  private func renderJournalGlyphEffectSnapshot(
+    surfaceFrame: TerminalSurfaceFrame?,
+    slugRenderer: SlugGlyphRenderer?
+  ) -> GlyphEffectStampDiagnostics? {
+    var stamp = surfaceFrame?.glyphEffectStamp
+    guard stamp != nil || slugRenderer != nil else { return nil }
+    if stamp == nil {
+      stamp = GlyphEffectStampDiagnostics.none
+    }
+    if let slug = slugRenderer {
+      stamp?.liveCount = slug.glyphEffectLiveCount
+      stamp?.animatingRemainingMs = slug.glyphEffectAnimatingRemainingSeconds * 1000
+    }
+    return stamp
   }
 
   private func sampleGPUFreezeDetector(

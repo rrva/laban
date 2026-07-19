@@ -41,6 +41,9 @@ final class RenderJournal {
     var commandCounts: CommandCounts?
     var payload: PayloadSnapshot?
     var diagnostics: TerminalSurfaceFrameDiagnostics?
+    /// Ink-bloom stamp decision for this frame. Optional so older journal
+    /// dumps still decode.
+    var glyphEffect: GlyphEffectStampDiagnostics?
     var metalInstances: MetalInstanceCounts?
     var drawableAcquire: MetalDrawableAcquireDiagnostic?
     var gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure?
@@ -361,6 +364,7 @@ final class RenderJournal {
     overlayCommands: [FrameCommand] = [],
     payload: TerminalCellPayload? = nil,
     diagnostics: TerminalSurfaceFrameDiagnostics? = nil,
+    glyphEffect: GlyphEffectStampDiagnostics? = nil,
     metalInstances: MetalRenderer.RenderInstanceCounts? = nil,
     drawableAcquire: MetalDrawableAcquireDiagnostic? = nil,
     gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure? = nil,
@@ -403,6 +407,7 @@ final class RenderJournal {
       },
       payload: payload.map(Self.payloadSnapshot),
       diagnostics: diagnostics,
+      glyphEffect: glyphEffect,
       metalInstances: metalInstances.map(MetalInstanceCounts.init),
       drawableAcquire: drawableAcquireForEvent,
       gpuCellPayloadFailure: gpuCellPayloadFailure,

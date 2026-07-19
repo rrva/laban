@@ -36,6 +36,7 @@ def main() -> int:
     print_counts(entries)
     print_state(entries)
     print_display_link(entries)
+    print_glyph_effect(entries)
     print_drawables(entries)
     print_window(entries)
     print_per_second(entries)
@@ -152,6 +153,55 @@ def print_display_link(entries: list[dict[str, Any]]) -> None:
             f"p50={percentile(intervals, 50):.2f} "
             f"p95={percentile(intervals, 95):.2f} "
             f"max={max(intervals):.2f}"
+        )
+    print()
+
+
+def print_glyph_effect(entries: list[dict[str, Any]]) -> None:
+    effects = [
+        entry.get("glyphEffect")
+        for entry in entries
+        if isinstance(entry.get("glyphEffect"), dict)
+    ]
+    print("glyphEffect:")
+    if not effects:
+        print("  unavailable")
+        print()
+        return
+    print_counter("  mode", Counter(effect.get("mode", "-") for effect in effects))
+    stamped = [e for e in effects if e.get("mode") not in (None, "none")]
+    print(f"  stampedFrames: {len(stamped)}")
+    runs = number_list(e.get("stampedRuns") for e in stamped)
+    glyphs = number_list(e.get("stampedGlyphs") for e in stamped)
+    if runs:
+        print(
+            "  stampedRuns: "
+            f"p50={percentile(runs, 50):.0f} "
+            f"p95={percentile(runs, 95):.0f} "
+            f"max={max(runs):.0f}"
+        )
+    if glyphs:
+        print(
+            "  stampedGlyphs: "
+            f"p50={percentile(glyphs, 50):.0f} "
+            f"p95={percentile(glyphs, 95):.0f} "
+            f"max={max(glyphs):.0f}"
+        )
+    strips = [
+        e
+        for e in stamped
+        if e.get("stripColMin") is not None and e.get("stripColMax") is not None
+    ]
+    if strips:
+        widths = [
+            int(e["stripColMax"]) - int(e["stripColMin"]) + 1
+            for e in strips
+        ]
+        print(
+            "  stripWidthCols: "
+            f"p50={percentile(widths, 50):.0f} "
+            f"p95={percentile(widths, 95):.0f} "
+            f"max={max(widths)}"
         )
     print()
 

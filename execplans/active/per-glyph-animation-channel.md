@@ -359,6 +359,27 @@ comparison in a scenario fixture).
   faint frame and `syncGlyphEffectAnimatingState` never observed decay.
   Fix: `glyphEffectStripFrame` / `glyphEffectWasAnimating` mirroring
   attention, and clear `glyphEffectAnimatingUntil` when remaining hits 0.
+- **All-rows-dirty keystroke flash — Bug C.** Post-A/B capture
+  `appkit-2026-07-19T18-58-19Z` + journals `T185827291Z`…`T185844411Z`:
+  every `keyboard` wake reports `dirtyRowsSetCount == 32` (full grid)
+  while the following `settleWake` correctly has `setCount == 1`.
+  `freshnessBands` stamped the whole grid on the keystroke force-full
+  frame → age-0 bloom flash of scrollback, then settle. Interim fix
+  stamped cursor row + row above; that still bloomed the whole prompt
+  line. Approach 1 (cursor-cell on coarse dirty only) still failed live:
+  zsh synchronized updates dirty the prompt row precisely, FrameProducer
+  coalesces prompt+input into one glyph run, and whole-run stamping
+  re-bloomed the entire line on every keystroke (capture
+  `appkit-2026-07-19T21-21-55Z`). **Approach 2 (current):** per-row cell
+  content fingerprints + diff → X-strip stamp of only changed columns
+  (split coalesced runs); multi-row / near-full-row rewrites still
+  whole-run. Soften age-0 curve (~0.82/0.72 over 280 ms). Escalate to
+  per-cell FrameCommand stamps (3) only if diff still mis-attributes.
+- **Render-journal `glyphEffect` stamp summary.** Each journal entry now
+  carries `glyphEffect: {mode, dirtyRows, stripColMin/Max, changedCells,
+  stampedRuns, stampedGlyphs, stampAgeMs, generation, liveCount,
+  animatingRemainingMs}` so dumps can prove cellDiff vs wholeRun without a
+  PTY capture. `scripts/render-journal-summary` prints a mode/strip histogram.
 
 ## Artifacts and Notes
 

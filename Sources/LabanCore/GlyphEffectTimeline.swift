@@ -27,11 +27,20 @@ public enum GlyphEffectTimeline {
   public static let kindBellShake: UInt32 = 2
 
   /// Seconds an ink-bloom takes to fully settle.
-  public static let inkBloomDecaySeconds: Double = 0.150
+  ///
+  /// Kept longer than a keystroke so bloom reads as ease-to-steady, not a
+  /// single-frame flash. Mirrored in `VectorGlyphShaders.metal`.
+  public static let inkBloomDecaySeconds: Double = 0.280
   /// Seconds a bell shake takes to fully settle.
   public static let bellShakeDecaySeconds: Double = 0.300
-  /// Alpha multiplier fresh ink-bloom text starts from (faint), easing to 1.
-  public static let inkBloomInitialAlpha: Double = 0.35
+  /// Alpha multiplier fresh ink-bloom text starts from (slightly faint),
+  /// easing to 1. Must stay clearly above 0 — age-0 alpha near zero was the
+  /// "vanish then pop" flicker.
+  public static let inkBloomInitialAlpha: Double = 0.72
+  /// Dilation multiplier fresh ink-bloom text starts from (slightly thin),
+  /// easing to 1. Must stay clearly above 0 — `dilation *= progress` with
+  /// progress 0 made glyphs disappear for a frame.
+  public static let inkBloomInitialDilation: Double = 0.82
   /// Settle frequency of the critically-damped shake. Chosen so
   /// `omega * bellShakeDecaySeconds == 5`: the residual normalized amplitude
   /// at the decay boundary is `5 * e^-4 ≈ 0.09` of peak, and `isAnimating`
@@ -79,14 +88,15 @@ public enum GlyphEffectTimeline {
     return 1 - pow(1 - t, 3)
   }
 
-  /// Dilation multiplier for kind `kindInkBloom`: starts at 0 (thin) and
-  /// eases to 1 (the run's normal dilation).
+  /// Dilation multiplier for kind `kindInkBloom`: starts at
+  /// `inkBloomInitialDilation` (slightly thin) and eases to 1.
   public static func inkBloomDilationScale(age: Double) -> Double {
-    inkBloomProgress(age: age)
+    let progress = inkBloomProgress(age: age)
+    return inkBloomInitialDilation + (1 - inkBloomInitialDilation) * progress
   }
 
   /// Alpha multiplier for kind `kindInkBloom`: starts at
-  /// `inkBloomInitialAlpha` (faint) and eases to 1 (full opacity).
+  /// `inkBloomInitialAlpha` (slightly faint) and eases to 1 (full opacity).
   public static func inkBloomAlphaScale(age: Double) -> Double {
     let progress = inkBloomProgress(age: age)
     return inkBloomInitialAlpha + (1 - inkBloomInitialAlpha) * progress

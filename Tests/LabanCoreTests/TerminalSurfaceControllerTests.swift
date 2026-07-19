@@ -1091,12 +1091,157 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       "ambiguous global dirty must not invent whole-grid freshness for ink-bloom")
   }
 
-  func testFreshnessBandsCoverEveryRowWhenAllRowBitsAreSet() {
+  func testFreshnessFallsBackToCursorCellWhenAllRowBitsAreSet() {
     let dirtyRows: [UInt8] = [1, 1, 1, 1]
     var snapshot = LabanSnapshot()
     snapshot.rows = 4
     snapshot.dirty = 1
     snapshot.dirty_row_count = 4
+    snapshot.cursor_row = 2
+    snapshot.cursor_col = 5
+
+    let region = dirtyRows.withUnsafeBufferPointer { buffer -> GlyphEffectFreshness? in
+      snapshot.dirty_rows = buffer.baseAddress
+      return withUnsafePointer(to: &snapshot) { ptr in
+        TerminalSurfaceController.freshness(
+          snapshot: ptr,
+          cellWidth: 8,
+          cellHeight: 5,
+          originX: 100,
+          originY: 10)
+      }
+    }
+
+    // Cursor row 2, cell before cursor (col 4): y = originY + (4-1-2)*5 = 15.
+    XCTAssertEqual(region?.bands, [DirtyYRange(y: 15, height: 5)])
+    XCTAssertEqual(region?.xMin, 100 + 4 * 8)
+    XCTAssertEqual(region?.xMax, 100 + 5 * 8)
+  }
+
+  func testFreshnessUsesPreviousWholeRowWhenCoarseDirtyAndCursorColIsZero() {
+    let dirtyRows: [UInt8] = [1, 1, 1, 1]
+    var snapshot = LabanSnapshot()
+    snapshot.rows = 4
+    snapshot.dirty = 1
+    snapshot.dirty_row_count = 4
+    snapshot.cursor_row = 2
+    snapshot.cursor_col = 0
+
+    let region = dirtyRows.withUnsafeBufferPointer { buffer -> GlyphEffectFreshness? in
+      snapshot.dirty_rows = buffer.baseAddress
+      return withUnsafePointer(to: &snapshot) { ptr in
+        TerminalSurfaceController.freshness(
+          snapshot: ptr,
+          cellWidth: 8,
+          cellHeight: 5,
+          originX: 100,
+          originY: 10)
+      }
+    }
+
+    // Previous row 1: y = originY + (4-1-1)*5 = 20. Whole-run (no X strip).
+    XCTAssertEqual(region?.bands, [DirtyYRange(y: 20, height: 5)])
+    XCTAssertNil(region?.xMin)
+    XCTAssertNil(region?.xMax)
+  }
+
+  func testFreshnessFromCellDiffBloomsOnlyChangedColumnsOnPromptRow() {
+    // Prompt cells unchanged, only the typed column flipped → X strip.
+    let previous: [Int: [UInt64]] = [31: [1, 1, 1, 1, 1, 1, 1, 1]]
+    let current: [Int: [UInt64]] = [31: [1, 1, 1, 1, 1, 9, 1, 1]]
+    let region = TerminalSurfaceController.freshnessFromCellDiff(
+      dirtyRows: [31],
+      currentFingerprints: current,
+      previousFingerprints: previous,
+      cols: 8,
+      cellWidth: 10,
+      cellHeight: 16,
+      originX: 100,
+      originY: 0,
+      totalRows: 32)
+    XCTAssertEqual(region?.bands, [DirtyYRange(y: 0, height: 16)])
+    XCTAssertEqual(region?.xMin, 100 + 5 * 10)
+    XCTAssertEqual(region?.xMax, 100 + 6 * 10)
+    XCTAssertEqual(region?.mode, .cellDiff)
+    XCTAssertEqual(region?.stripColMin, 5)
+    XCTAssertEqual(region?.stripColMax, 5)
+    XCTAssertEqual(region?.changedCells, 1)
+  }
+
+  func testStampedGlyphCountsCountsOnlyTimestampedTerminalRuns() {
+    let commands: [FrameCommand] = [
+      .glyphRun(
+        origin: .zero, text: "hello", foreground: 0, background: 0, attributes: [],
+        source: .terminal, outputTimestampSeconds: 1.0),
+      .glyphRun(
+        origin: .zero, text: "prompt", foreground: 0, background: 0, attributes: [],
+        source: .terminal, outputTimestampSeconds: nil),
+      .glyphRun(
+        origin: .zero, text: "x", foreground: 0, background: 0, attributes: [],
+        source: .sidebar, outputTimestampSeconds: 1.0),
+    ]
+    let counts = TerminalSurfaceController.stampedGlyphCounts(commands)
+    XCTAssertEqual(counts.runs, 1)
+    XCTAssertEqual(counts.glyphs, 5)
+  }
+
+  func testFreshnessFromCellDiffWholeRunsMultiRowBulk() {
+    let previous: [Int: [UInt64]] = [
+      10: [1, 1, 1, 1],
+      11: [1, 1, 1, 1],
+    ]
+    let current: [Int: [UInt64]] = [
+      10: [2, 1, 1, 1],
+      11: [1, 2, 1, 1],
+    ]
+    let region = TerminalSurfaceController.freshnessFromCellDiff(
+      dirtyRows: [10, 11],
+      currentFingerprints: current,
+      previousFingerprints: previous,
+      cols: 4,
+      cellWidth: 8,
+      cellHeight: 12,
+      originX: 0,
+      originY: 0,
+      totalRows: 20)
+    XCTAssertNil(region?.xMin, "multi-row dumps must whole-run, not cell-strip")
+    XCTAssertEqual(region?.bands.count, 2)
+  }
+
+  func testCellStripStampSplitsCoalescedRunSoOnlyFreshCharacterBlooms() {
+    let run = FrameCommand.glyphRun(
+      origin: CGPoint(x: 100, y: 20),
+      text: "hello",
+      foreground: 0xFFFF_FFFF,
+      background: 0,
+      attributes: [],
+      source: .terminal)
+    // Fresh strip covers the final 'o' (col offset 4 from grid origin 100).
+    let stamped = TerminalSurfaceController.applyCellStripStamp(
+      [run],
+      bands: [DirtyYRange(y: 20, height: 16)],
+      xMin: 100 + 4 * 8,
+      xMax: 100 + 5 * 8,
+      cellWidth: 8,
+      cellHeight: 16,
+      gridOriginX: 100,
+      stamp: 3.5)
+    let pieces = stamped.compactMap { command -> (String, Double?)? in
+      guard case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, _, let stamp) = command
+      else { return nil }
+      return (text, stamp)
+    }
+    XCTAssertEqual(pieces.map(\.0), ["hell", "o"])
+    XCTAssertEqual(pieces.map(\.1), [nil, 3.5])
+  }
+
+  func testFreshnessBandsKeepSubsetDirtyRowsPrecise() {
+    let dirtyRows: [UInt8] = [0, 1, 1, 0]
+    var snapshot = LabanSnapshot()
+    snapshot.rows = 4
+    snapshot.dirty = 1
+    snapshot.dirty_row_count = 4
+    snapshot.cursor_row = 3
 
     let bands = dirtyRows.withUnsafeBufferPointer { buffer -> [DirtyYRange]? in
       snapshot.dirty_rows = buffer.baseAddress
@@ -1110,8 +1255,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
 
     XCTAssertEqual(
       bands,
-      [DirtyYRange(y: 10, height: 20)],
-      "a true full-grid rewrite still exposes freshness bands covering every row")
+      [DirtyYRange(y: 15, height: 10)],
+      "a precise dirty subset must not collapse to the cursor row")
   }
 
   func testRemoteDirtyRangesMapTopDownRowsToBottomUpYRanges() {

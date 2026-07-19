@@ -6,7 +6,7 @@ final class GlyphEffectTimelineTests: XCTestCase {
   // MARK: - Decay bounds
 
   func testDecaySecondsMatchesDocumentedConstants() {
-    XCTAssertEqual(GlyphEffectTimeline.inkBloomDecaySeconds, 0.150, accuracy: 1e-9)
+    XCTAssertEqual(GlyphEffectTimeline.inkBloomDecaySeconds, 0.280, accuracy: 1e-9)
     XCTAssertEqual(GlyphEffectTimeline.bellShakeDecaySeconds, 0.300, accuracy: 1e-9)
     XCTAssertEqual(
       GlyphEffectTimeline.decaySeconds(kind: GlyphEffectTimeline.kindInkBloom),
@@ -100,11 +100,17 @@ final class GlyphEffectTimelineTests: XCTestCase {
   }
 
   func testInkBloomStartsThinAndFaint() {
-    XCTAssertEqual(GlyphEffectTimeline.inkBloomDilationScale(age: 0), 0)
+    // Age 0 must stay clearly above zero — dilation/alpha 0 was the vanish flicker.
+    XCTAssertEqual(
+      GlyphEffectTimeline.inkBloomDilationScale(age: 0),
+      GlyphEffectTimeline.inkBloomInitialDilation,
+      accuracy: 1e-9)
     XCTAssertEqual(
       GlyphEffectTimeline.inkBloomAlphaScale(age: 0),
       GlyphEffectTimeline.inkBloomInitialAlpha,
       accuracy: 1e-9)
+    XCTAssertGreaterThan(GlyphEffectTimeline.inkBloomInitialDilation, 0.5)
+    XCTAssertGreaterThan(GlyphEffectTimeline.inkBloomInitialAlpha, 0.5)
   }
 
   func testInkBloomProgressIsMonotonicEaseOut() {

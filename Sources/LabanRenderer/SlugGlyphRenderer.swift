@@ -396,7 +396,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   public static let glyphEffectKindNone: UInt32 = 0
   public static let glyphEffectKindInkBloom: UInt32 = 1
   public static let glyphEffectKindBellShake: UInt32 = 2
-  private static let glyphEffectInkBloomDecaySeconds: Double = 0.150
+  private static let glyphEffectInkBloomDecaySeconds: Double = 0.280
   private static let glyphEffectBellShakeDecaySeconds: Double = 0.300
 
   private static func glyphEffectDecaySeconds(kind: UInt32) -> Double {

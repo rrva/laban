@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import LabanCore
 import LabanRenderer
 import XCTest
 
@@ -106,6 +107,42 @@ final class RenderJournalTests: XCTestCase {
     let jsonl = try String(contentsOf: url.appendingPathComponent("entries.jsonl"), encoding: .utf8)
     XCTAssertEqual(jsonl.split(separator: "\n").count, 2)
     XCTAssertTrue(jsonl.contains(#""processID":42424"#))
+  }
+
+  func testGlyphEffectStampDiagnosticsRoundTripInJournalEntry() throws {
+    let journal = RenderJournal()
+    let stamp = GlyphEffectStampDiagnostics(
+      mode: .cellDiff,
+      dirtyRows: [31],
+      stripColMin: 43,
+      stripColMax: 43,
+      changedCells: 1,
+      stampedRuns: 1,
+      stampedGlyphs: 1,
+      stampAgeMs: 0,
+      generation: 12,
+      liveCount: 1,
+      animatingRemainingMs: 210)
+    let entry = journal.makeEntry(
+      event: .rendered,
+      frame: 9,
+      tabId: "tab",
+      sessionId: "s",
+      glyphEffect: stamp)
+    XCTAssertEqual(entry.glyphEffect, stamp)
+
+    let data = try JSONEncoder().encode(entry)
+    let decoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: data)
+    XCTAssertEqual(decoded.glyphEffect?.mode, .cellDiff)
+    XCTAssertEqual(decoded.glyphEffect?.stripColMin, 43)
+    XCTAssertEqual(decoded.glyphEffect?.stampedGlyphs, 1)
+    XCTAssertEqual(decoded.glyphEffect?.liveCount, 1)
+
+    // Older dumps without the field still decode.
+    let legacy = journal.makeEntry(event: .rendered, frame: 10, tabId: "tab", sessionId: "s")
+    let legacyData = try JSONEncoder().encode(legacy)
+    let legacyDecoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: legacyData)
+    XCTAssertNil(legacyDecoded.glyphEffect)
   }
 
   func testCommandCountsClassifyFrameCommands() {
