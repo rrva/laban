@@ -14,21 +14,31 @@ def write(text: str) -> None:
 
 def main() -> int:
     delay = float(os.environ.get("LABAN_RESIZE_TORTURE_DELAY_MS", "60")) / 1000
+    # Alt-screen mode mimics fullscreen TUIs (claude code, vim): no
+    # scrollback, full-grid repaint after every SIGWINCH.
+    alt_screen = os.environ.get("LABAN_RESIZE_TORTURE_ALT_SCREEN") == "1"
     blocks = "█" * 12
-    write("\x1b[?25h\x1b[2J")
+    if alt_screen:
+        write("\x1b[?1049h\x1b[2J")
+    else:
+        write("\x1b[?25h\x1b[2J")
     frame = 0
-    while True:
-        write("\x1b[H")
-        write("resize torture: diagonal window resize should not flash stale pixels\r\n")
-        write("top row and sidebar should stay continuously painted\r\n")
-        for row in range(3, 18):
-            color = 235 if (row + frame) % 4 == 0 else 250
-            write(f"\x1b[{row};1H")
-            write(f"\x1b[48;5;{color}m{blocks}\x1b[0m ")
-            write(f"row {row:02d} frame {frame:04d} ")
-            write("abcdefghijklmnopqrstuvwxyz0123456789")
-        frame += 1
-        time.sleep(delay)
+    try:
+        while True:
+            write("\x1b[H")
+            write("resize torture: diagonal window resize should not flash stale pixels\r\n")
+            write("top row and sidebar should stay continuously painted\r\n")
+            for row in range(3, 18):
+                color = 235 if (row + frame) % 4 == 0 else 250
+                write(f"\x1b[{row};1H")
+                write(f"\x1b[48;5;{color}m{blocks}\x1b[0m ")
+                write(f"row {row:02d} frame {frame:04d} ")
+                write("abcdefghijklmnopqrstuvwxyz0123456789")
+            frame += 1
+            time.sleep(delay)
+    finally:
+        if alt_screen:
+            write("\x1b[?1049l")
 
 
 if __name__ == "__main__":
