@@ -20,6 +20,8 @@ enum DebugAction: Decodable {
   case advanceFrames(AdvanceFramesActionRequest)
   case advanceTime(AdvanceTimeActionRequest)
   case setGlyphEffectsEnabled(SetGlyphEffectsEnabledActionRequest)
+  case setSpinnerMotionSmoothingEnabled(SetSpinnerMotionSmoothingEnabledActionRequest)
+  case resetSpinnerMotionDiagnostics(ResetSpinnerMotionDiagnosticsActionRequest)
   case setVectorSubpixelLayout(VectorSubpixelLayoutActionRequest)
   case setClipboardText(TextActionRequest)
   case setSelection(SelectionActionRequest)
@@ -90,6 +92,12 @@ enum DebugAction: Decodable {
       self = .advanceTime(try AdvanceTimeActionRequest(from: decoder))
     case "setGlyphEffectsEnabled":
       self = .setGlyphEffectsEnabled(try SetGlyphEffectsEnabledActionRequest(from: decoder))
+    case "setSpinnerMotionSmoothingEnabled":
+      self = .setSpinnerMotionSmoothingEnabled(
+        try SetSpinnerMotionSmoothingEnabledActionRequest(from: decoder))
+    case "resetSpinnerMotionDiagnostics":
+      self = .resetSpinnerMotionDiagnostics(
+        try ResetSpinnerMotionDiagnosticsActionRequest(from: decoder))
     case "setVectorSubpixelLayout":
       self = .setVectorSubpixelLayout(try VectorSubpixelLayoutActionRequest(from: decoder))
     case "setClipboardText":
@@ -191,6 +199,10 @@ extension DebugAction {
       return legacyIntent(action: "advanceTime")
     case .setGlyphEffectsEnabled:
       return legacyIntent(action: "setGlyphEffectsEnabled")
+    case .setSpinnerMotionSmoothingEnabled:
+      return legacyIntent(action: "setSpinnerMotionSmoothingEnabled")
+    case .resetSpinnerMotionDiagnostics:
+      return legacyIntent(action: "resetSpinnerMotionDiagnostics")
     case .setVectorSubpixelLayout:
       return legacyIntent(action: "setVectorSubpixelLayout")
     case .setClipboardText:
@@ -277,6 +289,10 @@ typealias TextActionRequest = LabanCore.TextActionRequest
 typealias AdvanceFramesActionRequest = LabanCore.AdvanceFramesActionRequest
 typealias AdvanceTimeActionRequest = LabanCore.AdvanceTimeActionRequest
 typealias SetGlyphEffectsEnabledActionRequest = LabanCore.SetGlyphEffectsEnabledActionRequest
+typealias SetSpinnerMotionSmoothingEnabledActionRequest =
+  LabanCore.SetSpinnerMotionSmoothingEnabledActionRequest
+typealias ResetSpinnerMotionDiagnosticsActionRequest =
+  LabanCore.ResetSpinnerMotionDiagnosticsActionRequest
 typealias WindowFocusActionRequest = LabanCore.WindowFocusActionRequest
 typealias DebugKeyActionRequest = LabanCore.DebugKeyActionRequest
 typealias MouseWheelActionRequest = LabanCore.MouseWheelActionRequest

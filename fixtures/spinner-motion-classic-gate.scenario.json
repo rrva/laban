@@ -1,0 +1,62 @@
+{
+  "name": "spinner-motion-classic-gate",
+  "description": "Non-Slug gate for spinner motion smoothing: configured true but effective renderer is classic, so the feature stays off, no transition metadata is emitted, and no motion instances are created.",
+  "fixture": "fixtures/spinner-motion-smoothing.fixture.json",
+  "renderer": "classic",
+  "deterministic": true,
+  "steps": [
+    {
+      "op": "discover",
+      "expectEndpoints": [
+        "GET /debug/spinner-motion"
+      ],
+      "expectActions": [
+        "feedOutput",
+        "advanceTime",
+        "setSpinnerMotionSmoothingEnabled"
+      ]
+    },
+    {
+      "op": "action",
+      "label": "enable spinner motion smoothing setting",
+      "body": {"action": "setSpinnerMotionSmoothingEnabled", "enabled": true}
+    },
+    {
+      "op": "action",
+      "label": "feed red row at t=0",
+      "body": {"action": "feedOutput", "text": "\u001b[H\u001b[38;2;255;0;0m\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf"}
+    },
+    {
+      "op": "action",
+      "label": "advance to allow any motion to start",
+      "body": {"action": "advanceTime", "ms": 300}
+    },
+    {
+      "op": "action",
+      "label": "feed blue row",
+      "body": {"action": "feedOutput", "text": "\u001b[H\u001b[38;2;14;56;86m\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf\u25cf"}
+    },
+    {
+      "op": "action",
+      "label": "advance to midpoint of any would-be transition",
+      "body": {"action": "advanceTime", "ms": 100}
+    },
+    {
+      "op": "get",
+      "label": "spinner motion telemetry on non-slug renderer",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {"path": "configured", "equals": true},
+        {"path": "rendererEligible", "equals": false},
+        {"path": "effectiveEnabled", "equals": false},
+        {"path": "activeTransitions", "equals": 0},
+        {"path": "analyticMotionInstances", "equals": 0}
+      ],
+      "saveAs": "state-classic-gate.json"
+    },
+    {
+      "op": "screenshot",
+      "label": "classic-gate"
+    }
+  ]
+}

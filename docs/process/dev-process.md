@@ -132,6 +132,14 @@ to one existing endpoint: `discover` calls `GET /debug`, `action` posts to
 `/debug/actions`, `wait` posts to `/debug/wait`, `snapshot` posts to
 `/debug/snapshot`, and `screenshot` captures `GET /debug/screenshot`.
 
+`scripts/test-e2e` runs deterministic scenarios under `.artifacts/runs/<run-id>/`.
+Checked-in spinner-motion scenarios (`fixtures/spinner-motion-smoothing.scenario.json`
+and `fixtures/spinner-motion-classic-gate.scenario.json`) exercise Slug-only
+motion smoothing and the non-Slug gate. `GET /debug/spinner-motion` reports
+configured state, renderer eligibility, Reduce Motion, effective enablement,
+active transitions, analytic motion instances, fallback snaps, effect kind,
+and remaining animation time.
+
 ### Health
 
 `GET /debug/health`

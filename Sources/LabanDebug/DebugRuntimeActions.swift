@@ -51,6 +51,10 @@ extension HeadlessDebugRuntime {
       return DebugWindowActions(runtime: self).advanceTime(request)
     case .setGlyphEffectsEnabled(let request):
       return DebugWindowActions(runtime: self).setGlyphEffectsEnabled(request)
+    case .setSpinnerMotionSmoothingEnabled(let request):
+      return DebugWindowActions(runtime: self).setSpinnerMotionSmoothingEnabled(request)
+    case .resetSpinnerMotionDiagnostics:
+      return DebugWindowActions(runtime: self).resetSpinnerMotionDiagnostics()
     case .setVectorSubpixelLayout(let request):
       return DebugWindowActions(runtime: self).setVectorSubpixelLayout(request)
     case .windowFocus(let request):

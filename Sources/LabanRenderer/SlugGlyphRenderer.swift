@@ -381,8 +381,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   )
   private var runFontIdentityCache: [UInt8: RunFontIdentity] = [:]
   private var lastFrameSolidsCount = 0
-  private(set) var lastFrameSlugGlyphsCount = 0
-  private(set) var lastFrameMotionGlyphsCount = 0
+  public private(set) var lastFrameSlugGlyphsCount = 0
+  public private(set) var lastFrameMotionGlyphsCount = 0
   private var lastFrameRasterGlyphsCount = 0
   private var lastFrameColorGlyphsCount = 0
 

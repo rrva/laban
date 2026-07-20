@@ -4,6 +4,12 @@ import LabanRenderer
 import LabanTerminalCore
 
 public enum ControlStateProjections {
+  public static func spinnerMotionResponse(
+    _ ctx: ControlProjectionContext
+  ) -> SpinnerMotionStateResponse? {
+    ctx.spinnerMotionProvider?()
+  }
+
   public static func stateResponse(_ ctx: ControlProjectionContext) -> StateResponse {
     switch ctx.readRedaction {
     case .appObserveSummary:
@@ -37,7 +43,8 @@ public enum ControlStateProjections {
       emojiRendering: emojiRenderingSettingsResponse(),
       attentionNotifications: filteredAttentionNotifications(ctx).map(
         attentionNotificationDecisionResponse),
-      glyphEffects: ctx.glyphEffectsProvider?()
+      glyphEffects: ctx.glyphEffectsProvider?(),
+      spinnerMotion: ctx.spinnerMotionProvider?()
     )
   }
 

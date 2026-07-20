@@ -315,6 +315,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var vectorSubpixelLayoutObserver: NSObjectProtocol?
   private var vectorTextWeightObserver: NSObjectProtocol?
   private var vectorSmoothScrollObserver: NSObjectProtocol?
+  private var spinnerMotionSmoothingSettingsObserver: NSObjectProtocol?
   private var screenParametersObserver: NSObjectProtocol?
   private var fontChangeObserver: NSObjectProtocol?
   /// Persisted font name as of the last time this view reconciled with
@@ -912,6 +913,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       vector.refreshSmoothScrollMode()
       self.markRenderConfigForProfiling()
       self.renderInvalidated = true
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    spinnerMotionSmoothingSettingsObserver = NotificationCenter.default.addObserver(
+      forName: SpinnerMotionSmoothingSettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      // Setting changes can flip eligibility; force a full damage frame so the
+      // spinner-motion detector resets and the next render sees the new state.
+      self.renderInvalidated = true
+      self.surfaceController.invalidateSessionSyncCache()
       if self.window != nil {
         self.scheduleRenderRetry()
       }
@@ -1620,7 +1634,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       preedit: hasMarkedText() ? markedText.string : nil,
       preeditCaretCells: hasMarkedText() ? markedTextCaretCells : 0,
       userCursorStyle: CursorSettings.style,
-      userCursorBlinkEnabled: CursorSettings.blinkEnabled)
+      userCursorBlinkEnabled: CursorSettings.blinkEnabled,
+      spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
+      effectiveRendererIsSlug: targetBackend is SlugGlyphRenderer)
 
     let surfaceFrame: TerminalSurfaceFrame?
     if let remoteFrame {
@@ -3099,7 +3115,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       preedit: hasMarkedText() ? markedText.string : nil,
       preeditCaretCells: hasMarkedText() ? markedTextCaretCells : 0,
       userCursorStyle: CursorSettings.style,
-      userCursorBlinkEnabled: CursorSettings.blinkEnabled
+      userCursorBlinkEnabled: CursorSettings.blinkEnabled,
+      spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
+      effectiveRendererIsSlug: backend is SlugGlyphRenderer
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
@@ -3497,6 +3515,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       diagnostics: surfaceFrame?.diagnostics,
       glyphEffect: renderJournalGlyphEffectSnapshot(
         surfaceFrame: surfaceFrame, slugRenderer: slugRenderer),
+      spinnerMotion: surfaceFrame?.spinnerMotionDiagnostics,
       metalInstances: metalRenderer?.lastInstanceCounts,
       drawableAcquire: metalRenderer?.lastDrawableAcquireDiagnostic,
       gpuCellPayloadFailure: gpuCellPayloadFailure,

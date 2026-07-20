@@ -297,6 +297,11 @@ final class LiveIntentRouter: IntentRouter {
           ControlStateProjections.sessionResponse(id: sessionId, query: query.params, ctx: ctx))
       case "selection.read":
         return json(ControlStateProjections.selectionResponse(ctx))
+      case "spinnerMotion.state":
+        guard let response = ControlStateProjections.spinnerMotionResponse(ctx) else {
+          return .error(503, "spinner motion diagnostics unavailable")
+        }
+        return json(response)
       default:
         return .error(404, "unavailable on gui")
       }

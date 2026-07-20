@@ -46,6 +46,12 @@ public enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(
       name: "setGlyphEffectsEnabled",
       summary: "Enable or disable per-glyph effects (ink-bloom, bell shake)."),
+    DebugDiscoveryControl(
+      name: "setSpinnerMotionSmoothingEnabled",
+      summary: "Enable or disable spinner foreground-color motion smoothing."),
+    DebugDiscoveryControl(
+      name: "resetSpinnerMotionDiagnostics",
+      summary: "Reset spinner-motion detector state."),
     DebugDiscoveryControl(name: "key", summary: "Send a structured key event."),
     DebugDiscoveryControl(name: "mouseWheel", summary: "Send a mouse wheel event."),
     DebugDiscoveryControl(name: "mouseDrag", summary: "Send a mouse press-drag-release gesture."),

@@ -23,6 +23,9 @@ public struct ControlProjectionContext {
   /// Reports the per-glyph animation channel state for `/debug/state`; nil
   /// when the serving runtime has no renderer to report (GUI control server).
   public var glyphEffectsProvider: (() -> GlyphEffectsStateResponse?)?
+  /// Reports the spinner motion smoothing state for `/debug/state`; nil when
+  /// the serving runtime has no renderer to report (GUI control server).
+  public var spinnerMotionProvider: (() -> SpinnerMotionStateResponse?)?
 
   public init(
     model: AppModel,
@@ -41,7 +44,8 @@ public struct ControlProjectionContext {
     readRedaction: ControlReadRedaction = .none,
     clientSnapshotProvider: (@Sendable (Session.ID) -> LabandSnapshotResponse?)? = nil,
     accessibilityValueProvider: (@Sendable (Tab) -> String)? = nil,
-    glyphEffectsProvider: (() -> GlyphEffectsStateResponse?)? = nil
+    glyphEffectsProvider: (() -> GlyphEffectsStateResponse?)? = nil,
+    spinnerMotionProvider: (() -> SpinnerMotionStateResponse?)? = nil
   ) {
     self.model = model
     self.mode = mode
@@ -60,5 +64,6 @@ public struct ControlProjectionContext {
     self.clientSnapshotProvider = clientSnapshotProvider
     self.accessibilityValueProvider = accessibilityValueProvider
     self.glyphEffectsProvider = glyphEffectsProvider
+    self.spinnerMotionProvider = spinnerMotionProvider
   }
 }

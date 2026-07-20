@@ -37,6 +37,7 @@ def main() -> int:
     print_state(entries)
     print_display_link(entries)
     print_glyph_effect(entries)
+    print_spinner_motion(entries)
     print_drawables(entries)
     print_window(entries)
     print_per_second(entries)
@@ -212,6 +213,41 @@ def print_glyph_effect(entries: list[dict[str, Any]]) -> None:
             f"p50={percentile(widths, 50):.0f} "
             f"p95={percentile(widths, 95):.0f} "
             f"max={max(widths)}"
+        )
+    print()
+
+
+def print_spinner_motion(entries: list[dict[str, Any]]) -> None:
+    motions = [
+        entry.get("spinnerMotion")
+        for entry in entries
+        if isinstance(entry.get("spinnerMotion"), dict)
+    ]
+    print("spinnerMotion:")
+    if not motions:
+        print("  unavailable")
+        print()
+        return
+    active = [m for m in motions if m.get("detectorActive")]
+    created = [m for m in motions if int(m.get("createdTransitions") or 0) > 0]
+    print(f"  framesWithData: {len(motions)}")
+    print(f"  detectorActiveFrames: {len(active)}")
+    print(f"  createdTransitionFrames: {len(created)}")
+    active_transitions = number_list(m.get("activeTransitions") for m in motions)
+    if active_transitions:
+        print(
+            "  activeTransitions: "
+            f"p50={percentile(active_transitions, 50):.0f} "
+            f"p95={percentile(active_transitions, 95):.0f} "
+            f"max={max(active_transitions)}"
+        )
+    changed = number_list(m.get("changedCells") for m in motions)
+    if changed:
+        print(
+            "  changedCells: "
+            f"p50={percentile(changed, 50):.0f} "
+            f"p95={percentile(changed, 95):.0f} "
+            f"max={max(changed)}"
         )
     print()
 

@@ -172,6 +172,29 @@ struct DebugWindowActions {
     return runtime.actionResult(ok: true)
   }
 
+  func setSpinnerMotionSmoothingEnabled(
+    _ request: SetSpinnerMotionSmoothingEnabledActionRequest
+  ) -> DebugResponse {
+    guard let enabled = request.enabled else {
+      return jsonError("setSpinnerMotionSmoothingEnabled requires enabled")
+    }
+    guard SpinnerMotionSmoothingSettings.setEnabled(enabled) else {
+      let raw =
+        ProcessInfo.processInfo.environment[SpinnerMotionSmoothingSettings.enabledEnvironmentKey]
+        ?? ""
+      return jsonError(
+        "setSpinnerMotionSmoothingEnabled is locked by \(SpinnerMotionSmoothingSettings.enabledEnvironmentKey)=\(raw)")
+    }
+    runtime.renderFrameUnlocked()
+    return runtime.actionResult(ok: true)
+  }
+
+  func resetSpinnerMotionDiagnostics() -> DebugResponse {
+    runtime.surfaceController.resetSpinnerMotionDiagnostics()
+    runtime.renderFrameUnlocked()
+    return runtime.actionResult(ok: true)
+  }
+
   func setVectorSubpixelLayout(_ request: VectorSubpixelLayoutActionRequest) -> DebugResponse {
     guard let vectorRenderer = runtime.rendererBackend as? VectorGlyphRenderer else {
       return jsonError("setVectorSubpixelLayout requires vectorGlyph renderer")

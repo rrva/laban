@@ -13,8 +13,6 @@ public enum SpinnerMotion {
   /// Minimum and maximum observed cadence in seconds.
   public static let minCadenceSeconds = 0.04
   public static let maxCadenceSeconds = 0.60
-  /// Maximum number of retained row baselines.
-  public static let maxRetainedRows = 4
   /// Maximum number of live transitions retained per session.
   public static let maxTransitions = 64
 }
@@ -137,14 +135,18 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
 
   /// Observe a new terminal generation and return the active foreground
   /// transition map for the current timestamp.
-  public mutating func observe(_ observation: SpinnerMotionObservation) -> [SpinnerMotionCellKey: GlyphForegroundTransition] {
+  public mutating func observe(_ observation: SpinnerMotionObservation) -> [SpinnerMotionCellKey:
+    GlyphForegroundTransition]
+  {
     diagnostics = SpinnerMotionDiagnostics()
     defer { lastObservationTimestamp = observation.timestamp }
 
     // Compute changed cells and qualifying region.
     var changed: [SpinnerMotionCellKey: SpinnerMotionCellState] = [:]
     for (key, cell) in observation.cells {
-      if let previous = previousCells[key], !previous.sameIdentity(as: cell) || previous.foreground != cell.foreground {
+      if let previous = previousCells[key],
+        !previous.sameIdentity(as: cell) || previous.foreground != cell.foreground
+      {
         changed[key] = cell
       } else if previousCells[key] == nil {
         // Newly visible cell; treat as changed for region qualification but
@@ -191,7 +193,8 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     if let gap, !SpinnerMotionDetector.isCadenceGapInRange(gap) {
       resetRun()
     } else if let last = qualifyingRun.last,
-      !SpinnerMotionDetector.regionsAreNear(last, region) {
+      !SpinnerMotionDetector.regionsAreNear(last, region)
+    {
       resetRun()
     }
 
@@ -225,7 +228,9 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     var created = 0
     var overflow = 0
     for (key, current) in changed {
-      guard let previous = previousCells[key], previous.sameIdentity(as: current), previous.foreground != current.foreground else {
+      guard let previous = previousCells[key], previous.sameIdentity(as: current),
+        previous.foreground != current.foreground
+      else {
         // Decorated, different glyph, or no baseline: snap.
         transitions.removeValue(forKey: key)
         continue
@@ -278,7 +283,9 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
 
   /// Active transition map sampled at `timestamp`. Settled transitions are
   /// omitted so the next frame renders the authoritative target color.
-  public func activeTransitions(at timestamp: Double) -> [SpinnerMotionCellKey: GlyphForegroundTransition] {
+  public func activeTransitions(at timestamp: Double) -> [SpinnerMotionCellKey:
+    GlyphForegroundTransition]
+  {
     var result: [SpinnerMotionCellKey: GlyphForegroundTransition] = [:]
     for (key, transition) in transitions {
       let age = timestamp - transition.startTimestamp
@@ -322,9 +329,12 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     var reason: String?
   }
 
-  private static func qualifyingRegion(changed: [SpinnerMotionCellKey], rows: Int, cols: Int) -> Region {
+  private static func qualifyingRegion(changed: [SpinnerMotionCellKey], rows: Int, cols: Int)
+    -> Region
+  {
     guard !changed.isEmpty else {
-      return Region(minRow: 0, maxRow: -1, minCol: 0, maxCol: -1, qualifies: false, reason: "no changed cells")
+      return Region(
+        minRow: 0, maxRow: -1, minCol: 0, maxCol: -1, qualifies: false, reason: "no changed cells")
     }
     let minRow = changed.map(\.row).min()!
     let maxRow = changed.map(\.row).max()!
@@ -333,15 +343,22 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     let rowSpan = maxRow - minRow + 1
     let colSpan = maxCol - minCol + 1
     if rowSpan > 2 {
-      return Region(minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol, qualifies: false, reason: "rows > 2")
+      return Region(
+        minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol, qualifies: false,
+        reason: "rows > 2")
     }
     if colSpan > SpinnerMotion.maxRegionColumns {
-      return Region(minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol, qualifies: false, reason: "columns > 32")
+      return Region(
+        minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol, qualifies: false,
+        reason: "columns > 32")
     }
     if changed.count > SpinnerMotion.maxChangedCells {
-      return Region(minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol, qualifies: false, reason: "changed cells > 32")
+      return Region(
+        minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol, qualifies: false,
+        reason: "changed cells > 32")
     }
-    return Region(minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol, qualifies: true, reason: nil)
+    return Region(
+      minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol, qualifies: true, reason: nil)
   }
 
   private static func isCadenceGapInRange(_ gap: Double) -> Bool {
@@ -361,17 +378,10 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
   }
 
   private mutating func updatePreviousCells(_ observation: SpinnerMotionObservation) {
-    // Retain only the most recently changed rows to bound memory. Anchor rows
-    // from the current observation are pinned; the rest are LRU.
-    var touchedRows = Set<Int>()
-    for key in observation.cells.keys { touchedRows.insert(key.row) }
-    var retainedRows = Array(touchedRows)
-    if retainedRows.count > SpinnerMotion.maxRetainedRows {
-      retainedRows.sort()
-      retainedRows = Array(retainedRows.suffix(SpinnerMotion.maxRetainedRows))
-    }
-    let keep = Set(retainedRows)
-    previousCells = observation.cells.filter { keep.contains($0.key.row) }
+    // Keep the whole grid baseline so changes in any row can be compared
+    // against the same-glyph previous state. The grid is bounded by the
+    // terminal dimensions, so retaining every cell is cheap (a few KiB).
+    previousCells = observation.cells
   }
 
   private func estimatedCadence() -> Double {

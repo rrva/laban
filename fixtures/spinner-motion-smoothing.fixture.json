@@ -1,0 +1,23 @@
+{
+  "name": "spinner-motion-smoothing",
+  "version": 1,
+  "description": "Control and target rows for the spinner-motion smoothing scenario. Row 1 starts green (the baseline the scenario will transition away from); row 2 is a never-transitioned blue reference row used for pixel-exact settlement comparisons.",
+  "initialSize": {
+    "cols": 80,
+    "rows": 24
+  },
+  "steps": [
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "\u001b[2J\u001b[H\u001b[38;2;0;255;0m\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u001b[2;1H\u001b[38;2;0;0;255m\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u001b[?25l"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "containsText": ["\u2022"]
+  }
+}

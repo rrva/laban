@@ -872,7 +872,9 @@ public final class HeadlessDebugRuntime {
         preedit: activePreedit?.text,
         preeditCaretCells: activePreedit?.caretCells ?? 0,
         userCursorStyle: CursorSettings.style,
-        userCursorBlinkEnabled: CursorSettings.blinkEnabled)
+        userCursorBlinkEnabled: CursorSettings.blinkEnabled,
+        spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
+        effectiveRendererIsSlug: rendererBackend is SlugGlyphRenderer)
     )
     let surfaceBuildMs = elapsedMs(since: timer)
     snapshotMs = surfaceFrame?.snapshotMs ?? 0

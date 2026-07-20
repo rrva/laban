@@ -44,6 +44,9 @@ final class RenderJournal {
     /// Ink-bloom stamp decision for this frame. Optional so older journal
     /// dumps still decode.
     var glyphEffect: GlyphEffectStampDiagnostics?
+    /// Spinner-motion detector diagnostics for this frame. Optional so older
+    /// journal dumps still decode.
+    var spinnerMotion: SpinnerMotionDiagnostics?
     var metalInstances: MetalInstanceCounts?
     var drawableAcquire: MetalDrawableAcquireDiagnostic?
     var gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure?
@@ -365,6 +368,7 @@ final class RenderJournal {
     payload: TerminalCellPayload? = nil,
     diagnostics: TerminalSurfaceFrameDiagnostics? = nil,
     glyphEffect: GlyphEffectStampDiagnostics? = nil,
+    spinnerMotion: SpinnerMotionDiagnostics? = nil,
     metalInstances: MetalRenderer.RenderInstanceCounts? = nil,
     drawableAcquire: MetalDrawableAcquireDiagnostic? = nil,
     gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure? = nil,
@@ -408,6 +412,7 @@ final class RenderJournal {
       payload: payload.map(Self.payloadSnapshot),
       diagnostics: diagnostics,
       glyphEffect: glyphEffect,
+      spinnerMotion: spinnerMotion,
       metalInstances: metalInstances.map(MetalInstanceCounts.init),
       drawableAcquire: drawableAcquireForEvent,
       gpuCellPayloadFailure: gpuCellPayloadFailure,

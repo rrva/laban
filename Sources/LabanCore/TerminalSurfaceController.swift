@@ -253,6 +253,8 @@ public struct TerminalSurfaceFrame {
   public var diagnostics: TerminalSurfaceFrameDiagnostics?
   /// Ink-bloom stamp decision for this frame (render-journal `glyphEffect`).
   public var glyphEffectStamp: GlyphEffectStampDiagnostics?
+  /// Spinner-motion detector diagnostics for this frame (render-journal). Optional.
+  public var spinnerMotionDiagnostics: SpinnerMotionDiagnostics?
 
   public init(
     frame: Int,
@@ -269,7 +271,8 @@ public struct TerminalSurfaceFrame {
     snapshotMs: Double = 0,
     cellPayload: TerminalCellPayload? = nil,
     diagnostics: TerminalSurfaceFrameDiagnostics? = nil,
-    glyphEffectStamp: GlyphEffectStampDiagnostics? = nil
+    glyphEffectStamp: GlyphEffectStampDiagnostics? = nil,
+    spinnerMotionDiagnostics: SpinnerMotionDiagnostics? = nil
   ) {
     self.frame = frame
     self.tabId = tabId
@@ -286,6 +289,7 @@ public struct TerminalSurfaceFrame {
     self.cellPayload = cellPayload
     self.diagnostics = diagnostics
     self.glyphEffectStamp = glyphEffectStamp
+    self.spinnerMotionDiagnostics = spinnerMotionDiagnostics
   }
 }
 
@@ -704,6 +708,24 @@ public final class TerminalSurfaceController {
     spinnerMotionLastRemoteDirty.removeAll()
   }
 
+  /// Drops all spinner-motion detector state without disturbing the broader
+  /// sync cache. Used by the `resetSpinnerMotionDiagnostics` debug action.
+  public func resetSpinnerMotionDiagnostics() {
+    spinnerMotionDetectors.removeAll()
+    spinnerMotionCellMetrics.removeAll()
+    spinnerMotionRemoteIncarnations.removeAll()
+    spinnerMotionLastObservedGeneration.removeAll()
+    spinnerMotionLastRemoteDirty.removeAll()
+  }
+
+  /// Total number of active spinner-motion transitions across all tracked
+  /// sessions at the current clock. Excludes transitions that have already
+  /// settled to their target color.
+  public func spinnerMotionActiveTransitionCount() -> Int {
+    let now = outputStampClock()
+    return spinnerMotionDetectors.values.reduce(0) { $0 + $1.activeTransitions(at: now).count }
+  }
+
   /// Returns true if any tracked session has a dirty generation that
   /// differs from the last synced generation. Used by the safety-net poll
   /// (Milestone 3) to detect missed wakes without taking a full snapshot.
@@ -968,7 +990,8 @@ public final class TerminalSurfaceController {
       && snapshotCommandsHook == nil
       && captureSink == nil
 
-    let foregroundTransitions = canSkipTerminalCommands
+    let foregroundTransitions =
+      canSkipTerminalCommands
       ? nil
       : spinnerMotionTransitions(
         for: session.id,
@@ -1013,7 +1036,8 @@ public final class TerminalSurfaceController {
       snapshotMs: snapshotMs,
       cellPayload: canSkipTerminalCommands ? cellPayload : nil,
       diagnostics: diagnostics,
-      glyphEffectStamp: lastGlyphEffectStampDiagnostics
+      glyphEffectStamp: lastGlyphEffectStampDiagnostics,
+      spinnerMotionDiagnostics: spinnerMotionDetectors[session.id]?.diagnostics
     )
   }
 
@@ -1121,7 +1145,8 @@ public final class TerminalSurfaceController {
       gridOriginY: gridOriginY,
       damage: damage,
       snapshotMs: 0,
-      diagnostics: diagnostics
+      diagnostics: diagnostics,
+      spinnerMotionDiagnostics: spinnerMotionDetectors[sessionId]?.diagnostics
     )
   }
 
@@ -1921,7 +1946,8 @@ public final class TerminalSurfaceController {
     var glyphs = 0
     for command in commands {
       guard
-        case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, let displayCellCount, let stamp, _) =
+        case .glyphRun(
+          _, let text, _, _, _, .terminal, _, _, _, let displayCellCount, let stamp, _) =
           command,
         stamp != nil
       else { continue }
@@ -1944,8 +1970,9 @@ public final class TerminalSurfaceController {
       guard
         case .glyphRun(
           let origin, let text, let foreground, let background, let attributes, let source,
-          let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _
-        , _) = stamped[index],
+          let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _,
+          let foregroundTransition
+        ) = stamped[index],
         source == .terminal
       else { continue }
       let minY = origin.y
@@ -1963,7 +1990,8 @@ public final class TerminalSurfaceController {
         underlineColor: underlineColor,
         hyperlink: hyperlink,
         displayCellCount: displayCellCount,
-        outputTimestampSeconds: stamp)
+        outputTimestampSeconds: stamp,
+        foregroundTransition: foregroundTransition)
     }
     return stamped
   }
@@ -1987,8 +2015,9 @@ public final class TerminalSurfaceController {
       guard
         case .glyphRun(
           let origin, let text, let foreground, let background, let attributes, let source,
-          let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _
-        , _) = command,
+          let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _,
+          let foregroundTransition
+        ) = command,
         source == .terminal
       else {
         result.append(command)
@@ -2028,7 +2057,8 @@ public final class TerminalSurfaceController {
             hyperlink: hyperlink,
             displayCellCount: displayCellCount == nil
               ? nil : TerminalDisplayWidth.cells(of: piece.text),
-            outputTimestampSeconds: piece.stamped ? stamp : nil))
+            outputTimestampSeconds: piece.stamped ? stamp : nil,
+            foregroundTransition: foregroundTransition))
       }
     }
     return result

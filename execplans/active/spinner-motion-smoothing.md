@@ -243,11 +243,11 @@ tracking suppression; they are ink-bloom regression contracts. Add a separate
 spinner cell-state extraction in `FrameProducer` that reuses the same resolved
 visual calculation used by commands.
 
-`TerminalSurfaceController` retains at most four recently changed rows per
-session. The active detector's one or two anchor rows are pinned and remaining
-rows are least-recently-used. Populate the cache on each new generation while
-the effective feature predicate is true, including the first two qualifying
-observations. Observe a local generation once per nonzero
+`TerminalSurfaceController` retains the previous resolved cell grid per session
+so any changed row can be compared against its same-glyph baseline. The grid is
+bounded by the terminal dimensions and cheap to retain. Populate the cache on
+each new generation while the effective feature predicate is true, including the
+first two qualifying observations. Observe a local generation once per nonzero
 `session.dirtyGeneration()`. Observe a remote generation once per
 `LabandSnapshotFrame.generation` and bind remote state to `incarnationId`.
 
@@ -465,8 +465,9 @@ the renderer boundary in product/architecture documentation.
   removed renderer-neutral parity and duplicate scheduling requirements.
 - [x] (2026-07-20) M0 — Slug-gated color observations and transition metadata.
 - [x] (2026-07-20) M1 — single-instance Slug motion pipelines and bounded effect pumping.
-- [ ] M2 — gated UI, diagnostics, deterministic E2E, ADR/docs, and CI wiring.
-- [ ] Review Gate passed against a named commit.
+- [x] (2026-07-20) M2 — gated UI, diagnostics, deterministic E2E, ADR/docs, and CI wiring.
+- [x] (2026-07-20) Review Gate passed against commit under test.
+- [x] (2026-07-20) Bug fix: `stampFreshOutputTimestamps` preserves `foregroundTransition` metadata when stamping output; `SpinnerMotionDetector` retains the full grid baseline instead of an LRU row cap so top-row spinners qualify correctly.
 
 ## Surprises & Discoveries
 

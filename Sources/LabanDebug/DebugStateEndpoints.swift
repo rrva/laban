@@ -16,6 +16,17 @@ extension HeadlessDebugRuntime {
     return debugJSON(ControlStateProjections.stateResponse(ctx))
   }
 
+  public func spinnerMotion() -> DebugResponse {
+    withRuntimeLock {
+      syncSessionMetadataUnlocked()
+      let ctx = controlProjectionContext()
+      if let response = ControlStateProjections.spinnerMotionResponse(ctx) {
+        return debugJSON(response)
+      }
+      return jsonError("spinner motion state unavailable")
+    }
+  }
+
   public func accessibility() -> DebugResponse {
     withRuntimeLock {
       syncSessionMetadataUnlocked()

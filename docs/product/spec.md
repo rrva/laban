@@ -146,6 +146,8 @@ The terminal core exposes callbacks/effects for pty writes, size reports, device
 
 Terminal title changes update tab/window labels without changing tab identity, pane identity, session identity, or focus. Title bytes are copied into bounded or owned storage, and hostile terminal output cannot overflow UI buffers.
 
+A persisted setting enables **Smooth spinner motion** when the effective renderer is Slug Glyph. When enabled, the Slug renderer interpolates the foreground color of unchanged, undecorated analytic glyphs between consecutive resolved terminal states in linear light, producing one glyph instance per cell. The feature is disabled by default and force-disabled by macOS Reduce Motion; other renderers, configured Slug that falls back to another backend, decorated cells, background changes, raster/color fallbacks, and overflow regions snap to the authoritative current state. Motion is bounded by an explicit duration and reuses existing display-link settle and parking behavior.
+
 ## 21. Failure-mode requirements
 
 EOF from the pty, and platform-specific closed-pty errors, mark the session as exited. If the OS provides an exit status, store it and expose it in the UI. Closing the final tab follows explicit product policy: create a replacement tab, show an empty state, or close the window. It must never leave selection pointing at freed state.

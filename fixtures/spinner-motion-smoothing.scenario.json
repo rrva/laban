@@ -1,0 +1,184 @@
+{
+  "name": "spinner-motion-smoothing",
+  "description": "Spinner motion smoothing end-to-end (M2): a row of bullets transitions from its previous resolved color to the next through a smooth midpoint, retargets on a later color change, and settles pixel-identical to an untouched reference row. Verifies GET /debug/spinner-motion telemetry, active/motion instance counts, early retargeting, and display-link re-parking. Requires slugGlyph and --deterministic.",
+  "fixture": "fixtures/spinner-motion-smoothing.fixture.json",
+  "renderer": "slugGlyph",
+  "deterministic": true,
+  "steps": [
+    {
+      "op": "discover",
+      "expectEndpoints": [
+        "POST /debug/actions",
+        "POST /debug/pixel-probe",
+        "GET /debug/state",
+        "GET /debug/spinner-motion"
+      ],
+      "expectActions": [
+        "feedOutput",
+        "advanceFrames",
+        "advanceTime",
+        "setSpinnerMotionSmoothingEnabled",
+        "resetSpinnerMotionDiagnostics"
+      ]
+    },
+    {
+      "op": "action",
+      "label": "reset setting to disabled for baseline",
+      "body": {"action": "setSpinnerMotionSmoothingEnabled", "enabled": false}
+    },
+    {
+      "op": "get",
+      "label": "spinner motion disabled baseline",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {"path": "configured", "equals": false},
+        {"path": "effectiveEnabled", "equals": false},
+        {"path": "activeTransitions", "equals": 0}
+      ],
+      "saveAs": "state-disabled.json"
+    },
+    {
+      "op": "action",
+      "label": "enable spinner motion smoothing",
+      "body": {"action": "setSpinnerMotionSmoothingEnabled", "enabled": true}
+    },
+    {
+      "op": "get",
+      "label": "state reflects enabled setting",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {"path": "configured", "equals": true},
+        {"path": "effectiveEnabled", "equals": true},
+        {"path": "rendererEligible", "equals": true},
+        {"path": "effectiveRenderer", "nonEmpty": true}
+      ]
+    },
+    {
+      "op": "action",
+      "label": "feed first changed color (red)",
+      "body": {"action": "feedOutput", "text": "\u001b[H\u001b[38;2;255;0;0m\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"}
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 200 ms",
+      "body": {"action": "advanceTime", "ms": 200}
+    },
+    {
+      "op": "action",
+      "label": "feed second changed color (blue)",
+      "body": {"action": "feedOutput", "text": "\u001b[H\u001b[38;2;0;0;255m\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"}
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 200 ms",
+      "body": {"action": "advanceTime", "ms": 200}
+    },
+    {
+      "op": "action",
+      "label": "feed third changed color (red), detector activates transition blue->red",
+      "body": {"action": "feedOutput", "text": "\u001b[H\u001b[38;2;255;0;0m\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"}
+    },
+    {
+      "op": "action",
+      "label": "midpoint age 100 ms",
+      "body": {"action": "advanceTime", "ms": 100}
+    },
+    {
+      "op": "post",
+      "label": "midpoint: transition row is purple (more red, less blue than target)",
+      "path": "/debug/pixel-probe",
+      "body": {
+        "regions": [
+          {"name": "transition", "x": 201, "y": 439, "width": 298, "height": 15},
+          {"name": "target", "x": 201, "y": 420, "width": 298, "height": 15}
+        ]
+      },
+      "expectJson": [
+        {"path": "regions[0].nonBackgroundPixels", "greaterThan": 0},
+        {"path": "regions[1].nonBackgroundPixels", "greaterThan": 0},
+        {"path": "regions[0].averageRgba[0]", "greaterThanPath": "regions[1].averageRgba[0]"},
+        {"path": "regions[0].averageRgba[2]", "lessThanPath": "regions[1].averageRgba[2]"}
+      ],
+      "saveAs": "probe-midpoint.json"
+    },
+    {
+      "op": "get",
+      "label": "spinner motion telemetry at midpoint",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {"path": "configured", "equals": true},
+        {"path": "effectiveEnabled", "equals": true},
+        {"path": "activeTransitions", "equals": 30},
+        {"path": "analyticMotionInstances", "equals": 30},
+        {"path": "fallbackSnaps", "equals": 0},
+        {"path": "effectKind", "equals": 3},
+        {"path": "remainingSeconds", "greaterThan": 0}
+      ],
+      "saveAs": "state-midpoint.json"
+    },
+    {
+      "op": "action",
+      "label": "advance to retarget timestamp",
+      "body": {"action": "advanceTime", "ms": 100}
+    },
+    {
+      "op": "action",
+      "label": "early retarget: red->blue",
+      "body": {"action": "feedOutput", "text": "\u001b[H\u001b[38;2;0;0;255m\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"}
+    },
+    {
+      "op": "action",
+      "label": "advance to settle timestamp",
+      "body": {"action": "advanceTime", "ms": 200}
+    },
+    {
+      "op": "post",
+      "label": "settled: transition row is pixel-identical to blue target row",
+      "path": "/debug/pixel-probe",
+      "body": {
+        "regions": [
+          {"name": "transition", "x": 201, "y": 439, "width": 298, "height": 15},
+          {"name": "target", "x": 201, "y": 420, "width": 298, "height": 15}
+        ]
+      },
+      "expectJson": [
+        {"path": "regions[0].averageRgba", "equalsPath": "regions[1].averageRgba"},
+        {"path": "regions[0].nonBackgroundPixels", "equalsPath": "regions[1].nonBackgroundPixels"}
+      ],
+      "saveAs": "probe-settled.json"
+    },
+    {
+      "op": "get",
+      "label": "spinner motion telemetry after settlement",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {"path": "configured", "equals": true},
+        {"path": "effectiveEnabled", "equals": true},
+        {"path": "activeTransitions", "equals": 0},
+        {"path": "analyticMotionInstances", "equals": 0},
+        {"path": "remainingSeconds", "equals": 0},
+        {"path": "liveEffectFrames", "greaterThan": 0}
+      ],
+      "saveAs": "state-settled.json"
+    },
+    {
+      "op": "action",
+      "label": "idle re-renders stay parked",
+      "body": {"action": "advanceFrames", "count": 3}
+    },
+    {
+      "op": "get",
+      "label": "post-idle telemetry remains parked",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {"path": "activeTransitions", "equals": 0},
+        {"path": "analyticMotionInstances", "equals": 0},
+        {"path": "remainingSeconds", "equals": 0}
+      ]
+    },
+    {
+      "op": "screenshot",
+      "label": "settled"
+    }
+  ]
+}

@@ -1190,6 +1190,10 @@ public struct IntentCatalog: Sendable {
       summary: "Return renderer state and draw stats.",
       requiredCapability: .fixture, dataSensitivity: .trace),
     descriptor(
+      id: "spinnerMotion.state", kind: .query, category: "rendering",
+      summary: "Return spinner motion smoothing state and telemetry.",
+      requiredCapability: .fixture, dataSensitivity: .trace),
+    descriptor(
       id: "render.frameCommands", kind: .query, category: "rendering",
       summary: "Return bounded frame commands.",
       requiredCapability: .fixture, dataSensitivity: .trace),
@@ -1327,6 +1331,20 @@ public struct IntentCatalog: Sendable {
       requiredCapability: .fixture,
       dataSensitivity: .nonSensitiveState,
       inputSchema: SetGlyphEffectsEnabledActionRequest.jsonSchema),
+    descriptor(
+      id: "spinnerMotion.setEnabled",
+      category: "fixture",
+      summary: "Enable or disable spinner foreground-color motion smoothing.",
+      requiredCapability: .fixture,
+      dataSensitivity: .nonSensitiveState,
+      inputSchema: SetSpinnerMotionSmoothingEnabledActionRequest.jsonSchema),
+    descriptor(
+      id: "spinnerMotion.resetDiagnostics",
+      category: "fixture",
+      summary: "Reset spinner-motion detector state.",
+      requiredCapability: .fixture,
+      dataSensitivity: .nonSensitiveState,
+      inputSchema: ResetSpinnerMotionDiagnosticsActionRequest.jsonSchema),
     descriptor(
       id: "fixture.windowFocus",
       category: "fixture",

@@ -934,6 +934,40 @@ EXIT_WAKE_REPORT="$EXIT_WAKE_ARTIFACTS/debug-script-report.json"
 jq -e '.ok == true and (.steps | length) == 4' "$EXIT_WAKE_REPORT" >/dev/null 2>&1 \
   || fail "exit-wake debug script report invalid: $(cat "$EXIT_WAKE_REPORT")"
 
+# 34. Spinner motion smoothing — slugGlyph only.
+SPINNER_ARTIFACTS="$RUN_ARTIFACTS/spinner-motion-smoothing"
+SPINNER_TMP="$RUN_TMP/spinner-motion-smoothing"
+if ! SPINNER_OUTPUT=$(LABAN_AGENT_BIN="$AGENT_BIN" ./scripts/run-debug-script \
+  --no-build \
+  --artifacts "$SPINNER_ARTIFACTS" \
+  --temp-dir "$SPINNER_TMP" \
+  fixtures/spinner-motion-smoothing.scenario.json 2>&1); then
+  fail "spinner motion smoothing scenario failed: $SPINNER_OUTPUT"
+fi
+printf '%s' "$SPINNER_OUTPUT" | grep -q "debug script passed" \
+  || fail "spinner motion smoothing scenario did not report success: $SPINNER_OUTPUT"
+SPINNER_REPORT="$SPINNER_ARTIFACTS/debug-script-report.json"
+[ -f "$SPINNER_REPORT" ] || fail "spinner motion smoothing report missing: $SPINNER_REPORT"
+jq -e '.ok == true' "$SPINNER_REPORT" >/dev/null 2>&1 \
+  || fail "spinner motion smoothing report invalid: $(cat "$SPINNER_REPORT")"
+
+# 35. Spinner motion non-Slug gate — configured true but effective renderer is not Slug.
+SPINNER_GATE_ARTIFACTS="$RUN_ARTIFACTS/spinner-motion-classic-gate"
+SPINNER_GATE_TMP="$RUN_TMP/spinner-motion-classic-gate"
+if ! SPINNER_GATE_OUTPUT=$(LABAN_AGENT_BIN="$AGENT_BIN" ./scripts/run-debug-script \
+  --no-build \
+  --artifacts "$SPINNER_GATE_ARTIFACTS" \
+  --temp-dir "$SPINNER_GATE_TMP" \
+  fixtures/spinner-motion-classic-gate.scenario.json 2>&1); then
+  fail "spinner motion classic gate scenario failed: $SPINNER_GATE_OUTPUT"
+fi
+printf '%s' "$SPINNER_GATE_OUTPUT" | grep -q "debug script passed" \
+  || fail "spinner motion classic gate scenario did not report success: $SPINNER_GATE_OUTPUT"
+SPINNER_GATE_REPORT="$SPINNER_GATE_ARTIFACTS/debug-script-report.json"
+[ -f "$SPINNER_GATE_REPORT" ] || fail "spinner motion classic gate report missing: $SPINNER_GATE_REPORT"
+jq -e '.ok == true' "$SPINNER_GATE_REPORT" >/dev/null 2>&1 \
+  || fail "spinner motion classic gate report invalid: $(cat "$SPINNER_GATE_REPORT")"
+
 # Success — clean up and remove trap
 trap - EXIT
 cleanup_success

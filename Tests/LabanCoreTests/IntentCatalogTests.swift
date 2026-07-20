@@ -52,6 +52,7 @@ final class IntentCatalogTests: XCTestCase {
       [
         "fixture.advanceFrames", "fixture.advanceTime", "fixture.control",
         "fixture.feedOutput", "fixture.windowFocus", "glyphEffects.setEnabled",
+        "spinnerMotion.resetDiagnostics", "spinnerMotion.setEnabled",
       ])
     for descriptor in IntentCatalog.fixture.descriptors {
       XCTAssertTrue(descriptor.availability.headless, descriptor.id)

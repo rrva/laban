@@ -52,6 +52,10 @@
     "attentionNotifications": {
       "type": "array",
       "items": {"$ref": "#/$defs/attentionNotificationDecision"}
+    },
+    "spinnerMotion": {
+      "type": ["object", "null"],
+      "$ref": "#/$defs/spinnerMotion"
     }
   },
   "$defs": {
@@ -201,6 +205,36 @@
         "blinkEnabled": {"type": "boolean"},
         "styleOverridden": {"type": ["boolean", "null"]},
         "blinkOverridden": {"type": ["boolean", "null"]}
+      }
+    },
+    "spinnerMotion": {
+      "type": "object",
+      "required": [
+        "configured",
+        "effectiveRenderer",
+        "rendererEligible",
+        "reduceMotion",
+        "effectiveEnabled",
+        "activeTransitions",
+        "analyticMotionInstances",
+        "fallbackSnaps",
+        "effectKind",
+        "remainingSeconds",
+        "liveEffectFrames"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "configured": {"type": "boolean"},
+        "effectiveRenderer": {"type": "string"},
+        "rendererEligible": {"type": "boolean"},
+        "reduceMotion": {"type": "boolean"},
+        "effectiveEnabled": {"type": "boolean"},
+        "activeTransitions": {"type": "integer", "minimum": 0},
+        "analyticMotionInstances": {"type": "integer", "minimum": 0},
+        "fallbackSnaps": {"type": "integer", "minimum": 0},
+        "effectKind": {"type": "integer", "minimum": 0},
+        "remainingSeconds": {"type": "number", "minimum": 0},
+        "liveEffectFrames": {"type": "integer", "minimum": 0}
       }
     }
   }

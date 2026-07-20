@@ -192,6 +192,46 @@ public struct GlyphEffectsStateResponse: Encodable {
   }
 }
 
+public struct SpinnerMotionStateResponse: Encodable {
+  public var configured: Bool
+  public var effectiveRenderer: String
+  public var rendererEligible: Bool
+  public var reduceMotion: Bool
+  public var effectiveEnabled: Bool
+  public var activeTransitions: Int
+  public var analyticMotionInstances: Int
+  public var fallbackSnaps: Int
+  public var effectKind: Int
+  public var remainingSeconds: Double
+  public var liveEffectFrames: Int
+
+  public init(
+    configured: Bool,
+    effectiveRenderer: String,
+    rendererEligible: Bool,
+    reduceMotion: Bool,
+    effectiveEnabled: Bool,
+    activeTransitions: Int,
+    analyticMotionInstances: Int,
+    fallbackSnaps: Int,
+    effectKind: Int,
+    remainingSeconds: Double,
+    liveEffectFrames: Int
+  ) {
+    self.configured = configured
+    self.effectiveRenderer = effectiveRenderer
+    self.rendererEligible = rendererEligible
+    self.reduceMotion = reduceMotion
+    self.effectiveEnabled = effectiveEnabled
+    self.activeTransitions = activeTransitions
+    self.analyticMotionInstances = analyticMotionInstances
+    self.fallbackSnaps = fallbackSnaps
+    self.effectKind = effectKind
+    self.remainingSeconds = remainingSeconds
+    self.liveEffectFrames = liveEffectFrames
+  }
+}
+
 public struct StateResponse: Encodable {
   public var mode: String
   public var frame: Int
@@ -206,6 +246,7 @@ public struct StateResponse: Encodable {
   /// Per-glyph animation channel state (nil when the serving runtime has no
   /// renderer to report — e.g. the GUI control server).
   public var glyphEffects: GlyphEffectsStateResponse?
+  public var spinnerMotion: SpinnerMotionStateResponse?
 
   public init(
     mode: String,
@@ -218,7 +259,8 @@ public struct StateResponse: Encodable {
     cursorSettings: CursorSettingsResponse,
     emojiRendering: EmojiRenderingSettingsResponse,
     attentionNotifications: [AttentionNotificationDecisionResponse],
-    glyphEffects: GlyphEffectsStateResponse? = nil
+    glyphEffects: GlyphEffectsStateResponse? = nil,
+    spinnerMotion: SpinnerMotionStateResponse? = nil
   ) {
     self.mode = mode
     self.frame = frame
@@ -231,6 +273,7 @@ public struct StateResponse: Encodable {
     self.emojiRendering = emojiRendering
     self.attentionNotifications = attentionNotifications
     self.glyphEffects = glyphEffects
+    self.spinnerMotion = spinnerMotion
   }
 }
 

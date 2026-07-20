@@ -306,6 +306,16 @@
   {
     "category" : "rendering",
     "method" : "GET",
+    "path" : "\/debug\/spinner-motion",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/spinner-motion.schema.json",
+    "summary" : "Return spinner motion smoothing configuration, eligibility, and active state."
+  },
+  {
+    "category" : "rendering",
+    "method" : "GET",
     "path" : "\/debug\/frame-commands",
     "queryParameters" : [
       "source",

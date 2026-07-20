@@ -269,6 +269,13 @@ public enum ControlRouteCatalog {
       intentID: "render.state"),
     endpoint(
       method: "GET",
+      path: "/debug/spinner-motion",
+      category: "rendering",
+      summary: "Return spinner motion smoothing configuration, eligibility, and active state.",
+      responseSchema: "schemas/debug/spinner-motion.schema.json",
+      intentID: "spinnerMotion.state"),
+    endpoint(
+      method: "GET",
       path: "/debug/frame-commands",
       category: "rendering",
       summary: "Return bounded frame commands, optionally filtered by source.",
@@ -495,6 +502,7 @@ public enum ControlRouteCatalog {
     ("GET", "/debug/scroll-trace"),
     ("GET", "/debug/sessions"),
     ("GET", "/debug/render"),
+    ("GET", "/debug/spinner-motion"),
     ("GET", "/debug/frame-commands"),
     ("GET", "/debug/atlas"),
     ("GET", "/debug/events"),

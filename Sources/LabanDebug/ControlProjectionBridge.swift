@@ -32,6 +32,26 @@ extension HeadlessDebugRuntime {
           liveCount: slug.glyphEffectLiveCount,
           lastKind: Int(slug.lastGlyphEffectKind),
           wakeCount: Int(slug.glyphEffectFrameCount))
+      },
+      spinnerMotionProvider: {
+        let slug = runtime.rendererBackend as? SlugGlyphRenderer
+        let motionCount = slug?.lastFrameMotionGlyphsCount ?? 0
+        let activeTransitionCount = runtime.surfaceController.spinnerMotionActiveTransitionCount()
+        let effectKind = Int(slug?.lastGlyphEffectKind ?? 0)
+
+        return SpinnerMotionStateResponse(
+          configured: SpinnerMotionSmoothingSettings.enabled,
+          effectiveRenderer: runtime.rendererBackend.rendererStatus.effectiveRenderer,
+          rendererEligible: runtime.rendererBackend is SlugGlyphRenderer,
+          reduceMotion: false,
+          effectiveEnabled: SpinnerMotionSmoothingSettings.enabled
+            && runtime.rendererBackend is SlugGlyphRenderer,
+          activeTransitions: activeTransitionCount,
+          analyticMotionInstances: motionCount,
+          fallbackSnaps: max(0, activeTransitionCount - motionCount),
+          effectKind: effectKind,
+          remainingSeconds: slug?.glyphEffectAnimatingRemainingSeconds ?? 0,
+          liveEffectFrames: Int(slug?.glyphEffectFrameCount ?? 0))
       })
   }
 }

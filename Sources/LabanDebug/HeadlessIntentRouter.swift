@@ -72,6 +72,8 @@ public final class HeadlessIntentRouter: IntentRouter {
       return json(runtime.session(id: query.params["sessionId"] ?? "", query: query.params))
     case "render.state":
       return json(runtime.renderState())
+    case "spinnerMotion.state":
+      return json(runtime.spinnerMotion())
     case "render.frameCommands":
       return json(runtime.frameCommands(query: query.params))
     case "render.atlas":
