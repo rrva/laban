@@ -161,7 +161,8 @@ struct DebugWindowActions {
       return jsonError("setGlyphEffectsEnabled requires enabled")
     }
     guard GlyphEffectSettings.setEnabled(enabled) else {
-      let raw = ProcessInfo.processInfo.environment[GlyphEffectSettings.enabledEnvironmentKey]
+      let raw =
+        ProcessInfo.processInfo.environment[GlyphEffectSettings.enabledEnvironmentKey]
         ?? ""
       return jsonError(
         "setGlyphEffectsEnabled is locked by \(GlyphEffectSettings.enabledEnvironmentKey)=\(raw)")

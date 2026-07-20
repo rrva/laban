@@ -1917,7 +1917,8 @@ public final class TerminalSurfaceController {
             underlineStyle: underlineStyle,
             underlineColor: underlineColor,
             hyperlink: hyperlink,
-            displayCellCount: displayCellCount == nil ? nil : TerminalDisplayWidth.cells(of: piece.text),
+            displayCellCount: displayCellCount == nil
+              ? nil : TerminalDisplayWidth.cells(of: piece.text),
             outputTimestampSeconds: piece.stamped ? stamp : nil))
       }
     }

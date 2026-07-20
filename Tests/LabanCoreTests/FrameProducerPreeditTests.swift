@@ -40,7 +40,8 @@ final class FrameProducerPreeditTests: XCTestCase {
     -> (origin: CGPoint, text: String, attrs: TextAttributes, underline: UnderlineStyle)?
   {
     for cmd in cmds {
-      if case .glyphRun(let origin, let text, _, _, let attrs, .preedit, let uStyle, _, _, _, _) = cmd
+      if case .glyphRun(let origin, let text, _, _, let attrs, .preedit, let uStyle, _, _, _, _) =
+        cmd
       {
         return (origin, text, attrs, uStyle)
       }

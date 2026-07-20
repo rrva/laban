@@ -920,7 +920,8 @@ final class FrameProducerTests: XCTestCase {
     containing needle: String
   ) -> (text: String, foreground: UInt32, background: UInt32)? {
     for cmd in cmds {
-      if case .glyphRun(_, let text, let foreground, let background, _, let src, _, _, _, _, _) = cmd,
+      if case .glyphRun(_, let text, let foreground, let background, _, let src, _, _, _, _, _) =
+        cmd,
         src == .terminal, text.contains(needle)
       {
         return (text, foreground, background)

@@ -617,7 +617,9 @@ final class SidebarProducerTests: XCTestCase {
     // reserved for failures). Compare RGB only — M3 modulates the alpha byte
     // for the breathing pulse.
     let marker = cmds.compactMap { cmd -> UInt32? in
-      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _) = cmd, text == "◆" { return fg }
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _) = cmd, text == "◆" {
+        return fg
+      }
       return nil
     }.first
     XCTAssertNotNil(marker, "needsAction must render a ◆ marker")
@@ -648,7 +650,9 @@ final class SidebarProducerTests: XCTestCase {
     let cmds = p.commands(tabs: [tab], activeTabId: "other", height: 600)
 
     let marker = cmds.compactMap { cmd -> UInt32? in
-      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _) = cmd, text == "◆" { return fg }
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _) = cmd, text == "◆" {
+        return fg
+      }
       return nil
     }.first
     XCTAssertEqual(marker, Theme.current.cursor, "done marker uses the accent colour")
@@ -716,7 +720,9 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let marker = p.commands(tabs: [tab], activeTabId: "other", height: 600)
       .compactMap { cmd -> UInt32? in
-        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _) = cmd, text == "*" { return fg }
+        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _) = cmd, text == "*" {
+          return fg
+        }
         return nil
       }.first
     XCTAssertEqual(marker, Theme.current.dim0, "passive marker is dim, not red")

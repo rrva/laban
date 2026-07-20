@@ -142,7 +142,8 @@ final class GlyphEffectTimelineTests: XCTestCase {
       age: 1 / GlyphEffectTimeline.bellShakeOmega)
     XCTAssertEqual(peak, 1, accuracy: 1e-9)
     // The peak lands inside the decay window's first half (a snap, not a sway).
-    XCTAssertLessThan(1 / GlyphEffectTimeline.bellShakeOmega, 0.5 * GlyphEffectTimeline.bellShakeDecaySeconds)
+    XCTAssertLessThan(
+      1 / GlyphEffectTimeline.bellShakeOmega, 0.5 * GlyphEffectTimeline.bellShakeDecaySeconds)
   }
 
   func testBellShakeDecaysAfterPeak() {
@@ -209,4 +210,3 @@ final class GlyphEffectSettingsTests: XCTestCase {
     XCTAssertFalse(GlyphEffectSettings.setEnabled(true, defaults: defaults, environment: env))
   }
 }
-
