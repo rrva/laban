@@ -57,6 +57,10 @@ def main() -> int:
     parser.add_argument(
         "--dim", type=_parse_rgb, default="120;120;120",
         help="Dim text RGB, e.g. '120;120;120'.")
+    parser.add_argument(
+        "--pulse", action="store_true",
+        help="Pulse the entire text between --highlight and --dim instead of a moving highlight. "
+             "This is a stronger A/B stimulus because every cell changes foreground color.")
     args = parser.parse_args()
 
     text = args.text
@@ -72,17 +76,22 @@ def main() -> int:
     _write("\x1b[?25l")
     try:
         for frame in range(max(0, args.frames)):
-            # Ping-pong highlight position across the status text.
-            t = frame % period
-            pos = t if t < length else 2 * (length - 1) - t
-
             glyph = _SPINNER_SEQUENCE[frame % len(_SPINNER_SEQUENCE)]
             line = "\x1b[1G\x1b[0K"  # home, clear to end
             line += glyph + " "
 
-            for i, ch in enumerate(text):
-                color = hl if i == pos else dim
-                line += _rgb(*color) + ch + "\x1b[0m"
+            if args.pulse:
+                # Alternate the whole status text between the two colors.
+                current = hl if frame % 2 == 0 else dim
+                for ch in text:
+                    line += _rgb(*current) + ch + "\x1b[0m"
+            else:
+                # Ping-pong highlight position across the status text.
+                t = frame % period
+                pos = t if t < length else 2 * (length - 1) - t
+                for i, ch in enumerate(text):
+                    color = hl if i == pos else dim
+                    line += _rgb(*color) + ch + "\x1b[0m"
 
             _write(line)
             sys.stdout.flush()
