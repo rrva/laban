@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Claude Code-style terminal spinner for visually A/B testing Laban's
+"Smooth spinner motion" toggle with the Slug Glyph renderer.
+
+The leading glyph cycles through the Claude Code star/dot sequence. The
+status text carries a traveling highlight so the same glyphs change only
+foreground color, which is what Slug's motion-smoothing detector looks for.
+
+Usage:
+    python3 scripts/claude-spinner
+    python3 scripts/claude-spinner --text "Building your project..." --interval-ms 80
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+
+# Claude Code primary spinner glyph sequence (forward + backward, no duplicate
+# endpoints) so it loops cleanly at 2 columns.
+_SPINNER = ["·", "✢", "✳", "✶", "✻", "✽"]
+_SPINNER_SEQUENCE = _SPINNER + _SPINNER[-2:0:-1]
+
+
+def _write(text: str) -> None:
+    os.write(sys.stdout.fileno(), text.encode("utf-8"))
+
+
+def _rgb(r: int, g: int, b: int) -> str:
+    return f"\x1b[38;2;{r};{g};{b}m"
+
+
+def _parse_rgb(text: str) -> tuple[int, int, int]:
+    parts = [int(p.strip()) for p in text.split(";")]
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError("RGB must be three semicolon-separated integers")
+    return (parts[0], parts[1], parts[2])
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Claude Code-style spinner for Laban motion-smoothing A/B testing.")
+    parser.add_argument(
+        "--text",
+        default="Smooth spinner motion test",
+        help="Status text to animate with a traveling highlight.")
+    parser.add_argument(
+        "--frames", type=int, default=1000, help="Number of frames to emit.")
+    parser.add_argument(
+        "--interval-ms", type=float, default=120.0,
+        help="Delay between frames in milliseconds.")
+    parser.add_argument(
+        "--highlight", type=_parse_rgb, default="0;255;255",
+        help="Highlight RGB, e.g. '0;255;255'.")
+    parser.add_argument(
+        "--dim", type=_parse_rgb, default="120;120;120",
+        help="Dim text RGB, e.g. '120;120;120'.")
+    args = parser.parse_args()
+
+    text = args.text
+    length = len(text)
+    if length == 0:
+        return 0
+
+    period = max(1, 2 * (length - 1))
+    hl = args.highlight
+    dim = args.dim
+
+    # Hide cursor to avoid a distracting caret.
+    _write("\x1b[?25l")
+    try:
+        for frame in range(max(0, args.frames)):
+            # Ping-pong highlight position across the status text.
+            t = frame % period
+            pos = t if t < length else 2 * (length - 1) - t
+
+            glyph = _SPINNER_SEQUENCE[frame % len(_SPINNER_SEQUENCE)]
+            line = "\x1b[1G\x1b[0K"  # home, clear to end
+            line += glyph + " "
+
+            for i, ch in enumerate(text):
+                color = hl if i == pos else dim
+                line += _rgb(*color) + ch + "\x1b[0m"
+
+            _write(line)
+            sys.stdout.flush()
+            time.sleep(args.interval_ms / 1000.0)
+    finally:
+        # Show cursor and move to a fresh line.
+        _write("\x1b[?25h\r\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
