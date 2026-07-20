@@ -167,7 +167,7 @@ final class ChineseTransparencyTrustGateTests: XCTestCase {
       file: file,
       line: line)
     let preeditRuns = commands.compactMap { command -> (String, Int)? in
-      guard case .glyphRun(_, let text, _, _, _, .preedit, _, _, _, let cells, _) = command else {
+      guard case .glyphRun(_, let text, _, _, _, .preedit, _, _, _, let cells, _, _) = command else {
         return nil
       }
       return (text, cells ?? TerminalDisplayWidth.cells(of: text))
@@ -188,7 +188,7 @@ final class ChineseTransparencyTrustGateTests: XCTestCase {
 
   private func cjkGeometry(in commands: [FrameCommand]) throws -> [CJKRunGeometry] {
     let terminalText = commands.compactMap { command -> String? in
-      guard case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, _, _) = command else {
+      guard case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, _, _, _) = command else {
         return nil
       }
       return text
@@ -200,7 +200,7 @@ final class ChineseTransparencyTrustGateTests: XCTestCase {
     let runs = commands.compactMap { command -> CJKRunGeometry? in
       guard
         case .glyphRun(
-          let origin, let text, _, _, _, .terminal, _, _, _, let displayCellCount, _) = command,
+          let origin, let text, _, _, _, .terminal, _, _, _, let displayCellCount, _, _) = command,
         text.unicodeScalars.contains(where: Self.isHan)
       else { return nil }
       return CJKRunGeometry(

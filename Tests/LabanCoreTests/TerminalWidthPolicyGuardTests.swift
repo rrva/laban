@@ -18,6 +18,7 @@ final class TerminalWidthPolicyGuardTests: XCTestCase {
       "LabanCore/FrameProducer.swift": ["TerminalDisplayWidth.cells("],
       "LabanCore/TerminalFind.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanCore/TerminalSelection.swift": ["TerminalDisplayWidth.cells(of:"],
+      "LabanCore/TerminalSurfaceController.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanApp/TerminalSelectionInput.swift": ["TerminalDisplayWidth.isWide("],
       "LabanRenderer/SoftwareRenderer.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanRenderer/SlugGlyphRenderer.swift": ["TerminalDisplayWidth.cells(of:"],

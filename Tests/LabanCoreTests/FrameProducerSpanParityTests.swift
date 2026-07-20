@@ -25,7 +25,7 @@ final class FrameProducerSpanParityTests: XCTestCase {
     case .rect(let rect, let color, let source, let compositing):
       return "rect|\(r(rect))|\(color)|\(source.rawValue)|\(compositing.rawValue)"
     case .glyphRun(
-      let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link, _, _):
+      let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link, _, _, _):
       // Encode text by scalar so any decode discrepancy surfaces, and pin the
       // grapheme-cluster count so RI/ZWJ/skin-tone merges must match exactly.
       let scalars = text.unicodeScalars.map { String($0.value, radix: 16) }.joined(separator: ".")

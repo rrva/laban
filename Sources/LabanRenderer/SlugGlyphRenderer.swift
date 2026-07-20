@@ -53,7 +53,7 @@ private struct SlugGlyphGPUBand {
 // stride stays 64 B and kind 0 (none) is byte-identical to the pre-channel
 // layout. The Metal mirror in VectorGlyphShaders.metal must stay
 // byte-identical with this struct.
-private struct SlugGlyphGPUInstance {
+struct SlugGlyphGPUInstance {
   var originPx: SIMD2<Float>
   var sizePx: SIMD2<Float>
   var localMin: SIMD2<Float>
@@ -63,6 +63,23 @@ private struct SlugGlyphGPUInstance {
   var dilation: Float = 0
   var effectKind: UInt32 = 0
   var effectStart: Float = 0
+}
+
+// Motion variant: 96 bytes, matching the Metal mirror in
+// VectorGlyphShaders.metal. It carries the normal Slug instance fields plus
+// the start color and duration needed for foreground-color spinner motion.
+struct SlugGlyphMotionGPUInstance {
+  var originPx: SIMD2<Float>
+  var sizePx: SIMD2<Float>
+  var localMin: SIMD2<Float>
+  var localMax: SIMD2<Float>
+  var color: SIMD4<Float>
+  var glyphIndex: UInt32
+  var dilation: Float = 0
+  var effectKind: UInt32 = 0
+  var effectStart: Float = 0
+  var duration: Float = 0
+  var startColor: SIMD4<Float> = .zero
 }
 
 private struct SlugGlyphGPUUniforms {
@@ -317,6 +334,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// translucent PSOs.
   private var translucentPipelines: SlugTranslucentPipelines?
   private var linearPremultipliedResolvePipeline: MTLRenderPipelineState?
+  /// Lazy motion-pipeline variants; created on first frame that needs them.
+  private var motionGlyphAlphaPipeline: MTLRenderPipelineState?
+  private var motionSlugAccumulatePipeline: MTLRenderPipelineState?
+  private var motionGlyphCoveragePipeline: MTLRenderPipelineState?
+  private var motionGlyphColorPipeline: MTLRenderPipelineState?
+  private var motionTranslucentGlyphAlphaPipeline: MTLRenderPipelineState?
   private let sampler: MTLSamplerState
   public let layer: CAMetalLayer
 
@@ -358,7 +381,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   )
   private var runFontIdentityCache: [UInt8: RunFontIdentity] = [:]
   private var lastFrameSolidsCount = 0
-  private var lastFrameSlugGlyphsCount = 0
+  private(set) var lastFrameSlugGlyphsCount = 0
+  private(set) var lastFrameMotionGlyphsCount = 0
   private var lastFrameRasterGlyphsCount = 0
   private var lastFrameColorGlyphsCount = 0
 
@@ -396,13 +420,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   public static let glyphEffectKindNone: UInt32 = 0
   public static let glyphEffectKindInkBloom: UInt32 = 1
   public static let glyphEffectKindBellShake: UInt32 = 2
+  public static let glyphEffectKindSpinnerForegroundMotion: UInt32 = 3
   private static let glyphEffectInkBloomDecaySeconds: Double = 0.280
   private static let glyphEffectBellShakeDecaySeconds: Double = 0.300
 
-  private static func glyphEffectDecaySeconds(kind: UInt32) -> Double {
+  private static func glyphEffectDecaySeconds(kind: UInt32, duration: Float? = nil) -> Double {
     switch kind {
     case glyphEffectKindInkBloom: return glyphEffectInkBloomDecaySeconds
     case glyphEffectKindBellShake: return glyphEffectBellShakeDecaySeconds
+    case glyphEffectKindSpinnerForegroundMotion:
+      guard let duration, duration > 0 else { return 0 }
+      return Double(duration)
     default: return 0
     }
   }
@@ -418,6 +446,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     var band: DirtyYRange
     var effectStart: Float
     var kind: UInt32
+    /// Per-transition duration in seconds. Kind 1/2 use fixed decay; kind 3
+    /// stores the command metadata duration.
+    var duration: Float?
   }
   /// Live effects from the most recently built frame; their bands are
   /// re-damaged at the next `render()` entry (frame pumping + settle
@@ -847,6 +878,76 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       presentLink.start()
       self.presentDisplayLinkStorage = presentLink
     }
+  }
+
+  /// Lazy builds the motion-pipeline variants once. Returns false if any
+  /// variant fails to compile; callers should fall back to static rendering.
+  @discardableResult
+  private func ensureMotionPipelines() -> Bool {
+    guard motionGlyphAlphaPipeline == nil else { return true }
+    guard let motionVertex = shaderLibrary.makeFunction(name: "slugGlyphMotionVertex"),
+      let glyphAlphaFragment = shaderLibrary.makeFunction(name: "slugGlyphAlphaFragment"),
+      let slugAccumulateFragment = shaderLibrary.makeFunction(name: "slugGlyphAccumulateFragment"),
+      let glyphCoverageFragment = shaderLibrary.makeFunction(name: "slugGlyphCoverageFragment"),
+      let glyphColorFragment = shaderLibrary.makeFunction(name: "slugGlyphColorFragment")
+    else { return false }
+
+    let glyphAlphaDescriptor = MTLRenderPipelineDescriptor()
+    glyphAlphaDescriptor.label = "laban.slug.motion-glyph-alpha"
+    glyphAlphaDescriptor.vertexFunction = motionVertex
+    glyphAlphaDescriptor.fragmentFunction = glyphAlphaFragment
+    glyphAlphaDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSlugAlphaBlend(glyphAlphaDescriptor.colorAttachments[0])
+
+    let slugAccumulateDescriptor = MTLRenderPipelineDescriptor()
+    slugAccumulateDescriptor.label = "laban.slug.motion-glyph-accumulate"
+    slugAccumulateDescriptor.vertexFunction = motionVertex
+    slugAccumulateDescriptor.fragmentFunction = slugAccumulateFragment
+    slugAccumulateDescriptor.colorAttachments[0]?.pixelFormat = .rgba16Float
+    configureAdditiveAccumBlend(slugAccumulateDescriptor.colorAttachments[0])
+    slugAccumulateDescriptor.colorAttachments[1]?.pixelFormat = .rgba16Float
+    configureAdditiveAccumBlend(slugAccumulateDescriptor.colorAttachments[1])
+
+    let glyphCoverageDescriptor = MTLRenderPipelineDescriptor()
+    glyphCoverageDescriptor.label = "laban.slug.motion-glyph-coverage"
+    glyphCoverageDescriptor.vertexFunction = motionVertex
+    glyphCoverageDescriptor.fragmentFunction = glyphCoverageFragment
+    glyphCoverageDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSubpixelCoverageBlend(glyphCoverageDescriptor.colorAttachments[0])
+
+    let glyphColorDescriptor = MTLRenderPipelineDescriptor()
+    glyphColorDescriptor.label = "laban.slug.motion-glyph-color"
+    glyphColorDescriptor.vertexFunction = motionVertex
+    glyphColorDescriptor.fragmentFunction = glyphColorFragment
+    glyphColorDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureAdditiveRGBPreserveAlphaBlend(glyphColorDescriptor.colorAttachments[0])
+
+    guard
+      let glyphAlpha = try? device.makeRenderPipelineState(descriptor: glyphAlphaDescriptor),
+      let slugAccumulate = try? device.makeRenderPipelineState(
+        descriptor: slugAccumulateDescriptor),
+      let glyphCoverage = try? device.makeRenderPipelineState(
+        descriptor: glyphCoverageDescriptor),
+      let glyphColor = try? device.makeRenderPipelineState(descriptor: glyphColorDescriptor)
+    else { return false }
+
+    motionGlyphAlphaPipeline = glyphAlpha
+    motionSlugAccumulatePipeline = slugAccumulate
+    motionGlyphCoveragePipeline = glyphCoverage
+    motionGlyphColorPipeline = glyphColor
+
+    if !surfaceTransparency.isOpaque {
+      let translucentDescriptor = MTLRenderPipelineDescriptor()
+      translucentDescriptor.label = "laban.slug.translucent-motion-glyph-alpha"
+      translucentDescriptor.vertexFunction = motionVertex
+      translucentDescriptor.fragmentFunction = glyphAlphaFragment
+      translucentDescriptor.colorAttachments[0]?.pixelFormat = .rgba16Float
+      configureSlugAlphaBlend(translucentDescriptor.colorAttachments[0])
+      motionTranslucentGlyphAlphaPipeline = try? device.makeRenderPipelineState(
+        descriptor: translucentDescriptor)
+    }
+
+    return true
   }
 
   /// Default true. `LabanSlugPresentDisplayLink` can opt Slug out alone; if it is
@@ -1299,10 +1400,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     var solids: [SlugSolidInstance] = []
     var replaceSolids: [SlugSolidInstance] = []
     var slugGlyphs: [SlugGlyphGPUInstance] = []
+    var motionGlyphs: [SlugGlyphMotionGPUInstance] = []
     var rasterGlyphs: [SlugTextureInstance] = []
     var colorGlyphs: [SlugTextureInstance] = []
     solids.reserveCapacity(lastFrameSolidsCount)
     slugGlyphs.reserveCapacity(lastFrameSlugGlyphsCount)
+    motionGlyphs.reserveCapacity(lastFrameMotionGlyphsCount)
     rasterGlyphs.reserveCapacity(lastFrameRasterGlyphsCount)
     colorGlyphs.reserveCapacity(lastFrameColorGlyphsCount)
     frameGlyphFontSizes.removeAll(keepingCapacity: true)
@@ -1312,22 +1415,31 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       solids: &solids,
       replaceSolids: &replaceSolids,
       glyphs: &slugGlyphs,
+      motionGlyphs: &motionGlyphs,
       rasterGlyphs: &rasterGlyphs,
       colorGlyphs: &colorGlyphs,
       damageBands: damageBands)
     updateLiveGlyphEffectState()
     lastFrameSolidsCount = solids.count + replaceSolids.count
     lastFrameSlugGlyphsCount = slugGlyphs.count
+    lastFrameMotionGlyphsCount = motionGlyphs.count
     lastFrameRasterGlyphsCount = rasterGlyphs.count
     lastFrameColorGlyphsCount = colorGlyphs.count
     spanSolids = solids.count + replaceSolids.count
-    spanGlyphs = slugGlyphs.count
+    spanGlyphs = slugGlyphs.count + motionGlyphs.count
     spanRaster = rasterGlyphs.count
     spanColor = colorGlyphs.count
     lastFrameGlyphFontSizes = frameGlyphFontSizes.sorted()
     lastFrameQuadHeights = frameQuadHeights.sorted()
     lastRasterFallbackGlyphs = rasterGlyphs.count + colorGlyphs.count
-    guard ensureGeometryBuffersIfNeeded(glyphsNeeded: !slugGlyphs.isEmpty) else { return false }
+    guard
+      ensureGeometryBuffersIfNeeded(
+        glyphsNeeded: !slugGlyphs.isEmpty || !motionGlyphs.isEmpty)
+    else { return false }
+    if !motionGlyphs.isEmpty, !ensureMotionPipelines() {
+      lastRenderFailureReason = .motionPipelineCompilation
+      return false
+    }
 
     var retainedBuffers: [MTLBuffer] = []
 
@@ -1335,12 +1447,18 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let activeSolidPipeline: MTLRenderPipelineState
     let activeReplaceSolidPipeline: MTLRenderPipelineState
     let activeGlyphAlphaPipeline: MTLRenderPipelineState
+    let activeMotionGlyphAlphaPipeline: MTLRenderPipelineState?
+    let activeMotionGlyphCoveragePipeline: MTLRenderPipelineState?
+    let activeMotionGlyphColorPipeline: MTLRenderPipelineState?
     let activeRasterGlyphPipeline: MTLRenderPipelineState
     let activeColorGlyphPipeline: MTLRenderPipelineState
     if isOpaque {
       activeSolidPipeline = solidPipeline
       activeReplaceSolidPipeline = replaceSolidPipeline
       activeGlyphAlphaPipeline = glyphAlphaPipeline
+      activeMotionGlyphAlphaPipeline = motionGlyphAlphaPipeline
+      activeMotionGlyphCoveragePipeline = motionGlyphCoveragePipeline
+      activeMotionGlyphColorPipeline = motionGlyphColorPipeline
       activeRasterGlyphPipeline = rasterGlyphPipeline
       activeColorGlyphPipeline = colorGlyphPipeline
     } else {
@@ -1348,18 +1466,23 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       activeSolidPipeline = pipelines.solid
       activeReplaceSolidPipeline = pipelines.replaceSolid
       activeGlyphAlphaPipeline = pipelines.glyphAlpha
+      activeMotionGlyphAlphaPipeline = motionTranslucentGlyphAlphaPipeline
+      activeMotionGlyphCoveragePipeline = nil
+      activeMotionGlyphColorPipeline = nil
       activeRasterGlyphPipeline = pipelines.rasterGlyph
       activeColorGlyphPipeline = pipelines.colorGlyph
     }
     let useSubpixel = isOpaque && effectiveSubpixelLayout != .grayscale
     let slugInstanceBuffer = makeBuffer(slugGlyphs)
     if let slugInstanceBuffer { retainedBuffers.append(slugInstanceBuffer) }
+    let motionInstanceBuffer = makeBuffer(motionGlyphs)
+    if let motionInstanceBuffer { retainedBuffers.append(motionInstanceBuffer) }
     let slugCurveBuffer = curveBuffer
     let slugGlyphBuffer = glyphBuffer
     let slugBandBuffer = bandBuffer
     let slugBandIndexBuffer = bandIndexBuffer
     let slugBuffersReady =
-      slugInstanceBuffer != nil
+      (slugInstanceBuffer != nil || motionInstanceBuffer != nil)
       && slugCurveBuffer != nil
       && slugGlyphBuffer != nil
       && slugBandBuffer != nil
@@ -1413,6 +1536,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
             vertexStart: 0,
             vertexCount: 6,
             instanceCount: slugGlyphs.count)
+        }
+        if let motionInstanceBuffer, let motionSlugAccumulatePipeline {
+          accumEncoder.setRenderPipelineState(motionSlugAccumulatePipeline)
+          accumEncoder.setVertexBuffer(motionInstanceBuffer, offset: 0, index: 0)
+          repeatingBands(scissorPlan, on: accumEncoder) {
+            accumEncoder.drawPrimitives(
+              type: .triangle,
+              vertexStart: 0,
+              vertexCount: 6,
+              instanceCount: motionGlyphs.count)
+          }
         }
         accumEncoder.endEncoding()
       }
@@ -1534,6 +1668,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
             vertexCount: 6,
             instanceCount: slugGlyphs.count)
         }
+        if let motionInstanceBuffer, let activeMotionGlyphAlphaPipeline {
+          encoder.setRenderPipelineState(activeMotionGlyphAlphaPipeline)
+          encoder.setVertexBuffer(motionInstanceBuffer, offset: 0, index: 0)
+          repeatingBands(scissorPlan, on: encoder) {
+            encoder.drawPrimitives(
+              type: .triangle,
+              vertexStart: 0,
+              vertexCount: 6,
+              instanceCount: motionGlyphs.count)
+          }
+        }
       } else if subpixelAccumReady, let coverageAccum, let colorAccum {
         // Composite the accumulated coverage + premultiplied color over the
         // background once with a full-screen quad: darken (dst *= 1 - cov) then
@@ -1597,6 +1742,28 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
             vertexStart: 0,
             vertexCount: 6,
             instanceCount: slugGlyphs.count)
+        }
+        if let motionInstanceBuffer,
+          let activeMotionGlyphCoveragePipeline,
+          let activeMotionGlyphColorPipeline
+        {
+          encoder.setVertexBuffer(motionInstanceBuffer, offset: 0, index: 0)
+          encoder.setRenderPipelineState(activeMotionGlyphCoveragePipeline)
+          repeatingBands(scissorPlan, on: encoder) {
+            encoder.drawPrimitives(
+              type: .triangle,
+              vertexStart: 0,
+              vertexCount: 6,
+              instanceCount: motionGlyphs.count)
+          }
+          encoder.setRenderPipelineState(activeMotionGlyphColorPipeline)
+          repeatingBands(scissorPlan, on: encoder) {
+            encoder.drawPrimitives(
+              type: .triangle,
+              vertexStart: 0,
+              vertexCount: 6,
+              instanceCount: motionGlyphs.count)
+          }
         }
       }
     }
@@ -1836,6 +2003,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     solids: inout [SlugSolidInstance],
     replaceSolids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
+    motionGlyphs: inout [SlugGlyphMotionGPUInstance],
     rasterGlyphs: inout [SlugTextureInstance],
     colorGlyphs: inout [SlugTextureInstance],
     damageBands: DirtyYRangeSet?
@@ -1870,7 +2038,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, _, _, let outputTimestampSeconds
+        let underlineStyle, let underlineColor, _, _, let outputTimestampSeconds,
+        let foregroundTransition
       ):
         let activeAtlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
         let cellHeight = activeAtlas.cellSize.height
@@ -1878,8 +2047,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           intersectsDamage(
             minY: origin.y - cellHeight, maxY: origin.y + 2 * cellHeight, bands: damageBands)
         else { continue }
-        let effectKind = resolvedGlyphEffectKind(outputTimestampSeconds: outputTimestampSeconds)
-        let effectStart = effectStartSeconds(for: outputTimestampSeconds)
+        let effectKind = resolvedGlyphEffectKind(
+          outputTimestampSeconds: outputTimestampSeconds,
+          foregroundTransition: foregroundTransition)
+        let (effectStart, effectDuration) = effectStartAndDuration(
+          outputTimestampSeconds: outputTimestampSeconds,
+          foregroundTransition: foregroundTransition)
         if effectKind != Self.glyphEffectKindNone {
           // Track at the run level, in the same CG-point y-up space
           // RenderDamage uses, so render() can re-damage these bands while
@@ -1888,7 +2061,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
             LiveGlyphEffect(
               band: DirtyYRange(y: origin.y - cellHeight, height: 3 * cellHeight),
               effectStart: effectStart,
-              kind: effectKind))
+              kind: effectKind,
+              duration: effectDuration))
         }
         appendGlyphRun(
           text,
@@ -1901,9 +2075,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           source: source,
           effectKind: effectKind,
           effectStart: effectStart,
+          effectDuration: effectDuration,
+          foregroundTransition: foregroundTransition,
           preeditMaskRects: preeditMaskRects,
           solids: &solids,
           glyphs: &glyphs,
+          motionGlyphs: &motionGlyphs,
           rasterGlyphs: &rasterGlyphs,
           colorGlyphs: &colorGlyphs)
 
@@ -1913,21 +2090,38 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
   }
 
-  /// Effect kind for a glyph run: kind 0 unless the run carries a fresh
-  /// output timestamp. Kind assignment for stamped runs: the debug trigger
-  /// wins when set, otherwise ink-bloom while `glyphEffectsEnabled` is on
-  /// (the view already applied the reduceMotion gate).
-  private func resolvedGlyphEffectKind(outputTimestampSeconds: Double?) -> UInt32 {
+  /// Effect kind for a glyph run: kind 0 unless the run carries spinner
+  /// motion metadata (which wins over ink bloom) or a fresh output timestamp.
+  /// Kind assignment for stamped runs: the debug trigger wins when set,
+  /// otherwise ink-bloom while `glyphEffectsEnabled` is on (the view already
+  /// applied the reduceMotion gate).
+  private func resolvedGlyphEffectKind(
+    outputTimestampSeconds: Double?,
+    foregroundTransition: GlyphForegroundTransition?
+  ) -> UInt32 {
+    if foregroundTransition != nil {
+      return Self.glyphEffectKindSpinnerForegroundMotion
+    }
     guard outputTimestampSeconds != nil else { return Self.glyphEffectKindNone }
     if debugGlyphEffectKind != 0 { return debugGlyphEffectKind }
     return glyphEffectsEnabled ? Self.glyphEffectKindInkBloom : Self.glyphEffectKindNone
   }
 
-  /// Converts a stamp (controller clock domain) into the renderer-relative
-  /// Float the shader compares against `timeSeconds`; 0 when unstamped.
-  private func effectStartSeconds(for outputTimestampSeconds: Double?) -> Float {
-    guard let outputTimestampSeconds, let epoch = glyphEffectEpochSeconds else { return 0 }
-    return Float(outputTimestampSeconds - epoch)
+  /// Converts a stamp or transition start (controller clock domain) into the
+  /// renderer-relative Float the shader compares against `timeSeconds`. Returns
+  /// the start time and, for spinner motion, the metadata duration.
+  private func effectStartAndDuration(
+    outputTimestampSeconds: Double?,
+    foregroundTransition: GlyphForegroundTransition?
+  ) -> (Float, Float?) {
+    guard let epoch = glyphEffectEpochSeconds else { return (0, nil) }
+    if let transition = foregroundTransition {
+      let start = Float(transition.startTimestampSeconds - epoch)
+      let duration = Float(transition.durationSeconds)
+      return (start, duration)
+    }
+    guard let outputTimestampSeconds else { return (0, nil) }
+    return (Float(outputTimestampSeconds - epoch), nil)
   }
 
   /// Unions the previous frame's live-effect bands into incoming damage so
@@ -1950,14 +2144,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// union (the settle repaint) still needs them.
   private func updateLiveGlyphEffectState() {
     liveGlyphEffects = frameLiveGlyphEffects.filter { effect in
-      Double(effect.effectStart) + Self.glyphEffectDecaySeconds(kind: effect.kind)
+      Double(effect.effectStart)
+        + Self.glyphEffectDecaySeconds(kind: effect.kind, duration: effect.duration)
         > Double(frameTimeSeconds)
     }
     glyphEffectLiveCount = liveGlyphEffects.count
     var remaining = 0.0
     for effect in liveGlyphEffects {
       lastGlyphEffectKind = effect.kind
-      let decay = Self.glyphEffectDecaySeconds(kind: effect.kind)
+      let decay = Self.glyphEffectDecaySeconds(kind: effect.kind, duration: effect.duration)
       remaining = max(
         remaining, Double(effect.effectStart) + decay - Double(frameTimeSeconds))
     }
@@ -1978,9 +2173,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     source: FrameSource,
     effectKind: UInt32,
     effectStart: Float,
+    effectDuration: Float? = nil,
+    foregroundTransition: GlyphForegroundTransition? = nil,
     preeditMaskRects: [CGRect],
     solids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
+    motionGlyphs: inout [SlugGlyphMotionGPUInstance],
     rasterGlyphs: inout [SlugTextureInstance],
     colorGlyphs: inout [SlugTextureInstance]
   ) {
@@ -2087,17 +2285,33 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         max(0, Float((bounds.height + localPixelPad * 2) * pointScale * scale)))
       guard instanceSize.x > 0, instanceSize.y > 0 else { continue }
       frameQuadHeights.insert(Int((CGFloat(instanceSize.y) * gestureZoom).rounded()))
-      glyphs.append(
-        SlugGlyphGPUInstance(
-          originPx: instanceOrigin,
-          sizePx: instanceSize,
-          localMin: localMin,
-          localMax: localMax,
-          color: foregroundColor,
-          glyphIndex: UInt32(entry.glyphIndex),
-          dilation: perSideDilatePx,
-          effectKind: effectKind,
-          effectStart: effectStart))
+      if let transition = foregroundTransition {
+        motionGlyphs.append(
+          SlugGlyphMotionGPUInstance(
+            originPx: instanceOrigin,
+            sizePx: instanceSize,
+            localMin: localMin,
+            localMax: localMax,
+            color: foregroundColor,
+            glyphIndex: UInt32(entry.glyphIndex),
+            dilation: perSideDilatePx,
+            effectKind: effectKind,
+            effectStart: effectStart,
+            duration: effectDuration ?? 0,
+            startColor: transition.startLinearRGBA))
+      } else {
+        glyphs.append(
+          SlugGlyphGPUInstance(
+            originPx: instanceOrigin,
+            sizePx: instanceSize,
+            localMin: localMin,
+            localMax: localMax,
+            color: foregroundColor,
+            glyphIndex: UInt32(entry.glyphIndex),
+            dilation: perSideDilatePx,
+            effectKind: effectKind,
+            effectStart: effectStart))
+      }
     }
 
     appendDecorations(

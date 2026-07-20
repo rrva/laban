@@ -621,6 +621,22 @@ struct SlugGlyphUniforms {
     float bellDirection;
 };
 
+// Byte-identical mirror of SlugGlyphMotionGPUInstance in SlugGlyphRenderer.swift
+// (96 B stride). Adds the start color and duration needed for spinner motion.
+struct SlugGlyphMotionInstance {
+    float2 originPx;
+    float2 sizePx;
+    float2 localMin;
+    float2 localMax;
+    float4 color;
+    uint glyphIndex;
+    float dilation;
+    uint effectKind;
+    float effectStart;
+    float duration;
+    float4 startColor;
+};
+
 struct SlugGlyphVertexOut {
     float4 position [[position]];
     float2 glyphPoint;
@@ -689,6 +705,36 @@ vertex SlugGlyphVertexOut slugGlyphVertex(
     out.color = color;
     out.glyphIndex = float(instance.glyphIndex);
     out.dilation = dilation;
+    return out;
+}
+
+vertex SlugGlyphVertexOut slugGlyphMotionVertex(
+    uint vertexId [[vertex_id]],
+    uint instanceId [[instance_id]],
+    constant SlugGlyphMotionInstance *instances [[buffer(0)]],
+    constant SlugGlyphUniforms &uniforms [[buffer(1)]]
+) {
+    SlugGlyphMotionInstance instance = instances[instanceId];
+    float2 unit = kVectorQuadVertices[vertexId];
+    float2 px = instance.originPx + unit * instance.sizePx;
+    px = slugGlyphApplyGestureZoom(px, uniforms);
+
+    float age = uniforms.timeSeconds - instance.effectStart;
+    float u;
+    if (instance.duration <= 0.0) {
+        u = 1.0;
+    } else {
+        u = clamp(age / instance.duration, 0.0, 1.0);
+    }
+    float p = u * u * (3.0 - 2.0 * u);
+    float4 color = mix(instance.startColor, instance.color, p);
+
+    SlugGlyphVertexOut out;
+    out.position = float4(vector_to_ndc(px, uniforms.surfaceSizePixels), 0.0, 1.0);
+    out.glyphPoint = mix(instance.localMin, instance.localMax, unit);
+    out.color = color;
+    out.glyphIndex = float(instance.glyphIndex);
+    out.dilation = instance.dilation;
     return out;
 }
 

@@ -375,6 +375,101 @@ public struct FrameProducer {
       isInvisible: (attrsRaw & invisibleRaw) != 0)
   }
 
+  // MARK: - Spinner motion observation extraction
+
+  /// Extract the resolved visual state of every terminal cell for the spinner
+  /// motion detector. The result is factored identically to `resolvedVisuals`
+  /// so the detector compares the same colors and attributes the renderer sees.
+  public func spinnerCellStates(
+    from snap: UnsafePointer<LabanSnapshot>
+  ) -> [SpinnerMotionCellKey: SpinnerMotionCellState] {
+    let snapshot = snap.pointee
+    let rows = Int(snapshot.rows)
+    let cols = Int(snapshot.cols)
+    guard rows > 0, cols > 0, let cells = snapshot.cells else { return [:] }
+    let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
+    let storage = snapshot.utf8_storage
+    var result: [SpinnerMotionCellKey: SpinnerMotionCellState] = [:]
+    result.reserveCapacity(rows * cols)
+    for row in 0..<rows {
+      let rowStart = row * cols
+      for col in 0..<cols {
+        let cell = cells[rowStart + col]
+        let visuals = resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+        let text: String
+        if cell.utf8_length > 0, let storage {
+          let offset = Int(cell.utf8_offset)
+          let length = Int(cell.utf8_length)
+          let ptr = UnsafeRawPointer(storage).advanced(by: offset)
+          let buf = UnsafeBufferPointer<UInt8>(
+            start: ptr.assumingMemoryBound(to: UInt8.self),
+            count: length)
+          text = String(bytes: buf, encoding: .utf8) ?? ""
+        } else {
+          text = ""
+        }
+        let displayWidth = cell.wide == UInt8(LABAN_CELL_WIDE_WIDE) ? 2 : 1
+        let key = SpinnerMotionCellKey(row: row, col: col)
+        result[key] = SpinnerMotionCellState(
+          key: key,
+          text: text,
+          displayWidth: displayWidth,
+          foreground: visuals.foreground,
+          background: visuals.background,
+          attributes: visuals.attributes,
+          underlineStyle: visuals.underlineStyle,
+          underlineColor: visuals.underlineColor,
+          hyperlink: visuals.hyperlink,
+          wide: cell.wide)
+      }
+    }
+    return result
+  }
+
+  public func spinnerCellStates(
+    from snapshot: LabandSnapshotResponse
+  ) -> [SpinnerMotionCellKey: SpinnerMotionCellState] {
+    let rows = max(snapshot.rows, 0)
+    let cols = max(snapshot.cols, 0)
+    guard rows > 0, cols > 0 else { return [:] }
+    var result: [SpinnerMotionCellKey: SpinnerMotionCellState] = [:]
+    result.reserveCapacity(rows * cols)
+    let fullGrid = snapshot.cells.count >= rows * cols
+    func cellAt(row: Int, col: Int) -> LabandSnapshotCell? {
+      if fullGrid {
+        let index = row * cols + col
+        guard index < snapshot.cells.count else { return nil }
+        let cell = snapshot.cells[index]
+        if cell.row == row && cell.col == col { return cell }
+      }
+      return snapshot.cells.first { $0.row == row && $0.col == col }
+    }
+    for row in 0..<rows {
+      for col in 0..<cols {
+        guard let cell = cellAt(row: row, col: col) else { continue }
+        let background = compositedBackgroundColor(
+          cell.backgroundRGBA,
+          explicit: isExplicitBackground(flags: cell.flags))
+        let foreground = cell.foregroundRGBA
+        let attrs = TextAttributes(cellFlags: cell.flags)
+        let displayWidth = TerminalDisplayWidth.cells(of: cell.text)
+        let key = SpinnerMotionCellKey(row: row, col: col)
+        result[key] = SpinnerMotionCellState(
+          key: key,
+          text: cell.text,
+          displayWidth: displayWidth,
+          foreground: foreground,
+          background: background,
+          attributes: attrs,
+          underlineStyle: .none,
+          underlineColor: nil,
+          hyperlink: nil,
+          wide: UInt8(displayWidth > 1 ? 1 : 0))
+      }
+    }
+    return result
+  }
+
   // Caller owns the snapshot lifetime; FrameProducer does not retain it.
   public func commands(
     from snap: UnsafePointer<LabanSnapshot>,
@@ -402,7 +497,8 @@ public struct FrameProducer {
     cursorBlinkVisible: Bool,
     preedit: String? = nil,
     preeditCaretCells: Int = 0,
-    resolvedCursor: (style: Int32, blinking: Bool)? = nil
+    resolvedCursor: (style: Int32, blinking: Bool)? = nil,
+    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]? = nil
   ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -559,11 +655,13 @@ public struct FrameProducer {
     if #available(macOS 26, *), !FrameProducer._forceLegacyGlyphRuns {
       appendFastTerminalGlyphRuns(
         into: &cmds, snapshot: snapshot, rows: rows, cols: cols, cw: cw, ch: ch,
-        hyperlinkURIs: hyperlinkURIs)
+        hyperlinkURIs: hyperlinkURIs,
+        foregroundTransitions: foregroundTransitions)
     } else {
       appendLegacyTerminalGlyphRuns(
         into: &cmds, snapshot: snapshot, rows: rows, cols: cols, cw: cw, ch: ch,
-        hyperlinkURIs: hyperlinkURIs)
+        hyperlinkURIs: hyperlinkURIs,
+        foregroundTransitions: foregroundTransitions)
     }
 
     let activePreeditLayout = preedit.flatMap {
@@ -1203,7 +1301,8 @@ public struct FrameProducer {
     cols: Int,
     cw: CGFloat,
     ch: CGFloat,
-    hyperlinkURIs: [String]
+    hyperlinkURIs: [String],
+    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]?
   ) {
     guard let cells = snapshot.cells else { return }
     let storage = snapshot.utf8_storage
@@ -1223,13 +1322,19 @@ public struct FrameProducer {
       var runUnderlineStyle: UnderlineStyle = .none
       var runUnderlineColor: UInt32? = nil
       var runHyperlink: String? = nil
+      var runTransition: GlyphForegroundTransition? = nil
       var pendingSpacer = false
       runBytes.removeAll(keepingCapacity: true)
+
+      func cellTransition(_ col: Int) -> GlyphForegroundTransition? {
+        foregroundTransitions?[SpinnerMotionCellKey(row: row, col: col)]
+      }
 
       func flushRun() {
         guard let start = runStart, !runBytes.isEmpty else {
           runStart = nil
           runBytes.removeAll(keepingCapacity: true)
+          runTransition = nil
           return
         }
         let cellX = originX + CGFloat(start) * cw
@@ -1243,13 +1348,15 @@ public struct FrameProducer {
             source: .terminal,
             underlineStyle: runUnderlineStyle,
             underlineColor: runUnderlineColor,
-            hyperlink: runHyperlink
+            hyperlink: runHyperlink,
+            foregroundTransition: runTransition
           ))
         runStart = nil
         runBytes.removeAll(keepingCapacity: true)
         runUnderlineStyle = .none
         runUnderlineColor = nil
         runHyperlink = nil
+        runTransition = nil
       }
 
       for col in 0..<cols {
@@ -1317,12 +1424,14 @@ public struct FrameProducer {
           continue
         }
 
+        let cellTransition = cellTransition(col)
         let sameStyle =
           runFg == visuals.foreground && runBg == visuals.background
           && runAttrsRaw == visuals.attrsRaw
           && runUnderlineStyle == visuals.underlineStyle
           && runUnderlineColor == visuals.underlineColor
           && runHyperlink == visuals.hyperlink
+          && runTransition == cellTransition
 
         if runStart != nil, sameStyle {
           if pendingSpacer {
@@ -1347,6 +1456,7 @@ public struct FrameProducer {
               runUnderlineStyle = visuals.underlineStyle
               runUnderlineColor = visuals.underlineColor
               runHyperlink = visuals.hyperlink
+              runTransition = cellTransition
               runBytes.removeAll(keepingCapacity: true)
               runBytes.append(contentsOf: cellBytes)
             }
@@ -1363,6 +1473,7 @@ public struct FrameProducer {
           runUnderlineStyle = visuals.underlineStyle
           runUnderlineColor = visuals.underlineColor
           runHyperlink = visuals.hyperlink
+          runTransition = cellTransition
           runBytes.removeAll(keepingCapacity: true)
           runBytes.append(contentsOf: cellBytes)
         }
@@ -1381,7 +1492,8 @@ public struct FrameProducer {
     cols: Int,
     cw: CGFloat,
     ch: CGFloat,
-    hyperlinkURIs: [String]
+    hyperlinkURIs: [String],
+    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]?
   ) {
     guard let cells = snapshot.cells else { return }
     for row in 0..<rows {
@@ -1396,15 +1508,21 @@ public struct FrameProducer {
       var runUnderlineStyle: UnderlineStyle = .none
       var runUnderlineColor: UInt32? = nil
       var runHyperlink: String? = nil
+      var runTransition: GlyphForegroundTransition? = nil
       // Set when we encounter a SPACER_TAIL while a run is open. The spacer
       // is provisionally swallowed; we only flush it if the next visible
       // cell does not extend the cluster.
       var pendingSpacer = false
 
+      func cellTransition(_ col: Int) -> GlyphForegroundTransition? {
+        foregroundTransitions?[SpinnerMotionCellKey(row: row, col: col)]
+      }
+
       func flushRun() {
         guard let start = runStart, !runText.isEmpty else {
           runStart = nil
           runText = ""
+          runTransition = nil
           return
         }
         let cellX = originX + CGFloat(start) * cw
@@ -1418,13 +1536,15 @@ public struct FrameProducer {
             source: .terminal,
             underlineStyle: runUnderlineStyle,
             underlineColor: runUnderlineColor,
-            hyperlink: runHyperlink
+            hyperlink: runHyperlink,
+            foregroundTransition: runTransition
           ))
         runStart = nil
         runText = ""
         runUnderlineStyle = .none
         runUnderlineColor = nil
         runHyperlink = nil
+        runTransition = nil
       }
 
       for col in 0..<cols {
@@ -1475,11 +1595,13 @@ public struct FrameProducer {
               continue
             }
 
+            let cellTransition = cellTransition(col)
             let sameStyle =
               runFg == visuals.foreground && runBg == visuals.background && runAttrs == cellAttrs
               && runUnderlineStyle == visuals.underlineStyle
               && runUnderlineColor == visuals.underlineColor
               && runHyperlink == visuals.hyperlink
+              && runTransition == cellTransition
 
             if runStart != nil, sameStyle {
               if pendingSpacer {
@@ -1501,6 +1623,7 @@ public struct FrameProducer {
                   runUnderlineStyle = visuals.underlineStyle
                   runUnderlineColor = visuals.underlineColor
                   runHyperlink = visuals.hyperlink
+                  runTransition = cellTransition
                   runText = text
                 }
               } else {
@@ -1516,6 +1639,7 @@ public struct FrameProducer {
               runUnderlineStyle = visuals.underlineStyle
               runUnderlineColor = visuals.underlineColor
               runHyperlink = visuals.hyperlink
+              runTransition = cellTransition
               runText = text
             }
           } else {
@@ -1538,7 +1662,8 @@ public struct FrameProducer {
     cursorBlinkVisible: Bool = true,
     preedit: String? = nil,
     preeditCaretCells: Int = 0,
-    userCursorStyle: CursorSettings.Style = .block
+    userCursorStyle: CursorSettings.Style = .block,
+    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]? = nil
   ) -> [FrameCommand] {
     let rows = max(snapshot.rows, 0)
     let cols = max(snapshot.cols, 0)
@@ -1657,11 +1782,17 @@ public struct FrameProducer {
       var runBg: UInt32 = 0
       var runAttrs: TextAttributes = []
       var runText = ""
+      var runTransition: GlyphForegroundTransition? = nil
+
+      func cellTransition(_ col: Int) -> GlyphForegroundTransition? {
+        foregroundTransitions?[SpinnerMotionCellKey(row: row, col: col)]
+      }
 
       func flushRun() {
         guard let start = runStart, !runText.isEmpty else {
           runStart = nil
           runText = ""
+          runTransition = nil
           return
         }
         cmds.append(
@@ -1671,10 +1802,12 @@ public struct FrameProducer {
             foreground: runFg,
             background: runBg,
             attributes: runAttrs,
-            source: .terminal
+            source: .terminal,
+            foregroundTransition: runTransition
           ))
         runStart = nil
         runText = ""
+        runTransition = nil
       }
 
       for col in 0..<cols {
@@ -1708,6 +1841,7 @@ public struct FrameProducer {
           continue
         }
         let attrs = TextAttributes(cellFlags: cell.flags)
+        let cellTransition = cellTransition(col)
         if runStart == nil {
           runStart = col
           runFg = cell.foregroundRGBA
@@ -1715,12 +1849,14 @@ public struct FrameProducer {
             cell.backgroundRGBA,
             explicit: isExplicitBackground(flags: cell.flags))
           runAttrs = attrs
+          runTransition = cellTransition
           runText = cell.text
         } else if cell.foregroundRGBA == runFg
           && compositedBackgroundColor(
             cell.backgroundRGBA,
             explicit: isExplicitBackground(flags: cell.flags)) == runBg
           && attrs == runAttrs
+          && runTransition == cellTransition
         {
           runText += cell.text
         } else {
@@ -1731,6 +1867,7 @@ public struct FrameProducer {
             cell.backgroundRGBA,
             explicit: isExplicitBackground(flags: cell.flags))
           runAttrs = attrs
+          runTransition = cellTransition
           runText = cell.text
         }
       }

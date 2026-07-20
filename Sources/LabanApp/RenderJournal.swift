@@ -716,7 +716,7 @@ final class GPURenderFreezeDetector {
       .fullRedrawProducedNoContent,
       .drawableUnavailable:
       return true
-    case .drawableSizeMismatch, .none:
+    case .drawableSizeMismatch, .motionPipelineCompilation, .none:
       return false
     }
   }

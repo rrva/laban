@@ -463,8 +463,8 @@ the renderer boundary in product/architecture documentation.
 - [x] (2026-07-20) Plan corrected after inspecting the live Slug effect
   channel: selected a Slug-only, one-analytic-instance, linear-light GPU path;
   removed renderer-neutral parity and duplicate scheduling requirements.
-- [ ] M0 — Slug-gated color observations and transition metadata.
-- [ ] M1 — single-instance Slug motion pipelines and bounded effect pumping.
+- [x] (2026-07-20) M0 — Slug-gated color observations and transition metadata.
+- [x] (2026-07-20) M1 — single-instance Slug motion pipelines and bounded effect pumping.
 - [ ] M2 — gated UI, diagnostics, deterministic E2E, ADR/docs, and CI wiring.
 - [ ] Review Gate passed against a named commit.
 

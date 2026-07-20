@@ -186,7 +186,7 @@ extension HeadlessDebugRuntime {
     var missing = Set<String>()
 
     for command in lastFrameCommands {
-      guard case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _) = command else { continue }
+      guard case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = command else { continue }
       for scalar in text.unicodeScalars {
         let label = codepointLabel(scalar)
         if fontHasGlyph(for: scalar) {

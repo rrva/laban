@@ -25,6 +25,9 @@ public enum GlyphEffectTimeline {
   /// Visual bell shake: one critically-damped horizontal swing of the grid
   /// (M2).
   public static let kindBellShake: UInt32 = 2
+  /// Slug-only foreground-color spinner motion: a single analytic glyph
+  /// interpolates from its previous resolved color to the new one (M1).
+  public static let kindSpinnerForegroundMotion: UInt32 = 3
 
   /// Seconds an ink-bloom takes to fully settle.
   ///
@@ -111,5 +114,18 @@ public enum GlyphEffectTimeline {
     guard age > 0, age < bellShakeDecaySeconds else { return 0 }
     let phase = bellShakeOmega * age
     return phase * exp(1 - phase)
+  }
+
+  /// Cubic smoothstep for kind `kindSpinnerForegroundMotion`.
+  /// Returns 0 when `age <= 0`, 1 when `age >= duration`, and a
+  /// smooth `u^2(3-2u)` interpolation in between. The duration is
+  /// per-transition; the caller is responsible for clamping liveness.
+  public static func spinnerForegroundMotionProgress(age: Double, duration: Double)
+    -> Double
+  {
+    guard duration > 0 else { return 1 }
+    guard age > 0 else { return 0 }
+    let u = min(1, age / duration)
+    return u * u * (3 - 2 * u)
   }
 }

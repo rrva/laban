@@ -23,6 +23,10 @@ final class GlyphEffectTimelineTests: XCTestCase {
     XCTAssertFalse(GlyphEffectTimeline.isAnimating(kind: 99, age: 0.01))
   }
 
+  func testSpinnerForegroundMotionKindIsThree() {
+    XCTAssertEqual(GlyphEffectTimeline.kindSpinnerForegroundMotion, 3)
+  }
+
   func testMaxDecaySecondsCoversEveryKind() {
     XCTAssertEqual(GlyphEffectTimeline.maxDecaySeconds, 0.300, accuracy: 1e-9)
     for kind in [GlyphEffectTimeline.kindInkBloom, GlyphEffectTimeline.kindBellShake] {
@@ -97,6 +101,16 @@ final class GlyphEffectTimelineTests: XCTestCase {
       GlyphEffectTimeline.inkBloomDilationScale(age: GlyphEffectTimeline.inkBloomDecaySeconds), 1)
     XCTAssertEqual(
       GlyphEffectTimeline.inkBloomAlphaScale(age: GlyphEffectTimeline.inkBloomDecaySeconds), 1)
+  }
+
+  func testSpinnerForegroundMotionProgressEndpointsAndSmoothstep() {
+    XCTAssertEqual(GlyphEffectTimeline.spinnerForegroundMotionProgress(age: -1, duration: 0.25), 0)
+    XCTAssertEqual(GlyphEffectTimeline.spinnerForegroundMotionProgress(age: 0, duration: 0.25), 0)
+    let half = GlyphEffectTimeline.spinnerForegroundMotionProgress(
+      age: 0.125, duration: 0.25)
+    XCTAssertEqual(half, 0.5, accuracy: 1e-9)
+    XCTAssertEqual(GlyphEffectTimeline.spinnerForegroundMotionProgress(age: 0.25, duration: 0.25), 1)
+    XCTAssertEqual(GlyphEffectTimeline.spinnerForegroundMotionProgress(age: 1, duration: 0.25), 1)
   }
 
   func testInkBloomStartsThinAndFaint() {

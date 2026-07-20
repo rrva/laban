@@ -779,8 +779,8 @@ public enum FrameCommandCaptureCodec {
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
         let underlineStyle, let underlineColor, let hyperlink, let displayCellCount,
-        let outputTimestampSeconds
-      ):
+        _
+      , _):
         let attrNames = attributes.names
         return CapturedFrameCommand(
           index: index, kind: "glyphRun", source: source.rawValue,
@@ -790,8 +790,7 @@ public enum FrameCommandCaptureCodec {
           underlineStyle: underlineStyle.name,
           underlineColor: underlineColor,
           hyperlink: hyperlink,
-          displayCellCount: displayCellCount,
-          outputTimestampSeconds: outputTimestampSeconds)
+          displayCellCount: displayCellCount)
       case .cursor(let rect, let color):
         return CapturedFrameCommand(
           index: index, kind: "cursor", source: FrameSource.cursor.rawValue,

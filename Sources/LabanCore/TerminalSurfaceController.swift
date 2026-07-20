@@ -123,6 +123,8 @@ public struct TerminalSurfaceFrameRequest {
   /// User-configured blink preference (from `CursorSettings`). Overridden per
   /// frame by the snapshot's blink flag when `cursor_blink_explicit != 0`.
   public var userCursorBlinkEnabled: Bool
+  public var spinnerMotionSmoothingEnabled: Bool
+  public var effectiveRendererIsSlug: Bool
 
   public init(
     frame: Int,
@@ -152,7 +154,9 @@ public struct TerminalSurfaceFrameRequest {
     preedit: String? = nil,
     preeditCaretCells: Int = 0,
     userCursorStyle: CursorSettings.Style = .block,
-    userCursorBlinkEnabled: Bool = false
+    userCursorBlinkEnabled: Bool = false,
+    spinnerMotionSmoothingEnabled: Bool = false,
+    effectiveRendererIsSlug: Bool = false
   ) {
     self.frame = frame
     self.viewportWidth = viewportWidth
@@ -182,6 +186,8 @@ public struct TerminalSurfaceFrameRequest {
     self.preeditCaretCells = preeditCaretCells
     self.userCursorStyle = userCursorStyle
     self.userCursorBlinkEnabled = userCursorBlinkEnabled
+    self.spinnerMotionSmoothingEnabled = spinnerMotionSmoothingEnabled
+    self.effectiveRendererIsSlug = effectiveRendererIsSlug
   }
 }
 
@@ -530,6 +536,13 @@ public final class TerminalSurfaceController {
   /// that mark the whole prompt row dirty only bloom cells that actually
   /// changed (approach 2).
   private var lastCellFingerprints: [Session.ID: [Int: [UInt64]]] = [:]
+  /// Per-session spinner motion detector and the last observed cell metrics,
+  /// used to detect eligibility changes and clear state when dimensions shift.
+  private var spinnerMotionDetectors: [Session.ID: SpinnerMotionDetector] = [:]
+  private var spinnerMotionCellMetrics: [Session.ID: (width: Int, height: Int)] = [:]
+  private var spinnerMotionRemoteIncarnations: [Session.ID: String] = [:]
+  private var spinnerMotionLastObservedGeneration: [Session.ID: UInt64] = [:]
+  private var spinnerMotionLastRemoteDirty: [Session.ID: Bool] = [:]
   /// Stamp decision from the most recent `stampFreshOutputTimestamps` call;
   /// copied onto `TerminalSurfaceFrame.glyphEffectStamp` for the journal.
   private var lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics.none
@@ -684,6 +697,11 @@ public final class TerminalSurfaceController {
     lastSyncedGeneration.removeAll()
     lastOutputStamp.removeAll()
     lastCellFingerprints.removeAll()
+    spinnerMotionDetectors.removeAll()
+    spinnerMotionCellMetrics.removeAll()
+    spinnerMotionRemoteIncarnations.removeAll()
+    spinnerMotionLastObservedGeneration.removeAll()
+    spinnerMotionLastRemoteDirty.removeAll()
   }
 
   /// Returns true if any tracked session has a dirty generation that
@@ -698,6 +716,82 @@ public final class TerminalSurfaceController {
       if last != current { return true }
     }
     return false
+  }
+
+  /// Active spinner-motion transitions for `session` at the current moment,
+  /// observing a new generation when one is available. Returns nil when the
+  /// feature is disabled, the renderer is not Slug, or Reduce Motion is on.
+  private func spinnerMotionTransitions(
+    for sessionID: Session.ID,
+    producer: FrameProducer,
+    request: TerminalSurfaceFrameRequest,
+    session: Session? = nil,
+    snapshot: UnsafePointer<LabanSnapshot>? = nil,
+    remoteSnapshot: LabandSnapshotResponse? = nil
+  ) -> [SpinnerMotionCellKey: GlyphForegroundTransition]? {
+    let eligible =
+      request.spinnerMotionSmoothingEnabled
+      && request.effectiveRendererIsSlug
+      && !request.reduceMotion
+    guard eligible else {
+      spinnerMotionDetectors.removeValue(forKey: sessionID)
+      spinnerMotionCellMetrics.removeValue(forKey: sessionID)
+      spinnerMotionRemoteIncarnations.removeValue(forKey: sessionID)
+      spinnerMotionLastObservedGeneration.removeValue(forKey: sessionID)
+      spinnerMotionLastRemoteDirty.removeValue(forKey: sessionID)
+      return nil
+    }
+
+    let metrics = (width: cellWidth, height: cellHeight)
+    if spinnerMotionCellMetrics[sessionID].map({ $0 != metrics }) ?? true {
+      spinnerMotionDetectors[sessionID]?.reset()
+      spinnerMotionCellMetrics[sessionID] = metrics
+    }
+
+    var detector = spinnerMotionDetectors[sessionID] ?? SpinnerMotionDetector()
+    let now = outputStampClock()
+    let map: [SpinnerMotionCellKey: GlyphForegroundTransition]
+
+    if let snap = snapshot {
+      let currentGen = session?.dirtyGeneration() ?? 0
+      if currentGen != 0 && spinnerMotionLastObservedGeneration[sessionID] != currentGen {
+        let cells = producer.spinnerCellStates(from: snap)
+        let observation = SpinnerMotionObservation(
+          timestamp: now,
+          rows: Int(snap.pointee.rows),
+          cols: Int(snap.pointee.cols),
+          cells: cells,
+          mouseTracking: snap.pointee.mouse_tracking != 0)
+        map = detector.observe(observation)
+        spinnerMotionLastObservedGeneration[sessionID] = currentGen
+      } else {
+        map = detector.activeTransitions(at: now)
+      }
+    } else if let remote = remoteSnapshot {
+      if spinnerMotionRemoteIncarnations[sessionID] != remote.incarnationId {
+        detector.reset()
+        spinnerMotionRemoteIncarnations[sessionID] = remote.incarnationId
+      }
+      let remoteDirty = remote.dirty
+      if spinnerMotionLastRemoteDirty[sessionID] != remoteDirty {
+        let cells = producer.spinnerCellStates(from: remote)
+        let observation = SpinnerMotionObservation(
+          timestamp: now,
+          rows: remote.rows,
+          cols: remote.cols,
+          cells: cells,
+          mouseTracking: remote.mouseTracking ?? false)
+        map = detector.observe(observation)
+        spinnerMotionLastRemoteDirty[sessionID] = remoteDirty
+      } else {
+        map = detector.activeTransitions(at: now)
+      }
+    } else {
+      map = detector.activeTransitions(at: now)
+    }
+
+    spinnerMotionDetectors[sessionID] = detector
+    return map.isEmpty ? nil : map
   }
 
   public func makeFrame(
@@ -874,6 +968,14 @@ public final class TerminalSurfaceController {
       && snapshotCommandsHook == nil
       && captureSink == nil
 
+    let foregroundTransitions = canSkipTerminalCommands
+      ? nil
+      : spinnerMotionTransitions(
+        for: session.id,
+        producer: producer,
+        request: request,
+        session: session,
+        snapshot: UnsafePointer(snap))
     if !canSkipTerminalCommands {
       commands += producer.commands(
         from: UnsafePointer(snap),
@@ -883,7 +985,8 @@ public final class TerminalSurfaceController {
         cursorBlinkVisible: request.cursorBlinkVisible,
         preedit: request.preedit,
         preeditCaretCells: request.preeditCaretCells,
-        resolvedCursor: preResolvedCursor)
+        resolvedCursor: preResolvedCursor,
+        foregroundTransitions: foregroundTransitions)
     }
     commands = stampFreshOutputTimestamps(
       commands,
@@ -984,13 +1087,19 @@ public final class TerminalSurfaceController {
       accessibilityVisualOptions: request.accessibilityVisualOptions,
       backgroundCompositingOptions: request.backgroundCompositingOptions
     )
+    let foregroundTransitions = spinnerMotionTransitions(
+      for: sessionId,
+      producer: producer,
+      request: request,
+      remoteSnapshot: snapshot)
     commands += producer.commands(
       from: snapshot,
       selection: request.selection,
       cursorBlinkVisible: request.cursorBlinkVisible,
       preedit: request.preedit,
       preeditCaretCells: request.preeditCaretCells,
-      userCursorStyle: request.userCursorStyle
+      userCursorStyle: request.userCursorStyle,
+      foregroundTransitions: foregroundTransitions
     )
     recordFrameCommands(request, commands: commands)
 
@@ -1812,7 +1921,7 @@ public final class TerminalSurfaceController {
     var glyphs = 0
     for command in commands {
       guard
-        case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, let displayCellCount, let stamp) =
+        case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, let displayCellCount, let stamp, _) =
           command,
         stamp != nil
       else { continue }
@@ -1836,7 +1945,7 @@ public final class TerminalSurfaceController {
         case .glyphRun(
           let origin, let text, let foreground, let background, let attributes, let source,
           let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _
-        ) = stamped[index],
+        , _) = stamped[index],
         source == .terminal
       else { continue }
       let minY = origin.y
@@ -1879,7 +1988,7 @@ public final class TerminalSurfaceController {
         case .glyphRun(
           let origin, let text, let foreground, let background, let attributes, let source,
           let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _
-        ) = command,
+        , _) = command,
         source == .terminal
       else {
         result.append(command)

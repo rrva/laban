@@ -73,7 +73,7 @@ final class FrameProducerGraphemeClusterTests: XCTestCase {
     // one would split into two emoji runs.
     let farmerScalars: Set<UInt32> = [0x1F9D1, 0x1F33E]
     let farmerRuns: [String] = cmds.compactMap { cmd in
-      guard case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _) = cmd, src == .terminal
+      guard case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _) = cmd, src == .terminal
       else { return nil }
       let touchesFarmer = text.unicodeScalars.contains { farmerScalars.contains($0.value) }
       return touchesFarmer ? text : nil

@@ -17,6 +17,8 @@ public enum RenderFailureReason: String, Codable, Equatable, Sendable {
   case fullRedrawProducedNoContent
   /// `CAMetalLayer` had no drawable available to present into.
   case drawableUnavailable
+  /// A lazy motion-pipeline variant failed to compile.
+  case motionPipelineCompilation
   /// The layer resized between target allocation and drawable acquisition, so
   /// the mismatched drawable was dropped and a full repaint forced.
   case drawableSizeMismatch
@@ -30,7 +32,8 @@ public enum RenderFailureReason: String, Codable, Equatable, Sendable {
     case .previousFrameInFlight, .drawableUnavailable:
       return true
     case .commandBufferUnavailable, .targetTextureUnavailable,
-      .fullRedrawProducedNoContent, .drawableSizeMismatch:
+      .fullRedrawProducedNoContent, .drawableSizeMismatch,
+      .motionPipelineCompilation:
       return false
     }
   }

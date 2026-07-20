@@ -138,7 +138,7 @@ final class FrameProducerTransparencyTests: XCTestCase {
       "inverse backgrounds must remain opaque and use replace")
 
     let glyphBackgroundPairs: [(String, UInt32?)] = commands.compactMap { command in
-      guard case .glyphRun(_, let text, _, let background, _, .terminal, _, _, _, _, _) = command
+      guard case .glyphRun(_, let text, _, let background, _, .terminal, _, _, _, _, _, _) = command
       else { return nil }
       return (text, background)
     }

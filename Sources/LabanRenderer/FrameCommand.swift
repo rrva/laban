@@ -18,6 +18,28 @@ public enum MonotonicClock {
   }
 }
 
+/// Optional metadata attached to a `FrameCommand.glyphRun` when the Slug Glyph
+/// renderer is smoothing a foreground-color transition for a steady-cadence
+/// spinner. Other renderers ignore this field.
+public struct GlyphForegroundTransition: Equatable, Sendable, Codable {
+  /// Start color in linear-light straight RGBA, matching Slug's working space.
+  public var startLinearRGBA: SIMD4<Float>
+  /// Monotonic seconds at which the transition began (`MonotonicClock` domain).
+  public var startTimestampSeconds: Double
+  /// Duration of the transition in seconds.
+  public var durationSeconds: Double
+
+  public init(
+    startLinearRGBA: SIMD4<Float>,
+    startTimestampSeconds: Double,
+    durationSeconds: Double
+  ) {
+    self.startLinearRGBA = startLinearRGBA
+    self.startTimestampSeconds = startTimestampSeconds
+    self.durationSeconds = durationSeconds
+  }
+}
+
 public enum FrameSource: String, Sendable {
   case sidebar
   case chrome
@@ -170,7 +192,10 @@ public enum FrameCommand: Sendable {
     /// emitted after PTY output; nil = not fresh. Feeds the glyph-effect
     /// animation channel (`effectStart`); re-emissions caused by scroll,
     /// selection, or relayout damage keep nil so effects never restart.
-    outputTimestampSeconds: Double? = nil
+    outputTimestampSeconds: Double? = nil,
+    /// Slug-only foreground motion metadata; nil unless the smooth-spinner
+    /// detector has activated for this cell and the effective renderer is Slug.
+    foregroundTransition: GlyphForegroundTransition? = nil
   )
   case cursor(CGRect, color: UInt32)
   case selection(CGRect, color: UInt32)

@@ -7,14 +7,34 @@ import Metal
 /// in linear light. Nonopaque surfaces instead retain these values in a
 /// linear-premultiplied float target; a separate final resolve owns the one
 /// encoded-sRGB-premultiplication boundary needed by Core Animation.
-enum SRGBRenderTargetColor {
+public enum SRGBRenderTargetColor {
   @inline(__always)
-  static func linearizedStraightRGBA(_ rgba: UInt32) -> SIMD4<Float> {
+  public static func linearizedStraightRGBA(_ rgba: UInt32) -> SIMD4<Float> {
     SIMD4<Float>(
       linearize(Float((rgba >> 24) & 0xFF) / 255),
       linearize(Float((rgba >> 16) & 0xFF) / 255),
       linearize(Float((rgba >> 8) & 0xFF) / 255),
       Float(rgba & 0xFF) / 255)
+  }
+
+  /// Inverse of `linearizedStraightRGBA`: convert a linear-light straight
+  /// RGBA value to a packed `0xRRGGBBAA` encoded-sRGB value. Used by tests
+  /// and debug readback to compare GPU output against expected encoded values.
+  @inline(__always)
+  public static func encodedSRGBA(_ linear: SIMD4<Float>) -> UInt32 {
+    func encode(_ component: Float) -> UInt8 {
+      let clamped = max(0, min(1, component))
+      let encoded =
+        clamped <= 0.0031308
+        ? clamped * 12.92
+        : 1.055 * pow(clamped, 1 / 2.4) - 0.055
+      return UInt8((encoded * 255).rounded())
+    }
+    let r = encode(linear.x)
+    let g = encode(linear.y)
+    let b = encode(linear.z)
+    let a = UInt8((max(0, min(1, linear.w)) * 255).rounded())
+    return (UInt32(r) << 24) | (UInt32(g) << 16) | (UInt32(b) << 8) | UInt32(a)
   }
 
   /// Linear-premultiplied clear matching the first terminal replace canvas.
