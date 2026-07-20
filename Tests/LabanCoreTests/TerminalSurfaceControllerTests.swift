@@ -1145,6 +1145,24 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertNil(region?.xMax)
   }
 
+  func testCellFingerprintIgnoresColorOnlyChanges() {
+    var cell = LabanCell()
+    cell.utf8_offset = 0
+    cell.utf8_length = 1
+    cell.wide = UInt8(LABAN_CELL_WIDE_NARROW)
+    cell.foreground_rgba = 0xFF00_00FF
+    let storage = "x"
+    let a = storage.withCString { ptr in
+      TerminalSurfaceController.cellContentFingerprint(cell: cell, storage: ptr)
+    }
+    cell.foreground_rgba = 0xFFFF_FFFF
+    cell.flags = 0x20  // bold / intensity bit — must not affect bloom freshness
+    let b = storage.withCString { ptr in
+      TerminalSurfaceController.cellContentFingerprint(cell: cell, storage: ptr)
+    }
+    XCTAssertEqual(a, b, "spinner color/intensity pulses must not restart ink-bloom")
+  }
+
   func testFreshnessFromCellDiffBloomsOnlyChangedColumnsOnPromptRow() {
     // Prompt cells unchanged, only the typed column flipped → X strip.
     let previous: [Int: [UInt64]] = [31: [1, 1, 1, 1, 1, 1, 1, 1]]
@@ -1204,8 +1222,70 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       originX: 0,
       originY: 0,
       totalRows: 20)
-    XCTAssertNil(region?.xMin, "multi-row dumps must whole-run, not cell-strip")
+    XCTAssertNil(region?.xMin, "multi-row dumps classify as wholeRun, not cell-strip")
+    XCTAssertEqual(region?.mode, .wholeRun)
+    XCTAssertEqual(region?.changedCells, 2, "diff still counts real content changes")
     XCTAssertEqual(region?.bands.count, 2)
+  }
+
+  func testWholeRunBulkRewriteIsSuppressedThroughMakeFrame() throws {
+    // Near-full-row lexical rewrite → freshness.mode == .wholeRun → stamp
+    // path must leave every terminal run unstamped (btop-style bulk redraw).
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    guard let tab = model.activeTab,
+      let session = model.session(forTab: tab.id)
+    else {
+      XCTFail("missing active fixture session")
+      return
+    }
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    var now = 1.0
+    controller.outputStampClock = { now }
+    func makeFrame(_ index: Int) -> TerminalSurfaceFrame? {
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: index,
+          viewportWidth: 360,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 360,
+          surfaceHeight: 64,
+          surfaceScale: 1))
+    }
+
+    // Seed cell fingerprints with a settled 16-cell line (threshold for
+    // wholeRun on cols=20 is max(8, 10) = 10 changed columns).
+    _ = session.write(Array("aaaaaaaaaaaaaaaa".utf8))
+    _ = session.poll()
+    XCTAssertNotNil(makeFrame(1))
+    session.markRendered()
+
+    // CR + rewrite the same span with different glyphs → one dirty row, many
+    // changed columns → wholeRun classification → suppress.
+    _ = session.write(Array("\rbbbbbbbbbbbbbbbb".utf8))
+    _ = session.poll()
+    now = 2.0
+    guard let frame = makeFrame(2) else {
+      XCTFail("expected a frame after bulk rewrite")
+      return
+    }
+    XCTAssertEqual(
+      frame.glyphEffectStamp?.mode, .wholeRun,
+      "bulk lexical rewrite must classify as wholeRun")
+    XCTAssertEqual(frame.glyphEffectStamp?.stampedGlyphs, 0)
+    XCTAssertEqual(frame.glyphEffectStamp?.stampedRuns, 0)
+    let stamps = terminalGlyphRunTimestamps(frame)
+    XCTAssertTrue(
+      stamps.allSatisfy { $0.stamp == nil },
+      "wholeRun suppress must not stamp any terminal glyph run; got \(stamps)")
   }
 
   func testCellStripStampSplitsCoalescedRunSoOnlyFreshCharacterBlooms() {

@@ -169,8 +169,18 @@ def print_glyph_effect(entries: list[dict[str, Any]]) -> None:
         print()
         return
     print_counter("  mode", Counter(effect.get("mode", "-") for effect in effects))
-    stamped = [e for e in effects if e.get("mode") not in (None, "none")]
+    # wholeRun is a suppress decision (changedCells recorded, no bloom).
+    stamped = [
+        e
+        for e in effects
+        if e.get("mode") not in (None, "none", "wholeRun")
+        and int(e.get("stampedGlyphs") or 0) > 0
+    ]
+    whole_run = sum(1 for e in effects if e.get("mode") == "wholeRun")
+    tui = sum(1 for e in effects if e.get("mode") == "suppressedTUI")
     print(f"  stampedFrames: {len(stamped)}")
+    print(f"  wholeRunSuppressed: {whole_run}")
+    print(f"  tuiSuppressed: {tui}")
     runs = number_list(e.get("stampedRuns") for e in stamped)
     glyphs = number_list(e.get("stampedGlyphs") for e in stamped)
     if runs:

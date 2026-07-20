@@ -370,8 +370,13 @@ public enum GlyphEffectStampMode: String, Codable, Equatable, Sendable {
   case cellDiff
   /// Fallback: single cell (or previous whole row) at the cursor.
   case cursorCell
-  /// Whole intersecting glyph runs on the fresh Y bands (bulk / multi-row).
+  /// Diff saw a bulk rewrite (multi-row or near-full row). Recorded for
+  /// journal forensics only — stamping is suppressed (TUIs like btop).
   case wholeRun
+  /// Mouse tracking is active (fullscreen TUI). Stamping suppressed — Claude
+  /// Code / similar apps animate spinners via glyph + color churn that would
+  /// otherwise classify as `cellDiff` and flicker.
+  case suppressedTUI
   /// Same dirty generation still inside the freshness window; prior stamp
   /// re-applied for effectStart stability.
   case reapply
@@ -1192,18 +1197,18 @@ public final class TerminalSurfaceController {
     return result
   }
 
-  /// Stable hash of one grid cell's visible content (text bytes + style).
+  /// Stable hash of one grid cell's **glyph text** for bloom freshness.
+  ///
+  /// Style (fg/bg/flags/intensity) is intentionally omitted: TUIs often pulse
+  /// spinner colors without changing the character, and blooming those made
+  /// Claude Code look flickery. Wide/spacer identity stays so layout shifts
+  /// still count.
   public static func cellContentFingerprint(
     cell: LabanCell,
     storage: UnsafePointer<CChar>?
   ) -> UInt64 {
     var hasher = Hasher()
-    hasher.combine(cell.foreground_rgba)
-    hasher.combine(cell.background_rgba)
-    hasher.combine(cell.flags)
-    hasher.combine(cell.underline_style)
     hasher.combine(cell.wide)
-    hasher.combine(cell.hyperlink_id)
     let length = Int(cell.utf8_length)
     hasher.combine(length)
     if length > 0, let storage {
@@ -1242,9 +1247,11 @@ public final class TerminalSurfaceController {
 
   /// Freshness from a cell-content diff on dirty rows (approach 2).
   ///
-  /// - One dirty row with a small changed-column span → X strip (typing /
-  ///   paste-in-one-wake blooms only those cells; settled prompt stays put).
-  /// - Multi-row changes or a near-full-row rewrite → whole-run bands (bulk).
+  /// Fingerprints are per-cell UTF-8 bytes + style (fg/bg/flags/…), not merely
+  /// "row dirty". Diff result:
+  /// - One dirty row with a small changed-column span → X strip (`cellDiff`).
+  /// - Multi-row changes or a near-full-row rewrite → `wholeRun` (stamp path
+  ///   suppresses bloom; journal still records the decision).
   /// - No baseline yet → `nil` so the caller can fall back to cursor-cell.
   public static func freshnessFromCellDiff(
     dirtyRows: [Int],
@@ -1706,12 +1713,19 @@ public final class TerminalSurfaceController {
     // Write after freshness reads `previousFingerprints`.
     defer { lastCellFingerprints[session.id] = mergedFingerprints }
 
-    func finishNone() -> [FrameCommand] {
+    func finishNone(mode: GlyphEffectStampMode = .none) -> [FrameCommand] {
       lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics(
-        mode: .none,
+        mode: mode,
         dirtyRows: dirtyRows,
         generation: generation == 0 ? nil : generation)
       return commands
+    }
+
+    // Fullscreen TUIs (Claude Code, btop, …) enable mouse tracking. Their
+    // spinners rewrite glyphs/colors every tick; blooming that is pure flicker.
+    if snapshot.pointee.mouse_tracking != 0 {
+      lastOutputStamp.removeValue(forKey: session.id)
+      return finishNone(mode: .suppressedTUI)
     }
 
     guard generation != 0 else { return finishNone() }
@@ -1736,6 +1750,19 @@ public final class TerminalSurfaceController {
           previousFingerprints: previousFingerprints),
         !region.bands.isEmpty
       else { return finishNone() }
+      // Bulk / multi-row / near-full-row rewrites: content diff still ran
+      // (changedCells is real glyph+style churn), but blooming whole runs
+      // makes TUIs like btop flicker — suppress the stamp entirely.
+      if region.mode == .wholeRun {
+        lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics(
+          mode: .wholeRun,
+          dirtyRows: region.dirtyRows.isEmpty ? dirtyRows : region.dirtyRows,
+          changedCells: region.changedCells,
+          stampedRuns: 0,
+          stampedGlyphs: 0,
+          generation: generation)
+        return commands
+      }
       stamp = now
       freshness = region
       modeOverride = nil
@@ -1754,6 +1781,8 @@ public final class TerminalSurfaceController {
         gridOriginX: originX,
         stamp: stamp)
     } else {
+      // Non-strip freshness that isn't `wholeRun` (e.g. cursorCell after CR
+      // with a previous-row band): still stamp those runs.
       stamped = Self.applyWholeRunStamp(
         commands,
         bands: freshness.bands,
