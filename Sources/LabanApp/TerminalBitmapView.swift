@@ -123,6 +123,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     top: 8 + titlebarReservedHeight, left: 14, bottom: 8, right: 8)
   static var accessibilityDisplayOptionsProviderForTests: (() -> AccessibilityDisplayOptions)?
 
+  /// Whether the terminal window is visible enough to justify animation work.
+  /// Key-window state is deliberately not an input: a same-application panel
+  /// such as Settings can own keyboard focus while the terminal remains fully
+  /// visible and its in-flight glyph effects still need display-link frames.
+  nonisolated static func animationVisibleToUser(
+    applicationActive: Bool,
+    windowVisible: Bool,
+    windowMiniaturized: Bool,
+    occlusionVisible: Bool
+  ) -> Bool {
+    applicationActive && windowVisible && !windowMiniaturized && occlusionVisible
+  }
+
   private static func currentAccessibilityDisplayOptions() -> AccessibilityDisplayOptions {
     if let provider = accessibilityDisplayOptionsProviderForTests {
       return provider()
@@ -1926,10 +1939,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       ) { [weak self] _ in
         self?.syncActiveSessionFocus(windowFocused: false)
         self?.updateDisplayLinkRunState()
-        // Window no longer visible to user: stop the blink timer immediately
-        // so the cursor freezes solid rather than blinking behind a covered window.
+        // Reconcile the blink timer immediately. If Settings became key, the
+        // still-visible terminal remains animation-visible; if Laban became
+        // inactive, the application observer below stops it.
         self?.syncBlinkDriverFromWindowState()
-        // A precise gesture interrupted by an app switch must not freeze the
+        // A precise gesture interrupted by a focus change must not freeze the
         // grid on a fractional row.
         self?.settlePreciseScrollToWholeRow()
       })
@@ -1941,6 +1955,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
       ) { [weak self] _ in
         self?.advanceFrame(wake: .occlusion)
+      })
+    // A terminal window does not receive another key-window notification when
+    // Settings is key and the whole app deactivates/reactivates. Observe app
+    // activity separately so animation links still park in the background and
+    // wake again when Laban returns.
+    windowFocusObservers.append(
+      center.addObserver(
+        forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+      ) { [weak self] _ in
+        self?.advanceFrame(wake: .applicationActivation)
+      })
+    windowFocusObservers.append(
+      center.addObserver(
+        forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+      ) { [weak self] _ in
+        self?.updateDisplayLinkRunState()
+        self?.syncBlinkDriverFromWindowState()
+        self?.settlePreciseScrollToWholeRow()
       })
   }
 
@@ -2333,8 +2365,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     setSafetyNetArmed(!policy.shouldRun)
     // Renderer-owned CAMetalDisplayLink present threads ride the SAME
     // animate-or-park policy as the main tick, so they spin only while the
-    // terminal is active and park (zero CPU) when unfocused, occluded, or
-    // focused-and-idle.
+    // terminal is active and park (zero CPU) when the app is inactive, the
+    // terminal is hidden/occluded, or it is visible-and-idle. A same-app
+    // Settings window becoming key does not make terminal pixels invisible.
     (backend as? DisplayLinkPresentingRenderer)?.setPresentLinkRunning(policy.shouldRun)
   }
 
@@ -2380,16 +2413,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   /// Synchronise the blink driver with the current window-visibility state,
-  /// without requiring a full rendered frame. Called from resign-key and
-  /// occlusion observers so the timer stops promptly when the window hides.
+  /// without requiring a full rendered frame. Called from window and app
+  /// lifecycle observers so the timer stops promptly when pixels hide.
   private func syncBlinkDriverFromWindowState() {
-    let windowVisibleToUser =
-      (window?.isKeyWindow == true)
-      && (window?.occlusionState.contains(.visible) ?? false)
     blinkDriver.sync(
       blinkActive: lastRenderedCursorBlinking,
-      windowVisibleToUser: windowVisibleToUser,
+      windowVisibleToUser: animationVisibleToUser,
       cursorVisible: true)  // conservative: cursor treated as visible when we lack a fresh snapshot
+  }
+
+  private var animationVisibleToUser: Bool {
+    guard let window else { return false }
+    return Self.animationVisibleToUser(
+      applicationActive: NSApplication.shared.isActive,
+      windowVisible: window.isVisible,
+      windowMiniaturized: window.isMiniaturized,
+      occlusionVisible: window.occlusionState.contains(.visible))
   }
 
   private struct DisplayLinkPolicyState {
@@ -2406,9 +2445,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func displayLinkPolicyState(now: Date = Date()) -> DisplayLinkPolicyState {
-    let windowVisibleToUser =
-      (window?.isKeyWindow == true)
-      && (window?.occlusionState.contains(.visible) ?? false)
+    let windowVisibleToUser = animationVisibleToUser
     let terminalOutputActive = windowVisibleToUser && terminalOutputActiveUntil > now
     let attentionAnimating =
       windowVisibleToUser && !reduceMotion
@@ -2663,6 +2700,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case modelMutation
     case focus
     case occlusion
+    case applicationActivation
     case settleWake
     case synchronizedOutputWake
     case renderRetry
@@ -2691,8 +2729,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // (including the idle early-return below). A window that is no longer
     // visible to the user parks the link — background output still reaches the
     // screen through the onSessionDirty push — so a backgrounded terminal stops
-    // waking the CPU at refresh cadence. Waking again is driven by the key and
-    // occlusion observers in installWindowFocusObservers.
+    // waking the CPU at refresh cadence. Waking again is driven by the window
+    // and application observers in installWindowFocusObservers.
     defer { updateDisplayLinkRunState() }
 
     let captureFrame = renderedFrameCount + 1
@@ -2732,9 +2770,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
 
-    let windowVisibleToUser =
-      (window?.isKeyWindow == true)
-      && (window?.occlusionState.contains(.visible) ?? false)
+    let windowVisibleToUser = animationVisibleToUser
     // cursorBlinkFrame is true when the driver fired a phase flip since the
     // last advanceFrame call. The driver's onPhaseFlip closure also calls
     // advanceFrame() directly so a flip always paints immediately rather than
@@ -3806,7 +3842,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       isMainWindow: window?.isMainWindow ?? false,
       isMiniaturized: window?.isMiniaturized ?? false,
       occlusionVisible: occlusionVisible,
-      visibleToUser: isKey && occlusionVisible,
+      visibleToUser: animationVisibleToUser,
       backingScaleFactor: Double(window?.backingScaleFactor ?? backend.surfaceScale),
       screenName: window?.screen?.localizedName)
   }

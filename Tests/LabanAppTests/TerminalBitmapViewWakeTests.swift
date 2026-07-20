@@ -13,7 +13,7 @@ import XCTest
 /// `advanceFrame(wake:)` (directly or through the kick coalescer) leaves a
 /// permanently stale frame — the frozen-frame bug class. The assertions read
 /// `advanceFrameCallCountForTesting`, stamped at the top of every
-/// `advanceFrame(wake:)` entry, so they hold without a window or display.
+/// `advanceFrame(wake:)` entry, so most hold without a window or display.
 final class TerminalBitmapViewWakeTests: XCTestCase {
 
   private var savedRenderer: String?
@@ -264,6 +264,66 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
       drainMainQueue { harness.view.advanceFrameCallCountForTesting > baseline },
       "a Reduce Motion flip must schedule a frame; invalidation alone never paints on a parked link"
     )
+  }
+
+  // MARK: - Row 6: application and window visibility
+
+  func testSettingsWindowDoesNotHideVisibleTerminalFromAnimationPolicy() {
+    XCTAssertTrue(
+      TerminalBitmapView.animationVisibleToUser(
+        applicationActive: true,
+        windowVisible: true,
+        windowMiniaturized: false,
+        occlusionVisible: true),
+      "a same-app Settings key window must not stop animation in the visible terminal")
+  }
+
+  func testAnimationVisibilityParksForInactiveHiddenMiniaturizedOrOccludedTerminal() {
+    let inputs = [
+      (
+        applicationActive: false, windowVisible: true, windowMiniaturized: false,
+        occlusionVisible: true
+      ),
+      (
+        applicationActive: true, windowVisible: false, windowMiniaturized: false,
+        occlusionVisible: true
+      ),
+      (
+        applicationActive: true, windowVisible: true, windowMiniaturized: true,
+        occlusionVisible: true
+      ),
+      (
+        applicationActive: true, windowVisible: true, windowMiniaturized: false,
+        occlusionVisible: false
+      ),
+    ]
+
+    for input in inputs {
+      XCTAssertFalse(
+        TerminalBitmapView.animationVisibleToUser(
+          applicationActive: input.applicationActive,
+          windowVisible: input.windowVisible,
+          windowMiniaturized: input.windowMiniaturized,
+          occlusionVisible: input.occlusionVisible))
+    }
+  }
+
+  @MainActor
+  func testApplicationActivationWakesFrameLoop() throws {
+    let harness = try makeHarness()
+    let window = NSWindow()
+    window.contentView = harness.view
+    defer { window.contentView = nil }
+    let baseline = harness.view.advanceFrameCallCountForTesting
+
+    NotificationCenter.default.post(
+      name: NSApplication.didBecomeActiveNotification,
+      object: NSApplication.shared)
+
+    XCTAssertGreaterThan(
+      harness.view.advanceFrameCallCountForTesting,
+      baseline,
+      "app activation must wake a terminal whose link parked while Settings was key")
   }
 
   func testTerminalSurfaceAccessibilityReadsVisibleTextAndSuppressesFocusRing() throws {

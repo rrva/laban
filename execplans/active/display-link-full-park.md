@@ -215,6 +215,12 @@ proven. The mitigations baked into this plan:
       `scheduleRenderRetry()` when the park policy would not keep the link
       running (no automated test; see Decision Log). Cosmetic test-count
       prose corrected to 1455.
+- [x] (2026-07-20) Same-app auxiliary-window visibility correction:
+      animation visibility no longer uses terminal key-window ownership. A
+      visible terminal keeps active animation links running while Settings is
+      key; application inactivity, hidden/minimized state, and full occlusion
+      still park them. Application activation is now an enumerated wake, with
+      deterministic policy and observer tests in `TerminalBitmapViewWakeTests`.
 - [ ] Milestone 5 — OPEN FOR THE HUMAN (live-app soak; the safety net stays
       in place until ALL of these pass):
       1. Install (`./scripts/install-app`), relaunch Laban yourself, verify
@@ -263,6 +269,14 @@ them without recording a superseding entry here.
   for zero visible benefit; the push path already paints occluded windows
   without a link. Stage 2 of the agreed two-stage idle-energy design.
   Date/Author: 2026-06-10 / settled with product owner.
+- Decision: Treat animation visibility and terminal input focus as separate
+  policies. Animation visibility requires an active app and a visible,
+  nonminiaturized, unoccluded terminal; it does not require the terminal to be
+  key. PTY focus reporting remains key-window based.
+  Rationale: Settings can be key while terminal pixels remain visible. Parking
+  animation in that state removes interpolation frames, while treating an
+  inactive app as visible would waste background CPU.
+  Date/Author: 2026-07-20 / Codex.
 - Decision: Keep the 8 Hz floor behind `LabanDisplayLinkIdleFloor`
   (default off = parked) instead of deleting it.
   Rationale: instant, no-rebuild rollback for the frozen-frame risk class.
@@ -383,6 +397,16 @@ them without recording a superseding entry here.
   Date/Author: 2026-06-10 / Claude (review-fix round).
 
 ## Surprises & Discoveries
+
+- Observation: `isKeyWindow && occlusionVisible` conflated focus with pixel
+  visibility. Opening Settings therefore parked both the main and Slug present
+  links even though the terminal was still on screen; closing Settings made
+  motion smooth again. Application activity also needs an observer because a
+  terminal already behind a key Settings window receives no key transition
+  when the whole app backgrounds or foregrounds.
+  Evidence: `TerminalBitmapView.displayLinkPolicyState`, `advanceFrame`, blink
+  synchronization, and render-journal visibility all shared the key-window
+  predicate.
 
 - Observation: the Stage-1 cursor-blink files landed on this base unformatted
   — `./scripts/lint` (part of `./scripts/check`) failed at the base commit on
@@ -1036,7 +1060,7 @@ numbers before editing.
 | 3 | Keyboard input | `keyDown` writes to PTY; echo rides #1, but no-echo cases (echo off, app ignoring keys) and blink-phase reset get no wake | `TerminalBitmapView.swift` (`keyDown`) | **wired+proven (M2)**: `advanceFrame(wake: .keyboard)` at end of `keyDown`; `testKeyDownWakesFrameLoop` |
 | 4 | Scroll wheel | `scrollWheel` sets `targetScrollRows` + `renderInvalidated`; the handler itself must start the glide | `TerminalBitmapView.swift` (`scrollWheel`) | **wired+proven (M2)**: single `advanceFrame(wake: .scrollWheel)` at end of `scrollWheel` (early-return branches use `invalidateRenderAndWake()`); `testScrollWheelWakesFrameLoop`, mutation-verified |
 | 5 | Tab switch / open / close (sidebar click, Cmd-digit, menus, debug endpoints) | `model.selectTab` etc. mutate the model | `AppModel.notifyWorkspaceMutation` co-fires `onSurfaceStateChanged` | **wired+proven (M2)**: hook → kick coalescer → `advanceFrame(wake: .modelMutation)`; `testTabMutationWakesFrameLoopThroughCoalescer` |
-| 6 | Focus / occlusion | `didBecomeKey` → `advanceFrame`; `didResignKey` → `updateDisplayLinkRunState`; occlusion change → `advanceFrame` | `installWindowFocusObservers`, `TerminalBitmapView.swift:713-739` | exists |
+| 6 | Focus / app activity / occlusion | `didBecomeKey` → `advanceFrame`; `didResignKey` → focus-out + policy reconciliation; app activation → `advanceFrame`; app deactivation → policy reconciliation; occlusion change → `advanceFrame` | `installWindowFocusObservers` in `TerminalBitmapView.swift` | **wired+proven (2026-07-20)**: animation visibility is independent of same-app Settings key focus; `testSettingsWindowDoesNotHideVisibleTerminalFromAnimationPolicy`, `testAnimationVisibilityParksForInactiveHiddenMiniaturizedOrOccludedTerminal`, `testApplicationActivationWakesFrameLoop` |
 | 7 | One-shot render gates | `scheduleOutputSettleWake` (output-settle defer) and `scheduleRenderRetry` (theme/renderer-switch/backpressure) call `advanceFrame` directly | `TerminalBitmapView.swift:863-881` | exists — these MUST remain direct calls; with a parked link they are the only continuation after a deferred frame |
 | 8 | Attention transitions carried by output (OSC 133 / agent status / notifications) | bytes bump generation → row #1 | `tab_status.c`, `osc133.c`, `osc_host.c` | exists via #1 |
 | 9 | Model metadata written off the output path (background git-branch resolution, daemon surface signals, agent status updates) | `applyResolvedBranch`, `applySurfaceSignals`, `applyTabStatusUpdate` fire `onSurfaceStateChanged` when they changed the model | `AppModel.swift` | **wired+proven (M2)**: `testSurfaceSignalsWakeFrameLoopThroughCoalescer`; branch/agent paths share the same fire helper |

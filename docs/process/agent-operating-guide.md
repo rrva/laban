@@ -165,6 +165,10 @@ style, workflow, or verification rules.
 - Present, idle, and zoom decision logic should live in pure GPU-free value
   types such as `PresentParkDecision`, with test-only synchronous seams such as
   `debugFlushZoomCommit` for debounced work.
+- Do not use `NSWindow.isKeyWindow` as a proxy for renderer visibility. A
+  same-app Settings or utility window can own focus while terminal pixels stay
+  visible; animation policy uses app activity plus visible/nonminiaturized/
+  unoccluded window state, while PTY and input focus remain key-window based.
 - For renderer visual artifacts such as wrong glyph size, blank frames, or
   mixed sizes, build a diagnostic seam and measure before theorizing a cause.
   Rapid pinch commits should coalesce to one settle bake; keep

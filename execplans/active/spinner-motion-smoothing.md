@@ -468,6 +468,12 @@ the renderer boundary in product/architecture documentation.
 - [x] (2026-07-20) M2 — gated UI, diagnostics, deterministic E2E, ADR/docs, and CI wiring.
 - [x] (2026-07-20) Review Gate passed against commit under test.
 - [x] (2026-07-20) Bug fix: `stampFreshOutputTimestamps` preserves `foregroundTransition` metadata when stamping output; `SpinnerMotionDetector` retains the full grid baseline instead of an LRU row cap so top-row spinners qualify correctly.
+- [x] (2026-07-20) Bug fix: opening Settings no longer parks Slug motion in a
+  still-visible terminal. Animation visibility now follows app activity plus
+  actual terminal-window visibility instead of key-window ownership;
+  application activation has its own wake. The focused wake/visibility suite
+  passes with explicit Settings-window, inactive, hidden, miniaturized,
+  occluded, and reactivation coverage.
 
 ## Surprises & Discoveries
 
@@ -496,6 +502,15 @@ the renderer boundary in product/architecture documentation.
 - Observation: two half-alpha source-over glyphs are not a dissolve. They
   produce 75% combined coverage and an order-biased color. A single shader
   color mix is required.
+- Observation: the Settings window becoming key caused the terminal's
+  `didResignKey` observer and per-frame policy to classify the still-visible
+  terminal as hidden. That set both Slug's present link and the main display
+  link to parked, leaving only one authoritative render per spinner update and
+  no interpolation frames. Closing Settings restored key status and therefore
+  appeared to make smoothing start working.
+  Evidence: all four animation visibility checks in `TerminalBitmapView`
+  required `window.isKeyWindow`; the symptom stopped immediately when Settings
+  closed.
 
 ## Decision Log
 
@@ -545,6 +560,13 @@ the renderer boundary in product/architecture documentation.
   and Reduce Motion, with explicit unavailable UI/debug reasons.
   Rationale: the feature must be discoverable without implying unsupported
   behavior on another or fallback renderer.
+  Date/Author: 2026-07-20 / Codex
+
+- Decision: Separate terminal input focus from animation visibility.
+  Rationale: PTY focus must follow the key terminal window, but renderer work
+  depends on whether pixels can be seen. A same-app Settings key window changes
+  the former without changing the latter; whole-app deactivation is observed
+  separately so background animation still parks.
   Date/Author: 2026-07-20 / Codex
 
 ## Review Gate
@@ -692,6 +714,10 @@ The implementation is accepted only when all of the following are true:
 11. The deterministic Slug and non-Slug gate scenarios run in
     `scripts/test-e2e`; rendered artifacts, diagnostics, `scripts/check`, and
     the fresh Review Gate all pass against one named commit.
+12. Opening Settings while a qualifying spinner runs does not interrupt Slug
+    interpolation in the visible terminal. Deactivating Laban or hiding,
+    minimizing, or fully occluding the terminal still parks animation, and
+    reactivating Laban explicitly wakes the frame loop.
 
 ## Idempotence and Recovery
 

@@ -41,6 +41,13 @@ timer, not a guaranteed periodic repaint.
   cursor-blink timer's floor while blink is enabled. A focused, visible,
   quiescent terminal parks the link completely
   (`TerminalIdlePolicy.displayLinkShouldRun(windowVisibleToUser:scrollAnimating:attentionAnimating:terminalOutputActive:cursorBlinkActive:idleFloorEnabled:)`).
+- Animation visibility means the Laban application is active and the terminal
+  window is visible, not miniaturized, and at least partly unoccluded. It is
+  intentionally independent of `NSWindow.isKeyWindow`: a same-application
+  auxiliary window such as Settings may own keyboard focus without hiding the
+  terminal's pixels. PTY/input focus remains key-window based. Application
+  activation is an explicit wake because the terminal receives no new
+  key-window notification when Settings stays key across an app switch.
 - Every state change that can alter pixels wakes the frame loop explicitly.
   The wake sources are enumerated and tagged (`FrameWakeSource` in
   `Sources/LabanApp/TerminalBitmapView.swift`); each rendered frame's render
@@ -77,6 +84,9 @@ timer, not a guaranteed periodic repaint.
 - The render journal's `displayLink.reason` ladder gains `"parked"` (visible,
   quiescent, floor off) so dumps distinguish the new state from
   `"notVisible"` and floor-on `"idle"`.
+- Opening a same-application auxiliary window no longer interrupts a live
+  terminal animation; deactivating Laban, hiding/minimizing the terminal, or
+  fully occluding it still parks animation work.
 
 ## Applies To New Code
 
