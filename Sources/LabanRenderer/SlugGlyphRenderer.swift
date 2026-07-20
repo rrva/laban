@@ -383,6 +383,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var lastFrameSolidsCount = 0
   public private(set) var lastFrameSlugGlyphsCount = 0
   public private(set) var lastFrameMotionGlyphsCount = 0
+  public private(set) var lastFrameSpinnerFallbackSnapCount = 0
+  private var frameSpinnerFallbackSnapCount = 0
   private var lastFrameRasterGlyphsCount = 0
   private var lastFrameColorGlyphsCount = 0
 
@@ -950,6 +952,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     return true
   }
 
+  /// Public hook to compile motion pipelines before the first spinner frame
+  /// lands, so effective enablement flipping false-to-true does not hitch.
+  @discardableResult
+  public func prewarmMotionPipelines() -> Bool {
+    ensureMotionPipelines()
+  }
+
   /// Default true. `LabanSlugPresentDisplayLink` can opt Slug out alone; if it is
   /// unset, the existing vector opt-out key disables the shared ADR 0026 fast path
   /// for both curve renderers.
@@ -1410,6 +1419,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     colorGlyphs.reserveCapacity(lastFrameColorGlyphsCount)
     frameGlyphFontSizes.removeAll(keepingCapacity: true)
     frameQuadHeights.removeAll(keepingCapacity: true)
+    frameSpinnerFallbackSnapCount = 0
     buildInstances(
       commands: commands,
       solids: &solids,
@@ -1423,6 +1433,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     lastFrameSolidsCount = solids.count + replaceSolids.count
     lastFrameSlugGlyphsCount = slugGlyphs.count
     lastFrameMotionGlyphsCount = motionGlyphs.count
+    lastFrameSpinnerFallbackSnapCount = frameSpinnerFallbackSnapCount
     lastFrameRasterGlyphsCount = rasterGlyphs.count
     lastFrameColorGlyphsCount = colorGlyphs.count
     spanSolids = solids.count + replaceSolids.count
@@ -2232,6 +2243,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           italicFallback: activeVariant.italicFallback,
           position: CGPoint(x: cellOriginX, y: origin.y))
       {
+        if foregroundTransition != nil {
+          frameSpinnerFallbackSnapCount += 1
+        }
         colorGlyphs.append(colorFallback)
         continue
       }
@@ -2245,6 +2259,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           position: CGPoint(x: cellOriginX, y: origin.y),
           color: foreground)
       {
+        if foregroundTransition != nil {
+          frameSpinnerFallbackSnapCount += 1
+        }
         rasterGlyphs.append(fallback)
         continue
       }
@@ -2264,6 +2281,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           position: CGPoint(x: cellOriginX, y: origin.y),
           color: foreground)
         {
+          if foregroundTransition != nil {
+            frameSpinnerFallbackSnapCount += 1
+          }
           rasterGlyphs.append(fallback)
         }
         continue

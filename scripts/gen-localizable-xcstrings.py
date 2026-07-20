@@ -1100,6 +1100,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "hi": "स्मूथ स्क्रॉल:",
         "ru": "Плавная прокрутка:",
     },
+    "Smooth spinner motion": {},
+    "Available with Slug Glyph; smooths foreground-color spinner ripples.": {},
     "Thin": {
         "zh-Hans": "细",
         "zh-Hant": "細",

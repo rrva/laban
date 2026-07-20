@@ -43,12 +43,13 @@ extension HeadlessDebugRuntime {
           configured: SpinnerMotionSmoothingSettings.enabled,
           effectiveRenderer: runtime.rendererBackend.rendererStatus.effectiveRenderer,
           rendererEligible: runtime.rendererBackend is SlugGlyphRenderer,
-          reduceMotion: false,
+          reduceMotion: runtime.accessibilityDisplayFlags.reduceMotion,
           effectiveEnabled: SpinnerMotionSmoothingSettings.enabled
-            && runtime.rendererBackend is SlugGlyphRenderer,
+            && runtime.rendererBackend is SlugGlyphRenderer
+            && !runtime.accessibilityDisplayFlags.reduceMotion,
           activeTransitions: activeTransitionCount,
           analyticMotionInstances: motionCount,
-          fallbackSnaps: max(0, activeTransitionCount - motionCount),
+          fallbackSnaps: slug?.lastFrameSpinnerFallbackSnapCount ?? 0,
           effectKind: effectKind,
           remainingSeconds: slug?.glyphEffectAnimatingRemainingSeconds ?? 0,
           liveEffectFrames: Int(slug?.glyphEffectFrameCount ?? 0))

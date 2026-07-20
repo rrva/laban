@@ -17,6 +17,8 @@ struct LiveControlEnvironment {
   var selectionProvider: (Session.ID) -> TerminalSelection?
   var accessibilityValueProvider: (Tab) -> String
   var sessionClientInfoById: [Session.ID: LabandSessionInfo]
+  var glyphEffectsStateProvider: (() -> GlyphEffectsStateResponse?)?
+  var spinnerMotionStateProvider: (() -> SpinnerMotionStateResponse?)?
 
   static func `default`(model: AppModel) -> LiveControlEnvironment {
     LiveControlEnvironment(
@@ -30,10 +32,26 @@ struct LiveControlEnvironment {
       accessibilityDisplayFlags: AccessibilityDisplayFlagsResponse(
         increaseContrast: false,
         differentiateWithoutColor: false,
-        reduceTransparency: false),
+        reduceTransparency: false,
+        reduceMotion: false),
       selectionProvider: { _ in nil },
       accessibilityValueProvider: { _ in "" },
-      sessionClientInfoById: [:])
+      sessionClientInfoById: [:],
+      glyphEffectsStateProvider: nil,
+      spinnerMotionStateProvider: {
+        SpinnerMotionStateResponse(
+          configured: SpinnerMotionSmoothingSettings.enabled,
+          effectiveRenderer: "vectorGlyph",
+          rendererEligible: false,
+          reduceMotion: false,
+          effectiveEnabled: false,
+          activeTransitions: 0,
+          analyticMotionInstances: 0,
+          fallbackSnaps: 0,
+          effectKind: 0,
+          remainingSeconds: 0,
+          liveEffectFrames: 0)
+      })
   }
 }
 
@@ -108,10 +126,26 @@ final class LiveIntentRouter: IntentRouter {
         accessibilityDisplayFlags: AccessibilityDisplayFlagsResponse(
           increaseContrast: false,
           differentiateWithoutColor: false,
-          reduceTransparency: false),
+          reduceTransparency: false,
+          reduceMotion: false),
         selectionProvider: { _ in nil },
         accessibilityValueProvider: { _ in "" },
-        sessionClientInfoById: [:])
+        sessionClientInfoById: [:],
+        glyphEffectsStateProvider: nil,
+        spinnerMotionStateProvider: {
+          SpinnerMotionStateResponse(
+            configured: SpinnerMotionSmoothingSettings.enabled,
+            effectiveRenderer: "vectorGlyph",
+            rendererEligible: false,
+            reduceMotion: false,
+            effectiveEnabled: false,
+            activeTransitions: 0,
+            analyticMotionInstances: 0,
+            fallbackSnaps: 0,
+            effectKind: 0,
+            remainingSeconds: 0,
+            liveEffectFrames: 0)
+        })
     }
   }
 
@@ -698,7 +732,9 @@ final class LiveIntentRouter: IntentRouter {
       readRedaction: readRedaction,
       clientSnapshotProvider: nil,
       accessibilityValueProvider: { [environment] tab in environment.accessibilityValueProvider(tab)
-      })
+      },
+      glyphEffectsProvider: environment.glyphEffectsStateProvider,
+      spinnerMotionProvider: environment.spinnerMotionStateProvider)
   }
 
   private func guiDiscoveryResponse(readRedaction: ControlReadRedaction) -> DebugDiscoveryResponse {

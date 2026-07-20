@@ -281,15 +281,18 @@ public struct AccessibilityDisplayFlagsResponse: Encodable {
   public var increaseContrast: Bool
   public var differentiateWithoutColor: Bool
   public var reduceTransparency: Bool
+  public var reduceMotion: Bool
 
   public init(
     increaseContrast: Bool,
     differentiateWithoutColor: Bool,
-    reduceTransparency: Bool
+    reduceTransparency: Bool,
+    reduceMotion: Bool = false
   ) {
     self.increaseContrast = increaseContrast
     self.differentiateWithoutColor = differentiateWithoutColor
     self.reduceTransparency = reduceTransparency
+    self.reduceMotion = reduceMotion
   }
 }
 

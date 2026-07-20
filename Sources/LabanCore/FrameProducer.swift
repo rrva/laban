@@ -375,6 +375,31 @@ public struct FrameProducer {
       isInvisible: (attrsRaw & invisibleRaw) != 0)
   }
 
+  /// Same visual resolution as `resolvedVisuals(for: LabanCell, ...)` but for
+  /// the remote `LabandSnapshotCell` transport, which does not carry per-cell
+  /// underline or hyperlink IDs. Keeping the factoring identical matters for
+  /// spinner motion detection and remote glyph-run splitting, which must agree
+  /// on the resolved foreground/background/attributes the renderer will see.
+  @inline(__always)
+  private func resolvedVisuals(for cell: LabandSnapshotCell) -> ResolvedCellVisuals {
+    let attrsRaw = (cell.flags & renderableMaskRaw) & ~inverseRaw
+    let background = compositedBackgroundColor(
+      cell.backgroundRGBA,
+      explicit: isExplicitBackground(flags: cell.flags))
+    let foreground =
+      (attrsRaw & faintRaw) != 0
+      ? Self.blend(cell.foregroundRGBA, toward: background, foregroundWeight: 0.50)
+      : cell.foregroundRGBA
+    return ResolvedCellVisuals(
+      foreground: foreground,
+      background: background,
+      attrsRaw: attrsRaw,
+      underlineStyle: .none,
+      underlineColor: nil,
+      hyperlink: nil,
+      isInvisible: (attrsRaw & invisibleRaw) != 0)
+  }
+
   // MARK: - Spinner motion observation extraction
 
   /// Extract the resolved visual state of every terminal cell for the spinner
@@ -447,24 +472,20 @@ public struct FrameProducer {
     for row in 0..<rows {
       for col in 0..<cols {
         guard let cell = cellAt(row: row, col: col) else { continue }
-        let background = compositedBackgroundColor(
-          cell.backgroundRGBA,
-          explicit: isExplicitBackground(flags: cell.flags))
-        let foreground = cell.foregroundRGBA
-        let attrs = TextAttributes(cellFlags: cell.flags)
+        let visuals = resolvedVisuals(for: cell)
         let displayWidth = TerminalDisplayWidth.cells(of: cell.text)
         let key = SpinnerMotionCellKey(row: row, col: col)
         result[key] = SpinnerMotionCellState(
           key: key,
           text: cell.text,
           displayWidth: displayWidth,
-          foreground: foreground,
-          background: background,
-          attributes: attrs,
-          underlineStyle: .none,
-          underlineColor: nil,
-          hyperlink: nil,
-          wide: UInt8(displayWidth > 1 ? 1 : 0))
+          foreground: visuals.foreground,
+          background: visuals.background,
+          attributes: visuals.attributes,
+          underlineStyle: visuals.underlineStyle,
+          underlineColor: visuals.underlineColor,
+          hyperlink: visuals.hyperlink,
+          wide: UInt8(displayWidth > 1 ? LABAN_CELL_WIDE_WIDE : LABAN_CELL_WIDE_NARROW))
       }
     }
     return result
@@ -1815,6 +1836,11 @@ public struct FrameProducer {
           flushRun()
           continue
         }
+        let visuals = resolvedVisuals(for: cell)
+        guard !visuals.isInvisible else {
+          flushRun()
+          continue
+        }
         // Block elements (U+2580..U+259F) and fixed-format geometric triangles
         // (U+25E2..U+25E5) leave hairline gaps when rendered through the
         // font, because the loaded glyph's metrics don't exactly fill the
@@ -1834,39 +1860,32 @@ public struct FrameProducer {
             at: CGPoint(x: cellX, y: cellY),
             cellWidth: cw,
             cellHeight: ch,
-            foreground: cell.foregroundRGBA
+            foreground: visuals.foreground
           ) {
             cmds.append(.rect(filled.rect, color: filled.color, source: .terminal))
           }
           continue
         }
-        let attrs = TextAttributes(cellFlags: cell.flags)
         let cellTransition = cellTransition(col)
         if runStart == nil {
           runStart = col
-          runFg = cell.foregroundRGBA
-          runBg = compositedBackgroundColor(
-            cell.backgroundRGBA,
-            explicit: isExplicitBackground(flags: cell.flags))
-          runAttrs = attrs
+          runFg = visuals.foreground
+          runBg = visuals.background
+          runAttrs = visuals.attributes
           runTransition = cellTransition
           runText = cell.text
-        } else if cell.foregroundRGBA == runFg
-          && compositedBackgroundColor(
-            cell.backgroundRGBA,
-            explicit: isExplicitBackground(flags: cell.flags)) == runBg
-          && attrs == runAttrs
+        } else if visuals.foreground == runFg
+          && visuals.background == runBg
+          && visuals.attributes == runAttrs
           && runTransition == cellTransition
         {
           runText += cell.text
         } else {
           flushRun()
           runStart = col
-          runFg = cell.foregroundRGBA
-          runBg = compositedBackgroundColor(
-            cell.backgroundRGBA,
-            explicit: isExplicitBackground(flags: cell.flags))
-          runAttrs = attrs
+          runFg = visuals.foreground
+          runBg = visuals.background
+          runAttrs = visuals.attributes
           runTransition = cellTransition
           runText = cell.text
         }

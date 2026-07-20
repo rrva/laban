@@ -7445,6 +7445,12 @@
         }
       }
     },
+    "Smooth spinner motion": {
+      "localizations": {}
+    },
+    "Available with Slug Glyph; smooths foreground-color spinner ripples.": {
+      "localizations": {}
+    },
     "Thin": {
       "localizations": {
         "zh-Hans": {

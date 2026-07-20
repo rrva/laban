@@ -106,6 +106,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorOverlapLabel = NSTextField(labelWithString: L10n.tr("Overlap:"))
   private let vectorTextWeightLabel = NSTextField(labelWithString: L10n.tr("Text weight:"))
   private let vectorSmoothScrollLabel = NSTextField(labelWithString: L10n.tr("Smooth scroll:"))
+  private let spinnerMotionSmoothingCheckbox = NSButton(
+    checkboxWithTitle: L10n.tr("Smooth spinner motion"), target: nil, action: nil)
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Option as Meta"), target: nil, action: nil)
@@ -582,6 +584,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       + "softens slightly while moving). Crisp rasterizes a mask per sub-pixel phase "
       + "(sharper subpixel-AA in motion, a touch more GPU work). Vector renderer only."
 
+    spinnerMotionSmoothingCheckbox.target = self
+    spinnerMotionSmoothingCheckbox.action = #selector(spinnerMotionSmoothingChanged(_:))
+    spinnerMotionSmoothingCheckbox.toolTip = L10n.tr(
+      "Available with Slug Glyph; smooths foreground-color spinner ripples.")
+    spinnerMotionSmoothingCheckbox.setAccessibilityLabel(L10n.tr("Smooth spinner motion"))
+
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
     optionAsMetaCheckbox.toolTip =
@@ -689,6 +697,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [vectorOverlapLabel, makeVectorSubpixelCustomRow()],
       [vectorTextWeightLabel, makeVectorTextWeightRow()],
       [vectorSmoothScrollLabel, vectorSmoothScrollPopUp],
+      [NSGridCell.emptyContentView, spinnerMotionSmoothingCheckbox],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
     let notificationsGrid = makeSettingsGrid([
@@ -859,6 +868,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     vectorSmoothScrollPopUp.isEnabled = smoothScroll
     vectorSmoothScrollLabel.textColor = smoothScroll ? .labelColor : .secondaryLabelColor
+
+    let spinnerMotion = selection == .slugGlyph
+    let envLocked = SpinnerMotionSmoothingSettings.environmentOverride() != nil
+    spinnerMotionSmoothingCheckbox.isEnabled = spinnerMotion && !envLocked
   }
 
   private func makeVectorSubpixelCustomRow() -> NSStackView {
@@ -985,6 +998,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       vectorSmoothScrollPopUp.selectItem(at: row)
     }
     refreshVectorControlsForRenderer(rendererSelection)
+    spinnerMotionSmoothingCheckbox.state = SpinnerMotionSmoothingSettings.enabled ? .on : .off
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off
@@ -1441,6 +1455,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let row = sender.indexOfSelectedItem
     guard row >= 0, row < vectorSmoothScrollOptions.count else { return }
     VectorSmoothScrollSettings.setCurrent(vectorSmoothScrollOptions[row])
+    refresh()
+  }
+
+  @objc private func spinnerMotionSmoothingChanged(_ sender: NSButton) {
+    let enabled = sender.state == .on
+    guard SpinnerMotionSmoothingSettings.setEnabled(enabled) else {
+      sender.state = SpinnerMotionSmoothingSettings.enabled ? .on : .off
+      return
+    }
     refresh()
   }
 

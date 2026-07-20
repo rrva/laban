@@ -185,6 +185,9 @@ struct DebugWindowActions {
       return jsonError(
         "setSpinnerMotionSmoothingEnabled is locked by \(SpinnerMotionSmoothingSettings.enabledEnvironmentKey)=\(raw)")
     }
+    if enabled, let slug = runtime.rendererBackend as? SlugGlyphRenderer {
+      slug.prewarmMotionPipelines()
+    }
     runtime.renderFrameUnlocked()
     return runtime.actionResult(ok: true)
   }

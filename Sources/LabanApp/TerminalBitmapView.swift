@@ -924,6 +924,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       guard let self else { return }
       // Setting changes can flip eligibility; force a full damage frame so the
       // spinner-motion detector resets and the next render sees the new state.
+      if SpinnerMotionSmoothingSettings.enabled, let slug = self.backend as? SlugGlyphRenderer {
+        slug.prewarmMotionPipelines()
+      }
       self.renderInvalidated = true
       self.surfaceController.invalidateSessionSyncCache()
       if self.window != nil {
@@ -1340,6 +1343,38 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   var rendererSelection: RendererSelection {
     intendedRendererSelection
+  }
+
+  var spinnerMotionState: SpinnerMotionStateResponse? {
+    let currentBackend = pendingBackendSwap?.backend ?? backend
+    let slug = currentBackend as? SlugGlyphRenderer
+    let motionCount = slug?.lastFrameMotionGlyphsCount ?? 0
+    let activeTransitionCount = surfaceController.spinnerMotionActiveTransitionCount()
+    let effectKind = Int(slug?.lastGlyphEffectKind ?? 0)
+    return SpinnerMotionStateResponse(
+      configured: SpinnerMotionSmoothingSettings.enabled,
+      effectiveRenderer: currentBackend.rendererStatus.effectiveRenderer,
+      rendererEligible: currentBackend is SlugGlyphRenderer,
+      reduceMotion: accessibilityDisplayOptions.reduceMotion,
+      effectiveEnabled: SpinnerMotionSmoothingSettings.enabled
+        && currentBackend is SlugGlyphRenderer
+        && !accessibilityDisplayOptions.reduceMotion,
+      activeTransitions: activeTransitionCount,
+      analyticMotionInstances: motionCount,
+      fallbackSnaps: slug?.lastFrameSpinnerFallbackSnapCount ?? 0,
+      effectKind: effectKind,
+      remainingSeconds: slug?.glyphEffectAnimatingRemainingSeconds ?? 0,
+      liveEffectFrames: Int(slug?.glyphEffectFrameCount ?? 0))
+  }
+
+  var glyphEffectsState: GlyphEffectsStateResponse? {
+    let currentBackend = pendingBackendSwap?.backend ?? backend
+    guard let slug = currentBackend as? SlugGlyphRenderer else { return nil }
+    return GlyphEffectsStateResponse(
+      active: slug.glyphEffectLiveCount > 0,
+      liveCount: slug.glyphEffectLiveCount,
+      lastKind: Int(slug.lastGlyphEffectKind),
+      wakeCount: Int(slug.glyphEffectFrameCount))
   }
 
   var usesMetalBackend: Bool {

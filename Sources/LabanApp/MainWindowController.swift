@@ -1049,7 +1049,8 @@ final class MainWindowController: NSWindowController {
         accessibilityDisplayFlags: AccessibilityDisplayFlagsResponse(
           increaseContrast: opts.increaseContrast,
           differentiateWithoutColor: opts.differentiateWithoutColor,
-          reduceTransparency: opts.reduceTransparency),
+          reduceTransparency: opts.reduceTransparency,
+          reduceMotion: opts.reduceMotion),
         selectionProvider: { sessionID in
           termView.terminalSelection(forSessionID: sessionID, model: model)
         },
@@ -1062,7 +1063,9 @@ final class MainWindowController: NSWindowController {
             from: UnsafePointer(snap),
             mode: .trimmedNonEmptyRows)
         },
-        sessionClientInfoById: [:]))
+        sessionClientInfoById: [:],
+        glyphEffectsStateProvider: { [weak termView] in termView?.glyphEffectsState },
+        spinnerMotionStateProvider: { [weak termView] in termView?.spinnerMotionState }))
   }
 
   func applyControlServerEnabled(_ enabled: Bool) {

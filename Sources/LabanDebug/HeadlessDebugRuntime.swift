@@ -123,7 +123,8 @@ public final class HeadlessDebugRuntime {
   var accessibilityDisplayFlags = AccessibilityDisplayFlagsResponse(
     increaseContrast: false,
     differentiateWithoutColor: false,
-    reduceTransparency: false)
+    reduceTransparency: false,
+    reduceMotion: false)
   var requestedTransparency = TerminalTransparencyConfiguration(
     backgroundOpacity: 1,
     applyToExplicitCellBackgrounds: false,
@@ -253,6 +254,11 @@ public final class HeadlessDebugRuntime {
       headless: true)
     let configuredBackend = try TerminalSessionBackend.configured()
     self.terminalBackend = fixtureURL == nil ? configuredBackend : .inProcess
+    let envReduceMotion = ProcessInfo.processInfo.environment["LABAN_REDUCE_MOTION"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    self.accessibilityDisplayFlags.reduceMotion =
+      envReduceMotion == "1" || envReduceMotion == "true" || envReduceMotion == "yes"
 
     // Parity with MainWindowController: honor the persisted font size
     // (UserDefaults `LabanFontSize`) instead of hardcoding the default.
@@ -850,6 +856,7 @@ public final class HeadlessDebugRuntime {
         viewportWidth: CGFloat(windowWidth),
         viewportHeight: CGFloat(windowHeight),
         cursorBlinkVisible: true,
+        reduceMotion: accessibilityDisplayFlags.reduceMotion,
         accessibilityVisualOptions: TerminalAccessibilityVisualOptions(
           increaseContrast: accessibilityDisplayFlags.increaseContrast,
           differentiateWithoutColor: accessibilityDisplayFlags.differentiateWithoutColor,
