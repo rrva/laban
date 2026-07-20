@@ -1712,4 +1712,94 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       stamps.first(where: { $0.text == "delta" })?.stamp ?? nil, 11.0,
       "only the freshly output row may receive the ink-bloom stamp")
   }
+
+  // MARK: - Spinner motion re-activation
+
+  func testSpinnerMotionReactivatesAfterLiveToggle() throws {
+    var size = LabanTerminalSize()
+    size.rows = 1
+    size.cols = 32
+    let model = try AppModel(initialSize: size)
+    guard let tab = model.activeTab,
+      let session = model.session(forTab: tab.id)
+    else {
+      XCTFail("missing active fixture session")
+      return
+    }
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 0)
+    var virtualTime: Double = 0
+    controller.outputStampClock = { virtualTime }
+
+    let bullets = String(repeating: "\u{2022}", count: 20)
+    func feed(red: Bool) {
+      let color = red ? "255;0;0" : "0;0;255"
+      let bytes = Array(
+        "\u{001B}[?25l\u{001B}[H\u{001B}[38;2;\(color)m\(bullets)".utf8)
+      _ = session.write(bytes)
+      _ = session.poll()
+    }
+
+    func makeFrame(enabled: Bool, frame: Int) -> TerminalSurfaceFrame? {
+      virtualTime += 0.3
+      return controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: frame,
+          viewportWidth: 256,
+          viewportHeight: 16,
+          cursorBlinkVisible: false,
+          requireActiveSnapshot: true,
+          surfaceWidth: 256,
+          surfaceHeight: 16,
+          surfaceScale: 1,
+          spinnerMotionSmoothingEnabled: enabled,
+          effectiveRendererIsSlug: true))
+    }
+
+    // Warm up: three alternating color pulses should activate the detector.
+    feed(red: true)
+    let warm1 = makeFrame(enabled: true, frame: 1)
+    XCTAssertEqual(warm1?.spinnerMotionDiagnostics?.activeTransitions ?? 0, 0)
+
+    feed(red: false)
+    let warm2 = makeFrame(enabled: true, frame: 2)
+    XCTAssertEqual(warm2?.spinnerMotionDiagnostics?.activeTransitions ?? 0, 0)
+
+    feed(red: true)
+    let warm3 = makeFrame(enabled: true, frame: 3)
+    XCTAssertTrue(warm3?.spinnerMotionDiagnostics?.detectorActive ?? false)
+    XCTAssertGreaterThan(warm3?.spinnerMotionDiagnostics?.activeTransitions ?? 0, 0)
+
+    // Toggle the setting off: detector state is dropped and no transitions are emitted.
+    feed(red: false)
+    let offFrame = makeFrame(enabled: false, frame: 4)
+    XCTAssertEqual(offFrame?.spinnerMotionDiagnostics?.activeTransitions ?? 0, 0)
+
+    // Toggle back on. The detector must re-learn the cadence from scratch and
+    // re-activate on the third qualifying observation — this is what a user
+    // sees after turning Smooth spinner motion off and on while a spinner runs.
+    feed(red: true)
+    let reactivate1 = makeFrame(enabled: true, frame: 5)
+    XCTAssertEqual(reactivate1?.spinnerMotionDiagnostics?.activeTransitions ?? 0, 0)
+
+    feed(red: false)
+    let reactivate2 = makeFrame(enabled: true, frame: 6)
+    XCTAssertEqual(reactivate2?.spinnerMotionDiagnostics?.activeTransitions ?? 0, 0)
+
+    feed(red: true)
+    let reactivate3 = makeFrame(enabled: true, frame: 7)
+    XCTAssertTrue(reactivate3?.spinnerMotionDiagnostics?.detectorActive ?? false)
+    XCTAssertGreaterThan(reactivate3?.spinnerMotionDiagnostics?.activeTransitions ?? 0, 0)
+
+    // Continue pulsing: the re-activated detector must not be confused by the
+    // earlier off/on switch and should keep producing transitions.
+    feed(red: false)
+    let reactivate4 = makeFrame(enabled: true, frame: 8)
+    XCTAssertTrue(reactivate4?.spinnerMotionDiagnostics?.detectorActive ?? false)
+    XCTAssertGreaterThan(reactivate4?.spinnerMotionDiagnostics?.activeTransitions ?? 0, 0)
+  }
 }
