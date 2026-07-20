@@ -35,7 +35,8 @@
         ]
       },
       "expectJson": [
-        {"path": "regions[0].nonBackgroundPixels", "greaterThan": 0}
+        {"path": "regions[0].nonBackgroundPixels", "greaterThan": 0},
+        {"path": "regions[1].nonBackgroundPixels", "equals": 0}
       ],
       "saveAs": "probe-baseline.json"
     },

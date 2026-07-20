@@ -146,8 +146,12 @@ struct DebugWindowActions {
     guard runtime.deterministic else {
       return jsonError("advanceTime requires --deterministic")
     }
-    let ms = max(request.ms ?? 0, 1)
-    runtime.virtualTimeSeconds += Double(ms) / 1000.0
+    let raw = request.ms ?? 0
+    guard raw >= 1, raw <= AdvanceTimeActionRequest.maxMilliseconds else {
+      return jsonError(
+        "advanceTime ms must be in 1...\(AdvanceTimeActionRequest.maxMilliseconds)")
+    }
+    runtime.virtualTimeSeconds += Double(raw) / 1000.0
     runtime.renderFrameUnlocked()
     return runtime.actionResult(ok: true)
   }
@@ -156,7 +160,12 @@ struct DebugWindowActions {
     guard let enabled = request.enabled else {
       return jsonError("setGlyphEffectsEnabled requires enabled")
     }
-    GlyphEffectSettings.setEnabled(enabled)
+    guard GlyphEffectSettings.setEnabled(enabled) else {
+      let raw = ProcessInfo.processInfo.environment[GlyphEffectSettings.enabledEnvironmentKey]
+        ?? ""
+      return jsonError(
+        "setGlyphEffectsEnabled is locked by \(GlyphEffectSettings.enabledEnvironmentKey)=\(raw)")
+    }
     runtime.wireGlyphEffectChannelUnlocked()
     runtime.renderFrameUnlocked()
     return runtime.actionResult(ok: true)

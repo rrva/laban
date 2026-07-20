@@ -159,3 +159,54 @@ final class GlyphEffectTimelineTests: XCTestCase {
     }
   }
 }
+
+final class GlyphEffectSettingsTests: XCTestCase {
+  private var defaults: UserDefaults!
+
+  override func setUp() {
+    super.setUp()
+    defaults = UserDefaults(suiteName: "GlyphEffectSettingsTests.\(UUID().uuidString)")
+  }
+
+  override func tearDown() {
+    if let suite = defaults?.dictionaryRepresentation().keys {
+      for key in suite { defaults.removeObject(forKey: key) }
+    }
+    defaults = nil
+    super.tearDown()
+  }
+
+  func testDefaultsToOffWhenKeyAbsent() {
+    XCTAssertFalse(
+      GlyphEffectSettings.enabled(defaults: defaults, environment: [:]))
+  }
+
+  func testUserDefaultsEnablesWithoutEnv() {
+    XCTAssertTrue(GlyphEffectSettings.setEnabled(true, defaults: defaults, environment: [:]))
+    XCTAssertTrue(GlyphEffectSettings.enabled(defaults: defaults, environment: [:]))
+    XCTAssertTrue(GlyphEffectSettings.setEnabled(false, defaults: defaults, environment: [:]))
+    XCTAssertFalse(GlyphEffectSettings.enabled(defaults: defaults, environment: [:]))
+  }
+
+  func testEnvironmentOverrideWinsAndLocksSetEnabled() {
+    let env = [GlyphEffectSettings.enabledEnvironmentKey: "1"]
+    XCTAssertTrue(GlyphEffectSettings.enabled(defaults: defaults, environment: env))
+    // Writing UserDefaults must refuse — otherwise debug actions claim success
+    // while `enabled` keeps returning the env value.
+    XCTAssertFalse(GlyphEffectSettings.setEnabled(false, defaults: defaults, environment: env))
+    XCTAssertTrue(
+      GlyphEffectSettings.enabled(defaults: defaults, environment: env),
+      "env must still win after a refused setEnabled(false)")
+    XCTAssertNil(
+      defaults.object(forKey: GlyphEffectSettings.enabledKey),
+      "refused write must not touch UserDefaults")
+  }
+
+  func testFalsyEnvironmentOverrideForcesOff() {
+    let env = [GlyphEffectSettings.enabledEnvironmentKey: "0"]
+    defaults.set(true, forKey: GlyphEffectSettings.enabledKey)
+    XCTAssertFalse(GlyphEffectSettings.enabled(defaults: defaults, environment: env))
+    XCTAssertFalse(GlyphEffectSettings.setEnabled(true, defaults: defaults, environment: env))
+  }
+}
+

@@ -1486,6 +1486,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     pending.backend.onFrameCompleted = nil
     backend = pending.backend
     activeRendererSelection = pending.selection
+    // Drop any live ink-bloom deadline: `syncGlyphEffectAnimatingState` is a
+    // no-op on non-Slug backends, so a leftover until would keep the display
+    // link at the 30 fps animation budget against a backend with nothing to
+    // animate. The next Slug render re-extends if effects are still live.
+    glyphEffectAnimatingUntil = .distantPast
     configurePresentationForCurrentBackend()
     installFrameCompletionHook()
     lastPixelWidth = 0

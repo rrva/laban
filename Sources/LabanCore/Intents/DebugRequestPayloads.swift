@@ -1212,6 +1212,10 @@ public struct AdvanceFramesActionRequest: Codable, Sendable, Equatable, JSONSche
 }
 
 public struct AdvanceTimeActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  /// Hard ceiling so a typo cannot jump the virtual clock by minutes/hours.
+  /// Scenario fixtures use ≤300 ms steps; 60 s is still ample for long settles.
+  public static let maxMilliseconds = 60_000
+
   public var ms: Int?
 
   public init(ms: Int? = nil) {
@@ -1219,7 +1223,9 @@ public struct AdvanceTimeActionRequest: Codable, Sendable, Equatable, JSONSchema
   }
 
   public static var jsonSchema: SchemaNode {
-    DebugPayloadSchema.object(["ms": SchemaNode.integer(min: 1, max: nil)])
+    DebugPayloadSchema.object([
+      "ms": SchemaNode.integer(min: 1, max: maxMilliseconds)
+    ])
   }
 }
 

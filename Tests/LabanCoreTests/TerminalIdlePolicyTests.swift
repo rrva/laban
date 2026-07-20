@@ -319,6 +319,30 @@ final class TerminalIdlePolicyTests: XCTestCase {
       TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
   }
 
+  func testGlyphEffectParkWhenDecayEnds() {
+    // The live→settled edge: once the last bloom decays, the link must park
+    // (floor off, no other activity). Without this, a sticky
+    // `glyphEffectAnimatingUntil` would keep the 30 fps animation budget.
+    XCTAssertTrue(
+      TerminalIdlePolicy.displayLinkShouldRun(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        terminalOutputActive: false,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false,
+        glyphEffectAnimating: true))
+    XCTAssertFalse(
+      TerminalIdlePolicy.displayLinkShouldRun(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        terminalOutputActive: false,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false,
+        glyphEffectAnimating: false))
+  }
+
   func testShimsKeepGlyphEffectOff() {
     // The compatibility shims model the pre-channel world: no glyph effects.
     XCTAssertEqual(
