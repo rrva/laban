@@ -1,576 +1,570 @@
-# Motion-smoothed ANSI/ASCII spinners (detect steady small-region redraws, interpolate between them)
+# Motion-smoothed ANSI/ASCII spinners
 
 This ExecPlan is a living document maintained in accordance with `PLANS.md`
-at the repository root. Keep `Progress` and `Validation and Acceptance`
-current as work proceeds.
+at the repository root. Keep `Progress`, `Surprises & Discoveries`, `Decision
+Log`, and `Validation and Acceptance` current as work proceeds.
 
 ## Purpose / Big Picture
 
-Modern TVs run "motion interpolation" (marketed as TruMotion, MotionFlow,
-Auto Motion Plus, etc.): they synthesize extra frames between the ones a
-24-30fps source actually provides, so motion looks buttery instead of
-juddery. It is famous for two things: making things look noticeably
-smoother, and the "soap opera effect" that makes film purists reach for the
-remote to turn it off. Both properties are relevant here.
+Many terminal programs repaint a small status region at a modest, steady
+cadence. Claude Code, for example, can leave the letters of a status verb in
+place while a foreground-color ripple moves across them. Laban currently
+shows each real update as a discrete color jump.
 
-Many terminal programs animate a small part of the screen at a modest,
-steady rate: a spinner character cycling, a status word pulsing through
-different brightness levels, a progress bar's fill color shifting. A
-concrete example already visible in this repo's own daily use: Claude Code
-prints a verb like "Zigzagging" while it works, and a brightness ripple runs
-left-to-right across the letters, redrawn every time the underlying app
-writes a new frame (roughly every 100ms for that kind of spinner, though the
-exact rate is app-specific and this plan never hardcodes it). Today Laban
-redraws that word exactly as fast as the app writes it and no faster — there
-is no synthesis, so the ripple looks exactly as chunky as the source data.
+After this work, a user can enable **Smooth spinner motion** in Settings. When
+the same glyphs in a small, steadily updating region change foreground or
+background color, Laban displays one copy of each current glyph and gradually
+interpolates its colors from the previously displayed colors to the new
+colors. There is no overlapping old glyph, opacity dip, or ghost image. The
+behavior is renderer-neutral: software, classic Metal, GPU-driven Metal,
+Vector Glyph, and Slug Glyph consume the same interpolated colors. Fullscreen
+TUIs that enable terminal mouse tracking remain eligible; the detector never
+matches process names or literal output text.
 
-After this plan, Laban notices *any* small region of the grid that keeps
-being rewritten at a steady, spinner-like cadence — this works for any
-program's spinner or pulsing status text, not just Claude Code's, and Laban
-never inspects the running program's name or output text to decide — and
-smooths the transitions between the real states it receives, the same way a
-TV smooths between real film frames. Concretely, for a cell whose character
-does not change but whose color does (the "Zigzagging" ripple case), instead
-of snapping straight from color A to color B the moment new PTY output
-arrives, Laban eases the displayed color from A to B continuously over the
-gap between updates, so the ripple reads as a continuous wave instead of a
-strobe. This is opt-in and off by default (see Design decisions below) — the
-"turn off the soap opera effect" toggle for anyone who finds smoothed
-terminal output distracting.
+The setting is off by default, and macOS Reduce Motion force-disables it.
+While disabled, both frame commands and `TerminalCellPayload` are byte-for-byte
+equivalent to the pre-plan output and spinner detection does not keep the
+display link running. When an enabled transition settles, a final target-color
+frame is rendered and the display link parks exactly as it does today.
 
-How to see it working (once M1 lands): enable the setting, run a program
-that repaints a spinner in place (or the synthetic scenario fixture this
-plan adds), and watch the color transitions read as a continuous ripple
-instead of discrete jumps. Disable the setting (the default) and output is
-pixel-identical to today. Either way, once the spinner stops, the display
-link parks exactly as it does today — `idle-counters.jsonl` shows zero
-`advanceFrames` over a subsequent idle window.
+The committed scope is deliberately color-only: the grapheme cluster, display
+width, attributes, underline metadata, and hyperlink identity must remain
+unchanged. A spinner that substitutes different characters, such as a Braille
+sequence, still changes instantly. Different-glyph motion synthesis is
+deferred because it requires a separate visual/compositing design rather than
+two ordinary source-over glyphs.
+
+How to see the result after implementation:
+
+1. Open Settings > Rendering and enable **Smooth spinner motion**.
+2. Run the deterministic scenario in
+   `fixtures/spinner-motion-smoothing.scenario.json`, or run a real program
+   that repeatedly recolors a fixed status word.
+3. During a transition, `/debug/pixel-probe` and
+   `/debug/frame-commands` show colors strictly and predictably between the
+   previous and new endpoint colors.
+4. Disable the checkbox or enable Reduce Motion. The next frame displays the
+   authoritative terminal colors immediately, no animation frames remain, and
+   the link parks after the ordinary output hold expires.
 
 ## Context and Orientation
 
-This section assumes no prior context beyond a checkout of this repository.
+Laban renders an authoritative terminal snapshot through two equivalent data
+paths:
 
-**Relationship to `execplans/active/per-glyph-animation-channel.md`.** A
-separate, already-partially-shipped ExecPlan (three commits landed on branch
-`per-glyph-animation-channel` as of this writing: `46cd1b6b`, `b6358251`,
-`467158fd`) built a **per-glyph animation channel**: a way for the GPU
-renderer to animate individual glyphs over time. That plan's first consumer
-was an "ink-bloom" type-in effect (freshly typed text eases in) and a
-planned-but-unbuilt "visual bell shake". This plan **reuses that channel's
-substrate** (the per-instance `effectKind`/`effectStart` payload, the
-`timeSeconds` uniform, the vertex-shader evaluation hook — all described
-below) but is **independent of and does not require** that plan's ink-bloom
-effect or bell shake to ship, stay, or be removed. The two plans share one
-resource that needs explicit coordination: the `effectKind` integer values
-each new effect uses (0 = none, 1 = ink-bloom already shipped, 2 = bell
-shake reserved-but-unbuilt by the sibling plan). This plan claims **3** and
-**4** (defined below) and must not collide with those. The fate of
-ink-bloom itself (kind 1) is a separate, still-open product question for the
-user and is out of scope for this plan to decide.
+- `Sources/LabanRenderer/FrameCommand.swift` defines the shared command
+  language used by software, classic Metal, Vector Glyph, Slug Glyph, debug
+  serialization, and capture/replay.
+- `Sources/LabanRenderer/TerminalCellPayload.swift` is a renderer-neutral
+  acceleration payload used by GPU-driven Metal. It is not a second source of
+  truth; `Sources/LabanCore/FrameProducer.swift` derives both paths from the
+  same snapshot and resolved terminal-cell visuals.
+- `Sources/LabanCore/TerminalSurfaceController.swift` owns persistent,
+  per-session render state and constructs `TerminalSurfaceFrame` values. It is
+  the correct owner for cadence history and short-lived color transitions
+  because it already survives view rebuilds without making a renderer into a
+  retained scene graph.
+- `Sources/LabanApp/TerminalBitmapView.swift` owns AppKit display-link policy.
+  `Sources/LabanCore/TerminalIdlePolicy.swift` is its pure, GPU-free decision
+  function. ADR 0018 requires every animation to have an explicit wake source,
+  a bounded liveness signal, a final settle frame, and complete parking after
+  the animation ends.
+- `Sources/LabanDebug/HeadlessDebugRuntime.swift` is the headless equivalent
+  of the visible app path. It must receive the same effective setting, clock,
+  detector, transition, frame-command, and payload behavior.
 
-**Key terms, defined plainly:**
+The existing per-glyph ink-bloom channel on branch
+`per-glyph-animation-channel` is not the implementation substrate for this
+feature. It is useful precedent for deterministic virtual time, animation
+liveness, and the trailing settle-frame latch, but its shader payload cannot
+represent this design:
 
-- **Cell** — one character position in the terminal grid: a row/column pair
-  holding one grapheme cluster (visible character(s)), a foreground color, a
-  background color, and style flags (bold, underline, etc.).
-- **Generation** — a monotonically increasing integer Laban's PTY layer
-  (`libghostty-vt`, wrapped by `Session`) bumps every time new terminal
-  output changes any cell. `session.dirtyGeneration()` reads it.
-- **Glyph run** — one `FrameCommand.glyphRun` value (defined at
-  `Sources/LabanRenderer/FrameCommand.swift:158`): a horizontal run of
-  adjacent cells sharing color/attributes, rendered as one text string. The
-  renderer never draws individual cells directly; it draws runs.
-- **Cross-fade** — this plan's core mechanic: rendering the *old* cell
-  content and the *new* cell content as two overlapping instances at the
-  same position, one fading out (alpha 1→0) and one fading in (alpha 0→1),
-  so the transition between them reads as a smooth blend instead of an
-  instant swap. This is exactly what a video cross-dissolve does with two
-  frames; here it is done per-cell with two colors (or, in the deferred M2,
-  two different glyphs).
-- **Instance** — one `SlugGlyphGPUInstance` (Swift,
-  `Sources/LabanRenderer/SlugGlyphRenderer.swift:56`) / `SlugGlyphInstance`
-  (Metal mirror, `Sources/LabanRenderer/VectorGlyphShaders.metal:594`): the
-  fixed-size (64 bytes) struct the GPU reads once per drawn glyph. Today one
-  cell in one glyph run produces exactly one instance; this plan's M1 makes
-  actively-transitioning cells produce **two** instances (old + new) for the
-  duration of their cross-fade, and one instance again once it settles.
+- `FrameCommand.glyphRun` carries only `outputTimestampSeconds`, not an effect
+  kind or duration.
+- `SlugGlyphGPUInstance` has no spare duration field.
+- two ordinary source-over instances at half alpha produce 75% combined
+  coverage and an order-biased mixture, not a true color interpolation.
+- Slug ignores `glyphRun.background` while building glyph instances, so that
+  mechanism cannot interpolate cell backgrounds.
 
-**Existing diffing machinery this plan builds on** (all in
-`Sources/LabanCore/TerminalSurfaceController.swift`, already exercised and
-verified correct for its current purpose by a prior review of this exact
-branch):
+This plan therefore adds no spinner effect kinds and makes no spinner changes
+to `SlugGlyphGPUInstance`, `SlugGlyphGPUUniforms`, or
+`Sources/LabanRenderer/VectorGlyphShaders.metal`.
 
-- `TerminalSurfaceController.cellFingerprints(snapshot:rows:)` (line 1173)
-  computes one hash per cell (character bytes + style) per row, used to tell
-  "this cell changed" from "this cell is unchanged" cheaply.
-- `TerminalSurfaceController.freshness(snapshot:cellWidth:cellHeight:originX:
-  originY:previousFingerprints:)` (line 1331) and its helper
-  `freshnessFromCellDiff(dirtyRows:...)` classify each generation's change as
-  one of: `cellDiff` (one dirty row, a small contiguous span of changed
-  columns — exactly the shape of a spinner or a shimmering word), `wholeRun`
-  (multi-row or near-full-row rewrite — a bulk TUI redraw, e.g. `btop`; never
-  a spinner), `cursorCell`, or none.
-- `TerminalSurfaceController.stampFreshOutputTimestamps` (private, line
-  1682) is called once per frame from `makeFrame` (public overloads at lines
-  703 and 917) and currently only *mutates the `outputTimestampSeconds`
-  field* on existing `FrameCommand.glyphRun` values already built earlier in
-  `makeFrame` (via `Sources/LabanCore/FrameProducer.swift`, a `struct` — see
-  line 34 — that turns the raw grid snapshot into glyph runs). This plan's
-  M1 extends this step to *also insert new synthetic glyph-run commands*
-  (the fading-out "old" instance) alongside the real ones — see Plan of
-  Work.
+The existing ink-bloom diff is also not the spinner detector. In
+`TerminalSurfaceController.cellContentFingerprint`, foreground, background,
+flags, and intensity are intentionally omitted so color pulses do not restart
+ink-bloom. `stampFreshOutputTimestamps` additionally suppresses ink-bloom when
+terminal mouse tracking is active. Both behaviors remain correct for
+ink-bloom. Spinner motion needs a separate color-aware observation path that
+runs before and independently of that suppression.
 
-**Important limitation of the current fingerprint hash:** it combines
-character bytes and style into one hash, so today's code can tell "this cell
-changed" but not "did only the color change, or did the character change
-too." M1 must add a way to compare the actual old vs. new character
-separately from color, described in Plan of Work.
+### Terms used by this plan
 
-**Frame scheduling / idle contract this plan must respect (binding for new
-code, per `docs/adr/0018-event-driven-frame-production.md`, "frame
-production is event-driven ... the display link is a transient animation
-timer that fully parks on a quiescent, focused window"):**
+- **Cell**: one terminal row/column position and its grapheme cluster, display
+  width, resolved foreground/background colors, renderable attributes,
+  underline metadata, and hyperlink identity.
+- **Resolved colors**: the exact packed RGBA values that `FrameProducer` would
+  emit after inverse, faint, explicit-background opacity, accessibility, and
+  theme rules have been applied. Interpolation operates on these values so
+  command and payload paths cannot disagree.
+- **Observation**: one new terminal generation and the bounded set of visible
+  cells whose resolved render state changed from the previous generation.
+- **Qualifying region**: one or two adjacent rows, no more than 32 columns
+  wide, containing no more than 32 changed cells. This is the explicit meaning
+  of “small” in this plan.
+- **Cadence run**: consecutive qualifying observations whose regions remain
+  spatially near one another and whose arrival gaps remain within the allowed
+  timing band.
+- **Transition**: one cell’s retained displayed start colors, authoritative
+  target colors, monotonic start time, and duration. A transition changes only
+  colors; it never retains or redraws an old glyph.
+- **Color override**: the current interpolated foreground/background pair for
+  a cell. `FrameProducer` consumes the same override while producing both
+  frame commands and `TerminalCellPayload`.
 
-- `Sources/LabanCore/TerminalIdlePolicy.swift` (134 lines, pure, no AppKit
-  import — verified by reading the whole file) defines three named rates:
-  `idleDisplayLinkFramesPerSecond = 8`, `activeDisplayLinkFramesPerSecond =
-  120`, `animationDisplayLinkFramesPerSecond = 30`. `displayLinkShouldRun(...)`
-  (line 49) takes seven booleans (`windowVisibleToUser, scrollAnimating,
-  attentionAnimating, terminalOutputActive, cursorBlinkActive,
-  idleFloorEnabled, glyphEffectAnimating`) and ORs the last six together,
-  gated by `windowVisibleToUser` (scroll always wins outright).
-  `preferredDisplayLinkFramesPerSecond(...)` (line 86) picks 120 if
-  `scrollAnimating || terminalOutputActive`, else 30 if `attentionAnimating
-  || glyphEffectAnimating`, else 8. Both functions default
-  `glyphEffectAnimating` to `false` so existing 6-argument call sites keep
-  compiling.
-- `Sources/LabanApp/TerminalBitmapView.swift`: `FrameWakeSource` (line 2605)
-  is a `String`-backed enum with cases including `.glyphEffect`;
-  `displayLinkPolicyState(now:)` (line 2357) computes the same booleans,
-  calls the two policy functions, and separately builds a human-readable
-  `reason` string via its own `if/else` ladder (lines 2397-2418), currently
-  ending `...→ attentionAnimating → terminalOutputActive → glyphEffectAnimating
-  ("glyphEffect") → !windowVisibleToUser → cursorBlinkActive → idleFloorEnabled
-  → "parked"`.
-- `terminalOutputActive` (used above) is a fixed 150ms hold window
-  (`terminalOutputDisplayLinkHoldSeconds = 0.150`, line 496), **not** a
-  cadence/frequency measurement — confirmed by reading the whole file: no
-  code anywhere in `Sources/LabanCore/` or `Sources/LabanApp/` currently
-  tracks how often output arrives, only whether it arrived "recently" against
-  a fixed timeout. This plan is the first thing in the repo to need real
-  cadence tracking (see Plan of Work, M0).
-- `Sources/LabanApp/RenderJournal.swift`: `DisplayLinkSnapshot` (line 84) has
-  an optional `glyphEffectAnimating: Bool? = nil` field — the established
-  pattern for adding an optional field so old journal dumps still decode.
+## Design Decisions
 
-## Design decisions (made here, not left to the reader)
+### Renderer-neutral, single-glyph interpolation
 
-- **The elevated frame rate reuses the existing 30fps "decorative animation"
-  tier, not the 120fps "active" tier.** A naive "boost the framerate" reading
-  would push straight to 120fps. Rejected: color/brightness interpolation
-  does not need 120fps to read as smooth to a human eye (unlike on-screen
-  motion of edges or text position, which is far more demanding); and unlike
-  the sibling plan's ink-bloom (bounded to a ~300ms burst per keystroke), a
-  spinner can run for the full duration of a long-running command — tens of
-  seconds to minutes for something like an LLM "thinking" indicator. Holding
-  the display link at 120fps for minutes at a time on a laptop is a real,
-  avoidable battery/thermal cost for a purely cosmetic feature. 30fps is
-  already a 3.75x lift over the 8fps idle floor and is plenty smooth for
-  color-only motion.
-- **Cross-fade via two overlapping instances, not new GPU struct fields.**
-  `SlugGlyphGPUInstance` is 64 bytes and `SlugGlyphGPUUniforms` is 96 bytes,
-  with **zero spare bytes** left after the sibling plan's `effectKind`/
-  `effectStart`/`timeSeconds`/`bellAmplitudePx`/`bellDirection` additions
-  (confirmed: both pad-word budgets are fully consumed). Growing either
-  struct is exactly the kind of change that, if the Swift and Metal mirrors
-  drift even slightly, corrupts GPU memory silently rather than failing to
-  compile — the single riskiest category of bug in this renderer (see
-  `docs/adr/0026-display-synced-drawable-acquisition.md` and the renderer
-  safety rules in `docs/process/agent-operating-guide.md`). Rendering the
-  cross-fade as two ordinary instances (the "old" cell's real content fading
-  out, the "new" cell's real content fading in) needs zero new fields — it
-  reuses the alpha channel and the `effectKind`/`effectStart` mechanism the
-  sibling plan already built and proved out, so this plan inherits none of
-  the struct-parity risk.
-- **New effect kinds 3 (`crossfadeIn`) and 4 (`crossfadeOut`), not a reuse of
-  kind 1 (ink-bloom).** Ink-bloom's curve also eases `dilation` (glyph
-  weight, thin→normal). This feature only ever wants to ease alpha/color, not
-  weight — reusing kind 1 would silently couple this feature's visual
-  correctness to ink-bloom's unrelated tuning. `crossfadeIn`/`crossfadeOut`
-  hold `dilation` constant and only ease `color.a` (in of 0→1, out 1→0).
-- **MVP scope is same-glyph, color/attribute-changed cells only** (exactly
-  the "Zigzagging" ripple: character identity is unchanged, only color
-  changes). Different-glyph substitution (e.g. a rotating Braille spinner
-  `⠋→⠙→⠹...`, a genuinely different Unicode codepoint each tick) is
-  deliberately **not** in this plan's committed scope — it is a materially
-  harder visual problem (two overlapping different glyph shapes blended by
-  alpha can read as muddy/ghosted rather than smooth, the way fast motion on
-  a real TV with interpolation on produces visible ghosting artifacts) and
-  needs its own visual-quality validation before committing to it. It is
-  captured as an explicitly optional, prototype-first milestone (M2) per
-  PLANS.md's guidance for challenging/uncertain designs — implement it,
-  screenshot-compare it, and decide whether to keep it, rather than assuming
-  it ships.
-- **Detection is generic — no process-name or literal-text matching.** The
-  detector operates purely on the shape and cadence of grid changes (small
-  region, steady inter-tick interval), never on which program is in the
-  foreground or what text it prints. This is deliberate: it is meant to
-  "carry to many ANSI/ASCII spinners" (the user's own framing) — Claude
-  Code's verb-shimmer is this plan's concrete demo case, not its target.
-  Laban does expose the foreground process name generically (`laban status
-  --json` reports a `process.foregroundProcess` field), but keying detection
-  to a literal program name would be fragile (broken by wrapper scripts,
-  aliases, or the target app changing its spinner UI) and defeats the
-  generality goal, so this plan does not use it.
-- **Cross-fade duration is derived per-detection from the observed cadence,
-  not a fixed constant.** Ink-bloom eases toward a fixed final state over a
-  fixed 280ms regardless of what happens next. This feature must instead
-  finish easing *approximately when the next real update arrives* — too
-  short and the display holds a settled frame waiting for the next tick
-  (looks like it paused); too long and the next real tick arrives mid-ease
-  and the color visibly jumps ("double-motion", the same artifact real TV
-  motion interpolation shows on fast pans). The duration is therefore
-  `clamp(rollingAverageIntervalSeconds, 0.04, 0.6)` — the same 40ms-600ms
-  band used to qualify a run as spinner-like in the first place (defined
-  below), recomputed from the last few observed ticks. A single unusually
-  fast or slow tick cannot swing it outside that band.
-- **Default off, `reduceMotion` forces off.** Same opt-in posture as the
-  sibling plan (ADR 0017/0022/0027), and the same escape hatch this plan's
-  premise explicitly calls for: a toggle for anyone who does not want their
-  terminal doing TV-style motion smoothing on principle. Promotion to
-  default-on is a separate `docs/product/spec.md` decision, not part of this
-  plan.
-- **The debug toggle action must echo the value it actually applied, not a
-  blind `{"ok": true}`.** A prior review of the sibling ink-bloom plan's
-  `setGlyphEffectsEnabled` debug action found it always reports success even
-  when the `LABAN_GLYPH_EFFECTS_ENABLED` environment variable silently
-  overrides the write it just made, producing a false-success response. This
-  plan's equivalent action (`setSpinnerMotionSmoothingEnabled`, M3) must
-  return the resulting *effective* enabled state (after considering any env
-  override) in its response body, not merely whether the write call was
-  issued, so this exact bug class cannot recur here.
+Do not add `crossfadeIn` or `crossfadeOut` shader kinds. Instead, compute a
+single interpolated foreground/background pair per transitioning cell before
+`FrameProducer` emits either output path. `FrameProducer` still emits one
+current glyph and the normal background run. Its existing run coalescing
+naturally splits when adjacent cells have different interpolated colors.
+
+This preserves the renderer contract and fixes the mathematical flaw in the
+superseded two-instance proposal. It also covers the GPU-driven cell payload
+without forcing a renderer fallback.
+
+### Exact color math
+
+Add a pure `SpinnerMotionColor.interpolate(from:to:progress:)` helper. Packed
+RGBA uses `0xRRGGBBAA`. Clamp `progress` to 0...1, linearly interpolate all
+four encoded 8-bit channels independently, and round each channel to the
+nearest integer. The endpoints are exact: progress 0 returns `from` without
+arithmetic and progress 1 returns `to` without arithmetic. The midpoint from
+`0xFF0000FF` to `0x0000FFFF` is therefore exactly `0x800080FF`.
+
+The values are already resolved renderer inputs. Do not decode/re-encode
+colors in individual renderers, and do not multiply glyph alpha to simulate a
+color change.
+
+### Independent color-aware history
+
+Do not change `cellContentFingerprint` or `freshnessFromCellDiff`; their
+ink-bloom semantics are regression contracts on this branch. Add a separate
+spinner cell-state extraction path in `FrameProducer` that reuses the same
+`resolvedVisuals` logic used by commands and payloads.
+
+`TerminalSurfaceController` retains at most four recently changed rows per
+session, with a full row of `SpinnerCellState` values in each retained entry.
+The active detector’s one or two anchor rows are pinned; the remaining rows
+are least-recently-used. This bounded cache is populated on every new
+generation, including the first two qualifying observations before detection
+becomes active. That makes the previous endpoint available on the third
+observation, rather than starting history too late.
+
+Clear detector history and transitions when session identity disappears,
+snapshot dimensions change, a remote incarnation changes, a tab/session cache
+is invalidated, or the setting/Reduce Motion becomes ineffective.
+
+### Cadence qualification
+
+The detector is pure and contains no process-name, output-text, mouse-tracking,
+AppKit, renderer, or settings logic.
+
+- A spatial observation qualifies when it affects one row, or two adjacent
+  rows; spans at most 32 columns; and changes at most 32 cells.
+- Consecutive observations belong to one run when their row ranges overlap or
+  are one row apart, their column ranges overlap or are within four columns,
+  and their timestamp gap is 0.04...0.60 seconds inclusive.
+- An observation outside those spatial or timing bounds starts a new run of
+  length one. It does not preserve the old run.
+- Detection becomes active on the third consecutive qualifying observation.
+- `estimatedCadenceSeconds` is the arithmetic mean of at most the last four
+  qualifying gaps, clamped to 0.04...0.60 seconds.
+- Detection becomes inactive after `min(2 * estimatedCadenceSeconds, 0.8)`
+  seconds without another qualifying observation.
+
+Mouse-tracking state is diagnostic metadata only. It never suppresses a
+spinner observation. Add an explicit regression test with mouse tracking on.
+
+### Continuous retargeting under cadence jitter
+
+When an eligible update arrives and detection is active, create a transition
+from the colors currently displayed at that instant to the new authoritative
+colors. If the cell already has a live transition, sample that transition at
+the new update time and use the sampled colors as the next start colors. Do
+not restart from the prior terminal endpoint. This makes early or irregular
+updates continuous instead of producing a mid-ease jump.
+
+The duration is the detector’s estimated cadence, clamped to 0.04...0.60
+seconds. For age `a`, compute normalized time
+`u = clamp(a / duration, 0, 1)` and visual progress
+`u * u * (3 - 2 * u)` (cubic smoothstep), then feed that progress to the
+channel-wise color interpolator. At or after the duration, return the target
+colors exactly and remove the transition only after the target-color settle
+frame has been requested. The cached current terminal cell state remains
+available while the detector is active; removing a completed transition must
+not remove the observation baseline needed by the next tick.
+
+If text, width, attributes, underline metadata, hyperlink identity, or cell
+geometry changes, cancel any transition for that cell and render the new state
+immediately. Different-glyph changes may still qualify the region’s cadence,
+but they never create an M1 transition.
+
+### Effective setting owns animation cost
+
+The pure detector may update diagnostics while the feature is disabled, but
+only live transitions created under
+`configuredEnabled && !reduceMotion` may:
+
+- produce color overrides;
+- union animation rows into render damage;
+- report `spinnerMotionAnimating` to `TerminalIdlePolicy`; or
+- keep the display link running.
+
+Disabling the setting or enabling Reduce Motion mid-transition clears all
+transitions, invalidates the affected rows, wakes one authoritative settle
+frame, and then parks. A disabled detector must never cause decorative frames.
+
+### Cached live setting and real UI
+
+`SpinnerMotionSmoothingSettings` follows the repository’s notification-based
+settings contract. `TerminalBitmapView`, `HeadlessDebugRuntime`, and
+`SettingsWindowController` read and cache the configured value at
+initialization; the render callers combine that cache with live Reduce Motion
+to derive the effective value. Writes post `didChangeNotification`; observers
+update the cached configured value and explicitly invalidate/wake. No
+per-frame render or glyph-build path reads `UserDefaults` or
+`ProcessInfo.processInfo.environment`.
+
+The Rendering settings tab contains a checkbox labeled **Smooth spinner
+motion**. It is available for every renderer because interpolation occurs
+before the renderer boundary. The environment override remains useful for
+headless runs and wins over UserDefaults; when present, the debug action
+returns the effective value and reports that persistence was not applied.
 
 ## Plan of Work
 
-### M0 — Cadence detector and idle-policy plumbing (no visual change yet)
+### M0 — Separate color-aware observations and cadence detection
 
-Goal: Laban can tell, in real time, "a small region of the grid is being
-rewritten at a steady spinner-like cadence right now," and the display link
-responds to that signal — before any pixel looks different.
+Goal: detect a small, steady color-changing region without changing pixels or
+frame scheduling.
 
-1. **New pure type** `Sources/LabanCore/SpinnerMotionDetector.swift`
-   (AppKit-free, unit-testable without a window — mirrors the existing
-   `GlyphEffectTimeline.swift` and `Sources/LabanCore/TabAttention.swift`'s
-   `AttentionPulse` pattern of pure timeline functions plus a small piece of
-   retained state). It consumes, once per generation, the `cellDiff`
-   classification `TerminalSurfaceController.freshnessFromCellDiff` already
-   computes (row, `stripColMin`/`stripColMax`, timestamp) and maintains, per
-   session:
-   - A short ring of the last 5 qualifying observations (row, column range,
-     arrival timestamp).
-   - **Qualifying** means: same row as the previous observation (or within 1
-     row, to tolerate a two-line status block), column range overlapping the
-     previous one or within 4 columns of it, and the gap since the previous
-     observation between 0.04s and 0.6s. Any observation outside those bounds
-     resets the run to length 1 (starts over) rather than aborting detection
-     outright, so an occasional missed/coalesced tick does not permanently
-     disqualify a genuine spinner.
-   - **Active** once the run reaches length 3 (matches the sibling plan's
-     precedent of requiring multiple consecutive confirmations before
-     triggering anything visible, avoiding one-off false positives from
-     ordinary prompt redraws).
-   - Exposes `isActive`, `estimatedCadenceSeconds` (rolling average of the
-     last observed gaps, clamped 0.04-0.6 as decided above), and
-     `anchorRow`/`columnRange` for the currently-active run.
-   - **Decays** (goes inactive) once `2 × estimatedCadenceSeconds` has
-     elapsed with no new qualifying observation, capped at an absolute 0.8s
-     ceiling — mirrors the "decays to zero wakeups" shape already
-     established by `AttentionPulse` and the sibling plan's
-     `GlyphEffectTimeline`, so a spinner that simply stops does not leave
-     anything running.
-2. **`TerminalIdlePolicy.swift`**: add a `spinnerMotionActive: Bool = false`
-   parameter to both `displayLinkShouldRun(...)` and
-   `preferredDisplayLinkFramesPerSecond(...)`, OR'd into exactly the same
-   position as the existing `glyphEffectAnimating` (i.e. it joins the 30fps
-   tier, per the Design decision above, not a new tier). Update both
-   compatibility shims. Unit tests: mirror the existing
-   `testGlyphEffectWithActiveOutputPrefersActiveFrameRate`-style test for
-   the new boolean (asserts `terminalOutputActive` still wins the 120fps
-   tier over `spinnerMotionActive`), plus an explicit park-on-decay test
-   (`spinnerMotionActive: false` and every other input false →
-   `displayLinkShouldRun == false`) — the sibling plan's equivalent test for
-   `glyphEffectAnimating` was found missing during review; do not repeat that
-   gap here.
-3. **`TerminalBitmapView.swift`**: add `FrameWakeSource.spinnerMotion`
-   (exactly one new case), a `spinnerMotionActiveUntil` state field mirroring
-   `glyphEffectAnimatingUntil` (line 358), a `"spinnerMotion"` rung inserted
-   into the `displayLinkPolicyState` reason ladder next to `"glyphEffect"`
-   (same priority slot), and a `spinnerMotionStripFrame`/
-   `spinnerMotionWasAnimating` latch pair mirroring the existing
-   `glyphEffectStripFrame`/`glyphEffectWasAnimating` pair in the
-   `advanceFrame` early-return guard (around line 2950) — the sibling plan's
-   review found that without this exact latch shape, the display link can
-   tick forever without ever calling the renderer again once the ordinary
-   output frame's `renderInvalidated` clears; the fix there is the template
-   to copy here, not a new mechanism to invent.
-4. **`RenderJournal.swift`**: add an optional `spinnerMotion: SpinnerMotionSnapshot?`
-   field to `Entry` and an optional `spinnerMotionActive: Bool? = nil` field
-   to `DisplayLinkSnapshot`, following the exact optional-field pattern
-   `glyphEffectAnimating` already established (old dumps decode these as
-   `nil`).
+1. Add `Sources/LabanCore/SpinnerMotion.swift` with pure value types for
+   `SpinnerCellKey`, `SpinnerCellState`, `SpinnerMotionObservation`,
+   `SpinnerMotionDetector`, detector diagnostics, transition sampling, and
+   packed-RGBA interpolation. Keep the file AppKit-free.
+2. In `Sources/LabanCore/FrameProducer.swift`, factor the existing resolved
+   cell visual calculation so `commands`, `fillTerminalCellPayload`, and a new
+   internal `spinnerCellStates(...)` helper use one implementation. A state
+   contains the actual grapheme text/bytes and display width plus resolved
+   foreground/background, attributes, underline style/color, and hyperlink
+   identity. Provide equivalent extraction for local `LabanSnapshot` and
+   remote `LabandSnapshotResponse` cells. The remote protocol currently
+   carries text, flags, foreground, and background but not separate underline
+   style/color or hyperlink identity; use the same defaulted metadata the
+   existing remote `FrameProducer.commands(from:)` path renders, rather than
+   expanding the daemon protocol in this plan.
+3. In `Sources/LabanCore/TerminalSurfaceController.swift`, add per-session
+   spinner history keyed by `Session.ID`. Observe a local snapshot exactly once
+   for each nonzero `session.dirtyGeneration()`. Extend the remote `makeFrame`
+   overload to accept the `LabandSnapshotFrame.generation` token and observe
+   each remote generation exactly once; also bind history to
+   `snapshot.incarnationId`.
+4. Build observations from spinner cell states, not from
+   `GlyphEffectFreshness`. Run this before and independently of
+   `stampFreshOutputTimestamps` and its mouse-tracking suppression. Preserve
+   all current ink-bloom behavior and tests unchanged.
+5. Extend `invalidateSessionSyncCache()` to clear spinner histories and
+   transitions. Reset a session on dimension/incarnation changes.
+6. Add `SpinnerMotionDetectorTests` and focused
+   `TerminalSurfaceControllerTests` for the thresholds, third-observation
+   activation, reset behavior, rolling cadence, decay, cache-before-active,
+   local generation deduplication, remote generation/incarnation handling,
+   and mouse-tracking eligibility.
 
-M0 acceptance: `SpinnerMotionDetectorTests` cover the qualifying/reset/decay
-rules directly (no window, no renderer); `TerminalIdlePolicyTests` cover the
-new boolean's precedence and park-on-decay; a synthetic scripted sequence of
-qualifying cell-diffs (fed via the headless `/debug` surface, see M3) can be
-observed in the render journal's new `spinnerMotion` field going active then
-decaying — but no pixel changes yet (M0 deliberately produces no visual
-effect, matching the sibling plan's own M0 precedent of "substrate only").
+M0 acceptance: tests can drive a same-glyph color ripple to active detection
+with mouse tracking both off and on. `TerminalIdlePolicy` receives no new input
+yet, frame commands and payloads are unchanged, and no visual or wake behavior
+changes.
 
-### M1 — Same-glyph color cross-fade (the actual visual smoothing)
+### M1 — Single-instance color interpolation and bounded frame pumping
 
-Goal: when `SpinnerMotionDetector` is active and the setting is enabled, a
-cell whose character is unchanged but whose color changed eases between the
-two colors instead of snapping.
+Goal: enabled eligible cells interpolate through the shared producer, all
+renderers see the same values, and only live transitions keep frames moving.
 
-1. **Track enough history to build the "old" instance.** The existing
-   `lastCellFingerprints` (hash-only) is not enough — this needs the actual
-   previous character and color for cells inside the currently-detected hot
-   region, not just a hash proving *something* changed. Add a small, bounded
-   companion cache (bounded because the hot region is small by construction
-   — a handful of cells) keyed by `(sessionId, row, column)`, storing the
-   prior grapheme cluster, foreground color, and background color, populated
-   whenever `SpinnerMotionDetector` is active and evicted for a cell as soon
-   as its cross-fade completes or the detector goes inactive.
-2. **Classify each changed cell in the hot region** by comparing its new
-   character against the cached prior character:
-   - **Same character, different color** → this milestone's target case.
-     Continue to step 3.
-   - **Different character** → out of scope for M1 (deferred to M2). Render
-     exactly as today (instant swap, no cross-fade) — this must be a
-     deliberate, tested fallback, not an accident of the code not handling
-     it.
-3. **Inject a synthetic "old" glyph run.** In
-   `TerminalSurfaceController.stampFreshOutputTimestamps` (or an immediately
-   adjacent step in `makeFrame`, whichever proves cleaner once the
-   surrounding code is in front of you — this is the one place in the plan
-   deliberately left to the executing agent's judgment, since the exact
-   splice point depends on details of `FrameProducer`'s output shape not
-   worth over-specifying here), for each cell entering a color cross-fade,
-   emit one extra `FrameCommand.glyphRun` carrying the cell's *prior*
-   character and color, `effectKind = 4` (`crossfadeOut`), and `effectStart`
-   set to now. The normal glyph run for that cell (already built with the
-   *new* character and color) gets `effectKind = 3` (`crossfadeIn`),
-   `effectStart` set to the same timestamp. Both ride the existing
-   `outputTimestampSeconds` stamping path already built by the sibling plan.
-4. **Shader**: in `Sources/LabanRenderer/VectorGlyphShaders.metal`'s
-   `slugGlyphEvaluateEffect` (or the equivalent current name — read the
-   function the sibling plan added before editing it), add cases for kind 3
-   and kind 4: both compute `age = uniforms.timeSeconds - instance.effectStart`
-   and `t = clamp(age / durationSeconds, 0, 1)` exactly as the existing
-   ink-bloom case does, but only write `color.a *= t` (kind 3) or
-   `color.a *= (1 - t)` (kind 4); `dilation` is left untouched in both cases
-   (Design decision above). `durationSeconds` for a given pair of instances
-   is the cross-fade duration computed in step 3 above (from
-   `SpinnerMotionDetector.estimatedCadenceSeconds`, clamped 0.04-0.6) —
-   thread it through the same way `effectStart` is threaded through today
-   (per-instance, since different concurrently-animating cells across
-   different sessions/tabs could have different estimated cadences).
-5. **Setting**: new `Sources/LabanCore/SpinnerMotionSmoothingSettings.swift`,
-   mirroring `GlyphEffectSettings.swift` field-for-field (UserDefaults key
-   `LabanSpinnerMotionSmoothingEnabled`, environment override
-   `LABAN_SPINNER_MOTION_SMOOTHING_ENABLED`, default `false`), consulted live
-   per frame together with `reduceMotion` (no observer needed, same
-   rationale as the sibling plan: the flag is only read while building
-   instances).
-6. **Idle proof**: after the spinner stops and both instances finish easing,
-   `IdleCounters` shows zero `advanceFrames` over a subsequent 5s idle
-   window, same method as the sibling plan's M1 idle proof.
+1. Add `spinnerMotionConfiguredEnabled: Bool = false` to
+   `TerminalSurfaceFrameRequest`. The caller passes the cached configured
+   value; the controller derives the effective value as
+   `spinnerMotionConfiguredEnabled && !request.reduceMotion` and never reads
+   settings itself. Keeping configured and effective state distinct makes the
+   debug response and Reduce Motion behavior unambiguous.
+2. Add the transition map described above to each session’s spinner state. On
+   a qualifying third-or-later observation, create or retarget transitions for
+   same-glyph/same-layout cells whose resolved foreground or background
+   changed. Cap live transitions at 64 cells (two 32-cell rows); if an input
+   exceeds the cap, render it immediately and increment an overflow diagnostic
+   instead of allocating without bound.
+3. Sample live transitions from the same monotonic clock already exposed as
+   `TerminalSurfaceController.outputStampClock`. Headless deterministic mode
+   already replaces this clock; do not add a second time domain.
+4. Add an optional, compact color-override map to `FrameProducer.commands`,
+   `FrameProducer.fillTerminalCellPayload`, and their local/remote helpers.
+   Apply an override after normal visual resolution and before background/glyph
+   run coalescing. The nil/default path must take a single fast branch and emit
+   byte-identical output. Do not extend `FrameCommand`,
+   `TerminalCellPayload.Glyph`, or any GPU struct.
+5. Compute transition liveness before payload dirty-row selection. Union the
+   affected rows into `RenderDamage` and into the payload’s included rows so a
+   display-link frame with no new terminal generation still rebuilds the
+   interpolated cells. Leave unrelated rows and overlays on their existing
+   damage path.
+6. Add `SpinnerMotionFrameState` to `TerminalSurfaceFrame`: configured/effective
+   enabled, detector active, animating, active row/column bounds, estimated
+   cadence, transition count, remaining seconds, and affected damage bands.
+   This is plain state used by AppKit, headless, journals, and debug projection.
+7. Add `spinnerMotionAnimating: Bool = false` to both
+   `TerminalIdlePolicy` functions at the same 30 fps decorative tier as
+   `glyphEffectAnimating`. In `TerminalBitmapView`, add
+   `FrameWakeSource.spinnerMotion`, a deadline synchronized from
+   `SpinnerMotionFrameState.remainingSeconds`, and an
+   `spinnerMotionWasAnimating` trailing-frame latch. Only `animating`, never
+   detector activity, feeds the policy.
+8. Mirror the exact scheduling and settle behavior in
+   `HeadlessDebugRuntime`. On disabling/Reduce Motion, reset transitions,
+   invalidate their rows, request one frame, then report inactive.
+9. Add tests:
+   - `SpinnerMotionColorTests`: endpoints, clamping, alpha, and exact red/blue
+     midpoint `0x800080FF`.
+   - `SpinnerMotionTransitionTests`: normal progress, exact settle, early
+     retargeting from the currently displayed color, cubic-smoothstep samples,
+     and baseline retention after transition eviction.
+   - `SpinnerMotionFrameProducerTests`: exact foreground and background
+     overrides in both frame commands and `TerminalCellPayload`; command/payload
+     parity; nil/disabled byte identity; wide glyph and attribute changes snap.
+   - `SpinnerMotionRendererRoutingTests`: with an opaque full-cell background,
+     each `RendererSelection.allCases` backend consumes the midpoint override;
+     GPU-driven reports payload routing rather than a classic fallback.
+   - `TerminalIdlePolicyTests`: transition-only selects 30 fps; output still
+     wins with 120 fps; detector-active/transition-inactive parks; disabled and
+     Reduce Motion park after the settle frame.
+   - AppKit/headless tests for the strip-frame latch and reset/wake behavior.
 
-M1 acceptance: with the setting enabled, a scripted synthetic same-glyph
-color-changing sequence (fixture, see M3) shows via `/debug/pixel-probe`
-that a frame captured strictly between two real updates has a color
-*between* the two real colors (proving genuine interpolation, not just a
-faster identical redraw); with the setting disabled (default) or
-`reduceMotion` on, output is pixel-identical to the pre-plan tree.
+M1 acceptance: every renderer receives one current glyph with interpolated
+colors; GPU-driven Metal remains on the payload path; an exact midpoint is the
+defined RGBA lerp rather than a source-over approximation; disabled output is
+unchanged; and the link parks after the final target frame.
 
-### M2 — Different-glyph cross-fade (optional, prototype-first)
+### M2 — Settings UI, diagnostics, deterministic E2E, docs, and review
 
-Explicitly optional and explicitly a prototype per PLANS.md's guidance for
-challenging/uncertain designs. Goal: generalize M1's mechanism to a spinner
-that cycles through genuinely different characters (e.g. a rotating Braille
-spinner). Mechanically this is the same "old instance fades out, new
-instance fades in" shape as M1 — the *old* instance's glyph is now a
-different codepoint than the *new* instance's, not just a different color —
-so no new renderer mechanism is needed, only relaxing M1 step 2's
-"same-character" gate for a specific, separately-flagged sub-mode.
+Goal: users can control the feature, agents can prove it, and CI exercises the
+real path including fullscreen-TUI mouse tracking.
 
-1. Build the relaxed classifier behind its own separate setting default
-   (**not** enabled by turning on M1's setting alone), so it can ship, be
-   evaluated, and be reverted independently of the color-only case.
-2. Capture side-by-side screenshots (spinner-motion off vs. on) for at least
-   two visually distinct spinner styles (e.g. a Braille-dot spinner and a
-   block-character spinner) and inspect them for the ghosting/muddiness risk
-   named in Design decisions.
-3. **Go/no-go**: if the cross-faded transition reads as smoother than a hard
-   cut in both cases, promote the sub-mode to a normal (still default-off)
-   setting and fold it into M3's Review Gate. If it reads as muddy/ghosted,
-   record that finding in Surprises & Discoveries, leave the sub-mode behind
-   a debug-only trigger (not user-facing), and stop — this milestone is
-   explicitly allowed to end in "built a prototype, decided not to ship it."
-
-### M3 — Observability, settings wiring, E2E, docs, review gate
-
-1. **Debug actions**: `setSpinnerMotionSmoothingEnabled` (payload:
-   `enabled: Bool`), registered through all four places a new debug action
-   needs registration in this codebase (a gotcha the sibling plan's own
-   Surprises section documents and this plan's own review confirmed still
-   holds): `DebugActionIntentID.knownActionNames` +
-   `intentID(forAction:)` (`Sources/LabanCore/Intents/DebugRequestPayloads.swift`),
-   an `IntentCatalog` descriptor (`Sources/LabanCore/Intents/IntentCatalog.swift`),
-   the decode/dispatch chain (`Sources/LabanDebug/DebugRuntimeRequests.swift`,
-   `Sources/LabanDebug/DebugRuntimeActions.swift`), and the discovery list
-   (`Sources/LabanDebug/DebugDiscoveryEndpoints.swift`). Update
-   `IntentCatalogTests`'s fixture-id pin to include it. Per the Design
-   decision above, its response must echo the resulting effective enabled
-   state (post any environment override), not a blind `{"ok": true}`.
-2. **`GET /debug/spinner-motion`**: resettable counters, following the exact
-   shape of `GET /debug/transparency` (ADR 0028,
-   `docs/adr/0028-terminal-background-transparency.md`; response type
-   `Sources/LabanCore/Intents/DebugRequestPayloads.swift:456`,
-   `TerminalTransparencyDebugResponse`): detections started, crossfades
-   rendered, wake count, park-restored count, resettable via a
-   `{"action":"resetSpinnerMotionDiagnostics"}` debug action.
-3. **`/debug/state`**: add a `spinnerMotion: {active, row, colMin, colMax,
-   estimatedCadenceMs, crossfadeCount, wakeCount}` block, following the
-   `glyphEffects` block's exact shape and response-model file
-   (`Sources/LabanCore/Projections/ControlResponseModels.swift`). Populate it
-   in `HeadlessDebugRuntime` regardless of which renderer backend a scenario
-   selects (the sibling plan's review found its `glyphEffects` block is
-   `nil`, not zeroed, unless `--renderer=slugGlyph` is explicit — do not
-   repeat that trap; this block should read as a real zeroed/inactive state
-   for any renderer, not `null`).
-4. **Scenario fixture** `fixtures/spinner-motion-smoothing.scenario.json`,
-   following `fixtures/glyph-effects-ink-bloom.scenario.json`'s shape
-   (top-level `name/description/fixture/renderer/deterministic/steps`,
-   `expectJson` assertions). Script a synthetic same-glyph, alternating-color
-   write sequence at a fixed ~100ms cadence via the deterministic virtual
-   clock (`advanceTime` debug action, already built by the sibling plan and
-   confirmed wired to both `TerminalSurfaceController`'s stamp clock and the
-   renderer's `timeSeconds`), and assert: (a) `spinnerMotion.active` becomes
-   `true` after 3 qualifying ticks, (b) a pixel probe strictly between two
-   ticks shows a blended color, (c) `spinnerMotion.active` returns to `false`
-   after the decay window with no further ticks, (d) with the setting left
-   at its default (off), the same script's pixel probes are byte-identical
-   to a captured no-smoothing baseline. **Wire this fixture into
-   `scripts/test-e2e`** (add a `run-debug-script
-   fixtures/spinner-motion-smoothing.scenario.json` step alongside the
-   existing ones there) — the sibling plan's own ink-bloom fixture was found
-   during review to exist but never actually run in CI; do not repeat that
-   gap.
-5. **Docs**: one line in `docs/product/spec.md` describing the (default-off)
-   spinner motion-smoothing setting; a note in
-   `docs/process/agent-operating-guide.md`'s renderer safety rules
-   acknowledging effect kinds 3/4 now exist and what they own (parallel to
-   the sibling plan's own required note about kinds 1/2); AGENTS.md
-   untouched (no convention changes).
-6. **Review Gate** (below), executed by a fresh agent.
+1. Add `Sources/LabanCore/SpinnerMotionSmoothingSettings.swift` with:
+   - UserDefaults key `LabanSpinnerMotionSmoothingEnabled`;
+   - environment override `LABAN_SPINNER_MOTION_SMOOTHING_ENABLED`;
+   - default `false`;
+   - `didChangeNotification`;
+   - `configuredEnabled(...)`, `effectiveEnabled(reduceMotion:...)`, and
+     `setEnabled(...)` helpers;
+   - a write result that distinguishes persisted from environment-locked.
+2. Add **Smooth spinner motion** to the Rendering tab in
+   `Sources/LabanApp/SettingsWindowController.swift`, wire its target/action,
+   refresh it from the cached setting, and add localization entries in
+   `Sources/LabanApp/Resources/Localizable.xcstrings`. When the environment
+   override is present, show the effective state but disable the checkbox and
+   expose an explanatory help/accessibility string so the UI cannot imply a
+   write will win. Add a Settings test that toggles it, observes the
+   notification/effective state, and pins the environment-locked UI.
+3. Add one cached configured-setting field and observer to
+   `TerminalBitmapView`; install the cached value on initialization and live
+   backend/view rebuilds. The observer resets active transitions, invalidates,
+   and wakes. Extend the existing accessibility-display-options refresh so a
+   Reduce Motion change uses the same reset/settle path.
+4. Mirror the cache and notification behavior in `HeadlessDebugRuntime`.
+   `setSpinnerMotionSmoothingEnabled` accepts `enabled: Bool` and returns
+   `{configuredEnabled, effectiveEnabled, persisted, environmentOverride}`.
+   Register it in every intent catalog, decode/dispatch, discovery, and schema
+   location required by the debug framework.
+5. Add `GET /debug/spinner-motion` plus
+   `resetSpinnerMotionDiagnostics`. Counters are: observations, detections
+   started, transitions started, retargets, interpolated frames, overflow
+   fallbacks, wakes, settle frames, and parks restored. Add a `spinnerMotion`
+   block to `/debug/state` for every renderer; inactive values are zero/false,
+   never `null`.
+6. Extend `RenderJournal.Entry` with an optional
+   `spinnerMotion: SpinnerMotionSnapshot?` and
+   `DisplayLinkSnapshot` with optional `spinnerMotionAnimating`. Old dumps must
+   decode with nil fields. Update `scripts/render-journal-summary` to report
+   detection, transition, and park counts.
+7. Create `fixtures/spinner-motion-smoothing.scenario.json` and its fixture
+   data. Pin the fixture to an opaque terminal background, run under
+   `--deterministic`, and exercise this exact sequence:
+   - leave the setting off, enable terminal mouse tracking with DECSET output,
+     send three 100 ms same-glyph color updates, and prove detector diagnostics
+     can become active while transition/wake counts stay zero and endpoint
+     colors remain exact;
+   - enable the setting through the debug action and assert the returned
+     effective value;
+   - reset diagnostics, repeat three 100 ms updates with mouse tracking still
+     active, advance virtual time 50 ms, and assert the command foreground and
+     a full-cell background pixel are the defined midpoint values;
+   - deliver an early fourth update and assert the next transition starts from
+     the sampled displayed midpoint rather than the prior terminal endpoint;
+   - advance through settlement and assert exact target colors, zero live
+     transitions, one settle frame, and restored parking; save the final
+     `/debug/state` response as `final-state.json` and the final
+     `/debug/spinner-motion` response as `final-diagnostics.json`;
+   - disable the setting and prove subsequent output remains exact with no
+     spinner wake.
+8. Wire the scenario into `scripts/test-e2e`. Update debug schemas/catalogs,
+   `docs/process/dev-process.md`, `docs/product/spec.md`, and the renderer safety
+   section of `docs/process/agent-operating-guide.md`. Document that this is a
+   renderer-neutral, default-off color interpolation and that different-glyph
+   substitution is deferred. Leave AGENTS.md unchanged.
+9. Execute the Review Gate below with a fresh agent. The plan is not complete
+   until the full gate passes against one named commit.
 
 ## Progress
 
-- [x] Plan filed at `execplans/active/spinner-motion-smoothing.md`
-- [ ] M0 — cadence detector and idle-policy plumbing
-- [ ] M1 — same-glyph color cross-fade
-- [ ] M2 — different-glyph cross-fade (optional, prototype-first; may end in "decided not to ship")
-- [ ] M3 — observability, settings wiring, E2E, docs
-- [ ] Review Gate passed
+- [x] (2026-07-20) Initial plan filed.
+- [x] (2026-07-20) Plan revised after review: replaced the unrepresentable
+  dual-instance Slug effect with renderer-neutral color overrides; separated
+  spinner detection from ink-bloom; added effective-setting gating, UI,
+  mouse-tracking coverage, exact color math, and mechanical review checks.
+- [ ] M0 — color-aware observations and cadence detector.
+- [ ] M1 — renderer-neutral transitions, payload/command parity, and bounded
+  frame pumping.
+- [ ] M2 — setting/UI, observability, deterministic E2E, docs, and CI wiring.
+- [ ] Review Gate passed against a named commit.
+
+## Surprises & Discoveries
+
+- Observation: the existing cell fingerprint intentionally ignores color and
+  intensity, despite an older nearby comment saying it includes style.
+  Evidence: `TerminalSurfaceController.cellContentFingerprint` hashes wide
+  identity and UTF-8 only, and
+  `testCellFingerprintIgnoresColorOnlyChanges` pins that behavior. The spinner
+  detector therefore needs its own state comparison.
+- Observation: the ink-bloom stamp path suppresses mouse-tracking TUIs before
+  freshness classification. Evidence: `stampFreshOutputTimestamps` returns
+  `.suppressedTUI` when `snapshot.mouse_tracking != 0`. Spinner detection must
+  run independently because fullscreen Claude is a primary scenario.
+- Observation: the existing command and GPU-instance payloads cannot carry a
+  cadence-derived duration and separate in/out kinds without extension.
+  Evidence: `FrameCommand.glyphRun` has only `outputTimestampSeconds`, and
+  `SlugGlyphGPUInstance` has only `effectKind` and `effectStart` in its former
+  pad words.
+- Observation: two half-alpha source-over glyphs are not a true dissolve.
+  With full glyph coverage they yield 0.75 combined alpha and an order-biased
+  color. Slug also discards `glyphRun.background` in `appendGlyphRun`.
+  Single-instance resolved-color interpolation avoids both defects.
 
 ## Decision Log
 
-- Decision: Elevated frame rate reuses the existing 30fps decorative tier
-  (`animationDisplayLinkFramesPerSecond`), not a new/max-fps tier.
-  Rationale: color-only motion does not need 120fps to look smooth, and a
-  spinner can run far longer than the sibling plan's bounded ink-bloom
-  bursts — sustaining max fps for a multi-minute "thinking" spinner is a
-  real, avoidable battery/thermal cost.
-  Date/Author: 2026-07-20 / Claude
+- Decision: Perform color interpolation before the renderer boundary and emit
+  one current glyph, rather than adding Slug effect kinds 3/4.
+  Rationale: this is mathematically exact, handles foreground and background,
+  works through both frame commands and the GPU-driven payload, preserves GPU
+  struct layouts, and avoids ghosting/opacity dips.
+  Date/Author: 2026-07-20 / Codex
 
-- Decision: Cross-fade renders as two overlapping GPU instances (old fading
-  out, new fading in) instead of adding fields to `SlugGlyphGPUInstance` /
-  `SlugGlyphGPUUniforms`.
-  Rationale: both structs have zero spare bytes left after the sibling
-  plan's additions; growing them risks silent GPU memory corruption if the
-  Swift/Metal mirrors drift. Reusing the existing alpha-ease mechanism needs
-  no struct change and inherits none of that risk.
-  Date/Author: 2026-07-20 / Claude
+- Decision: Preserve the ink-bloom fingerprint and add a separate
+  color-aware spinner history.
+  Rationale: changing the existing fingerprint would regress the branch’s
+  explicit “color pulses do not restart ink-bloom” contract.
+  Date/Author: 2026-07-20 / Codex
 
-- Decision: New effect kinds 3 (`crossfadeIn`) / 4 (`crossfadeOut`) rather
-  than reusing kind 1 (ink-bloom).
-  Rationale: ink-bloom's curve also eases `dilation`, which this feature
-  does not want; reuse would couple two unrelated features' visual tuning.
-  Date/Author: 2026-07-20 / Claude
+- Decision: Use a maximum two-row, 32-column, 32-changed-cell region and three
+  observations within 40-600 ms for detection.
+  Rationale: “small” must be mechanically bounded for memory, false-positive,
+  and review purposes; the bounds cover status words and compact progress
+  indicators without treating broad TUI redraws as spinners.
+  Date/Author: 2026-07-20 / Codex
 
-- Decision: MVP (M1) covers same-character/color-changed cells only;
-  different-glyph substitution is a separate, optional, prototype-first
-  milestone (M2), not assumed to ship.
-  Rationale: color interpolation between two known RGB values is
-  unambiguous; blending two different glyph shapes is a genuinely different
-  and riskier visual problem that needs its own quality checkpoint before
-  committing to it.
-  Date/Author: 2026-07-20 / Claude
+- Decision: Retarget from the currently displayed interpolated color when a
+  new update arrives early.
+  Rationale: restarting from the prior terminal endpoint creates a visible
+  discontinuity under cadence jitter.
+  Date/Author: 2026-07-20 / Codex
 
-- Decision: Detection is purely shape/cadence-based; it never inspects the
-  foreground process name or terminal text content.
-  Rationale: the goal is to generalize across any ANSI/ASCII spinner style,
-  not to special-case one program; name-based matching would be fragile and
-  defeats that goal.
-  Date/Author: 2026-07-20 / Claude
+- Decision: Detector activity is diagnostic; only an effective live
+  transition may drive the display link.
+  Rationale: default-off and Reduce Motion must impose no decorative wake or
+  rendering cost.
+  Date/Author: 2026-07-20 / Codex
 
-- Decision: This plan depends on `per-glyph-animation-channel.md`'s M0
-  substrate (already merged) but not on its M1 (ink-bloom) or M2 (bell
-  shake); it claims effect kinds 3/4, leaving kind 2 reserved for that
-  plan's still-unbuilt bell shake.
-  Rationale: avoid a numbering collision between two ExecPlans sharing one
-  GPU enum's value space; keep this plan executable regardless of what the
-  user ultimately decides about ink-bloom.
-  Date/Author: 2026-07-20 / Claude
+- Decision: Cache the setting via notifications and expose a real Rendering
+  checkbox.
+  Rationale: repository renderer rules prohibit per-frame UserDefaults reads,
+  and an opt-in product setting must be reachable without shell defaults or a
+  debug endpoint.
+  Date/Author: 2026-07-20 / Codex
+
+- Decision: Defer different-glyph smoothing; do not retain the old optional M2
+  cross-fade prototype.
+  Rationale: source-over copies are already proven to be the wrong primitive,
+  and character-shape interpolation needs a separate design and visual gate.
+  Date/Author: 2026-07-20 / Codex
 
 ## Review Gate
 
-- [ ] `git grep -n "crossfadeIn\|crossfadeOut" Sources/LabanRenderer/VectorGlyphShaders.metal`
-      and `git grep -n "crossfadeIn\|crossfadeOut" Sources/LabanRenderer/SlugGlyphRenderer.swift`
-      — both hit; kind numbering (3, 4) matches in both files and does not
-      collide with kind 1 or 2.
-- [ ] `git diff main -- Sources/LabanRenderer/SlugGlyphRenderer.swift
-      Sources/LabanRenderer/VectorGlyphShaders.metal` shows no new stored
-      property added to `SlugGlyphGPUInstance`/`SlugGlyphInstance` or
-      `SlugGlyphGPUUniforms`/`SlugGlyphUniforms` (struct sizes stay 64B/96B).
-- [ ] `git grep -n "spinnerMotionActive" Sources/LabanCore/TerminalIdlePolicy.swift`
-      — hits in both `displayLinkShouldRun` and
-      `preferredDisplayLinkFramesPerSecond`, in the same precedence tier as
-      `glyphEffectAnimating`.
-- [ ] `git grep -n "case spinnerMotion" Sources/LabanApp/TerminalBitmapView.swift`
-      — exactly one hit in `FrameWakeSource`.
-- [ ] `swift test --filter SpinnerMotionDetector` — 0 failures.
-- [ ] `swift test --filter TerminalIdlePolicy` — 0 failures, including an
-      explicit park-on-decay case for `spinnerMotionActive`.
-- [ ] `swift test --filter SlugWeightCoreTextParity` — 0 failures (confirms
-      the struct-untouched claim above did not perturb existing rendering).
-- [ ] `swift test --filter Slug` — 0 failures.
-- [ ] With `LabanSpinnerMotionSmoothingEnabled` unset (default), the M3
-      scenario fixture's pixel probes are byte-identical to its recorded
-      no-smoothing baseline.
-- [ ] With the setting enabled, the M3 scenario fixture's mid-tick pixel
-      probe is neither equal to the pre-tick nor the post-tick color
-      (proves real interpolation, not a coincidental match).
-- [ ] `git grep -n "spinner-motion" Sources/LabanControl/ControlRouteCatalog.swift`
-      — hits.
-- [ ] `git grep -n "spinner-motion-smoothing.scenario.json" scripts/test-e2e`
-      — hits (fixture is actually wired into CI, not merely present on disk).
-- [ ] `git grep -n "spinnerMotion" docs/product/spec.md` — hits.
-- [ ] `setSpinnerMotionSmoothingEnabled`'s response body contains the
-      resulting effective enabled value (not merely `{"ok": true}`) —
-      confirmed by reading `Sources/LabanDebug/DebugWindowActions.swift`.
+A fresh agent must run every item against the completed implementation. On
+failure, record exact file/line findings here, fix them, and rerun the entire
+gate. Stop after three failures of the same item and escalate per `PLANS.md`.
+
+- [ ] Run
+  `rtk rg -n "crossfadeIn|crossfadeOut|spinner.*effectKind" Sources/LabanRenderer Sources/LabanCore`.
+  Expect zero hits: spinner motion owns no shader effect kind.
+- [ ] Run
+  `rtk git diff 551cbaff -- Sources/LabanRenderer/SlugGlyphRenderer.swift Sources/LabanRenderer/VectorGlyphShaders.metal`.
+  Expect no spinner-motion changes to either file and no GPU struct-layout
+  changes.
+- [ ] Run
+  `rtk swift test --filter SpinnerMotionDetectorTests` and expect exit 0,
+  including the mouse-tracking-eligible and third-observation cases.
+- [ ] Run `rtk swift test --filter SpinnerMotionColorTests` and expect exit 0,
+  including exact `0xFF0000FF -> 0x0000FFFF @ 0.5 == 0x800080FF`.
+- [ ] Run
+  `rtk swift test --filter SpinnerMotionTransitionTests` and expect exit 0,
+  including early-retarget continuity and baseline-after-eviction cases.
+- [ ] Run
+  `rtk swift test --filter SpinnerMotionFrameProducerTests` and expect exit 0,
+  including command/payload parity, foreground/background overrides,
+  nil/disabled byte identity, and attribute/different-glyph snap behavior.
+- [ ] Run
+  `rtk swift test --filter SpinnerMotionRendererRoutingTests` and expect exit
+  0, including an opaque midpoint background through every
+  `RendererSelection.allCases` backend and payload routing for GPU-driven.
+- [ ] Run `rtk swift test --filter TerminalIdlePolicyTests` and expect exit 0,
+  including transition-only 30 fps, output precedence at 120 fps, and
+  detector-active/transition-inactive parking.
+- [ ] Run
+  `rtk swift test --filter SpinnerMotionSettingsTests` and
+  `rtk swift test --filter SettingsWindowControllerTests` and expect exit 0,
+  including environment-lock response and checkbox notification behavior.
+- [ ] Run
+  `rtk ./scripts/run-debug-script fixtures/spinner-motion-smoothing.scenario.json --artifacts=.artifacts/review/spinner-motion-smoothing`.
+  Expect exit 0 and stdout ending `debug script passed`; the report’s `ok`
+  field must be true and its steps must contain the exact disabled endpoint,
+  enabled midpoint, early-retarget, mouse-tracking, settle, and park assertions
+  described in M2.
+- [ ] Run
+  `rtk rg -n "spinner-motion-smoothing.scenario.json" scripts/test-e2e` and
+  expect one executable scenario invocation, not only a comment or filename.
+- [ ] Run `rtk ./scripts/test-e2e` and expect exit 0.
+- [ ] Run
+  `rtk rg -n "Smooth spinner motion|spinnerMotion" Sources/LabanApp/SettingsWindowController.swift Sources/LabanApp/Resources/Localizable.xcstrings docs/product/spec.md docs/process/dev-process.md`.
+  Expect hits in all four files.
+- [ ] Run `rtk ./scripts/check` and expect exit 0.
+- [ ] Run
+  `rtk jq -e '.spinnerMotion.animating == false and .spinnerMotion.transitionCount == 0' .artifacts/review/spinner-motion-smoothing/final-state.json`
+  and
+  `rtk jq -e '.settleFrames == 1 and .parksRestored >= 1' .artifacts/review/spinner-motion-smoothing/final-diagnostics.json`.
+  Expect both commands to exit 0.
 
 Review status: NOT REVIEWED
 
@@ -578,58 +572,130 @@ Review findings (filled in by the review agent):
 
 _(empty)_
 
+## Concrete Steps
+
+Work from `/Users/rrj/wrk/laban`. Use the repository-required `rtk` prefix.
+
+After M0:
+
+    rtk swift test --filter SpinnerMotionDetectorTests
+    rtk swift test --filter TerminalSurfaceControllerTests
+
+Expect both commands to exit 0. The existing
+`testCellFingerprintIgnoresColorOnlyChanges` must remain green.
+
+After M1:
+
+    rtk swift test --filter SpinnerMotionColorTests
+    rtk swift test --filter SpinnerMotionTransitionTests
+    rtk swift test --filter SpinnerMotionFrameProducerTests
+    rtk swift test --filter SpinnerMotionRendererRoutingTests
+    rtk swift test --filter TerminalIdlePolicyTests
+
+Expect zero failures. The midpoint transcript must include:
+
+    from=FF0000FF to=0000FFFF progress=0.5 actual=800080FF
+
+After M2:
+
+    rtk swift test --filter SpinnerMotionSettingsTests
+    rtk swift test --filter SettingsWindowControllerTests
+    rtk ./scripts/run-debug-script fixtures/spinner-motion-smoothing.scenario.json
+    rtk ./scripts/test-e2e
+
+Expect the scenario to exit 0, print `debug script passed`, write a report with
+`ok: true`, and save its state, diagnostics, frame-command, pixel-probe, and
+screenshot artifacts under `.artifacts/runs/`.
+
+Before review/ship:
+
+    rtk ./scripts/check
+    rtk git status --short
+
+Expect the check to exit 0. Inspect status and keep unrelated user files out of
+the changeset. Commit milestones as focused, single-reason commits.
+
 ## Validation and Acceptance
 
-1. `scripts/check` passes; the full swift test suite passes.
-2. With the setting enabled, a program that repaints a same-character,
-   color-changing spinner in place (the M3 fixture, or a real one such as
-   Claude Code's own status line) shows a continuous color ripple; with the
-   setting disabled (default) or `reduceMotion` on, output is pixel-identical
-   to the pre-plan tree.
-3. The M3 scenario fixture proves real interpolation occurred (mid-tick
-   probe strictly between the two real endpoint colors), not merely a faster
-   identical-content redraw.
-4. After spinner activity stops, the display link parks:
-   `idle-counters.jsonl` records zero `advanceFrames` over a subsequent 5s
+The implementation is accepted only when all of the following are true:
+
+1. With the setting off, local and remote detector diagnostics may observe a
+   cadence, but commands, cell payloads, rendered pixels, display-link wake
+   counts, and parking behavior match the pre-plan tree.
+2. With the setting enabled, the third qualifying same-glyph color update
+   starts interpolation. At exact virtual midpoint, both foreground command
+   color and a full-cell background pixel equal the defined channel-wise RGBA
+   midpoint.
+3. A fourth update arriving before settlement starts from the currently
+   displayed color, with no discontinuity back to a prior terminal endpoint.
+4. Mouse tracking can remain enabled for the whole scenario and does not
+   suppress detection or interpolation.
+5. Different glyphs, widths, attributes, underline metadata, hyperlinks,
+   resize/incarnation changes, and overflow regions snap immediately to the
+   authoritative current state.
+6. Software, classic Metal, GPU-driven Metal, Vector Glyph, and Slug Glyph
+   receive equivalent interpolated colors. GPU-driven stays on
+   `TerminalCellPayload`; no hidden classic fallback is used.
+7. Disabling the setting or enabling Reduce Motion during a transition renders
+   one target-color settle frame, clears liveness, and restores parking.
+8. After normal completion, `idle-counters.jsonl` records zero
+   `advanceFrames` during a subsequent five-second focused, cursor-blink-off
    idle window.
-5. The M3 scenario fixture fails on the pre-plan tree (the new debug action
-   and `/debug/state` block do not exist) and passes after, and is actually
-   invoked by `scripts/test-e2e` in CI, not merely present under `fixtures/`.
-6. Review Gate passes with a fresh review agent (max 3 review-fix loops per
-   `PLANS.md`, then escalate to a human).
+9. The setting is visible and operable in Settings > Rendering, defaults off,
+   updates live, and is localized.
+10. The deterministic scenario is invoked by `scripts/test-e2e`, the full
+    `scripts/check` gate passes, and the fresh Review Gate passes against the
+    named implementation commit.
 
 ## Idempotence and Recovery
 
-Every milestone is independently revertible (`git revert` of its changeset).
-M0 alone produces no visual change, so a partial tree (M0 without M1/M2) is
-safe to leave in. The feature is default-off; recovery from any runtime
-misbehavior is unsetting `LabanSpinnerMotionSmoothingEnabled` (or never
-having set it). M2 is explicitly allowed to be built, evaluated, and then
-left disabled/unshipped without that being a plan failure.
+The setting defaults off. M0 changes only diagnostics/state and is safe without
+M1. M1’s optional override input defaults to nil/false, preserving existing
+callers and output. Re-running tests and scenarios is safe; scenario artifacts
+use normal run-scoped directories.
+
+If implementation stops mid-transition work, set
+`LabanSpinnerMotionSmoothingEnabled` to false, clear any environment override,
+and relaunch. The disabled path must render authoritative terminal colors with
+no transition state. Each milestone is a focused changeset and can be reverted
+independently with `git revert <commit>`.
+
+Never recover by changing the ink-bloom fingerprint, disabling mouse tracking,
+or forcing GPU-driven rendering onto a different backend. Those would hide the
+bug rather than restore the specified contract.
 
 ## Interfaces and Dependencies
 
 End-state interfaces that must exist:
 
-- `Sources/LabanCore/SpinnerMotionDetector.swift`: pure type exposing
-  `isActive`, `estimatedCadenceSeconds`, `anchorRow`, `columnRange`, fed by
-  `TerminalSurfaceController.freshnessFromCellDiff` classifications.
-- `TerminalIdlePolicy.displayLinkShouldRun(...)` /
-  `preferredDisplayLinkFramesPerSecond(...)`: additional
-  `spinnerMotionActive: Bool` input (default `false`), same precedence tier
-  as `glyphEffectAnimating`.
-- `FrameWakeSource.spinnerMotion`; `"spinnerMotion"` reason rung in
-  `displayLinkPolicyState`.
-- Effect kinds 3 (`crossfadeIn`) and 4 (`crossfadeOut`) in
-  `SlugGlyphGPUInstance.effectKind` / `SlugGlyphInstance.effectKind` and
-  their Metal evaluation in `slugGlyphEvaluateEffect`: ease `color.a` only,
-  `dilation` untouched, duration threaded per-instance from
-  `SpinnerMotionDetector.estimatedCadenceSeconds` (clamped 0.04-0.6s).
-- `Sources/LabanCore/SpinnerMotionSmoothingSettings.swift`: `enabled`
-  (UserDefaults `LabanSpinnerMotionSmoothingEnabled` + environment override
-  `LABAN_SPINNER_MOTION_SMOOTHING_ENABLED`, default `false`).
-- Debug action `setSpinnerMotionSmoothingEnabled` (echoes effective
-  resulting state); `GET /debug/spinner-motion` resettable counters;
-  `spinnerMotion` block in `/debug/state`.
-- New scenario fixture `fixtures/spinner-motion-smoothing.scenario.json`,
-  wired into `scripts/test-e2e`.
+- `Sources/LabanCore/SpinnerMotion.swift`: pure detector, cell/observation
+  types, transition sampler, and packed-RGBA interpolation.
+- `FrameProducer.spinnerCellStates(...)`: local and remote state extraction
+  through the same resolved-visual logic as normal production.
+- `FrameProducer.commands(..., spinnerColorOverrides: ... = nil)` and
+  `fillTerminalCellPayload(..., spinnerColorOverrides: ... = nil)`: one shared
+  optional override contract with byte-identical nil behavior.
+- `TerminalSurfaceFrameRequest.spinnerMotionConfiguredEnabled: Bool = false`:
+  cached configured caller input; the controller combines it with
+  `request.reduceMotion` to derive effective state.
+- `TerminalSurfaceFrame.spinnerMotion: SpinnerMotionFrameState?`: detector and
+  transition liveness/diagnostics for AppKit, headless, journal, and debug.
+- Remote `TerminalSurfaceController.makeFrame` input includes the remote frame
+  generation and binds retained state to `incarnationId`.
+- `TerminalIdlePolicy.displayLinkShouldRun(...)` and
+  `preferredDisplayLinkFramesPerSecond(...)` include
+  `spinnerMotionAnimating: Bool = false` at the decorative 30 fps tier.
+- `FrameWakeSource.spinnerMotion` plus the trailing settle-frame latch in
+  `TerminalBitmapView` and its headless equivalent.
+- `SpinnerMotionSmoothingSettings`: notification-based, default-off,
+  environment-overridable setting with explicit effective/persisted result.
+- Settings > Rendering checkbox **Smooth spinner motion**.
+- Debug action `setSpinnerMotionSmoothingEnabled`, reset action
+  `resetSpinnerMotionDiagnostics`, `GET /debug/spinner-motion`, and non-null
+  `/debug/state.spinnerMotion` for every renderer.
+- `fixtures/spinner-motion-smoothing.scenario.json`, invoked from
+  `scripts/test-e2e`.
+
+No new package dependency is required. No spinner effect kind, GPU-instance
+field, shader uniform, renderer-specific settings read, process-name match, or
+literal-text match is permitted.
