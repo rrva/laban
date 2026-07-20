@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import LabanCore
 @testable import LabanRenderer
 
@@ -20,7 +21,7 @@ final class SpinnerMotionTransitionTests: XCTestCase {
       text: "◆",
       displayWidth: 1,
       foreground: foreground,
-      background: 0x000000FF,
+      background: 0x0000_00FF,
       attributes: [],
       underlineStyle: .none,
       underlineColor: nil,
@@ -55,8 +56,8 @@ final class SpinnerMotionTransitionTests: XCTestCase {
   }
 
   func testTransitionCarriesLinearLightStartColor() {
-    let t = transition(for: [0xFF0000FF, 0x0000FFFF, 0x00FF00FF])
-    let expected = SRGBRenderTargetColor.linearizedStraightRGBA(0x0000FFFF)
+    let t = transition(for: [0xFF00_00FF, 0x0000_FFFF, 0x00FF_00FF])
+    let expected = SRGBRenderTargetColor.linearizedStraightRGBA(0x0000_FFFF)
     XCTAssertEqual(t.startLinearRGBA, expected)
   }
 
@@ -70,26 +71,30 @@ final class SpinnerMotionTransitionTests: XCTestCase {
   func testMidpointMixIsLinearLight() {
     // Red → blue with a 0.25s cadence. At the midpoint the smoothstep is 0.5,
     // so the linear-light mix is the average of the linearized endpoints.
-    let red = SRGBRenderTargetColor.linearizedStraightRGBA(0xFF0000FF)
-    let blue = SRGBRenderTargetColor.linearizedStraightRGBA(0x0000FFFF)
+    let red = SRGBRenderTargetColor.linearizedStraightRGBA(0xFF00_00FF)
+    let blue = SRGBRenderTargetColor.linearizedStraightRGBA(0x0000_FFFF)
     let midpoint = (red + blue) / 2
     let encoded = SRGBRenderTargetColor.encodedSRGBA(midpoint)
     // Reference value from the execplan acceptance criteria.
-    XCTAssertEqual(encoded, 0xBC00BCFF)
+    XCTAssertEqual(encoded, 0xBC00_BCFF)
   }
 
   func testExactStartAndEndPoints() {
-    let t = transition(for: [0xFF0000FF, 0x0000FFFF, 0x00FF00FF], cadence: 0.25)
+    let t = transition(for: [0xFF00_00FF, 0x0000_FFFF, 0x00FF_00FF], cadence: 0.25)
     XCTAssertEqual(t.startTimestampSeconds, 0.50, accuracy: 1e-9)
     XCTAssertEqual(t.durationSeconds, 0.25, accuracy: 1e-9)
   }
 
   func testEarlyRetargetContinuitySamplesMidInterpolation() {
-    let colors: [UInt32] = [0xFF0000FF, 0x0000FFFF, 0x00FF00FF, 0xFFFF00FF]
-    _ = detector.observe(observation(at: 0.00, cells: [cell(row: 0, col: 0, foreground: colors[0])]))
-    _ = detector.observe(observation(at: 0.25, cells: [cell(row: 0, col: 0, foreground: colors[1])]))
-    _ = detector.observe(observation(at: 0.50, cells: [cell(row: 0, col: 0, foreground: colors[2])]))
-    _ = detector.observe(observation(at: 0.60, cells: [cell(row: 0, col: 0, foreground: colors[3])]))
+    let colors: [UInt32] = [0xFF00_00FF, 0x0000_FFFF, 0x00FF_00FF, 0xFFFF_00FF]
+    _ = detector.observe(
+      observation(at: 0.00, cells: [cell(row: 0, col: 0, foreground: colors[0])]))
+    _ = detector.observe(
+      observation(at: 0.25, cells: [cell(row: 0, col: 0, foreground: colors[1])]))
+    _ = detector.observe(
+      observation(at: 0.50, cells: [cell(row: 0, col: 0, foreground: colors[2])]))
+    _ = detector.observe(
+      observation(at: 0.60, cells: [cell(row: 0, col: 0, foreground: colors[3])]))
     let t = detector.activeTransitions(at: 0.60)[SpinnerMotionCellKey(row: 0, col: 0)]!
     let previousSourceLinear = SRGBRenderTargetColor.linearizedStraightRGBA(colors[2])
     XCTAssertNotEqual(t.startLinearRGBA, previousSourceLinear)
@@ -102,11 +107,11 @@ final class SpinnerMotionTransitionTests: XCTestCase {
   func testStartColorIsNotPackedSRGB() {
     // Use a non-primary grey so the linear-light value diverges from the
     // normalized packed-sRGB value.
-    let t = transition(for: [0x808080FF, 0xA0A0A0FF, 0xC0C0C0FF])
+    let t = transition(for: [0x8080_80FF, 0xA0A0_A0FF, 0xC0C0_C0FF])
     let packed = SIMD4<Float>(
-      Float((0xA0A0A0FF >> 24) & 0xFF) / 255,
-      Float((0xA0A0A0FF >> 16) & 0xFF) / 255,
-      Float((0xA0A0A0FF >> 8) & 0xFF) / 255,
+      Float((0xA0A0_A0FF >> 24) & 0xFF) / 255,
+      Float((0xA0A0_A0FF >> 16) & 0xFF) / 255,
+      Float((0xA0A0_A0FF >> 8) & 0xFF) / 255,
       1)
     XCTAssertNotEqual(t.startLinearRGBA, packed)
   }

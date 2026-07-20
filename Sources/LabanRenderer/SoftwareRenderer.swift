@@ -90,8 +90,7 @@ public final class SoftwareRenderer {
 
       case .glyphRun(
         let origin, let text, let fg, let bg, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _, _, _
-      , _):
+        let underlineStyle, let underlineColor, _, _, _, _):
         ctx.setBlendMode(.normal)
         let atlas = runSource == .sidebar ? sidebarFontAtlas : fontAtlas
         let advance = runSource == .sidebar ? sidebarCellAdvance : glyphCellAdvance

@@ -19,8 +19,7 @@ struct DebugFrameCommandSerializer {
         rect: Self.rectResponse(rect), color: Self.rgbaArray(color))
     case .glyphRun(
       let origin, let text, let foreground, let background, let attributes, let source,
-      let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _
-    , _):
+      let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _, _):
       let approxWidth = CGFloat((displayCellCount ?? text.count) * cellWidth)
       let approxRect = CGRect(
         x: origin.x, y: origin.y,

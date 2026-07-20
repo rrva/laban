@@ -20,17 +20,17 @@ final class SpinnerMotionCommandTests: XCTestCase {
       dirty: true,
       visibleText: cells.map(\.text).joined(),
       cells: cells,
-      defaultBackgroundRGBA: 0x000000FF)
+      defaultBackgroundRGBA: 0x0000_00FF)
   }
 
   func testRemoteForegroundTransitionSplitsRun() {
     let cells = [
       LabandSnapshotCell(
         row: 0, col: 0, text: "A", flags: 0,
-        foregroundRGBA: 0xFF0000FF, backgroundRGBA: 0x000000FF),
+        foregroundRGBA: 0xFF00_00FF, backgroundRGBA: 0x0000_00FF),
       LabandSnapshotCell(
         row: 0, col: 1, text: "B", flags: 0,
-        foregroundRGBA: 0xFF0000FF, backgroundRGBA: 0x000000FF),
+        foregroundRGBA: 0xFF00_00FF, backgroundRGBA: 0x0000_00FF),
     ]
     let snapshot = remoteSnapshot(cells: cells)
     let transition = GlyphForegroundTransition(
@@ -41,7 +41,8 @@ final class SpinnerMotionCommandTests: XCTestCase {
     let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(
       from: snapshot,
       foregroundTransitions: transitions)
-    let runs = cmds.compactMap { command -> (text: String, transition: GlyphForegroundTransition?)? in
+    let runs = cmds.compactMap {
+      command -> (text: String, transition: GlyphForegroundTransition?)? in
       if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, let t) = command {
         return (text, t)
       }
@@ -59,12 +60,12 @@ final class SpinnerMotionCommandTests: XCTestCase {
       col: 0,
       text: "◆",
       flags: TextAttributes.faint.rawValue,
-      foregroundRGBA: 0xFF0000FF,
-      backgroundRGBA: 0x000000FF)
+      foregroundRGBA: 0xFF00_00FF,
+      backgroundRGBA: 0x0000_00FF)
     let states = FrameProducer(cellWidth: 8, cellHeight: 16).spinnerCellStates(
       from: remoteSnapshot(cells: [cell]))
     let state = states[SpinnerMotionCellKey(row: 0, col: 0)]!
     // 50% foreground blended toward black: ~0x800000FF.
-    XCTAssertEqual(state.foreground, 0x800000FF)
+    XCTAssertEqual(state.foreground, 0x8000_00FF)
   }
 }

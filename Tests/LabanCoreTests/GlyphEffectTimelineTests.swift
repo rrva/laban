@@ -109,7 +109,8 @@ final class GlyphEffectTimelineTests: XCTestCase {
     let half = GlyphEffectTimeline.spinnerForegroundMotionProgress(
       age: 0.125, duration: 0.25)
     XCTAssertEqual(half, 0.5, accuracy: 1e-9)
-    XCTAssertEqual(GlyphEffectTimeline.spinnerForegroundMotionProgress(age: 0.25, duration: 0.25), 1)
+    XCTAssertEqual(
+      GlyphEffectTimeline.spinnerForegroundMotionProgress(age: 0.25, duration: 0.25), 1)
     XCTAssertEqual(GlyphEffectTimeline.spinnerForegroundMotionProgress(age: 1, duration: 0.25), 1)
   }
 

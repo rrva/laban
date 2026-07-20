@@ -17,10 +17,10 @@ private func makeModel(rows: Int32 = 4, cols: Int32 = 20) throws -> AppModel {
 
 private func colorCode(for foreground: UInt32) -> String {
   switch foreground {
-  case 0xFF0000FF: return "31"
-  case 0x0000FFFF: return "34"
-  case 0x00FF00FF: return "32"
-  case 0xFFFF00FF: return "33"
+  case 0xFF00_00FF: return "31"
+  case 0x0000_FFFF: return "34"
+  case 0x00FF_00FF: return "32"
+  case 0xFFFF_00FF: return "33"
   default: return "37"
   }
 }
@@ -54,7 +54,7 @@ final class SpinnerMotionRendererGateTests: XCTestCase {
     controller.outputStampClock = { self.clock }
     // Seed the first generation with a red diamond, observed while eligible.
     clock = 0
-    writeColoredDiamond(session, foreground: 0xFF0000FF, overwrite: false)
+    writeColoredDiamond(session, foreground: 0xFF00_00FF, overwrite: false)
     let seeded = makeFrame(spinnerEnabled: true, rendererIsSlug: true, reduceMotion: false)
     XCTAssertNotNil(seeded, "seed frame must build")
   }
@@ -87,14 +87,17 @@ final class SpinnerMotionRendererGateTests: XCTestCase {
     // qualify (the whole grid is newly visible), so it only sets the baseline.
     // Blue and green build the qualifying run; the third (yellow) creates the
     // first active transition.
-    writeColoredDiamond(session, foreground: 0x0000FFFF, overwrite: true)
-    let frame2 = makeFrame(spinnerEnabled: spinnerEnabled, rendererIsSlug: rendererIsSlug, reduceMotion: reduceMotion)
+    writeColoredDiamond(session, foreground: 0x0000_FFFF, overwrite: true)
+    let frame2 = makeFrame(
+      spinnerEnabled: spinnerEnabled, rendererIsSlug: rendererIsSlug, reduceMotion: reduceMotion)
 
-    writeColoredDiamond(session, foreground: 0x00FF00FF, overwrite: true)
-    let frame3 = makeFrame(spinnerEnabled: spinnerEnabled, rendererIsSlug: rendererIsSlug, reduceMotion: reduceMotion)
+    writeColoredDiamond(session, foreground: 0x00FF_00FF, overwrite: true)
+    let frame3 = makeFrame(
+      spinnerEnabled: spinnerEnabled, rendererIsSlug: rendererIsSlug, reduceMotion: reduceMotion)
 
-    writeColoredDiamond(session, foreground: 0xFFFF00FF, overwrite: true)
-    let frame4 = makeFrame(spinnerEnabled: spinnerEnabled, rendererIsSlug: rendererIsSlug, reduceMotion: reduceMotion)
+    writeColoredDiamond(session, foreground: 0xFFFF_00FF, overwrite: true)
+    let frame4 = makeFrame(
+      spinnerEnabled: spinnerEnabled, rendererIsSlug: rendererIsSlug, reduceMotion: reduceMotion)
 
     XCTAssertNotNil(frame2, "frame 2 must build")
     XCTAssertNotNil(frame3, "frame 3 must build")
@@ -109,13 +112,15 @@ final class SpinnerMotionRendererGateTests: XCTestCase {
   }
 
   func testEligibleSlugEmitsForegroundTransition() {
-    let transitions = runTransitions(spinnerEnabled: true, rendererIsSlug: true, reduceMotion: false)
+    let transitions = runTransitions(
+      spinnerEnabled: true, rendererIsSlug: true, reduceMotion: false)
     XCTAssertFalse(transitions.isEmpty, "Slug + enabled + no Reduce Motion must emit transitions")
     XCTAssertEqual(transitions.count, 1, "a single isolated spinner cell should produce one run")
   }
 
   func testNonSlugDropsTransitions() {
-    let transitions = runTransitions(spinnerEnabled: true, rendererIsSlug: false, reduceMotion: false)
+    let transitions = runTransitions(
+      spinnerEnabled: true, rendererIsSlug: false, reduceMotion: false)
     XCTAssertTrue(transitions.isEmpty, "non-Slug renderer must not emit transitions")
   }
 
@@ -125,7 +130,8 @@ final class SpinnerMotionRendererGateTests: XCTestCase {
   }
 
   func testDisabledSettingDropsTransitions() {
-    let transitions = runTransitions(spinnerEnabled: false, rendererIsSlug: true, reduceMotion: false)
+    let transitions = runTransitions(
+      spinnerEnabled: false, rendererIsSlug: true, reduceMotion: false)
     XCTAssertTrue(transitions.isEmpty, "disabled setting must not emit transitions")
   }
 }

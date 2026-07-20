@@ -158,7 +158,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
 
     func sidebarTexts(_ cmds: [FrameCommand]) -> [String] {
       cmds.compactMap { cmd in
-        if case .glyphRun(_, let text, _, _, _, let source, _, _, _, _, _, _) = cmd, source == .sidebar
+        if case .glyphRun(_, let text, _, _, _, let source, _, _, _, _, _, _) = cmd,
+          source == .sidebar
         {
           return text
         }

@@ -608,7 +608,8 @@ final class FrameProducerTests: XCTestCase {
     let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
     let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
     let bannerLabels = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd, text.contains("signaled") {
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd, text.contains("signaled")
+      {
         return text
       }
       return nil

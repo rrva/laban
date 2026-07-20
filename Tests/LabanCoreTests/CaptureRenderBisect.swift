@@ -97,7 +97,8 @@ final class CaptureRenderBisect: XCTestCase {
     }
     if let by = bypassY {
       for cmd in cmds {
-        if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _) = cmd, origin.y == by {
+        if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _) = cmd, origin.y == by
+        {
           print("  y=\(origin.y) x=\(origin.x) text=\"\(text)\"")
         }
       }

@@ -601,7 +601,8 @@ final class TerminalSelectionTests: XCTestCase {
       return false
     }
     let firstGlyph = cmds.firstIndex { command in
-      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _, _) = command, source == .terminal {
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _, _) = command, source == .terminal
+      {
         return true
       }
       return false

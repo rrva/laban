@@ -1,5 +1,6 @@
 import Metal
 import XCTest
+
 @testable import LabanRenderer
 
 final class SlugSpinnerMotionBench: XCTestCase {
@@ -15,8 +16,8 @@ final class SlugSpinnerMotionBench: XCTestCase {
         scale: 1))
     renderer.waitForFrameCompletion = true
 
-    let start = SRGBRenderTargetColor.linearizedStraightRGBA(0xFF0000FF)
-    let target: UInt32 = 0x0000FFFF
+    let start = SRGBRenderTargetColor.linearizedStraightRGBA(0xFF00_00FF)
+    let target: UInt32 = 0x0000_FFFF
     let transition = GlyphForegroundTransition(
       startLinearRGBA: start,
       startTimestampSeconds: 1.0,
@@ -25,13 +26,13 @@ final class SlugSpinnerMotionBench: XCTestCase {
     let commands: [FrameCommand] = [
       .rect(
         CGRect(x: 0, y: 0, width: 256, height: 32),
-        color: 0x000000FF,
+        color: 0x0000_00FF,
         source: .terminal),
       .glyphRun(
         origin: CGPoint(x: 0, y: 0),
         text: text,
         foreground: target,
-        background: 0x00000000,
+        background: 0x0000_0000,
         attributes: [],
         source: .terminal,
         foregroundTransition: transition),

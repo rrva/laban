@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import LabanRenderer
 
 final class SlugGlyphGPUContractTests: XCTestCase {

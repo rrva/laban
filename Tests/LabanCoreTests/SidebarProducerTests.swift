@@ -405,7 +405,8 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: tabs, activeTabId: tabs[0].id, height: 600)
     let labelRuns = cmds.compactMap { cmd -> (String, UInt32)? in
-      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd, text.contains("Tab") {
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd, text.contains("Tab")
+      {
         return (text, fg)
       }
       return nil

@@ -167,7 +167,8 @@ final class ChineseTransparencyTrustGateTests: XCTestCase {
       file: file,
       line: line)
     let preeditRuns = commands.compactMap { command -> (String, Int)? in
-      guard case .glyphRun(_, let text, _, _, _, .preedit, _, _, _, let cells, _, _) = command else {
+      guard case .glyphRun(_, let text, _, _, _, .preedit, _, _, _, let cells, _, _) = command
+      else {
         return nil
       }
       return (text, cells ?? TerminalDisplayWidth.cells(of: text))

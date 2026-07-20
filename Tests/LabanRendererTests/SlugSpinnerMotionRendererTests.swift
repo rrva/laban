@@ -19,8 +19,8 @@ final class SlugSpinnerMotionRendererTests: XCTestCase {
         scale: 1))
     renderer.waitForFrameCompletion = true
 
-    let startPacked: UInt32 = 0xFF0000FF
-    let targetPacked: UInt32 = 0x0000FFFF
+    let startPacked: UInt32 = 0xFF00_00FF
+    let targetPacked: UInt32 = 0x0000_FFFF
     let transition = GlyphForegroundTransition(
       startLinearRGBA: SRGBRenderTargetColor.linearizedStraightRGBA(startPacked),
       startTimestampSeconds: 1.0,
@@ -28,13 +28,13 @@ final class SlugSpinnerMotionRendererTests: XCTestCase {
     let commands: [FrameCommand] = [
       .rect(
         CGRect(x: 0, y: 0, width: 160, height: 80),
-        color: 0x000000FF,
+        color: 0x0000_00FF,
         source: .terminal),
       .glyphRun(
         origin: CGPoint(x: 40, y: 20),
         text: "A",
         foreground: targetPacked,
-        background: 0x00000000,
+        background: 0x0000_0000,
         attributes: [],
         source: .terminal,
         foregroundTransition: transition),
@@ -103,8 +103,9 @@ final class SlugSpinnerMotionRendererTests: XCTestCase {
     return RGBAImage(width: width, height: height, bytes: bytes)
   }
 
-  private func firstFullyCoveredPixel(in image: RGBAImage) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8)?
-  {
+  private func firstFullyCoveredPixel(in image: RGBAImage) -> (
+    r: UInt8, g: UInt8, b: UInt8, a: UInt8
+  )? {
     var best: (r: UInt8, g: UInt8, b: UInt8, a: UInt8)?
     var bestSum: Int = 0
     for y in 0..<image.height {
