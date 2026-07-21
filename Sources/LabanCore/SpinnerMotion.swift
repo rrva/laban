@@ -240,10 +240,19 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
         continue
       }
       let startLinear: SIMD4<Float>
+      let previousLinear = SRGBRenderTargetColor.linearizedStraightRGBA(previous.foreground)
       if let existing = transitions[key] {
-        startLinear = sampleLinear(existing, at: observation.timestamp)
+        // The renderer blends a transition's start color toward the cell's
+        // current authoritative foreground, not toward the target recorded in
+        // the transition. While the detector stays active those coincide, but
+        // after a cadence/region reset the cell can snap past a stale
+        // transition whose stored target no longer matches what is on screen.
+        // Sampling toward `previous.foreground` keeps the retarget continuous
+        // with the displayed color in exactly those cases; a settled stale
+        // transition then samples to `previous.foreground` itself.
+        startLinear = sampleLinear(existing, toward: previousLinear, at: observation.timestamp)
       } else {
-        startLinear = SRGBRenderTargetColor.linearizedStraightRGBA(previous.foreground)
+        startLinear = previousLinear
       }
       transitions[key] = Transition(
         startLinearRGBA: startLinear,
@@ -305,12 +314,13 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     return clamped * clamped * (3 - 2 * clamped)
   }
 
-  private func sampleLinear(_ transition: Transition, at timestamp: Double) -> SIMD4<Float> {
+  private func sampleLinear(
+    _ transition: Transition, toward target: SIMD4<Float>, at timestamp: Double
+  ) -> SIMD4<Float> {
     let age = timestamp - transition.startTimestamp
     let u = max(0, min(1, age / max(transition.duration, 1e-9)))
     let p = Self.smoothstep(u)
     let start = transition.startLinearRGBA
-    let target = transition.targetLinearRGBA
     return SIMD4<Float>(
       Float(Double(start.x) + (Double(target.x) - Double(start.x)) * p),
       Float(Double(start.y) + (Double(target.y) - Double(start.y)) * p),

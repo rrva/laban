@@ -177,4 +177,94 @@ final class SpinnerMotionDetectorTests: XCTestCase {
     XCTAssertEqual(map.count, 1)
     XCTAssertTrue(detector.diagnostics.mouseTracking)
   }
+
+  func testRetargetAfterResetStartsFromDisplayedColorNotStaleSettledTarget() {
+    let colors: [UInt32] = [
+      0xFF00_00FF, 0x0000_FFFF, 0x00FF_00FF, 0xFFFF_00FF, 0x00FF_FFFF, 0xFF00_FFFF,
+    ]
+    // Activate and create a transition targeting colors[2].
+    _ = detector.observe(
+      observation(at: 0.00, cells: [cell(row: 0, col: 0, foreground: colors[0])]))
+    _ = detector.observe(
+      observation(at: 0.25, cells: [cell(row: 0, col: 0, foreground: colors[1])]))
+    _ = detector.observe(
+      observation(at: 0.50, cells: [cell(row: 0, col: 0, foreground: colors[2])]))
+    // A gap beyond the cadence range resets the run. While the detector is
+    // inactive the cell snaps through two more colors with no transitions,
+    // leaving the settled colors[2] transition stale in the map.
+    _ = detector.observe(
+      observation(at: 1.50, cells: [cell(row: 0, col: 0, foreground: colors[3])]))
+    _ = detector.observe(
+      observation(at: 1.75, cells: [cell(row: 0, col: 0, foreground: colors[4])]))
+    // The third qualifying observation reactivates the detector and retargets.
+    // The new transition must start from the displayed color (colors[4]), not
+    // from the stale settled target (colors[2]).
+    let map = detector.observe(
+      observation(at: 2.00, cells: [cell(row: 0, col: 0, foreground: colors[5])]))
+    let transition = map[SpinnerMotionCellKey(row: 0, col: 0)]!
+    XCTAssertEqual(
+      transition.startLinearRGBA, SRGBRenderTargetColor.linearizedStraightRGBA(colors[4]))
+  }
+
+  func testRetargetAfterResetSamplesLiveTransitionTowardCurrentColor() {
+    let colors: [UInt32] = [
+      0xFF00_00FF, 0x0000_FFFF, 0x00FF_00FF, 0xFFFF_00FF, 0x00FF_FFFF, 0xFF00_FFFF,
+    ]
+    _ = detector.observe(
+      observation(at: 0.00, cells: [cell(row: 0, col: 0, foreground: colors[0])]))
+    _ = detector.observe(
+      observation(at: 0.60, cells: [cell(row: 0, col: 0, foreground: colors[1])]))
+    _ = detector.observe(
+      observation(at: 1.20, cells: [cell(row: 0, col: 0, foreground: colors[2])]))
+    // A distant newly visible cell resets the run without touching col 0.
+    _ = detector.observe(
+      observation(
+        at: 1.33,
+        cells: [
+          cell(row: 0, col: 0, foreground: colors[2]),
+          cell(row: 0, col: 10, foreground: colors[0]),
+        ]))
+    // Region {0} is not near region {10}: a second reset. While inactive,
+    // col 0 snaps onward; its transition toward colors[2] stays live but no
+    // longer represents the displayed color.
+    _ = detector.observe(
+      observation(
+        at: 1.46,
+        cells: [
+          cell(row: 0, col: 0, foreground: colors[3]),
+          cell(row: 0, col: 10, foreground: colors[0]),
+        ]))
+    _ = detector.observe(
+      observation(
+        at: 1.59,
+        cells: [
+          cell(row: 0, col: 0, foreground: colors[4]),
+          cell(row: 0, col: 10, foreground: colors[0]),
+        ]))
+    // Reactivation retargets at t=1.72, above the finely sampled bypass exit
+    // threshold. The renderer has been blending the live transition toward
+    // the current cell color (colors[4]), so the sampled start must mix
+    // start -> colors[4], not start -> colors[2].
+    let map = detector.observe(
+      observation(
+        at: 1.72,
+        cells: [
+          cell(row: 0, col: 0, foreground: colors[5]),
+          cell(row: 0, col: 10, foreground: colors[0]),
+        ]))
+    let transition = map[SpinnerMotionCellKey(row: 0, col: 0)]!
+    let u = 0.52 / 0.60
+    let p = u * u * (3 - 2 * u)
+    let start = SRGBRenderTargetColor.linearizedStraightRGBA(colors[1])
+    let current = SRGBRenderTargetColor.linearizedStraightRGBA(colors[4])
+    let expected = SIMD4<Float>(
+      Float(Double(start.x) + (Double(current.x) - Double(start.x)) * p),
+      Float(Double(start.y) + (Double(current.y) - Double(start.y)) * p),
+      Float(Double(start.z) + (Double(current.z) - Double(start.z)) * p),
+      Float(Double(start.w) + (Double(current.w) - Double(start.w)) * p))
+    XCTAssertEqual(transition.startLinearRGBA.x, expected.x, accuracy: 1e-6)
+    XCTAssertEqual(transition.startLinearRGBA.y, expected.y, accuracy: 1e-6)
+    XCTAssertEqual(transition.startLinearRGBA.z, expected.z, accuracy: 1e-6)
+    XCTAssertEqual(transition.startLinearRGBA.w, expected.w, accuracy: 1e-6)
+  }
 }
