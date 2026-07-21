@@ -83,4 +83,21 @@ final class DebugFrameCommandSerializerTests: XCTestCase {
     XCTAssertEqual(response.color, [1, 2, 3, 68])
     XCTAssertEqual(DebugFrameCommandSerializer.kind(.findMatch(.zero, color: 0)), "findMatch")
   }
+
+  func testWaveRegionSerializesAsItsOwnKind() {
+    let serializer = DebugFrameCommandSerializer(cellWidth: 10, cellHeight: 20)
+    let command = FrameCommand.waveRegion(
+      colors: [SIMD4<Float>(1, 0, 0, 1), SIMD4<Float>(0, 0, 1, 1)],
+      anchorTimestampSeconds: 42,
+      velocityCellsPerSecond: 13.5)
+
+    let list = serializer.listCommand(command, index: 5, includeText: true)
+    let trace = serializer.traceCommand(command, index: 5)
+
+    XCTAssertEqual(DebugFrameCommandSerializer.kind(command), "waveRegion")
+    XCTAssertEqual(list.kind, "waveRegion")
+    XCTAssertEqual(trace.kind, "waveRegion")
+    XCTAssertNil(list.rect)
+    XCTAssertNil(trace.rect)
+  }
 }

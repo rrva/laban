@@ -65,9 +65,12 @@ struct SlugGlyphGPUInstance {
   var effectStart: Float = 0
 }
 
-// Motion variant: 96 bytes, matching the Metal mirror in
+// Motion variant: 112-byte stride, matching the Metal mirror in
 // VectorGlyphShaders.metal. It carries the normal Slug instance fields plus
-// the start color and duration needed for foreground-color spinner motion.
+// the start color and duration needed for foreground-color spinner motion,
+// plus the wave-field coordinates used by kind 4 (traveling-wave sampling).
+// (Fields end at byte 104; the 16-byte-aligned float4 member rounds the
+// stride up to 112 in both Swift and MSL.)
 struct SlugGlyphMotionGPUInstance {
   var originPx: SIMD2<Float>
   var sizePx: SIMD2<Float>
@@ -80,6 +83,60 @@ struct SlugGlyphMotionGPUInstance {
   var effectStart: Float = 0
   var duration: Float = 0
   var startColor: SIMD4<Float> = .zero
+  var waveRegionIndex: UInt32 = 0
+  var waveCellIndex: UInt32 = 0
+}
+
+// Per-frame traveling-wave fields for kind-4 motion instances, uploaded as
+// one buffer per frame and bound at vertex buffer index 2 of the motion
+// pipelines. Fixed 528-byte stride (16-byte header + 32 float4 colors,
+// linear-light straight RGBA); the Metal mirror `SlugWaveRegion` in
+// VectorGlyphShaders.metal must stay byte-identical with this struct.
+struct SlugWaveRegionGPU {
+  static let maxColors = 32
+
+  /// Region anchor in renderer-epoch seconds (same base as `effectStart`).
+  var anchorSeconds: Float = 0
+  var velocityCellsPerSecond: Float = 0
+  var colorCount: UInt32 = 0
+  var pad: UInt32 = 0
+  var colors:
+    (
+      SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+      SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+      SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+      SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+      SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+      SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+      SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+      SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>
+    ) = (
+      .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero,
+      .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero,
+      .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero,
+      .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero
+    )
+
+  /// Builds a region from a `FrameCommand.waveRegion` payload, mapping the
+  /// controller-clock anchor into the renderer epoch exactly like
+  /// `effectStart` (no epoch yet -> 0). `colors` is capped at `maxColors`.
+  init(
+    colors: [SIMD4<Float>],
+    anchorTimestampSeconds: Double,
+    velocityCellsPerSecond: Float,
+    epoch: Double?
+  ) {
+    anchorSeconds = epoch.map { Float(anchorTimestampSeconds - $0) } ?? 0
+    self.velocityCellsPerSecond = velocityCellsPerSecond
+    colorCount = UInt32(min(colors.count, Self.maxColors))
+    withUnsafeMutablePointer(to: &self.colors) { tuplePointer in
+      tuplePointer.withMemoryRebound(to: SIMD4<Float>.self, capacity: Self.maxColors) { base in
+        for index in 0..<Self.maxColors {
+          base[index] = index < colors.count ? colors[index] : .zero
+        }
+      }
+    }
+  }
 }
 
 private struct SlugGlyphGPUUniforms {
@@ -423,6 +480,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   public static let glyphEffectKindInkBloom: UInt32 = 1
   public static let glyphEffectKindBellShake: UInt32 = 2
   public static let glyphEffectKindSpinnerForegroundMotion: UInt32 = 3
+  public static let glyphEffectKindSpinnerForegroundWave: UInt32 = 4
+  /// Frame cap for `.waveRegion` payloads; extras are dropped defensively.
+  /// Mirrored as `kSlugWaveRegionLimit` in VectorGlyphShaders.metal.
+  public static let waveRegionLimit = 4
   private static let glyphEffectInkBloomDecaySeconds: Double = 0.280
   private static let glyphEffectBellShakeDecaySeconds: Double = 0.300
 
@@ -430,7 +491,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     switch kind {
     case glyphEffectKindInkBloom: return glyphEffectInkBloomDecaySeconds
     case glyphEffectKindBellShake: return glyphEffectBellShakeDecaySeconds
-    case glyphEffectKindSpinnerForegroundMotion:
+    // Kinds 3 and 4 take their liveness horizon from the duration channel;
+    // nil (never published for kind 3, not yet published for kind 4) means
+    // zero liveness, so the shader clamps to the settled/sampled state.
+    case glyphEffectKindSpinnerForegroundMotion, glyphEffectKindSpinnerForegroundWave:
       guard let duration, duration > 0 else { return 0 }
       return Double(duration)
     default: return 0
@@ -1420,6 +1484,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     var motionGlyphs: [SlugGlyphMotionGPUInstance] = []
     var rasterGlyphs: [SlugTextureInstance] = []
     var colorGlyphs: [SlugTextureInstance] = []
+    var waveRegions: [SlugWaveRegionGPU] = []
     solids.reserveCapacity(lastFrameSolidsCount)
     slugGlyphs.reserveCapacity(lastFrameSlugGlyphsCount)
     motionGlyphs.reserveCapacity(lastFrameMotionGlyphsCount)
@@ -1436,6 +1501,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       motionGlyphs: &motionGlyphs,
       rasterGlyphs: &rasterGlyphs,
       colorGlyphs: &colorGlyphs,
+      waveRegions: &waveRegions,
       damageBands: damageBands)
     updateLiveGlyphEffectState()
     lastFrameSolidsCount = solids.count + replaceSolids.count
@@ -1496,6 +1562,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     if let slugInstanceBuffer { retainedBuffers.append(slugInstanceBuffer) }
     let motionInstanceBuffer = makeBuffer(motionGlyphs)
     if let motionInstanceBuffer { retainedBuffers.append(motionInstanceBuffer) }
+    let waveRegionBuffer = makeBuffer(waveRegions)
+    if let waveRegionBuffer { retainedBuffers.append(waveRegionBuffer) }
     let slugCurveBuffer = curveBuffer
     let slugGlyphBuffer = glyphBuffer
     let slugBandBuffer = bandBuffer
@@ -1559,6 +1627,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         if let motionInstanceBuffer, let motionSlugAccumulatePipeline {
           accumEncoder.setRenderPipelineState(motionSlugAccumulatePipeline)
           accumEncoder.setVertexBuffer(motionInstanceBuffer, offset: 0, index: 0)
+          // Kind-4 instances read the wave fields at index 2; kind-3-only
+          // frames bind a stand-in buffer the shader never reads.
+          accumEncoder.setVertexBuffer(
+            waveRegionBuffer ?? motionInstanceBuffer, offset: 0, index: 2)
           repeatingBands(scissorPlan, on: accumEncoder) {
             accumEncoder.drawPrimitives(
               type: .triangle,
@@ -1690,6 +1762,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         if let motionInstanceBuffer, let activeMotionGlyphAlphaPipeline {
           encoder.setRenderPipelineState(activeMotionGlyphAlphaPipeline)
           encoder.setVertexBuffer(motionInstanceBuffer, offset: 0, index: 0)
+          encoder.setVertexBuffer(waveRegionBuffer ?? motionInstanceBuffer, offset: 0, index: 2)
           repeatingBands(scissorPlan, on: encoder) {
             encoder.drawPrimitives(
               type: .triangle,
@@ -1767,6 +1840,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           let activeMotionGlyphColorPipeline
         {
           encoder.setVertexBuffer(motionInstanceBuffer, offset: 0, index: 0)
+          encoder.setVertexBuffer(waveRegionBuffer ?? motionInstanceBuffer, offset: 0, index: 2)
           encoder.setRenderPipelineState(activeMotionGlyphCoveragePipeline)
           repeatingBands(scissorPlan, on: encoder) {
             encoder.drawPrimitives(
@@ -2025,6 +2099,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     motionGlyphs: inout [SlugGlyphMotionGPUInstance],
     rasterGlyphs: inout [SlugTextureInstance],
     colorGlyphs: inout [SlugTextureInstance],
+    waveRegions: inout [SlugWaveRegionGPU],
     damageBands: DirtyYRangeSet?
   ) {
     let preeditMaskRects = commands.compactMap { command -> CGRect? in
@@ -2058,7 +2133,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
         let underlineStyle, let underlineColor, _, _, let outputTimestampSeconds,
-        let foregroundTransition
+        let foregroundTransition, let foregroundWave
       ):
         let activeAtlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
         let cellHeight = activeAtlas.cellSize.height
@@ -2068,10 +2143,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         else { continue }
         let effectKind = resolvedGlyphEffectKind(
           outputTimestampSeconds: outputTimestampSeconds,
-          foregroundTransition: foregroundTransition)
+          foregroundTransition: foregroundTransition,
+          foregroundWave: foregroundWave)
         let (effectStart, effectDuration) = effectStartAndDuration(
           outputTimestampSeconds: outputTimestampSeconds,
-          foregroundTransition: foregroundTransition)
+          foregroundTransition: foregroundTransition,
+          foregroundWave: foregroundWave,
+          waveRegions: waveRegions)
         if effectKind != Self.glyphEffectKindNone {
           // Track at the run level, in the same CG-point y-up space
           // RenderDamage uses, so render() can re-damage these bands while
@@ -2096,12 +2174,25 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           effectStart: effectStart,
           effectDuration: effectDuration,
           foregroundTransition: foregroundTransition,
+          foregroundWave: foregroundWave,
           preeditMaskRects: preeditMaskRects,
           solids: &solids,
           glyphs: &glyphs,
           motionGlyphs: &motionGlyphs,
           rasterGlyphs: &rasterGlyphs,
           colorGlyphs: &colorGlyphs)
+
+      case .waveRegion(let colors, let anchorTimestampSeconds, let velocityCellsPerSecond):
+        // Frame-level wave fields are collected in command order; a run's
+        // `foregroundWave.regionIndex` indexes this array. Cap defensively:
+        // the shader guards indexes against the same limit.
+        guard waveRegions.count < Self.waveRegionLimit else { continue }
+        waveRegions.append(
+          SlugWaveRegionGPU(
+            colors: colors,
+            anchorTimestampSeconds: anchorTimestampSeconds,
+            velocityCellsPerSecond: velocityCellsPerSecond,
+            epoch: glyphEffectEpochSeconds))
 
       case .clip, .texturedQuad:
         break
@@ -2113,11 +2204,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// motion metadata (which wins over ink bloom) or a fresh output timestamp.
   /// Kind assignment for stamped runs: the debug trigger wins when set,
   /// otherwise ink-bloom while `glyphEffectsEnabled` is on (the view already
-  /// applied the reduceMotion gate).
+  /// applied the reduceMotion gate). Kind 4 (traveling wave) wins over ink
+  /// bloom exactly like kind 3.
   private func resolvedGlyphEffectKind(
     outputTimestampSeconds: Double?,
-    foregroundTransition: GlyphForegroundTransition?
+    foregroundTransition: GlyphForegroundTransition?,
+    foregroundWave: GlyphForegroundWave?
   ) -> UInt32 {
+    if foregroundWave != nil {
+      return Self.glyphEffectKindSpinnerForegroundWave
+    }
     if foregroundTransition != nil {
       return Self.glyphEffectKindSpinnerForegroundMotion
     }
@@ -2128,12 +2224,22 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   /// Converts a stamp or transition start (controller clock domain) into the
   /// renderer-relative Float the shader compares against `timeSeconds`. Returns
-  /// the start time and, for spinner motion, the metadata duration.
+  /// the start time and, for spinner motion, the metadata duration. For wave
+  /// runs the start is the region's anchor, already epoch-mapped when the
+  /// region was collected; the wave horizon rides the same duration channel
+  /// (nil until the controller publishes a bounded horizon).
   private func effectStartAndDuration(
     outputTimestampSeconds: Double?,
-    foregroundTransition: GlyphForegroundTransition?
+    foregroundTransition: GlyphForegroundTransition?,
+    foregroundWave: GlyphForegroundWave?,
+    waveRegions: [SlugWaveRegionGPU]
   ) -> (Float, Float?) {
     guard let epoch = glyphEffectEpochSeconds else { return (0, nil) }
+    if let wave = foregroundWave {
+      let index = Int(wave.regionIndex)
+      let anchor = waveRegions.indices.contains(index) ? waveRegions[index].anchorSeconds : 0
+      return (anchor, nil)
+    }
     if let transition = foregroundTransition {
       let start = Float(transition.startTimestampSeconds - epoch)
       let duration = Float(transition.durationSeconds)
@@ -2194,6 +2300,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     effectStart: Float,
     effectDuration: Float? = nil,
     foregroundTransition: GlyphForegroundTransition? = nil,
+    foregroundWave: GlyphForegroundWave? = nil,
     preeditMaskRects: [CGRect],
     solids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
@@ -2251,7 +2358,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           italicFallback: activeVariant.italicFallback,
           position: CGPoint(x: cellOriginX, y: origin.y))
       {
-        if foregroundTransition != nil {
+        if foregroundTransition != nil || foregroundWave != nil {
           frameSpinnerFallbackSnapCount += 1
         }
         colorGlyphs.append(colorFallback)
@@ -2267,7 +2374,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           position: CGPoint(x: cellOriginX, y: origin.y),
           color: foreground)
       {
-        if foregroundTransition != nil {
+        if foregroundTransition != nil || foregroundWave != nil {
           frameSpinnerFallbackSnapCount += 1
         }
         rasterGlyphs.append(fallback)
@@ -2289,7 +2396,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           position: CGPoint(x: cellOriginX, y: origin.y),
           color: foreground)
         {
-          if foregroundTransition != nil {
+          if foregroundTransition != nil || foregroundWave != nil {
             frameSpinnerFallbackSnapCount += 1
           }
           rasterGlyphs.append(fallback)
@@ -2313,7 +2420,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         max(0, Float((bounds.height + localPixelPad * 2) * pointScale * scale)))
       guard instanceSize.x > 0, instanceSize.y > 0 else { continue }
       frameQuadHeights.insert(Int((CGFloat(instanceSize.y) * gestureZoom).rounded()))
-      if let transition = foregroundTransition {
+      if foregroundTransition != nil || foregroundWave != nil {
         motionGlyphs.append(
           SlugGlyphMotionGPUInstance(
             originPx: instanceOrigin,
@@ -2326,7 +2433,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
             effectKind: effectKind,
             effectStart: effectStart,
             duration: effectDuration ?? 0,
-            startColor: transition.startLinearRGBA))
+            startColor: foregroundTransition?.startLinearRGBA ?? .zero,
+            waveRegionIndex: foregroundWave?.regionIndex ?? 0,
+            waveCellIndex: foregroundWave?.cellIndexInRegion ?? 0))
       } else {
         glyphs.append(
           SlugGlyphGPUInstance(

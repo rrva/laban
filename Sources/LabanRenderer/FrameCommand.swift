@@ -40,6 +40,23 @@ public struct GlyphForegroundTransition: Equatable, Sendable, Codable {
   }
 }
 
+/// Optional metadata attached to a `FrameCommand.glyphRun` when the Slug
+/// Glyph renderer super-samples a confident traveling color wave: the run's
+/// foreground is sampled from the referenced `.waveRegion` field at
+/// fractional cell offsets. Other renderers ignore this field.
+public struct GlyphForegroundWave: Equatable, Sendable, Codable {
+  /// Index of the `.waveRegion` payload for this frame, counting only
+  /// `waveRegion` commands in command order (0-based).
+  public var regionIndex: UInt32
+  /// This cell's column index within the region's color field.
+  public var cellIndexInRegion: UInt32
+
+  public init(regionIndex: UInt32, cellIndexInRegion: UInt32) {
+    self.regionIndex = regionIndex
+    self.cellIndexInRegion = cellIndexInRegion
+  }
+}
+
 public enum FrameSource: String, Sendable {
   case sidebar
   case chrome
@@ -195,7 +212,21 @@ public enum FrameCommand: Sendable {
     outputTimestampSeconds: Double? = nil,
     /// Slug-only foreground motion metadata; nil unless the smooth-spinner
     /// detector has activated for this cell and the effective renderer is Slug.
-    foregroundTransition: GlyphForegroundTransition? = nil
+    foregroundTransition: GlyphForegroundTransition? = nil,
+    /// Slug-only traveling-wave metadata referencing a `.waveRegion` payload;
+    /// nil unless the detector holds a confident wave for this cell. Wins over
+    /// `foregroundTransition`-free ink bloom exactly like kind 3.
+    foregroundWave: GlyphForegroundWave? = nil
+  )
+  /// Frame-level traveling-wave color field, emitted before the glyph runs
+  /// that reference it via `foregroundWave` (<= 4 per frame). Slug-only;
+  /// every other consumer ignores it. `colors` are linear-light straight RGBA
+  /// (<= 32 entries), `anchorTimestampSeconds` is in the `MonotonicClock`
+  /// domain, and `velocityCellsPerSecond` is positive for rightward motion.
+  case waveRegion(
+    colors: [SIMD4<Float>],
+    anchorTimestampSeconds: Double,
+    velocityCellsPerSecond: Float
   )
   case cursor(CGRect, color: UInt32)
   case selection(CGRect, color: UInt32)

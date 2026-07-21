@@ -25,7 +25,8 @@ final class FrameProducerSpanParityTests: XCTestCase {
     case .rect(let rect, let color, let source, let compositing):
       return "rect|\(r(rect))|\(color)|\(source.rawValue)|\(compositing.rawValue)"
     case .glyphRun(
-      let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link, _, _, _
+      let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link, _, _,
+      _, _
     ):
       // Encode text by scalar so any decode discrepancy surfaces, and pin the
       // grapheme-cluster count so RI/ZWJ/skin-tone merges must match exactly.
@@ -46,6 +47,8 @@ final class FrameProducerSpanParityTests: XCTestCase {
       return "clip|\(r(rect))"
     case .texturedQuad(let rect, let resourceId, let source):
       return "texturedQuad|\(r(rect))|\(resourceId)|\(source.rawValue)"
+    case .waveRegion:
+      return "waveRegion"
     }
   }
 

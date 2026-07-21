@@ -32,7 +32,7 @@ final class StyleAttributePlumbingTests: XCTestCase {
 
   private func firstGlyphRun(_ cmds: [FrameCommand], containing needle: String) -> FrameCommand? {
     for cmd in cmds {
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _) = cmd,
+      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _, _) = cmd,
         src == .terminal, text.contains(needle)
       {
         return cmd
@@ -54,7 +54,7 @@ final class StyleAttributePlumbingTests: XCTestCase {
     for (seq, label, expected) in cases {
       let cmds = try runWithText(seq + "\r\n")
       guard
-        case .glyphRun(_, _, _, _, _, _, let style, _, _, _, _, _)? = firstGlyphRun(
+        case .glyphRun(_, _, _, _, _, _, let style, _, _, _, _, _, _)? = firstGlyphRun(
           cmds, containing: label)
       else {
         XCTFail("missing glyph run for \(label)")
@@ -70,7 +70,7 @@ final class StyleAttributePlumbingTests: XCTestCase {
   func testCSI58TruecolorPropagatesUnderlineColor() throws {
     let cmds = try runWithText("\u{1b}[4:1m\u{1b}[58:2::255:0:0mREDUNDER\u{1b}[0m\r\n")
     guard
-      case .glyphRun(_, _, _, _, _, _, let style, let color, _, _, _, _)? =
+      case .glyphRun(_, _, _, _, _, _, let style, let color, _, _, _, _, _)? =
         firstGlyphRun(cmds, containing: "REDUNDER")
     else {
       XCTFail("missing REDUNDER glyph run")
@@ -83,7 +83,7 @@ final class StyleAttributePlumbingTests: XCTestCase {
   func testCSI58PaletteIndexPropagatesUnderlineColorThroughPalette() throws {
     let cmds = try runWithText("\u{1b}[4:3m\u{1b}[58:5:46mGREEN\u{1b}[0m\r\n")
     guard
-      case .glyphRun(_, _, _, _, _, _, let style, let color, _, _, _, _)? =
+      case .glyphRun(_, _, _, _, _, _, let style, let color, _, _, _, _, _)? =
         firstGlyphRun(cmds, containing: "GREEN")
     else {
       XCTFail("missing GREEN glyph run")
@@ -103,7 +103,7 @@ final class StyleAttributePlumbingTests: XCTestCase {
   func testBlinkAttributeIsPropagatedFromCSI5() throws {
     let cmds = try runWithText("\u{1b}[5mBLINK\u{1b}[0m\r\n")
     guard
-      case .glyphRun(_, _, _, _, let attrs, _, _, _, _, _, _, _)? =
+      case .glyphRun(_, _, _, _, let attrs, _, _, _, _, _, _, _, _)? =
         firstGlyphRun(cmds, containing: "BLINK")
     else {
       XCTFail("missing BLINK glyph run")
@@ -118,7 +118,7 @@ final class StyleAttributePlumbingTests: XCTestCase {
     // so we only assert that *some* blink survives (matches xterm/iTerm behaviour).
     let cmds = try runWithText("\u{1b}[6mFAST\u{1b}[0m\r\n")
     guard
-      case .glyphRun(_, _, _, _, let attrs, _, _, _, _, _, _, _)? =
+      case .glyphRun(_, _, _, _, let attrs, _, _, _, _, _, _, _, _)? =
         firstGlyphRun(cmds, containing: "FAST")
     else {
       XCTFail("missing FAST glyph run")

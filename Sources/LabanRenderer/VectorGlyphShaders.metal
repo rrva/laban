@@ -622,7 +622,9 @@ struct SlugGlyphUniforms {
 };
 
 // Byte-identical mirror of SlugGlyphMotionGPUInstance in SlugGlyphRenderer.swift
-// (96 B stride). Adds the start color and duration needed for spinner motion.
+// (112 B stride; fields end at byte 104, rounded up by the float4 alignment).
+// Adds the start color and duration needed for spinner motion, plus the
+// wave-field coordinates used by kind 4 (traveling-wave sampling).
 struct SlugGlyphMotionInstance {
     float2 originPx;
     float2 sizePx;
@@ -635,6 +637,24 @@ struct SlugGlyphMotionInstance {
     float effectStart;
     float duration;
     float4 startColor;
+    uint waveRegionIndex;
+    uint waveCellIndex;
+};
+
+// Byte-identical mirror of SlugWaveRegionGPU in SlugGlyphRenderer.swift
+// (528 B stride): one frame-level traveling-wave color field (linear-light
+// straight RGBA) sampled fractionally by kind-4 motion instances. Bound at
+// vertex buffer index 2 of the motion pipelines.
+#define kSlugWaveRegionMaxColors 32
+// Frame cap mirrored from SlugGlyphRenderer.waveRegionLimit; indexes at or
+// beyond it fall back to the instance's own color.
+#define kSlugWaveRegionLimit 4u
+struct SlugWaveRegion {
+    float anchorSeconds;
+    float velocityCellsPerSecond;
+    uint colorCount;
+    uint pad;
+    float4 colors[kSlugWaveRegionMaxColors];
 };
 
 struct SlugGlyphVertexOut {
@@ -712,22 +732,46 @@ vertex SlugGlyphVertexOut slugGlyphMotionVertex(
     uint vertexId [[vertex_id]],
     uint instanceId [[instance_id]],
     constant SlugGlyphMotionInstance *instances [[buffer(0)]],
-    constant SlugGlyphUniforms &uniforms [[buffer(1)]]
+    constant SlugGlyphUniforms &uniforms [[buffer(1)]],
+    constant SlugWaveRegion *waveRegions [[buffer(2)]]
 ) {
     SlugGlyphMotionInstance instance = instances[instanceId];
     float2 unit = kVectorQuadVertices[vertexId];
     float2 px = instance.originPx + unit * instance.sizePx;
     px = slugGlyphApplyGestureZoom(px, uniforms);
 
-    float age = uniforms.timeSeconds - instance.effectStart;
-    float u;
-    if (instance.duration <= 0.0) {
-        u = 1.0;
+    float4 color;
+    if (instance.effectKind == 4u &&
+        instance.waveRegionIndex < kSlugWaveRegionLimit) {
+        // Kind 4 = traveling-wave field sampling, mirroring
+        // SpinnerWaveState.sample(col:at:) in LabanCore:
+        // x = cellIndex - velocity * age, bilinear between floor/ceil,
+        // clamped to the field bounds, all in linear light.
+        constant SlugWaveRegion &region = waveRegions[instance.waveRegionIndex];
+        if (region.colorCount > 0u) {
+            float age = uniforms.timeSeconds - instance.effectStart;
+            float x = float(instance.waveCellIndex) - region.velocityCellsPerSecond * age;
+            x = clamp(x, 0.0, float(region.colorCount - 1u));
+            uint lo = uint(floor(x));
+            uint hi = min(lo + 1u, region.colorCount - 1u);
+            float f = x - float(lo);
+            color = mix(region.colors[lo], region.colors[hi], f);
+        } else {
+            color = instance.color;
+        }
     } else {
-        u = clamp(age / instance.duration, 0.0, 1.0);
+        // Kind 3 = smoothstep foreground transition (unknown kinds take this
+        // branch too; with duration <= 0 it resolves to the settled color).
+        float age = uniforms.timeSeconds - instance.effectStart;
+        float u;
+        if (instance.duration <= 0.0) {
+            u = 1.0;
+        } else {
+            u = clamp(age / instance.duration, 0.0, 1.0);
+        }
+        float p = u * u * (3.0 - 2.0 * u);
+        color = mix(instance.startColor, instance.color, p);
     }
-    float p = u * u * (3.0 - 2.0 * u);
-    float4 color = mix(instance.startColor, instance.color, p);
 
     SlugGlyphVertexOut out;
     out.position = float4(vector_to_ndc(px, uniforms.surfaceSizePixels), 0.0, 1.0);

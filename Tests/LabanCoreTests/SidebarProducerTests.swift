@@ -34,7 +34,7 @@ final class SidebarProducerTests: XCTestCase {
       switch cmd {
       case .rect(_, _, let src, _):
         XCTAssertEqual(src, .sidebar, "rect must have sidebar source")
-      case .glyphRun(_, _, _, _, _, let src, _, _, _, _, _, _):
+      case .glyphRun(_, _, _, _, _, let src, _, _, _, _, _, _, _):
         XCTAssertEqual(src, .sidebar, "glyphRun must have sidebar source")
       default:
         XCTFail("unexpected command type: \(cmd)")
@@ -79,7 +79,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: tabs, activeTabId: tabs[0].id, height: 600)
     let runs = cmds.compactMap { cmd -> (CGPoint, String, UInt32)? in
-      if case .glyphRun(let origin, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd {
+      if case .glyphRun(let origin, let text, let fg, _, _, _, _, _, _, _, _, _, _) = cmd {
         return (origin, text, fg)
       }
       return nil
@@ -212,7 +212,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: tabs, activeTabId: tabs[0].id, height: 600)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
     XCTAssertFalse(texts.contains("✕"), "close glyph must be hidden until hover")
@@ -225,7 +225,7 @@ final class SidebarProducerTests: XCTestCase {
       tabs: tabs, activeTabId: tabs[0].id, height: 600,
       hoveredTabId: tabs[0].id)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
     XCTAssertTrue(texts.contains("✕"), "close glyph must appear on hover")
@@ -244,7 +244,7 @@ final class SidebarProducerTests: XCTestCase {
 
     let dotX = p.commands(tabs: [tab], activeTabId: "other", height: 600)
       .compactMap { cmd -> CGFloat? in
-        if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _) = cmd,
+        if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd,
           text == "●"
         {
           return origin.x
@@ -255,7 +255,7 @@ final class SidebarProducerTests: XCTestCase {
       tabs: [tab], activeTabId: "other", height: 600, hoveredTabId: tab.id
     )
     .compactMap { cmd -> CGFloat? in
-      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _) = cmd,
+      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd,
         text == "✕"
       {
         return origin.x
@@ -280,7 +280,7 @@ final class SidebarProducerTests: XCTestCase {
 
     let idleTexts = p.commands(tabs: [tab], activeTabId: "other", height: 600)
       .compactMap { cmd -> String? in
-        if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+        if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
         return nil
       }
     XCTAssertTrue(idleTexts.contains("●"), "indicator must render when not hovered")
@@ -288,7 +288,7 @@ final class SidebarProducerTests: XCTestCase {
     let cmds = p.commands(
       tabs: [tab], activeTabId: "other", height: 600, hoveredTabId: tab.id)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
     XCTAssertTrue(texts.contains("✕"), "close glyph must render on hover")
@@ -325,7 +325,7 @@ final class SidebarProducerTests: XCTestCase {
         return rect
       }.first
       let titleRun = cmds.compactMap { cmd -> CGPoint? in
-        guard case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _, _, _) = cmd,
+        guard case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _, _, _, _) = cmd,
           source == .sidebar,
           text == "Tab 1"
         else { return nil }
@@ -367,7 +367,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: nil, height: 600)
     let labelTexts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
     XCTAssertTrue(
@@ -386,7 +386,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
     let labelRuns = cmds.compactMap { cmd -> (String, UInt32)? in
-      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd, text == "zsh" {
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _, _) = cmd, text == "zsh" {
         return (text, fg)
       }
       return nil
@@ -405,7 +405,8 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: tabs, activeTabId: tabs[0].id, height: 600)
     let labelRuns = cmds.compactMap { cmd -> (String, UInt32)? in
-      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd, text.contains("Tab")
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _, _) = cmd,
+        text.contains("Tab")
       {
         return (text, fg)
       }
@@ -438,7 +439,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 140, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
     let textRuns = cmds.compactMap { cmd -> (CGPoint, String)? in
-      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _) = cmd {
+      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd {
         return (origin, text)
       }
       return nil
@@ -466,7 +467,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
 
@@ -496,7 +497,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
 
@@ -511,7 +512,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: nil, height: 600)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
 
@@ -525,7 +526,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: nil, height: 600)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
 
@@ -540,7 +541,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: nil, height: 600)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
 
@@ -559,7 +560,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: "other", height: 600)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
     for marker in ["●", "◆", "!", "*", "•"] {
@@ -578,7 +579,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: "other", height: 600)
     let dot = cmds.compactMap { cmd -> UInt32? in
-      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd, text == "●" {
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _, _) = cmd, text == "●" {
         return fg
       }
       return nil
@@ -596,7 +597,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
     let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
     for marker in ["●", "◆", "!", "*", "•"] {
@@ -618,7 +619,7 @@ final class SidebarProducerTests: XCTestCase {
     // reserved for failures). Compare RGB only — M3 modulates the alpha byte
     // for the breathing pulse.
     let marker = cmds.compactMap { cmd -> UInt32? in
-      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd, text == "◆" {
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _, _) = cmd, text == "◆" {
         return fg
       }
       return nil
@@ -651,7 +652,7 @@ final class SidebarProducerTests: XCTestCase {
     let cmds = p.commands(tabs: [tab], activeTabId: "other", height: 600)
 
     let marker = cmds.compactMap { cmd -> UInt32? in
-      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd, text == "◆" {
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _, _) = cmd, text == "◆" {
         return fg
       }
       return nil
@@ -686,7 +687,7 @@ final class SidebarProducerTests: XCTestCase {
     // The single top tab occupies [tabY, tabY + rowHeight] with topInset 0.
     let tabY = height - p.rowHeight
     let origins = cmds.compactMap { cmd -> CGPoint? in
-      if case .glyphRun(let origin, _, _, _, _, _, _, _, _, _, _, _) = cmd { return origin }
+      if case .glyphRun(let origin, _, _, _, _, _, _, _, _, _, _, _, _) = cmd { return origin }
       return nil
     }
     XCTAssertFalse(origins.isEmpty)
@@ -706,7 +707,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let texts = p.commands(tabs: [tab], activeTabId: "other", height: 600)
       .compactMap { cmd -> String? in
-        if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+        if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
         return nil
       }
     XCTAssertTrue(texts.contains("◆"), "needs-action ◆ wins the slot")
@@ -721,7 +722,7 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let marker = p.commands(tabs: [tab], activeTabId: "other", height: 600)
       .compactMap { cmd -> UInt32? in
-        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd, text == "*" {
+        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _, _) = cmd, text == "*" {
           return fg
         }
         return nil
@@ -749,7 +750,7 @@ final class SidebarProducerTests: XCTestCase {
     }
     func markerAlpha(_ cmds: [FrameCommand]) -> UInt32? {
       cmds.compactMap { cmd -> UInt32? in
-        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _) = cmd, text == "◆" {
+        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _, _, _, _, _) = cmd, text == "◆" {
           return fg & 0xFF
         }
         return nil
@@ -801,7 +802,7 @@ final class SidebarProducerTests: XCTestCase {
       height: height,
       scrollOffset: offset
     ).compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
       return nil
     }
 

@@ -553,6 +553,8 @@ final class RenderJournal {
       counts.clips += 1
     case .texturedQuad:
       counts.texturedQuads += 1
+    case .waveRegion:
+      break
     }
   }
 

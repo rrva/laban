@@ -2391,7 +2391,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
         appendSolid(rect: rect, color: color, compositing: compositing)
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, .sidebar,
-        let underlineStyle, let underlineColor, _, _, _, _):
+        let underlineStyle, let underlineColor, _, _, _, _, _):
         let font = styledFont(for: attrs, in: sidebarFontAtlas)
         let traits = CTFontGetSymbolicTraits(font)
         let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
@@ -2568,7 +2568,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       switch cmd {
       case .rect(let rect, _, let source, _) where source == .terminal:
         include(rect)
-      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _, _, _)
+      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _, _, _, _)
       where source == .terminal:
         guard !text.isEmpty else { continue }
         include(
@@ -2943,7 +2943,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
             color: rgbaToFloat4(color)))
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _, _, _, _) where runSource == .sidebar:
+        let underlineStyle, let underlineColor, _, _, _, _, _) where runSource == .sidebar:
         let runHeight = sidebarCellHeight
         if let damageBounds, !damageBounds.overlaps(y: origin.y, height: runHeight) {
           continue
@@ -3297,7 +3297,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       guard
         case .glyphRun(
           let origin, let text, let fg, _, let attrs, let runSource,
-          let underlineStyle, let underlineColor, _, let displayCellCount, _, _) = cmd,
+          let underlineStyle, let underlineColor, _, let displayCellCount, _, _, _) = cmd,
         runSource == .preedit, !text.isEmpty
       else { continue }
       let font = styledFont(for: attrs, in: fontAtlas)
@@ -3659,7 +3659,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _, _, _, _):
+        let underlineStyle, let underlineColor, _, _, _, _, _):
         let isSidebar = runSource == .sidebar
         let runHeight = isSidebar ? sidebarCellHeight : glyphCellHeight
         if isSidebar, let damageBounds, !damageBounds.overlaps(y: origin.y, height: runHeight) {
@@ -3748,7 +3748,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           underlineStyle: underlineStyle, underlineColor: underlineColor,
           appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
 
-      case .texturedQuad:
+      case .texturedQuad, .waveRegion:
         break
       }
     }
@@ -3956,7 +3956,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _, _, _, _):
+        let underlineStyle, let underlineColor, _, _, _, _, _):
         let isSidebar = runSource == .sidebar
         let runHeight = isSidebar ? sidebarCellHeight : glyphCellHeight
         if let damageBounds, !damageBounds.overlaps(y: origin.y, height: runHeight) {
@@ -4019,7 +4019,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           underlineStyle: underlineStyle, underlineColor: underlineColor,
           appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
 
-      case .texturedQuad:
+      case .texturedQuad, .waveRegion:
         break
       }
     }
@@ -4187,7 +4187,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     guard emojiRenderingMode == .color else { return false }
     for command in commands {
       guard
-        case .glyphRun(_, let text, _, _, let attrs, let source, _, _, _, _, _, _) = command,
+        case .glyphRun(_, let text, _, _, let attrs, let source, _, _, _, _, _, _, _) = command,
         source != .sidebar,
         !text.isEmpty
       else { continue }

@@ -40,7 +40,8 @@ final class FrameProducerTests: XCTestCase {
     let cmds = producer.commands(from: UnsafePointer(snap))
 
     let glyphCmds = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _) = cmd, src == .terminal {
+      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _, _) = cmd, src == .terminal
+      {
         return text
       }
       return nil
@@ -75,7 +76,8 @@ final class FrameProducerTests: XCTestCase {
 
     let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(from: UnsafePointer(snap))
     let allText = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _) = cmd, src == .terminal {
+      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _, _) = cmd, src == .terminal
+      {
         return text
       }
       return nil
@@ -104,7 +106,9 @@ final class FrameProducerTests: XCTestCase {
     let cmds = FrameProducer().commands(from: UnsafePointer(snap))
     let terminalCmds = cmds.filter {
       if case .rect(_, _, let src, _) = $0 { return src == .terminal }
-      if case .glyphRun(_, _, _, _, _, let src, _, _, _, _, _, _) = $0 { return src == .terminal }
+      if case .glyphRun(_, _, _, _, _, let src, _, _, _, _, _, _, _) = $0 {
+        return src == .terminal
+      }
       return false
     }
     XCTAssertFalse(terminalCmds.isEmpty, "commands must include terminal-sourced commands")
@@ -130,7 +134,8 @@ final class FrameProducerTests: XCTestCase {
     let cmds = FrameProducer().commands(from: UnsafePointer(snap))
 
     let glyphTexts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _) = cmd, src == .terminal {
+      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _, _) = cmd, src == .terminal
+      {
         return text
       }
       return nil
@@ -172,7 +177,8 @@ final class FrameProducerTests: XCTestCase {
     let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(from: UnsafePointer(snap))
 
     let glyphTexts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _) = cmd, src == .terminal {
+      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _, _) = cmd, src == .terminal
+      {
         return text
       }
       return nil
@@ -416,7 +422,8 @@ final class FrameProducerTests: XCTestCase {
     let cmds = producer.commands(from: UnsafePointer(snap))
 
     let terminalGlyphs = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _) = cmd, src == .terminal {
+      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _, _) = cmd, src == .terminal
+      {
         return text
       }
       return nil
@@ -520,7 +527,7 @@ final class FrameProducerTests: XCTestCase {
     let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
     let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
     let exitLabels = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd,
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd,
         text.localizedCaseInsensitiveContains("exited")
           || text.localizedCaseInsensitiveContains("signaled")
       {
@@ -543,7 +550,8 @@ final class FrameProducerTests: XCTestCase {
     }
     XCTAssertFalse(bannerRects.isEmpty, "exited snapshot must produce a banner rect at originY")
     let bannerLabels = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd, text.contains("exited") {
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd, text.contains("exited")
+      {
         return text
       }
       return nil
@@ -577,7 +585,7 @@ final class FrameProducerTests: XCTestCase {
     let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
 
     let contentIndex = cmds.firstIndex { cmd in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd {
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd {
         return text.contains("visible before exit")
       }
       return false
@@ -589,7 +597,7 @@ final class FrameProducerTests: XCTestCase {
       return false
     }
     let bannerGlyphIndex = cmds.firstIndex { cmd in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd {
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd {
         return text.contains("Process exited 7")
       }
       return false
@@ -608,7 +616,8 @@ final class FrameProducerTests: XCTestCase {
     let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
     let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
     let bannerLabels = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd, text.contains("signaled")
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd,
+        text.contains("signaled")
       {
         return text
       }
@@ -773,7 +782,7 @@ final class FrameProducerTests: XCTestCase {
 
     func attrs(matching needle: String) -> TextAttributes? {
       for cmd in cmds {
-        if case .glyphRun(_, let text, _, _, let attributes, let src, _, _, _, _, _, _) = cmd,
+        if case .glyphRun(_, let text, _, _, let attributes, let src, _, _, _, _, _, _, _) = cmd,
           src == .terminal, text.contains(needle)
         {
           return attributes
@@ -820,7 +829,7 @@ final class FrameProducerTests: XCTestCase {
     var inverseFg: UInt32 = 0
     var inverseBg: UInt32 = 0
     for cmd in cmds {
-      if case .glyphRun(_, let text, let fg, let bg, _, let src, _, _, _, _, _, _) = cmd,
+      if case .glyphRun(_, let text, let fg, let bg, _, let src, _, _, _, _, _, _, _) = cmd,
         src == .terminal
       {
         if text.contains("FG") {
@@ -866,7 +875,7 @@ final class FrameProducerTests: XCTestCase {
 
     var runs: [(text: String, attrs: TextAttributes)] = []
     for cmd in cmds {
-      if case .glyphRun(_, let text, _, _, let attributes, let src, _, _, _, _, _, _) = cmd,
+      if case .glyphRun(_, let text, _, _, let attributes, let src, _, _, _, _, _, _, _) = cmd,
         src == .terminal,
         text.contains("A") || text.contains("C") || text.contains("E")
       {
@@ -904,7 +913,7 @@ final class FrameProducerTests: XCTestCase {
     let cmds = producer.commands(from: UnsafePointer(snap))
 
     let triangleGlyphs = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _) = cmd,
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd,
         text.unicodeScalars.contains(where: { (0x25E2...0x25E5).contains($0.value) })
       {
         return text
@@ -921,7 +930,8 @@ final class FrameProducerTests: XCTestCase {
     containing needle: String
   ) -> (text: String, foreground: UInt32, background: UInt32)? {
     for cmd in cmds {
-      if case .glyphRun(_, let text, let foreground, let background, _, let src, _, _, _, _, _, _) =
+      if case .glyphRun(
+        _, let text, let foreground, let background, _, let src, _, _, _, _, _, _, _) =
         cmd,
         src == .terminal, text.contains(needle)
       {

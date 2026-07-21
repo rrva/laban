@@ -42,7 +42,7 @@ final class HyperlinkPlumbingTests: XCTestCase {
     var nonLinkRuns: [(text: String, hl: String?)] = []
     for cmd in cmds {
       if case .glyphRun(
-        _, let text, _, _, let attrs, let src, let style, let color, let hl, _, _, _) =
+        _, let text, _, _, let attrs, let src, let style, let color, let hl, _, _, _, _) =
         cmd,
         src == .terminal
       {

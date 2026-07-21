@@ -1947,7 +1947,7 @@ public final class TerminalSurfaceController {
     for command in commands {
       guard
         case .glyphRun(
-          _, let text, _, _, _, .terminal, _, _, _, let displayCellCount, let stamp, _) =
+          _, let text, _, _, _, .terminal, _, _, _, let displayCellCount, let stamp, _, _) =
           command,
         stamp != nil
       else { continue }
@@ -1971,7 +1971,7 @@ public final class TerminalSurfaceController {
         case .glyphRun(
           let origin, let text, let foreground, let background, let attributes, let source,
           let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _,
-          let foregroundTransition
+          let foregroundTransition, let foregroundWave
         ) = stamped[index],
         source == .terminal
       else { continue }
@@ -1991,7 +1991,8 @@ public final class TerminalSurfaceController {
         hyperlink: hyperlink,
         displayCellCount: displayCellCount,
         outputTimestampSeconds: stamp,
-        foregroundTransition: foregroundTransition)
+        foregroundTransition: foregroundTransition,
+        foregroundWave: foregroundWave)
     }
     return stamped
   }
@@ -2016,7 +2017,7 @@ public final class TerminalSurfaceController {
         case .glyphRun(
           let origin, let text, let foreground, let background, let attributes, let source,
           let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _,
-          let foregroundTransition
+          let foregroundTransition, let foregroundWave
         ) = command,
         source == .terminal
       else {
@@ -2058,7 +2059,8 @@ public final class TerminalSurfaceController {
             displayCellCount: displayCellCount == nil
               ? nil : TerminalDisplayWidth.cells(of: piece.text),
             outputTimestampSeconds: piece.stamped ? stamp : nil,
-            foregroundTransition: foregroundTransition))
+            foregroundTransition: foregroundTransition,
+            foregroundWave: foregroundWave))
       }
     }
     return result

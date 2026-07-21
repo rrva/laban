@@ -104,7 +104,7 @@ final class SpinnerMotionRendererGateTests: XCTestCase {
     XCTAssertNotNil(frame4, "frame 4 must build")
     let commands = frame4?.commands ?? []
     return commands.compactMap { command -> GlyphForegroundTransition? in
-      if case .glyphRun(_, _, _, _, _, _, _, _, _, _, _, let transition) = command {
+      if case .glyphRun(_, _, _, _, _, _, _, _, _, _, _, let transition, _) = command {
         return transition
       }
       return nil

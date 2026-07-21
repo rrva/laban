@@ -480,7 +480,7 @@ final class GPUCellParityTests: XCTestCase {
           compositing: compositing)
       case .glyphRun(
         let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link,
-        let displayCellCount, _, _):
+        let displayCellCount, _, _, _):
         return .glyphRun(
           origin: CGPoint(x: origin.x + dx, y: origin.y),
           text: text, foreground: fg, background: bg, attributes: attrs, source: source,

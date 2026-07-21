@@ -290,7 +290,26 @@ adjacent step levels.
   Tests: new `Tests/LabanCoreTests/SpinnerTravelingWaveTests.swift`, 10
   tests green; `SpinnerMotionDetectorTests` 15/15,
   `SpinnerMotionTransitionTests` 6/6, `SpinnerMotionCommandTests` 2/2.
-- [ ] M1 — renderer contract and Slug kind-4 sampling.
+- [x] (2026-07-21) M1 — renderer contract and Slug kind-4 sampling.
+  `FrameCommand` gained `GlyphForegroundWave { regionIndex;
+  cellIndexInRegion }`, a frame-level `.waveRegion(colors:
+  anchorTimestampSeconds:velocityCellsPerSecond:)` case, and optional
+  `glyphRun.foregroundWave`; every exhaustive consumer was updated
+  (no-op everywhere except Slug, which collects regions). Slug uploads one
+  fixed-stride `SlugWaveRegionGPU` fields buffer (528 B/region, cap 4) at
+  vertex buffer index 2 of all three motion encoder sites, routes wave runs
+  to `SlugGlyphMotionGPUInstance` with new `waveRegionIndex`/`waveCellIndex`
+  fields, and selects effect kind 4 in `resolvedGlyphEffectKind` (wins over
+  ink bloom like kind 3). `slugGlyphMotionVertex` gained the kind-4 branch
+  mirroring `SpinnerWaveState.sample` (x = cellIndex − velocity·age,
+  clamped bilinear, linear light) with index/count guards falling back to
+  the instance color. Liveness rides the kind-3 path (nil duration → zero
+  liveness until the controller publishes a horizon). Tests:
+  `SlugSpinnerMotionRendererTests` 4/4 (new: GPU mid-interval bilinear
+  sample, instance/region stride assertions, `GlyphForegroundWave` Codable
+  round-trip), `DebugFrameCommandSerializerTests` wave-region serialization
+  test added; `SpinnerMotionDetectorTests` 15/15,
+  `SpinnerTravelingWaveTests` 10/10, `LabanRendererTests` green.
 - [ ] M2 — controller wiring, diagnostics, E2E, docs, review gate.
 
 ## Decision Log
@@ -319,6 +338,18 @@ adjacent step levels.
   Rationale: with a confident estimate the re-anchored function is already
   continuous up to sub-perceptual error; cross-fade is a follow-up only if
   captures show anchor steps.
+  Date/Author: 2026-07-21 / Kimi (user-directed)
+
+- Decision: Ship the wave region as a `FrameCommand.waveRegion` case
+  rather than an optional `waveRegions` array on the enum, and let the
+  Slug instance stride be 112 B instead of the planned 104 B.
+  Rationale: `FrameCommand` is a case-per-command enum with no place for a
+  frame-level payload other than a case; a case also preserves command
+  ordering (regions precede their runs) for free. The 104 B figure ignored
+  alignment: the 16-byte-aligned `float4 startColor` sits at offset 80, so
+  the appended wave coordinates end at byte 104 and both Swift and MSL
+  round the stride to 112 — the mirrors stay byte-identical, which is what
+  the layout test pins.
   Date/Author: 2026-07-21 / Kimi (user-directed)
 
 ## Review Gate

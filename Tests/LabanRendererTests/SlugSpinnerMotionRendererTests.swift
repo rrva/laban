@@ -67,6 +67,92 @@ final class SlugSpinnerMotionRendererTests: XCTestCase {
     XCTAssertNotEqual(Int(covered.r), 0x80, "midpoint must not be an encoded-channel mix")
   }
 
+  func testWaveMidIntervalMatchesBilinearFieldSample() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 24),
+        pixelWidth: 160,
+        pixelHeight: 80,
+        scale: 1))
+    renderer.waitForFrameCompletion = true
+
+    // Two-entry linear-light field (red -> blue); a rightward wave at
+    // 1 cell/s anchored at t=1.0. At t=1.5 the cell at index 1 samples
+    // x = 1 - 1.0 * 0.5 = 0.5, i.e. the exact bilinear midpoint, matching
+    // SpinnerWaveState.sample(col:at:) semantics (sign convention: positive
+    // velocity moves the highlight right).
+    let fieldColors: [SIMD4<Float>] = [
+      SRGBRenderTargetColor.linearizedStraightRGBA(0xFF00_00FF),
+      SRGBRenderTargetColor.linearizedStraightRGBA(0x0000_FFFF),
+    ]
+    let commands: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: 160, height: 80),
+        color: 0x0000_00FF,
+        source: .terminal),
+      .waveRegion(
+        colors: fieldColors,
+        anchorTimestampSeconds: 1.0,
+        velocityCellsPerSecond: 1.0),
+      .glyphRun(
+        origin: CGPoint(x: 40, y: 20),
+        text: "A",
+        foreground: 0x0000_FFFF,
+        background: 0x0000_0000,
+        attributes: [],
+        source: .terminal,
+        foregroundWave: GlyphForegroundWave(regionIndex: 0, cellIndexInRegion: 1)),
+    ]
+
+    // First render establishes the renderer epoch at t=1.0.
+    renderer.glyphEffectClock = { 1.0 }
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    XCTAssertEqual(renderer.lastFrameMotionGlyphsCount, 1)
+
+    renderer.glyphEffectClock = { 1.5 }
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    XCTAssertEqual(renderer.lastFrameMotionGlyphsCount, 1)
+    // Nil wave duration mirrors kind 3's nil handling: zero liveness.
+    XCTAssertEqual(renderer.glyphEffectLiveCount, 0)
+    XCTAssertEqual(renderer.glyphEffectAnimatingRemainingSeconds, 0)
+
+    let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+    guard let covered = firstFullyCoveredPixel(in: image) else {
+      XCTFail("no fully covered glyph pixel found")
+      return
+    }
+
+    // Linear-light 50/50 red+blue is (0.5, 0, 0.5, 1), which encodes to
+    // approximately 0xBC00BCFF. r > 0 also rules out the kind-3 fallback
+    // (which would settle to the run's blue foreground) and the clamped
+    // field ends (pure red or pure blue).
+    XCTAssertEqual(Int(covered.r), 0xBC, accuracy: 3)
+    XCTAssertEqual(Int(covered.g), 0x00, accuracy: 3)
+    XCTAssertEqual(Int(covered.b), 0xBC, accuracy: 3)
+    XCTAssertEqual(Int(covered.a), 0xFF, accuracy: 3)
+    XCTAssertNotEqual(Int(covered.r), 0x80, "midpoint must be a linear-light mix")
+  }
+
+  func testMotionInstanceLayoutMatchesMetalMirror() {
+    // Byte-identical with `SlugGlyphMotionInstance` in
+    // VectorGlyphShaders.metal. The appended kind-4 wave coordinates end at
+    // byte 104, but the 16-byte-aligned float4 member rounds the stride up
+    // to 112 in both Swift and MSL — the mirrors must agree on that.
+    XCTAssertEqual(MemoryLayout<SlugGlyphMotionGPUInstance>.stride, 112)
+    // Byte-identical with `SlugWaveRegion`: 16 B header + 32 float4 colors.
+    XCTAssertEqual(MemoryLayout<SlugWaveRegionGPU>.stride, 528)
+  }
+
+  func testGlyphForegroundWaveCodableRoundTrip() throws {
+    let wave = GlyphForegroundWave(regionIndex: 3, cellIndexInRegion: 17)
+    let data = try JSONEncoder().encode(wave)
+    let decoded = try JSONDecoder().decode(GlyphForegroundWave.self, from: data)
+    XCTAssertEqual(decoded, wave)
+  }
+
   private struct RGBAImage {
     var width: Int
     var height: Int

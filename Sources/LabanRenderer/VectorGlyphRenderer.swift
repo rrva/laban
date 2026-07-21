@@ -1420,7 +1420,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
 
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, _, _, _, _):
+        let underlineStyle, let underlineColor, _, _, _, _, _):
         let atlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
         appendGlyphRun(
           text,
@@ -1439,7 +1439,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
           sidebarRasterGlyphs: &sidebarRasterGlyphs,
           colorGlyphs: &colorGlyphs)
 
-      case .texturedQuad:
+      case .texturedQuad, .waveRegion:
         break
       }
     }
@@ -1569,7 +1569,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
           _,
           _,
           _,
-          _, _, _) = command
+          _, _, _, _) = command
       else {
         continue
       }

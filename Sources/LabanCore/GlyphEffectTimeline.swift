@@ -28,6 +28,10 @@ public enum GlyphEffectTimeline {
   /// Slug-only foreground-color spinner motion: a single analytic glyph
   /// interpolates from its previous resolved color to the new one (M1).
   public static let kindSpinnerForegroundMotion: UInt32 = 3
+  /// Slug-only traveling-wave super-sampling: the glyph's foreground is
+  /// sampled from a frame-level wave field at fractional cell offsets
+  /// (execplans/active/spinner-motion-traveling-wave.md).
+  public static let kindSpinnerForegroundWave: UInt32 = 4
 
   /// Seconds an ink-bloom takes to fully settle.
   ///

@@ -43,7 +43,7 @@ final class SpinnerMotionCommandTests: XCTestCase {
       foregroundTransitions: transitions)
     let runs = cmds.compactMap {
       command -> (text: String, transition: GlyphForegroundTransition?)? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, let t) = command {
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, let t, _) = command {
         return (text, t)
       }
       return nil

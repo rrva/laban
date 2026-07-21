@@ -779,7 +779,7 @@ public enum FrameCommandCaptureCodec {
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
         let underlineStyle, let underlineColor, let hyperlink, let displayCellCount,
-        _, _):
+        _, _, _):
         let attrNames = attributes.names
         return CapturedFrameCommand(
           index: index, kind: "glyphRun", source: source.rawValue,
@@ -813,6 +813,12 @@ public enum FrameCommandCaptureCodec {
         return CapturedFrameCommand(
           index: index, kind: "texturedQuad", source: source.rawValue,
           rect: CapturedRect(rect), resourceId: resourceId)
+      case .waveRegion:
+        // Slug-only GPU sampling payload; replaying the cell's authoritative
+        // colors needs nothing from it, so capture only its presence (decode
+        // drops it like other unknown kinds).
+        return CapturedFrameCommand(
+          index: index, kind: "waveRegion", source: FrameSource.terminal.rawValue)
       }
     }
   }

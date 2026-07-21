@@ -19,7 +19,7 @@ struct DebugFrameCommandSerializer {
         rect: Self.rectResponse(rect), color: Self.rgbaArray(color))
     case .glyphRun(
       let origin, let text, let foreground, let background, let attributes, let source,
-      let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _, _):
+      let underlineStyle, let underlineColor, let hyperlink, let displayCellCount, _, _, _):
       let approxWidth = CGFloat((displayCellCount ?? text.count) * cellWidth)
       let approxRect = CGRect(
         x: origin.x, y: origin.y,
@@ -37,6 +37,12 @@ struct DebugFrameCommandSerializer {
         underlineColor: underlineColor.map { Self.rgbaArray($0) },
         hyperlink: hyperlink
       )
+    case .waveRegion:
+      return FrameCommandResponse(
+        id: id, index: index, kind: "waveRegion", source: "terminal",
+        rect: nil, color: nil, foreground: nil, background: nil, text: nil,
+        resourceId: nil, attributes: nil, underlineStyle: nil, underlineColor: nil,
+        hyperlink: nil)
     case .cursor(let rect, let color):
       return FrameCommandResponse(
         id: id, index: index, kind: "cursor", source: "cursor",
@@ -72,7 +78,8 @@ struct DebugFrameCommandSerializer {
         id: id, index: index, kind: "rect",
         source: source.rawValue, rect: Self.rectResponse(rect))
     case .glyphRun(
-      let origin, let text, _, _, let attributes, let source, _, _, _, let displayCellCount, _, _):
+      let origin, let text, _, _, let attributes, let source, _, _, _, let displayCellCount, _, _, _
+    ):
       let approxWidth = CGFloat((displayCellCount ?? text.count) * cellWidth)
       let approxRect = CGRect(
         x: origin.x, y: origin.y,
@@ -107,6 +114,10 @@ struct DebugFrameCommandSerializer {
       return TraceCommand(
         id: id, index: index, kind: "texturedQuad",
         source: source.rawValue, rect: Self.rectResponse(rect))
+    case .waveRegion:
+      return TraceCommand(
+        id: id, index: index, kind: "waveRegion", source: "terminal",
+        rect: nil, text: nil, sourceRefs: nil, attributes: nil)
     }
   }
 
@@ -120,6 +131,7 @@ struct DebugFrameCommandSerializer {
     case .findSelected: return "findSelected"
     case .clip: return "clip"
     case .texturedQuad: return "texturedQuad"
+    case .waveRegion: return "waveRegion"
     }
   }
 
