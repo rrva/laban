@@ -474,6 +474,27 @@ the renderer boundary in product/architecture documentation.
   application activation has its own wake. The focused wake/visibility suite
   passes with explicit Settings-window, inactive, hidden, miniaturized,
   occluded, and reactivation coverage.
+- [x] (2026-07-21) Bug fix: retarget sampling now matches what the renderer
+  actually blends toward. After a cadence/region reset the cell can snap past
+  a stale, settled transition whose stored target no longer represents the
+  displayed color; sampling that stale target produced an instantaneous drop
+  plus smooth re-rise at sweep tails (the "Working" `n`/`g` arrhythmia).
+  Retargets now sample the existing transition toward the cell's current
+  authoritative foreground. Regression tests:
+  `testRetargetAfterResetStartsFromDisplayedColorNotStaleSettledTarget` and
+  `testRetargetAfterResetSamplesLiveTransitionTowardCurrentColor` (both red
+  on the old code, green on the fix).
+- [x] (2026-07-21) Finely sampled bypass: sources whose observed change
+  cadence falls below 100 ms (exit hysteresis at 120 ms) render
+  authoritatively; interpolation is reserved for sparse, discrete jumps.
+  Capture analysis showed finely sampled true-color sweepers (Codex's ~74 ms
+  shimmer, ~50 ms class sources) already read as smooth, so interpolation
+  only filtered an already time-shaped signal. `testCadenceClampedToMinimum`
+  became `testMinimumCadenceEngagesFinelySampledBypass`; new coverage:
+  `testFinelySampledSourceIsRenderedAuthoritatively`,
+  `testSparseSourceDoesNotEngageFinelySampledBypass`,
+  `testFinelySampledBypassHysteresis`. Diagnostics expose
+  `finelySampledBypass`.
 
 ## Surprises & Discoveries
 
@@ -511,6 +532,24 @@ the renderer boundary in product/architecture documentation.
   Evidence: all four animation visibility checks in `TerminalBitmapView`
   required `window.isKeyWindow`; the symptom stopped immediately when Settings
   closed.
+- Observation: settled transitions are never evicted from the detector's
+  `transitions` map, and the Slug motion shader blends a transition's start
+  color toward the run's *current* foreground — not toward the target stored
+  in the transition. While the detector stays active the two coincide, but
+  real spinner sources (verified against `codex-rs/tui/src/shimmer.rs`) emit
+  interleaved change-bursts at independent cadences (a word sweep every
+  ~74 ms plus a bullet sweep every ~95 ms), so the qualifying run resets
+  regularly: change-gaps below the 40 ms floor when bursts land close
+  together, and `regionsAreNear` failures when a bullet-only region follows a
+  tail word-region. During inactive windows cells snap authoritatively; on
+  reactivation the old retarget sampled the stale settled transition and
+  jumped the cell to its long-dead target before easing to the new one.
+  Evidence: composite A/B captures
+  (`~/Library/Logs/Laban/captures/appkit-2026-07-21T17-56-24Z` smoothing on,
+  `...T17-56-50Z` off) with identical PTY streams; window-grab luminance
+  showed a one-frame 0.91→0.55 drop plus re-rise exactly when the highlight
+  leaves the word, absent with smoothing off; a Python port of source +
+  detector + renderer reproduced the mismatch events.
 
 ## Decision Log
 
@@ -555,6 +594,27 @@ the renderer boundary in product/architecture documentation.
   Rationale: restarting from a terminal endpoint or quantizing through packed
   sRGB creates a visible discontinuity under cadence jitter.
   Date/Author: 2026-07-20 / Codex
+
+- Decision: Sample retargets toward the cell's current authoritative
+  foreground instead of the transition's stored target.
+  Rationale: this is what the renderer actually blends toward
+  (`GlyphForegroundTransition` carries no target; the shader mixes start color
+  into the run foreground). It is behavior-identical while the detector
+  remains active and restores C0 continuity exactly after cadence/region
+  resets, which is where the stale-target drop/re-rise artifact lived.
+  Velocity (C1) discontinuity at retargets remains a known, smaller term.
+  Date/Author: 2026-07-21 / Kimi (user-directed)
+
+- Decision: Bypass interpolation entirely for finely sampled sources
+  (observed change cadence < 100 ms, exit > 120 ms with hysteresis).
+  Rationale: capture A/B of the real Codex shimmer showed the OFF path is
+  already perceptually smooth — the source emits a spatially cosine-shaped
+  band at ~74 ms per-cell cadence — so interpolation had no upside there and
+  only added filtering artifacts. Smoothing's value is confined to sparse,
+  discrete jumps; cadence is the product-neutral classifier (no process,
+  text, or glyph identity). The run/cadence bookkeeping stays live while
+  bypassed so the bypass can disengage when a source slows down.
+  Date/Author: 2026-07-21 / Kimi (user-directed)
 
 - Decision: Persist the setting but make effective enablement depend on Slug
   and Reduce Motion, with explicit unavailable UI/debug reasons.

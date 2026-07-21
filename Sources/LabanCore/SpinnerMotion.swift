@@ -13,6 +13,14 @@ public enum SpinnerMotion {
   /// Minimum and maximum observed cadence in seconds.
   public static let minCadenceSeconds = 0.04
   public static let maxCadenceSeconds = 0.60
+  /// Cadence below which a source already emits finely sampled motion and is
+  /// rendered authoritatively instead of interpolated. Sources that change
+  /// colors faster than this already read as smooth; interpolating them only
+  /// filters an already time-shaped signal and can add artifacts. The exit
+  /// threshold adds hysteresis so sources hovering near the boundary do not
+  /// flap between interpolated and authoritative rendering.
+  public static let finelySampledEnterCadenceSeconds = 0.10
+  public static let finelySampledExitCadenceSeconds = 0.12
   /// Maximum number of live transitions retained per session.
   public static let maxTransitions = 64
 }
@@ -129,6 +137,7 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
   private var qualifyingRun: [QualifyingObservation] = []
   private var transitions: [SpinnerMotionCellKey: Transition] = [:]
   private var lastObservationTimestamp: Double?
+  private var finelySampledBypass = false
   private(set) public var diagnostics: SpinnerMotionDiagnostics = .init()
 
   public init() {}
@@ -139,6 +148,7 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     GlyphForegroundTransition]
   {
     diagnostics = SpinnerMotionDiagnostics()
+    diagnostics.finelySampledBypass = finelySampledBypass
     defer { lastObservationTimestamp = observation.timestamp }
 
     // Compute changed cells and qualifying region.
@@ -223,6 +233,25 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     diagnostics.cadenceSeconds = cadence
     diagnostics.detectorActive = true
 
+    // Finely sampled sources already read as smooth on their own; render them
+    // authoritatively and reserve interpolation for sparse, discrete jumps.
+    // Hysteresis keeps sources near the threshold from flapping. The run and
+    // cadence bookkeeping above stays live so the bypass can disengage.
+    if finelySampledBypass {
+      if cadence > SpinnerMotion.finelySampledExitCadenceSeconds {
+        finelySampledBypass = false
+      }
+    } else if cadence < SpinnerMotion.finelySampledEnterCadenceSeconds {
+      finelySampledBypass = true
+    }
+    diagnostics.finelySampledBypass = finelySampledBypass
+    guard !finelySampledBypass else {
+      let result = activeTransitions(at: observation.timestamp)
+      diagnostics.activeTransitions = result.count
+      updatePreviousCells(observation)
+      return result
+    }
+
     // Create or retarget transitions for changed cells whose identity is
     // unchanged and whose foreground changed.
     var created = 0
@@ -278,6 +307,7 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     previousTimestamp = nil
     qualifyingRun.removeAll()
     transitions.removeAll()
+    finelySampledBypass = false
     diagnostics = SpinnerMotionDiagnostics()
   }
 
@@ -419,6 +449,7 @@ public struct SpinnerMotionDiagnostics: Equatable, Sendable, Codable {
   public var overflowTransitions: Int
   public var fallbackReason: String?
   public var mouseTracking: Bool
+  public var finelySampledBypass: Bool
 
   public init(
     detectorActive: Bool = false,
@@ -431,7 +462,8 @@ public struct SpinnerMotionDiagnostics: Equatable, Sendable, Codable {
     activeTransitions: Int = 0,
     overflowTransitions: Int = 0,
     fallbackReason: String? = nil,
-    mouseTracking: Bool = false
+    mouseTracking: Bool = false,
+    finelySampledBypass: Bool = false
   ) {
     self.detectorActive = detectorActive
     self.consecutiveQualifyingObservations = consecutiveQualifyingObservations
@@ -444,5 +476,6 @@ public struct SpinnerMotionDiagnostics: Equatable, Sendable, Codable {
     self.overflowTransitions = overflowTransitions
     self.fallbackReason = fallbackReason
     self.mouseTracking = mouseTracking
+    self.finelySampledBypass = finelySampledBypass
   }
 }

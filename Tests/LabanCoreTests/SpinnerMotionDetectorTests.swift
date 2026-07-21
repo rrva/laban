@@ -124,7 +124,7 @@ final class SpinnerMotionDetectorTests: XCTestCase {
     XCTAssertEqual(map.first!.value.durationSeconds, cadence)
   }
 
-  func testCadenceClampedToMinimum() {
+  func testMinimumCadenceEngagesFinelySampledBypass() {
     let cadence = SpinnerMotion.minCadenceSeconds
     let a = cell(row: 0, col: 0, foreground: 0xFF00_00FF)
     let b = cell(row: 0, col: 0, foreground: 0x0000_FFFF)
@@ -132,8 +132,11 @@ final class SpinnerMotionDetectorTests: XCTestCase {
     _ = detector.observe(observation(at: 0.00, cells: [a]))
     _ = detector.observe(observation(at: cadence, cells: [b]))
     let map = detector.observe(observation(at: 2 * cadence, cells: [c]))
-    XCTAssertEqual(map.count, 1)
-    XCTAssertEqual(map.first!.value.durationSeconds, cadence)
+    // A 40 ms source already emits finely sampled motion; it renders
+    // authoritatively instead of being double-smoothed.
+    XCTAssertTrue(map.isEmpty)
+    XCTAssertTrue(detector.diagnostics.detectorActive)
+    XCTAssertTrue(detector.diagnostics.finelySampledBypass)
   }
 
   func testTransitionSettlesAfterDuration() {
@@ -266,5 +269,65 @@ final class SpinnerMotionDetectorTests: XCTestCase {
     XCTAssertEqual(transition.startLinearRGBA.y, expected.y, accuracy: 1e-6)
     XCTAssertEqual(transition.startLinearRGBA.z, expected.z, accuracy: 1e-6)
     XCTAssertEqual(transition.startLinearRGBA.w, expected.w, accuracy: 1e-6)
+  }
+
+  private func gray(_ v: UInt32) -> UInt32 {
+    (v << 24) | (v << 16) | (v << 8) | 0xFF
+  }
+
+  func testFinelySampledSourceIsRenderedAuthoritatively() {
+    // Codex-shimmer-like input: small color steps at ~75 ms cadence.
+    var timestamp = 0.0
+    var map: [SpinnerMotionCellKey: GlyphForegroundTransition] = [:]
+    for step in 0..<6 {
+      let foreground = gray(UInt32(0x80 + step * 8))
+      map = detector.observe(
+        observation(at: timestamp, cells: [cell(row: 0, col: 0, foreground: foreground)]))
+      timestamp += 0.075
+    }
+    XCTAssertTrue(map.isEmpty)
+    XCTAssertTrue(detector.diagnostics.detectorActive)
+    XCTAssertTrue(detector.diagnostics.finelySampledBypass)
+  }
+
+  func testSparseSourceDoesNotEngageFinelySampledBypass() {
+    let a = cell(row: 0, col: 0, foreground: 0xFF00_00FF)
+    let b = cell(row: 0, col: 0, foreground: 0x0000_FFFF)
+    let c = cell(row: 0, col: 0, foreground: 0x00FF_00FF)
+    _ = detector.observe(observation(at: 0.00, cells: [a]))
+    _ = detector.observe(observation(at: 0.25, cells: [b]))
+    let map = detector.observe(observation(at: 0.50, cells: [c]))
+    XCTAssertEqual(map.count, 1)
+    XCTAssertFalse(detector.diagnostics.finelySampledBypass)
+  }
+
+  func testFinelySampledBypassHysteresis() {
+    var timestamp = 0.0
+    func step(_ v: UInt32, advance: Double) -> [SpinnerMotionCellKey:
+      GlyphForegroundTransition]
+    {
+      let map = detector.observe(
+        observation(at: timestamp, cells: [cell(row: 0, col: 0, foreground: gray(v))]))
+      timestamp += advance
+      return map
+    }
+    // Engage the bypass at 75 ms cadence.
+    var map = step(0x80, advance: 0.075)
+    map = step(0x88, advance: 0.075)
+    map = step(0x90, advance: 0.075)
+    XCTAssertTrue(map.isEmpty)
+    XCTAssertTrue(detector.diagnostics.finelySampledBypass)
+    // 110 ms gaps sit between the enter/exit thresholds: the bypass holds.
+    map = step(0x98, advance: 0.11)
+    map = step(0xA0, advance: 0.11)
+    map = step(0xA8, advance: 0.11)
+    XCTAssertTrue(map.isEmpty)
+    XCTAssertTrue(detector.diagnostics.finelySampledBypass)
+    // 130 ms gaps cross the exit threshold: interpolation resumes.
+    _ = step(0xB0, advance: 0.13)
+    _ = step(0xB8, advance: 0.13)
+    map = step(0xC0, advance: 0.13)
+    XCTAssertFalse(detector.diagnostics.finelySampledBypass)
+    XCTAssertEqual(map.count, 1)
   }
 }
