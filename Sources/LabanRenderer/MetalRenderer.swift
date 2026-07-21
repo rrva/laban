@@ -925,6 +925,14 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     }
   }
 
+  /// Rebuild the present link after a display reconfiguration; see
+  /// `VectorPresentDisplayLink.rebuild()`. No-op on the legacy path.
+  public func rebuildPresentLink() {
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.rebuild()
+    }
+  }
+
   public func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency) {
     guard transparency != surfaceTransparency else { return }
     // Do not allow a completion handler from the old policy to republish a

@@ -954,6 +954,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
     ) { [weak self] _ in
       guard let self else { return }
+      // A display add/remove can strand the renderer's CAMetalDisplayLink on a
+      // dead vsync port (frozen presentation, then a CFRunLoop abort when the
+      // dead port is serviced). Rebuild it against the current display set.
+      (self.backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
       if self.updateDisplayDownsampledState() {
         self.renderInvalidated = true
         if self.window != nil {
@@ -1955,6 +1959,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
       ) { [weak self] _ in
         self?.advanceFrame(wake: .occlusion)
+      })
+    // Moving the window to another screen rebinds the renderer's
+    // CAMetalDisplayLink to a new vsync source. Rebuild it so a link whose
+    // display later disappears is never left holding a dead port.
+    windowFocusObservers.append(
+      center.addObserver(
+        forName: NSWindow.didChangeScreenNotification, object: window, queue: .main
+      ) { [weak self] _ in
+        (self?.backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
       })
     // A terminal window does not receive another key-window notification when
     // Settings is key and the whole app deactivates/reactivates. Observe app

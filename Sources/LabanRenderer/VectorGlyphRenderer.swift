@@ -464,6 +464,14 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     }
   }
 
+  /// Rebuild the present link after a display reconfiguration; see
+  /// `VectorPresentDisplayLink.rebuild()`. No-op on the legacy path.
+  public func rebuildPresentLink() {
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.rebuild()
+    }
+  }
+
   public func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency) {
     guard transparency != surfaceTransparency else { return }
     // The completion handler publishes retained targets to the present link;

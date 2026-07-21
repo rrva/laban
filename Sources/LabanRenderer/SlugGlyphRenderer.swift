@@ -985,6 +985,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
   }
 
+  /// Rebuild the present link after a display reconfiguration; see
+  /// `VectorPresentDisplayLink.rebuild()`. No-op on the legacy path.
+  public func rebuildPresentLink() {
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.rebuild()
+    }
+  }
+
   public func setSurfaceTransparency(_ transparency: RendererSurfaceTransparency) {
     guard transparency != surfaceTransparency else { return }
     // Retire the publish handler before removing the current target; otherwise

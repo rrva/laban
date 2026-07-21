@@ -52,6 +52,20 @@ struct PresentParkDecision: Equatable {
 }
 
 @available(macOS 14.0, *)
+private func configurePresentLink(
+  _ link: CAMetalDisplayLink, delegate: any CAMetalDisplayLinkDelegate
+) {
+  link.delegate = delegate
+  link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+  // A terminal finishes a frame in ~1–2 ms, but live scroll traces can still
+  // miss whole present callbacks with latency 1. Give Core Animation one more
+  // frame of scheduling slack so the display-link presenter holds 120 Hz.
+  link.preferredFrameLatency = 2
+  // Start paused; `notifyContentUpdated()` unpauses on the first rendered frame.
+  link.isPaused = true
+}
+
+@available(macOS 14.0, *)
 final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// Called on the dedicated present thread with a ready drawable; blits the
   /// latest target and presents. Return value is advisory (stats only): the link's
@@ -88,6 +102,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     let s = presentIntervalsMs.sorted()
     let callbacks = callbackCount
     let presented = presentedCount
+    let rebuilds = rebuildCount
     if reset {
       presentIntervalsMs.removeAll(keepingCapacity: true)
       lastPresentTimestamp = nil
@@ -97,7 +112,10 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     statsLock.unlock()
     _ = (callbacks, presented)
     guard !s.isEmpty else {
-      return ["count": 0, "callbacks": Double(callbacks), "presented": Double(presented)]
+      return [
+        "count": 0, "callbacks": Double(callbacks), "presented": Double(presented),
+        "rebuilds": Double(rebuilds),
+      ]
     }
     let n = s.count
     let mean = s.reduce(0, +) / Double(n)
@@ -120,6 +138,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       "callbacks": Double(callbacks), "presented": Double(presented),
       "twoVsyncGaps": Double(twoVsyncGaps), "longerGaps": Double(longerGaps),
       "estimatedMissedVsyncs": Double(estimatedMissedVsyncs),
+      "rebuilds": Double(rebuilds),
     ]
   }
 
@@ -139,25 +158,28 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     statsLock.unlock()
   }
 
-  private let link: CAMetalDisplayLink
+  private let layer: CAMetalLayer
+  /// The live link. Mutated only on the present thread during `rebuild()`;
+  /// read from any thread under `lock` so a swap never tears a caller.
+  private var link: CAMetalDisplayLink
   private let lock = NSLock()
   private var thread: Thread?
   private var runLoop: CFRunLoop?
   private var started = false
   private var stopRequested = false
+  /// A rebuild requested before the present thread captured its run loop;
+  /// consumed inside `start()` once the link is attached. Guarded by `lock`.
+  private var rebuildPending = false
+  /// How many times the link was rebuilt after a display reconfiguration.
+  /// Surfaced through `presentIntervalStats` as `rebuilds`.
+  private var rebuildCount = 0
 
   init(layer: CAMetalLayer) {
+    self.layer = layer
     link = CAMetalDisplayLink(metalLayer: layer)
     park = PresentParkDecision(budgetCallbacks: Self.pendingPresentBudgetCallbacks)
     super.init()
-    link.delegate = self
-    link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
-    // A terminal finishes a frame in ~1–2 ms, but live scroll traces can still
-    // miss whole present callbacks with latency 1. Give Core Animation one more
-    // frame of scheduling slack so the display-link presenter holds 120 Hz.
-    link.preferredFrameLatency = 2
-    // Start paused; `notifyContentUpdated()` unpauses on the first rendered frame.
-    link.isPaused = true
+    configurePresentLink(link, delegate: self)
   }
 
   /// Spin up the dedicated run-loop thread the link is attached to. Idempotent.
@@ -186,8 +208,16 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
         return
       }
       self.runLoop = CFRunLoopGetCurrent()
+      let link = self.link
+      let pendingRebuild = self.rebuildPending
+      self.rebuildPending = false
       self.lock.unlock()
-      self.link.add(to: RunLoop.current, forMode: .common)
+      link.add(to: RunLoop.current, forMode: .common)
+      // A rebuild requested before this thread captured its run loop is
+      // honored now, directly on the present thread.
+      if pendingRebuild {
+        self.performRebuildSwap()
+      }
       CFRunLoopRun()
     }
     t.qualityOfService = .userInteractive
@@ -219,6 +249,9 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     statsLock.unlock()
     // Pause only when the decision says so (host parked AND no pending frame).
     // Otherwise keep running: the callback parks once the pending frame presents.
+    lock.lock()
+    let link = self.link
+    lock.unlock()
     if link.isPaused != pause { link.isPaused = pause }
   }
 
@@ -233,12 +266,77 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     statsLock.unlock()
     // Unpause now so the next vsync presents the new frame; the callback parks
     // again afterward if the host still wants idle.
+    lock.lock()
+    let link = self.link
+    lock.unlock()
     if link.isPaused { link.isPaused = false }
   }
 
-  func stop() {
-    link.isPaused = true
+  /// Test/debug seam: the live link's paused state, read under the swap lock.
+  var debugLinkIsPaused: Bool {
     lock.lock()
+    defer { lock.unlock() }
+    return link.isPaused
+  }
+
+  /// Rebuild the `CAMetalDisplayLink` on the present thread after a display
+  /// reconfiguration (display unplugged, clamshell close, mode change, window
+  /// moved across screens). A link whose display disappears keeps a dead vsync
+  /// port in the run loop's wait set: it never fires again (the published
+  /// frames pile up unpresented — a frozen terminal), and when the run loop
+  /// eventually services the dead port CoreFoundation aborts in
+  /// `__CFRunLoopServiceMachPort.cold.1` (EXC_BREAKPOINT, observed 2026-07-21
+  /// after a clamshell close + external-display detach). Swapping in a fresh
+  /// link rebinds to the current display and drops the dead port from the wait
+  /// set. Deferred (not dropped) while the present thread has not yet captured
+  /// its run loop; no-op after `stop()`.
+  func rebuild() {
+    lock.lock()
+    guard started, !stopRequested else {
+      lock.unlock()
+      return
+    }
+    guard let rl = runLoop else {
+      rebuildPending = true
+      lock.unlock()
+      return
+    }
+    lock.unlock()
+    CFRunLoopPerformBlock(rl, CFRunLoopMode.commonModes.rawValue) { [weak self] in
+      self?.performRebuildSwap()
+    }
+    CFRunLoopWakeUp(rl)
+  }
+
+  /// The link swap. Must run on the present thread (it adds the new link to
+  /// that thread's run loop); guards against a stop() that raced the queue.
+  private func performRebuildSwap() {
+    lock.lock()
+    guard started, !stopRequested else {
+      lock.unlock()
+      return
+    }
+    let oldLink = link
+    let newLink = CAMetalDisplayLink(metalLayer: layer)
+    configurePresentLink(newLink, delegate: self)
+    link = newLink
+    lock.unlock()
+    // Preserve the host's current run/park intent so the swap neither
+    // restarts a parked terminal nor freezes an active one.
+    statsLock.lock()
+    let paused = park.wantsPaused
+    statsLock.unlock()
+    oldLink.invalidate()
+    newLink.isPaused = paused
+    newLink.add(to: RunLoop.current, forMode: .common)
+    statsLock.lock()
+    rebuildCount += 1
+    statsLock.unlock()
+  }
+
+  func stop() {
+    lock.lock()
+    link.isPaused = true
     stopRequested = true
     let t = thread
     let rl = runLoop

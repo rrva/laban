@@ -112,6 +112,11 @@ extension GestureZoomRenderable {
 public protocol DisplayLinkPresentingRenderer: AnyObject {
   func setPresentLinkRunning(_ running: Bool)
   func presentDisplayLinkStats(reset: Bool) -> [String: Double]?
+  /// Rebuild the present link after a display reconfiguration. A
+  /// `CAMetalDisplayLink` whose display disappears never fires again and
+  /// eventually aborts its run loop on the dead vsync port; the host view
+  /// calls this from its screen-change observers. No-op on the legacy path.
+  func rebuildPresentLink()
 }
 
 /// Common surface contract for swappable rendering backends.

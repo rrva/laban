@@ -123,6 +123,17 @@ path plus an untouched, pinned legacy fallback.
   legacy path is used only when the present link was never created (macOS 13, or the
   `LabanVectorPresentDisplayLink=NO` opt-out). Idle is handled by pausing the link,
   never by switching presenters.
+- The link does NOT reliably survive its display disappearing (observed on macOS
+  27.0 beta, 2026-07-21: clamshell close + external-display detach left the link
+  unfired for 14 minutes — frozen terminal with healthy content commits — and its
+  run loop then aborted in `__CFRunLoopServiceMachPort.cold.1` on the dead vsync
+  port, killing the app). The host view therefore rebuilds the link
+  (`VectorPresentDisplayLink.rebuild()`, surfaced as
+  `DisplayLinkPresentingRenderer.rebuildPresentLink()`) on
+  `NSApplication.didChangeScreenParametersNotification` and
+  `NSWindow.didChangeScreenNotification`. The swap runs on the present thread,
+  preserves the host's run/park intent, and is counted in `presentIntervalStats`
+  as `rebuilds`.
 - Frame-command contract (ADR 0017/0022) and MVP behavior are unchanged; this is a
   presentation/pacing change, not a rendering-semantics change.
 
