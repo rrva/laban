@@ -111,6 +111,195 @@ public struct SpinnerMotionObservation: Equatable, Sendable {
   }
 }
 
+/// A confident traveling-wave estimate for one single-row region: a color
+/// field anchored at a timestamp plus a velocity in cells per second. The
+/// renderer samples `colors` at fractional offsets `x = (col - minCol) -
+/// velocity * (t - anchorTimestamp)` so a pattern the source emits in whole
+/// cell steps can glide at display rate. Pure value type; the Slug motion
+/// shader mirrors `sample(col:at:)`.
+public struct SpinnerWaveState: Equatable, Sendable {
+  public var row: Int
+  public var minCol: Int
+  /// Linear-light straight RGBA per column, starting at `minCol` (<= 32).
+  public var colors: [SIMD4<Float>]
+  public var anchorTimestamp: Double
+  public var velocityCellsPerSecond: Double
+  public var confidence: Double
+
+  public init(
+    row: Int,
+    minCol: Int,
+    colors: [SIMD4<Float>],
+    anchorTimestamp: Double,
+    velocityCellsPerSecond: Double,
+    confidence: Double
+  ) {
+    self.row = row
+    self.minCol = minCol
+    self.colors = colors
+    self.anchorTimestamp = anchorTimestamp
+    self.velocityCellsPerSecond = velocityCellsPerSecond
+    self.confidence = confidence
+  }
+
+  /// Bilinear field sample for `col` at time `t`, clamped to the field
+  /// bounds. A rightward-moving highlight has positive velocity: the color
+  /// now at `col` was at anchor time at `col - velocity * age`.
+  public func sample(col: Int, at t: Double) -> SIMD4<Float> {
+    guard !colors.isEmpty else { return .zero }
+    let age = t - anchorTimestamp
+    let x = Double(col - minCol) - velocityCellsPerSecond * age
+    let clampedX = max(0.0, min(Double(colors.count - 1), x))
+    let lower = Int(clampedX.rounded(.down))
+    let upper = min(colors.count - 1, lower + 1)
+    let f = Float(clampedX - Double(lower))
+    let a = colors[lower]
+    let b = colors[upper]
+    return a + (b - a) * f
+  }
+}
+
+/// Estimates steady translation of a single-row color pattern from
+/// consecutive observations. Detection is purely semantic: integer-shift
+/// cross-correlation of the region's luminance vector. No process names,
+/// output text, or glyph identities are consulted.
+private struct TravelingWaveEstimator: Equatable, Sendable {
+  private struct Vote: Equatable, Sendable {
+    var shift: Int
+    var dt: Double
+    var score: Double
+  }
+
+  private var previousVector: [Double] = []
+  private var previousMinCol = 0
+  private var previousRow = -1
+  private var previousTimestamp: Double?
+  private var votes: [Vote] = []
+  private var consecutiveFailures = 0
+  private(set) var currentState: SpinnerWaveState?
+
+  static var minimumColumns: Int { 6 }
+  static var minimumScore: Double { 0.90 }
+
+  var confident: Bool { currentState != nil }
+
+  mutating func reset() {
+    previousVector = []
+    previousMinCol = 0
+    previousRow = -1
+    previousTimestamp = nil
+    votes = []
+    consecutiveFailures = 0
+    currentState = nil
+  }
+
+  /// Record a broken observation stream (out-of-range cadence gap, region
+  /// jump, or non-qualifying region). Two consecutive failures disengage.
+  mutating func noteFailure() {
+    consecutiveFailures += 1
+    if consecutiveFailures >= 2 {
+      votes = []
+      currentState = nil
+    }
+  }
+
+  /// Feed one qualifying single-row observation. `colors` and `vector` cover
+  /// columns `minCol...` in parallel; `timeout` is the observation staleness
+  /// bound (`min(2 * cadence, 0.8)`).
+  mutating func observe(
+    row: Int,
+    minCol: Int,
+    vector: [Double],
+    colors: [SIMD4<Float>],
+    timestamp: Double,
+    timeout: Double
+  ) {
+    guard let previousTimestamp, previousRow == row else {
+      adopt(vector: vector, minCol: minCol, row: row, timestamp: timestamp)
+      return
+    }
+    let dt = timestamp - previousTimestamp
+    guard dt > 0, dt <= timeout else {
+      // A stale observation is a hard temporal break: drop the wave at once
+      // instead of letting an outdated field extrapolate.
+      votes = []
+      currentState = nil
+      adopt(vector: vector, minCol: minCol, row: row, timestamp: timestamp)
+      return
+    }
+    var best: (shift: Int, score: Double) = (0, 0)
+    for shift in -2...2 {
+      let score = Self.correlation(
+        current: vector, currentMinCol: minCol,
+        previous: previousVector, previousMinCol: previousMinCol,
+        shift: shift)
+      if score > best.score { best = (shift, score) }
+    }
+    adopt(vector: vector, minCol: minCol, row: row, timestamp: timestamp)
+    guard best.shift != 0, best.score >= Self.minimumScore else {
+      noteFailure()
+      return
+    }
+    consecutiveFailures = 0
+    votes.append(Vote(shift: best.shift, dt: dt, score: best.score))
+    if votes.count > 5 { votes.removeFirst() }
+    let recent = votes.suffix(3)
+    guard recent.count == 3, recent.allSatisfy({ $0.shift == best.shift }) else { return }
+    let samples = recent.map { Double($0.shift) / $0.dt }.sorted()
+    currentState = SpinnerWaveState(
+      row: row,
+      minCol: minCol,
+      colors: colors,
+      anchorTimestamp: timestamp,
+      velocityCellsPerSecond: samples[1],
+      confidence: best.score)
+  }
+
+  private mutating func adopt(vector: [Double], minCol: Int, row: Int, timestamp: Double) {
+    previousVector = vector
+    previousMinCol = minCol
+    previousRow = row
+    previousTimestamp = timestamp
+  }
+
+  /// Normalized (Pearson) correlation between `current[col]` and
+  /// `previous[col - shift]` over the columns where both exist.
+  private static func correlation(
+    current: [Double],
+    currentMinCol: Int,
+    previous: [Double],
+    previousMinCol: Int,
+    shift: Int
+  ) -> Double {
+    var xs: [Double] = []
+    var ys: [Double] = []
+    xs.reserveCapacity(current.count)
+    ys.reserveCapacity(current.count)
+    for (i, value) in current.enumerated() {
+      let j = (currentMinCol + i) - shift - previousMinCol
+      guard j >= 0, j < previous.count else { continue }
+      xs.append(value)
+      ys.append(previous[j])
+    }
+    guard xs.count >= minimumColumns else { return 0 }
+    let n = Double(xs.count)
+    let meanX = xs.reduce(0, +) / n
+    let meanY = ys.reduce(0, +) / n
+    var sxx = 0.0
+    var syy = 0.0
+    var sxy = 0.0
+    for i in 0..<xs.count {
+      let dx = xs[i] - meanX
+      let dy = ys[i] - meanY
+      sxx += dx * dx
+      syy += dy * dy
+      sxy += dx * dy
+    }
+    guard sxx > 1e-12, syy > 1e-12 else { return 0 }
+    return sxy / (sxx.squareRoot() * syy.squareRoot())
+  }
+}
+
 /// Mutable per-session detector state. A pure value type owned by
 /// `TerminalSurfaceController`; it does not retain AppKit or renderer objects.
 public struct SpinnerMotionDetector: Equatable, Sendable {
@@ -138,6 +327,13 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
   private var transitions: [SpinnerMotionCellKey: Transition] = [:]
   private var lastObservationTimestamp: Double?
   private var finelySampledBypass = false
+  private var waveEstimator = TravelingWaveEstimator()
+  /// Confident traveling-wave state for the current observation stream, when
+  /// the finely sampled bypass is engaged. The renderer may keep sampling the
+  /// returned field/velocity between observations; the value is sticky across
+  /// observations that do not feed the estimator (for example foreign
+  /// single-cell changes) and clears when the wave disengages.
+  private(set) public var lastWave: SpinnerWaveState?
   private(set) public var diagnostics: SpinnerMotionDiagnostics = .init()
 
   public init() {}
@@ -149,6 +345,9 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
   {
     diagnostics = SpinnerMotionDiagnostics()
     diagnostics.finelySampledBypass = finelySampledBypass
+    diagnostics.waveActive = lastWave != nil
+    diagnostics.waveVelocityCellsPerSecond = lastWave?.velocityCellsPerSecond
+    diagnostics.waveConfidence = lastWave?.confidence
     defer { lastObservationTimestamp = observation.timestamp }
 
     // Compute changed cells and qualifying region.
@@ -191,6 +390,8 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     guard region.qualifies else {
       // Non-qualifying observation: snap changed cells and reset the run.
       resetRun()
+      waveEstimator.noteFailure()
+      lastWave = nil
       for key in changed.keys { transitions.removeValue(forKey: key) }
       diagnostics.detectorActive = false
       diagnostics.fallbackReason = region.reason
@@ -202,10 +403,12 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
 
     if let gap, !SpinnerMotionDetector.isCadenceGapInRange(gap) {
       resetRun()
+      waveEstimator.noteFailure()
     } else if let last = qualifyingRun.last,
       !SpinnerMotionDetector.regionsAreNear(last, region)
     {
       resetRun()
+      waveEstimator.noteFailure()
     }
 
     qualifyingRun.append(
@@ -218,9 +421,45 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
         changedCells: changed.count))
     if qualifyingRun.count > 4 { qualifyingRun.removeFirst() }
 
+    // Feed the traveling-wave estimator on single-row regions wide enough to
+    // correlate. Narrower rounds (for example a foreign single-cell change)
+    // are skipped without penalty; the estimator keeps its last baseline.
+    if region.maxRow == region.minRow,
+      region.maxCol - region.minCol + 1 >= TravelingWaveEstimator.minimumColumns
+    {
+      var vector: [Double] = []
+      var colors: [SIMD4<Float>] = []
+      var complete = true
+      for col in region.minCol...region.maxCol {
+        guard let cell = observation.cells[SpinnerMotionCellKey(row: region.minRow, col: col)]
+        else {
+          complete = false
+          break
+        }
+        let linear = SRGBRenderTargetColor.linearizedStraightRGBA(cell.foreground)
+        colors.append(linear)
+        vector.append(Double(0.2126 * linear.x + 0.7152 * linear.y + 0.0722 * linear.z))
+      }
+      if complete {
+        waveEstimator.observe(
+          row: region.minRow,
+          minCol: region.minCol,
+          vector: vector,
+          colors: colors,
+          timestamp: observation.timestamp,
+          timeout: min(2 * estimatedCadence(), 0.8))
+      }
+    }
+
     diagnostics.consecutiveQualifyingObservations = qualifyingRun.count
 
     guard isActive(at: observation.timestamp) else {
+      // While the detector is inactive (warm-up or after a timeout) no wave
+      // metadata may be published either.
+      lastWave = nil
+      diagnostics.waveActive = false
+      diagnostics.waveVelocityCellsPerSecond = nil
+      diagnostics.waveConfidence = nil
       diagnostics.detectorActive = false
       diagnostics.cadenceSeconds = estimatedCadence()
       let result = activeTransitions(at: observation.timestamp)
@@ -246,11 +485,16 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     }
     diagnostics.finelySampledBypass = finelySampledBypass
     guard !finelySampledBypass else {
+      lastWave = waveEstimator.currentState
+      diagnostics.waveActive = lastWave != nil
+      diagnostics.waveVelocityCellsPerSecond = lastWave?.velocityCellsPerSecond
+      diagnostics.waveConfidence = lastWave?.confidence
       let result = activeTransitions(at: observation.timestamp)
       diagnostics.activeTransitions = result.count
       updatePreviousCells(observation)
       return result
     }
+    lastWave = nil
 
     // Create or retarget transitions for changed cells whose identity is
     // unchanged and whose foreground changed.
@@ -308,6 +552,8 @@ public struct SpinnerMotionDetector: Equatable, Sendable {
     qualifyingRun.removeAll()
     transitions.removeAll()
     finelySampledBypass = false
+    waveEstimator.reset()
+    lastWave = nil
     diagnostics = SpinnerMotionDiagnostics()
   }
 
@@ -450,6 +696,9 @@ public struct SpinnerMotionDiagnostics: Equatable, Sendable, Codable {
   public var fallbackReason: String?
   public var mouseTracking: Bool
   public var finelySampledBypass: Bool
+  public var waveActive: Bool
+  public var waveVelocityCellsPerSecond: Double?
+  public var waveConfidence: Double?
 
   public init(
     detectorActive: Bool = false,
@@ -463,7 +712,10 @@ public struct SpinnerMotionDiagnostics: Equatable, Sendable, Codable {
     overflowTransitions: Int = 0,
     fallbackReason: String? = nil,
     mouseTracking: Bool = false,
-    finelySampledBypass: Bool = false
+    finelySampledBypass: Bool = false,
+    waveActive: Bool = false,
+    waveVelocityCellsPerSecond: Double? = nil,
+    waveConfidence: Double? = nil
   ) {
     self.detectorActive = detectorActive
     self.consecutiveQualifyingObservations = consecutiveQualifyingObservations
@@ -477,5 +729,8 @@ public struct SpinnerMotionDiagnostics: Equatable, Sendable, Codable {
     self.fallbackReason = fallbackReason
     self.mouseTracking = mouseTracking
     self.finelySampledBypass = finelySampledBypass
+    self.waveActive = waveActive
+    self.waveVelocityCellsPerSecond = waveVelocityCellsPerSecond
+    self.waveConfidence = waveConfidence
   }
 }
