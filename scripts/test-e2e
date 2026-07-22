@@ -968,6 +968,23 @@ SPINNER_GATE_REPORT="$SPINNER_GATE_ARTIFACTS/debug-script-report.json"
 jq -e '.ok == true' "$SPINNER_GATE_REPORT" >/dev/null 2>&1 \
   || fail "spinner motion classic gate report invalid: $(cat "$SPINNER_GATE_REPORT")"
 
+# 36. Spinner motion traveling wave — slugGlyph only.
+WAVE_ARTIFACTS="$RUN_ARTIFACTS/spinner-motion-wave"
+WAVE_TMP="$RUN_TMP/spinner-motion-wave"
+if ! WAVE_OUTPUT=$(LABAN_AGENT_BIN="$AGENT_BIN" ./scripts/run-debug-script \
+  --no-build \
+  --artifacts "$WAVE_ARTIFACTS" \
+  --temp-dir "$WAVE_TMP" \
+  fixtures/spinner-motion-wave.scenario.json 2>&1); then
+  fail "spinner motion wave scenario failed: $WAVE_OUTPUT"
+fi
+printf '%s' "$WAVE_OUTPUT" | grep -q "debug script passed" \
+  || fail "spinner motion wave scenario did not report success: $WAVE_OUTPUT"
+WAVE_REPORT="$WAVE_ARTIFACTS/debug-script-report.json"
+[ -f "$WAVE_REPORT" ] || fail "spinner motion wave report missing: $WAVE_REPORT"
+jq -e '.ok == true' "$WAVE_REPORT" >/dev/null 2>&1 \
+  || fail "spinner motion wave report invalid: $(cat "$WAVE_REPORT")"
+
 # Success — clean up and remove trap
 trap - EXIT
 cleanup_success

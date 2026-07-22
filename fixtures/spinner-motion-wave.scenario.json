@@ -1,0 +1,432 @@
+{
+  "name": "spinner-motion-wave",
+  "description": "Traveling-wave super-sampling end-to-end: a gray band shifting one cell per ~75 ms engages the wave estimator (waveActive, ~13.3 cells/s), a mid-interval frame renders a cell color strictly between adjacent source step levels (sub-cell sampling), and after the steps stop the wave disengages, settles pixel-identical to a static reference row, and the effect channel re-parks. Requires slugGlyph and --deterministic.",
+  "fixture": "fixtures/spinner-motion-wave.fixture.json",
+  "renderer": "slugGlyph",
+  "deterministic": true,
+  "steps": [
+    {
+      "op": "discover",
+      "expectEndpoints": [
+        "POST /debug/actions",
+        "POST /debug/pixel-probe",
+        "GET /debug/spinner-motion"
+      ],
+      "expectActions": [
+        "feedOutput",
+        "advanceTime",
+        "advanceFrames",
+        "setSpinnerMotionSmoothingEnabled"
+      ]
+    },
+    {
+      "op": "action",
+      "label": "enable spinner motion smoothing",
+      "body": {
+        "action": "setSpinnerMotionSmoothingEnabled",
+        "enabled": true
+      }
+    },
+    {
+      "op": "get",
+      "label": "enabled, no wave yet",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {
+          "path": "configured",
+          "equals": true
+        },
+        {
+          "path": "effectiveEnabled",
+          "equals": true
+        },
+        {
+          "path": "waveActive",
+          "equals": false
+        }
+      ]
+    },
+    {
+      "op": "action",
+      "label": "wave step 1 (pos 3)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 2 (pos 4)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 3 (pos 5)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 4 (pos 6)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 5 (pos 7)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;128;128;128m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 6 (pos 8)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 7 (pos 9)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 8 (pos 10)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 9 (pos 11)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 10 (pos 12)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 11 (pos 13)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf"
+      }
+    },
+    {
+      "op": "action",
+      "label": "cadence gap 75 ms",
+      "body": {
+        "action": "advanceTime",
+        "ms": 75
+      }
+    },
+    {
+      "op": "action",
+      "label": "wave step 12 (pos 14, final anchor)",
+      "body": {
+        "action": "feedOutput",
+        "text": "\u001b[1;3H\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf"
+      }
+    },
+    {
+      "op": "get",
+      "label": "wave engaged",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {
+          "path": "waveActive",
+          "equals": true
+        },
+        {
+          "path": "waveVelocityCellsPerSecond",
+          "greaterThan": 10
+        },
+        {
+          "path": "waveVelocityCellsPerSecond",
+          "lessThan": 16
+        },
+        {
+          "path": "waveConfidence",
+          "greaterThan": 0.89
+        },
+        {
+          "path": "effectKind",
+          "equals": 4
+        },
+        {
+          "path": "analyticMotionInstances",
+          "greaterThan": 0
+        },
+        {
+          "path": "activeTransitions",
+          "equals": 0
+        }
+      ],
+      "saveAs": "state-wave.json"
+    },
+    {
+      "op": "action",
+      "label": "half-step interval (37 ms)",
+      "body": {
+        "action": "advanceTime",
+        "ms": 37
+      }
+    },
+    {
+      "op": "post",
+      "label": "mid-interval: wave cell renders strictly between adjacent source levels",
+      "path": "/debug/pixel-probe",
+      "body": {
+        "regions": [
+          {
+            "name": "wave",
+            "x": 319,
+            "y": 439,
+            "width": 4,
+            "height": 15
+          },
+          {
+            "name": "ref-low",
+            "x": 310,
+            "y": 420,
+            "width": 4,
+            "height": 15
+          },
+          {
+            "name": "ref-high",
+            "x": 319,
+            "y": 420,
+            "width": 4,
+            "height": 15
+          }
+        ]
+      },
+      "expectJson": [
+        {
+          "path": "regions[0].nonBackgroundPixels",
+          "greaterThan": 0
+        },
+        {
+          "path": "regions[0].averageRgba[0]",
+          "greaterThanPath": "regions[1].averageRgba[0]"
+        },
+        {
+          "path": "regions[0].averageRgba[0]",
+          "lessThanPath": "regions[2].averageRgba[0]"
+        }
+      ],
+      "saveAs": "probe-mid-interval.json"
+    },
+    {
+      "op": "action",
+      "label": "idle past detector timeout and teardown duration",
+      "body": {
+        "action": "advanceTime",
+        "ms": 800
+      }
+    },
+    {
+      "op": "action",
+      "label": "settle repaints",
+      "body": {
+        "action": "advanceFrames",
+        "count": 3
+      }
+    },
+    {
+      "op": "post",
+      "label": "settled: wave row is pixel-identical to the static reference row",
+      "path": "/debug/pixel-probe",
+      "body": {
+        "regions": [
+          {
+            "name": "wave",
+            "x": 319,
+            "y": 439,
+            "width": 4,
+            "height": 15
+          },
+          {
+            "name": "reference",
+            "x": 319,
+            "y": 420,
+            "width": 4,
+            "height": 15
+          }
+        ]
+      },
+      "expectJson": [
+        {
+          "path": "regions[0].averageRgba",
+          "equalsPath": "regions[1].averageRgba"
+        },
+        {
+          "path": "regions[0].nonBackgroundPixels",
+          "equalsPath": "regions[1].nonBackgroundPixels"
+        }
+      ],
+      "saveAs": "probe-settled.json"
+    },
+    {
+      "op": "get",
+      "label": "parked after settlement",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {
+          "path": "waveActive",
+          "equals": false
+        },
+        {
+          "path": "activeTransitions",
+          "equals": 0
+        },
+        {
+          "path": "analyticMotionInstances",
+          "equals": 0
+        },
+        {
+          "path": "remainingSeconds",
+          "equals": 0
+        },
+        {
+          "path": "liveEffectFrames",
+          "greaterThan": 0
+        }
+      ],
+      "saveAs": "state-settled.json"
+    },
+    {
+      "op": "action",
+      "label": "idle re-renders stay parked",
+      "body": {
+        "action": "advanceFrames",
+        "count": 3
+      }
+    },
+    {
+      "op": "get",
+      "label": "post-idle telemetry remains parked",
+      "path": "/debug/spinner-motion",
+      "expectJson": [
+        {
+          "path": "waveActive",
+          "equals": false
+        },
+        {
+          "path": "activeTransitions",
+          "equals": 0
+        },
+        {
+          "path": "remainingSeconds",
+          "equals": 0
+        }
+      ]
+    },
+    {
+      "op": "screenshot",
+      "label": "settled"
+    }
+  ]
+}

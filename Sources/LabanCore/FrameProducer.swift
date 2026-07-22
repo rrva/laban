@@ -519,7 +519,8 @@ public struct FrameProducer {
     preedit: String? = nil,
     preeditCaretCells: Int = 0,
     resolvedCursor: (style: Int32, blinking: Bool)? = nil,
-    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]? = nil
+    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]? = nil,
+    foregroundWave: SpinnerWavePublication? = nil
   ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -672,17 +673,29 @@ public struct FrameProducer {
     // grapheme clusters without allocating; older systems — and the A/B test
     // toggle — take the legacy loop. Both MUST emit byte-identical
     // FrameCommands; FrameProducerSpanParityTests pins that.
+    //
+    // A confident traveling wave publishes its field before the runs that
+    // reference it (regionIndex 0).
+    if let wave = foregroundWave {
+      cmds.append(
+        .waveRegion(
+          colors: wave.wave.colors,
+          anchorTimestampSeconds: wave.wave.anchorTimestamp,
+          velocityCellsPerSecond: Float(wave.wave.velocityCellsPerSecond)))
+    }
     let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
     if #available(macOS 26, *), !FrameProducer._forceLegacyGlyphRuns {
       appendFastTerminalGlyphRuns(
         into: &cmds, snapshot: snapshot, rows: rows, cols: cols, cw: cw, ch: ch,
         hyperlinkURIs: hyperlinkURIs,
-        foregroundTransitions: foregroundTransitions)
+        foregroundTransitions: foregroundTransitions,
+        foregroundWave: foregroundWave)
     } else {
       appendLegacyTerminalGlyphRuns(
         into: &cmds, snapshot: snapshot, rows: rows, cols: cols, cw: cw, ch: ch,
         hyperlinkURIs: hyperlinkURIs,
-        foregroundTransitions: foregroundTransitions)
+        foregroundTransitions: foregroundTransitions,
+        foregroundWave: foregroundWave)
     }
 
     let activePreeditLayout = preedit.flatMap {
@@ -1323,7 +1336,8 @@ public struct FrameProducer {
     cw: CGFloat,
     ch: CGFloat,
     hyperlinkURIs: [String],
-    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]?
+    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]?,
+    foregroundWave: SpinnerWavePublication? = nil
   ) {
     guard let cells = snapshot.cells else { return }
     let storage = snapshot.utf8_storage
@@ -1344,6 +1358,7 @@ public struct FrameProducer {
       var runUnderlineColor: UInt32? = nil
       var runHyperlink: String? = nil
       var runTransition: GlyphForegroundTransition? = nil
+      var runWave: GlyphForegroundWave? = nil
       var pendingSpacer = false
       runBytes.removeAll(keepingCapacity: true)
 
@@ -1351,11 +1366,23 @@ public struct FrameProducer {
         foregroundTransitions?[SpinnerMotionCellKey(row: row, col: col)]
       }
 
+      func cellWave(_ col: Int) -> GlyphForegroundWave? {
+        guard let publication = foregroundWave else { return nil }
+        let wave = publication.wave
+        guard row == wave.row, col >= wave.minCol, col < wave.minCol + wave.colors.count
+        else { return nil }
+        return GlyphForegroundWave(
+          regionIndex: 0,
+          cellIndexInRegion: UInt32(col - wave.minCol),
+          durationSeconds: publication.durationSeconds)
+      }
+
       func flushRun() {
         guard let start = runStart, !runBytes.isEmpty else {
           runStart = nil
           runBytes.removeAll(keepingCapacity: true)
           runTransition = nil
+          runWave = nil
           return
         }
         let cellX = originX + CGFloat(start) * cw
@@ -1370,7 +1397,8 @@ public struct FrameProducer {
             underlineStyle: runUnderlineStyle,
             underlineColor: runUnderlineColor,
             hyperlink: runHyperlink,
-            foregroundTransition: runTransition
+            foregroundTransition: runTransition,
+            foregroundWave: runWave
           ))
         runStart = nil
         runBytes.removeAll(keepingCapacity: true)
@@ -1378,6 +1406,7 @@ public struct FrameProducer {
         runUnderlineColor = nil
         runHyperlink = nil
         runTransition = nil
+        runWave = nil
       }
 
       for col in 0..<cols {
@@ -1446,6 +1475,7 @@ public struct FrameProducer {
         }
 
         let cellTransition = cellTransition(col)
+        let cellWave = cellWave(col)
         let sameStyle =
           runFg == visuals.foreground && runBg == visuals.background
           && runAttrsRaw == visuals.attrsRaw
@@ -1453,6 +1483,7 @@ public struct FrameProducer {
           && runUnderlineColor == visuals.underlineColor
           && runHyperlink == visuals.hyperlink
           && runTransition == cellTransition
+          && runWave == cellWave
 
         if runStart != nil, sameStyle {
           if pendingSpacer {
@@ -1478,6 +1509,7 @@ public struct FrameProducer {
               runUnderlineColor = visuals.underlineColor
               runHyperlink = visuals.hyperlink
               runTransition = cellTransition
+              runWave = cellWave
               runBytes.removeAll(keepingCapacity: true)
               runBytes.append(contentsOf: cellBytes)
             }
@@ -1495,6 +1527,7 @@ public struct FrameProducer {
           runUnderlineColor = visuals.underlineColor
           runHyperlink = visuals.hyperlink
           runTransition = cellTransition
+          runWave = cellWave
           runBytes.removeAll(keepingCapacity: true)
           runBytes.append(contentsOf: cellBytes)
         }
@@ -1514,7 +1547,8 @@ public struct FrameProducer {
     cw: CGFloat,
     ch: CGFloat,
     hyperlinkURIs: [String],
-    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]?
+    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]?,
+    foregroundWave: SpinnerWavePublication? = nil
   ) {
     guard let cells = snapshot.cells else { return }
     for row in 0..<rows {
@@ -1530,6 +1564,7 @@ public struct FrameProducer {
       var runUnderlineColor: UInt32? = nil
       var runHyperlink: String? = nil
       var runTransition: GlyphForegroundTransition? = nil
+      var runWave: GlyphForegroundWave? = nil
       // Set when we encounter a SPACER_TAIL while a run is open. The spacer
       // is provisionally swallowed; we only flush it if the next visible
       // cell does not extend the cluster.
@@ -1539,11 +1574,23 @@ public struct FrameProducer {
         foregroundTransitions?[SpinnerMotionCellKey(row: row, col: col)]
       }
 
+      func cellWave(_ col: Int) -> GlyphForegroundWave? {
+        guard let publication = foregroundWave else { return nil }
+        let wave = publication.wave
+        guard row == wave.row, col >= wave.minCol, col < wave.minCol + wave.colors.count
+        else { return nil }
+        return GlyphForegroundWave(
+          regionIndex: 0,
+          cellIndexInRegion: UInt32(col - wave.minCol),
+          durationSeconds: publication.durationSeconds)
+      }
+
       func flushRun() {
         guard let start = runStart, !runText.isEmpty else {
           runStart = nil
           runText = ""
           runTransition = nil
+          runWave = nil
           return
         }
         let cellX = originX + CGFloat(start) * cw
@@ -1558,7 +1605,8 @@ public struct FrameProducer {
             underlineStyle: runUnderlineStyle,
             underlineColor: runUnderlineColor,
             hyperlink: runHyperlink,
-            foregroundTransition: runTransition
+            foregroundTransition: runTransition,
+            foregroundWave: runWave
           ))
         runStart = nil
         runText = ""
@@ -1566,6 +1614,7 @@ public struct FrameProducer {
         runUnderlineColor = nil
         runHyperlink = nil
         runTransition = nil
+        runWave = nil
       }
 
       for col in 0..<cols {
@@ -1617,12 +1666,14 @@ public struct FrameProducer {
             }
 
             let cellTransition = cellTransition(col)
+            let cellWave = cellWave(col)
             let sameStyle =
               runFg == visuals.foreground && runBg == visuals.background && runAttrs == cellAttrs
               && runUnderlineStyle == visuals.underlineStyle
               && runUnderlineColor == visuals.underlineColor
               && runHyperlink == visuals.hyperlink
               && runTransition == cellTransition
+              && runWave == cellWave
 
             if runStart != nil, sameStyle {
               if pendingSpacer {
@@ -1645,6 +1696,7 @@ public struct FrameProducer {
                   runUnderlineColor = visuals.underlineColor
                   runHyperlink = visuals.hyperlink
                   runTransition = cellTransition
+                  runWave = cellWave
                   runText = text
                 }
               } else {
@@ -1661,6 +1713,7 @@ public struct FrameProducer {
               runUnderlineColor = visuals.underlineColor
               runHyperlink = visuals.hyperlink
               runTransition = cellTransition
+              runWave = cellWave
               runText = text
             }
           } else {
@@ -1684,7 +1737,8 @@ public struct FrameProducer {
     preedit: String? = nil,
     preeditCaretCells: Int = 0,
     userCursorStyle: CursorSettings.Style = .block,
-    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]? = nil
+    foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]? = nil,
+    foregroundWave: SpinnerWavePublication? = nil
   ) -> [FrameCommand] {
     let rows = max(snapshot.rows, 0)
     let cols = max(snapshot.cols, 0)
@@ -1796,6 +1850,16 @@ public struct FrameProducer {
       }
     }
 
+    // A confident traveling wave publishes its field before the runs that
+    // reference it (regionIndex 0).
+    if let wave = foregroundWave {
+      cmds.append(
+        .waveRegion(
+          colors: wave.wave.colors,
+          anchorTimestampSeconds: wave.wave.anchorTimestamp,
+          velocityCellsPerSecond: Float(wave.wave.velocityCellsPerSecond)))
+    }
+
     for row in 0..<rows {
       let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
       var runStart: Int? = nil
@@ -1804,9 +1868,21 @@ public struct FrameProducer {
       var runAttrs: TextAttributes = []
       var runText = ""
       var runTransition: GlyphForegroundTransition? = nil
+      var runWave: GlyphForegroundWave? = nil
 
       func cellTransition(_ col: Int) -> GlyphForegroundTransition? {
         foregroundTransitions?[SpinnerMotionCellKey(row: row, col: col)]
+      }
+
+      func cellWave(_ col: Int) -> GlyphForegroundWave? {
+        guard let publication = foregroundWave else { return nil }
+        let wave = publication.wave
+        guard row == wave.row, col >= wave.minCol, col < wave.minCol + wave.colors.count
+        else { return nil }
+        return GlyphForegroundWave(
+          regionIndex: 0,
+          cellIndexInRegion: UInt32(col - wave.minCol),
+          durationSeconds: publication.durationSeconds)
       }
 
       func flushRun() {
@@ -1814,6 +1890,7 @@ public struct FrameProducer {
           runStart = nil
           runText = ""
           runTransition = nil
+          runWave = nil
           return
         }
         cmds.append(
@@ -1824,11 +1901,13 @@ public struct FrameProducer {
             background: runBg,
             attributes: runAttrs,
             source: .terminal,
-            foregroundTransition: runTransition
+            foregroundTransition: runTransition,
+            foregroundWave: runWave
           ))
         runStart = nil
         runText = ""
         runTransition = nil
+        runWave = nil
       }
 
       for col in 0..<cols {
@@ -1867,17 +1946,20 @@ public struct FrameProducer {
           continue
         }
         let cellTransition = cellTransition(col)
+        let cellWave = cellWave(col)
         if runStart == nil {
           runStart = col
           runFg = visuals.foreground
           runBg = visuals.background
           runAttrs = visuals.attributes
           runTransition = cellTransition
+          runWave = cellWave
           runText = cell.text
         } else if visuals.foreground == runFg
           && visuals.background == runBg
           && visuals.attributes == runAttrs
           && runTransition == cellTransition
+          && runWave == cellWave
         {
           runText += cell.text
         } else {
@@ -1887,6 +1969,7 @@ public struct FrameProducer {
           runBg = visuals.background
           runAttrs = visuals.attributes
           runTransition = cellTransition
+          runWave = cellWave
           runText = cell.text
         }
       }

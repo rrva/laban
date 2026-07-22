@@ -28,6 +28,9 @@
     "fallbackSnaps": {"type": "integer", "minimum": 0},
     "effectKind": {"type": "integer", "minimum": 0},
     "remainingSeconds": {"type": "number", "minimum": 0},
-    "liveEffectFrames": {"type": "integer", "minimum": 0}
+    "liveEffectFrames": {"type": "integer", "minimum": 0},
+    "waveActive": {"type": "boolean"},
+    "waveVelocityCellsPerSecond": {"type": "number"},
+    "waveConfidence": {"type": "number", "minimum": 0, "maximum": 1}
   }
 }

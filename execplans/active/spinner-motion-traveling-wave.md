@@ -310,7 +310,31 @@ adjacent step levels.
   round-trip), `DebugFrameCommandSerializerTests` wave-region serialization
   test added; `SpinnerMotionDetectorTests` 15/15,
   `SpinnerTravelingWaveTests` 10/10, `LabanRendererTests` green.
-- [ ] M2 — controller wiring, diagnostics, E2E, docs, review gate.
+- [x] (2026-07-22) M2 — controller wiring, diagnostics, E2E, docs.
+  `TerminalSurfaceController.spinnerMotionTransitions` now returns
+  `SpinnerMotionFrameMetadata` (transitions + optional
+  `SpinnerWavePublication`): a confident wave publishes one
+  `FrameCommand.waveRegion` plus per-cell `foregroundWave` (run splitting
+  rides the existing metadata-equality coalescing key in all three
+  FrameProducer glyph-run builders), with liveness horizon
+  `min(2 * cadence, 0.8)` on `GlyphForegroundWave.durationSeconds`;
+  disengagement synthesizes kind-3 teardown transitions from
+  `SpinnerWaveState.sample(col:at:)`; wave state clears alongside
+  `spinnerMotionDetectors` on eligibility loss, metrics change, incarnation
+  change, and cache resets. `GET /debug/spinner-motion` reports
+  `waveActive`, `waveVelocityCellsPerSecond`, `waveConfidence` (schema
+  updated). New `fixtures/spinner-motion-wave.{fixture,scenario}.json`:
+  12 one-cell shifts of a gray cosine band at 75 ms engage
+  (`waveActive: true`, velocity 13.33 cells/s, effectKind 4), a
+  mid-interval pixel probe shows a cell strictly between adjacent source
+  levels (137 vs 128/145), and after an 800 ms idle the wave disengages,
+  settles pixel-identical to a static reference row, and re-parks
+  (`remainingSeconds: 0`). Registered as step 36 in `scripts/test-e2e`.
+  Tests: `SpinnerMotionWaveControllerTests` 3/3 (engagement metadata,
+  timeout teardown, eligibility-loss clearing),
+  `SpinnerMotionCommandTests` 4/4 (producer wave splitting + region
+  emission). Docs: `docs/product/spec.md` setting description, ADR 0030
+  amendment, `docs/process/dev-process.md` endpoint list.
 
 ## Decision Log
 
@@ -351,6 +375,15 @@ adjacent step levels.
   round the stride to 112 — the mirrors stay byte-identical, which is what
   the layout test pins.
   Date/Author: 2026-07-21 / Kimi (user-directed)
+
+- Decision: Carry the wave liveness horizon on `GlyphForegroundWave`
+  (`durationSeconds`) rather than on the `waveRegion` payload.
+  Rationale: the horizon rides the same optional duration channel kind 3
+  already uses, so `glyphEffectDecaySeconds`, remaining-time publication,
+  and the settle repaint needed no wave-specific path; the region payload
+  stays a pure sampling field. `min(2 * cadence, 0.8)` refreshed per
+  generation parks the present link when generations stop.
+  Date/Author: 2026-07-22 / Kimi (user-directed)
 
 ## Review Gate
 

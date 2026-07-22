@@ -38,6 +38,7 @@ extension HeadlessDebugRuntime {
         let motionCount = slug?.lastFrameMotionGlyphsCount ?? 0
         let activeTransitionCount = runtime.surfaceController.spinnerMotionActiveTransitionCount()
         let effectKind = Int(slug?.lastGlyphEffectKind ?? 0)
+        let wave = runtime.surfaceController.spinnerMotionWaveDiagnostics()
 
         return SpinnerMotionStateResponse(
           configured: SpinnerMotionSmoothingSettings.enabled,
@@ -52,7 +53,10 @@ extension HeadlessDebugRuntime {
           fallbackSnaps: slug?.lastFrameSpinnerFallbackSnapCount ?? 0,
           effectKind: effectKind,
           remainingSeconds: slug?.glyphEffectAnimatingRemainingSeconds ?? 0,
-          liveEffectFrames: Int(slug?.glyphEffectFrameCount ?? 0))
+          liveEffectFrames: Int(slug?.glyphEffectFrameCount ?? 0),
+          waveActive: wave.active,
+          waveVelocityCellsPerSecond: wave.velocityCellsPerSecond,
+          waveConfidence: wave.confidence)
       })
   }
 }

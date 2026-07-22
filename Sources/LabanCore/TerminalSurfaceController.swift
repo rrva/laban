@@ -547,6 +547,10 @@ public final class TerminalSurfaceController {
   private var spinnerMotionRemoteIncarnations: [Session.ID: String] = [:]
   private var spinnerMotionLastObservedGeneration: [Session.ID: UInt64] = [:]
   private var spinnerMotionLastRemoteDirty: [Session.ID: Bool] = [:]
+  /// Last wave published per session, for disengagement teardown: when the
+  /// detector's wave goes away, the affected cells get ordinary kind-3
+  /// transitions starting from the wave-displayed color at that moment.
+  private var spinnerMotionLastWaves: [Session.ID: SpinnerWaveState] = [:]
   /// Stamp decision from the most recent `stampFreshOutputTimestamps` call;
   /// copied onto `TerminalSurfaceFrame.glyphEffectStamp` for the journal.
   private var lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics.none
@@ -706,6 +710,7 @@ public final class TerminalSurfaceController {
     spinnerMotionRemoteIncarnations.removeAll()
     spinnerMotionLastObservedGeneration.removeAll()
     spinnerMotionLastRemoteDirty.removeAll()
+    spinnerMotionLastWaves.removeAll()
   }
 
   /// Drops all spinner-motion detector state without disturbing the broader
@@ -716,6 +721,7 @@ public final class TerminalSurfaceController {
     spinnerMotionRemoteIncarnations.removeAll()
     spinnerMotionLastObservedGeneration.removeAll()
     spinnerMotionLastRemoteDirty.removeAll()
+    spinnerMotionLastWaves.removeAll()
   }
 
   /// Total number of active spinner-motion transitions across all tracked
@@ -740,9 +746,12 @@ public final class TerminalSurfaceController {
     return false
   }
 
-  /// Active spinner-motion transitions for `session` at the current moment,
+  /// Active spinner-motion metadata for `session` at the current moment,
   /// observing a new generation when one is available. Returns nil when the
   /// feature is disabled, the renderer is not Slug, or Reduce Motion is on.
+  /// When the detector holds a confident traveling wave the result carries a
+  /// wave publication; when a previously published wave disengages, the
+  /// result carries teardown transitions from the wave-displayed colors.
   private func spinnerMotionTransitions(
     for sessionID: Session.ID,
     producer: FrameProducer,
@@ -750,7 +759,7 @@ public final class TerminalSurfaceController {
     session: Session? = nil,
     snapshot: UnsafePointer<LabanSnapshot>? = nil,
     remoteSnapshot: LabandSnapshotResponse? = nil
-  ) -> [SpinnerMotionCellKey: GlyphForegroundTransition]? {
+  ) -> SpinnerMotionFrameMetadata? {
     let eligible =
       request.spinnerMotionSmoothingEnabled
       && request.effectiveRendererIsSlug
@@ -761,6 +770,7 @@ public final class TerminalSurfaceController {
       spinnerMotionRemoteIncarnations.removeValue(forKey: sessionID)
       spinnerMotionLastObservedGeneration.removeValue(forKey: sessionID)
       spinnerMotionLastRemoteDirty.removeValue(forKey: sessionID)
+      spinnerMotionLastWaves.removeValue(forKey: sessionID)
       return nil
     }
 
@@ -768,11 +778,14 @@ public final class TerminalSurfaceController {
     if spinnerMotionCellMetrics[sessionID].map({ $0 != metrics }) ?? true {
       spinnerMotionDetectors[sessionID]?.reset()
       spinnerMotionCellMetrics[sessionID] = metrics
+      // A dimension change invalidates the old grid coordinates; drop the
+      // last published wave without teardown.
+      spinnerMotionLastWaves.removeValue(forKey: sessionID)
     }
 
     var detector = spinnerMotionDetectors[sessionID] ?? SpinnerMotionDetector()
     let now = outputStampClock()
-    let map: [SpinnerMotionCellKey: GlyphForegroundTransition]
+    var map: [SpinnerMotionCellKey: GlyphForegroundTransition]
 
     if let snap = snapshot {
       let currentGen = session?.dirtyGeneration() ?? 0
@@ -793,6 +806,9 @@ public final class TerminalSurfaceController {
       if spinnerMotionRemoteIncarnations[sessionID] != remote.incarnationId {
         detector.reset()
         spinnerMotionRemoteIncarnations[sessionID] = remote.incarnationId
+        // A new incarnation is a new terminal; drop the old wave without
+        // teardown.
+        spinnerMotionLastWaves.removeValue(forKey: sessionID)
       }
       let remoteDirty = remote.dirty
       if spinnerMotionLastRemoteDirty[sessionID] != remoteDirty {
@@ -812,8 +828,51 @@ public final class TerminalSurfaceController {
       map = detector.activeTransitions(at: now)
     }
 
+    // Wave channel (traveling-wave super-sampling). Publish while the
+    // detector is confident and active; on disengagement (confidence lost,
+    // observation timeout) synthesize kind-3 teardown transitions from the
+    // wave-displayed color at `now` to each cell's authoritative color, so
+    // the cells ease instead of popping. The horizon matches the detector's
+    // own timeout, so the present link parks when generations stop.
+    let horizon = min(2 * (detector.diagnostics.cadenceSeconds ?? 0.15), 0.8)
+    let currentWave = detector.lastWave
+    let waveLive = currentWave != nil && detector.isActive(at: now)
+    var wave: SpinnerWavePublication?
+    if let current = currentWave, waveLive {
+      wave = SpinnerWavePublication(wave: current, durationSeconds: horizon)
+      spinnerMotionLastWaves[sessionID] = current
+    } else if let previous = spinnerMotionLastWaves.removeValue(forKey: sessionID) {
+      for offset in previous.colors.indices {
+        let col = previous.minCol + offset
+        let key = SpinnerMotionCellKey(row: previous.row, col: col)
+        guard map[key] == nil else { continue }
+        map[key] = GlyphForegroundTransition(
+          startLinearRGBA: previous.sample(col: col, at: now),
+          startTimestampSeconds: now,
+          durationSeconds: horizon)
+      }
+    }
+
     spinnerMotionDetectors[sessionID] = detector
-    return map.isEmpty ? nil : map
+    return SpinnerMotionFrameMetadata(
+      transitions: map.isEmpty ? nil : map,
+      wave: wave)
+  }
+
+  /// Aggregate traveling-wave diagnostics across tracked sessions for the
+  /// debug endpoint: the first session with an active wave wins. A wave is
+  /// reported only while the detector is live (`diagnostics.waveActive` is
+  /// refreshed inside `observe` and would otherwise stay stale after an
+  /// observation timeout).
+  public func spinnerMotionWaveDiagnostics() -> (
+    active: Bool, velocityCellsPerSecond: Double?, confidence: Double?
+  ) {
+    let now = outputStampClock()
+    for detector in spinnerMotionDetectors.values {
+      guard let wave = detector.lastWave, detector.isActive(at: now) else { continue }
+      return (true, wave.velocityCellsPerSecond, wave.confidence)
+    }
+    return (false, nil, nil)
   }
 
   public func makeFrame(
@@ -990,7 +1049,7 @@ public final class TerminalSurfaceController {
       && snapshotCommandsHook == nil
       && captureSink == nil
 
-    let foregroundTransitions =
+    let spinnerMotion =
       canSkipTerminalCommands
       ? nil
       : spinnerMotionTransitions(
@@ -1009,7 +1068,8 @@ public final class TerminalSurfaceController {
         preedit: request.preedit,
         preeditCaretCells: request.preeditCaretCells,
         resolvedCursor: preResolvedCursor,
-        foregroundTransitions: foregroundTransitions)
+        foregroundTransitions: spinnerMotion?.transitions,
+        foregroundWave: spinnerMotion?.wave)
     }
     commands = stampFreshOutputTimestamps(
       commands,
@@ -1111,7 +1171,7 @@ public final class TerminalSurfaceController {
       accessibilityVisualOptions: request.accessibilityVisualOptions,
       backgroundCompositingOptions: request.backgroundCompositingOptions
     )
-    let foregroundTransitions = spinnerMotionTransitions(
+    let spinnerMotion = spinnerMotionTransitions(
       for: sessionId,
       producer: producer,
       request: request,
@@ -1123,7 +1183,8 @@ public final class TerminalSurfaceController {
       preedit: request.preedit,
       preeditCaretCells: request.preeditCaretCells,
       userCursorStyle: request.userCursorStyle,
-      foregroundTransitions: foregroundTransitions
+      foregroundTransitions: spinnerMotion?.transitions,
+      foregroundWave: spinnerMotion?.wave
     )
     recordFrameCommands(request, commands: commands)
 

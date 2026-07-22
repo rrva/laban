@@ -104,7 +104,8 @@ final class SlugSpinnerMotionRendererTests: XCTestCase {
         background: 0x0000_0000,
         attributes: [],
         source: .terminal,
-        foregroundWave: GlyphForegroundWave(regionIndex: 0, cellIndexInRegion: 1)),
+        foregroundWave: GlyphForegroundWave(
+          regionIndex: 0, cellIndexInRegion: 1, durationSeconds: 1.0)),
     ]
 
     // First render establishes the renderer epoch at t=1.0.
@@ -115,9 +116,9 @@ final class SlugSpinnerMotionRendererTests: XCTestCase {
     renderer.glyphEffectClock = { 1.5 }
     XCTAssertTrue(renderer.render(commands, damage: .full))
     XCTAssertEqual(renderer.lastFrameMotionGlyphsCount, 1)
-    // Nil wave duration mirrors kind 3's nil handling: zero liveness.
-    XCTAssertEqual(renderer.glyphEffectLiveCount, 0)
-    XCTAssertEqual(renderer.glyphEffectAnimatingRemainingSeconds, 0)
+    // The published horizon drives kind-4 liveness exactly like kind 3.
+    XCTAssertEqual(renderer.glyphEffectLiveCount, 1)
+    XCTAssertEqual(renderer.glyphEffectAnimatingRemainingSeconds, 0.5, accuracy: 0.01)
 
     let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
     guard let covered = firstFullyCoveredPixel(in: image) else {
@@ -147,7 +148,7 @@ final class SlugSpinnerMotionRendererTests: XCTestCase {
   }
 
   func testGlyphForegroundWaveCodableRoundTrip() throws {
-    let wave = GlyphForegroundWave(regionIndex: 3, cellIndexInRegion: 17)
+    let wave = GlyphForegroundWave(regionIndex: 3, cellIndexInRegion: 17, durationSeconds: 0.15)
     let data = try JSONEncoder().encode(wave)
     let decoded = try JSONDecoder().decode(GlyphForegroundWave.self, from: data)
     XCTAssertEqual(decoded, wave)

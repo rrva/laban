@@ -2226,8 +2226,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// renderer-relative Float the shader compares against `timeSeconds`. Returns
   /// the start time and, for spinner motion, the metadata duration. For wave
   /// runs the start is the region's anchor, already epoch-mapped when the
-  /// region was collected; the wave horizon rides the same duration channel
-  /// (nil until the controller publishes a bounded horizon).
+  /// region was collected, and the duration is the controller-published
+  /// liveness horizon (nil when unposted/non-positive, same as kind 3).
   private func effectStartAndDuration(
     outputTimestampSeconds: Double?,
     foregroundTransition: GlyphForegroundTransition?,
@@ -2238,7 +2238,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     if let wave = foregroundWave {
       let index = Int(wave.regionIndex)
       let anchor = waveRegions.indices.contains(index) ? waveRegions[index].anchorSeconds : 0
-      return (anchor, nil)
+      let duration = wave.durationSeconds > 0 ? Float(wave.durationSeconds) : nil
+      return (anchor, duration)
     }
     if let transition = foregroundTransition {
       let start = Float(transition.startTimestampSeconds - epoch)

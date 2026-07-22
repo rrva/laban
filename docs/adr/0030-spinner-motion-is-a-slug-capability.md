@@ -65,6 +65,23 @@ shader motion code.
   a new ADR backed by an equally capable backend substrate: per-glyph GPU time,
 single analytic instance, and bounded liveness/settle parking.
 
+## Amendment (2026-07-21): traveling-wave super-sampling
+
+The same Smooth spinner motion setting carries a second Slug-only capability:
+when the detector's finely sampled bypass recognizes a *traveling wave* (a
+single-row color pattern translating at a steady velocity), the Slug renderer
+samples a per-frame wave field at fractional cell offsets in a new effect
+kind 4 of the same motion pipeline (`slugGlyphMotionVertex`), instead of
+interpolating per cell. This rides the same substrate ADR 0030 requires: one
+analytic glyph instance per cell, GPU time, linear light, and bounded liveness
+through the existing duration channel (the wave's horizon is
+`min(2 * cadence, 0.8)`, refreshed per generation). The wave field travels as
+a frame-level `FrameCommand.waveRegion` payload plus optional
+`glyphRun.foregroundWave` metadata; non-Slug renderers ignore both, exactly as
+they ignore `foregroundTransition`. Wave teardown reuses the kind-3
+C0-continuous transition path. Implementation:
+`execplans/active/spinner-motion-traveling-wave.md`.
+
 ## Applies To New Code
 
 Do not add spinner-motion state, fields, or shaders to non-Slug renderers or to

@@ -50,10 +50,16 @@ public struct GlyphForegroundWave: Equatable, Sendable, Codable {
   public var regionIndex: UInt32
   /// This cell's column index within the region's color field.
   public var cellIndexInRegion: UInt32
+  /// Liveness horizon in seconds (refreshed per generation by the
+  /// controller). Drives liveness/remaining-time publication exactly like
+  /// kind 3's duration; the kind-4 shader does not read it. Zero or
+  /// negative means zero liveness.
+  public var durationSeconds: Double
 
-  public init(regionIndex: UInt32, cellIndexInRegion: UInt32) {
+  public init(regionIndex: UInt32, cellIndexInRegion: UInt32, durationSeconds: Double = 0) {
     self.regionIndex = regionIndex
     self.cellIndexInRegion = cellIndexInRegion
+    self.durationSeconds = durationSeconds
   }
 }
 

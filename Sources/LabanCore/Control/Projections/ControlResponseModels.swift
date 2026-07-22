@@ -204,6 +204,11 @@ public struct SpinnerMotionStateResponse: Encodable {
   public var effectKind: Int
   public var remainingSeconds: Double
   public var liveEffectFrames: Int
+  /// Traveling-wave super-sampling diagnostics; velocity/confidence are
+  /// present only while a wave is active.
+  public var waveActive: Bool
+  public var waveVelocityCellsPerSecond: Double?
+  public var waveConfidence: Double?
 
   public init(
     configured: Bool,
@@ -216,7 +221,10 @@ public struct SpinnerMotionStateResponse: Encodable {
     fallbackSnaps: Int,
     effectKind: Int,
     remainingSeconds: Double,
-    liveEffectFrames: Int
+    liveEffectFrames: Int,
+    waveActive: Bool = false,
+    waveVelocityCellsPerSecond: Double? = nil,
+    waveConfidence: Double? = nil
   ) {
     self.configured = configured
     self.effectiveRenderer = effectiveRenderer
@@ -229,6 +237,9 @@ public struct SpinnerMotionStateResponse: Encodable {
     self.effectKind = effectKind
     self.remainingSeconds = remainingSeconds
     self.liveEffectFrames = liveEffectFrames
+    self.waveActive = waveActive
+    self.waveVelocityCellsPerSecond = waveVelocityCellsPerSecond
+    self.waveConfidence = waveConfidence
   }
 }
 

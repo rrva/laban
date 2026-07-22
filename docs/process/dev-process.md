@@ -133,12 +133,16 @@ to one existing endpoint: `discover` calls `GET /debug`, `action` posts to
 `/debug/snapshot`, and `screenshot` captures `GET /debug/screenshot`.
 
 `scripts/test-e2e` runs deterministic scenarios under `.artifacts/runs/<run-id>/`.
-Checked-in spinner-motion scenarios (`fixtures/spinner-motion-smoothing.scenario.json`
-and `fixtures/spinner-motion-classic-gate.scenario.json`) exercise Slug-only
-motion smoothing and the non-Slug gate. `GET /debug/spinner-motion` reports
+Checked-in spinner-motion scenarios (`fixtures/spinner-motion-smoothing.scenario.json`,
+`fixtures/spinner-motion-classic-gate.scenario.json`, and
+`fixtures/spinner-motion-wave.scenario.json`) exercise Slug-only motion
+smoothing, the non-Slug gate, and traveling-wave super-sampling
+(engagement telemetry, a mid-interval sub-cell pixel probe, pixel-exact
+settlement, and re-parking). `GET /debug/spinner-motion` reports
 configured state, renderer eligibility, Reduce Motion, effective enablement,
 active transitions, analytic motion instances, fallback snaps, effect kind,
-and remaining animation time.
+remaining animation time, and traveling-wave diagnostics (`waveActive`,
+`waveVelocityCellsPerSecond`, `waveConfidence`).
 
 ### Health
 

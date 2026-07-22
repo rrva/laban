@@ -159,6 +159,38 @@ public struct SpinnerWaveState: Equatable, Sendable {
   }
 }
 
+/// A confident traveling wave plus the liveness horizon the controller
+/// publishes with it for one frame, bundled for `FrameProducer`. The horizon
+/// is `min(2 * cadence, 0.8)` refreshed per generation: when generations
+/// stop, the renderer's remaining time runs out, the present link parks, and
+/// a settle repaint runs. Renderer-neutral; the producer turns it into
+/// `FrameCommand.waveRegion` + `GlyphForegroundWave` metadata.
+public struct SpinnerWavePublication: Equatable, Sendable {
+  public var wave: SpinnerWaveState
+  public var durationSeconds: Double
+
+  public init(wave: SpinnerWaveState, durationSeconds: Double) {
+    self.wave = wave
+    self.durationSeconds = durationSeconds
+  }
+}
+
+/// Per-frame spinner-motion output from `TerminalSurfaceController`: the
+/// transition map plus the optional traveling-wave publication consumed by
+/// `FrameProducer`.
+public struct SpinnerMotionFrameMetadata: Equatable, Sendable {
+  public var transitions: [SpinnerMotionCellKey: GlyphForegroundTransition]?
+  public var wave: SpinnerWavePublication?
+
+  public init(
+    transitions: [SpinnerMotionCellKey: GlyphForegroundTransition]? = nil,
+    wave: SpinnerWavePublication? = nil
+  ) {
+    self.transitions = transitions
+    self.wave = wave
+  }
+}
+
 /// Estimates steady translation of a single-row color pattern from
 /// consecutive observations. Detection is purely semantic: integer-shift
 /// cross-correlation of the region's luminance vector. No process names,

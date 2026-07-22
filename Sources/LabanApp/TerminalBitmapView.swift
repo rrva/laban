@@ -1368,6 +1368,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let motionCount = slug?.lastFrameMotionGlyphsCount ?? 0
     let activeTransitionCount = surfaceController.spinnerMotionActiveTransitionCount()
     let effectKind = Int(slug?.lastGlyphEffectKind ?? 0)
+    let wave = surfaceController.spinnerMotionWaveDiagnostics()
     return SpinnerMotionStateResponse(
       configured: SpinnerMotionSmoothingSettings.enabled,
       effectiveRenderer: currentBackend.rendererStatus.effectiveRenderer,
@@ -1381,7 +1382,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       fallbackSnaps: slug?.lastFrameSpinnerFallbackSnapCount ?? 0,
       effectKind: effectKind,
       remainingSeconds: slug?.glyphEffectAnimatingRemainingSeconds ?? 0,
-      liveEffectFrames: Int(slug?.glyphEffectFrameCount ?? 0))
+      liveEffectFrames: Int(slug?.glyphEffectFrameCount ?? 0),
+      waveActive: wave.active,
+      waveVelocityCellsPerSecond: wave.velocityCellsPerSecond,
+      waveConfidence: wave.confidence)
   }
 
   var glyphEffectsState: GlyphEffectsStateResponse? {

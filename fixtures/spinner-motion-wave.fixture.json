@@ -1,0 +1,25 @@
+{
+  "name": "spinner-motion-wave",
+  "version": 1,
+  "description": "Row 1 (top) holds a gray cosine band the scenario shifts one cell right per ~75 ms step; row 2 holds the static final-step colors for pixel-exact settle comparison. Generic gray levels only.",
+  "initialSize": {
+    "cols": 80,
+    "rows": 24
+  },
+  "steps": [
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "\u001b[2J\u001b[H\u001b[1;3H\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[2;3H\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;128;128;128m\u25cf\u001b[38;2;139;139;139m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;242;242;242m\u25cf\u001b[38;2;231;231;231m\u25cf\u001b[38;2;203;203;203m\u25cf\u001b[38;2;167;167;167m\u25cf\u001b[0m\u001b[?25l"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "containsText": [
+      "\u25cf"
+    ]
+  }
+}
