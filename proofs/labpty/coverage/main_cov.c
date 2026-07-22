@@ -321,9 +321,16 @@ static void cover_output_wake_paths(void) {
     /* arm records the watch set on every matching wake fd (R2). */
     assert(cov_daemon.clients[3].wake_watch_count == 2 && cov_daemon.clients[3].wake_watch_handles[0] == 100);
     assert(cov_daemon.clients[4].wake_watch_count == 2 && cov_daemon.clients[4].wake_watch_handles[1] == 200);
-    /* count == 0 path: empty watch set, still arms. */
+    /* Multi-fd count == 0 path: the union prunes handles whose registry
+     * slots are gone (200 has no session, 100 does) and still arms. */
     arm_output_wake_clients(&cov_daemon, "client-a", NULL, 0);
-    assert(cov_daemon.clients[4].wake_watch_count == 0);
+    assert(cov_daemon.clients[4].wake_watch_count == 1 && cov_daemon.clients[4].wake_watch_handles[0] == 100);
+    assert(cov_daemon.clients[4].wake_armed == 1);
+    /* A single wake fd for the id keeps exact replacement semantics: an
+     * empty arm clears the watch set but still arms. */
+    arm_output_wake_clients(&cov_daemon, "client-b", NULL, 0);
+    assert(cov_daemon.clients[2].wake_watch_count == 0 && cov_daemon.clients[2].wake_armed == 1);
+    assert(cov_daemon.output_wake_armed_count == 3);
 
     labpty_client_t queue_client = {0};
     queue_client.fd = -1;
