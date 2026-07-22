@@ -17,6 +17,7 @@
         "feedOutput",
         "advanceFrames",
         "advanceTime",
+        "setGlyphEffectsEnabled",
         "setSpinnerMotionSmoothingEnabled",
         "resetSpinnerMotionDiagnostics"
       ]
@@ -25,6 +26,11 @@
       "op": "action",
       "label": "reset setting to disabled for baseline",
       "body": {"action": "setSpinnerMotionSmoothingEnabled", "enabled": false}
+    },
+    {
+      "op": "action",
+      "label": "disable glyph effects so ink-bloom decay cannot leak into settle telemetry",
+      "body": {"action": "setGlyphEffectsEnabled", "enabled": false}
     },
     {
       "op": "get",

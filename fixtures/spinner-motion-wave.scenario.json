@@ -16,6 +16,7 @@
         "feedOutput",
         "advanceTime",
         "advanceFrames",
+        "setGlyphEffectsEnabled",
         "setSpinnerMotionSmoothingEnabled"
       ]
     },
@@ -25,6 +26,14 @@
       "body": {
         "action": "setSpinnerMotionSmoothingEnabled",
         "enabled": true
+      }
+    },
+    {
+      "op": "action",
+      "label": "disable glyph effects so ink-bloom decay cannot leak into settle telemetry",
+      "body": {
+        "action": "setGlyphEffectsEnabled",
+        "enabled": false
       }
     },
     {
