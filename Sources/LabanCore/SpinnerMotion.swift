@@ -19,7 +19,7 @@ public enum SpinnerMotion {
   /// filters an already time-shaped signal and can add artifacts. The exit
   /// threshold adds hysteresis so sources hovering near the boundary do not
   /// flap between interpolated and authoritative rendering.
-  public static let finelySampledEnterCadenceSeconds = 0.0
+  public static let finelySampledEnterCadenceSeconds = 0.10
   public static let finelySampledExitCadenceSeconds = 0.12
   /// Maximum number of live transitions retained per session.
   public static let maxTransitions = 64
