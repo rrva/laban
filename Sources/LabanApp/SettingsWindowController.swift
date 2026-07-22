@@ -108,6 +108,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorSmoothScrollLabel = NSTextField(labelWithString: L10n.tr("Smooth scroll:"))
   private let spinnerMotionSmoothingCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Smooth spinner motion"), target: nil, action: nil)
+  private let glyphEffectsCheckbox = NSButton(
+    checkboxWithTitle: L10n.tr("Ink bloom type-in effect"), target: nil, action: nil)
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Option as Meta"), target: nil, action: nil)
@@ -590,6 +592,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       "Available with Slug Glyph; smooths foreground-color spinner ripples.")
     spinnerMotionSmoothingCheckbox.setAccessibilityLabel(L10n.tr("Smooth spinner motion"))
 
+    glyphEffectsCheckbox.target = self
+    glyphEffectsCheckbox.action = #selector(glyphEffectsChanged(_:))
+    glyphEffectsCheckbox.toolTip = L10n.tr(
+      "Available with Slug Glyph; freshly output text eases in slightly thin and faint.")
+    glyphEffectsCheckbox.setAccessibilityLabel(L10n.tr("Ink bloom type-in effect"))
+
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
     optionAsMetaCheckbox.toolTip =
@@ -698,6 +706,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [vectorTextWeightLabel, makeVectorTextWeightRow()],
       [vectorSmoothScrollLabel, vectorSmoothScrollPopUp],
       [NSGridCell.emptyContentView, spinnerMotionSmoothingCheckbox],
+      [NSGridCell.emptyContentView, glyphEffectsCheckbox],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
     let notificationsGrid = makeSettingsGrid([
@@ -872,6 +881,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let spinnerMotion = selection == .slugGlyph
     let envLocked = SpinnerMotionSmoothingSettings.environmentOverride() != nil
     spinnerMotionSmoothingCheckbox.isEnabled = spinnerMotion && !envLocked
+    let glyphEffectsEnvLocked = GlyphEffectSettings.environmentOverride() != nil
+    glyphEffectsCheckbox.isEnabled = spinnerMotion && !glyphEffectsEnvLocked
   }
 
   private func makeVectorSubpixelCustomRow() -> NSStackView {
@@ -999,6 +1010,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
     refreshVectorControlsForRenderer(rendererSelection)
     spinnerMotionSmoothingCheckbox.state = SpinnerMotionSmoothingSettings.enabled ? .on : .off
+    glyphEffectsCheckbox.state = GlyphEffectSettings.enabled ? .on : .off
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off
@@ -1462,6 +1474,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let enabled = sender.state == .on
     guard SpinnerMotionSmoothingSettings.setEnabled(enabled) else {
       sender.state = SpinnerMotionSmoothingSettings.enabled ? .on : .off
+      return
+    }
+    refresh()
+  }
+
+  @objc private func glyphEffectsChanged(_ sender: NSButton) {
+    let enabled = sender.state == .on
+    guard GlyphEffectSettings.setEnabled(enabled) else {
+      sender.state = GlyphEffectSettings.enabled ? .on : .off
       return
     }
     refresh()

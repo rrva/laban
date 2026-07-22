@@ -7451,6 +7451,12 @@
     "Available with Slug Glyph; smooths foreground-color spinner ripples.": {
       "localizations": {}
     },
+    "Ink bloom type-in effect": {
+      "localizations": {}
+    },
+    "Available with Slug Glyph; freshly output text eases in slightly thin and faint.": {
+      "localizations": {}
+    },
     "Thin": {
       "localizations": {
         "zh-Hans": {

@@ -1102,6 +1102,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
     "Smooth spinner motion": {},
     "Available with Slug Glyph; smooths foreground-color spinner ripples.": {},
+    "Ink bloom type-in effect": {},
+    "Available with Slug Glyph; freshly output text eases in slightly thin and faint.": {},
     "Thin": {
         "zh-Hans": "细",
         "zh-Hant": "細",
