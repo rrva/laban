@@ -1646,6 +1646,99 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       "after the freshness window the stamp must expire")
   }
 
+  func testKeystrokeDoesNotCutInFlightBloomOnPreviousCell() throws {
+    // Typing cadence (~100 ms) is shorter than the ink-bloom decay (280 ms),
+    // so the previous character is still blooming when the next one lands.
+    // The new generation must not drop the in-flight stamp: losing it snaps
+    // the previous glyph from mid-bloom to settled in one frame (a visible
+    // pop on the cell before the cursor).
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    guard let tab = model.activeTab,
+      let session = model.session(forTab: tab.id)
+    else {
+      XCTFail("missing active fixture session")
+      return
+    }
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    var now = 1.0
+    controller.outputStampClock = { now }
+    func makeFrame(_ index: Int) -> TerminalSurfaceFrame? {
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: index,
+          viewportWidth: 360,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 360,
+          surfaceHeight: 64,
+          surfaceScale: 1))
+    }
+
+    // Keystroke 1: 'a' lands, cursor-cell strip stamps it at 1.0.
+    _ = session.write(Array("a".utf8))
+    _ = session.poll()
+    guard let frame1 = makeFrame(1) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps1 = terminalGlyphRunTimestamps(frame1)
+    XCTAssertEqual(stamps1.first(where: { $0.text == "a" })?.stamp ?? nil, 1.0)
+    session.markRendered()
+
+    // Keystroke 2, 100 ms later (mid-bloom for 'a'): 'b' is stamped at 1.1
+    // while 'a' must keep its original 1.0 stamp so its bloom completes.
+    _ = session.write(Array("b".utf8))
+    _ = session.poll()
+    now = 1.1
+    guard let frame2 = makeFrame(2) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps2 = terminalGlyphRunTimestamps(frame2)
+    XCTAssertEqual(
+      stamps2.first(where: { $0.text == "a" })?.stamp ?? nil, 1.0,
+      "the previous cell's in-flight bloom must survive the next keystroke")
+    XCTAssertEqual(stamps2.first(where: { $0.text == "b" })?.stamp ?? nil, 1.1)
+    session.markRendered()
+
+    // Same generation, still inside both windows: both stamps re-apply.
+    now = 1.2
+    guard let frame3 = makeFrame(3) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps3 = terminalGlyphRunTimestamps(frame3)
+    XCTAssertEqual(stamps3.first(where: { $0.text == "a" })?.stamp ?? nil, 1.0)
+    XCTAssertEqual(stamps3.first(where: { $0.text == "b" })?.stamp ?? nil, 1.1)
+
+    // Staggered expiry: 'a's window (1.0 + maxDecay) closes first; 'b' keeps
+    // blooming on its own until its own window closes.
+    now = 1.0 + GlyphEffectTimeline.maxDecaySeconds + 0.05
+    guard let frame4 = makeFrame(4) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps4 = terminalGlyphRunTimestamps(frame4)
+    XCTAssertEqual(stamps4.first(where: { $0.text == "a" })?.stamp ?? nil, nil)
+    XCTAssertEqual(stamps4.first(where: { $0.text == "b" })?.stamp ?? nil, 1.1)
+
+    now = 1.1 + GlyphEffectTimeline.maxDecaySeconds + 0.01
+    guard let frame5 = makeFrame(5) else {
+      XCTFail("expected a frame")
+      return
+    }
+    let stamps5 = terminalGlyphRunTimestamps(frame5)
+    XCTAssertEqual(stamps5.first(where: { $0.text == "b" })?.stamp ?? nil, nil)
+  }
+
   func testForceFullDamageDoesNotStampSettledScrollback() throws {
     var size = LabanTerminalSize()
     size.rows = 6

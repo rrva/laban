@@ -523,18 +523,28 @@ public final class TerminalSurfaceController {
   // Glyph-effect channel (execplans/active/per-glyph-animation-channel.md):
   // remembers, per session, the dirty_generation at which terminal glyph runs
   // were last stamped with `outputTimestampSeconds`, the monotonic stamp
-  // itself, and the freshness region at that moment. The stamp is re-applied
-  // to the same region while the freshness window
-  // (`GlyphEffectTimeline.maxDecaySeconds`) is open so rebuilds keep an
+  // itself, and the freshness region at that moment. Stamps are re-applied
+  // to the same regions while their freshness windows
+  // (`GlyphEffectTimeline.maxDecaySeconds`) are open so rebuilds keep an
   // identical effectStart; frames driven by scroll, selection, or blink leave
-  // the generation unchanged and never create a new stamp. Pruned together
-  // with lastSyncedGeneration.
+  // the generation unchanged and never create a new stamp. Several records
+  // stay in flight at once: typing cadence is shorter than the decay window,
+  // so the previous keystroke's bloom is still animating when the next one
+  // lands — dropping it there snapped the glyph before the cursor to settled
+  // mid-bloom (a visible pop). Pruned together with lastSyncedGeneration.
   private struct OutputStampRecord {
     var generation: UInt64
     var stamp: Double
     var freshness: GlyphEffectFreshness
   }
-  private var lastOutputStamp: [Session.ID: OutputStampRecord] = [:]
+  private var outputStampRecords: [Session.ID: [OutputStampRecord]] = [:]
+  /// Newest dirty generation already evaluated for stamping, per session.
+  /// Outlives individual records (they expire with their decay window) so a
+  /// stale generation can never mint a fresh stamp on a later rebuild.
+  private var outputStampLastGeneration: [Session.ID: UInt64] = [:]
+  /// Defensive bound on in-flight stamp records per session (a keystroke
+  /// burst inside one decay window is single digits).
+  private static let maxActiveOutputStampRecords = 16
   /// Per-session per-row cell content fingerprints (viewport row → one hash
   /// per column). Diffed on each stamp so zsh/fish synchronized line redraws
   /// that mark the whole prompt row dirty only bloom cells that actually
@@ -703,7 +713,8 @@ public final class TerminalSurfaceController {
   /// generation and cause sync work to be incorrectly skipped.
   public func invalidateSessionSyncCache() {
     lastSyncedGeneration.removeAll()
-    lastOutputStamp.removeAll()
+    outputStampRecords.removeAll()
+    outputStampLastGeneration.removeAll()
     lastCellFingerprints.removeAll()
     spinnerMotionDetectors.removeAll()
     spinnerMotionCellMetrics.removeAll()
@@ -1870,10 +1881,15 @@ public final class TerminalSurfaceController {
   /// row only bloom the cells that actually changed; coalesced runs are
   /// split on an X strip. Multi-row dumps still whole-run stamp.
   ///
+  /// Stamps stay in flight until their decay window closes, several at a
+  /// time: typing cadence is shorter than the window, so the previous
+  /// keystroke's bloom is still animating when the next one lands — each
+  /// frame re-applies every unexpired stamp to its own region (oldest
+  /// first) so overlapping blooms settle naturally instead of snapping.
+  ///
   /// Cell fingerprints are refreshed on every call so idle frames seed a
-  /// baseline before the next keystroke. While the freshness window stays
-  /// open the same stamp is re-applied to the same region; scroll /
-  /// selection / blink frames leave the generation unchanged and keep nil.
+  /// baseline before the next keystroke. Scroll / selection / blink frames
+  /// leave the generation unchanged and never create a new stamp.
   private func stampFreshOutputTimestamps(
     _ commands: [FrameCommand],
     session: Session,
@@ -1919,81 +1935,94 @@ public final class TerminalSurfaceController {
     // Fullscreen TUIs (Claude Code, btop, …) enable mouse tracking. Their
     // spinners rewrite glyphs/colors every tick; blooming that is pure flicker.
     if snapshot.pointee.mouse_tracking != 0 {
-      lastOutputStamp.removeValue(forKey: session.id)
+      outputStampRecords.removeValue(forKey: session.id)
       return finishNone(mode: .suppressedTUI)
     }
 
     guard generation != 0 else { return finishNone() }
     let now = outputStampClock()
-    let stamp: Double
-    let freshness: GlyphEffectFreshness
+    var records = outputStampRecords[session.id] ?? []
+    records.removeAll { now - $0.stamp >= GlyphEffectTimeline.maxDecaySeconds }
+
     let modeOverride: GlyphEffectStampMode?
-    if let record = lastOutputStamp[session.id], record.generation == generation {
-      guard now - record.stamp < GlyphEffectTimeline.maxDecaySeconds
-      else { return finishNone() }
-      stamp = record.stamp
-      freshness = record.freshness
-      modeOverride = .reapply
+    if outputStampLastGeneration[session.id] == generation {
+      // Generation already evaluated: reapply in-flight stamps (if any).
+      modeOverride = records.isEmpty ? nil : .reapply
     } else {
-      guard
-        let region = Self.freshness(
-          snapshot: snapshot,
-          cellWidth: CGFloat(cellWidth),
-          cellHeight: CGFloat(cellHeight),
-          originX: originX,
-          originY: originY,
-          previousFingerprints: previousFingerprints),
-        !region.bands.isEmpty
-      else { return finishNone() }
-      // Bulk / multi-row / near-full-row rewrites: content diff still ran
-      // (changedCells is real glyph+style churn), but blooming whole runs
-      // makes TUIs like btop flicker — suppress the stamp entirely.
-      if region.mode == .wholeRun {
-        lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics(
-          mode: .wholeRun,
-          dirtyRows: region.dirtyRows.isEmpty ? dirtyRows : region.dirtyRows,
-          changedCells: region.changedCells,
-          stampedRuns: 0,
-          stampedGlyphs: 0,
-          generation: generation)
-        return commands
-      }
-      stamp = now
-      freshness = region
-      modeOverride = nil
-      lastOutputStamp[session.id] = OutputStampRecord(
-        generation: generation, stamp: stamp, freshness: freshness)
-    }
-    let stamped: [FrameCommand]
-    if let xMin = freshness.xMin, let xMax = freshness.xMax, freshness.hasCellStrip {
-      stamped = Self.applyCellStripStamp(
-        commands,
-        bands: freshness.bands,
-        xMin: xMin,
-        xMax: xMax,
+      outputStampLastGeneration[session.id] = generation
+      let region = Self.freshness(
+        snapshot: snapshot,
         cellWidth: CGFloat(cellWidth),
         cellHeight: CGFloat(cellHeight),
-        gridOriginX: originX,
-        stamp: stamp)
-    } else {
-      // Non-strip freshness that isn't `wholeRun` (e.g. cursorCell after CR
-      // with a previous-row band): still stamp those runs.
-      stamped = Self.applyWholeRunStamp(
-        commands,
-        bands: freshness.bands,
-        cellHeight: CGFloat(cellHeight),
-        stamp: stamp)
+        originX: originX,
+        originY: originY,
+        previousFingerprints: previousFingerprints)
+      if let region, !region.bands.isEmpty {
+        // Bulk / multi-row / near-full-row rewrites: content diff still ran
+        // (changedCells is real glyph+style churn), but blooming whole runs
+        // makes TUIs like btop flicker — suppress the new stamp and cut
+        // in-flight ones (the rewrite may have overwritten their cells).
+        if region.mode == .wholeRun {
+          outputStampRecords.removeValue(forKey: session.id)
+          lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics(
+            mode: .wholeRun,
+            dirtyRows: region.dirtyRows.isEmpty ? dirtyRows : region.dirtyRows,
+            changedCells: region.changedCells,
+            stampedRuns: 0,
+            stampedGlyphs: 0,
+            generation: generation)
+          return commands
+        }
+        records.append(
+          OutputStampRecord(generation: generation, stamp: now, freshness: region))
+        if records.count > Self.maxActiveOutputStampRecords {
+          records.removeFirst(records.count - Self.maxActiveOutputStampRecords)
+        }
+        modeOverride = nil
+      } else {
+        // No new stamp this generation (clean frame, or a redraw that
+        // changed no cell content): in-flight stamps keep animating to
+        // settle instead of snapping settled mid-bloom.
+        modeOverride = records.isEmpty ? nil : .reapply
+      }
+    }
+    outputStampRecords[session.id] = records
+    guard let newest = records.last else { return finishNone() }
+
+    // Apply oldest-first so overlapping regions end with the newest stamp.
+    var stamped = commands
+    for record in records {
+      let freshness = record.freshness
+      if let xMin = freshness.xMin, let xMax = freshness.xMax, freshness.hasCellStrip {
+        stamped = Self.applyCellStripStamp(
+          stamped,
+          bands: freshness.bands,
+          xMin: xMin,
+          xMax: xMax,
+          cellWidth: CGFloat(cellWidth),
+          cellHeight: CGFloat(cellHeight),
+          gridOriginX: originX,
+          stamp: record.stamp)
+      } else {
+        // Non-strip freshness that isn't `wholeRun` (e.g. cursorCell after CR
+        // with a previous-row band): still stamp those runs.
+        stamped = Self.applyWholeRunStamp(
+          stamped,
+          bands: freshness.bands,
+          cellHeight: CGFloat(cellHeight),
+          stamp: record.stamp)
+      }
     }
     let counts = Self.stampedGlyphCounts(stamped)
     lastGlyphEffectStampDiagnostics = GlyphEffectStampDiagnostics(
-      mode: modeOverride ?? freshness.mode,
-      dirtyRows: freshness.dirtyRows.isEmpty ? dirtyRows : freshness.dirtyRows,
-      stripColMin: freshness.stripColMin,
-      stripColMax: freshness.stripColMax,
-      changedCells: freshness.changedCells,
+      mode: modeOverride ?? newest.freshness.mode,
+      dirtyRows: newest.freshness.dirtyRows.isEmpty ? dirtyRows : newest.freshness.dirtyRows,
+      stripColMin: newest.freshness.stripColMin,
+      stripColMax: newest.freshness.stripColMax,
+      changedCells: newest.freshness.changedCells,
       stampedRuns: counts.runs,
       stampedGlyphs: counts.glyphs,
-      stampAgeMs: max(0, (now - stamp) * 1000),
+      stampAgeMs: max(0, (now - newest.stamp) * 1000),
       generation: generation)
     return stamped
   }
