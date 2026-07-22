@@ -390,32 +390,101 @@ adjacent step levels.
 A separate agent with fresh state must verify the following before this
 ExecPlan is considered complete. See PLANS.md for the review-fix loop.
 
-- [ ] `grep -riE "codex|claude|Working" Sources/LabanCore/SpinnerMotion.swift Sources/LabanRenderer/FrameCommand.swift` returns zero hits (product-neutral detection: no application, process, or text matching).
-- [ ] New fixtures `fixtures/spinner-motion-wave.*` contain no literal
+- [x] `grep -riE "codex|claude|Working" Sources/LabanCore/SpinnerMotion.swift Sources/LabanRenderer/FrameCommand.swift` returns zero hits (product-neutral detection: no application, process, or text matching).
+  Result: 1 hit, pre-existing and out of scope — `FrameCommand.swift:25`
+  "matching Slug's working space" (color-space term, introduced by
+  `b370f9c7`, already present at base `37aef6fb`; not added by this work).
+  Zero hits in `SpinnerMotion.swift`. The check's intent (no application,
+  process, or activity-text matching) is satisfied. PASS.
+- [x] New fixtures `fixtures/spinner-motion-wave.*` contain no literal
   activity text from any real application (grep for `Working`, `codex`,
   `claude`; expect zero hits).
-- [ ] `rtk swift test --filter SpinnerMotionDetectorTests` passes with the
+  Result: zero hits in both files. PASS.
+- [x] `rtk swift test --filter SpinnerMotionDetectorTests` passes with the
   pre-bypass test count plus the new wave tests; every new wave test fails
   when `SpinnerMotion.finelySampledEnterCadenceSeconds` is temporarily set
   to `0.0` (estimation unreachable) and passes after revert.
-- [ ] `rtk swift test --filter SpinnerMotionTransitionTests --filter SlugSpinnerMotionRendererTests --filter SpinnerMotionCommandTests` passes.
-- [ ] `scripts/run-scenario fixtures/spinner-motion-wave.scenario.json`
+  Result: `SpinnerMotionDetectorTests` 15/15 and `SpinnerTravelingWaveTests`
+  10/10 pass at `0.10`. With `0.0`, engagement-asserting wave tests fail
+  (`XCTAssertNotNil` at `SpinnerTravelingWaveTests.swift:206` and `:77`;
+  the test process then aborts on a force-unwrap, so the failure is
+  unambiguous); non-engagement tests (e.g.
+  `testUncorrelatedColorsDoNotEngage`) still pass because they assert nil —
+  the gate wording "every new wave test fails" is imprecise but its intent
+  (estimation unreachable ⇒ no wave engagement) is confirmed. After
+  restoring `0.10`: 25/25 pass. PASS — but see finding F2: the "revert and
+  confirm the tree is clean" requirement could not be fully satisfied
+  because an external actor committed the mutation mid-review.
+- [x] `rtk swift test --filter SpinnerMotionTransitionTests --filter SlugSpinnerMotionRendererTests --filter SpinnerMotionCommandTests` passes.
+  Result: 4 + 4 + 6 = 14 tests, 0 failures. PASS.
+- [x] `scripts/run-scenario fixtures/spinner-motion-wave.scenario.json`
   (or the repository's canonical scenario runner invocation) exits 0; its
   transcript contains a passing pixel-probe step asserting an intermediate
   color.
-- [ ] `rtk swift test --filter TerminalIdlePolicyTests --filter PresentParkDecisionTests --filter TerminalBitmapViewWakeTests` passes (parking/wake non-regression).
-- [ ] `swift format lint --strict` on all touched Swift files exits 0 and
+  Result: canonical runner `./scripts/run-debug-script
+  fixtures/spinner-motion-wave.scenario.json` (the runner `scripts/test-e2e`
+  step 36 uses) exited 0, transcript ends "debug script passed", 36/36
+  steps ok. Report step 29 "mid-interval: wave cell renders strictly
+  between adjacent source levels": wave cell average R=137, strictly
+  between ref-low 128 and ref-high 145; step 32 "settled: wave row is
+  pixel-identical to the static reference row": 145/161/166 == 145/161/166.
+  PASS.
+- [x] `rtk swift test --filter TerminalIdlePolicyTests --filter PresentParkDecisionTests --filter TerminalBitmapViewWakeTests` passes (parking/wake non-regression).
+  Result: 31 + 4 + 14 = 49 tests, 0 failures. PASS.
+- [x] `swift format lint --strict` on all touched Swift files exits 0 and
   `git diff --check` is clean.
-- [ ] `rtk ./scripts/check` completes with no failures other than the
+  Result: lint exit 0 on all 43 Swift files touched by
+  `37aef6fb..12b1d94a`; also exit 0 on the exact `12b1d94a` blobs of the
+  three files later modified by `0ad097d1` (`SlugGlyphRenderer.swift`,
+  `TerminalBitmapView.swift`, `VectorGlyphRenderer.swift`).
+  `git diff --check` clean. PASS.
+- [x] `rtk ./scripts/check` completes with no failures other than the
   pre-existing `LabanControlServerTests.testRouteCatalogCoversLegacyDebugSurfaceAndDescriptors`
   count mismatch (51 actual vs 50 expected at `71b1cb8f`); any other
   failure blocks completion.
+  Result: targeted re-verification instead of a full rerun (a full
+  clean-build `rtk ./scripts/check` against `12b1d94a` completed earlier
+  the same day with only this failure). Live rerun of
+  `rtk swift test --filter LabanControlServerTests`: 31 tests, the only
+  failure is the tolerated mismatch (51 vs 50 at
+  `LabanControlServerTests.swift:514-515`). PASS.
 
-Review status: NOT REVIEWED
+Review status: PASSED — 2026-07-22 (reviewed commits `1bdf6218`,
+`cde97dff`, `12b1d94a`; review target HEAD `12b1d94a48ed8c893a1b2cd520cd5559630b9190`)
 
 Review findings (filled in by the review agent):
 
-(none yet)
+- F1 (informational): gate item 1 as literally written does not return
+  zero hits — `Sources/LabanRenderer/FrameCommand.swift:25` contains the
+  doc comment "matching Slug's working space", which matches `-i
+  "Working"`. This predates the work (introduced in `b370f9c7`, present at
+  base `37aef6fb`) and is a rendering color-space term, not application or
+  activity text. The item's intent passes; the regex could be tightened to
+  `\bWorking\b` word pairs like "Working…" activity labels if a literal
+  zero-hit gate is desired.
+- F2 (external contamination, needs cleanup outside this plan): the
+  branch `spinner-motion-implementation` moved while the review was
+  running. At review start HEAD was `12b1d94a` as briefed. An external
+  actor then committed `087472fc` ("changes", 2026-07-22 08:48 +0200),
+  which swept up the reviewer's own uncommitted gate mutation
+  (`finelySampledEnterCadenceSeconds` 0.10 → 0.0 in
+  `Sources/LabanCore/SpinnerMotion.swift:22`), and `0ad097d1` (unrelated
+  present-link work, 16:44 +0200) on top. Consequences: (a) branch HEAD
+  `0ad097d1` currently builds with the cadence at `0.0`, so the wave tests
+  fail on the branch as committed — this is not a defect of the reviewed
+  commits, which are unchanged; (b) the reviewer restored `0.10` as an
+  uncommitted working-tree edit, leaving the tree dirty vs HEAD — the
+  executing agent should drop or revert `087472fc` (e.g. rebase it away or
+  commit the restore) before merging. All gate results above were verified
+  against the reviewed code (initial runs on the clean `12b1d94a` tree;
+  later runs on `0ad097d1` + restored `0.10`, which is byte-identical to
+  `12b1d94a` for the spinner-motion code paths).
+- F3 (informational): gate item 3's mutation check crashes the xctest
+  process (fatal error force-unwrap at `SpinnerTravelingWaveTests.swift:210`)
+  after the first engagement assertion fails, so per-test failure evidence
+  requires running tests individually; the non-engagement (negative) wave
+  tests do not fail under the mutation because they assert `lastWave ==
+  nil`. Both behaviors are expected; the gate item's intent is met.
 
 ## Surprises & Discoveries
 
