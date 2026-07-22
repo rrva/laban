@@ -1,6 +1,6 @@
 {
   "name": "glyph-effects-ink-bloom",
-  "description": "Ink-bloom type-in (M1): a freshly output row renders slightly thin/faint at age 0, eases toward settled over 280 ms of virtual time, and is pixel-identical to a never-restamped control row once settled. Fails on the pre-channel tree (advanceTime/setGlyphEffectsEnabled actions missing). Requires slugGlyph (the effect is evaluated in the Slug vertex shader) and --deterministic (virtual clock).",
+  "description": "Ink-bloom type-in (M1): a freshly output row renders slightly fainter at age 0, eases toward settled over 280 ms of virtual time, and is pixel-identical to a never-restamped control row once settled. The softened age-0 curve (0.82 dilation) no longer moves raw glyph coverage at the probe font size, so thinness is witnessed by average brightness, not pixel counts. The fixture hides the block cursor (DECTCEM) so the empty-row baseline probe reads background, not cursor pixels. Fails on the pre-channel tree (advanceTime/setGlyphEffectsEnabled actions missing). Requires slugGlyph (the effect is evaluated in the Slug vertex shader) and --deterministic (virtual clock).",
   "fixture": "fixtures/glyph-effects-ink-bloom.fixture.json",
   "renderer": "slugGlyph",
   "deterministic": true,
@@ -61,8 +61,7 @@
         ]
       },
       "expectJson": [
-        {"path": "regions[0].averageRgba[0]", "greaterThanPath": "regions[1].averageRgba[0]"},
-        {"path": "regions[1].nonBackgroundPixels", "lessThanPath": "regions[0].nonBackgroundPixels"}
+        {"path": "regions[0].averageRgba[0]", "greaterThanPath": "regions[1].averageRgba[0]"}
       ],
       "saveAs": "probe-age0.json"
     },
