@@ -150,14 +150,23 @@ enum TerminalScrollInput {
     min(400, baseOmega + 7.0 * abs(inputRowsPerSec))
   }
 
-  static func mouseTrackingWheelDirection(event: Event) -> WheelDirection? {
-    let signedDelta =
-      event.hasPreciseScrollingDeltas
-      ? event.scrollingDeltaY
-      : event.deltaY
-    if signedDelta > 0 { return .up }
-    if signedDelta < 0 { return .down }
-    return nil
+  /// Translate a resolved row delta into wheel reports for mouse-tracking
+  /// mode. The caller runs the raw event through `decide` first, so a
+  /// trackpad's high-frequency trickle of sub-row precise deltas accumulates
+  /// in the residual and only crosses a report per terminal row of travel —
+  /// one report per NSEvent would hand apps like tmux (which scrolls several
+  /// lines per wheel event) a report per few pixels instead. Notched wheels
+  /// are unaffected: their line-unit `deltaY` resolves to one report per
+  /// notch. Sign convention matches `decide`: negative rows scroll toward
+  /// older history and map to wheel-up. `maxReports` bounds a fast trackpad
+  /// fling so it cannot flood the PTY in a single event.
+  static func mouseTrackingWheelReports(
+    rowsDelta: Int,
+    maxReports: Int = 64
+  ) -> (direction: WheelDirection, count: Int)? {
+    guard rowsDelta != 0, maxReports > 0 else { return nil }
+    let count = min(abs(rowsDelta), maxReports)
+    return rowsDelta < 0 ? (.up, count) : (.down, count)
   }
 
   enum AltScrollKey {

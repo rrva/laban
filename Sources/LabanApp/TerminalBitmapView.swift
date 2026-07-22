@@ -6337,32 +6337,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let shiftScrollOverride = event.modifierFlags.contains(.shift)
 
     if mouseTracking && !localSelectionMouseGestureActive && !shiftScrollOverride {
-      // Mouse tracking active: encode wheel as press+release. Use legacy
-      // deltaY for notched wheels and precise scrollingDeltaY for trackpads.
-      let direction = TerminalScrollInput.mouseTrackingWheelDirection(
+      // Mouse tracking active: forward wheel motion as wheel reports, one per
+      // accumulated terminal row of travel. Reuse `decide` so the trackpad's
+      // high-frequency sub-row precise deltas quantize through the same
+      // residual carry as alt-scroll and local scrollback — emitting a report
+      // per raw NSEvent scrolls apps like tmux (several lines per wheel
+      // event) far faster than the same gesture moves Laban's own scrollback.
+      let decision = TerminalScrollInput.decide(
         event: TerminalScrollInput.Event(
           deltaY: event.deltaY,
           scrollingDeltaY: event.scrollingDeltaY,
           hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
-        ))
-      guard let direction else { return }
-      let button: MouseButton = direction == .up ? .wheelUp : .wheelDown
+        ),
+        residualPx: scrollResidualPx,
+        cellHeightPx: CGFloat(cellHeight)
+      )
+      scrollResidualPx = decision.newResidualPx
+      guard
+        let reports = TerminalScrollInput.mouseTrackingWheelReports(
+          rowsDelta: decision.rowsDelta
+        )
+      else {
+        return
+      }
+      let button: MouseButton = reports.direction == .up ? .wheelUp : .wheelDown
       let geom = terminalMouseGeometry(at: pt)
       let mouseEncoding = remoteMouseEncoding(for: activeTab)
-      let me = MouseEvent(
-        action: .press,
-        button: button,
-        x: geom.x, y: geom.y,
-        screenWidth: geom.screenWidth,
-        screenHeight: geom.screenHeight,
-        cellWidth: cellWidth,
-        cellHeight: cellHeight,
-        modifiers: event.labanModifiers,
-        trackingMode: mouseEncoding?.trackingMode ?? 0,
-        format: mouseEncoding?.format ?? 0
-      )
-      let sent = session.sendMouseCapturingBytes(me)
-      let bytes = sent.result == 0 ? sent.bytes : []
+      var bytes: [UInt8] = []
+      for _ in 0..<reports.count {
+        let me = MouseEvent(
+          action: .press,
+          button: button,
+          x: geom.x, y: geom.y,
+          screenWidth: geom.screenWidth,
+          screenHeight: geom.screenHeight,
+          cellWidth: cellWidth,
+          cellHeight: cellHeight,
+          modifiers: event.labanModifiers,
+          trackingMode: mouseEncoding?.trackingMode ?? 0,
+          format: mouseEncoding?.format ?? 0
+        )
+        let sent = session.sendMouseCapturingBytes(me)
+        if sent.result == 0 { bytes.append(contentsOf: sent.bytes) }
+      }
       forwardEncodedMouseToDaemon(bytes, session: session)
       dismissLocalSelectionForForwardedInput()
       recordInput(

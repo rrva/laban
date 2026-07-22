@@ -58,24 +58,69 @@ final class TerminalScrollInputTests: XCTestCase {
     XCTAssertEqual(d.newResidualPx, 0)
   }
 
-  func testMouseTrackingWheelDirectionUsesPreciseScrollingDeltaWhenLegacyDeltaIsZero() {
-    let up = TerminalScrollInput.mouseTrackingWheelDirection(
-      event: .init(deltaY: 0, scrollingDeltaY: 3.5, hasPreciseScrollingDeltas: true)
-    )
-    let down = TerminalScrollInput.mouseTrackingWheelDirection(
-      event: .init(deltaY: 0, scrollingDeltaY: -2.0, hasPreciseScrollingDeltas: true)
-    )
+  // MARK: - Mouse-tracking wheel reports
 
-    XCTAssertEqual(up, .up)
-    XCTAssertEqual(down, .down)
+  func testMouseTrackingWheelReportsNoMotionProducesNoReports() {
+    XCTAssertNil(TerminalScrollInput.mouseTrackingWheelReports(rowsDelta: 0))
   }
 
-  func testMouseTrackingWheelDirectionUsesLegacyDeltaForNotchedWheel() {
-    let direction = TerminalScrollInput.mouseTrackingWheelDirection(
-      event: .init(deltaY: -1, scrollingDeltaY: 0, hasPreciseScrollingDeltas: false)
-    )
+  func testMouseTrackingWheelReportsScrollTowardHistoryEmitsWheelUp() {
+    let reports = TerminalScrollInput.mouseTrackingWheelReports(rowsDelta: -2)
+    XCTAssertEqual(reports?.direction, .up)
+    XCTAssertEqual(reports?.count, 2)
+  }
 
-    XCTAssertEqual(direction, .down)
+  func testMouseTrackingWheelReportsScrollTowardBottomEmitsWheelDown() {
+    let reports = TerminalScrollInput.mouseTrackingWheelReports(rowsDelta: 3)
+    XCTAssertEqual(reports?.direction, .down)
+    XCTAssertEqual(reports?.count, 3)
+  }
+
+  func testMouseTrackingWheelReportsCountIsBoundedByMaxReports() {
+    let reports = TerminalScrollInput.mouseTrackingWheelReports(
+      rowsDelta: -100,
+      maxReports: 64
+    )
+    XCTAssertEqual(reports?.count, 64)
+  }
+
+  func testMouseTrackingWheelReportsNonPositiveMaxProducesNoReports() {
+    XCTAssertNil(TerminalScrollInput.mouseTrackingWheelReports(rowsDelta: -1, maxReports: 0))
+  }
+
+  func testMouseTrackingSubRowPreciseDeltasAccumulateBeforeFirstReport() {
+    var residual: CGFloat = 0
+    let first = TerminalScrollInput.decide(
+      event: .init(deltaY: 0, scrollingDeltaY: 6.0, hasPreciseScrollingDeltas: true),
+      residualPx: residual,
+      cellHeightPx: 10
+    )
+    residual = first.newResidualPx
+    XCTAssertNil(TerminalScrollInput.mouseTrackingWheelReports(rowsDelta: first.rowsDelta))
+
+    let second = TerminalScrollInput.decide(
+      event: .init(deltaY: 0, scrollingDeltaY: 6.0, hasPreciseScrollingDeltas: true),
+      residualPx: residual,
+      cellHeightPx: 10
+    )
+    let reports = TerminalScrollInput.mouseTrackingWheelReports(
+      rowsDelta: second.rowsDelta
+    )
+    XCTAssertEqual(reports?.direction, .up)
+    XCTAssertEqual(reports?.count, 1)
+  }
+
+  func testMouseTrackingNotchedWheelEmitsOneReportPerNotch() {
+    let decision = TerminalScrollInput.decide(
+      event: .init(deltaY: -1, scrollingDeltaY: 0, hasPreciseScrollingDeltas: false),
+      residualPx: 0,
+      cellHeightPx: 10
+    )
+    let reports = TerminalScrollInput.mouseTrackingWheelReports(
+      rowsDelta: decision.rowsDelta
+    )
+    XCTAssertEqual(reports?.direction, .down)
+    XCTAssertEqual(reports?.count, 1)
   }
 
   // MARK: - Alternate scroll mode (DEC private 1007)
