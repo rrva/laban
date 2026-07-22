@@ -111,6 +111,28 @@ final class RendererActivationNoBlankWindowTests: XCTestCase {
     XCTAssertEqual(vector.renderedDamages, [.full])
   }
 
+  func testScreenChangeRebuildsVisibleAndPendingRendererLinks() throws {
+    let harness = BackendHarness()
+    let classic = ControlledBackend(selection: .classic)
+    let vector = ControlledBackend(selection: .vectorGlyph)
+    harness.enqueue(classic)
+    harness.enqueue(vector)
+    TerminalBitmapView.backendFactoryForTesting = harness.makeBackend
+    RendererSelection.set(.classic)
+    let view = try makeView()
+
+    view.applyRendererSelection(.vectorGlyph)
+    XCTAssertEqual(view.debugPendingRendererSwapSelection, .vectorGlyph)
+
+    NotificationCenter.default.post(
+      name: NSApplication.didChangeScreenParametersNotification, object: nil)
+
+    XCTAssertEqual(classic.presentLinkRebuildCount, 1)
+    XCTAssertEqual(
+      vector.presentLinkRebuildCount, 1,
+      "a renderer warming behind the visible backend must not retain a stale display link")
+  }
+
   private func makeView(
     file: StaticString = #filePath,
     line: UInt = #line
@@ -309,7 +331,7 @@ private final class BackendHarness {
   }
 }
 
-private final class ControlledBackend: RendererBackend {
+private final class ControlledBackend: RendererBackend, DisplayLinkPresentingRenderer {
   let selection: RendererSelection
   let layer = CALayer()
   private let renderResult: Bool
@@ -319,6 +341,7 @@ private final class ControlledBackend: RendererBackend {
   var renderCount = 0
   var renderedDamages: [RenderDamage] = []
   var renderedCommandFrames: [[FrameCommand]] = []
+  var presentLinkRebuildCount = 0
   var onFrameCompleted: (() -> Void)?
   var waitForFrameCompletion = false
   private(set) var surfaceTransparency = RendererSurfaceTransparency(isOpaque: true)
@@ -361,6 +384,14 @@ private final class ControlledBackend: RendererBackend {
     RendererStatus(
       configuredRenderer: selection.rawValue,
       effectiveRenderer: selection.rawValue)
+  }
+
+  func setPresentLinkRunning(_: Bool) {}
+
+  func presentDisplayLinkStats(reset _: Bool) -> [String: Double]? { nil }
+
+  func rebuildPresentLink() {
+    presentLinkRebuildCount += 1
   }
 
   func completeFrame() {

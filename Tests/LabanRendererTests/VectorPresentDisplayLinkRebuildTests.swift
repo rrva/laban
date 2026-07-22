@@ -4,6 +4,24 @@ import XCTest
 
 @testable import LabanRenderer
 
+private final class PresentRunLoopBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: CFRunLoop?
+
+  var value: CFRunLoop? {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return storage
+    }
+    set {
+      lock.lock()
+      storage = newValue
+      lock.unlock()
+    }
+  }
+}
+
 /// The clamshell/display-detach bug (2026-07-21): a `CAMetalDisplayLink` whose
 /// display disappears never fires again (frozen terminal) and later aborts its
 /// run loop on the dead vsync port (`__CFRunLoopServiceMachPort.cold.1`).
@@ -34,6 +52,37 @@ final class VectorPresentDisplayLinkRebuildTests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.01))
     }
     return predicate()
+  }
+
+  /// `CFRunLoopStop()` called before `CFRunLoopRun()` does not apply to the
+  /// later activation (measured on the macOS 27 incident build). The lifecycle
+  /// helper must queue the stop so a backend teardown in this startup window
+  /// cannot leak the dedicated present thread.
+  func testStopRequestBeforeRunActivationStopsFirstActivation() {
+    let captured = expectation(description: "run loop captured")
+    let exited = expectation(description: "run loop exited")
+    let proceed = DispatchSemaphore(value: 0)
+    let box = PresentRunLoopBox()
+    let thread = Thread {
+      let keepalive = Timer(timeInterval: 3600, repeats: true) { _ in }
+      RunLoop.current.add(keepalive, forMode: .default)
+      box.value = CFRunLoopGetCurrent()
+      captured.fulfill()
+      proceed.wait()
+      CFRunLoopRun()
+      exited.fulfill()
+    }
+    thread.start()
+
+    wait(for: [captured], timeout: 1)
+    guard let runLoop = box.value else {
+      XCTFail("present thread must publish its run loop")
+      proceed.signal()
+      return
+    }
+    requestPresentRunLoopStop(runLoop)
+    proceed.signal()
+    wait(for: [exited], timeout: 1)
   }
 
   func testRebuildBeforeStartIsNoOp() {

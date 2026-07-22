@@ -34,6 +34,12 @@ bug) raised two follow-ups, addressed as follows:
   (no per-frame fallback to the legacy `nextDrawable()` path while the link exists);
   the legacy path is reachable only when the link was never created (macOS 13 / opt-
   out). This was a real hazard latent in the originally-merged code.
+- **Present-thread lifecycle hardening (2026-07-22):** macOS 27.0 build
+  `26A5378n` testing proved that `CFRunLoopStop()` issued after a worker captures
+  its run loop but before `CFRunLoopRun()` does not stop the later activation.
+  Teardown now queues the stop in the default-mode run loop, the thread logs and
+  rebuilds if `CFRunLoopRun()` returns without a deliberate stop, and screen-change
+  notifications rebuild both the visible and any warming pending backend.
 
 ## Purpose / Big Picture
 

@@ -1,5 +1,6 @@
 import Foundation
 import Metal
+import OSLog
 import QuartzCore
 
 /// macOS 26 fast path for vector-renderer presentation. A `CAMetalDisplayLink`
@@ -65,8 +66,23 @@ private func configurePresentLink(
   link.isPaused = true
 }
 
+/// Queue the stop inside the run loop activation itself. `CFRunLoopStop()`
+/// only stops a current activation: if another thread calls it after the run
+/// loop is captured but before `CFRunLoopRun()`, it does not stop the later
+/// activation. A performed block survives that startup window and stops the
+/// activation as soon as it begins servicing the default mode.
+func requestPresentRunLoopStop(_ runLoop: CFRunLoop) {
+  CFRunLoopPerformBlock(runLoop, CFRunLoopMode.defaultMode.rawValue) {
+    CFRunLoopStop(runLoop)
+  }
+  CFRunLoopWakeUp(runLoop)
+}
+
 @available(macOS 14.0, *)
 final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
+  private static let lifecycleLog = Logger(
+    subsystem: "com.rrva.laban", category: "present-link")
+
   /// Called on the dedicated present thread with a ready drawable; blits the
   /// latest target and presents. Return value is advisory (stats only): the link's
   /// run state is controlled externally via `setRunning(_:)`, not by this result.
@@ -213,12 +229,37 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       self.rebuildPending = false
       self.lock.unlock()
       link.add(to: RunLoop.current, forMode: .common)
+      // The CAMetalDisplayLink is otherwise this run loop's only source. If a
+      // display reconfiguration ever makes CoreAnimation fully remove that
+      // source — instead of leaving a dead-but-present vsync port, the case
+      // `rebuild()` handles — CFRunLoopRun() sees zero sources/timers and
+      // returns, silently ending this thread with no crash and nothing left
+      // for `rebuild()` to reach (observed as a permanently frozen terminal
+      // that no display-change notification recovers). A harmless repeating
+      // timer that is never removed keeps the run loop non-empty so it only
+      // ever exits via our own `CFRunLoopStop()` in `stop()`. RunLoop retains
+      // the timer, so no ivar is needed.
+      RunLoop.current.add(Timer(timeInterval: 3600, repeats: true) { _ in }, forMode: .common)
       // A rebuild requested before this thread captured its run loop is
       // honored now, directly on the present thread.
       if pendingRebuild {
         self.performRebuildSwap()
       }
-      CFRunLoopRun()
+      while true {
+        CFRunLoopRun()
+        self.lock.lock()
+        let stopped = self.stopRequested
+        self.lock.unlock()
+        if stopped { break }
+
+        // `CFRunLoopRun()` can otherwise return when its current mode loses
+        // every source/timer. The keepalive timer above should prevent that,
+        // but recover as well as logging if the platform still returns: a
+        // fresh link is attached on this same present thread before re-entry.
+        Self.lifecycleLog.error(
+          "present run loop returned without stop; rebuilding before re-entry")
+        self.performRebuildSwap()
+      }
     }
     t.qualityOfService = .userInteractive
     t.name = "laban.vector.present-link"
@@ -302,7 +343,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       return
     }
     lock.unlock()
-    CFRunLoopPerformBlock(rl, CFRunLoopMode.commonModes.rawValue) { [weak self] in
+    CFRunLoopPerformBlock(rl, CFRunLoopMode.defaultMode.rawValue) { [weak self] in
       self?.performRebuildSwap()
     }
     CFRunLoopWakeUp(rl)
@@ -344,9 +385,10 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     runLoop = nil
     started = false
     lock.unlock()
-    // If the thread already entered CFRunLoopRun(), stop it; if it has not yet
-    // captured its run loop, `stopRequested` makes it bail before CFRunLoopRun().
-    if let rl { CFRunLoopStop(rl) }
+    // If the thread has not captured its run loop, `stopRequested` makes it
+    // bail. Otherwise enqueue the stop into the run loop so the request also
+    // survives the captured-but-not-yet-running startup window.
+    if let rl { requestPresentRunLoopStop(rl) }
     t?.cancel()
   }
 

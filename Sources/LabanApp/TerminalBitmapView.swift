@@ -957,7 +957,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // A display add/remove can strand the renderer's CAMetalDisplayLink on a
       // dead vsync port (frozen presentation, then a CFRunLoop abort when the
       // dead port is serviced). Rebuild it against the current display set.
-      (self.backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
+      self.rebuildPresentLinksAfterDisplayChange()
       if self.updateDisplayDownsampledState() {
         self.renderInvalidated = true
         if self.window != nil {
@@ -1522,6 +1522,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     _ = updateDisplayDownsampledState(for: pendingBackend)
   }
 
+  /// Rebind both the visible renderer and a renderer warming behind it. A
+  /// display notification can arrive after the pending renderer created its
+  /// CAMetalDisplayLink but before `installPendingBackendSwap`; rebuilding only
+  /// `backend` would later install the pending renderer with that stale link.
+  private func rebuildPresentLinksAfterDisplayChange() {
+    (backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
+    (pendingBackendSwap?.backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
+  }
+
   private func completePendingBackendSwap(token: UInt64) {
     guard var pending = pendingBackendSwap, pending.token == token else { return }
 
@@ -1971,7 +1980,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       center.addObserver(
         forName: NSWindow.didChangeScreenNotification, object: window, queue: .main
       ) { [weak self] _ in
-        (self?.backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
+        self?.rebuildPresentLinksAfterDisplayChange()
       })
     // A terminal window does not receive another key-window notification when
     // Settings is key and the whole app deactivates/reactivates. Observe app

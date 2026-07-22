@@ -123,6 +123,57 @@ final class VectorGlyphGammaTests: XCTestCase {
         + "(output \(meanOutput), gamma \(meanGamma))")
   }
 
+  /// `device.makeCommandQueue()` can transiently return nil at construction
+  /// time (GPU/display churn), leaving the present link permanently absent
+  /// with no retry. `rebuildPresentLink()` — called on every display-change
+  /// notification — now tries to create it if missing, instead of silently
+  /// no-op'ing forever. Simulated here via the disable flag rather than a
+  /// forced allocation failure: disabled-at-init stands in for "the link did
+  /// not get created", and flipping the flag stands in for "the condition
+  /// that prevented creation no longer holds".
+  func testRebuildPresentLinkCreatesItWhenMissing() throws {
+    guard #available(macOS 14.0, *) else {
+      throw XCTSkip("CAMetalDisplayLink unavailable before macOS 14")
+    }
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let key = "LabanVectorPresentDisplayLink"
+    let saved = UserDefaults.standard.object(forKey: key)
+    defer {
+      if let saved {
+        UserDefaults.standard.set(saved, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
+
+    UserDefaults.standard.set(false, forKey: key)
+    let atlas = FontAtlas(pointSize: 14, fontName: nil)
+    let renderer = try XCTUnwrap(
+      VectorGlyphRenderer(
+        fontAtlas: atlas,
+        sidebarFontAtlas: atlas,
+        pixelWidth: 160,
+        pixelHeight: 96,
+        scale: 1))
+    let displayLinked = renderer as DisplayLinkPresentingRenderer
+    XCTAssertNil(
+      displayLinked.presentDisplayLinkStats(reset: true),
+      "disabled at construction -> no present link created")
+
+    displayLinked.rebuildPresentLink()
+    XCTAssertNil(
+      displayLinked.presentDisplayLinkStats(reset: true),
+      "still disabled -> rebuild must not create one")
+
+    UserDefaults.standard.set(true, forKey: key)
+    displayLinked.rebuildPresentLink()
+    XCTAssertNotNil(
+      displayLinked.presentDisplayLinkStats(reset: true),
+      "no longer disabled -> rebuild creates the missing link")
+  }
+
   private func accumulateCoverage(
     device: MTLDevice, queue: MTLCommandQueue, rasterizer: VectorGlyphScratchRasterizer,
     outline: GlyphCurveOutline, width: Int, height: Int, origin: CGPoint, scale: CGFloat

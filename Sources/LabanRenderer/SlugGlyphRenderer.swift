@@ -2,6 +2,7 @@ import CoreGraphics
 import CoreText
 import Foundation
 import Metal
+import OSLog
 import QuartzCore
 
 private struct SlugSolidInstance {
@@ -296,6 +297,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   private static let bandCount = 64
   private static let targetRingDepth = 3
+  private static let presentLinkLog = Logger(
+    subsystem: "com.rrva.laban", category: "present-link")
 
   /// Geometric dilation (stem darkening) constants, calibrated so slug text
   /// weight 1.0 matches the software/CoreText renderer's ink. This approximates
@@ -932,18 +935,32 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         scale: self.scale)
     }
 
-    if #available(macOS 14.0, *), Self.presentDisplayLinkEnabled,
-      let presentQueue = device.makeCommandQueue()
-    {
-      presentQueue.label = "laban.slug.present"
-      self.presentQueue = presentQueue
-      let presentLink = VectorPresentDisplayLink(layer: layer)
-      presentLink.onPresent = { [weak self] drawable in
-        self?.presentLatestTarget(into: drawable) ?? false
-      }
-      presentLink.start()
-      self.presentDisplayLinkStorage = presentLink
+    ensurePresentDisplayLink()
+  }
+
+  /// Create the present link if it does not exist yet. Called from init and
+  /// again from `rebuildPresentLink()`: `device.makeCommandQueue()` can
+  /// transiently return nil under GPU/display churn — the same
+  /// reconfiguration that later fires a screen-change notification — which
+  /// previously left `presentDisplayLinkStorage` permanently nil with no
+  /// retry. The next display-change notification now gives it another try.
+  private func ensurePresentDisplayLink() {
+    guard #available(macOS 14.0, *), Self.presentDisplayLinkEnabled,
+      presentDisplayLinkStorage == nil
+    else { return }
+    guard let presentQueue = device.makeCommandQueue() else {
+      Self.presentLinkLog.error(
+        "slug present command queue creation failed; using legacy presentation until retry")
+      return
     }
+    presentQueue.label = "laban.slug.present"
+    self.presentQueue = presentQueue
+    let presentLink = VectorPresentDisplayLink(layer: layer)
+    presentLink.onPresent = { [weak self] drawable in
+      self?.presentLatestTarget(into: drawable) ?? false
+    }
+    presentLink.start()
+    self.presentDisplayLinkStorage = presentLink
   }
 
   /// Lazy builds the motion-pipeline variants once. Returns false if any
@@ -1050,10 +1067,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   /// Rebuild the present link after a display reconfiguration; see
-  /// `VectorPresentDisplayLink.rebuild()`. No-op on the legacy path.
+  /// `VectorPresentDisplayLink.rebuild()`. If the link was never created
+  /// (an earlier `device.makeCommandQueue()` failure), try to create it now
+  /// instead of silently doing nothing. No-op on the legacy path.
   public func rebuildPresentLink() {
     if #available(macOS 14.0, *) {
-      presentDisplayLink?.rebuild()
+      guard let link = presentDisplayLink else {
+        ensurePresentDisplayLink()
+        return
+      }
+      link.rebuild()
     }
   }
 
