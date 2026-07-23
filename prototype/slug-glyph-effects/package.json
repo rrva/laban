@@ -1,0 +1,17 @@
+{
+  "name": "slug-glyph-effects-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PROTOTYPE (throwaway) — per-glyph terminal animation effects via three.js + three-slug, mirroring Laban's Metal Slug renderer.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "three": "0.185.1",
+    "three-slug": "1.1.4"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}

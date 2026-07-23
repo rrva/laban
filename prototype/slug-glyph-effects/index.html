@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<!-- PROTOTYPE — throwaway per-glyph glyph-effects playground. See NOTES.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>slug-glyph-effects prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; overflow: hidden; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 10px; left: 12px; z-index: 10;
+    font: 12px/1.5 "JetBrains Mono", Menlo, monospace;
+    color: #8b949e; white-space: pre; pointer-events: none;
+    text-shadow: 0 1px 2px #000;
+  }
+  #hud .ok { color: #3fb950; }
+  #hud .hot { color: #d29922; }
+  #controls {
+    position: fixed; top: 10px; right: 12px; z-index: 10;
+    display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;
+    font: 12px "JetBrains Mono", Menlo, monospace;
+  }
+  #controls button {
+    background: #161b22; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit;
+  }
+  #controls button:hover { border-color: #58a6ff; }
+  #controls button.off { color: #6e7681; }
+  #variant-bar {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 10; display: flex; align-items: center; gap: 10px;
+    background: #161b22ee; border: 1px solid #30363d; border-radius: 999px;
+    padding: 6px 12px; font: 12px "JetBrains Mono", Menlo, monospace; color: #c9d1d9;
+    box-shadow: 0 4px 16px #000a;
+  }
+  #variant-bar button {
+    background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 999px; width: 26px; height: 26px; cursor: pointer; font: inherit;
+  }
+  #variant-bar button:hover { border-color: #58a6ff; }
+  #loading {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #8b949e; font: 14px "JetBrains Mono", Menlo, monospace; z-index: 5;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.module.js",
+    "three-slug": "./node_modules/three-slug/src/index.js",
+    "opentype.js": "./node_modules/opentype.js/dist/opentype.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="loading">generating slug font…</div>
+<div id="hud"></div>
+<div id="controls">
+  <button id="btn-type" title="T">type line</button>
+  <button id="btn-keys" title="K">keystroke demo</button>
+  <button id="btn-bell" title="B">bell ␇</button>
+  <button id="btn-auto" title="A">auto-demo: off</button>
+  <button id="btn-effects" title="E">effects: on</button>
+  <button id="btn-motion" title="M">reduceMotion: off</button>
+</div>
+<div id="variant-bar">
+  <button id="var-prev" title="←">‹</button>
+  <span id="var-label"></span>
+  <button id="var-next" title="→">›</button>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
