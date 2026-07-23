@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<!-- PROTOTYPE — throwaway. Hover-to-preview: sidebar rows stay compact (no
+     permanent embedded strip, unlike ../tab-thumbnails) — hovering a
+     background row (not the current one) shows a larger, live, crisp
+     vector-text preview floating beside it. Trades "zero interaction" for
+     "zero permanent space cost" and a bigger, more legible preview than a
+     strip squeezed into a row could ever be.
+
+     Same underlying tech as ../tab-thumbnails: flat orthographic camera,
+     MeshBasicMaterial, geometry.addText() — no perspective, no lighting, no
+     animation loop (only the preview panel's show/hide is CSS-transitioned,
+     nothing 3D). Sidebar chrome matches ../pane-focus-depth (colors sampled
+     from a live `laban session screenshot`). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tab-hover-preview prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; overflow: hidden; }
+  body {
+    display: flex;
+    font: 13px/1.6 "JetBrains Mono", Menlo, monospace; color: #c9d1d9;
+  }
+
+  /* --- Sidebar: identical chrome to ../pane-focus-depth, compact rows --- */
+  .sidebar {
+    flex: 0 0 17%; min-width: 200px; max-width: 280px;
+    background: #21222b; display: flex; flex-direction: column;
+  }
+  .sidebar .titlebar {
+    flex: none; height: 40px; display: flex; align-items: center;
+    gap: 8px; padding: 0 14px;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.red { background: #ff5f57; } .dot.yellow { background: #febc2e; } .dot.green { background: #28c840; }
+  .titlebar .plus { margin-left: auto; color: #6e7681; font-size: 16px; user-select: none; }
+  .sidebar .tabs { flex: 1; overflow: hidden; padding: 4px 0; }
+  .tab-row {
+    display: flex; gap: 10px; padding: 10px 14px 10px 12px; cursor: pointer;
+    border-left: 3px solid transparent; transition: background 160ms ease, border-color 160ms ease;
+  }
+  .tab-row .num { color: #606a95; flex: none; }
+  .tab-row .info { min-width: 0; }
+  .tab-row .name { color: #9198b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row .meta { color: #646f9d; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row.selected { background: #444657; border-left-color: #b393ef; }
+  .tab-row.selected .name { color: #eaeaea; font-weight: 600; }
+  .tab-row.selected .num { color: #b393ef; }
+
+  /* --- Main content: full-size, borderless, live terminal --- */
+  .right { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .stage { flex: 1; min-width: 0; position: relative; background: #0d1117; }
+  .stage canvas { display: block; }
+  .hint {
+    flex: none; text-align: center; color: #6e7681; font-size: 12px;
+    padding: 6px 0 14px; user-select: none;
+  }
+
+  /* --- Floating hover preview: a single reused panel, repositioned to
+     whichever row is currently hovered. Unlike the main terminal, a
+     transient floating overlay conventionally DOES get a border/shadow —
+     that's what reads as "floating above" the content behind it. --- */
+  .preview {
+    position: fixed; z-index: 30; pointer-events: none;
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    box-shadow: 0 16px 40px -10px rgba(0,0,0,.65);
+    opacity: 0; transform: translateX(-8px);
+    transition: opacity 130ms ease, transform 130ms ease;
+    overflow: hidden;
+  }
+  .preview.visible { opacity: 1; transform: translateX(0); }
+  .preview canvas { display: block; width: 100%; height: 100%; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.module.js",
+    "three-slug": "./node_modules/three-slug/src/index.js",
+    "opentype.js": "./node_modules/opentype.js/dist/opentype.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div class="sidebar">
+  <div class="titlebar">
+    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+    <span class="plus">+</span>
+  </div>
+  <div class="tabs">
+    <div class="tab-row" data-pane="0">
+      <span class="num">1</span>
+      <div class="info">
+        <div class="name">main</div>
+        <div class="meta">laban</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="1">
+      <span class="num">2</span>
+      <div class="info">
+        <div class="name">tests</div>
+        <div class="meta">swift test --filter Slug</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="2">
+      <span class="num">3</span>
+      <div class="info">
+        <div class="name">build</div>
+        <div class="meta">./scripts/build-app</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="3">
+      <span class="num">4</span>
+      <div class="info">
+        <div class="name">logs</div>
+        <div class="meta">tail -f laban.log</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="right">
+  <div class="stage"></div>
+  <div class="hint">click a sidebar row to switch · hover a background row for a live preview</div>
+</div>
+<div class="preview"><canvas></canvas></div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

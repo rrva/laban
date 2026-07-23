@@ -1,0 +1,14 @@
+{
+  "name": "tab-hover-preview-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PROTOTYPE (throwaway) — hover a sidebar row to see a larger, live, crisp vector-text preview of that tab, instead of a permanent always-on strip.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "three": "0.185.1",
+    "three-slug": "1.1.4"
+  }
+}
