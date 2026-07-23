@@ -1092,7 +1092,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
 
     XCTAssertNil(
       bands,
-      "ambiguous global dirty must not invent whole-grid freshness for ink-bloom")
+      "ambiguous global dirty must not invent whole-grid freshness for keystroke impulse")
   }
 
   func testFreshnessFallsBackToCursorCellWhenAllRowBitsAreSet() {
@@ -1164,7 +1164,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let b = storage.withCString { ptr in
       TerminalSurfaceController.cellContentFingerprint(cell: cell, storage: ptr)
     }
-    XCTAssertEqual(a, b, "spinner color/intensity pulses must not restart ink-bloom")
+    XCTAssertEqual(a, b, "spinner color/intensity pulses must not restart keystroke impulse")
   }
 
   func testFreshnessFromCellDiffBloomsOnlyChangedColumnsOnPromptRow() {
@@ -1646,12 +1646,13 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       "after the freshness window the stamp must expire")
   }
 
-  func testKeystrokeDoesNotCutInFlightBloomOnPreviousCell() throws {
-    // Typing cadence (~100 ms) is shorter than the ink-bloom decay (280 ms),
-    // so the previous character is still blooming when the next one lands.
-    // The new generation must not drop the in-flight stamp: losing it snaps
-    // the previous glyph from mid-bloom to settled in one frame (a visible
-    // pop on the cell before the cursor).
+  func testKeystrokeDoesNotCutInFlightTypeInStampOnPreviousCell() throws {
+    // Typing cadence (~100 ms) is shorter than the stamp retention horizon
+    // (maxDecaySeconds, 300 ms), so the previous character's type-in effect
+    // is still live when the next one lands. The new generation must not
+    // drop the in-flight stamp: losing it snaps the previous glyph from
+    // mid-animation to settled in one frame (a visible pop on the cell
+    // before the cursor).
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 20
@@ -1805,7 +1806,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       "settled scrollback must stay unstamped on a force-full redraw")
     XCTAssertEqual(
       stamps.first(where: { $0.text == "delta" })?.stamp ?? nil, 11.0,
-      "only the freshly output row may receive the ink-bloom stamp")
+      "only the freshly output row may receive the keystroke-impulse stamp")
   }
 
   // MARK: - Spinner motion re-activation

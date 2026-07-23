@@ -480,19 +480,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   // LabanCore (dependency direction), so keep these in sync manually — same
   // shared-source pattern as the Metal shader constants.
   public static let glyphEffectKindNone: UInt32 = 0
-  public static let glyphEffectKindInkBloom: UInt32 = 1
+  public static let glyphEffectKindKeystrokeImpulse: UInt32 = 1
   public static let glyphEffectKindBellShake: UInt32 = 2
   public static let glyphEffectKindSpinnerForegroundMotion: UInt32 = 3
   public static let glyphEffectKindSpinnerForegroundWave: UInt32 = 4
   /// Frame cap for `.waveRegion` payloads; extras are dropped defensively.
   /// Mirrored as `kSlugWaveRegionLimit` in VectorGlyphShaders.metal.
   public static let waveRegionLimit = 4
-  private static let glyphEffectInkBloomDecaySeconds: Double = 0.280
+  static let glyphEffectKeystrokeImpulseDecaySeconds: Double = 0.130
   private static let glyphEffectBellShakeDecaySeconds: Double = 0.300
 
   private static func glyphEffectDecaySeconds(kind: UInt32, duration: Float? = nil) -> Double {
     switch kind {
-    case glyphEffectKindInkBloom: return glyphEffectInkBloomDecaySeconds
+    case glyphEffectKindKeystrokeImpulse: return glyphEffectKeystrokeImpulseDecaySeconds
     case glyphEffectKindBellShake: return glyphEffectBellShakeDecaySeconds
     // Kinds 3 and 4 take their liveness horizon from the duration channel;
     // nil (never published for kind 3, not yet published for kind 4) means
@@ -505,7 +505,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   /// Whether freshly output glyph runs are emitted with a real `effectKind`
-  /// (ink-bloom today). Set by the view every frame from
+  /// (keystroke impulse today). Set by the view every frame from
   /// `GlyphEffectSettings.enabled && !reduceMotion`; default off.
   public var glyphEffectsEnabled = false
 
@@ -2224,11 +2224,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   /// Effect kind for a glyph run: kind 0 unless the run carries spinner
-  /// motion metadata (which wins over ink bloom) or a fresh output timestamp.
-  /// Kind assignment for stamped runs: the debug trigger wins when set,
-  /// otherwise ink-bloom while `glyphEffectsEnabled` is on (the view already
-  /// applied the reduceMotion gate). Kind 4 (traveling wave) wins over ink
-  /// bloom exactly like kind 3.
+  /// motion metadata (which wins over keystroke impulse) or a fresh output
+  /// timestamp. Kind assignment for stamped runs: the debug trigger wins when
+  /// set, otherwise keystroke impulse while `glyphEffectsEnabled` is on (the
+  /// view already applied the reduceMotion gate). Kind 4 (traveling wave)
+  /// wins over keystroke impulse exactly like kind 3.
   private func resolvedGlyphEffectKind(
     outputTimestampSeconds: Double?,
     foregroundTransition: GlyphForegroundTransition?,
@@ -2242,7 +2242,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     guard outputTimestampSeconds != nil else { return Self.glyphEffectKindNone }
     if debugGlyphEffectKind != 0 { return debugGlyphEffectKind }
-    return glyphEffectsEnabled ? Self.glyphEffectKindInkBloom : Self.glyphEffectKindNone
+    return glyphEffectsEnabled ? Self.glyphEffectKindKeystrokeImpulse : Self.glyphEffectKindNone
   }
 
   /// Converts a stamp or transition start (controller clock domain) into the

@@ -41,7 +41,7 @@ final class RenderJournal {
     var commandCounts: CommandCounts?
     var payload: PayloadSnapshot?
     var diagnostics: TerminalSurfaceFrameDiagnostics?
-    /// Ink-bloom stamp decision for this frame. Optional so older journal
+    /// Keystroke-impulse stamp decision for this frame. Optional so older journal
     /// dumps still decode.
     var glyphEffect: GlyphEffectStampDiagnostics?
     /// Spinner-motion detector diagnostics for this frame. Optional so older

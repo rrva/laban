@@ -676,9 +676,23 @@ inline float2 slugGlyphApplyGestureZoom(float2 px, constant SlugGlyphUniforms &u
 // bit-identical to the pre-channel tree. The easing/decay source of truth is
 // GlyphEffectTimeline in LabanCore (same shared-source pattern as the
 // dilation table) — keep these constants in sync with it.
-constant float kSlugGlyphEffectInkBloomDecay = 0.280;  // inkBloomDecaySeconds
-constant float kSlugGlyphEffectInkBloomInitialAlpha = 0.72;  // inkBloomInitialAlpha
-constant float kSlugGlyphEffectInkBloomInitialDilation = 0.82;  // inkBloomInitialDilation
+constant float kSlugGlyphEffectKeystrokeImpulseDecay = 0.130;  // keystrokeImpulseDecaySeconds
+constant float kSlugGlyphEffectKeystrokeImpulseInitialScaleX = 0.55;  // keystrokeImpulseInitialScaleX
+constant float kSlugGlyphEffectKeystrokeImpulseInitialScaleY = 1.10;  // keystrokeImpulseInitialScaleY
+constant float kSlugGlyphEffectKeystrokeImpulseInitialTilt = 0.07;  // keystrokeImpulseInitialTilt
+constant float kSlugGlyphEffectEaseOutBackC1 = 1.70158;  // easeOutBackC1
+constant float kSlugGlyphEffectEaseOutBackC3 = 2.70158;  // easeOutBackC3
+
+// easeOutBack over the impulse decay with an intentional single overshoot
+// (peak ≈1.100 at ≈0.580 of the window). Exact endpoint branches mirror
+// GlyphEffectTimeline.keystrokeImpulseProgress; callers must not evaluate
+// this at or past decay (the kind-1 branch early-returns instead).
+inline float slugGlyphKeystrokeImpulseProgress(float age) {
+    if (age <= 0.0) { return 0.0; }
+    float y = age / kSlugGlyphEffectKeystrokeImpulseDecay - 1.0;
+    return 1.0 + kSlugGlyphEffectEaseOutBackC3 * y * y * y
+        + kSlugGlyphEffectEaseOutBackC1 * y * y;
+}
 
 inline void slugGlyphEvaluateEffect(
     SlugGlyphInstance instance,
@@ -689,17 +703,30 @@ inline void slugGlyphEvaluateEffect(
 ) {
     if (instance.effectKind == 0u) { return; }
     if (instance.effectKind == 1u) {
-        // Kind 1 = ink-bloom type-in: ease-out cubic from slightly thin/faint
-        // to the run's normal dilation and full alpha over ~280 ms. Starts
-        // above zero so age 0 never vanishes (that was the flicker). At age
-        // >= decay, progress is exactly 1 and multiplying by 1.0 leaves both
-        // values bit-identical to the no-effect render.
+        // Kind 1 = keystroke-impulse type-in: the glyph quad arrives
+        // horizontally compressed, slightly tall and tilted, then springs
+        // into place over ~130 ms (easeOutBack, one overshoot). Full alpha
+        // and normal dilation throughout — brightness/weight wobble read as
+        // flicker; directional motion is the whole point.
         float age = uniforms.timeSeconds - instance.effectStart;
-        float t = clamp(age / kSlugGlyphEffectInkBloomDecay, 0.0, 1.0);
-        float u = 1.0 - t;
-        float progress = 1.0 - u * u * u;
-        dilation *= mix(kSlugGlyphEffectInkBloomInitialDilation, 1.0, progress);
-        color.a *= mix(kSlugGlyphEffectInkBloomInitialAlpha, 1.0, progress);
+        // Expired stamps still arrive (stamp retention 300 ms > 130 ms
+        // visual lifetime): return before ANY arithmetic so a settled glyph
+        // is bit-identical to kind 0 — the identity transform through
+        // subtract/scale/rotate/add is not guaranteed to round identically.
+        if (age >= kSlugGlyphEffectKeystrokeImpulseDecay) { return; }
+        float p = slugGlyphKeystrokeImpulseProgress(age);
+        float sx = mix(kSlugGlyphEffectKeystrokeImpulseInitialScaleX, 1.0, p);
+        float sy = mix(kSlugGlyphEffectKeystrokeImpulseInitialScaleY, 1.0, p);
+        float theta = kSlugGlyphEffectKeystrokeImpulseInitialTilt * (1.0 - p);
+        // Scale then rotate around the glyph quad's own center; layout,
+        // advances, and hit-testing stay frozen (visual overlay only).
+        float2 center = instance.originPx + instance.sizePx * 0.5;
+        float2 local = (px - center) * float2(sx, sy);
+        float s = sin(theta);
+        float c = cos(theta);
+        px = center + float2(
+            c * local.x - s * local.y,
+            s * local.x + c * local.y);
         return;
     }
     // Kind 2 (bell shake) lands in M2; unknown kinds no-op.

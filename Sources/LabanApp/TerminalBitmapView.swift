@@ -366,7 +366,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var transparencyRendererPresentBaseline = 0
   private var terminalOutputActiveUntil = Date.distantPast
   /// Glyph-effect animation channel (M0 substrate): while non-expired, a
-  /// per-glyph effect (ink-bloom, bell shake) is live and the display link
+  /// per-glyph effect (keystroke impulse, bell shake) is live and the display link
   /// runs at the 30 fps animation budget. M1/M2 stamp this when an effect
   /// starts; the natural `advanceFrame` reconcile parks the link on decay.
   private var glyphEffectAnimatingUntil = Date.distantPast
@@ -1565,7 +1565,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     pending.backend.onFrameCompleted = nil
     backend = pending.backend
     activeRendererSelection = pending.selection
-    // Drop any live ink-bloom deadline: `syncGlyphEffectAnimatingState` is a
+    // Drop any live keystroke-impulse deadline: `syncGlyphEffectAnimatingState` is a
     // no-op on non-Slug backends, so a leftover until would keep the display
     // link at the 30 fps animation budget against a backend with nothing to
     // animate. The next Slug render re-extends if effects are still live.

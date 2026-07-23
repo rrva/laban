@@ -6,11 +6,11 @@ final class GlyphEffectTimelineTests: XCTestCase {
   // MARK: - Decay bounds
 
   func testDecaySecondsMatchesDocumentedConstants() {
-    XCTAssertEqual(GlyphEffectTimeline.inkBloomDecaySeconds, 0.280, accuracy: 1e-9)
+    XCTAssertEqual(GlyphEffectTimeline.keystrokeImpulseDecaySeconds, 0.130, accuracy: 1e-9)
     XCTAssertEqual(GlyphEffectTimeline.bellShakeDecaySeconds, 0.300, accuracy: 1e-9)
     XCTAssertEqual(
-      GlyphEffectTimeline.decaySeconds(kind: GlyphEffectTimeline.kindInkBloom),
-      GlyphEffectTimeline.inkBloomDecaySeconds)
+      GlyphEffectTimeline.decaySeconds(kind: GlyphEffectTimeline.kindKeystrokeImpulse),
+      GlyphEffectTimeline.keystrokeImpulseDecaySeconds)
     XCTAssertEqual(
       GlyphEffectTimeline.decaySeconds(kind: GlyphEffectTimeline.kindBellShake),
       GlyphEffectTimeline.bellShakeDecaySeconds)
@@ -29,7 +29,7 @@ final class GlyphEffectTimelineTests: XCTestCase {
 
   func testMaxDecaySecondsCoversEveryKind() {
     XCTAssertEqual(GlyphEffectTimeline.maxDecaySeconds, 0.300, accuracy: 1e-9)
-    for kind in [GlyphEffectTimeline.kindInkBloom, GlyphEffectTimeline.kindBellShake] {
+    for kind in [GlyphEffectTimeline.kindKeystrokeImpulse, GlyphEffectTimeline.kindBellShake] {
       XCTAssertLessThanOrEqual(
         GlyphEffectTimeline.decaySeconds(kind: kind), GlyphEffectTimeline.maxDecaySeconds)
     }
@@ -38,9 +38,9 @@ final class GlyphEffectTimelineTests: XCTestCase {
   // MARK: - Liveness
 
   func testIsAnimatingInsideDecayWindow() {
-    XCTAssertTrue(GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindInkBloom, age: 0))
+    XCTAssertTrue(GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindKeystrokeImpulse, age: 0))
     XCTAssertTrue(
-      GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindInkBloom, age: 0.075))
+      GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindKeystrokeImpulse, age: 0.075))
     XCTAssertTrue(
       GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindBellShake, age: 0.299))
   }
@@ -48,20 +48,20 @@ final class GlyphEffectTimelineTests: XCTestCase {
   func testIsAnimatingStopsExactlyAtDecay() {
     XCTAssertFalse(
       GlyphEffectTimeline.isAnimating(
-        kind: GlyphEffectTimeline.kindInkBloom,
-        age: GlyphEffectTimeline.inkBloomDecaySeconds))
+        kind: GlyphEffectTimeline.kindKeystrokeImpulse,
+        age: GlyphEffectTimeline.keystrokeImpulseDecaySeconds))
     XCTAssertFalse(
       GlyphEffectTimeline.isAnimating(
         kind: GlyphEffectTimeline.kindBellShake,
         age: GlyphEffectTimeline.bellShakeDecaySeconds))
     XCTAssertFalse(
-      GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindInkBloom, age: 1.0))
+      GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindKeystrokeImpulse, age: 1.0))
   }
 
   func testNegativeAgeIsConservativelyAnimating() {
     // A stamp from the future cannot occur with a monotonic clock; if one
     // ever does, keep the link running rather than freezing mid-effect.
-    XCTAssertTrue(GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindInkBloom, age: -1))
+    XCTAssertTrue(GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindKeystrokeImpulse, age: -1))
   }
 
   // MARK: - Reduce Motion policy
@@ -69,7 +69,7 @@ final class GlyphEffectTimelineTests: XCTestCase {
   func testReduceMotionForcesKindNone() {
     XCTAssertEqual(
       GlyphEffectTimeline.effectiveKind(
-        kind: GlyphEffectTimeline.kindInkBloom, reduceMotion: true),
+        kind: GlyphEffectTimeline.kindKeystrokeImpulse, reduceMotion: true),
       GlyphEffectTimeline.kindNone)
     XCTAssertEqual(
       GlyphEffectTimeline.effectiveKind(
@@ -80,27 +80,109 @@ final class GlyphEffectTimelineTests: XCTestCase {
   func testNoReduceMotionPassesKindThrough() {
     XCTAssertEqual(
       GlyphEffectTimeline.effectiveKind(
-        kind: GlyphEffectTimeline.kindInkBloom, reduceMotion: false),
-      GlyphEffectTimeline.kindInkBloom)
+        kind: GlyphEffectTimeline.kindKeystrokeImpulse, reduceMotion: false),
+      GlyphEffectTimeline.kindKeystrokeImpulse)
     XCTAssertEqual(
       GlyphEffectTimeline.effectiveKind(kind: GlyphEffectTimeline.kindNone, reduceMotion: false),
       GlyphEffectTimeline.kindNone)
   }
 
-  // MARK: - Ink-bloom easing
+  // MARK: - Keystroke-impulse easing
 
-  func testInkBloomEndpointsAreExact() {
-    // Exact endpoints are the settle-identical contract: at/after decay the
-    // effect multiplies dilation and alpha by exactly 1.
-    XCTAssertEqual(GlyphEffectTimeline.inkBloomProgress(age: 0), 0)
-    XCTAssertEqual(GlyphEffectTimeline.inkBloomProgress(age: -0.5), 0)
+  func testKeystrokeImpulseEndpointsAreExact() {
+    // Exact endpoints are the settle-identical contract: the shader
+    // early-returns at/after decay, and progress must be bit-exact 1 there
+    // (and 0 at/before age 0) — branch results, not polynomial evaluations.
+    XCTAssertEqual(GlyphEffectTimeline.keystrokeImpulseProgress(age: 0), 0)
+    XCTAssertEqual(GlyphEffectTimeline.keystrokeImpulseProgress(age: -0.5), 0)
     XCTAssertEqual(
-      GlyphEffectTimeline.inkBloomProgress(age: GlyphEffectTimeline.inkBloomDecaySeconds), 1)
-    XCTAssertEqual(GlyphEffectTimeline.inkBloomProgress(age: 10), 1)
+      GlyphEffectTimeline.keystrokeImpulseProgress(
+        age: GlyphEffectTimeline.keystrokeImpulseDecaySeconds), 1)
+    XCTAssertEqual(GlyphEffectTimeline.keystrokeImpulseProgress(age: 10), 1)
     XCTAssertEqual(
-      GlyphEffectTimeline.inkBloomDilationScale(age: GlyphEffectTimeline.inkBloomDecaySeconds), 1)
+      GlyphEffectTimeline.keystrokeImpulseScaleX(
+        age: GlyphEffectTimeline.keystrokeImpulseDecaySeconds), 1)
     XCTAssertEqual(
-      GlyphEffectTimeline.inkBloomAlphaScale(age: GlyphEffectTimeline.inkBloomDecaySeconds), 1)
+      GlyphEffectTimeline.keystrokeImpulseScaleY(
+        age: GlyphEffectTimeline.keystrokeImpulseDecaySeconds), 1)
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseTilt(
+        age: GlyphEffectTimeline.keystrokeImpulseDecaySeconds), 0)
+  }
+
+  func testKeystrokeImpulseStartsCompressedTallAndTilted() {
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseScaleX(age: 0),
+      GlyphEffectTimeline.keystrokeImpulseInitialScaleX,
+      accuracy: 1e-9)
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseScaleY(age: 0),
+      GlyphEffectTimeline.keystrokeImpulseInitialScaleY,
+      accuracy: 1e-9)
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseTilt(age: 0),
+      GlyphEffectTimeline.keystrokeImpulseInitialTilt,
+      accuracy: 1e-9)
+    // Arrival must stay a substantial, readable pose: clearly compressed but
+    // not crushed, and only slightly tall/tilted.
+    XCTAssertGreaterThan(GlyphEffectTimeline.keystrokeImpulseInitialScaleX, 0.4)
+    XCTAssertLessThan(GlyphEffectTimeline.keystrokeImpulseInitialScaleX, 0.8)
+    XCTAssertGreaterThan(GlyphEffectTimeline.keystrokeImpulseInitialScaleY, 1.0)
+    XCTAssertLessThan(GlyphEffectTimeline.keystrokeImpulseInitialScaleY, 1.3)
+    XCTAssertLessThan(GlyphEffectTimeline.keystrokeImpulseInitialTilt, 0.15)
+  }
+
+  func testKeystrokeImpulseProgressInteriorSamples() {
+    // easeOutBack reference values (c1 = 1.70158, c3 = 2.70158); tolerance
+    // for interior samples, exact equality only at the branched endpoints.
+    let decay = GlyphEffectTimeline.keystrokeImpulseDecaySeconds
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseProgress(age: 0.25 * decay), 0.8174097, accuracy: 1e-6)
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseProgress(age: 0.50 * decay), 1.0876975, accuracy: 1e-6)
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseProgress(age: 0.580103 * decay),
+      1.1000041,
+      accuracy: 1e-6)
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseProgress(age: 0.75 * decay), 1.0641366, accuracy: 1e-6)
+  }
+
+  func testKeystrokeImpulseProgressHasSingleOvershoot() {
+    // The curve is deliberately non-monotonic: one overshoot peak near
+    // 0.580103 × decay, then it settles back to 1. Do NOT assert
+    // monotonicity here — the overshoot is the elastic settle.
+    let decay = GlyphEffectTimeline.keystrokeImpulseDecaySeconds
+    let half = GlyphEffectTimeline.keystrokeImpulseProgress(age: 0.50 * decay)
+    let peak = GlyphEffectTimeline.keystrokeImpulseProgress(age: 0.580103 * decay)
+    let threeQuarter = GlyphEffectTimeline.keystrokeImpulseProgress(age: 0.75 * decay)
+    XCTAssertGreaterThan(half, 1)
+    XCTAssertGreaterThan(peak, half)
+    XCTAssertLessThan(threeQuarter, peak)
+    XCTAssertGreaterThan(threeQuarter, 1)
+  }
+
+  func testKeystrokeImpulseTransformOvershootMagnitudes() {
+    // At the progress peak (≈1.100): width overshoots ~4.5%, height
+    // undershoots ~1%, tilt crosses to ≈ −0.4°.
+    let peakAge = 0.580103 * GlyphEffectTimeline.keystrokeImpulseDecaySeconds
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseScaleX(age: peakAge), 1.045, accuracy: 1e-3)
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseScaleY(age: peakAge), 0.990, accuracy: 1e-3)
+    XCTAssertEqual(
+      GlyphEffectTimeline.keystrokeImpulseTilt(age: peakAge), -0.007, accuracy: 1e-3)
+  }
+
+  func testKeystrokeImpulseIsAnimatingBoundary() {
+    XCTAssertTrue(
+      GlyphEffectTimeline.isAnimating(
+        kind: GlyphEffectTimeline.kindKeystrokeImpulse,
+        age: GlyphEffectTimeline.keystrokeImpulseDecaySeconds.nextDown))
+    XCTAssertFalse(
+      GlyphEffectTimeline.isAnimating(
+        kind: GlyphEffectTimeline.kindKeystrokeImpulse,
+        age: GlyphEffectTimeline.keystrokeImpulseDecaySeconds))
   }
 
   func testSpinnerForegroundMotionProgressEndpointsAndSmoothstep() {
@@ -112,34 +194,6 @@ final class GlyphEffectTimelineTests: XCTestCase {
     XCTAssertEqual(
       GlyphEffectTimeline.spinnerForegroundMotionProgress(age: 0.25, duration: 0.25), 1)
     XCTAssertEqual(GlyphEffectTimeline.spinnerForegroundMotionProgress(age: 1, duration: 0.25), 1)
-  }
-
-  func testInkBloomStartsThinAndFaint() {
-    // Age 0 must stay clearly above zero — dilation/alpha 0 was the vanish flicker.
-    XCTAssertEqual(
-      GlyphEffectTimeline.inkBloomDilationScale(age: 0),
-      GlyphEffectTimeline.inkBloomInitialDilation,
-      accuracy: 1e-9)
-    XCTAssertEqual(
-      GlyphEffectTimeline.inkBloomAlphaScale(age: 0),
-      GlyphEffectTimeline.inkBloomInitialAlpha,
-      accuracy: 1e-9)
-    XCTAssertGreaterThan(GlyphEffectTimeline.inkBloomInitialDilation, 0.5)
-    XCTAssertGreaterThan(GlyphEffectTimeline.inkBloomInitialAlpha, 0.5)
-  }
-
-  func testInkBloomProgressIsMonotonicEaseOut() {
-    var previous = 0.0
-    for step in 1...10 {
-      let age = Double(step) / 10 * GlyphEffectTimeline.inkBloomDecaySeconds
-      let progress = GlyphEffectTimeline.inkBloomProgress(age: age)
-      XCTAssertGreaterThan(progress, previous)
-      // Ease-out: progress at the midpoint is already past half way.
-      previous = progress
-    }
-    XCTAssertGreaterThan(
-      GlyphEffectTimeline.inkBloomProgress(age: GlyphEffectTimeline.inkBloomDecaySeconds / 2),
-      0.5)
   }
 
   // MARK: - Bell-shake easing

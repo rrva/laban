@@ -42,7 +42,7 @@ public enum TerminalIdlePolicy {
   ///     keeps the legacy blink floor while the feature is on.
   ///   - idleFloorEnabled: the `LabanDisplayLinkIdleFloor` parachute — restores
   ///     the pre-park 8 Hz visible-idle floor with no rebuild.
-  ///   - glyphEffectAnimating: a per-glyph effect (ink-bloom type-in, bell
+  ///   - glyphEffectAnimating: a per-glyph effect (keystroke-impulse type-in, bell
   ///     shake) is live. Decorative, so it rides the 30 fps animation budget
   ///     like the attention pulse and parks the moment the last effect decays
   ///     (ADR 0018: the link is a transient animation timer).

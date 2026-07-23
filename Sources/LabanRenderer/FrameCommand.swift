@@ -221,7 +221,7 @@ public enum FrameCommand: Sendable {
     foregroundTransition: GlyphForegroundTransition? = nil,
     /// Slug-only traveling-wave metadata referencing a `.waveRegion` payload;
     /// nil unless the detector holds a confident wave for this cell. Wins over
-    /// `foregroundTransition`-free ink bloom exactly like kind 3.
+    /// `foregroundTransition`-free keystroke impulse exactly like kind 3.
     foregroundWave: GlyphForegroundWave? = nil
   )
   /// Frame-level traveling-wave color field, emitted before the glyph runs

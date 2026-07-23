@@ -739,7 +739,7 @@ public struct CapturedFrameCommand: Codable, Equatable, Sendable {
   /// renderer-neutral rectangle compositing was recorded. Missing means the
   /// historical source-over behavior.
   public var compositing: UInt8? = nil
-  /// Monotonic ink-bloom stamp when present; omitted when unstamped.
+  /// Monotonic keystroke-impulse stamp when present; omitted when unstamped.
   public var outputTimestampSeconds: Double? = nil
 }
 

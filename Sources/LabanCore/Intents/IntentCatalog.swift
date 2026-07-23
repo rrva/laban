@@ -1327,7 +1327,7 @@ public struct IntentCatalog: Sendable {
     descriptor(
       id: "glyphEffects.setEnabled",
       category: "fixture",
-      summary: "Enable or disable per-glyph effects (ink-bloom, bell shake).",
+      summary: "Enable or disable per-glyph effects (keystroke impulse, bell shake).",
       requiredCapability: .fixture,
       dataSensitivity: .nonSensitiveState,
       inputSchema: SetGlyphEffectsEnabledActionRequest.jsonSchema),

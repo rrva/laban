@@ -19,9 +19,10 @@ public enum GlyphEffectTimeline {
   /// `effectKind` values carried by the animation channel. Kind 0 = none;
   /// the shader must treat it as a bit-identical no-op.
   public static let kindNone: UInt32 = 0
-  /// Ink-bloom type-in: freshly output text eases dilation + alpha from a
-  /// thin/faint state to normal (M1).
-  public static let kindInkBloom: UInt32 = 1
+  /// Keystroke impulse type-in: a freshly output glyph arrives horizontally
+  /// compressed, slightly tall and tilted, then springs into place (pivot
+  /// from ink-bloom; see `gpt-research` and the ExecPlan pivot note).
+  public static let kindKeystrokeImpulse: UInt32 = 1
   /// Visual bell shake: one critically-damped horizontal swing of the grid
   /// (M2).
   public static let kindBellShake: UInt32 = 2
@@ -33,21 +34,25 @@ public enum GlyphEffectTimeline {
   /// (execplans/active/spinner-motion-traveling-wave.md).
   public static let kindSpinnerForegroundWave: UInt32 = 4
 
-  /// Seconds an ink-bloom takes to fully settle.
-  ///
-  /// Kept longer than a keystroke so bloom reads as ease-to-steady, not a
-  /// single-frame flash. Mirrored in `VectorGlyphShaders.metal`.
-  public static let inkBloomDecaySeconds: Double = 0.280
+  /// Seconds a keystroke impulse takes to fully settle (the *visual* lifetime
+  /// of kind 1). Short on purpose: the motion is a directional arrival, not a
+  /// linger — 100–140 ms per `gpt-research`. Mirrored in
+  /// `VectorGlyphShaders.metal`.
+  public static let keystrokeImpulseDecaySeconds: Double = 0.130
   /// Seconds a bell shake takes to fully settle.
   public static let bellShakeDecaySeconds: Double = 0.300
-  /// Alpha multiplier fresh ink-bloom text starts from (slightly faint),
-  /// easing to 1. Must stay clearly above 0 — age-0 alpha near zero was the
-  /// "vanish then pop" flicker.
-  public static let inkBloomInitialAlpha: Double = 0.72
-  /// Dilation multiplier fresh ink-bloom text starts from (slightly thin),
-  /// easing to 1. Must stay clearly above 0 — `dilation *= progress` with
-  /// progress 0 made glyphs disappear for a frame.
-  public static let inkBloomInitialDilation: Double = 0.82
+  /// Horizontal scale a fresh impulse glyph starts from (compressed), easing
+  /// to 1 with an easeOutBack overshoot to ≈1.045.
+  public static let keystrokeImpulseInitialScaleX: Double = 0.55
+  /// Vertical scale a fresh impulse glyph starts from (slightly tall), easing
+  /// to 1 with an easeOutBack undershoot to ≈0.990.
+  public static let keystrokeImpulseInitialScaleY: Double = 1.10
+  /// Rotation a fresh impulse glyph starts from (~4°), easing to 0 and
+  /// crossing to ≈ −0.4° at the overshoot peak.
+  public static let keystrokeImpulseInitialTilt: Double = 0.07
+  /// easeOutBack overshoot coefficients (c3 = c1 + 1 by construction).
+  public static let easeOutBackC1: Double = 1.70158
+  public static let easeOutBackC3: Double = 2.70158
   /// Settle frequency of the critically-damped shake. Chosen so
   /// `omega * bellShakeDecaySeconds == 5`: the residual normalized amplitude
   /// at the decay boundary is `5 * e^-4 ≈ 0.09` of peak, and `isAnimating`
@@ -57,17 +62,18 @@ public enum GlyphEffectTimeline {
   /// Settle duration per effect kind; 0 for unknown kinds (never animating).
   public static func decaySeconds(kind: UInt32) -> Double {
     switch kind {
-    case kindInkBloom: return inkBloomDecaySeconds
+    case kindKeystrokeImpulse: return keystrokeImpulseDecaySeconds
     case kindBellShake: return bellShakeDecaySeconds
     default: return 0
     }
   }
 
-  /// Longest decay of any effect kind: the freshness window during which a
-  /// freshly output glyph run keeps its `outputTimestampSeconds` stamp
-  /// (after it, age > decay for every kind and re-stamping would be dead
-  /// weight).
-  public static let maxDecaySeconds: Double = max(inkBloomDecaySeconds, bellShakeDecaySeconds)
+  /// Stamp retention/re-apply horizon: how long a freshly output glyph run
+  /// keeps its `outputTimestampSeconds` stamp. Distinct from any kind's
+  /// *visual* lifetime (130 ms impulse vs 300 ms horizon): an expired stamp
+  /// may still reach the shader after its effect settled, so every kind must
+  /// no-op exactly at and after its own decay.
+  public static let maxDecaySeconds: Double = max(keystrokeImpulseDecaySeconds, bellShakeDecaySeconds)
 
   /// True while an effect of `kind`, started `age` seconds ago, still moves
   /// pixels. A negative age cannot happen (stamps are monotonic) but is
@@ -86,27 +92,38 @@ public enum GlyphEffectTimeline {
     reduceMotion ? kindNone : kind
   }
 
-  /// Ink-bloom progress in [0, 1]: ease-out cubic over the decay window,
-  /// exactly 1 at and after decay so settled frames are bit-identical to the
-  /// no-effect render.
-  public static func inkBloomProgress(age: Double) -> Double {
-    guard age > 0 else { return 0 }
-    let t = min(age / inkBloomDecaySeconds, 1)
-    return 1 - pow(1 - t, 3)
+  /// Keystroke-impulse progress: easeOutBack over the decay window with an
+  /// intentional single overshoot (peak ≈1.100 at age ≈ 0.580103 × decay).
+  /// Deliberately **not** monotonic. Endpoint branches are explicit (not
+  /// polynomial evaluations) so settled frames are bit-exact: exactly 0 at
+  /// and before age 0, exactly 1 at and after decay.
+  public static func keystrokeImpulseProgress(age: Double) -> Double {
+    if age <= 0 { return 0 }
+    if age >= keystrokeImpulseDecaySeconds { return 1 }
+    let x = age / keystrokeImpulseDecaySeconds
+    let y = x - 1
+    return 1 + easeOutBackC3 * y * y * y + easeOutBackC1 * y * y
   }
 
-  /// Dilation multiplier for kind `kindInkBloom`: starts at
-  /// `inkBloomInitialDilation` (slightly thin) and eases to 1.
-  public static func inkBloomDilationScale(age: Double) -> Double {
-    let progress = inkBloomProgress(age: age)
-    return inkBloomInitialDilation + (1 - inkBloomInitialDilation) * progress
+  /// Horizontal scale for kind `kindKeystrokeImpulse`: compressed
+  /// (`keystrokeImpulseInitialScaleX`) at arrival, springing to exactly 1.
+  public static func keystrokeImpulseScaleX(age: Double) -> Double {
+    let progress = keystrokeImpulseProgress(age: age)
+    return keystrokeImpulseInitialScaleX + (1 - keystrokeImpulseInitialScaleX) * progress
   }
 
-  /// Alpha multiplier for kind `kindInkBloom`: starts at
-  /// `inkBloomInitialAlpha` (slightly faint) and eases to 1 (full opacity).
-  public static func inkBloomAlphaScale(age: Double) -> Double {
-    let progress = inkBloomProgress(age: age)
-    return inkBloomInitialAlpha + (1 - inkBloomInitialAlpha) * progress
+  /// Vertical scale for kind `kindKeystrokeImpulse`: slightly tall
+  /// (`keystrokeImpulseInitialScaleY`) at arrival, springing to exactly 1.
+  public static func keystrokeImpulseScaleY(age: Double) -> Double {
+    let progress = keystrokeImpulseProgress(age: age)
+    return keystrokeImpulseInitialScaleY + (1 - keystrokeImpulseInitialScaleY) * progress
+  }
+
+  /// Tilt (radians) for kind `kindKeystrokeImpulse`:
+  /// `keystrokeImpulseInitialTilt` at arrival, springing to exactly 0
+  /// (crossing negative at the overshoot peak).
+  public static func keystrokeImpulseTilt(age: Double) -> Double {
+    keystrokeImpulseInitialTilt * (1 - keystrokeImpulseProgress(age: age))
   }
 
   /// Horizontal offset for kind `kindBellShake`, normalized to a peak of 1 —

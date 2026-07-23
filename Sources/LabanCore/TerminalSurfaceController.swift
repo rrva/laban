@@ -251,7 +251,7 @@ public struct TerminalSurfaceFrame {
   public var snapshotMs: Double
   public var cellPayload: TerminalCellPayload?
   public var diagnostics: TerminalSurfaceFrameDiagnostics?
-  /// Ink-bloom stamp decision for this frame (render-journal `glyphEffect`).
+  /// Keystroke-impulse stamp decision for this frame (render-journal `glyphEffect`).
   public var glyphEffectStamp: GlyphEffectStampDiagnostics?
   /// Spinner-motion detector diagnostics for this frame (render-journal). Optional.
   public var spinnerMotionDiagnostics: SpinnerMotionDiagnostics?
@@ -370,7 +370,7 @@ private struct SidebarCacheSignature: Equatable {
   var theme: ThemeData
 }
 
-/// How the ink-bloom stamp path chose freshness for a frame. Surfaced in
+/// How the keystroke-impulse stamp path chose freshness for a frame. Surfaced in
 /// render-journal `glyphEffect.mode` so dumps can distinguish per-cell typing
 /// blooms from whole-row re-blooms without a PTY capture.
 public enum GlyphEffectStampMode: String, Codable, Equatable, Sendable {
@@ -392,7 +392,7 @@ public enum GlyphEffectStampMode: String, Codable, Equatable, Sendable {
   case reapply
 }
 
-/// Freshness region for ink-bloom stamping: Y bands always, optional X strip
+/// Freshness region for keystroke-impulse stamping: Y bands always, optional X strip
 /// so only changed character cells bloom (settled prompt text stays put).
 public struct GlyphEffectFreshness: Equatable, Sendable {
   public var bands: [DirtyYRange]
@@ -434,7 +434,7 @@ public struct GlyphEffectFreshness: Equatable, Sendable {
   }
 }
 
-/// Per-frame ink-bloom stamp decision for render-journal /debug dumps.
+/// Per-frame keystroke-impulse stamp decision for render-journal /debug dumps.
 public struct GlyphEffectStampDiagnostics: Codable, Equatable, Sendable {
   public var mode: GlyphEffectStampMode
   public var dirtyRows: [Int]

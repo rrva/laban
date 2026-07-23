@@ -45,7 +45,7 @@ public enum DebugDiscoveryCatalog {
       summary: "Advance the deterministic virtual clock (glyph-effect channel) and render."),
     DebugDiscoveryControl(
       name: "setGlyphEffectsEnabled",
-      summary: "Enable or disable per-glyph effects (ink-bloom, bell shake)."),
+      summary: "Enable or disable per-glyph effects (keystroke impulse, bell shake)."),
     DebugDiscoveryControl(
       name: "setSpinnerMotionSmoothingEnabled",
       summary: "Enable or disable spinner foreground-color motion smoothing."),

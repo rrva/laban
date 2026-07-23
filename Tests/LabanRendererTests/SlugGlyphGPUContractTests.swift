@@ -47,9 +47,16 @@ final class SlugGlyphGPUContractTests: XCTestCase {
 
   func testEffectKindConstantsArePinned() {
     XCTAssertEqual(SlugGlyphRenderer.glyphEffectKindNone, 0)
-    XCTAssertEqual(SlugGlyphRenderer.glyphEffectKindInkBloom, 1)
+    XCTAssertEqual(SlugGlyphRenderer.glyphEffectKindKeystrokeImpulse, 1)
     XCTAssertEqual(SlugGlyphRenderer.glyphEffectKindBellShake, 2)
     XCTAssertEqual(SlugGlyphRenderer.glyphEffectKindSpinnerForegroundMotion, 3)
     XCTAssertEqual(SlugGlyphRenderer.glyphEffectKindSpinnerForegroundWave, 4)
+  }
+
+  func testKeystrokeImpulseDecayMatchesGlyphEffectTimeline() {
+    // LabanRenderer cannot import LabanCore; the mirrored constant must stay
+    // in sync with GlyphEffectTimeline.keystrokeImpulseDecaySeconds (pinned
+    // at 0.130 in GlyphEffectTimelineTests on the LabanCore side).
+    XCTAssertEqual(SlugGlyphRenderer.glyphEffectKeystrokeImpulseDecaySeconds, 0.130, accuracy: 1e-9)
   }
 }
