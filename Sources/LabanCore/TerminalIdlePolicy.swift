@@ -42,10 +42,10 @@ public enum TerminalIdlePolicy {
   ///     keeps the legacy blink floor while the feature is on.
   ///   - idleFloorEnabled: the `LabanDisplayLinkIdleFloor` parachute — restores
   ///     the pre-park 8 Hz visible-idle floor with no rebuild.
-  ///   - glyphEffectAnimating: a per-glyph effect (keystroke-impulse type-in, bell
-  ///     shake) is live. Decorative, so it rides the 30 fps animation budget
-  ///     like the attention pulse and parks the moment the last effect decays
-  ///     (ADR 0018: the link is a transient animation timer).
+  ///   - glyphEffectAnimating: a per-glyph effect (keystroke-impulse type-in,
+  ///     bell shake) is live. Rides the active (panel) rate while live —
+  ///   a ~130 ms spring needs the samples — and parks the moment the last
+  ///   effect decays (ADR 0018: the link is a transient animation timer).
   public static func displayLinkShouldRun(
     windowVisibleToUser: Bool,
     scrollAnimating: Bool,
@@ -80,9 +80,13 @@ public enum TerminalIdlePolicy {
   }
 
   /// Preferred frame rate while the link runs: the active rate for scroll and
-  /// live output, the animation budget rate for attention-only or
-  /// glyph-effect-only frames, the idle rate for blink-only or floor-only
-  /// operation (and as the don't-care value while parked).
+  /// live output, the animation budget rate for attention-only frames, the
+  /// idle rate for blink-only or floor-only operation (and as the don't-care
+  /// value while parked). Glyph effects ride the active rate too: the
+  /// keystroke impulse settles in ~130 ms, so the 30 fps decorative budget
+  /// would give it ~4 frames — the frame starvation that made the old
+  /// ink-bloom read as flicker. Effects park the moment they decay, so the
+  /// energy cost stays bounded.
   public static func preferredDisplayLinkFramesPerSecond(
     windowVisibleToUser: Bool,
     scrollAnimating: Bool,
@@ -107,7 +111,10 @@ public enum TerminalIdlePolicy {
     if scrollAnimating || terminalOutputActive {
       return activeDisplayLinkFramesPerSecond
     }
-    if attentionAnimating || glyphEffectAnimating {
+    if glyphEffectAnimating {
+      return activeDisplayLinkFramesPerSecond
+    }
+    if attentionAnimating {
       return animationDisplayLinkFramesPerSecond
     }
     return idleDisplayLinkFramesPerSecond

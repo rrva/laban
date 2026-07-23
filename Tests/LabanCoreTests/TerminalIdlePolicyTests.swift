@@ -290,9 +290,11 @@ final class TerminalIdlePolicyTests: XCTestCase {
         glyphEffectAnimating: true))
   }
 
-  func testGlyphEffectOnlyPrefersAnimationBudgetFrameRate() {
-    // Decorative, short-lived motion: same 30 fps budget as the attention
-    // pulse, not the 120 Hz live-output rate.
+  func testGlyphEffectOnlyPrefersActiveFrameRate() {
+    // A ~130 ms keystroke-impulse spring at the 30 fps decorative budget
+    // would get ~4 frames — the frame starvation that made the old ink-bloom
+    // read as flicker. Live effects ride the active (panel) rate; they park
+    // the moment they decay, so the energy cost stays bounded.
     XCTAssertEqual(
       TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
         windowVisibleToUser: true,
@@ -302,6 +304,35 @@ final class TerminalIdlePolicyTests: XCTestCase {
         cursorBlinkActive: false,
         idleFloorEnabled: false,
         glyphEffectAnimating: true),
+      TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
+  }
+
+  func testGlyphEffectWithAttentionPrefersActiveFrameRate() {
+    // Effect + attention pulse: the effect's panel-rate need outranks the
+    // pulse's 30 fps decorative budget.
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: true,
+        terminalOutputActive: false,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false,
+        glyphEffectAnimating: true),
+      TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
+  }
+
+  func testAttentionOnlyStillPrefersAnimationBudgetFrameRate() {
+    // The slow attention breath (1.5 s period) keeps the 30 fps budget.
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: true,
+        terminalOutputActive: false,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false,
+        glyphEffectAnimating: false),
       TerminalIdlePolicy.animationDisplayLinkFramesPerSecond)
   }
 
@@ -320,9 +351,9 @@ final class TerminalIdlePolicyTests: XCTestCase {
   }
 
   func testGlyphEffectParkWhenDecayEnds() {
-    // The live→settled edge: once the last bloom decays, the link must park
+    // The live→settled edge: once the last effect decays, the link must park
     // (floor off, no other activity). Without this, a sticky
-    // `glyphEffectAnimatingUntil` would keep the 30 fps animation budget.
+    // `glyphEffectAnimatingUntil` would keep the active frame rate alive.
     XCTAssertTrue(
       TerminalIdlePolicy.displayLinkShouldRun(
         windowVisibleToUser: true,
