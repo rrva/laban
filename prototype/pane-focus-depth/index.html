@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<!-- PROTOTYPE — throwaway. Pane-focus depth cue: Laban shows ONE full-size
+     session at a time (tab-style, confirmed against a live screenshot — this
+     is not a split view), so there are no sibling panes to lift relative to.
+     Instead, the pane you're switching TO plays a brief, discrete "rise into
+     focus" pop once — arriving from a slightly receded/tilted/dimmed pose to
+     full identity — then holds completely flat and still until you switch
+     again. No continuous animation, no per-glyph motion — this tests whether
+     a "geometry-like" arrival cue at PANE granularity reads as a meaningful,
+     low-fatigue focus signal instead of per-character noise.
+
+     Chrome (sidebar layout, colors, selected-row style) is sampled directly
+     from `laban session screenshot` of the real running app — see NOTES.md
+     "Chrome sampled from a live screenshot" for the exact pixel reads. The
+     sidebar rows and the main pane share one focus state, same as Laban's
+     own tab list drives which session is visible/frontmost.
+
+     Plain DOM + CSS transforms; no WebGL, no dependencies, no build step. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pane-focus-depth prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; overflow: hidden; }
+  body {
+    display: flex;
+    font: 13px/1.6 "JetBrains Mono", Menlo, monospace; color: #c9d1d9;
+  }
+
+  /* --- Sidebar: colors/proportions sampled from a live Laban screenshot --- */
+  .sidebar {
+    flex: 0 0 17%; min-width: 200px; max-width: 280px;
+    background: #21222b; display: flex; flex-direction: column;
+  }
+  .sidebar .titlebar {
+    flex: none; height: 40px; display: flex; align-items: center;
+    gap: 8px; padding: 0 14px;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.red { background: #ff5f57; } .dot.yellow { background: #febc2e; } .dot.green { background: #28c840; }
+  .titlebar .plus { margin-left: auto; color: #6e7681; font-size: 16px; user-select: none; }
+  .sidebar .tabs { flex: 1; overflow: hidden; padding: 4px 0; }
+  .tab-row {
+    display: flex; gap: 10px; padding: 10px 14px 10px 12px; cursor: pointer;
+    border-left: 3px solid transparent; transition: background 160ms ease, border-color 160ms ease;
+  }
+  .tab-row .num { color: #606a95; flex: none; }
+  .tab-row .info { min-width: 0; }
+  .tab-row .name { color: #9198b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row .meta { color: #646f9d; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row.selected {
+    background: #444657; border-left-color: #b393ef;
+  }
+  .tab-row.selected .name { color: #eaeaea; font-weight: 600; }
+  .tab-row.selected .num { color: #b393ef; }
+
+  /* --- Main content: ONE full-size pane at a time, tab-style like Laban
+     actually works — not a split view. Switching tabs fully replaces what's
+     visible; there are no sibling panes to lift relative to, so the incoming
+     pane instead arrives with its own "rise into focus" pop from a receded,
+     slightly tilted starting pose. --- */
+  .stage {
+    flex: 1; min-width: 0; position: relative; perspective: 1400px;
+    padding: 20px 20px 8px; box-sizing: border-box; min-height: 0; background: #0d1117;
+  }
+  .pane {
+    position: absolute; inset: 20px 20px 8px 20px;
+    background: #0d1117; border: 1px solid #30363d;
+    border-radius: 10px; padding: 14px 16px; white-space: pre; overflow: hidden;
+    transform-style: preserve-3d; transform-origin: center bottom;
+    transition: transform 260ms cubic-bezier(.22,1,.36,1), box-shadow 260ms ease,
+                border-color 200ms ease, filter 260ms ease;
+    display: none;
+  }
+  .pane.active { display: block; border-color: #b393ef; }
+  .pane.entering {
+    transform: translateY(16px) translateZ(-32px) rotateX(-3deg) scale(.965);
+    filter: brightness(.8) saturate(.9);
+    box-shadow: 0 8px 24px -8px rgba(0,0,0,.4);
+  }
+  .g { color: #3fb950; } .b { color: #58a6ff; } .m { color: #bc8cff; }
+  .y { color: #d29922; } .r { color: #f85149; } .d { color: #8b949e; }
+
+  .right { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .hint {
+    flex: none; text-align: center; color: #6e7681; font-size: 12px;
+    padding: 6px 0 14px; user-select: none;
+  }
+  .hint kbd {
+    background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+    padding: 1px 6px; color: #c9d1d9;
+  }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="titlebar">
+    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+    <span class="plus">+</span>
+  </div>
+  <div class="tabs">
+    <div class="tab-row" data-pane="0">
+      <span class="num">1</span>
+      <div class="info">
+        <div class="name">main</div>
+        <div class="meta">laban</div>
+        <div class="meta">spinner-motion-implementation</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="1">
+      <span class="num">2</span>
+      <div class="info">
+        <div class="name">tests</div>
+        <div class="meta">swift test --filter Slug</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="2">
+      <span class="num">3</span>
+      <div class="info">
+        <div class="name">build</div>
+        <div class="meta">./scripts/build-app</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="right">
+  <div class="stage">
+    <div class="pane" data-pane="0"><div class="title">1 · main</div><span class="g">$</span> git status
+On branch <span class="m">spinner-motion-implementation</span>
+Your branch is ahead of 'origin/...' by 29 commits.
+<span class="g">$</span> </div>
+    <div class="pane" data-pane="1"><div class="title">2 · tests</div><span class="g">$</span> swift test --filter Slug
+Test Suite 'SlugTests' started
+  <span class="g">✓</span> testGlyphCoverage (0.012s)
+  <span class="g">✓</span> testBandPacking (0.031s)
+<span class="d">47 tests, </span><span class="g">47 passed</span><span class="d"> (0.812s)</span>
+<span class="g">$</span> </div>
+    <div class="pane" data-pane="2"><div class="title">3 · build</div><span class="g">$</span> ./scripts/build-app
+<span class="d">[1/212] Compiling LabanCore GlyphEffectTimeline.swift</span>
+<span class="d">[89/212] Compiling LabanRenderer VectorGlyphShaders.metal</span>
+<span class="y">warning:</span> unused variable 'spill'
+<span class="d">[212/212] Build complete!</span> (24.3s)
+<span class="g">$</span> </div>
+  </div>
+  <div class="hint">click a sidebar row, or press <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> — switches the full pane, plays once, settles flat</div>
+</div>
+<script>
+  const panes = [...document.querySelectorAll('.pane')];
+  const tabRows = [...document.querySelectorAll('.tab-row')];
+  let current = -1;
+
+  function focusPane(index, animate) {
+    if (index === current) return;
+    current = index;
+    tabRows.forEach((r, i) => r.classList.toggle('selected', i === index));
+
+    panes.forEach((p, i) => {
+      if (i !== index) { p.classList.remove('active', 'entering'); return; }
+      p.classList.add('active');
+      if (!animate) return;
+      // Two-step enter transition: apply the receded/tilted starting pose
+      // and force layout so the browser commits it as a real frame, THEN
+      // (next rAF) remove it so the pane's own `transition:` rule animates
+      // from that pose to identity. Removing it in the same tick it was
+      // added would never paint the starting pose, so nothing would visibly
+      // move — this is why display:none -> block needs an explicit
+      // two-frame handoff instead of a single class toggle.
+      p.classList.add('entering');
+      void p.offsetWidth;
+      requestAnimationFrame(() => requestAnimationFrame(() => p.classList.remove('entering')));
+    });
+  }
+
+  // Only the sidebar drives switching now — with one full-size pane visible
+  // at a time there's no "other" pane to click on.
+  tabRows.forEach((el) => el.addEventListener('click', () => focusPane(Number(el.dataset.pane), true)));
+  window.addEventListener('keydown', (e) => {
+    const n = Number(e.key);
+    if (n >= 1 && n <= panes.length) focusPane(n - 1, true);
+  });
+
+  focusPane(0, false); // initial state: no animation on load, just the static indicator
+</script>
+</body>
+</html>
