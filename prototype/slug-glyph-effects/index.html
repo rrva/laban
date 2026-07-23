@@ -32,6 +32,13 @@
     border-radius: 999px; width: 26px; height: 26px; cursor: pointer; font: inherit;
   }
   #variant-bar button:hover { border-color: #58a6ff; }
+  #speed-bar {
+    position: fixed; top: 10px; left: 12px; z-index: 10;
+    display: flex; align-items: center; gap: 8px;
+    background: #161b22ee; border: 1px solid #30363d; border-radius: 8px;
+    padding: 6px 10px; font: 12px "JetBrains Mono", Menlo, monospace; color: #c9d1d9;
+  }
+  #speed-bar input[type="range"] { width: 130px; accent-color: #58a6ff; }
   #loading {
     position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #8b949e; font: 14px "JetBrains Mono", Menlo, monospace; z-index: 5;
@@ -49,6 +56,11 @@
 </head>
 <body>
 <div id="loading">generating slug font…</div>
+<div id="speed-bar">
+  <label for="speed-slider">duration</label>
+  <input type="range" id="speed-slider" min="0.25" max="4" step="0.05" value="1">
+  <span id="speed-label">1.00× (normal)</span>
+</div>
 <div id="controls">
   <button id="btn-type" title="T">type line</button>
   <button id="btn-keys" title="K">keystroke demo</button>
@@ -56,6 +68,7 @@
   <button id="btn-auto" title="A">auto-demo: off</button>
   <button id="btn-effects" title="E">effects: on</button>
   <button id="btn-motion" title="M">reduceMotion: off</button>
+  <button id="btn-live" title="L">live type…</button>
 </div>
 <div id="variant-bar">
   <button id="var-prev" title="←">‹</button>

@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { chromium } from 'playwright';
 
 const BASE = 'http://localhost:8737/';
-const VARIANTS = ['A', 'B', 'C'];
+const VARIANTS = ['A', 'B', 'C', 'D', 'E'];
 const shotsDir = new URL('./verify-shots/', import.meta.url);
 await import('node:fs/promises').then((fs) => fs.mkdir(shotsDir, { recursive: true }));
 
