@@ -21,8 +21,8 @@ size (14pt) and rescale them at render time (`pointScale = activeAtlas.pointSize
 `SlugGlyphRenderer` already renders two simultaneous font sizes from one shared
 curve cache: `fontAtlas` (terminal size) for `.terminal`-sourced glyph runs and
 `sidebarFontAtlas` (smaller) for `.sidebar`-sourced ones, chosen per
-`FrameCommand.source` (`Sources/LabanRenderer/SlugGlyphRenderer.swift:2161` and
-`:2336-2337`). Laban's other renderers (`software`, `classic` Metal,
+`FrameCommand.source` via `atlas(for:)`/`referenceAtlas(for:)`
+(`Sources/LabanRenderer/SlugGlyphRenderer.swift:2331` and `:2342`). Laban's other renderers (`software`, `classic` Metal,
 `vectorGlyph`) bake glyph coverage bitmaps at a fixed size per atlas build; each
 additional simultaneous size is a distinct, non-free rasterization and cache
 tier for them, not a cheap render-time scale factor.
@@ -49,7 +49,7 @@ and the previewed tab existing and not being the active tab.
   (`Sources/LabanApp/TerminalBitmapView.swift`) already flows through
   `TerminalSurfaceFrameRequest.hoveredSidebarTabId` into
   `TerminalSurfaceController.sidebarCommands(hoveredTabId:)`
-  (`Sources/LabanCore/TerminalSurfaceController.swift:1225`). No new hover
+  (`Sources/LabanCore/TerminalSurfaceController.swift:1253`). No new hover
   plumbing is introduced; the feature only changes what that existing signal
   causes to be drawn.
 - Recent-content resolution stays renderer-neutral too:
@@ -70,8 +70,15 @@ and the previewed tab existing and not being the active tab.
 - `SlugGlyphRenderer` alone resolves `.sidebarPreview` glyph runs against a
   third `previewFontAtlas`/`previewReferenceFontAtlas` pair, added beside the
   existing `sidebarFontAtlas`/`sidebarReferenceFontAtlas` pair and following
-  the identical construction, `reconfigureFonts`, and per-command atlas
-  selection pattern.
+  the identical construction and `reconfigureFonts` pattern. Per-command atlas
+  selection was refactored from the prior two-way ternary into
+  `atlas(for:)`/`referenceAtlas(for:)` helpers (a `switch` with a `default:`
+  case, not an exhaustive per-`FrameSource`-case list, so a future case still
+  falls through safely) so terminal/sidebar/preview share one selection
+  site instead of a ternary growing a third arm. `runFontIdentity`'s
+  font-identity cache key was similarly widened from a 1-bit `sidebar: Bool`
+  to a 2-bit atlas-kind field so preview's identity cache slot can't collide
+  with sidebar's when the two share a point size.
 - The preview point size is derived from the terminal's current point size by
   a fixed ratio (`FontAtlas.previewPointSize(forTerminalPointSize:)`), the same
   shape as the existing `FontAtlas.sidebarPointSize(forTerminalPointSize:)`
