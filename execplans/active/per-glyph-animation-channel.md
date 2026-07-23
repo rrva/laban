@@ -457,6 +457,36 @@ this section; environment restored after measurement).
 
 Review status: NOT REVIEWED
 
+## Pivot (2026-07-22): ink-bloom → keystroke impulse
+
+Kind 1's evaluation is replaced; everything else in this plan (stamping,
+channels, parking) stands. Rationale: user feedback on capture
+`appkit-2026-07-22T21-02-31Z` — the faint/thin alpha+dilation wobble read as
+flicker, not motion (it was also frame-starved to ~4 steps at the 30 fps
+decorative budget). `gpt-research` (repo root) ranks a directional
+"keystroke impulse" as the highest-payoff terminal glyph effect.
+
+Final contract: a freshly stamped glyph arrives at scaleX 0.55 / scaleY 1.10
+/ tilt 0.07 rad (full alpha, normal dilation) and springs to identity over
+130 ms with a single easeOutBack overshoot (c1 = 1.70158, c3 = 2.70158; peak
+progress ≈1.100 at ≈75 ms → scaleX ≈1.045, scaleY ≈0.990, tilt ≈ −0.4°),
+pivoted on the glyph quad's center. The shader early-returns at
+`age >= decay` before any arithmetic so settled frames are bit-identical to
+kind 0 (the 300 ms stamp-retention horizon outlives the 130 ms visual
+lifetime). Live effects ride the active (panel) display rate instead of the
+30 fps decorative budget; they still park on decay. Constants mirrored in
+`GlyphEffectTimeline.swift` ↔ `VectorGlyphShaders.metal`; transform ordering
+verified (effect applies to the raw quad before `vector_to_ndc`; instance
+`dilation` only feeds the fragment coverage threshold). Damage envelope: the
+existing live-effect band (`origin.y − cellHeight … 3 × cellHeight`) covers
+the ≤1.5 px worst-case spill; the reworked scenario
+(`fixtures/glyph-effects-keystroke-impulse.scenario.json`, renamed from
+`glyph-effects-ink-bloom.*`) proves settle pixel-identity including the gap
+rows, and `SlugKeystrokeImpulseRendererTests` proves expired-stamp pixel
+identity GPU-side. Setting renamed to "Keystroke impulse effect"; the
+persisted key `LabanGlyphEffectsEnabled` is unchanged.
+
+
 Gate items (all mechanical; run by a fresh review agent per PLANS.md):
 
 - [ ] `git grep -n "effectStart" Sources/LabanRenderer/VectorGlyphShaders.metal`
