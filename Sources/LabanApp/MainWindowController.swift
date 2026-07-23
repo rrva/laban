@@ -212,6 +212,7 @@ final class MainWindowController: NSWindowController {
   {
     let fontAtlas = FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize)
     let sidebarFontAtlas = FontAtlas(pointSize: FontAtlas.persistedSidebarPointSize)
+    let previewFontAtlas = FontAtlas(pointSize: FontAtlas.persistedPreviewPointSize)
     let cjkDiagnostics = fontAtlas.cjkFontDiagnostics
     AppLog.app.info(
       "CJK font preference=\(CJKFontSettings.currentDisplayName(baseFont: fontAtlas.font)), "
@@ -543,6 +544,7 @@ final class MainWindowController: NSWindowController {
       model: model,
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebarFontAtlas,
+      previewFontAtlas: previewFontAtlas,
       cellWidth: cellW,
       cellHeight: cellH,
       sessionCoordinator: sessionCoordinator

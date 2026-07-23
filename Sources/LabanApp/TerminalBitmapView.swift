@@ -724,6 +724,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private(set) var sidebarCellWidth: Int
   private(set) var sidebarCellHeight: Int
 
+  /// Hover-preview font, derived from the terminal point size at a fixed
+  /// 0.5 ratio (`FontAtlas.previewPointSize`). Only `SlugGlyphRenderer`
+  /// consumes it (docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md);
+  /// kept in lockstep with `fontAtlas`/`sidebarFontAtlas` regardless of the
+  /// active backend so a renderer switch to Slug never needs a stale atlas.
+  private(set) var previewFontAtlas: FontAtlas
+
   /// Prebuilt per-size atlas ladder so a zoom step swaps pointers instead of
   /// rasterizing. Created after the first frame (`ensureAtlasLadder`),
   /// discarded and rebuilt on backing-scale change. Nil (or still warming)
@@ -735,6 +742,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     model: AppModel,
     fontAtlas: FontAtlas,
     sidebarFontAtlas: FontAtlas,
+    previewFontAtlas: FontAtlas? = nil,
     cellWidth: Int,
     cellHeight: Int,
     urlOpener: any ExternalURLOpening = NSWorkspace.shared,
@@ -744,6 +752,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     self.urlOpener = urlOpener
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas
+    self.previewFontAtlas =
+      previewFontAtlas
+      ?? FontAtlas(pointSize: FontAtlas.previewPointSize(forTerminalPointSize: fontAtlas.pointSize))
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
     self.sessionCoordinator = sessionCoordinator
@@ -759,7 +770,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       cellHeight: cellHeight,
       sidebarWidth: SidebarLayout.defaultWidth,
       sidebarCellWidth: sidebarFontAtlas.cellSize.width,
-      sidebarCellHeight: sidebarFontAtlas.cellSize.height
+      sidebarCellHeight: sidebarFontAtlas.cellSize.height,
+      previewCellWidth: self.previewFontAtlas.cellSize.width,
+      previewCellHeight: self.previewFontAtlas.cellSize.height
     )
 
     let selection =
@@ -782,14 +795,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       self.backend = Self.makeBackend(
         selection: .classic,
         fontAtlas: fontAtlas,
-        sidebarFontAtlas: sidebarFontAtlas)
+        sidebarFontAtlas: sidebarFontAtlas,
+        previewFontAtlas: self.previewFontAtlas)
       self.activeRendererSelection = .classic
       self.coldLaunchPendingRealSelection = resolvedSelection
     } else {
       self.backend = Self.makeBackend(
         selection: resolvedSelection,
         fontAtlas: fontAtlas,
-        sidebarFontAtlas: sidebarFontAtlas)
+        sidebarFontAtlas: sidebarFontAtlas,
+        previewFontAtlas: self.previewFontAtlas)
       self.activeRendererSelection = resolvedSelection
     }
     self.backendSelfPresents = backend.presentationLayer != nil
@@ -1190,6 +1205,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     selection: RendererSelection,
     fontAtlas: FontAtlas,
     sidebarFontAtlas: FontAtlas,
+    previewFontAtlas: FontAtlas,
     prebuiltRasterAtlas: MetalGlyphAtlas? = nil,
     prebuiltSidebarRasterAtlas: MetalGlyphAtlas? = nil
   ) -> RendererBackend {
@@ -1200,6 +1216,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       selection: selection,
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebarFontAtlas,
+      previewFontAtlas: previewFontAtlas,
       prebuiltRasterAtlas: prebuiltRasterAtlas,
       prebuiltSidebarRasterAtlas: prebuiltSidebarRasterAtlas)
   }
@@ -1477,6 +1494,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       selection: resolved,
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebarFontAtlas,
+      previewFontAtlas: previewFontAtlas,
       prebuiltRasterAtlas: prebuilt?.terminal,
       prebuiltSidebarRasterAtlas: prebuilt?.sidebar)
     nextBackendSwapToken &+= 1
@@ -4716,11 +4734,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let newSidebarFontAtlas =
       ladderEntry?.sidebarFontAtlas
       ?? sidebarFontAtlas.withPointSize(FontAtlas.sidebarPointSize(forTerminalPointSize: clamped))
+    // No ladder entry for the preview atlas (GlyphAtlasLadder only prebuilds
+    // terminal/sidebar sizes) — always computed synchronously, same as the
+    // sidebar atlas's own ladder-miss fallback above.
+    let newPreviewFontAtlas = previewFontAtlas.withPointSize(
+      FontAtlas.previewPointSize(forTerminalPointSize: clamped))
     let cell = newFontAtlas.cellSize
     let sidebarCell = newSidebarFontAtlas.cellSize
+    let previewCell = newPreviewFontAtlas.cellSize
 
     fontAtlas = newFontAtlas
     sidebarFontAtlas = newSidebarFontAtlas
+    previewFontAtlas = newPreviewFontAtlas
     cellWidth = max(1, Int(cell.width))
     cellHeight = max(1, Int(cell.height))
     sidebarCellWidth = max(1, Int(sidebarCell.width))
@@ -4747,7 +4772,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         pixelHeight: lastPixelHeight,
         scale: lastSurfaceScale)
     } else if let slug = backend as? SlugGlyphRenderer {
-      slug.reconfigureFonts(fontAtlas: newFontAtlas, sidebarFontAtlas: newSidebarFontAtlas)
+      slug.reconfigureFonts(
+        fontAtlas: newFontAtlas, sidebarFontAtlas: newSidebarFontAtlas,
+        previewFontAtlas: newPreviewFontAtlas)
       slug.resize(
         pixelWidth: lastPixelWidth,
         pixelHeight: lastPixelHeight,
@@ -4769,7 +4796,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       cellWidth: cellWidth,
       cellHeight: cellHeight,
       sidebarCellWidth: sidebarCell.width,
-      sidebarCellHeight: sidebarCell.height)
+      sidebarCellHeight: sidebarCell.height,
+      previewCellWidth: previewCell.width,
+      previewCellHeight: previewCell.height)
 
     // Renegotiate the grid with the unchanged viewport pixels. Mirrors
     // setFrameSize's interaction invalidation: a grid-size change invalidates

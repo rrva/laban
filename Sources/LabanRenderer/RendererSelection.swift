@@ -60,6 +60,7 @@ public func makeRendererBackend(
   selection: RendererSelection,
   fontAtlas: FontAtlas,
   sidebarFontAtlas: FontAtlas? = nil,
+  previewFontAtlas: FontAtlas? = nil,
   pixelWidth: Int = 1,
   pixelHeight: Int = 1,
   scale: CGFloat = 1,
@@ -70,6 +71,7 @@ public func makeRendererBackend(
 ) -> RendererBackend {
   let resolved = selection.isAvailableOnCurrentOS ? selection : .classic
   let sidebar = sidebarFontAtlas ?? fontAtlas
+  let preview = previewFontAtlas ?? fontAtlas
 
   switch resolved {
   case .software:
@@ -195,6 +197,7 @@ public func makeRendererBackend(
     if let slug = SlugGlyphRenderer(
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebar,
+      previewFontAtlas: preview,
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
       scale: scale,

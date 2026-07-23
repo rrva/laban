@@ -405,8 +405,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   public private(set) var fontAtlas: FontAtlas
   public private(set) var sidebarFontAtlas: FontAtlas
+  public private(set) var previewFontAtlas: FontAtlas
   private var referenceFontAtlas: FontAtlas
   private var sidebarReferenceFontAtlas: FontAtlas
+  private var previewReferenceFontAtlas: FontAtlas
 
   private let curveStore = GlyphCurveStore()
   private var entriesByKey: [SlugGlyphGeometryKey: SlugGlyphEntry] = [:]
@@ -425,17 +427,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// re-probing `CTFontGetSymbolicTraits` every glyph run.
   private var colorTraitCache: [UInt32: Bool] = [:]
   /// Resolved (interned font ID, reference-atlas styled variant) per
-  /// (source == .sidebar, bold, italic) run-shape (8 combinations), keyed
-  /// like `colorTraitCache` (bit0 = sidebar, bit1 = bold, bit2 = italic).
+  /// (atlas kind, bold, italic) run-shape (16 combinations: atlas kind is 2
+  /// bits so terminal/sidebar/preview each get a distinct slot), keyed like
+  /// `colorTraitCache` (bits 0-1 = atlas kind, bit2 = bold, bit3 = italic).
   /// `appendGlyphRun` otherwise called `FontAtlas.postScriptName(of:)`
   /// (`CTFontCopyPostScriptName`) once per glyph run per frame just to feed
-  /// `internedFontID`; both reference atlases are stable between font
+  /// `internedFontID`; all three reference atlases are stable between font
   /// reconfigures, so the resolved pair only needs computing once per shape.
   /// Invalidated whenever a reference atlas can change identity: cleared in
   /// `reconfigureFonts` (replaces `referenceFontAtlas`/
-  /// `sidebarReferenceFontAtlas` directly) and in `refreshCJKFontCascade`
-  /// (only rebuilds `rasterAtlas`, not the reference atlases, but cleared
-  /// too for safety since nothing here is hot enough to matter).
+  /// `sidebarReferenceFontAtlas`/`previewReferenceFontAtlas` directly) and in
+  /// `refreshCJKFontCascade` (only rebuilds `rasterAtlas`, not the reference
+  /// atlases, but cleared too for safety since nothing here is hot enough to
+  /// matter).
   private typealias RunFontIdentity = (
     fontID: Int, referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool)
   )
@@ -712,6 +716,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   public init?(
     fontAtlas: FontAtlas,
     sidebarFontAtlas: FontAtlas? = nil,
+    previewFontAtlas: FontAtlas? = nil,
     pixelWidth: Int = 1,
     pixelHeight: Int = 1,
     scale: CGFloat = 1,
@@ -907,8 +912,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     self.layer = layer
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
+    self.previewFontAtlas = previewFontAtlas ?? fontAtlas
     self.referenceFontAtlas = fontAtlas.withPointSize(Self.referencePointSize)
     self.sidebarReferenceFontAtlas = (sidebarFontAtlas ?? fontAtlas).withPointSize(
+      Self.referencePointSize)
+    self.previewReferenceFontAtlas = (previewFontAtlas ?? fontAtlas).withPointSize(
       Self.referencePointSize)
     self.pixelWidth = max(1, pixelWidth)
     self.pixelHeight = max(1, pixelHeight)
@@ -1181,11 +1189,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     return (targetTexture.width, targetTexture.height, bytes)
   }
 
-  public func reconfigureFonts(fontAtlas: FontAtlas, sidebarFontAtlas: FontAtlas? = nil) {
+  public func reconfigureFonts(
+    fontAtlas: FontAtlas, sidebarFontAtlas: FontAtlas? = nil, previewFontAtlas: FontAtlas? = nil
+  ) {
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
+    self.previewFontAtlas = previewFontAtlas ?? fontAtlas
     self.referenceFontAtlas = fontAtlas.withPointSize(Self.referencePointSize)
     self.sidebarReferenceFontAtlas = (sidebarFontAtlas ?? fontAtlas).withPointSize(
+      Self.referencePointSize)
+    self.previewReferenceFontAtlas = (previewFontAtlas ?? fontAtlas).withPointSize(
       Self.referencePointSize)
     colorGlyphAtlas = Self.makeColorGlyphAtlas(
       device: device,
@@ -1212,8 +1225,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   public func refreshCJKFontCascade() {
     // Only rebuilds `rasterAtlas`, not `referenceFontAtlas`/
-    // `sidebarReferenceFontAtlas` (those change in `reconfigureFonts`), so
-    // strictly this cache would still be valid here. Invalidated anyway:
+    // `sidebarReferenceFontAtlas`/`previewReferenceFontAtlas` (those change in
+    // `reconfigureFonts`), so strictly this cache would still be valid here.
+    // Invalidated anyway:
     // nothing in this path is hot enough for the extra dictionary rebuild to
     // matter, and it keeps the cache's invariant ("cleared whenever atlas
     // state changes") simple to reason about from either call site alone.
@@ -2158,7 +2172,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         let underlineStyle, let underlineColor, _, _, let outputTimestampSeconds,
         let foregroundTransition, let foregroundWave
       ):
-        let activeAtlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
+        let activeAtlas = atlas(for: source)
         let cellHeight = activeAtlas.cellSize.height
         guard
           intersectsDamage(
@@ -2311,6 +2325,28 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
   }
 
+  /// Which font atlas a `FrameCommand.source` draws with. Single source of
+  /// truth for the terminal/sidebar/preview atlas selection so the two call
+  /// sites (damage precompute, `appendGlyphRun`) can't drift.
+  private func atlas(for source: FrameSource) -> FontAtlas {
+    switch source {
+    case .sidebar: return sidebarFontAtlas
+    case .sidebarPreview: return previewFontAtlas
+    default: return fontAtlas
+    }
+  }
+
+  /// The reference-point-size (`Self.referencePointSize`) counterpart of
+  /// `atlas(for:)`, used to resolve font identity/fallback independent of
+  /// the on-screen scale factor.
+  private func referenceAtlas(for source: FrameSource) -> FontAtlas {
+    switch source {
+    case .sidebar: return sidebarReferenceFontAtlas
+    case .sidebarPreview: return previewReferenceFontAtlas
+    default: return referenceFontAtlas
+    }
+  }
+
   private func appendGlyphRun(
     _ text: String,
     origin: CGPoint,
@@ -2333,8 +2369,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     colorGlyphs: inout [SlugTextureInstance]
   ) {
     guard !attributes.contains(.invisible) else { return }
-    let activeAtlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
-    let referenceAtlas = source == .sidebar ? sidebarReferenceFontAtlas : referenceFontAtlas
+    let activeAtlas = atlas(for: source)
+    let referenceAtlas = referenceAtlas(for: source)
     let cellAdvance = activeAtlas.cellSize.width
     let baseline = origin.y + activeAtlas.descent
 
@@ -2346,7 +2382,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let italic = attributes.contains(.italic)
     let activeVariant = activeAtlas.styledFontVariant(bold: bold, italic: italic)
     let (fontID, referenceVariant) = runFontIdentity(
-      sidebar: source == .sidebar, bold: bold, italic: italic, referenceAtlas: referenceAtlas)
+      source: source, bold: bold, italic: italic, referenceAtlas: referenceAtlas)
     frameGlyphFontSizes.insert(Double(activeAtlas.pointSize))
 
     // Run-level gates (mirrors VectorGlyphRenderer, see execplans/active/
@@ -2562,13 +2598,23 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// every glyph run every frame. There are only 8 possible run shapes
   /// (sidebar x bold x italic); each is resolved once and reused until the
   /// cache is invalidated.
+  /// Atlas-kind bits (0-1) for `runFontIdentityCache`'s key. Distinct from
+  /// `bold`/`italic` (bits 2-3) so terminal/sidebar/preview reference atlases
+  /// never collide in the cache even though they can share a point size.
+  private func atlasKind(for source: FrameSource) -> UInt8 {
+    switch source {
+    case .sidebar: return 1
+    case .sidebarPreview: return 2
+    default: return 0
+    }
+  }
+
   private func runFontIdentity(
-    sidebar: Bool, bold: Bool, italic: Bool, referenceAtlas: FontAtlas
+    source: FrameSource, bold: Bool, italic: Bool, referenceAtlas: FontAtlas
   ) -> (fontID: Int, referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool)) {
-    var key: UInt8 = 0
-    if sidebar { key |= 0x1 }
-    if bold { key |= 0x2 }
-    if italic { key |= 0x4 }
+    var key: UInt8 = atlasKind(for: source)
+    if bold { key |= 0x4 }
+    if italic { key |= 0x8 }
     if let cached = runFontIdentityCache[key] { return cached }
     let referenceVariant = referenceAtlas.styledFontVariant(bold: bold, italic: italic)
     let referencePostScriptName = FontAtlas.postScriptName(of: referenceVariant.font)

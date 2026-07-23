@@ -579,6 +579,13 @@ public final class TerminalSurfaceController {
   public var sidebarWidth: CGFloat
   public var sidebarCellWidth: CGFloat
   public var sidebarCellHeight: CGFloat
+  /// Hover-preview font's cell size. Zero (the default) means "no preview
+  /// atlas configured yet" — `SidebarProducer.HoverPreview`'s own guard
+  /// treats `cellWidth`/`cellHeight` <= 0 as "don't render a preview panel",
+  /// so leaving these at 0 is a safe default, not a special case callers
+  /// must handle.
+  public var previewCellWidth: CGFloat
+  public var previewCellHeight: CGFloat
 
   var cellPayloadCapacitySnapshotForTesting: TerminalCellPayload.CapacitySnapshot {
     reusableCellPayload.capacitySnapshot
@@ -591,6 +598,8 @@ public final class TerminalSurfaceController {
     sidebarWidth: CGFloat = 200,
     sidebarCellWidth: CGFloat? = nil,
     sidebarCellHeight: CGFloat? = nil,
+    previewCellWidth: CGFloat = 0,
+    previewCellHeight: CGFloat = 0,
     captureSink: TerminalSurfaceCaptureSink? = nil
   ) {
     self.model = model
@@ -599,6 +608,8 @@ public final class TerminalSurfaceController {
     self.sidebarWidth = sidebarWidth
     self.sidebarCellWidth = sidebarCellWidth ?? CGFloat(max(1, cellWidth))
     self.sidebarCellHeight = sidebarCellHeight ?? CGFloat(max(1, cellHeight))
+    self.previewCellWidth = max(0, previewCellWidth)
+    self.previewCellHeight = max(0, previewCellHeight)
     self.captureSink = captureSink
   }
 
@@ -610,12 +621,16 @@ public final class TerminalSurfaceController {
     cellWidth: Int,
     cellHeight: Int,
     sidebarCellWidth: CGFloat,
-    sidebarCellHeight: CGFloat
+    sidebarCellHeight: CGFloat,
+    previewCellWidth: CGFloat = 0,
+    previewCellHeight: CGFloat = 0
   ) {
     self.cellWidth = max(1, cellWidth)
     self.cellHeight = max(1, cellHeight)
     self.sidebarCellWidth = max(1, sidebarCellWidth)
     self.sidebarCellHeight = max(1, sidebarCellHeight)
+    self.previewCellWidth = max(0, previewCellWidth)
+    self.previewCellHeight = max(0, previewCellHeight)
   }
 
   @discardableResult
