@@ -1,0 +1,769 @@
+# Sidebar Hover Preview: A Live Miniature of a Background Tab's Recent Output
+
+This ExecPlan is a living document maintained in accordance with `PLANS.md`
+(repository root). Keep `Progress` and `Validation and Acceptance` current as
+work proceeds.
+
+## Purpose / Big Picture
+
+Today, checking on a background tab (one you are not currently viewing) means
+switching to it, which loses your place on the tab you were on. This change
+adds a **hover preview**: hover a non-active tab's row in the left sidebar, and
+a small floating panel appears beside it showing that tab's most recent
+terminal output, live and legible, rendered as crisp vector text rather than a
+blurry scaled screenshot. Move the mouse away and it disappears. The active
+tab's own row never shows a preview (its content is already the whole right
+side of the window).
+
+This only works when Laban's `slugGlyph` renderer is the effective renderer
+(see "Term glossary" below) and a new setting is turned on. On any other
+renderer, hovering a tab row behaves exactly as it does today: nothing happens.
+`docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md` records why this
+is intentionally Slug-only, mirroring the precedent in
+`docs/adr/0030-spinner-motion-is-a-slug-capability.md` for spinner motion
+smoothing.
+
+You will know this works when: with the Slug renderer active and the new
+setting on, hovering a background tab's sidebar row shows a panel with that
+tab's last few lines of terminal output, positioned beside the row, gone the
+instant the mouse leaves the row or the setting/renderer changes.
+
+### Term glossary (plain language, used throughout this plan)
+
+- **Effective renderer**: which `RendererBackend` is actually drawing frames
+  right now, as opposed to which one the user *selected* in Settings — a
+  selection can silently fall back (e.g. `slugGlyph` falls back to
+  `SoftwareBackend` when no Metal device exists). Detected today via a live
+  Swift type check, `backend is SlugGlyphRenderer`, computed only inside
+  `Sources/LabanApp/TerminalBitmapView.swift` (AppKit layer) and passed down
+  as a plain `Bool` named `effectiveRendererIsSlug`.
+- **`FrameCommand`**: a small enum (`Sources/LabanRenderer/FrameCommand.swift`)
+  that is the *only* thing every renderer consumes to draw a frame — a list of
+  `.rect(...)`, `.glyphRun(...)`, `.cursor(...)`, etc. values. Nothing in this
+  repo draws directly; everything goes through this list. Every `FrameCommand`
+  case that draws something carries a `source: FrameSource` tag (`.sidebar`,
+  `.terminal`, etc.) that renderers use to decide *how* to draw it (which font,
+  which cell size).
+- **`FontAtlas`**: a lightweight wrapper (`Sources/LabanRenderer/FontAtlas.swift`)
+  around a `CTFont` (CoreText font) at one specific point size, with its cell
+  width/height precomputed. A renderer typically owns one `FontAtlas` for
+  terminal text and a second, smaller one for sidebar text.
+  `SlugGlyphRenderer` is the only renderer this plan adds a *third* one to.
+- **Slug / `SlugGlyphRenderer`**: `Sources/LabanRenderer/SlugGlyphRenderer.swift`,
+  one of five `RendererBackend` implementations (`docs/adr/0027-slug-glyph-renderer.md`).
+  It renders text by evaluating glyph outline curves analytically in a Metal
+  fragment shader, so the same cached curve data can be redrawn crisply at any
+  point size just by changing a scale factor — unlike the other renderers,
+  which bake a bitmap glyph atlas at one fixed size and must rebuild it (a real
+  cost) to change size.
+- **Scrollback**: the terminal's history of output that has scrolled off the
+  visible screen. `Session.scrollbackBlock(rowOffset:maxRows:)`
+  (`Sources/LabanCore/Session.swift:883`) reads it directly from a session,
+  independent of whether that session's tab is currently visible on screen.
+- **ExecPlan / this document**: see `PLANS.md` at the repository root for the
+  full authoring rules this document follows.
+
+## Progress
+
+- [x] (2026-07-23) Milestone 1: Settings scaffold + `FrameCommand`/`FontAtlas` groundwork (no visible behavior change). Added `Sources/LabanCore/HoverPreviewSettings.swift`, `Tests/LabanCoreTests/HoverPreviewSettingsTests.swift` (9 tests, all passing), `FrameSource.sidebarPreview` case, `FontAtlas.previewPointSize(forTerminalPointSize:)` and `FontAtlas.persistedPreviewPointSize`. `swift build` clean for LabanCore/LabanRenderer.
+- [ ] Milestone 2: `SlugGlyphRenderer` third atlas + `.sidebarPreview` routing (visible only via a manual/test-injected `FrameCommand`)
+- [ ] Milestone 3: `SidebarProducer` emits the preview panel from resolved content (unit-testable, not yet wired to real hover/session data)
+- [ ] Milestone 4: `TerminalSurfaceController` + `TerminalBitmapView` wiring (feature is live end-to-end for local sessions)
+- [ ] Milestone 5: Settings UI checkbox + debug endpoint + headless parity
+- [ ] Milestone 6: Manual verification, polish pass, Review Gate
+
+## Decision Log
+
+- Decision: Preview panel size and font size both scale from the *terminal
+  content pane's* current size by a fixed ratio (`previewScale = 0.5`), not
+  from independently chosen pixel constants.
+  Rationale: this was prototyped and visually validated in the throwaway
+  browser prototype `prototype/tab-hover-preview/` (see its `NOTES.md`,
+  "Realistic scale" section): scaling both panel dimensions and font size by
+  the same factor keeps the aspect ratio exact and keeps the same character
+  budget that fits the real terminal view also fitting the preview, with no
+  separate truncation constant. `0.5` read as legible and correctly
+  proportioned in that prototype's zoomed-screenshot check.
+  Date/Author: 2026-07-23, planning session.
+- Decision: The preview has no show/hide delay or fade animation in this
+  plan's scope (v1 shows/hides instantly, tied directly to
+  `hoveredSidebarTabId` changing).
+  Rationale: the prototype's 130ms show-delay and CSS opacity fade were
+  explicitly UI polish, not load-bearing for proving the capability (see the
+  prototype's `NOTES.md`, "Not verified / open questions"). Keeping v1
+  instant avoids a whole additional question (does a fade need to respect
+  Reduce Motion?) that a non-animated reveal sidesteps entirely, since an
+  instant appear/disappear is not "motion" in the sense Laban's other
+  Reduce-Motion-gated features address. Milestone 6 revisits this once the
+  static version is in hand and can be judged live, per
+  `docs/process/agent-operating-guide.md`'s "For UI work, verify with the
+  running app" rule.
+  Date/Author: 2026-07-23, planning session.
+- Decision: Content resolution (session lookup + `scrollbackBlock` call) lives
+  in `TerminalSurfaceController.sidebarCommands` (`LabanCore`), not inside
+  `SidebarProducer`.
+  Rationale: `TerminalSurfaceController` already holds `model: AppModel` and
+  already has `AppModel.session(forTab:) -> Session?`
+  (`Sources/LabanCore/AppModel.swift:413`) plus the existing
+  `hoveredTabId` parameter on `sidebarCommands`
+  (`Sources/LabanCore/TerminalSurfaceController.swift:1225`).
+  `SidebarProducer` is documented as producing `FrameCommand`s from plain
+  inputs (tabs, geometry) with no session access at all; keeping it that way
+  means it stays trivially unit-testable with fake data (see Milestone 3).
+  Date/Author: 2026-07-23, planning session.
+- Decision: `runFontIdentity`'s cache key (`SlugGlyphRenderer.swift`, previously
+  `sidebar: Bool` packed into bit 0 of a `UInt8`) is widened to a 2-bit
+  "atlas kind" field (0 = terminal, 1 = sidebar, 2 = preview) rather than
+  aliasing preview onto the sidebar bucket.
+  Rationale: research (a fresh read of the function before editing, per this
+  plan's own Milestone 2 step 5 instruction) confirmed the `sidebar` bool is
+  purely a cache-key bit distinguishing which `FontAtlas`/reference-font
+  identity a cached `(fontID, referenceVariant)` pair was resolved against —
+  it is not a semantic "is this UI chrome" flag. `previewFontAtlas` is a
+  genuinely different `FontAtlas` from `sidebarFontAtlas` (different point
+  size: the preview's `previewScale = 0.5` ratio off the terminal size vs.
+  the sidebar's fixed 11/14 ratio), so aliasing preview to `sidebar: true`
+  would let a stale `CTFont`/fontID resolved against `sidebarReferenceFontAtlas`
+  leak into preview glyph runs (or vice versa) whenever the cache is warm
+  from both a sidebar row and a preview panel in the same session. Widening
+  the key avoids that collision at the cost of two more cache slots (8 -> 16
+  entries max, `bold`/`italic` unchanged at 2 bits each).
+  Date/Author: 2026-07-23, implementation session.
+
+## Surprises & Discoveries
+
+- Observation: Milestone 5's file list ("mirror the exact file list
+  `SpinnerMotionSmoothingSettings` touches outside `LabanCore`... 4 files")
+  undercounts the real surface. `grep -rniln spinnerMotion Sources/ Tests/`
+  returns 23 files, not 4: beyond `SettingsWindowController.swift`,
+  `LiveIntentRouter.swift`, `ControlProjectionBridge.swift`, and
+  `HeadlessDebugRuntime.swift` (the class declaration; the actual debug logic
+  lives in an `extension HeadlessDebugRuntime` in a *different* file,
+  `DebugStateEndpoints.swift`), full parity also touches:
+  `Sources/LabanApp/TerminalBitmapView.swift` (didChangeNotification observer
+  at ~934-948, a live GUI-side `spinnerMotionState` accessor at ~1365-1389,
+  and the two `TerminalSurfaceFrameRequest` construction sites at ~1703-1704
+  and ~3216-3217 — already covered by this plan's own Milestone 4, not new
+  work, just noting the overlap);
+  `Sources/LabanDebug/DebugWindowActions.swift` (the actual write-side
+  handler, `setSpinnerMotionSmoothingEnabled`/`resetSpinnerMotionDiagnostics`);
+  `Sources/LabanDebug/DebugRuntimeRequests.swift`,
+  `Sources/LabanDebug/DebugRuntimeActions.swift`,
+  `Sources/LabanDebug/HeadlessIntentRouter.swift`,
+  `Sources/LabanDebug/DebugDiscoveryEndpoints.swift` (routing/dispatch glue);
+  `Sources/LabanCore/Intents/IntentCatalog.swift`,
+  `Sources/LabanCore/Intents/DebugRequestPayloads.swift` (intent descriptors +
+  action-request Codable payload types);
+  `Sources/LabanCore/Control/Projections/ControlProjectionContext.swift`,
+  `Sources/LabanCore/Control/Projections/ControlResponseModels.swift`,
+  `Sources/LabanCore/Control/Projections/ControlStateProjections.swift`
+  (the response struct + aggregate-state wiring);
+  `Sources/LabanControl/ControlRouteCatalog.swift` (HTTP route registration)
+  plus a matching `schemas/debug/*.schema.json` file. Milestone 5's plan text
+  is corrected below to name this full list rather than the original 4-file
+  claim. No existing test exercises the spinner-motion debug endpoint or
+  intents at all (verified: no `SpinnerMotionSmoothingSettingsTests.swift`,
+  no debug-route test) — Milestone 5's new tests for hover-preview are
+  therefore new ground, not a copy of an existing spinner-motion test.
+  Evidence: `grep -rniln spinnerMotion Sources/ Tests/` (23 hits); full
+  per-file line numbers captured in the implementation session's research
+  pass, reproduced in Milestone 5's Plan of Work below.
+
+## Context and Orientation
+
+Laban is a native macOS terminal app. Its terminal pane and left sidebar are
+**not** drawn with SwiftUI — both are drawn by one custom `NSView` subclass,
+`TerminalBitmapView` (`Sources/LabanApp/TerminalBitmapView.swift`, ~8500
+lines), from a list of `FrameCommand` values built by pure, renderer-neutral
+functions in the `LabanCore` Swift package target. `SidebarProducer`
+(`Sources/LabanCore/SidebarProducer.swift`) is specifically the function that
+turns `[Tab]` (the list of open tabs) plus some layout numbers into the
+`[FrameCommand]` list for the sidebar column. `TerminalSurfaceController`
+(`Sources/LabanCore/TerminalSurfaceController.swift`) is the layer above it
+that assembles a full frame (terminal + sidebar) from a `TerminalSurfaceFrameRequest`
+and calls `SidebarProducer` internally via its own `sidebarCommands(...)`
+method.
+
+There are five renderer backends implementing the `RendererBackend` protocol
+(`SoftwareBackend`, `MetalRenderer` ("classic"), a GPU-driven cell renderer,
+`VectorGlyphRenderer`, and `SlugGlyphRenderer`), all consuming the same
+`[FrameCommand]` list. Which one is *configured* is a user setting; which one
+is *effective* can differ (silent fallback when a renderer's requirements
+aren't met, e.g. no Metal device). `TerminalBitmapView` is the only place that
+computes "is the effective renderer Slug" as a real Swift type check
+(`backend is SlugGlyphRenderer`, at `TerminalBitmapView.swift:1704` and
+`:3217`) and threads the answer down into `LabanCore` as a plain
+`Bool` field, `TerminalSurfaceFrameRequest.effectiveRendererIsSlug`
+(`TerminalSurfaceController.swift:127`). This is the established pattern
+(`docs/adr/0030-spinner-motion-is-a-slug-capability.md`,
+`Sources/LabanCore/SpinnerMotionSmoothingSettings.swift`) for adding a
+capability that only one renderer implements, without leaking that renderer's
+type into `LabanCore` (which must stay renderer-neutral — it does not import
+`LabanRenderer`'s concrete backends, only the shared `FrameCommand` contract).
+
+**Hover detection already exists and needs no new code.** `TerminalBitmapView`
+already tracks `hoveredSidebarTabId: Tab.ID?`
+(`TerminalBitmapView.swift:268`), updated by `mouseMoved(with:)` →
+`updateHoveredSidebarTab(at:)` (`TerminalBitmapView.swift:4088`), which calls
+`SidebarProducer.hitTest(...)` and, on a change, calls `setHoveredSidebarTab(_:)`
+(`:4110`) which stores the new id and calls `invalidateRenderAndWake()` — the
+event-driven wake mechanism from `docs/adr/0018-event-driven-frame-production.md`
+that tells the app "something changed, draw a new frame." That id already
+flows all the way through `TerminalSurfaceFrameRequest.hoveredSidebarTabId`
+into `TerminalSurfaceController.sidebarCommands(hoveredTabId:)`
+(`TerminalSurfaceController.swift:1225`), called from both of
+`TerminalSurfaceController`'s frame-assembly methods (local-session path at
+`:908` and remote/daemon-served path at `:1136`) with the identical arguments
+`hoveredTabId: request.hoveredSidebarTabId`. Today `sidebarCommands` only uses
+that id to decide whether to draw the close-✕ glyph and to pass it to
+`SidebarProducer.output(hoveredTabId:)`, which currently uses it the same way.
+This plan adds a *second* use of the same, already-flowing id: when eligible,
+resolve its tab's recent content and draw a preview panel.
+
+`Session.scrollbackBlock(rowOffset: Int = 0, maxRows: Int = 0) -> ScrollbackBlock?`
+(`Sources/LabanCore/Session.swift:883`) reads scrollback text directly from a
+`Session` object, with no dependency on whether that session's tab is the one
+currently on screen. `ScrollbackBlock` (`Sources/LabanCore/TerminalFind.swift:22`)
+has a `lines() -> [String]` method (`TerminalFind.swift:66`) that already does
+the correct byte-offset-to-per-row-`String` splitting (trailing newline/NUL
+trimming included) — reuse it; do not re-derive row splitting from
+`ScrollbackBlock.text`/`rowOffsets` by hand. A `Tab`'s `Session` is resolved via
+`AppModel.session(forTab: Tab.ID) -> Session?` (`Sources/LabanCore/AppModel.swift:413`);
+`TerminalSurfaceController` already holds `public let model: AppModel`
+(`TerminalSurfaceController.swift:489`).
+
+`SlugGlyphRenderer` (`Sources/LabanRenderer/SlugGlyphRenderer.swift`, ~3500
+lines) already renders two simultaneous font sizes from one shared glyph curve
+cache (`GlyphCurveStore`, keyed by `(postScriptName, pointSize, glyph, matrix)`
+but always queried at a fixed `referencePointSize = 14`; on-screen size is a
+render-time `pointScale = activeAtlas.pointSize / Self.referencePointSize`
+factor, not a re-bake). It stores `fontAtlas`/`referenceFontAtlas` (terminal
+size) and `sidebarFontAtlas`/`sidebarReferenceFontAtlas` (sidebar size,
+smaller), and picks between them per-command with a plain ternary at exactly
+two sites: `SlugGlyphRenderer.swift:2161` (`let activeAtlas = source == .sidebar
+? sidebarFontAtlas : fontAtlas`) and `:2336-2337` (the same ternary, plus the
+matching one for `referenceAtlas`, inside the function that actually emits GPU
+glyph instances). Both atlas pairs are computed together, in lockstep, in
+exactly two places: the `init` (`:911`) and `reconfigureFonts(fontAtlas:sidebarFontAtlas:)`
+(`:1184`). This plan adds a *third* pair, `previewFontAtlas`/`previewReferenceFontAtlas`,
+following the identical shape.
+
+`FrameCommand.source` is a `FrameSource` enum
+(`Sources/LabanRenderer/FrameCommand.swift:66`) with cases `.sidebar`,
+`.chrome`, `.terminal`, `.cursor`, `.selection`, `.find`, `.image`, `.preedit`.
+There is no exhaustive `switch` over `FrameSource` anywhere in
+`Sources/LabanRenderer` or `Sources/LabanApp` that a new case would break
+(verified by grep; the only two `switch source` occurrences in the whole
+`Sources/` tree are unrelated `String`/`TerminalBackdropStyle` switches in
+`Sources/LabanApp/SettingsWindowController.swift:1787` and
+`Sources/LabanCore/Control/Projections/ControlStateProjections.swift:211`).
+Adding a case is therefore additive and safe.
+
+## Plan of Work
+
+### Milestone 1 — Settings scaffold + `FrameCommand`/`FontAtlas` groundwork
+
+No user-visible behavior changes yet. This milestone adds the pieces every
+later milestone depends on.
+
+1. **New file** `Sources/LabanCore/HoverPreviewSettings.swift`. Copy the exact
+   shape of `Sources/LabanCore/SpinnerMotionSmoothingSettings.swift` (already
+   read in full above — reproduce its structure, not its content):
+   - `public enum HoverPreviewSettings`
+   - `public static let enabledKey = "LabanSidebarHoverPreviewEnabled"`
+   - `public static let enabledEnvironmentKey = "LABAN_SIDEBAR_HOVER_PREVIEW_ENABLED"`
+   - `public static let didChangeNotification = Notification.Name("LabanSidebarHoverPreviewSettingsDidChange")`
+   - `environmentOverride(environment:) -> Bool?`, `enabled` / `enabled(defaults:environment:)`,
+     `setEnabled(_:defaults:environment:) -> Bool` — copy
+     `SpinnerMotionSmoothingSettings`'s implementations verbatim, renaming only
+     the constants above. Defaults to **off** (same opt-in posture as spinner
+     motion smoothing; `docs/product/spec.md` governs new-scope defaults —
+     confirm this stays consistent with any explicit default-state guidance
+     there before shipping Milestone 5).
+2. **Edit** `Sources/LabanRenderer/FrameCommand.swift`: add one case to
+   `FrameSource` (after `case sidebar`):
+   ```swift
+   /// A floating live-preview panel of a background tab's recent scrollback,
+   /// shown on sidebar-row hover. Slug-only; see docs/adr/0031.
+   case sidebarPreview
+   ```
+3. **Edit** `Sources/LabanRenderer/FontAtlas.swift`: add a preview-size
+   constant and derivation function mirroring the existing sidebar ones
+   exactly (`sidebarPointSize(forTerminalPointSize:)` is at line 50-52):
+   ```swift
+   private static let defaultPreviewPointSize: CGFloat = 7.0  // 14 * 0.5
+
+   /// Hover-preview point size derived from a terminal point size, preserving
+   /// the previewScale = 0.5 ratio (see execplans/active/sidebar-hover-preview.md,
+   /// Decision Log). Mirrors `sidebarPointSize(forTerminalPointSize:)`.
+   public static func previewPointSize(forTerminalPointSize size: CGFloat) -> CGFloat {
+     size * (defaultPreviewPointSize / defaultTerminalPointSize)
+   }
+   ```
+   Do **not** add a `persistedPreviewPointSize` static var unless a later
+   milestone finds it's actually needed at a call site — `sidebarPointSize`
+   has one because sidebar atlases are built from the persisted terminal size
+   at multiple points; check whether the same is true for preview before
+   copying that part too.
+
+**Milestone 1 acceptance**: `swift build` succeeds from the repository root
+with no other files changed. `HoverPreviewSettings.enabled` returns `false` by
+default; a unit test (add to a new
+`Tests/LabanCoreTests/HoverPreviewSettingsTests.swift`, mirroring whatever
+`SpinnerMotionSmoothingSettingsTests.swift` file already tests for the
+existing settings type — find it with `find Tests -iname
+'*SpinnerMotionSmoothingSettings*'` and copy its test shape) confirms the env
+override and default-off behavior. Run `swift test --filter
+HoverPreviewSettingsTests` and expect all new tests to pass.
+
+### Milestone 2 — `SlugGlyphRenderer` third atlas + `.sidebarPreview` routing
+
+Still no user-visible change (nothing emits `.sidebarPreview` commands yet),
+but by the end of this milestone a hand-constructed `.glyphRun(..., source:
+.sidebarPreview)` command, fed into `SlugGlyphRenderer` directly, renders
+correctly at the smaller preview size. This is the riskiest, most
+Slug-internals-specific milestone — validate it in isolation before wiring
+real data into it.
+
+1. **Edit** `SlugGlyphRenderer`: add two stored properties beside the existing
+   sidebar pair (near line 407-409):
+   ```swift
+   public private(set) var previewFontAtlas: FontAtlas
+   private var previewReferenceFontAtlas: FontAtlas
+   ```
+2. Extend the memberwise `init` (line ~712, alongside the existing
+   `sidebarFontAtlas: FontAtlas? = nil` parameter) with
+   `previewFontAtlas: FontAtlas? = nil`, and initialize the two new
+   properties in the init body (near line 909-911) the same way the sidebar
+   pair is:
+   ```swift
+   self.previewFontAtlas = previewFontAtlas ?? fontAtlas
+   self.previewReferenceFontAtlas = (previewFontAtlas ?? fontAtlas).withPointSize(Self.referencePointSize)
+   ```
+3. Extend `reconfigureFonts(fontAtlas:sidebarFontAtlas:)` (line 1184) to
+   `reconfigureFonts(fontAtlas:sidebarFontAtlas:previewFontAtlas: FontAtlas? = nil)`
+   and mirror the same two assignments there.
+4. At the two atlas-selection ternary sites (`:2161` and `:2336-2337`),
+   replace the two-way ternary with a small private helper so the mapping
+   lives in one place:
+   ```swift
+   private func atlas(for source: FrameSource) -> FontAtlas {
+     switch source {
+     case .sidebar: return sidebarFontAtlas
+     case .sidebarPreview: return previewFontAtlas
+     default: return fontAtlas
+     }
+   }
+   private func referenceAtlas(for source: FrameSource) -> FontAtlas {
+     switch source {
+     case .sidebar: return sidebarReferenceFontAtlas
+     case .sidebarPreview: return previewReferenceFontAtlas
+     default: return referenceFontAtlas
+     }
+   }
+   ```
+   and use `atlas(for: source)` / `referenceAtlas(for: source)` at both call
+   sites in place of the old ternaries.
+5. **Check `runFontIdentity`** (referenced at `:2340`, signature
+   `runFontIdentity(sidebar: source == .sidebar, bold:italic:referenceAtlas:)`):
+   read its full implementation (`grep -n "func runFontIdentity" Sources/LabanRenderer/SlugGlyphRenderer.swift`)
+   before editing. It almost certainly uses the `sidebar: Bool` flag as part of
+   a cache key or font-fallback-identity choice. Determine whether "preview"
+   needs to be a third identity bucket (likely: change the parameter from
+   `sidebar: Bool` to an enum/pass `source` directly) or whether reusing the
+   sidebar identity for preview is harmless (possible if the function only
+   cares about "is this the smaller UI-chrome font" as a boolean, in which
+   case preview should map to `true` there too, sharing the sidebar's
+   fallback-cascade choice while still using its own `FontAtlas` for actual
+   size). Record whichever is true in this plan's Decision Log once
+   determined — do not guess silently.
+6. **Edit** `Sources/LabanRenderer/RendererSelection.swift`: at the
+   `SlugGlyphRenderer(...)` construction call (~line 195), thread a
+   `previewFontAtlas` argument through from `makeRendererBackend`'s own
+   parameters (which will need a new parameter added, threaded the same way
+   `sidebar: FontAtlas` already is — check `makeRendererBackend`'s full
+   signature with `grep -n "func makeRendererBackend" Sources/LabanRenderer/RendererSelection.swift`
+   first). Other branches of `makeRendererBackend` (the `MetalRenderer`,
+   `VectorGlyphRenderer`, `SoftwareBackend` constructions) do **not** need
+   this new parameter — leave them untouched.
+7. **Edit** `Sources/LabanApp/TerminalBitmapView.swift`: everywhere
+   `sidebarFontAtlas` is computed and threaded (the initial construction near
+   `makeBackend`'s call site, and the live-resize path in `applyFontSize`
+   around line 4692-4755), compute a parallel `previewFontAtlas` via
+   `FontAtlas.previewPointSize(forTerminalPointSize:)` and thread it the same
+   way. Grep for every `sidebarFontAtlas` occurrence in this file first
+   (`grep -n "sidebarFontAtlas" Sources/LabanApp/TerminalBitmapView.swift`) and
+   treat that list as the checklist of sites needing a parallel
+   `previewFontAtlas` line — do not assume the two call sites already read in
+   this plan's research are the only ones.
+
+**Milestone 2 acceptance**: add a focused test (new file
+`Tests/LabanRendererTests/SlugGlyphRendererPreviewAtlasTests.swift`, or add
+cases to an existing `SlugGlyphRenderer`-focused test file if one already
+covers `sidebarFontAtlas` routing — find it with `grep -rl
+"sidebarFontAtlas" Tests/`) that constructs a `SlugGlyphRenderer` with a
+distinct `previewFontAtlas` (different point size from both `fontAtlas` and
+`sidebarFontAtlas`), feeds it a single `.glyphRun(..., source: .sidebarPreview)`
+command, and asserts (via whatever introspection the existing sidebar-atlas
+tests use — e.g. checking `frameGlyphFontSizes` if that's how existing tests
+verify which atlas a command resolved to) that the preview atlas's point size,
+not the terminal or sidebar one, was used. Run `swift test --filter
+SlugGlyphRendererPreviewAtlasTests` (or the actual filter name once the file
+exists) and expect it to pass. `swift build` must still succeed with zero new
+warnings from this file.
+
+### Milestone 3 — `SidebarProducer` emits the preview panel
+
+Still not wired to real hover/session data — this milestone makes
+`SidebarProducer` able to draw a preview panel given already-resolved content,
+and is unit-testable with fake inputs, matching how `SidebarProducer.swift`'s
+existing tests (`grep -rl "SidebarProducer" Tests/`) already construct fake
+`[Tab]` arrays.
+
+1. **Edit** `Sources/LabanCore/SidebarProducer.swift`: add a nested struct
+   next to the existing `DragIndicator` struct (line 40-47):
+   ```swift
+   /// Resolved content for the floating hover-preview panel: the tab being
+   /// previewed, its most recent scrollback lines (oldest first, already
+   /// truncated to a reasonable fetch bound by the caller), and the geometry
+   /// inputs needed to size/position the panel and its text. `cellWidth`/
+   /// `cellHeight` are the PREVIEW font's cell size (from
+   /// `SlugGlyphRenderer.previewFontAtlas.cellSize`), not the sidebar's.
+   public struct HoverPreview: Equatable {
+     public var tabId: Tab.ID
+     public var lines: [String]
+     public var viewportWidth: CGFloat
+     public var cellWidth: CGFloat
+     public var cellHeight: CGFloat
+     public init(
+       tabId: Tab.ID, lines: [String], viewportWidth: CGFloat,
+       cellWidth: CGFloat, cellHeight: CGFloat
+     ) {
+       self.tabId = tabId
+       self.lines = lines
+       self.viewportWidth = viewportWidth
+       self.cellWidth = cellWidth
+       self.cellHeight = cellHeight
+     }
+   }
+
+   /// Scale applied to the terminal content pane's current width/height to
+   /// get the preview panel's size, and to the terminal point size to get the
+   /// preview font's point size (`FontAtlas.previewPointSize`). See
+   /// execplans/active/sidebar-hover-preview.md, Decision Log.
+   static let previewScale: CGFloat = 0.5
+   static let previewGap: CGFloat = 10
+   static let previewInset: CGFloat = 8
+   ```
+2. Add `hoverPreview: HoverPreview? = nil` as a new trailing parameter to
+   `output(tabs:activeTabId:height:topInset:hoveredTabId:dragIndicator:scrollOffset:)`
+   (line 158-163). Leave `commands(...)` (the legacy wrapper at line 61)
+   unchanged — it does not need this parameter unless a caller of it turns out
+   to need the feature (check with `grep -rn "\.commands(" Sources/ | grep -i
+   sidebar` before deciding; if only `sidebarCommands` needs it, `output` is
+   the only entry point that needs the new parameter).
+3. Inside `output(...)`, after the existing tab-row loop (after line 376, before
+   the drop-target-accent block at line 378), add the preview-panel emission.
+   Sketch (adapt exactly to this file's real coordinate variables — `tabY`,
+   `visibleRect`, `sidebarWidth`, `height`, `topInset`, `scrollOffset` are all
+   already in scope from the surrounding function; this is not literal
+   copy-paste code, work out the exact expressions against the real
+   surrounding code):
+   ```swift
+   if let preview = hoverPreview, preview.tabId != activeTabId,
+      let rowIndex = tabs.firstIndex(where: { $0.id == preview.tabId }),
+      preview.cellWidth > 0, preview.cellHeight > 0 {
+     let rowTabY = height - CGFloat(rowIndex + 1) * rowHeight - topInset + scrollOffset
+     let paneWidth = max(0, preview.viewportWidth - sidebarWidth)
+     let paneHeight = max(0, height - topInset)
+     let panelWidth = paneWidth * Self.previewScale
+     let panelHeight = paneHeight * Self.previewScale
+     if panelWidth >= 2 * Self.previewInset, panelHeight >= 2 * Self.previewInset {
+       var panelY = rowTabY + rowHeight - panelHeight
+       panelY = min(panelY, height - panelHeight)
+       panelY = max(panelY, 0)
+       let panelRect = CGRect(
+         x: sidebarWidth + Self.previewGap, y: panelY,
+         width: panelWidth, height: panelHeight)
+       // Border: a slightly larger rect painted first, background painted on
+       // top inset by 1pt, so only a 1pt ring of the border color shows —
+       // avoids needing a new FrameCommand case for strokes.
+       cmds.append(.rect(panelRect.insetBy(dx: -1, dy: -1), color: Theme.current.dim0, source: .sidebarPreview))
+       cmds.append(.rect(panelRect, color: Theme.current.bg1, source: .sidebarPreview, compositing: .replace))
+       let maxCols = max(1, Int(floor((panelWidth - 2 * Self.previewInset) / preview.cellWidth)))
+       let maxLines = max(1, Int(floor((panelHeight - 2 * Self.previewInset) / preview.cellHeight)))
+       let shown = preview.lines.suffix(maxLines)
+       for (i, line) in shown.enumerated() {
+         let truncated = String(line.prefix(maxCols))
+         let y = panelRect.maxY - Self.previewInset - CGFloat(i + 1) * preview.cellHeight
+         cmds.append(.glyphRun(
+           origin: CGPoint(x: panelRect.minX + Self.previewInset, y: y),
+           text: truncated, foreground: Theme.current.fg0, background: Theme.current.bg1,
+           attributes: [], source: .sidebarPreview))
+       }
+     }
+   }
+   ```
+   Note the known v1 simplification: `String(line.prefix(maxCols))` truncates
+   by `Character` count, not display column width, so a line containing
+   wide (e.g. CJK) characters can overflow the panel width slightly. This
+   mirrors the same simplification the browser prototype used and is an
+   accepted limitation for v1 — do not attempt grapheme-width-aware
+   truncation in this milestone; note it in `Surprises & Discoveries` if it
+   turns out to look bad in Milestone 6's manual check, and scope a follow-up
+   rather than scope-creeping this milestone.
+4. Add unit tests to `Tests/LabanCoreTests/SidebarProducerTests.swift` (or
+   wherever `SidebarProducer` is already tested — `grep -rl "SidebarProducer"
+   Tests/LabanCoreTests/`): construct 2+ fake `Tab`s, call `output(...)` with a
+   `hoverPreview` pointing at the non-active tab, and assert (a) at least one
+   `.rect(..., source: .sidebarPreview)` and one `.glyphRun(..., source:
+   .sidebarPreview)` command is present; (b) calling with `hoverPreview: nil`
+   produces byte-identical output to the pre-this-milestone behavior (a
+   regression guard — existing tests should already cover this if they pin
+   exact command counts/content); (c) calling with `hoverPreview.tabId ==
+   activeTabId` produces **no** `.sidebarPreview` commands (the
+   no-preview-on-your-own-tab rule).
+
+**Milestone 3 acceptance**: `swift test --filter SidebarProducerTests` passes,
+including the three new cases above. Every pre-existing `SidebarProducerTests`
+case still passes unmodified (proves the new parameter is additive).
+
+### Milestone 4 — `TerminalSurfaceController` + `TerminalBitmapView` wiring
+
+This is the milestone where the feature becomes live end-to-end for local
+(in-process) sessions. Remote/daemon-served sessions (`laband`-hosted tabs) are
+covered by the same code path since both of `TerminalSurfaceController`'s
+frame-assembly methods call the same `sidebarCommands`, but verify this
+explicitly in Milestone 6 rather than assuming it.
+
+1. **Edit** `Sources/LabanCore/TerminalSurfaceController.swift`:
+   - Add two new stored properties near `sidebarCellWidth`/`sidebarCellHeight`
+     (line 580-581): `public var previewCellWidth: CGFloat` and
+     `public var previewCellHeight: CGFloat`, set in both initializers (line
+     592 and 612) the same way the sidebar pair is (default to `0` when no
+     explicit value is given, matching `HoverPreview`'s guard in Milestone
+     3 step 3 that skips rendering when cell size is `<= 0`).
+   - Add `effectiveRendererIsSlug: Bool = false` and `hoverPreviewEnabled:
+     Bool = false` as new parameters to `sidebarCommands(...)` (line
+     1225-1233).
+   - Inside `sidebarCommands`, before calling `producer.output(...)` (inside
+     the local `build()` closure at line 1240), resolve the preview content:
+     ```swift
+     let hoverPreview: SidebarProducer.HoverPreview? = {
+       guard effectiveRendererIsSlug, hoverPreviewEnabled,
+         let hoveredTabId, hoveredTabId != activeTabId,
+         previewCellWidth > 0, previewCellHeight > 0,
+         let session = model.session(forTab: hoveredTabId),
+         let block = session.scrollbackBlock(rowOffset: 0, maxRows: 500)
+       else { return nil }
+       return SidebarProducer.HoverPreview(
+         tabId: hoveredTabId, lines: block.lines(), viewportWidth: sidebarWidth + terminalPaneWidthPlaceholder,
+         cellWidth: previewCellWidth, cellHeight: previewCellHeight)
+     }()
+     ```
+     The `viewportWidth` field needs the **full window content width**
+     (sidebar + terminal pane), not just `sidebarWidth` — check whether
+     `TerminalSurfaceController` already has that value available under a
+     different name near this function (search for how `request.viewportWidth`
+     from `TerminalSurfaceFrameRequest` reaches this area, since
+     `sidebarCommands` itself is not currently passed the request directly —
+     it may need a new `viewportWidth: CGFloat` parameter threaded from both
+     call sites at line 908 and 1136, where `request.viewportWidth` is
+     already in scope). Resolve this concretely; do not ship a placeholder.
+   - Pass `hoverPreview: hoverPreview` into `producer.output(...)` at line
+     1242-1250, and into the `build()` cache — **critical**: `hoverPreview`'s
+     content (scrollback lines) changes far more often than the rest of the
+     sidebar's memoization signature (`SidebarCacheSignature`, line 1258)
+     accounts for. Either (a) exclude `hoverPreview` from the
+     `SidebarCacheSignature` equality check and always append its commands
+     fresh after the memoized `build()` result (cleanest — the preview panel
+     commands are cheap to regenerate every call, unlike the whole sidebar),
+     or (b) include a content hash of `hoverPreview` in the signature. Prefer
+     (a): keep it simple, and keep the existing memoization's cost model
+     (built for the "don't rebuild every tab's title on every frame" problem)
+     unpolluted by a feature with entirely different invalidation timing. If
+     you choose (a), make sure the preview commands are appended in the
+     `hoveredTabId == nil` early-return-equivalent case too (i.e. don't skip
+     appending "no preview" — there's nothing to append when `hoverPreview ==
+     nil`, so this reduces to: call `build()`/use the cached `output.commands`
+     as today, then separately compute and append preview commands via a
+     *second*, small `SidebarProducer.output(...)` call or by extracting the
+     preview-emission logic from Milestone 3 into a standalone function
+     `SidebarProducer.hoverPreviewCommands(tabs:activeTabId:height:...:hoverPreview:)`
+     callable independently of the full `output(...)`. Pick whichever keeps
+     `SidebarProducer`'s public surface simplest and document the choice in
+     this plan's Decision Log once made.
+   - Thread the two new `sidebarCommands` parameters through both call sites
+     (line 908 and 1136): `effectiveRendererIsSlug: request.effectiveRendererIsSlug`,
+     `hoverPreviewEnabled: ` — this needs a new field on
+     `TerminalSurfaceFrameRequest` itself, `hoverPreviewEnabled: Bool = false`,
+     added the same way `spinnerMotionSmoothingEnabled` was added (struct
+     field at line ~126, init parameter + assignment at line ~159/190).
+2. **Edit** `Sources/LabanApp/TerminalBitmapView.swift`: wherever
+   `TerminalSurfaceFrameRequest(...)` is constructed with
+   `spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled`
+   (grep for that exact string to find the site(s)), add a parallel
+   `hoverPreviewEnabled: HoverPreviewSettings.enabled` argument. Also set
+   `controller.previewCellWidth`/`previewCellHeight` wherever
+   `controller.sidebarCellWidth`/`sidebarCellHeight` are currently assigned
+   (grep for `sidebarCellWidth =` in this file), sourcing the values from the
+   `previewFontAtlas.cellSize` computed in Milestone 2 step 7.
+3. Listen for `HoverPreviewSettings.didChangeNotification` wherever
+   `SpinnerMotionSmoothingSettings.didChangeNotification` is already observed
+   in `TerminalBitmapView.swift` (grep for that string), and trigger the same
+   kind of `invalidateRenderAndWake()` follow-up so toggling the setting live
+   takes effect on the next frame without needing a relaunch.
+
+**Milestone 4 acceptance**: this is the first milestone with real observable
+behavior. Build the app (`./scripts/build-app` from the repository root —
+**not** bare `swift build`, per `docs/process/agent-operating-guide.md`),
+install it to a dedicated path so it doesn't clobber any other running
+instance (`LABAN_INSTALL_PATH=~/Laban-hover-preview.app ./scripts/install-app`
+— check the exact env var name `docs/process/worktree-isolation.md` or
+`agent-operating-guide.md` documents for a dedicated install path before
+running this; do not guess it), then:
+```sh
+defaults write com.rrva.Laban LabanSidebarHoverPreviewEnabled -bool YES
+```
+Launch the installed app (the user launches it manually — do not `open` or
+otherwise launch the GUI app yourself from the shell), open 2+ tabs with
+different visible content in each (e.g. run a different command in each), and
+hover a non-active tab's sidebar row. Expect a panel to appear beside that row
+showing that tab's recent output. Moving the mouse to the active tab's row, or
+off the sidebar entirely, must make the panel disappear.
+
+### Milestone 5 — Settings UI checkbox + debug endpoint + headless parity
+
+Mirror the exact file list `SpinnerMotionSmoothingSettings` touches outside
+`LabanCore` (found via `grep -rl "SpinnerMotionSmoothingSettings" Sources/`):
+`Sources/LabanApp/SettingsWindowController.swift` (checkbox, disabled when
+`!effectiveRendererIsSlug`, same disabled-state UX as the spinner-motion
+checkbox), `Sources/LabanApp/Control/LiveIntentRouter.swift` (control-plane
+intent to read/write the setting live), `Sources/LabanDebug/ControlProjectionBridge.swift`
+and `Sources/LabanDebug/HeadlessDebugRuntime.swift` (debug endpoint reporting
+`configured`/`rendererEligible`/`effectiveEnabled`, matching ADR 0030's
+"Applies To New Code" precedent, plus headless parity per this repo's
+standing rule that `HeadlessDebugRuntime` must stay in feature parity with
+the visible app path). Read each file's existing spinner-motion-smoothing
+code as the template before writing the hover-preview equivalent; do not
+invent a different shape.
+
+**Milestone 5 acceptance**: the Settings window shows a hover-preview
+checkbox that is visibly disabled (grayed out, per whatever visual convention
+the spinner-motion checkbox already uses) when the configured renderer isn't
+Slug. A debug request (find the exact route the spinner-motion debug state
+uses via `grep -rn "spinnerMotion" Sources/LabanDebug/` and use the sibling
+route for hover preview once created) returns JSON containing `configured`,
+`rendererEligible`, and `effectiveEnabled` keys with correct values in at
+least two states: setting off, and setting on with a non-Slug renderer forced
+(`LABAN_RENDERER` env var — check its accepted values via
+`Static.launchForcesSoftwareRenderer` in `TerminalBitmapView.swift:1184` and
+any sibling env vars for forcing other renderers).
+
+### Milestone 6 — Manual verification, polish pass, Review Gate
+
+1. Use the `laban-terminal-control` skill (`laban session screenshot`) to
+   capture the running app with a preview visible, and visually confirm text
+   is crisp (not blurry) at the small preview size, matching the browser
+   prototype's own "zoomed screenshot confirms crisp text" verification step.
+2. Revisit the Decision Log's "no fade/delay" decision live: if the instant
+   appear/disappear feels visually jarring in practice (the concern the
+   prototype's 130ms debounce addressed — flashing during a fast mouse pass
+   over multiple rows), decide whether to add a show-delay. If added, gate any
+   *animated* portion (not the instant reveal itself) behind Reduce Motion,
+   consistent with how every other timed visual effect in this codebase is
+   gated. Record the outcome in `Surprises & Discoveries`.
+3. Verify the remote/daemon-served frame-assembly path (line 1136's caller)
+   also shows the preview correctly for a `laband`-hosted tab, not only the
+   local-session path — this was flagged as unverified-by-construction in
+   Milestone 4's context, not merely "probably fine."
+4. Run `./scripts/check` (the repository's full check suite) and `./scripts/test`
+   (or `swift test` for the full suite if `./scripts/test` is narrower — check
+   which) from the repository root and confirm a clean pass.
+5. Spawn a fresh review agent (no prior context from this implementation
+   session) with the Agent tool, per `PLANS.md`'s Review Gate process, and run
+   every item in the Review Gate section below.
+
+## Review Gate
+
+- [ ] `grep -rn "sidebarFontAtlas" Sources/LabanRenderer/SlugGlyphRenderer.swift`
+      and confirm every site that has a sidebar-atlas branch also has a
+      matching preview-atlas branch (no site was updated for sidebar and
+      missed for preview).
+- [ ] `grep -rn "switch source" Sources/` still returns only the two
+      pre-existing unrelated matches (`SettingsWindowController.swift`,
+      `ControlStateProjections.swift`) — confirms no new exhaustive switch
+      over `FrameSource` was introduced that could silently break on a future
+      case.
+- [ ] Run `swift test --filter SidebarProducerTests`; expect 100% pass
+      including the 3 new hover-preview cases from Milestone 3.
+- [ ] Run `swift test --filter HoverPreviewSettingsTests`; expect 100% pass.
+- [ ] With `LABAN_RENDERER` forcing a non-Slug renderer and
+      `LabanSidebarHoverPreviewEnabled` set to `YES`, hover a background tab
+      in the running app and confirm **no** preview panel appears (the
+      Slug-only gate holds even when the setting is on).
+- [ ] With the Slug renderer active and the setting off, hover a background
+      tab and confirm no preview panel appears (the setting gate holds
+      independent of renderer).
+- [ ] With the Slug renderer active and the setting on, hover the **active**
+      tab's own row and confirm no preview panel appears.
+- [ ] `./scripts/check` exits 0.
+- [ ] Re-read `docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md`
+      against the final implementation and confirm every file it names still
+      matches reality (renumber/reword any drift found during implementation
+      rather than leaving the ADR stale).
+
+Review status: NOT REVIEWED
+
+Review findings (filled in by the review agent):
+
+(none yet)
+
+## Validation and Acceptance
+
+The feature is complete when all of the following hold, verified against a
+real running app built via `./scripts/build-app` and installed to a dedicated
+path (never launched via `open`/shell — the user launches it):
+
+1. Slug renderer active, setting on, 2+ tabs with distinct content: hovering a
+   background tab's sidebar row shows a floating panel with that tab's recent
+   output within one frame of the hover starting; moving off the row removes
+   it within one frame.
+2. The panel's text is crisp at its small size (confirmed via a zoomed
+   `laban session screenshot` capture, not merely "looks fine" at normal
+   zoom).
+3. Any other renderer, or the setting off, or hovering the active tab's own
+   row: sidebar behaves exactly as it did before this change (byte-identical
+   `FrameCommand` output for the sidebar aside from the pre-existing
+   hover-close-✕ behavior — verified by the Milestone 3 regression test).
+4. `swift test --filter SidebarProducerTests`, `swift test --filter
+   HoverPreviewSettingsTests`, and `./scripts/check` all pass.
+5. The Review Gate above has passed cleanly per `PLANS.md`'s review-fix loop.
+
+## Interfaces and Dependencies
+
+- `Sources/LabanCore/HoverPreviewSettings.swift` (new): public API
+  `enabled: Bool`, `enabled(defaults:environment:) -> Bool`,
+  `setEnabled(_:defaults:environment:) -> Bool`, `didChangeNotification`,
+  `enabledKey`, `enabledEnvironmentKey`.
+- `Sources/LabanRenderer/FrameCommand.swift`: `FrameSource` gains
+  `case sidebarPreview`.
+- `Sources/LabanRenderer/FontAtlas.swift`: new
+  `static func previewPointSize(forTerminalPointSize: CGFloat) -> CGFloat`.
+- `Sources/LabanRenderer/SlugGlyphRenderer.swift`: new public
+  `previewFontAtlas: FontAtlas` property; `init` and `reconfigureFonts` gain a
+  `previewFontAtlas: FontAtlas? = nil` parameter.
+- `Sources/LabanCore/SidebarProducer.swift`: new public nested
+  `HoverPreview` struct; `output(...)` gains `hoverPreview: HoverPreview? =
+  nil`.
+- `Sources/LabanCore/TerminalSurfaceController.swift`: `sidebarCommands(...)`
+  gains `effectiveRendererIsSlug: Bool = false` and `hoverPreviewEnabled: Bool
+  = false`; new `previewCellWidth`/`previewCellHeight: CGFloat` public
+  properties; `TerminalSurfaceFrameRequest` gains `hoverPreviewEnabled: Bool =
+  false`.
+- Depends on already-existing, unmodified APIs: `AppModel.session(forTab:)`,
+  `Session.scrollbackBlock(rowOffset:maxRows:)`, `ScrollbackBlock.lines()`,
+  `TerminalBitmapView.hoveredSidebarTabId` and its update path, `Theme.current`
+  color tokens (`bg1`, `dim0`, `fg0`).
+- No changes required to `SoftwareBackend`, `MetalRenderer`,
+  `VectorGlyphRenderer`, or any non-Slug renderer file.
