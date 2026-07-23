@@ -68,7 +68,7 @@ instant the mouse leaves the row or the setting/renderer changes.
 - [x] (2026-07-23) Milestone 1: Settings scaffold + `FrameCommand`/`FontAtlas` groundwork (no visible behavior change). Added `Sources/LabanCore/HoverPreviewSettings.swift`, `Tests/LabanCoreTests/HoverPreviewSettingsTests.swift` (9 tests, all passing), `FrameSource.sidebarPreview` case, `FontAtlas.previewPointSize(forTerminalPointSize:)` and `FontAtlas.persistedPreviewPointSize`. `swift build` clean for LabanCore/LabanRenderer.
 - [x] (2026-07-23) Milestone 2: `SlugGlyphRenderer` third atlas + `.sidebarPreview` routing. Added `previewFontAtlas`/`previewReferenceFontAtlas` to `SlugGlyphRenderer` (init, `reconfigureFonts`, `atlas(for:)`/`referenceAtlas(for:)` helpers replacing the old two-way ternaries), widened `runFontIdentity`'s cache key to a 2-bit atlas-kind field (see Decision Log), threaded `previewFontAtlas` through `RendererSelection.makeRendererBackend` (Slug construction only, per ADR 0031), and through every `sidebarFontAtlas` site in `TerminalBitmapView.swift` that affects backend construction/reconfiguration (init, both `makeBackend` calls, the `makeBackend` static wrapper, `applyRendererSelection`, and `applyFontSize`'s ladder-miss/backend-reconfigure paths). Also folded in `TerminalSurfaceController.previewCellWidth`/`previewCellHeight` (originally scoped to Milestone 4) since threading `TerminalBitmapView`'s new `previewFontAtlas` through the `TerminalSurfaceController(...)` constructor call and `updateCellMetrics(...)` touches the exact same lines — see Decision Log. Added `Tests/LabanRendererTests/SlugGlyphRendererPreviewAtlasTests.swift` (2 tests, passing) proving `.sidebarPreview` glyph runs resolve the preview atlas's point size and stay distinct from terminal/sidebar. `swift build` (whole package) and `swift test --filter SlugGlyphRendererPreviewAtlasTests` both clean.
 - [x] (2026-07-23) Milestone 3: `SidebarProducer` emits the preview panel from resolved content. Added `SidebarProducer.HoverPreview` (nested struct) and a standalone `static func hoverPreviewCommands(...)` (extracted rather than left inline in `output(...)`, anticipating Milestone 4's memoization-bypass need — see Decision Log) that `output(...)` now calls internally so its own behavior/tests stay consistent. Added 3 tests to `Tests/LabanCoreTests/SidebarProducerTests.swift`: panel+glyph commands present for a background-tab preview, no `.sidebarPreview` commands when `hoverPreview` is nil, no `.sidebarPreview` commands when previewing the active tab's own row. All 52 `SidebarProducerTests` cases pass (49 pre-existing unmodified + 3 new).
-- [ ] Milestone 4: `TerminalSurfaceController` + `TerminalBitmapView` wiring (feature is live end-to-end for local sessions) — narrowed: cell-metrics threading (`previewCellWidth`/`previewCellHeight`) already landed in Milestone 2; remaining work is `sidebarCommands` hover-content resolution, `viewportWidth` threading, the memoization-signature decision, and the `HoverPreviewSettings.didChangeNotification` observer.
+- [x] (2026-07-23) Milestone 4: `TerminalSurfaceController` + `TerminalBitmapView` wiring. `sidebarCommands` gained `viewportWidth`, `effectiveRendererIsSlug`, `hoverPreviewEnabled` parameters; resolves `SidebarProducer.HoverPreview` from `model.session(forTab:)` + `Session.scrollbackBlock(rowOffset: 0, maxRows: 500)` when the hovered tab differs from the active tab, and appends `SidebarProducer.hoverPreviewCommands(...)` after the memoized sidebar lookup (bypassing `SidebarCacheSignature`, per Milestone 3's Decision Log). `TerminalSurfaceFrameRequest` gained `hoverPreviewEnabled: Bool = false`; both `TerminalBitmapView` call sites now pass `hoverPreviewEnabled: HoverPreviewSettings.enabled`. Added a `HoverPreviewSettings.didChangeNotification` observer mirroring the spinner-motion one (forces a render retry so toggling the setting takes effect live). Full package build and full `swift test` both pass (0 failures). Built via `./scripts/build-app`, installed to `~/Laban-hover-preview.app` (not launched from the shell). Manual verification pending the user launching the app (see Validation and Acceptance).
 - [ ] Milestone 5: Settings UI checkbox + debug endpoint + headless parity
 - [ ] Milestone 6: Manual verification, polish pass, Review Gate
 
@@ -215,6 +215,29 @@ instant the mouse leaves the row or the setting/renderer changes.
   Evidence: `grep -rniln spinnerMotion Sources/ Tests/` (23 hits); full
   per-file line numbers captured in the implementation session's research
   pass, reproduced in Milestone 5's Plan of Work below.
+- Observation: the `defaults write com.rrva.Laban ...` bundle identifier this
+  plan copied from `SpinnerMotionSmoothingSettings.swift`'s doc comment (and
+  by extension put into `HoverPreviewSettings.swift`'s own doc comment in
+  Milestone 1) does not match the app's real bundle identifier. Confirmed via
+  `./scripts/build-app --print-bundle-identifier` (prints `com.laban.LabanApp`
+  from the primary checkout) and `PlistBuddy -c 'Print :CFBundleIdentifier'`
+  on the built app's `Info.plist` (also `com.laban.LabanApp`). `com.rrva.Laban`
+  does not appear in any `Info.plist`-generating code (`grep -rn
+  "com.rrva.Laban" Sources/` only matches doc comments in
+  `SpinnerMotionSmoothingSettings.swift`, `GlyphEffectSettings.swift`, and
+  this plan's own `HoverPreviewSettings.swift`), so it is a stale reference
+  predating some earlier bundle-identifier rename, not a currently-valid
+  alternate identifier. `defaults write com.rrva.Laban ...` is a silent no-op
+  against the real app (writes to a preferences domain nothing reads).
+  Manual verification in this plan uses the corrected `com.laban.LabanApp`
+  domain throughout. Not fixed in the two pre-existing files (out of scope
+  for this feature) — worth a follow-up doc fix, flagged here for
+  visibility rather than silently left for a future contributor to
+  rediscover.
+  Evidence: `./scripts/build-app --print-bundle-identifier` → `com.laban.LabanApp`;
+  `defaults write com.laban.LabanApp LabanSidebarHoverPreviewEnabled -bool YES`
+  followed by `defaults read com.laban.LabanApp LabanSidebarHoverPreviewEnabled`
+  → `1`, confirming the correct domain actually persists.
 
 ## Context and Orientation
 
@@ -670,8 +693,14 @@ instance (`LABAN_INSTALL_PATH=~/Laban-hover-preview.app ./scripts/install-app`
 `agent-operating-guide.md` documents for a dedicated install path before
 running this; do not guess it), then:
 ```sh
-defaults write com.rrva.Laban LabanSidebarHoverPreviewEnabled -bool YES
+defaults write com.laban.LabanApp LabanSidebarHoverPreviewEnabled -bool YES
 ```
+(`com.laban.LabanApp` is the app's real bundle identifier, confirmed via
+`./scripts/build-app --print-bundle-identifier` from the primary checkout and
+`PlistBuddy -c 'Print :CFBundleIdentifier'` on the built `Info.plist`. The
+doc comments this plan's Milestone 1 copied verbatim from
+`SpinnerMotionSmoothingSettings.swift` say `com.rrva.Laban`, which is stale
+in *that* pre-existing file too — see Surprises & Discoveries.)
 Launch the installed app (the user launches it manually — do not `open` or
 otherwise launch the GUI app yourself from the shell), open 2+ tabs with
 different visible content in each (e.g. run a different command in each), and
