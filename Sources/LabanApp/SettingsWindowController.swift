@@ -109,7 +109,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let spinnerMotionSmoothingCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Smooth spinner motion"), target: nil, action: nil)
   private let glyphEffectsCheckbox = NSButton(
-    checkboxWithTitle: L10n.tr("Ink bloom type-in effect"), target: nil, action: nil)
+    checkboxWithTitle: L10n.tr("Keystroke impulse effect"), target: nil, action: nil)
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Option as Meta"), target: nil, action: nil)
@@ -595,8 +595,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     glyphEffectsCheckbox.target = self
     glyphEffectsCheckbox.action = #selector(glyphEffectsChanged(_:))
     glyphEffectsCheckbox.toolTip = L10n.tr(
-      "Available with Slug Glyph; freshly output text eases in slightly thin and faint.")
-    glyphEffectsCheckbox.setAccessibilityLabel(L10n.tr("Ink bloom type-in effect"))
+      "Available with Slug Glyph; freshly output glyphs arrive compressed and tilted, then spring into place.")
+    glyphEffectsCheckbox.setAccessibilityLabel(L10n.tr("Keystroke impulse effect"))
 
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))

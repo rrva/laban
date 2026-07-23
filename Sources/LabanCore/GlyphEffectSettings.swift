@@ -1,8 +1,8 @@
 import Foundation
 
 /// User-configurable switch for the per-glyph animation channel
-/// (execplans/active/per-glyph-animation-channel.md): ink-bloom type-in and
-/// the visual bell shake.
+/// (execplans/active/per-glyph-animation-channel.md): keystroke-impulse
+/// type-in and the visual bell shake.
 ///
 /// Ships default-OFF per the repo's opt-in posture (ADR 0017/0022/0027);
 /// promotion to default-on is a separate spec.md decision. Reduce Motion
