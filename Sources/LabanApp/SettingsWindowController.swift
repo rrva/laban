@@ -110,6 +110,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     checkboxWithTitle: L10n.tr("Smooth spinner motion"), target: nil, action: nil)
   private let glyphEffectsCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Keystroke impulse effect"), target: nil, action: nil)
+  private let hoverPreviewCheckbox = NSButton(
+    checkboxWithTitle: L10n.tr("Sidebar hover preview"), target: nil, action: nil)
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Option as Meta"), target: nil, action: nil)
@@ -599,6 +601,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     )
     glyphEffectsCheckbox.setAccessibilityLabel(L10n.tr("Keystroke impulse effect"))
 
+    hoverPreviewCheckbox.target = self
+    hoverPreviewCheckbox.action = #selector(hoverPreviewChanged(_:))
+    hoverPreviewCheckbox.toolTip = L10n.tr(
+      "Available with Slug Glyph; hovering a background tab's sidebar row shows a live miniature of its recent output."
+    )
+    hoverPreviewCheckbox.setAccessibilityLabel(L10n.tr("Sidebar hover preview"))
+
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
     optionAsMetaCheckbox.toolTip =
@@ -708,6 +717,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [vectorSmoothScrollLabel, vectorSmoothScrollPopUp],
       [NSGridCell.emptyContentView, spinnerMotionSmoothingCheckbox],
       [NSGridCell.emptyContentView, glyphEffectsCheckbox],
+      [NSGridCell.emptyContentView, hoverPreviewCheckbox],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
     let notificationsGrid = makeSettingsGrid([
@@ -884,6 +894,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     spinnerMotionSmoothingCheckbox.isEnabled = spinnerMotion && !envLocked
     let glyphEffectsEnvLocked = GlyphEffectSettings.environmentOverride() != nil
     glyphEffectsCheckbox.isEnabled = spinnerMotion && !glyphEffectsEnvLocked
+    let hoverPreviewEnvLocked = HoverPreviewSettings.environmentOverride() != nil
+    hoverPreviewCheckbox.isEnabled = spinnerMotion && !hoverPreviewEnvLocked
   }
 
   private func makeVectorSubpixelCustomRow() -> NSStackView {
@@ -1012,6 +1024,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     refreshVectorControlsForRenderer(rendererSelection)
     spinnerMotionSmoothingCheckbox.state = SpinnerMotionSmoothingSettings.enabled ? .on : .off
     glyphEffectsCheckbox.state = GlyphEffectSettings.enabled ? .on : .off
+    hoverPreviewCheckbox.state = HoverPreviewSettings.enabled ? .on : .off
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off
@@ -1484,6 +1497,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let enabled = sender.state == .on
     guard GlyphEffectSettings.setEnabled(enabled) else {
       sender.state = GlyphEffectSettings.enabled ? .on : .off
+      return
+    }
+    refresh()
+  }
+
+  @objc private func hoverPreviewChanged(_ sender: NSButton) {
+    let enabled = sender.state == .on
+    guard HoverPreviewSettings.setEnabled(enabled) else {
+      sender.state = HoverPreviewSettings.enabled ? .on : .off
       return
     }
     refresh()
