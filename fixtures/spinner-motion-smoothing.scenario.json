@@ -29,7 +29,7 @@
     },
     {
       "op": "action",
-      "label": "disable glyph effects so ink-bloom decay cannot leak into settle telemetry",
+      "label": "disable glyph effects so type-in decay cannot leak into settle telemetry",
       "body": {"action": "setGlyphEffectsEnabled", "enabled": false}
     },
     {
