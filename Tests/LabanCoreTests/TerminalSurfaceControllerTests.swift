@@ -146,6 +146,87 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(terminalText.contains("hello"), "got terminal text \(terminalText)")
   }
 
+  /// Regression test for execplans/active/sidebar-hover-preview.md's opacity
+  /// bug: the preview panel's commands must come AFTER the terminal pane's
+  /// own background/glyph commands in the frame's command list, or the
+  /// terminal grid's every-frame repaint (painter's-algorithm order, no
+  /// depth test) draws over the panel and it looks like terminal content is
+  /// bleeding through it.
+  func testHoverPreviewCommandsAppearAfterTerminalCommands() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let activeTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let hoveredTab = try XCTUnwrap(model.activeTab)
+    model.selectTab(activeTab.id)
+
+    let activeSession = try XCTUnwrap(model.session(forTab: activeTab.id))
+    _ = activeSession.write(Array("hello".utf8))
+    _ = activeSession.poll()
+    let hoveredSession = try XCTUnwrap(model.session(forTab: hoveredTab.id))
+    _ = hoveredSession.write(Array("background output".utf8))
+    _ = hoveredSession.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200,
+      previewCellWidth: 4,
+      previewCellHeight: 8)
+    let frame = controller.makeFrame(
+      TerminalSurfaceFrameRequest(
+        frame: 1,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        hoveredSidebarTabId: hoveredTab.id,
+        includeTerminalAreaBackground: true,
+        requireActiveSnapshot: true,
+        surfaceWidth: 800,
+        surfaceHeight: 600,
+        surfaceScale: 1,
+        effectiveRendererIsSlug: true,
+        hoverPreviewEnabled: true))
+
+    guard let frame else {
+      XCTFail("expected a frame from the active snapshot")
+      return
+    }
+
+    let hasPreviewCommand = frame.commands.contains { command in
+      switch command {
+      case .rect(_, _, let source, _): return source == .sidebarPreview
+      case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _, _, _):
+        return source == .sidebarPreview
+      default: return false
+      }
+    }
+    XCTAssertTrue(hasPreviewCommand, "expected at least one .sidebarPreview command")
+
+    let lastTerminalIndex = frame.commands.lastIndex { command in
+      switch command {
+      case .rect(_, _, let source, _): return source == .terminal
+      case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _, _, _): return source == .terminal
+      default: return false
+      }
+    }
+    let firstPreviewIndex = frame.commands.firstIndex { command in
+      switch command {
+      case .rect(_, _, let source, _): return source == .sidebarPreview
+      case .glyphRun(_, _, _, _, _, let source, _, _, _, _, _, _, _):
+        return source == .sidebarPreview
+      default: return false
+      }
+    }
+    let lastTerminal = try XCTUnwrap(lastTerminalIndex)
+    let firstPreview = try XCTUnwrap(firstPreviewIndex)
+    XCTAssertGreaterThan(
+      firstPreview, lastTerminal,
+      "the preview panel must be drawn after the terminal pane's own commands so it paints on top")
+  }
+
   func testSidebarCommandsMemoizesAndInvalidates() throws {
     var size = LabanTerminalSize()
     size.rows = 4
@@ -968,6 +1049,71 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertEqual(updatedSecond.lastOutputAt, now)
     XCTAssertTrue(updatedSecond.titleMetadata.unseenOutput)
     XCTAssertEqual(updatedSecond.titleMetadata.activityState, .unseenOutput)
+  }
+
+  /// Regression test for execplans/active/sidebar-hover-preview.md's "paused
+  /// video" bug: steady streaming output from a background tab must still
+  /// invalidate the frame when that tab is the one currently hover-previewed,
+  /// even though `noteSurfaceOutput`'s unseen-output transition (exercised
+  /// above) is edge-triggered and stops reporting `modelChanged` after the
+  /// first byte.
+  func testSyncSessionsHoveredInactiveTabKeepsReportingModelChanged() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let firstTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let secondTab = try XCTUnwrap(model.activeTab)
+    model.selectTab(firstTab.id)
+
+    let secondSession = try XCTUnwrap(model.session(forTab: secondTab.id))
+    _ = secondSession.markRendered()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+
+    // First byte: the unseen-output edge fires regardless of hover.
+    _ = secondSession.feedOutput(Array("first".utf8))
+    let edgeResult = controller.syncSessions(
+      captureFrame: 1,
+      polling: .none,
+      markInactiveDirtyRendered: true,
+      noteOutputOnDirty: true,
+      recordTitleChanges: false)
+    XCTAssertTrue(edgeResult.modelChanged, "the unseen-output transition itself must invalidate")
+
+    // Steady streaming with nothing hovering it: must NOT keep invalidating
+    // (this is the existing perf guard `noteSurfaceOutput` documents; a
+    // regression here would resurrect the per-output-tick cost it was added
+    // to avoid).
+    _ = secondSession.feedOutput(Array("second".utf8))
+    let steadyResult = controller.syncSessions(
+      captureFrame: 2,
+      polling: .none,
+      markInactiveDirtyRendered: true,
+      noteOutputOnDirty: true,
+      recordTitleChanges: false)
+    XCTAssertFalse(
+      steadyResult.modelChanged,
+      "steady background streaming with no hover must stay silent (perf guard)")
+
+    // Same steady streaming, but the tab is now hover-previewed: must
+    // invalidate on every tick so the preview panel stays live.
+    _ = secondSession.feedOutput(Array("third".utf8))
+    let hoveredResult = controller.syncSessions(
+      captureFrame: 3,
+      polling: .none,
+      markInactiveDirtyRendered: true,
+      noteOutputOnDirty: true,
+      recordTitleChanges: false,
+      hoveredTabId: secondTab.id)
+    XCTAssertTrue(
+      hoveredResult.modelChanged,
+      "a hovered background tab's continued output must invalidate the frame")
   }
 
   func testSyncSessionsRecordsResolvedTerminalTitleChanges() throws {

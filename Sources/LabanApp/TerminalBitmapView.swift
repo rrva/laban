@@ -2812,7 +2812,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       captureFrame: captureFrame,
       polling: .none,
       markInactiveDirtyRendered: true,
-      noteOutputOnDirty: true)
+      noteOutputOnDirty: true,
+      hoveredTabId: hoveredSidebarTabId)
     frameModelChanged = sync.modelChanged
     if sync.modelChanged {
       renderInvalidated = true

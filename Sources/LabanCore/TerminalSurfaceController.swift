@@ -647,7 +647,8 @@ public final class TerminalSurfaceController {
     markInactiveDirtyRendered: Bool,
     noteOutputOnDirty: Bool,
     recordTitleChanges: Bool = true,
-    now: Date = Date()
+    now: Date = Date(),
+    hoveredTabId: Tab.ID? = nil
   ) -> TerminalSurfaceSessionSyncResult {
     let snapshot = model.surfaceSessionSnapshot()
     let activeTabId = snapshot.activeTabId
@@ -716,8 +717,20 @@ public final class TerminalSurfaceController {
       }
       if tabId == activeTabId {
         activeTerminalDirty = true
-      } else if markInactiveDirtyRendered {
-        _ = session.markRendered()
+      } else {
+        // A hovered background tab's own output must invalidate the frame
+        // too, or the hover-preview panel only ever repaints as a side
+        // effect of unrelated wakes (active-tab cursor blink, scroll) —
+        // `noteSurfaceOutput` above is edge-triggered per tab (fires once on
+        // the unseen-output transition, not on every subsequent byte) so it
+        // cannot carry this signal by itself. See
+        // execplans/active/sidebar-hover-preview.md, Surprises & Discoveries.
+        if tabId == hoveredTabId {
+          modelChanged = true
+        }
+        if markInactiveDirtyRendered {
+          _ = session.markRendered()
+        }
       }
     }
 
@@ -940,9 +953,22 @@ public final class TerminalSurfaceController {
       effectiveRendererIsSlug: request.effectiveRendererIsSlug,
       hoverPreviewEnabled: request.hoverPreviewEnabled
     )
+    // Resolved once; appended last in every return path below (after the
+    // terminal pane's own commands where those exist) so the floating panel
+    // always paints on top rather than under the terminal grid's repaint.
+    let previewCommands = hoverPreviewOverlayCommands(
+      activeTabId: activeTab.id,
+      viewportWidth: request.viewportWidth,
+      viewportHeight: request.viewportHeight,
+      topInset: request.sidebarTopInset,
+      scrollOffset: request.sidebarScrollOffset,
+      hoveredTabId: request.hoveredSidebarTabId,
+      effectiveRendererIsSlug: request.effectiveRendererIsSlug,
+      hoverPreviewEnabled: request.hoverPreviewEnabled)
 
     guard let session = model.session(forTab: activeTab.id) else {
       if request.requireActiveSnapshot { return nil }
+      commands += previewCommands
       recordFrameCommands(request, commands: commands)
       return TerminalSurfaceFrame(
         frame: request.frame,
@@ -961,6 +987,7 @@ public final class TerminalSurfaceController {
     guard let snap = session.snapshot() else {
       let snapshotMs = Self.elapsedMs(since: snapshotStart)
       if request.requireActiveSnapshot { return nil }
+      commands += previewCommands
       recordFrameCommands(request, commands: commands)
       return TerminalSurfaceFrame(
         frame: request.frame,
@@ -1113,6 +1140,7 @@ public final class TerminalSurfaceController {
       snapshot: UnsafePointer(snap),
       originX: sidebarWidth + request.insets.left,
       originY: gridOriginY)
+    commands += previewCommands
 
     snapshotCommandsHook?(UnsafePointer(snap), commands)
     recordFrameCommands(request, commands: commands)
@@ -1171,6 +1199,18 @@ public final class TerminalSurfaceController {
       effectiveRendererIsSlug: request.effectiveRendererIsSlug,
       hoverPreviewEnabled: request.hoverPreviewEnabled
     )
+    // Resolved once; appended last, after the terminal pane's own commands
+    // below, so the floating panel always paints on top rather than under
+    // the terminal grid's repaint.
+    let previewCommands = hoverPreviewOverlayCommands(
+      activeTabId: activeTab.id,
+      viewportWidth: request.viewportWidth,
+      viewportHeight: request.viewportHeight,
+      topInset: request.sidebarTopInset,
+      scrollOffset: request.sidebarScrollOffset,
+      hoveredTabId: request.hoveredSidebarTabId,
+      effectiveRendererIsSlug: request.effectiveRendererIsSlug,
+      hoverPreviewEnabled: request.hoverPreviewEnabled)
 
     let rows = max(snapshot.rows, 1)
     let cols = max(snapshot.cols, 1)
@@ -1225,6 +1265,7 @@ public final class TerminalSurfaceController {
       foregroundTransitions: spinnerMotion?.transitions,
       foregroundWave: spinnerMotion?.wave
     )
+    commands += previewCommands
     recordFrameCommands(request, commands: commands)
 
     let damage = Self.damage(
@@ -1268,25 +1309,6 @@ public final class TerminalSurfaceController {
       sidebarWidth: sidebarWidth,
       cellWidth: sidebarCellWidth,
       cellHeight: sidebarCellHeight)
-
-    // Resolved outside `build()`/`SidebarCacheSignature`: scrollback content
-    // changes far more often (every session write) than the rest of the
-    // sidebar's memoization inputs (tab titles/status), so the preview is
-    // recomputed on every call and appended after the memo lookup below
-    // rather than invalidating the whole-sidebar cache on every keystroke in
-    // the hovered tab. See execplans/active/sidebar-hover-preview.md,
-    // Decision Log.
-    let hoverPreview: SidebarProducer.HoverPreview? = {
-      guard effectiveRendererIsSlug, hoverPreviewEnabled,
-        let hoveredTabId, hoveredTabId != activeTabId,
-        previewCellWidth > 0, previewCellHeight > 0,
-        let session = model.session(forTab: hoveredTabId),
-        let block = session.scrollbackBlock(rowOffset: 0, maxRows: 500)
-      else { return nil }
-      return SidebarProducer.HoverPreview(
-        tabId: hoveredTabId, lines: block.lines(), viewportWidth: viewportWidth,
-        cellWidth: previewCellWidth, cellHeight: previewCellHeight)
-    }()
 
     func build() -> SidebarProducer.Output {
       sidebarRebuildCountForTesting += 1
@@ -1349,8 +1371,7 @@ public final class TerminalSurfaceController {
 
     // Animate the markers on the memoized commands. No-op when nothing needs
     // action; Reduce Motion shows the full-opacity base form unmodified.
-    let baseCommands =
-      reduceMotion
+    return reduceMotion
       ? output.commands
       : SidebarProducer.retintPulseMarkers(
         output, at: now,
@@ -1358,11 +1379,43 @@ public final class TerminalSurfaceController {
         cellWidth: sidebarCellWidth,
         cellHeight: sidebarCellHeight,
         maxX: sidebarWidth)
-    let previewCommands = SidebarProducer.hoverPreviewCommands(
-      tabs: tabs, activeTabId: activeTabId, height: viewportHeight, topInset: topInset,
+  }
+
+  /// The floating hover-preview panel's commands, resolved separately from
+  /// `sidebarCommands` and appended by `makeFrame` last — after both the
+  /// sidebar and the terminal pane's own commands — so the panel always
+  /// paints on top instead of being erased by the terminal grid's repaint,
+  /// which runs every frame regardless of hover state. See
+  /// execplans/active/sidebar-hover-preview.md, Surprises & Discoveries
+  /// (the "paused video" / opacity bug this fixes).
+  private func hoverPreviewOverlayCommands(
+    activeTabId: Tab.ID?,
+    viewportWidth: CGFloat,
+    viewportHeight: CGFloat,
+    topInset: CGFloat,
+    scrollOffset: CGFloat,
+    hoveredTabId: Tab.ID?,
+    effectiveRendererIsSlug: Bool,
+    hoverPreviewEnabled: Bool
+  ) -> [FrameCommand] {
+    let hoverPreview: SidebarProducer.HoverPreview? = {
+      guard effectiveRendererIsSlug, hoverPreviewEnabled,
+        let hoveredTabId, hoveredTabId != activeTabId,
+        previewCellWidth > 0, previewCellHeight > 0,
+        let session = model.session(forTab: hoveredTabId),
+        let block = session.scrollbackBlock(rowOffset: 0, maxRows: 500)
+      else { return nil }
+      return SidebarProducer.HoverPreview(
+        tabId: hoveredTabId, lines: block.lines(), viewportWidth: viewportWidth,
+        cellWidth: previewCellWidth, cellHeight: previewCellHeight)
+    }()
+    guard hoverPreview != nil else { return [] }
+    let producer = SidebarProducer(
+      sidebarWidth: sidebarWidth, cellWidth: sidebarCellWidth, cellHeight: sidebarCellHeight)
+    return SidebarProducer.hoverPreviewCommands(
+      tabs: model.tabs, activeTabId: activeTabId, height: viewportHeight, topInset: topInset,
       scrollOffset: scrollOffset, rowHeight: producer.rowHeight, sidebarWidth: sidebarWidth,
       hoverPreview: hoverPreview)
-    return baseCommands + previewCommands
   }
 
   private static func withAlpha(_ color: UInt32, _ alpha: UInt8) -> UInt32 {
