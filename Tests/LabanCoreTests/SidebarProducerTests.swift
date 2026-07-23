@@ -945,4 +945,66 @@ final class SidebarProducerTests: XCTestCase {
     }
     XCTAssertTrue(overlay, "the dragging row gets a translucent dim overlay")
   }
+
+  // MARK: - Hover preview (execplans/active/sidebar-hover-preview.md, Milestone 3)
+
+  func testHoverPreviewOnBackgroundTabEmitsPanelAndGlyphCommands() {
+    let tabs = makeTabs(count: 2)
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
+    let preview = SidebarProducer.HoverPreview(
+      tabId: tabs[1].id, lines: ["one", "two", "three"], viewportWidth: 800,
+      cellWidth: 4, cellHeight: 8)
+    let out = p.output(
+      tabs: tabs, activeTabId: tabs[0].id, height: 600, hoverPreview: preview)
+
+    let hasPreviewRect = out.commands.contains { cmd in
+      if case .rect(_, _, let src, _) = cmd, src == .sidebarPreview { return true }
+      return false
+    }
+    let hasPreviewGlyph = out.commands.contains { cmd in
+      if case .glyphRun(_, _, _, _, _, let src, _, _, _, _, _, _, _) = cmd,
+        src == .sidebarPreview
+      {
+        return true
+      }
+      return false
+    }
+    XCTAssertTrue(hasPreviewRect, "hovering a background tab must draw a preview panel rect")
+    XCTAssertTrue(hasPreviewGlyph, "hovering a background tab must draw preview text")
+  }
+
+  func testNilHoverPreviewEmitsNoPreviewCommands() {
+    let tabs = makeTabs(count: 2)
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
+    let out = p.output(tabs: tabs, activeTabId: tabs[0].id, height: 600, hoverPreview: nil)
+
+    let hasAnyPreviewCommand = out.commands.contains { cmd in
+      switch cmd {
+      case .rect(_, _, let src, _): return src == .sidebarPreview
+      case .glyphRun(_, _, _, _, _, let src, _, _, _, _, _, _, _): return src == .sidebarPreview
+      default: return false
+      }
+    }
+    XCTAssertFalse(hasAnyPreviewCommand, "a nil hoverPreview must never emit .sidebarPreview commands")
+  }
+
+  func testHoverPreviewOnActiveTabEmitsNoPreviewCommands() {
+    let tabs = makeTabs(count: 2)
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
+    let preview = SidebarProducer.HoverPreview(
+      tabId: tabs[0].id, lines: ["one"], viewportWidth: 800, cellWidth: 4, cellHeight: 8)
+    let out = p.output(
+      tabs: tabs, activeTabId: tabs[0].id, height: 600, hoverPreview: preview)
+
+    let hasAnyPreviewCommand = out.commands.contains { cmd in
+      switch cmd {
+      case .rect(_, _, let src, _): return src == .sidebarPreview
+      case .glyphRun(_, _, _, _, _, let src, _, _, _, _, _, _, _): return src == .sidebarPreview
+      default: return false
+      }
+    }
+    XCTAssertFalse(
+      hasAnyPreviewCommand,
+      "the active tab's own row must never show a preview of itself")
+  }
 }

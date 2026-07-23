@@ -46,6 +46,38 @@ public struct SidebarProducer {
     }
   }
 
+  /// Resolved content for the floating hover-preview panel: the tab being
+  /// previewed, its most recent scrollback lines (oldest first, already
+  /// truncated to a reasonable fetch bound by the caller), and the geometry
+  /// inputs needed to size/position the panel and its text. `cellWidth`/
+  /// `cellHeight` are the PREVIEW font's cell size (from
+  /// `SlugGlyphRenderer.previewFontAtlas.cellSize`), not the sidebar's.
+  public struct HoverPreview: Equatable {
+    public var tabId: Tab.ID
+    public var lines: [String]
+    public var viewportWidth: CGFloat
+    public var cellWidth: CGFloat
+    public var cellHeight: CGFloat
+    public init(
+      tabId: Tab.ID, lines: [String], viewportWidth: CGFloat,
+      cellWidth: CGFloat, cellHeight: CGFloat
+    ) {
+      self.tabId = tabId
+      self.lines = lines
+      self.viewportWidth = viewportWidth
+      self.cellWidth = cellWidth
+      self.cellHeight = cellHeight
+    }
+  }
+
+  /// Scale applied to the terminal content pane's current width/height to
+  /// get the preview panel's size, and to the terminal point size to get the
+  /// preview font's point size (`FontAtlas.previewPointSize`). See
+  /// execplans/active/sidebar-hover-preview.md, Decision Log.
+  static let previewScale: CGFloat = 0.5
+  static let previewGap: CGFloat = 10
+  static let previewInset: CGFloat = 8
+
   /// `topInset` reserves vertical space at the top of the sidebar column —
   /// used by the AppKit shell to keep the first tab clear of the window
   /// traffic lights when running with a transparent full-size titlebar. The
@@ -159,7 +191,8 @@ public struct SidebarProducer {
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
     dragIndicator: DragIndicator? = nil,
-    scrollOffset: CGFloat = 0
+    scrollOffset: CGFloat = 0,
+    hoverPreview: HoverPreview? = nil
   ) -> Output {
     var pulseMarkers: [PulseMarker] = []
     var cmds: [FrameCommand] = []
@@ -375,6 +408,12 @@ public struct SidebarProducer {
       }
     }
 
+    cmds.append(
+      contentsOf: Self.hoverPreviewCommands(
+        tabs: tabs, activeTabId: activeTabId, height: height, topInset: topInset,
+        scrollOffset: scrollOffset, rowHeight: rowHeight, sidebarWidth: sidebarWidth,
+        hoverPreview: hoverPreview))
+
     // Drop-target accent. Drawn last so it sits on top of every row.
     // The slot range is `[0, tabs.count]`; a value equal to the dragging
     // index or `draggingIndex + 1` would re-insert the row in place, so
@@ -401,6 +440,70 @@ public struct SidebarProducer {
     }
 
     return Output(commands: cmds, pulseMarkers: pulseMarkers)
+  }
+
+  /// The floating hover-preview panel's commands, standalone from `output(...)`
+  /// so a caller that memoizes the rest of the sidebar (see
+  /// `TerminalSurfaceController.sidebarCommands`) can recompute just the
+  /// preview — whose content changes far more often than tab titles/status —
+  /// on every call without invalidating that memo. Never drawn for the
+  /// active tab (its content is already the whole right side of the window)
+  /// and never drawn without resolved preview geometry (cellWidth/cellHeight
+  /// <= 0 means the caller has no preview atlas configured yet, e.g. the
+  /// effective renderer isn't Slug — see docs/adr/0031).
+  static func hoverPreviewCommands(
+    tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat,
+    scrollOffset: CGFloat, rowHeight: CGFloat, sidebarWidth: CGFloat,
+    hoverPreview: HoverPreview?
+  ) -> [FrameCommand] {
+    guard let preview = hoverPreview, preview.tabId != activeTabId,
+      let rowIndex = tabs.firstIndex(where: { $0.id == preview.tabId }),
+      preview.cellWidth > 0, preview.cellHeight > 0
+    else { return [] }
+
+    let rowTabY = height - CGFloat(rowIndex + 1) * rowHeight - topInset + scrollOffset
+    let paneWidth = max(0, preview.viewportWidth - sidebarWidth)
+    let paneHeight = max(0, height - topInset)
+    let panelWidth = paneWidth * previewScale
+    let panelHeight = paneHeight * previewScale
+    guard panelWidth >= 2 * previewInset, panelHeight >= 2 * previewInset else { return [] }
+
+    var panelY = rowTabY + rowHeight - panelHeight
+    panelY = min(panelY, height - panelHeight)
+    panelY = max(panelY, 0)
+    let panelRect = CGRect(
+      x: sidebarWidth + previewGap, y: panelY,
+      width: panelWidth, height: panelHeight)
+
+    var cmds: [FrameCommand] = []
+    // Border: a slightly larger rect painted first, background painted on
+    // top inset by 1pt, so only a 1pt ring of the border color shows —
+    // avoids needing a new FrameCommand case for strokes.
+    cmds.append(
+      .rect(panelRect.insetBy(dx: -1, dy: -1), color: Theme.current.dim0, source: .sidebarPreview))
+    cmds.append(
+      .rect(panelRect, color: Theme.current.bg1, source: .sidebarPreview, compositing: .replace))
+    let maxCols = max(1, Int(floor((panelWidth - 2 * previewInset) / preview.cellWidth)))
+    let maxLines = max(1, Int(floor((panelHeight - 2 * previewInset) / preview.cellHeight)))
+    let shown = preview.lines.suffix(maxLines)
+    for (i, line) in shown.enumerated() {
+      // v1 simplification: truncates by Character count, not display column
+      // width, so a line containing wide (e.g. CJK) characters can overflow
+      // the panel slightly. Matches the browser prototype this plan was
+      // validated against; not attempting grapheme-width-aware truncation
+      // here (see execplans/active/sidebar-hover-preview.md).
+      let truncated = String(line.prefix(maxCols))
+      let y = panelRect.maxY - previewInset - CGFloat(i + 1) * preview.cellHeight
+      cmds.append(
+        .glyphRun(
+          origin: CGPoint(x: panelRect.minX + previewInset, y: y),
+          text: truncated,
+          foreground: Theme.current.fg0,
+          background: Theme.current.bg1,
+          attributes: [],
+          source: .sidebarPreview))
+    }
+    return cmds
   }
 
   public func maxScrollOffset(
