@@ -38,7 +38,8 @@ final class GlyphEffectTimelineTests: XCTestCase {
   // MARK: - Liveness
 
   func testIsAnimatingInsideDecayWindow() {
-    XCTAssertTrue(GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindKeystrokeImpulse, age: 0))
+    XCTAssertTrue(
+      GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindKeystrokeImpulse, age: 0))
     XCTAssertTrue(
       GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindKeystrokeImpulse, age: 0.075))
     XCTAssertTrue(
@@ -61,7 +62,8 @@ final class GlyphEffectTimelineTests: XCTestCase {
   func testNegativeAgeIsConservativelyAnimating() {
     // A stamp from the future cannot occur with a monotonic clock; if one
     // ever does, keep the link running rather than freezing mid-effect.
-    XCTAssertTrue(GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindKeystrokeImpulse, age: -1))
+    XCTAssertTrue(
+      GlyphEffectTimeline.isAnimating(kind: GlyphEffectTimeline.kindKeystrokeImpulse, age: -1))
   }
 
   // MARK: - Reduce Motion policy

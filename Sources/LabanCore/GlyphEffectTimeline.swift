@@ -73,7 +73,8 @@ public enum GlyphEffectTimeline {
   /// *visual* lifetime (130 ms impulse vs 300 ms horizon): an expired stamp
   /// may still reach the shader after its effect settled, so every kind must
   /// no-op exactly at and after its own decay.
-  public static let maxDecaySeconds: Double = max(keystrokeImpulseDecaySeconds, bellShakeDecaySeconds)
+  public static let maxDecaySeconds: Double = max(
+    keystrokeImpulseDecaySeconds, bellShakeDecaySeconds)
 
   /// True while an effect of `kind`, started `age` seconds ago, still moves
   /// pixels. A negative age cannot happen (stamps are monotonic) but is

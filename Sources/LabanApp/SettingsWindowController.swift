@@ -595,7 +595,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     glyphEffectsCheckbox.target = self
     glyphEffectsCheckbox.action = #selector(glyphEffectsChanged(_:))
     glyphEffectsCheckbox.toolTip = L10n.tr(
-      "Available with Slug Glyph; freshly output glyphs arrive compressed and tilted, then spring into place.")
+      "Available with Slug Glyph; freshly output glyphs arrive compressed and tilted, "
+      + "then spring into place.")
     glyphEffectsCheckbox.setAccessibilityLabel(L10n.tr("Keystroke impulse effect"))
 
     optionAsMetaCheckbox.target = self
