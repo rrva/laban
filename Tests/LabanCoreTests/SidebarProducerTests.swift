@@ -985,7 +985,8 @@ final class SidebarProducerTests: XCTestCase {
       default: return false
       }
     }
-    XCTAssertFalse(hasAnyPreviewCommand, "a nil hoverPreview must never emit .sidebarPreview commands")
+    XCTAssertFalse(
+      hasAnyPreviewCommand, "a nil hoverPreview must never emit .sidebarPreview commands")
   }
 
   func testHoverPreviewOnActiveTabEmitsNoPreviewCommands() {

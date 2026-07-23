@@ -43,7 +43,8 @@ final class SlugGlyphRendererPreviewAtlasTests: XCTestCase {
 
     XCTAssertEqual(
       renderer.lastFrameGlyphFontSizes, [Double(previewAtlas.pointSize)],
-      "a .sidebarPreview glyph run must resolve against previewFontAtlas, not fontAtlas or sidebarFontAtlas")
+      "a .sidebarPreview glyph run must resolve against previewFontAtlas, not fontAtlas or sidebarFontAtlas"
+    )
   }
 
   func testSidebarPreviewSourceIsDistinctFromSidebarAndTerminalAtlases() throws {
