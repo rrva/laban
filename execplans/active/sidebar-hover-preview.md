@@ -179,6 +179,62 @@ instant the mouse leaves the row or the setting/renderer changes.
 
 ## Surprises & Discoveries
 
+- Observation: Manual testing (Milestone 6) surfaced two real bugs not
+  caught by the unit-test suite, because both are about *frame-to-frame*
+  behavior across the renderer/controller boundary that no existing test
+  exercised end-to-end.
+  1. **Opacity / "terminal content shows through" bug.** Root cause:
+     command *order*, not compositing mode. `TerminalSurfaceController.sidebarCommands`
+     originally appended the preview's commands (`baseCommands + previewCommands`)
+     and `makeFrame` used that combined list as-is — but the terminal pane's
+     own background rect and grid glyphs were appended to `commands` *after*
+     `sidebarCommands`'s return, in both `makeFrame` overloads. `SlugGlyphRenderer`
+     draws each `FrameCommand` bucket in array order with no depth test
+     (painter's algorithm: `Sources/LabanRenderer/SlugGlyphRenderer.swift`'s
+     `buildInstances`/`render`), so the terminal pane's every-frame repaint —
+     which always runs, hover or not — painted directly over the preview
+     panel. `.replace` vs `.sourceOver` compositing was a red herring: `Theme.current.bg1`
+     is fully opaque, so `.replace` and `.sourceOver` are byte-identical for
+     it (`replacesDestination`'s early-out for alpha 255). Fixed by moving
+     preview-command resolution out of `sidebarCommands` into a new private
+     `TerminalSurfaceController.hoverPreviewOverlayCommands(...)`, called by
+     both `makeFrame` overloads and appended to `commands` *last*, after the
+     terminal pane's own commands, at every return path (including the
+     session-nil/snapshot-nil early returns). Regression test:
+     `TerminalSurfaceControllerTests.testHoverPreviewCommandsAppearAfterTerminalCommands`.
+  2. **"Paused video" / stale-content bug.** Root cause: nothing invalidated
+     the frame when the *hovered, non-active* tab produced new PTY output.
+     Every session's dirty push already reaches `TerminalBitmapView`'s
+     `model.onSessionDirty` handler (not scoped to the active tab), but
+     `TerminalSurfaceController.syncSessions` only set `activeTerminalDirty`
+     for the active tab; for every other tab it just called
+     `session.markRendered()`. The sidebar's own "new output" signal
+     (`TabMetadataSynchronizer.noteOutput`, which sets `modelChanged`) is
+     deliberately edge-triggered — it fires once on the transition into
+     `.unseenOutput` and then returns `false` on every subsequent tick, by
+     design (a documented perf guard against re-rendering the whole sidebar
+     on every streamed byte from every background tab). So a hovered
+     background tab's *first* byte after hover-start would repaint, but
+     nothing after that would, until some *unrelated* wake (active-tab
+     cursor blink, a resize, scroll) happened to also rebuild the sidebar —
+     hence "a frame of a paused video." Fixed by adding a `hoveredTabId`
+     parameter to `syncSessions`: when a non-active tab's session is dirty
+     and matches `hoveredTabId`, `modelChanged` is now also set (in addition
+     to, not instead of, the existing `markRendered()` call), independent of
+     `noteSurfaceOutput`'s edge-triggered signal. `TerminalBitmapView`'s
+     `advanceFrame` threads `hoveredSidebarTabId` through. This intentionally
+     does NOT touch the edge-triggered path (`TabMetadataSynchronizer.noteOutput`
+     stays exactly as before) so tabs that are dirty-but-not-hovered keep the
+     original perf guard. Regression test:
+     `TerminalSurfaceControllerTests.testSyncSessionsHoveredInactiveTabKeepsReportingModelChanged`,
+     which also locks in the *un*-hovered steady-streaming case staying silent
+     (asserting the perf guard survives the fix).
+  Evidence: user-reported symptoms during Milestone 6 manual testing ("the
+  preview needs to have opaque background... the preview should update
+  live, but now its like looking at a frame of a paused video"); root
+  causes confirmed via a fresh Explore-agent code trace before any fix was
+  written (both bugs' mechanisms cited above with exact file:line evidence
+  in that investigation, condensed here).
 - Observation: Milestone 5's file list ("mirror the exact file list
   `SpinnerMotionSmoothingSettings` touches outside `LabanCore`... 4 files")
   undercounts the real surface. `grep -rniln spinnerMotion Sources/ Tests/`
@@ -827,11 +883,16 @@ any sibling env vars for forcing other renderers).
       and confirm every site that has a sidebar-atlas branch also has a
       matching preview-atlas branch (no site was updated for sidebar and
       missed for preview).
-- [ ] `grep -rn "switch source" Sources/` still returns only the two
-      pre-existing unrelated matches (`SettingsWindowController.swift`,
-      `ControlStateProjections.swift`) — confirms no new exhaustive switch
-      over `FrameSource` was introduced that could silently break on a future
-      case.
+- [ ] `grep -rn "switch source" Sources/` returns 5 matches: 2 pre-existing
+      unrelated ones (`SettingsWindowController.swift`,
+      `ControlStateProjections.swift` — neither switches over `FrameSource`)
+      and 3 in `Sources/LabanRenderer/SlugGlyphRenderer.swift` this feature
+      added (`atlas(for:)`, `referenceAtlas(for:)`, `atlasKind(for:)`). For
+      each of those 3, confirm it has a `default:` case (not an exhaustive
+      per-case list) — `grep -A5 "private func atlas(for source\|private func referenceAtlas(for source\|private func atlasKind(for source" Sources/LabanRenderer/SlugGlyphRenderer.swift`
+      and check each block ends in `default:`. This is what makes them safe
+      against a future `FrameSource` case: it falls into `default` rather
+      than requiring every switch site to be updated in lockstep.
 - [ ] Run `swift test --filter SidebarProducerTests`; expect 100% pass
       including the 3 new hover-preview cases from Milestone 3.
 - [ ] Run `swift test --filter HoverPreviewSettingsTests`; expect 100% pass.
