@@ -22,6 +22,7 @@ enum DebugAction: Decodable {
   case setGlyphEffectsEnabled(SetGlyphEffectsEnabledActionRequest)
   case setSpinnerMotionSmoothingEnabled(SetSpinnerMotionSmoothingEnabledActionRequest)
   case resetSpinnerMotionDiagnostics(ResetSpinnerMotionDiagnosticsActionRequest)
+  case setHoverPreviewEnabled(SetHoverPreviewEnabledActionRequest)
   case setVectorSubpixelLayout(VectorSubpixelLayoutActionRequest)
   case setClipboardText(TextActionRequest)
   case setSelection(SelectionActionRequest)
@@ -98,6 +99,8 @@ enum DebugAction: Decodable {
     case "resetSpinnerMotionDiagnostics":
       self = .resetSpinnerMotionDiagnostics(
         try ResetSpinnerMotionDiagnosticsActionRequest(from: decoder))
+    case "setHoverPreviewEnabled":
+      self = .setHoverPreviewEnabled(try SetHoverPreviewEnabledActionRequest(from: decoder))
     case "setVectorSubpixelLayout":
       self = .setVectorSubpixelLayout(try VectorSubpixelLayoutActionRequest(from: decoder))
     case "setClipboardText":
@@ -203,6 +206,8 @@ extension DebugAction {
       return legacyIntent(action: "setSpinnerMotionSmoothingEnabled")
     case .resetSpinnerMotionDiagnostics:
       return legacyIntent(action: "resetSpinnerMotionDiagnostics")
+    case .setHoverPreviewEnabled:
+      return legacyIntent(action: "setHoverPreviewEnabled")
     case .setVectorSubpixelLayout:
       return legacyIntent(action: "setVectorSubpixelLayout")
     case .setClipboardText:
@@ -293,6 +298,7 @@ typealias SetSpinnerMotionSmoothingEnabledActionRequest =
   LabanCore.SetSpinnerMotionSmoothingEnabledActionRequest
 typealias ResetSpinnerMotionDiagnosticsActionRequest =
   LabanCore.ResetSpinnerMotionDiagnosticsActionRequest
+typealias SetHoverPreviewEnabledActionRequest = LabanCore.SetHoverPreviewEnabledActionRequest
 typealias WindowFocusActionRequest = LabanCore.WindowFocusActionRequest
 typealias DebugKeyActionRequest = LabanCore.DebugKeyActionRequest
 typealias MouseWheelActionRequest = LabanCore.MouseWheelActionRequest

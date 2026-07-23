@@ -316,6 +316,16 @@
   {
     "category" : "rendering",
     "method" : "GET",
+    "path" : "\/debug\/sidebar-hover-preview",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/sidebar-hover-preview.schema.json",
+    "summary" : "Return sidebar hover-preview configuration, eligibility, and active state."
+  },
+  {
+    "category" : "rendering",
+    "method" : "GET",
     "path" : "\/debug\/frame-commands",
     "queryParameters" : [
       "source",

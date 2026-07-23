@@ -243,6 +243,43 @@ public struct SpinnerMotionStateResponse: Encodable {
   }
 }
 
+/// Sidebar hover-preview configuration/eligibility state
+/// (docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md), matching
+/// `SpinnerMotionStateResponse`'s `configured`/`rendererEligible`/
+/// `effectiveEnabled` shape (ADR 0030 precedent). No telemetry fields:
+/// unlike spinner motion, the preview panel has no per-frame animation state
+/// worth reporting — `previewedTabId`/`showing` cover what a debug client
+/// needs to confirm a panel is actually resolving.
+public struct HoverPreviewStateResponse: Encodable {
+  public var configured: Bool
+  public var effectiveRenderer: String
+  public var rendererEligible: Bool
+  public var effectiveEnabled: Bool
+  /// The tab currently being previewed, or nil when no sidebar row is
+  /// hovered or the preview is ineligible.
+  public var previewedTabId: String?
+  /// Whether a panel is actually resolving this frame — `effectiveEnabled`
+  /// can be true with no panel showing (nothing hovered, or the hovered tab
+  /// is the active tab).
+  public var showing: Bool
+
+  public init(
+    configured: Bool,
+    effectiveRenderer: String,
+    rendererEligible: Bool,
+    effectiveEnabled: Bool,
+    previewedTabId: String? = nil,
+    showing: Bool = false
+  ) {
+    self.configured = configured
+    self.effectiveRenderer = effectiveRenderer
+    self.rendererEligible = rendererEligible
+    self.effectiveEnabled = effectiveEnabled
+    self.previewedTabId = previewedTabId
+    self.showing = showing
+  }
+}
+
 public struct StateResponse: Encodable {
   public var mode: String
   public var frame: Int
@@ -258,6 +295,7 @@ public struct StateResponse: Encodable {
   /// renderer to report — e.g. the GUI control server).
   public var glyphEffects: GlyphEffectsStateResponse?
   public var spinnerMotion: SpinnerMotionStateResponse?
+  public var hoverPreview: HoverPreviewStateResponse?
 
   public init(
     mode: String,
@@ -271,7 +309,8 @@ public struct StateResponse: Encodable {
     emojiRendering: EmojiRenderingSettingsResponse,
     attentionNotifications: [AttentionNotificationDecisionResponse],
     glyphEffects: GlyphEffectsStateResponse? = nil,
-    spinnerMotion: SpinnerMotionStateResponse? = nil
+    spinnerMotion: SpinnerMotionStateResponse? = nil,
+    hoverPreview: HoverPreviewStateResponse? = nil
   ) {
     self.mode = mode
     self.frame = frame
@@ -285,6 +324,7 @@ public struct StateResponse: Encodable {
     self.attentionNotifications = attentionNotifications
     self.glyphEffects = glyphEffects
     self.spinnerMotion = spinnerMotion
+    self.hoverPreview = hoverPreview
   }
 }
 

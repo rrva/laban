@@ -27,6 +27,17 @@ extension HeadlessDebugRuntime {
     }
   }
 
+  public func hoverPreview() -> DebugResponse {
+    withRuntimeLock {
+      syncSessionMetadataUnlocked()
+      let ctx = controlProjectionContext()
+      if let response = ControlStateProjections.hoverPreviewResponse(ctx) {
+        return debugJSON(response)
+      }
+      return jsonError("hover preview state unavailable")
+    }
+  }
+
   public func accessibility() -> DebugResponse {
     withRuntimeLock {
       syncSessionMetadataUnlocked()

@@ -141,6 +141,7 @@ public enum DebugActionIntentID {
     case "setGlyphEffectsEnabled": return "glyphEffects.setEnabled"
     case "setSpinnerMotionSmoothingEnabled": return "spinnerMotion.setEnabled"
     case "resetSpinnerMotionDiagnostics": return "spinnerMotion.resetDiagnostics"
+    case "setHoverPreviewEnabled": return "hoverPreview.setEnabled"
     case "setVectorSubpixelLayout": return "vector.subpixelLayout.set"
     case "setPreedit": return "preedit.set"
     case "setClipboardText": return "clipboard.setText"
@@ -1246,6 +1247,20 @@ public struct SetGlyphEffectsEnabledActionRequest: Codable, Sendable, Equatable,
 }
 
 public struct SetSpinnerMotionSmoothingEnabledActionRequest: Codable, Sendable, Equatable,
+  JSONSchemaProviding
+{
+  public var enabled: Bool?
+
+  public init(enabled: Bool? = nil) {
+    self.enabled = enabled
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(["enabled": DebugPayloadSchema.boolean], required: ["enabled"])
+  }
+}
+
+public struct SetHoverPreviewEnabledActionRequest: Codable, Sendable, Equatable,
   JSONSchemaProviding
 {
   public var enabled: Bool?

@@ -1417,6 +1417,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       waveConfidence: wave.confidence)
   }
 
+  var hoverPreviewState: HoverPreviewStateResponse? {
+    let currentBackend = pendingBackendSwap?.backend ?? backend
+    let rendererEligible = currentBackend is SlugGlyphRenderer
+    let effectiveEnabled = HoverPreviewSettings.enabled && rendererEligible
+    let activeTabId = model.activeTab?.id
+    let previewedTabId =
+      (effectiveEnabled && hoveredSidebarTabId != nil && hoveredSidebarTabId != activeTabId)
+      ? hoveredSidebarTabId : nil
+    return HoverPreviewStateResponse(
+      configured: HoverPreviewSettings.enabled,
+      effectiveRenderer: currentBackend.rendererStatus.effectiveRenderer,
+      rendererEligible: rendererEligible,
+      effectiveEnabled: effectiveEnabled,
+      previewedTabId: previewedTabId,
+      showing: previewedTabId != nil)
+  }
+
   var glyphEffectsState: GlyphEffectsStateResponse? {
     let currentBackend = pendingBackendSwap?.backend ?? backend
     guard let slug = currentBackend as? SlugGlyphRenderer else { return nil }

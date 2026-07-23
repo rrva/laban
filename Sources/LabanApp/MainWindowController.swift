@@ -1067,7 +1067,8 @@ final class MainWindowController: NSWindowController {
         },
         sessionClientInfoById: [:],
         glyphEffectsStateProvider: { [weak termView] in termView?.glyphEffectsState },
-        spinnerMotionStateProvider: { [weak termView] in termView?.spinnerMotionState }))
+        spinnerMotionStateProvider: { [weak termView] in termView?.spinnerMotionState },
+        hoverPreviewStateProvider: { [weak termView] in termView?.hoverPreviewState }))
   }
 
   func applyControlServerEnabled(_ enabled: Bool) {

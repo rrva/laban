@@ -199,6 +199,21 @@ struct DebugWindowActions {
     return runtime.actionResult(ok: true)
   }
 
+  func setHoverPreviewEnabled(_ request: SetHoverPreviewEnabledActionRequest) -> DebugResponse {
+    guard let enabled = request.enabled else {
+      return jsonError("setHoverPreviewEnabled requires enabled")
+    }
+    guard HoverPreviewSettings.setEnabled(enabled) else {
+      let raw =
+        ProcessInfo.processInfo.environment[HoverPreviewSettings.enabledEnvironmentKey] ?? ""
+      return jsonError(
+        "setHoverPreviewEnabled is locked by \(HoverPreviewSettings.enabledEnvironmentKey)=\(raw)"
+      )
+    }
+    runtime.renderFrameUnlocked()
+    return runtime.actionResult(ok: true)
+  }
+
   func setVectorSubpixelLayout(_ request: VectorSubpixelLayoutActionRequest) -> DebugResponse {
     guard let vectorRenderer = runtime.rendererBackend as? VectorGlyphRenderer else {
       return jsonError("setVectorSubpixelLayout requires vectorGlyph renderer")

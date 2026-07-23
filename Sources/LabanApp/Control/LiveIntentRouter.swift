@@ -19,6 +19,7 @@ struct LiveControlEnvironment {
   var sessionClientInfoById: [Session.ID: LabandSessionInfo]
   var glyphEffectsStateProvider: (() -> GlyphEffectsStateResponse?)?
   var spinnerMotionStateProvider: (() -> SpinnerMotionStateResponse?)?
+  var hoverPreviewStateProvider: (() -> HoverPreviewStateResponse?)?
 
   static func `default`(model: AppModel) -> LiveControlEnvironment {
     LiveControlEnvironment(
@@ -51,6 +52,13 @@ struct LiveControlEnvironment {
           effectKind: 0,
           remainingSeconds: 0,
           liveEffectFrames: 0)
+      },
+      hoverPreviewStateProvider: {
+        HoverPreviewStateResponse(
+          configured: HoverPreviewSettings.enabled,
+          effectiveRenderer: "vectorGlyph",
+          rendererEligible: false,
+          effectiveEnabled: false)
       })
   }
 }
@@ -145,6 +153,13 @@ final class LiveIntentRouter: IntentRouter {
             effectKind: 0,
             remainingSeconds: 0,
             liveEffectFrames: 0)
+        },
+        hoverPreviewStateProvider: {
+          HoverPreviewStateResponse(
+            configured: HoverPreviewSettings.enabled,
+            effectiveRenderer: "vectorGlyph",
+            rendererEligible: false,
+            effectiveEnabled: false)
         })
     }
   }
@@ -334,6 +349,11 @@ final class LiveIntentRouter: IntentRouter {
       case "spinnerMotion.state":
         guard let response = ControlStateProjections.spinnerMotionResponse(ctx) else {
           return .error(503, "spinner motion diagnostics unavailable")
+        }
+        return json(response)
+      case "hoverPreview.state":
+        guard let response = ControlStateProjections.hoverPreviewResponse(ctx) else {
+          return .error(503, "hover preview diagnostics unavailable")
         }
         return json(response)
       default:
@@ -734,7 +754,8 @@ final class LiveIntentRouter: IntentRouter {
       accessibilityValueProvider: { [environment] tab in environment.accessibilityValueProvider(tab)
       },
       glyphEffectsProvider: environment.glyphEffectsStateProvider,
-      spinnerMotionProvider: environment.spinnerMotionStateProvider)
+      spinnerMotionProvider: environment.spinnerMotionStateProvider,
+      hoverPreviewProvider: environment.hoverPreviewStateProvider)
   }
 
   private func guiDiscoveryResponse(readRedaction: ControlReadRedaction) -> DebugDiscoveryResponse {

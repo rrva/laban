@@ -55,6 +55,8 @@ extension HeadlessDebugRuntime {
       return DebugWindowActions(runtime: self).setSpinnerMotionSmoothingEnabled(request)
     case .resetSpinnerMotionDiagnostics:
       return DebugWindowActions(runtime: self).resetSpinnerMotionDiagnostics()
+    case .setHoverPreviewEnabled(let request):
+      return DebugWindowActions(runtime: self).setHoverPreviewEnabled(request)
     case .setVectorSubpixelLayout(let request):
       return DebugWindowActions(runtime: self).setVectorSubpixelLayout(request)
     case .windowFocus(let request):

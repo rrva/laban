@@ -10,6 +10,12 @@ public enum ControlStateProjections {
     ctx.spinnerMotionProvider?()
   }
 
+  public static func hoverPreviewResponse(
+    _ ctx: ControlProjectionContext
+  ) -> HoverPreviewStateResponse? {
+    ctx.hoverPreviewProvider?()
+  }
+
   public static func stateResponse(_ ctx: ControlProjectionContext) -> StateResponse {
     switch ctx.readRedaction {
     case .appObserveSummary:
@@ -44,7 +50,8 @@ public enum ControlStateProjections {
       attentionNotifications: filteredAttentionNotifications(ctx).map(
         attentionNotificationDecisionResponse),
       glyphEffects: ctx.glyphEffectsProvider?(),
-      spinnerMotion: ctx.spinnerMotionProvider?()
+      spinnerMotion: ctx.spinnerMotionProvider?(),
+      hoverPreview: ctx.hoverPreviewProvider?()
     )
   }
 

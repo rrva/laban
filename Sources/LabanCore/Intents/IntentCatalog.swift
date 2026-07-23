@@ -1194,6 +1194,10 @@ public struct IntentCatalog: Sendable {
       summary: "Return spinner motion smoothing state and telemetry.",
       requiredCapability: .fixture, dataSensitivity: .trace),
     descriptor(
+      id: "hoverPreview.state", kind: .query, category: "rendering",
+      summary: "Return sidebar hover-preview configuration and eligibility state.",
+      requiredCapability: .fixture, dataSensitivity: .trace),
+    descriptor(
       id: "render.frameCommands", kind: .query, category: "rendering",
       summary: "Return bounded frame commands.",
       requiredCapability: .fixture, dataSensitivity: .trace),
@@ -1338,6 +1342,13 @@ public struct IntentCatalog: Sendable {
       requiredCapability: .fixture,
       dataSensitivity: .nonSensitiveState,
       inputSchema: SetSpinnerMotionSmoothingEnabledActionRequest.jsonSchema),
+    descriptor(
+      id: "hoverPreview.setEnabled",
+      category: "fixture",
+      summary: "Enable or disable the sidebar hover preview.",
+      requiredCapability: .fixture,
+      dataSensitivity: .nonSensitiveState,
+      inputSchema: SetHoverPreviewEnabledActionRequest.jsonSchema),
     descriptor(
       id: "spinnerMotion.resetDiagnostics",
       category: "fixture",

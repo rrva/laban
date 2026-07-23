@@ -57,6 +57,15 @@ extension HeadlessDebugRuntime {
           waveActive: wave.active,
           waveVelocityCellsPerSecond: wave.velocityCellsPerSecond,
           waveConfidence: wave.confidence)
+      },
+      hoverPreviewProvider: {
+        let rendererEligible = runtime.rendererBackend is SlugGlyphRenderer
+        let effectiveEnabled = HoverPreviewSettings.enabled && rendererEligible
+        return HoverPreviewStateResponse(
+          configured: HoverPreviewSettings.enabled,
+          effectiveRenderer: runtime.rendererBackend.rendererStatus.effectiveRenderer,
+          rendererEligible: rendererEligible,
+          effectiveEnabled: effectiveEnabled)
       })
   }
 }

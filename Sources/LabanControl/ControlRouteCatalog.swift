@@ -276,6 +276,13 @@ public enum ControlRouteCatalog {
       intentID: "spinnerMotion.state"),
     endpoint(
       method: "GET",
+      path: "/debug/sidebar-hover-preview",
+      category: "rendering",
+      summary: "Return sidebar hover-preview configuration, eligibility, and active state.",
+      responseSchema: "schemas/debug/sidebar-hover-preview.schema.json",
+      intentID: "hoverPreview.state"),
+    endpoint(
+      method: "GET",
       path: "/debug/frame-commands",
       category: "rendering",
       summary: "Return bounded frame commands, optionally filtered by source.",
@@ -503,6 +510,7 @@ public enum ControlRouteCatalog {
     ("GET", "/debug/sessions"),
     ("GET", "/debug/render"),
     ("GET", "/debug/spinner-motion"),
+    ("GET", "/debug/sidebar-hover-preview"),
     ("GET", "/debug/frame-commands"),
     ("GET", "/debug/atlas"),
     ("GET", "/debug/events"),

@@ -52,6 +52,9 @@ public enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(
       name: "resetSpinnerMotionDiagnostics",
       summary: "Reset spinner-motion detector state."),
+    DebugDiscoveryControl(
+      name: "setHoverPreviewEnabled",
+      summary: "Enable or disable the sidebar hover preview."),
     DebugDiscoveryControl(name: "key", summary: "Send a structured key event."),
     DebugDiscoveryControl(name: "mouseWheel", summary: "Send a mouse wheel event."),
     DebugDiscoveryControl(name: "mouseDrag", summary: "Send a mouse press-drag-release gesture."),

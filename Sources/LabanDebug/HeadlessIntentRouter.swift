@@ -74,6 +74,8 @@ public final class HeadlessIntentRouter: IntentRouter {
       return json(runtime.renderState())
     case "spinnerMotion.state":
       return json(runtime.spinnerMotion())
+    case "hoverPreview.state":
+      return json(runtime.hoverPreview())
     case "render.frameCommands":
       return json(runtime.frameCommands(query: query.params))
     case "render.atlas":

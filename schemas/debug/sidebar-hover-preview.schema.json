@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/sidebar-hover-preview.schema.json",
+  "title": "Sidebar Hover Preview State",
+  "type": "object",
+  "required": [
+    "configured",
+    "effectiveRenderer",
+    "rendererEligible",
+    "effectiveEnabled"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "configured": {"type": "boolean"},
+    "effectiveRenderer": {"type": "string"},
+    "rendererEligible": {"type": "boolean"},
+    "effectiveEnabled": {"type": "boolean"},
+    "previewedTabId": {"type": ["string", "null"]},
+    "showing": {"type": "boolean"}
+  }
+}

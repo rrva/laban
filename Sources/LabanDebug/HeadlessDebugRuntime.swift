@@ -881,7 +881,8 @@ public final class HeadlessDebugRuntime {
         userCursorStyle: CursorSettings.style,
         userCursorBlinkEnabled: CursorSettings.blinkEnabled,
         spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
-        effectiveRendererIsSlug: rendererBackend is SlugGlyphRenderer)
+        effectiveRendererIsSlug: rendererBackend is SlugGlyphRenderer,
+        hoverPreviewEnabled: HoverPreviewSettings.enabled)
     )
     let surfaceBuildMs = elapsedMs(since: timer)
     snapshotMs = surfaceFrame?.snapshotMs ?? 0
