@@ -1,0 +1,28 @@
+{
+  "name": "glyph-effects-keystroke-impulse",
+  "version": 1,
+  "description": "Control row for the keystroke-impulse scenario: the scenario re-outputs the same text on the next row and compares first-frame (transformed) and settled (identical) pixels against this never-restamped control. The block cursor is hidden (DECTCEM) so the empty-row baseline probe reads background, not cursor pixels.",
+  "initialSize": {
+    "cols": 80,
+    "rows": 24
+  },
+  "steps": [
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "\u001b[?25l"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "elastic arrival text\r\n"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "containsText": ["elastic arrival text"]
+  }
+}

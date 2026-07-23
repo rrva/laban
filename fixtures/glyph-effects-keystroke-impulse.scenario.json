@@ -1,7 +1,7 @@
 {
-  "name": "glyph-effects-ink-bloom",
-  "description": "Ink-bloom type-in (M1): a freshly output row renders slightly fainter at age 0, eases toward settled over 280 ms of virtual time, and is pixel-identical to a never-restamped control row once settled. The softened age-0 curve (0.82 dilation) no longer moves raw glyph coverage at the probe font size, so thinness is witnessed by average brightness, not pixel counts. The fixture hides the block cursor (DECTCEM) so the empty-row baseline probe reads background, not cursor pixels. Fails on the pre-channel tree (advanceTime/setGlyphEffectsEnabled actions missing). Requires slugGlyph (the effect is evaluated in the Slug vertex shader) and --deterministic (virtual clock).",
-  "fixture": "fixtures/glyph-effects-ink-bloom.fixture.json",
+  "name": "glyph-effects-keystroke-impulse",
+  "description": "Keystroke-impulse type-in (pivot from ink-bloom): a freshly output glyph arrives horizontally compressed, slightly tall and tilted, then springs into place over 130 ms of virtual time (easeOutBack, one overshoot). First-frame assertions are pose-agnostic bounded inequalities (no age-0 pose assumptions): the transformed row must cover fewer pixels than the settled control but still render. Settled frames must be pixel-identical to the never-restamped control row — including the gap rows around it, so residual transform spill (scaleY 1.10, 4° tilt, 4.5% width overshoot) cannot leave trails. Requires slugGlyph (the effect is evaluated in the Slug vertex shader) and --deterministic (virtual clock).",
+  "fixture": "fixtures/glyph-effects-keystroke-impulse.fixture.json",
   "renderer": "slugGlyph",
   "deterministic": true,
   "steps": [
@@ -26,33 +26,37 @@
     },
     {
       "op": "post",
-      "label": "baseline probe: control settled, fresh row empty",
+      "label": "baseline probe: control settled, fresh row + gaps empty",
       "path": "/debug/pixel-probe",
       "body": {
         "regions": [
           {"name": "control", "x": 201, "y": 439, "width": 198, "height": 15},
-          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15}
+          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15},
+          {"name": "gapAbove", "x": 201, "y": 435, "width": 198, "height": 4},
+          {"name": "belowFresh", "x": 201, "y": 401, "width": 198, "height": 19}
         ]
       },
       "expectJson": [
         {"path": "regions[0].nonBackgroundPixels", "greaterThan": 0},
-        {"path": "regions[1].nonBackgroundPixels", "equals": 0}
+        {"path": "regions[1].nonBackgroundPixels", "equals": 0},
+        {"path": "regions[2].nonBackgroundPixels", "equals": 0},
+        {"path": "regions[3].nonBackgroundPixels", "equals": 0}
       ],
       "saveAs": "probe-baseline.json"
     },
     {
       "op": "action",
       "label": "fresh output on the next row",
-      "body": {"action": "feedOutput", "text": "ink bloom control text\r\n"}
+      "body": {"action": "feedOutput", "text": "elastic arrival text\r\n"}
     },
     {
       "op": "action",
-      "label": "render the age-0 frame",
+      "label": "render the first-frame impulse pose",
       "body": {"action": "advanceFrames", "count": 1}
     },
     {
       "op": "post",
-      "label": "age 0: fresh row is fainter and thinner than settled control",
+      "label": "first frame: transformed row renders but covers less than settled",
       "path": "/debug/pixel-probe",
       "body": {
         "regions": [
@@ -61,13 +65,14 @@
         ]
       },
       "expectJson": [
-        {"path": "regions[0].averageRgba[0]", "greaterThanPath": "regions[1].averageRgba[0]"}
+        {"path": "regions[1].nonBackgroundPixels", "greaterThan": 0},
+        {"path": "regions[1].nonBackgroundPixels", "lessThanPath": "regions[0].nonBackgroundPixels"}
       ],
-      "saveAs": "probe-age0.json"
+      "saveAs": "probe-first-frame.json"
     },
     {
       "op": "get",
-      "label": "state: effect live at age 0",
+      "label": "state: impulse live on the first frame",
       "path": "/debug/state",
       "expectJson": [
         {"path": "glyphEffects.active", "equals": true},
@@ -75,16 +80,16 @@
         {"path": "glyphEffects.liveCount", "greaterThan": 0},
         {"path": "glyphEffects.wakeCount", "greaterThan": 0}
       ],
-      "saveAs": "state-age0.json"
+      "saveAs": "state-first-frame.json"
     },
     {
       "op": "action",
-      "label": "advance into mid-bloom (age 40 ms)",
+      "label": "advance into mid-impulse (age 40 ms)",
       "body": {"action": "advanceTime", "ms": 40}
     },
     {
       "op": "post",
-      "label": "mid-bloom: fresh row still fainter than settled control",
+      "label": "mid-impulse: row still covers less than settled control",
       "path": "/debug/pixel-probe",
       "body": {
         "regions": [
@@ -93,13 +98,13 @@
         ]
       },
       "expectJson": [
-        {"path": "regions[1].averageRgba[0]", "lessThanPath": "regions[0].averageRgba[0]"}
+        {"path": "regions[1].nonBackgroundPixels", "lessThanPath": "regions[0].nonBackgroundPixels"}
       ],
       "saveAs": "probe-mid.json"
     },
     {
       "op": "get",
-      "label": "state: effect still live mid-bloom",
+      "label": "state: impulse still live mid-flight",
       "path": "/debug/state",
       "expectJson": [
         {"path": "glyphEffects.active", "equals": true}
@@ -107,22 +112,26 @@
     },
     {
       "op": "action",
-      "label": "advance past the 280 ms decay (age 290 ms)",
+      "label": "advance past the 130 ms decay plus settle repaint (age 290 ms)",
       "body": {"action": "advanceTime", "ms": 250}
     },
     {
       "op": "post",
-      "label": "settled: fresh row is pixel-identical to control",
+      "label": "settled: fresh row pixel-identical to control, no spill trails in gaps",
       "path": "/debug/pixel-probe",
       "body": {
         "regions": [
           {"name": "control", "x": 201, "y": 439, "width": 198, "height": 15},
-          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15}
+          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15},
+          {"name": "gapAbove", "x": 201, "y": 435, "width": 198, "height": 4},
+          {"name": "belowFresh", "x": 201, "y": 401, "width": 198, "height": 19}
         ]
       },
       "expectJson": [
         {"path": "regions[1].averageRgba", "equalsPath": "regions[0].averageRgba"},
-        {"path": "regions[1].nonBackgroundPixels", "equalsPath": "regions[0].nonBackgroundPixels"}
+        {"path": "regions[1].nonBackgroundPixels", "equalsPath": "regions[0].nonBackgroundPixels"},
+        {"path": "regions[2].nonBackgroundPixels", "equals": 0},
+        {"path": "regions[3].nonBackgroundPixels", "equals": 0}
       ],
       "saveAs": "probe-settled.json"
     },
@@ -143,17 +152,21 @@
     },
     {
       "op": "post",
-      "label": "post-idle: still pixel-identical to control",
+      "label": "post-idle: still pixel-identical to control, gaps still clean",
       "path": "/debug/pixel-probe",
       "body": {
         "regions": [
           {"name": "control", "x": 201, "y": 439, "width": 198, "height": 15},
-          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15}
+          {"name": "fresh", "x": 201, "y": 420, "width": 198, "height": 15},
+          {"name": "gapAbove", "x": 201, "y": 435, "width": 198, "height": 4},
+          {"name": "belowFresh", "x": 201, "y": 401, "width": 198, "height": 19}
         ]
       },
       "expectJson": [
         {"path": "regions[1].averageRgba", "equalsPath": "regions[0].averageRgba"},
-        {"path": "regions[1].nonBackgroundPixels", "equalsPath": "regions[0].nonBackgroundPixels"}
+        {"path": "regions[1].nonBackgroundPixels", "equalsPath": "regions[0].nonBackgroundPixels"},
+        {"path": "regions[2].nonBackgroundPixels", "equals": 0},
+        {"path": "regions[3].nonBackgroundPixels", "equals": 0}
       ]
     },
     {
