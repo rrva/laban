@@ -69,7 +69,7 @@ instant the mouse leaves the row or the setting/renderer changes.
 - [x] (2026-07-23) Milestone 2: `SlugGlyphRenderer` third atlas + `.sidebarPreview` routing. Added `previewFontAtlas`/`previewReferenceFontAtlas` to `SlugGlyphRenderer` (init, `reconfigureFonts`, `atlas(for:)`/`referenceAtlas(for:)` helpers replacing the old two-way ternaries), widened `runFontIdentity`'s cache key to a 2-bit atlas-kind field (see Decision Log), threaded `previewFontAtlas` through `RendererSelection.makeRendererBackend` (Slug construction only, per ADR 0031), and through every `sidebarFontAtlas` site in `TerminalBitmapView.swift` that affects backend construction/reconfiguration (init, both `makeBackend` calls, the `makeBackend` static wrapper, `applyRendererSelection`, and `applyFontSize`'s ladder-miss/backend-reconfigure paths). Also folded in `TerminalSurfaceController.previewCellWidth`/`previewCellHeight` (originally scoped to Milestone 4) since threading `TerminalBitmapView`'s new `previewFontAtlas` through the `TerminalSurfaceController(...)` constructor call and `updateCellMetrics(...)` touches the exact same lines — see Decision Log. Added `Tests/LabanRendererTests/SlugGlyphRendererPreviewAtlasTests.swift` (2 tests, passing) proving `.sidebarPreview` glyph runs resolve the preview atlas's point size and stay distinct from terminal/sidebar. `swift build` (whole package) and `swift test --filter SlugGlyphRendererPreviewAtlasTests` both clean.
 - [x] (2026-07-23) Milestone 3: `SidebarProducer` emits the preview panel from resolved content. Added `SidebarProducer.HoverPreview` (nested struct) and a standalone `static func hoverPreviewCommands(...)` (extracted rather than left inline in `output(...)`, anticipating Milestone 4's memoization-bypass need — see Decision Log) that `output(...)` now calls internally so its own behavior/tests stay consistent. Added 3 tests to `Tests/LabanCoreTests/SidebarProducerTests.swift`: panel+glyph commands present for a background-tab preview, no `.sidebarPreview` commands when `hoverPreview` is nil, no `.sidebarPreview` commands when previewing the active tab's own row. All 52 `SidebarProducerTests` cases pass (49 pre-existing unmodified + 3 new).
 - [x] (2026-07-23) Milestone 4: `TerminalSurfaceController` + `TerminalBitmapView` wiring. `sidebarCommands` gained `viewportWidth`, `effectiveRendererIsSlug`, `hoverPreviewEnabled` parameters; resolves `SidebarProducer.HoverPreview` from `model.session(forTab:)` + `Session.scrollbackBlock(rowOffset: 0, maxRows: 500)` when the hovered tab differs from the active tab, and appends `SidebarProducer.hoverPreviewCommands(...)` after the memoized sidebar lookup (bypassing `SidebarCacheSignature`, per Milestone 3's Decision Log). `TerminalSurfaceFrameRequest` gained `hoverPreviewEnabled: Bool = false`; both `TerminalBitmapView` call sites now pass `hoverPreviewEnabled: HoverPreviewSettings.enabled`. Added a `HoverPreviewSettings.didChangeNotification` observer mirroring the spinner-motion one (forces a render retry so toggling the setting takes effect live). Full package build and full `swift test` both pass (0 failures). Built via `./scripts/build-app`, installed to `~/Laban-hover-preview.app` (not launched from the shell). Manual verification pending the user launching the app (see Validation and Acceptance).
-- [ ] Milestone 5: Settings UI checkbox + debug endpoint + headless parity
+- [x] (2026-07-23) Milestone 5: Settings UI checkbox + debug endpoint + headless parity. See Milestone 5's own section for the full (corrected, larger-than-originally-scoped) file list. Full `swift test` passes.
 - [ ] Milestone 6: Manual verification, polish pass, Review Gate
 
 ## Decision Log
@@ -238,6 +238,22 @@ instant the mouse leaves the row or the setting/renderer changes.
   `defaults write com.laban.LabanApp LabanSidebarHoverPreviewEnabled -bool YES`
   followed by `defaults read com.laban.LabanApp LabanSidebarHoverPreviewEnabled`
   → `1`, confirming the correct domain actually persists.
+- Observation: `HoverPreviewStateResponse`
+  (`Sources/LabanCore/Control/Projections/ControlResponseModels.swift`)
+  intentionally does not copy `SpinnerMotionStateResponse`'s telemetry
+  fields (`activeTransitions`, `analyticMotionInstances`, `fallbackSnaps`,
+  `effectKind`, `remainingSeconds`, `liveEffectFrames`, wave diagnostics).
+  It carries only `configured`/`effectiveRenderer`/`rendererEligible`/
+  `effectiveEnabled` (ADR 0031's explicit requirement) plus two
+  hover-preview-specific fields, `previewedTabId`/`showing`. Rationale:
+  spinner motion's telemetry fields describe per-frame motion-detector
+  state with no hover-preview equivalent (the preview panel is a static
+  content projection, not an animated effect) — copying the shape would
+  mean fabricating meaningless zero fields. `previewedTabId`/`showing` were
+  added instead because they are cheap (already-resolved local state) and
+  directly answer "is a panel actually showing right now," which a debug
+  client checking this endpoint would otherwise have no way to confirm.
+  Date/Author: 2026-07-23, implementation session.
 
 ## Context and Orientation
 
@@ -708,7 +724,52 @@ hover a non-active tab's sidebar row. Expect a panel to appear beside that row
 showing that tab's recent output. Moving the mouse to the active tab's row, or
 off the sidebar entirely, must make the panel disappear.
 
-### Milestone 5 — Settings UI checkbox + debug endpoint + headless parity
+### Milestone 5 — Settings UI checkbox + debug endpoint + headless parity ✅ (2026-07-23)
+
+Settings UI checkbox: `SettingsWindowController.swift` gained
+`hoverPreviewCheckbox`, wired identically to the spinner-motion checkbox
+(same rendering-settings grid row, same `isEnabled = (selection ==
+.slugGlyph) && !envLocked` disable rule, same toggle-handler shape). Debug
+endpoint: `GET /debug/sidebar-hover-preview` (intent `hoverPreview.state`)
+returns `HoverPreviewStateResponse`; write action `hoverPreview.setEnabled`
+(legacy name `setHoverPreviewEnabled`) persists the setting through
+`HoverPreviewSettings.setEnabled`. Both headless (`HeadlessDebugRuntime` via
+`ControlProjectionBridge`) and live-GUI (`TerminalBitmapView.hoverPreviewState`
+→ `MainWindowController` → `LiveControlEnvironment` → `LiveIntentRouter`)
+paths report state through the same `ControlStateProjections.hoverPreviewResponse`
+accessor, satisfying AGENTS.md's `HeadlessDebugRuntime` feature-parity rule.
+`swift run LabanControlGen --write` regenerated the committed
+`schemas/debug/discovery-endpoints.json`; `IntentCatalogTests` and
+`DiscoveryEndpointParityTests` both required a one-line update each (new
+intent id in a fixture-catalog membership check; regenerated doc). Full
+`swift test` passes (0 failures) after all fixes.
+
+**Corrected file list** (see Surprises & Discoveries for how this was
+discovered to be larger than 4 files): `Sources/LabanApp/SettingsWindowController.swift`
+(checkbox), `Sources/LabanApp/Control/LiveIntentRouter.swift` (live GUI query
+dispatch + `LiveControlEnvironment` provider field), `Sources/LabanApp/TerminalBitmapView.swift`
+(`hoverPreviewState` computed property, mirroring `spinnerMotionState`),
+`Sources/LabanApp/MainWindowController.swift` (wires the real provider into
+`LiveControlEnvironment`), `Sources/LabanDebug/ControlProjectionBridge.swift`
+(headless provider closure), `Sources/LabanDebug/DebugStateEndpoints.swift`
+(the `hoverPreview()` HTTP-facing method), `Sources/LabanDebug/DebugWindowActions.swift`
+(`setHoverPreviewEnabled` write handler), `Sources/LabanDebug/DebugRuntimeRequests.swift`,
+`Sources/LabanDebug/DebugRuntimeActions.swift`, `Sources/LabanDebug/HeadlessIntentRouter.swift`,
+`Sources/LabanDebug/DebugDiscoveryEndpoints.swift` (routing/dispatch/discovery
+glue), `Sources/LabanCore/Intents/IntentCatalog.swift`,
+`Sources/LabanCore/Intents/DebugRequestPayloads.swift` (intent descriptors +
+action payload type), `Sources/LabanCore/Control/Projections/ControlProjectionContext.swift`,
+`Sources/LabanCore/Control/Projections/ControlResponseModels.swift`,
+`Sources/LabanCore/Control/Projections/ControlStateProjections.swift`
+(new `HoverPreviewStateResponse` + aggregate `StateResponse.hoverPreview`
+field), `Sources/LabanControl/ControlRouteCatalog.swift` (both the
+documented `endpoint(...)` catalog entry AND the separate
+`legacyJSONReadRoutePaths` list that actually builds the dispatchable
+`ControlRoute` — the catalog entry alone does not make a route reachable),
+`schemas/debug/sidebar-hover-preview.schema.json` (new file, mirrors
+`schemas/debug/spinner-motion.schema.json`'s shape), and the generated
+`schemas/debug/discovery-endpoints.json` (regenerated via `swift run
+LabanControlGen --write`, not hand-edited).
 
 Mirror the exact file list `SpinnerMotionSmoothingSettings` touches outside
 `LabanCore` (found via `grep -rl "SpinnerMotionSmoothingSettings" Sources/`):
