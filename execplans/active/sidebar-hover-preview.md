@@ -66,9 +66,9 @@ instant the mouse leaves the row or the setting/renderer changes.
 ## Progress
 
 - [x] (2026-07-23) Milestone 1: Settings scaffold + `FrameCommand`/`FontAtlas` groundwork (no visible behavior change). Added `Sources/LabanCore/HoverPreviewSettings.swift`, `Tests/LabanCoreTests/HoverPreviewSettingsTests.swift` (9 tests, all passing), `FrameSource.sidebarPreview` case, `FontAtlas.previewPointSize(forTerminalPointSize:)` and `FontAtlas.persistedPreviewPointSize`. `swift build` clean for LabanCore/LabanRenderer.
-- [ ] Milestone 2: `SlugGlyphRenderer` third atlas + `.sidebarPreview` routing (visible only via a manual/test-injected `FrameCommand`)
-- [ ] Milestone 3: `SidebarProducer` emits the preview panel from resolved content (unit-testable, not yet wired to real hover/session data)
-- [ ] Milestone 4: `TerminalSurfaceController` + `TerminalBitmapView` wiring (feature is live end-to-end for local sessions)
+- [x] (2026-07-23) Milestone 2: `SlugGlyphRenderer` third atlas + `.sidebarPreview` routing. Added `previewFontAtlas`/`previewReferenceFontAtlas` to `SlugGlyphRenderer` (init, `reconfigureFonts`, `atlas(for:)`/`referenceAtlas(for:)` helpers replacing the old two-way ternaries), widened `runFontIdentity`'s cache key to a 2-bit atlas-kind field (see Decision Log), threaded `previewFontAtlas` through `RendererSelection.makeRendererBackend` (Slug construction only, per ADR 0031), and through every `sidebarFontAtlas` site in `TerminalBitmapView.swift` that affects backend construction/reconfiguration (init, both `makeBackend` calls, the `makeBackend` static wrapper, `applyRendererSelection`, and `applyFontSize`'s ladder-miss/backend-reconfigure paths). Also folded in `TerminalSurfaceController.previewCellWidth`/`previewCellHeight` (originally scoped to Milestone 4) since threading `TerminalBitmapView`'s new `previewFontAtlas` through the `TerminalSurfaceController(...)` constructor call and `updateCellMetrics(...)` touches the exact same lines — see Decision Log. Added `Tests/LabanRendererTests/SlugGlyphRendererPreviewAtlasTests.swift` (2 tests, passing) proving `.sidebarPreview` glyph runs resolve the preview atlas's point size and stay distinct from terminal/sidebar. `swift build` (whole package) and `swift test --filter SlugGlyphRendererPreviewAtlasTests` both clean.
+- [x] (2026-07-23) Milestone 3: `SidebarProducer` emits the preview panel from resolved content. Added `SidebarProducer.HoverPreview` (nested struct) and a standalone `static func hoverPreviewCommands(...)` (extracted rather than left inline in `output(...)`, anticipating Milestone 4's memoization-bypass need — see Decision Log) that `output(...)` now calls internally so its own behavior/tests stay consistent. Added 3 tests to `Tests/LabanCoreTests/SidebarProducerTests.swift`: panel+glyph commands present for a background-tab preview, no `.sidebarPreview` commands when `hoverPreview` is nil, no `.sidebarPreview` commands when previewing the active tab's own row. All 52 `SidebarProducerTests` cases pass (49 pre-existing unmodified + 3 new).
+- [ ] Milestone 4: `TerminalSurfaceController` + `TerminalBitmapView` wiring (feature is live end-to-end for local sessions) — narrowed: cell-metrics threading (`previewCellWidth`/`previewCellHeight`) already landed in Milestone 2; remaining work is `sidebarCommands` hover-content resolution, `viewportWidth` threading, the memoization-signature decision, and the `HoverPreviewSettings.didChangeNotification` observer.
 - [ ] Milestone 5: Settings UI checkbox + debug endpoint + headless parity
 - [ ] Milestone 6: Manual verification, polish pass, Review Gate
 
@@ -128,6 +128,53 @@ instant the mouse leaves the row or the setting/renderer changes.
   from both a sidebar row and a preview panel in the same session. Widening
   the key avoids that collision at the cost of two more cache slots (8 -> 16
   entries max, `bold`/`italic` unchanged at 2 bits each).
+  Date/Author: 2026-07-23, implementation session.
+- Decision: `TerminalBitmapView.init`'s new `previewFontAtlas` parameter is
+  optional (`FontAtlas? = nil`, coalesced internally to a derived atlas),
+  unlike `sidebarFontAtlas` (required, no default) at the same call site.
+  Rationale: `sidebarFontAtlas` is required because every real caller
+  (`MainWindowController.makeAndShow`) always has a concrete one to pass and
+  the type deliberately gives call sites no accidental-default footgun. But
+  24 existing test call sites across `Tests/LabanAppTests/*.swift` construct
+  `TerminalBitmapView` directly without any preview-atlas awareness (they
+  predate this feature and aren't testing it). Making the parameter required
+  would force a mechanical, feature-irrelevant edit to all 24 files for no
+  behavioral benefit. Giving it a default that derives a same-ratio preview
+  atlas from the required `fontAtlas` (mirroring `FontAtlas.previewPointSize`)
+  keeps those tests unchanged while `MainWindowController` still passes an
+  explicit, persisted-size atlas in production. This mirrors the *renderer
+  layer's* own idiom (`SlugGlyphRenderer.init`'s `sidebarFontAtlas: FontAtlas?
+  = nil` coalesced to `?? fontAtlas`), just applied one layer up.
+  Date/Author: 2026-07-23, implementation session.
+- Decision: `TerminalSurfaceController.previewCellWidth`/`previewCellHeight`
+  work (originally scoped to Milestone 4 step 1) was implemented during
+  Milestone 2 instead.
+  Rationale: `TerminalBitmapView`'s `previewFontAtlas` threading (Milestone 2
+  step 7) and the `TerminalSurfaceController(...)` constructor call /
+  `updateCellMetrics(...)` call (Milestone 4 step 1) are the same lines in the
+  same function (`init` and `applyFontSize` respectively) — splitting them
+  across two milestones would mean reading and re-editing the same ~30-line
+  spans twice. `GlyphAtlasLadder`/`ColdLaunchAtlasPrewarmer` (the other
+  `sidebarFontAtlas`-adjacent optimization paths in the same grep sweep) were
+  deliberately left untouched: they only feed pre-rasterized atlas data to
+  Metal/software/vector raster backends, which `SlugGlyphRenderer`'s analytic
+  preview atlas doesn't need — extending them would add unused surface area.
+  Date/Author: 2026-07-23, implementation session.
+- Decision: the preview-panel emission logic lives in a standalone
+  `static func hoverPreviewCommands(...)` on `SidebarProducer`, called both
+  from inside `output(...)` (so Milestone 3's own tests, which call
+  `output(hoverPreview:)` directly, see identical behavior) and, starting in
+  Milestone 4, directly from `TerminalSurfaceController.sidebarCommands`
+  after its memoized `build()`/`SidebarCacheSignature` lookup.
+  Rationale: this is Milestone 4 step 1's option (a) from the plan's original
+  Decision Log entry ("keep it simple, and keep the existing memoization's
+  cost model... unpolluted by a feature with entirely different invalidation
+  timing"), implemented via the plan's own suggested mechanism ("extracting
+  the preview-emission logic... into a standalone function... callable
+  independently of the full output(...)"). Implemented in Milestone 3 (not
+  deferred to Milestone 4) since writing the extraction once, before any
+  caller depends on the inline shape, was simpler than writing it inline
+  first and refactoring under a caller's feet later.
   Date/Author: 2026-07-23, implementation session.
 
 ## Surprises & Discoveries
