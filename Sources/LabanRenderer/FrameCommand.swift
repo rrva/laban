@@ -65,6 +65,9 @@ public struct GlyphForegroundWave: Equatable, Sendable, Codable {
 
 public enum FrameSource: String, Sendable {
   case sidebar
+  /// A floating live-preview panel of a background tab's recent scrollback,
+  /// shown on sidebar-row hover. Slug-only; see docs/adr/0031.
+  case sidebarPreview
   case chrome
   case terminal
   case cursor

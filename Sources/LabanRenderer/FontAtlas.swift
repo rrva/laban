@@ -24,6 +24,7 @@ public final class FontAtlas {
 
   public static let defaultTerminalPointSize: CGFloat = 14.0
   private static let defaultSidebarPointSize: CGFloat = 11.0
+  private static let defaultPreviewPointSize: CGFloat = 7.0  // 14 * 0.5
 
   /// Live-zoom bounds (Cmd+= / Cmd+-). Integer point sizes only, so the
   /// prebuilt atlas ladder is finite (8…40 → 33 sizes).
@@ -51,6 +52,13 @@ public final class FontAtlas {
     size * (defaultSidebarPointSize / defaultTerminalPointSize)
   }
 
+  /// Hover-preview point size derived from a terminal point size, preserving
+  /// the previewScale = 0.5 ratio (see execplans/active/sidebar-hover-preview.md,
+  /// Decision Log). Mirrors `sidebarPointSize(forTerminalPointSize:)`.
+  public static func previewPointSize(forTerminalPointSize size: CGFloat) -> CGFloat {
+    size * (defaultPreviewPointSize / defaultTerminalPointSize)
+  }
+
   /// Terminal point size from UserDefaults, or `defaultTerminalPointSize`.
   public static var persistedTerminalPointSize: CGFloat {
     let stored = UserDefaults.standard.object(forKey: userFontSizeKey) as? Double
@@ -61,6 +69,13 @@ public final class FontAtlas {
   /// Sidebar point size scaled to keep the same ratio as the defaults.
   public static var persistedSidebarPointSize: CGFloat {
     persistedTerminalPointSize * (defaultSidebarPointSize / defaultTerminalPointSize)
+  }
+
+  /// Preview point size scaled to keep the same ratio as the defaults. Used
+  /// for the initial `FontAtlas` construction in `MainWindowController`,
+  /// mirroring `persistedSidebarPointSize`.
+  public static var persistedPreviewPointSize: CGFloat {
+    persistedTerminalPointSize * (defaultPreviewPointSize / defaultTerminalPointSize)
   }
 
   public static let didChangeNotification = Notification.Name("LabanFontDidChange")
