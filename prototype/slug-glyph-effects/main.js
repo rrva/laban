@@ -59,8 +59,6 @@ const state = {
   effectsEnabled: true, // prototype defaults ON so the effect is visible; app ships default-off
   reduceMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
   autoDemo: false,
-  lastKind: 0,
-  fps: 0,
   liveCount: 0,
 };
 
@@ -259,9 +257,7 @@ function rebuildGeometry() {
 // ADR 0018 parking mirror — the rAF loop only runs while an effect is live
 // (or a frame was explicitly requested). Parked = zero advanceFrames.
 // ---------------------------------------------------------------------------
-let rafId = 0;
 let running = false;
-let lastFrameT = 0;
 
 function countLive(now) {
   let n = 0;
@@ -276,28 +272,20 @@ function countLive(now) {
 function kick() {
   if (!running) {
     running = true;
-    lastFrameT = performance.now();
-    rafId = requestAnimationFrame(tick);
+    requestAnimationFrame(tick);
   }
 }
 
 function tick() {
-  const nowMs = performance.now();
-  const dt = nowMs - lastFrameT;
-  lastFrameT = nowMs;
-  if (dt > 0) state.fps = state.fps * 0.9 + (1000 / dt) * 0.1;
-
-  const now = nowMs / 1000;
+  const now = performance.now() / 1000;
   uniforms.uTimeSeconds.value = now;
   renderer.render(scene, camera);
 
   state.liveCount = countLive(now);
-  updateHud();
   if (state.liveCount > 0) {
-    rafId = requestAnimationFrame(tick);
+    requestAnimationFrame(tick);
   } else {
     running = false; // parked — mirror of updateDisplayLinkRunState()
-    updateHud();
   }
 }
 
@@ -307,7 +295,6 @@ function tick() {
 function stampLine(line, kind) {
   const now = clockSeconds();
   for (const cell of line.cells) { cell.kind = kind; cell.start = now; }
-  state.lastKind = kind;
   rebuildGeometry();
   kick();
 }
@@ -348,7 +335,6 @@ function keystrokeDemo() {
   const step = () => {
     if (i < cmd.length) {
       line.cells.push({ ch: cmd[i], color: C.fg, kind: TL.KIND_KEYSTROKE_IMPULSE, start: clockSeconds() });
-      state.lastKind = TL.KIND_KEYSTROKE_IMPULSE;
       i++;
       rebuildGeometry();
       kick();
@@ -371,7 +357,6 @@ function fireBell() {
   const now = clockSeconds();
   for (const { cells } of lines)
     for (const cell of cells) { cell.kind = TL.KIND_BELL_SHAKE; cell.start = now; }
-  state.lastKind = TL.KIND_BELL_SHAKE;
   rebuildGeometry();
   kick();
 }
@@ -385,20 +370,8 @@ function toggleAuto() {
 }
 
 // ---------------------------------------------------------------------------
-// HUD + controls
+// Controls
 // ---------------------------------------------------------------------------
-const hud = document.getElementById('hud');
-const KIND_NAMES = { 0: 'none', 1: 'keystroke impulse', 2: 'bell shake' };
-function updateHud() {
-  const link = running
-    ? `<span class="hot">link: RUNNING @ ${Math.round(state.fps)} fps</span>`
-    : '<span class="ok">link: PARKED</span>';
-  hud.innerHTML =
-    `${link}\n` +
-    `live: ${state.liveCount}  last kind: ${state.lastKind} (${KIND_NAMES[state.lastKind] ?? '?'})\n` +
-    `effects: ${state.effectsEnabled ? 'on' : 'off'} · reduceMotion: ${state.reduceMotion ? 'on' : 'off'} · ${variant.label}`;
-}
-
 const $ = (id) => document.getElementById(id);
 function updateButtons() {
   $('btn-auto').textContent = `auto-demo: ${state.autoDemo ? 'on' : 'off'}`;
@@ -406,7 +379,6 @@ function updateButtons() {
   $('btn-motion').textContent = `reduceMotion: ${state.reduceMotion ? 'on' : 'off'}`;
   $('btn-effects').classList.toggle('off', !state.effectsEnabled);
   $('btn-motion').classList.toggle('off', state.reduceMotion);
-  updateHud();
 }
 
 $('btn-type').onclick = typeLine;
@@ -468,3 +440,9 @@ rebuildGeometry();
 updateButtons();
 document.getElementById('loading').remove();
 kick(); // one demand render, then it parks
+
+// Test-only hook for verify.mjs — nothing renders from this on screen. The
+// visible page shows only what's being judged (the glyph effect itself); no
+// live status readout, since a changing HUD next to the animation competes
+// for attention with the thing being watched.
+window.__testState = () => ({ running, liveCount: state.liveCount });

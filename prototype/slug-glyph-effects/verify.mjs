@@ -51,12 +51,15 @@ for (const variant of VARIANTS) {
   await page.screenshot({ path: new URL(`variant-${variant}-bell.png`, shotsDir).pathname });
 
   // Poll for park instead of a fixed sleep — the auto-typed command length
-  // varies, so a fixed wait races the demo's own setTimeout chain.
-  let hudAfter = await page.textContent('#hud');
+  // varies, so a fixed wait races the demo's own setTimeout chain. Reads
+  // window.__testState(), a headless-only hook — nothing renders from it on
+  // screen (see main.js: no live HUD, so it doesn't distract from the effect
+  // being judged).
+  let testState = await page.evaluate(() => window.__testState());
   const deadline = Date.now() + 4000;
-  while (!hudAfter.includes('PARKED') && Date.now() < deadline) {
+  while (testState.running && Date.now() < deadline) {
     await page.waitForTimeout(150);
-    hudAfter = await page.textContent('#hud');
+    testState = await page.evaluate(() => window.__testState());
   }
 
   const liveCanvas = await page.evaluate(() => {
@@ -65,14 +68,15 @@ for (const variant of VARIANTS) {
   });
 
   const newRowRendered = idleRowHash !== typingRowHash;
+  const parked = !testState.running && testState.liveCount === 0;
 
   console.log(`--- variant ${variant} ---`);
   console.log('canvas:', JSON.stringify(liveCanvas));
-  console.log('hud (after typing+bell, settled):', JSON.stringify(hudAfter));
+  console.log('state (after typing+bell, settled):', JSON.stringify(testState));
   console.log('new-row pixel diff (idle vs. post-typing):', newRowRendered ? 'CHANGED (ok)' : 'IDENTICAL (bug: nothing rendered)');
   console.log('consoleErrors:', consoleErrors.length, consoleErrors.slice(0, 5));
   console.log('pageErrors:', pageErrors.length, pageErrors.slice(0, 5));
-  if (consoleErrors.length || pageErrors.length || !liveCanvas || !hudAfter.includes('PARKED') || !newRowRendered) {
+  if (consoleErrors.length || pageErrors.length || !liveCanvas || !parked || !newRowRendered) {
     anyError = true;
   }
   await page.close();
