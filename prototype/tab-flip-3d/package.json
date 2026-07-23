@@ -1,0 +1,14 @@
+{
+  "name": "tab-flip-3d-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PROTOTYPE (throwaway) — 3D card-flip tab-switch transition via three.js + three-slug, based on the JSlug demo's lit/perspective technique.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "three": "0.185.1",
+    "three-slug": "1.1.4"
+  }
+}

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<!-- PROTOTYPE — throwaway. 3D card-flip tab-switch transition: the outgoing
+     and incoming tab's terminal text are each Slug-rendered onto one face of
+     a thin card (a THREE.Group holding two back-to-back text+backing
+     meshes). Switching tabs rotates the card 180° around Y with real
+     lighting, so the transition itself shows genuine dimensional shading —
+     not a CSS fake. Based directly on the JSlug demo's technique
+     (github.com/manthrax/JSlug demo/main.js): PerspectiveCamera + ambient +
+     directional light + THREE.MeshStandardMaterial on Slug geometry, not the
+     flat/unlit MeshBasicMaterial used in the other two-tab prototypes here.
+     See NOTES.md for exactly what was reused vs. changed from that demo.
+
+     Sidebar chrome is identical to ../pane-focus-depth/index.html (same
+     colors, sampled from a live `laban session screenshot`). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tab-flip-3d prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; overflow: hidden; }
+  body {
+    display: flex;
+    font: 13px/1.6 "JetBrains Mono", Menlo, monospace; color: #c9d1d9;
+  }
+
+  /* --- Sidebar: identical chrome to ../pane-focus-depth --- */
+  .sidebar {
+    flex: 0 0 17%; min-width: 200px; max-width: 280px;
+    background: #21222b; display: flex; flex-direction: column;
+  }
+  .sidebar .titlebar {
+    flex: none; height: 40px; display: flex; align-items: center;
+    gap: 8px; padding: 0 14px;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.red { background: #ff5f57; } .dot.yellow { background: #febc2e; } .dot.green { background: #28c840; }
+  .titlebar .plus { margin-left: auto; color: #6e7681; font-size: 16px; user-select: none; }
+  .sidebar .tabs { flex: 1; overflow: hidden; padding: 4px 0; }
+  .tab-row {
+    display: flex; gap: 10px; padding: 10px 14px 10px 12px; cursor: pointer;
+    border-left: 3px solid transparent; transition: background 160ms ease, border-color 160ms ease;
+  }
+  .tab-row .num { color: #606a95; flex: none; }
+  .tab-row .info { min-width: 0; }
+  .tab-row .name { color: #9198b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row .meta { color: #646f9d; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row.selected { background: #444657; border-left-color: #b393ef; }
+  .tab-row.selected .name { color: #eaeaea; font-weight: 600; }
+  .tab-row.selected .num { color: #b393ef; }
+
+  /* --- Main content: a WebGL canvas hosting the flip card --- */
+  .right { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .stage { flex: 1; min-width: 0; position: relative; }
+  .stage canvas { display: block; }
+  .hint {
+    flex: none; text-align: center; color: #6e7681; font-size: 12px;
+    padding: 6px 0 14px; user-select: none;
+  }
+  .hint kbd {
+    background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+    padding: 1px 6px; color: #c9d1d9;
+  }
+  #loading {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #8b949e; font: 14px "JetBrains Mono", Menlo, monospace; z-index: 5;
+  }
+
+  /* --- Tuning gizmo: duration + flip axis --- */
+  .gizmo {
+    position: absolute; top: 10px; left: 10px; z-index: 10;
+    display: flex; align-items: center; gap: 14px;
+    background: #161b22ee; border: 1px solid #30363d; border-radius: 8px;
+    padding: 6px 12px; font: 12px "JetBrains Mono", Menlo, monospace; color: #c9d1d9;
+  }
+  .gizmo label { display: flex; align-items: center; gap: 8px; }
+  .gizmo input[type="range"] { width: 130px; accent-color: #b393ef; }
+  .gizmo .axis-btn {
+    background: #21222b; color: #9198b8; border: 1px solid #30363d;
+    border-radius: 6px; padding: 3px 10px; cursor: pointer; font: inherit;
+  }
+  .gizmo .axis-btn:hover { border-color: #b393ef; }
+  .gizmo .axis-btn.active { background: #444657; border-color: #b393ef; color: #eaeaea; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.module.js",
+    "three-slug": "./node_modules/three-slug/src/index.js",
+    "opentype.js": "./node_modules/opentype.js/dist/opentype.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div class="sidebar">
+  <div class="titlebar">
+    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+    <span class="plus">+</span>
+  </div>
+  <div class="tabs">
+    <div class="tab-row" data-pane="0">
+      <span class="num">1</span>
+      <div class="info">
+        <div class="name">main</div>
+        <div class="meta">laban</div>
+        <div class="meta">spinner-motion-implementation</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="1">
+      <span class="num">2</span>
+      <div class="info">
+        <div class="name">tests</div>
+        <div class="meta">swift test --filter Slug</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="2">
+      <span class="num">3</span>
+      <div class="info">
+        <div class="name">build</div>
+        <div class="meta">./scripts/build-app</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="right">
+  <div class="stage">
+    <div id="loading">generating slug font…</div>
+    <div class="gizmo">
+      <label for="duration-slider">duration <input type="range" id="duration-slider" min="300" max="3000" step="50" value="1400"> <span id="duration-label">1.40s</span></label>
+      <label>axis
+        <button id="axis-h" class="axis-btn" title="rotates around the vertical (Y) axis">horizontal</button>
+        <button id="axis-v" class="axis-btn" title="rotates around the horizontal (X) axis">vertical</button>
+      </label>
+    </div>
+  </div>
+  <div class="hint">click a sidebar row, or press <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> — card flips once, settles flat</div>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
