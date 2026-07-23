@@ -1,0 +1,14 @@
+{
+  "name": "tab-thumbnails-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PROTOTYPE (throwaway) — always-on, crisp, live vector-text strip of each tab's recent output embedded directly in its sidebar row.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "three": "0.185.1",
+    "three-slug": "1.1.4"
+  }
+}

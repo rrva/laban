@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<!-- PROTOTYPE — throwaway. Always-on live tab thumbnails: instead of a
+     gesture you invoke (../tab-peek-3d's hold-to-peek tilt), every sidebar
+     row gets a small, permanent, live-updating strip of Slug-rendered
+     vector text — the tab's own most recent output, always visible, zero
+     interaction required. No 3D, no perspective camera, no lighting: this
+     idea isn't about depth, it's about the one property genuinely exclusive
+     to vector glyph rendering — a miniature representation stays perfectly
+     crisp at any scale, because it's the same analytic curves, not a
+     downscaled bitmap screenshot. A bitmap terminal's tab thumbnail would
+     be a blurry re-rasterized screenshot; this one is legible text at any
+     size for free.
+
+     Per explicit design note: the sidebar row's aspect ratio (wide, short)
+     is NOT forced to match the main terminal's own aspect ratio — fighting
+     that would mean either illegibly compressing every row of the terminal
+     into a strip, or accepting visual clutter. Instead each strip shows
+     only the "lower half" — the most recent few lines, closest to the live
+     prompt/cursor, which is also the actually-useful signal ("is this tab
+     still running, did it just error, is it back at a prompt") — at a
+     scale that's actually legible for the row's own natural shape.
+
+     Sidebar chrome matches ../pane-focus-depth (colors sampled from a live
+     `laban session screenshot`). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tab-thumbnails prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; overflow: hidden; }
+  body {
+    display: flex;
+    font: 13px/1.6 "JetBrains Mono", Menlo, monospace; color: #c9d1d9;
+  }
+
+  /* --- Sidebar: identical chrome to ../pane-focus-depth --- */
+  .sidebar {
+    flex: 0 0 17%; min-width: 220px; max-width: 300px;
+    background: #21222b; display: flex; flex-direction: column;
+  }
+  .sidebar .titlebar {
+    flex: none; height: 40px; display: flex; align-items: center;
+    gap: 8px; padding: 0 14px;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.red { background: #ff5f57; } .dot.yellow { background: #febc2e; } .dot.green { background: #28c840; }
+  .titlebar .plus { margin-left: auto; color: #6e7681; font-size: 16px; user-select: none; }
+  .sidebar .tabs { flex: 1; overflow: hidden; padding: 4px 0; }
+  .tab-row {
+    display: flex; flex-direction: column; gap: 4px; padding: 8px 14px 10px 12px; cursor: pointer;
+    border-left: 3px solid transparent; transition: background 160ms ease, border-color 160ms ease;
+  }
+  .tab-row .head { display: flex; gap: 10px; }
+  .tab-row .num { color: #606a95; flex: none; }
+  .tab-row .info { min-width: 0; }
+  .tab-row .name { color: #9198b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row .meta { color: #646f9d; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row.selected { background: #444657; border-left-color: #b393ef; }
+  .tab-row.selected .name { color: #eaeaea; font-weight: 600; }
+  .tab-row.selected .num { color: #b393ef; }
+  .tab-row .strip { width: 100%; height: 40px; display: block; border-radius: 4px; }
+
+  /* --- Main content: full-size, borderless, live terminal --- */
+  .right { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .stage { flex: 1; min-width: 0; position: relative; background: #0d1117; }
+  .stage canvas { display: block; }
+  .hint {
+    flex: none; text-align: center; color: #6e7681; font-size: 12px;
+    padding: 6px 0 14px; user-select: none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.module.js",
+    "three-slug": "./node_modules/three-slug/src/index.js",
+    "opentype.js": "./node_modules/opentype.js/dist/opentype.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div class="sidebar">
+  <div class="titlebar">
+    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+    <span class="plus">+</span>
+  </div>
+  <div class="tabs">
+    <div class="tab-row" data-pane="0">
+      <div class="head">
+        <span class="num">1</span>
+        <div class="info">
+          <div class="name">main</div>
+          <div class="meta">laban</div>
+        </div>
+      </div>
+      <canvas class="strip" data-strip="0"></canvas>
+    </div>
+    <div class="tab-row" data-pane="1">
+      <div class="head">
+        <span class="num">2</span>
+        <div class="info">
+          <div class="name">tests</div>
+          <div class="meta">swift test --filter Slug</div>
+        </div>
+      </div>
+      <canvas class="strip" data-strip="1"></canvas>
+    </div>
+    <div class="tab-row" data-pane="2">
+      <div class="head">
+        <span class="num">3</span>
+        <div class="info">
+          <div class="name">build</div>
+          <div class="meta">./scripts/build-app</div>
+        </div>
+      </div>
+      <canvas class="strip" data-strip="2"></canvas>
+    </div>
+    <div class="tab-row" data-pane="3">
+      <div class="head">
+        <span class="num">4</span>
+        <div class="info">
+          <div class="name">logs</div>
+          <div class="meta">tail -f laban.log</div>
+        </div>
+      </div>
+      <canvas class="strip" data-strip="3"></canvas>
+    </div>
+  </div>
+</div>
+<div class="right">
+  <div class="stage"></div>
+  <div class="hint">click a sidebar row to switch — every row's strip updates live, always, no interaction needed</div>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
