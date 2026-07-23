@@ -1,0 +1,14 @@
+{
+  "name": "tab-peek-3d-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PROTOTYPE (throwaway) — hold-to-peek: current tab tilts back in 3D to reveal live-updating mini-panes of the other tabs beneath it.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "three": "0.185.1",
+    "three-slug": "1.1.4"
+  }
+}

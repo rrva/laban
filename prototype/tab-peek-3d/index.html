@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<!-- PROTOTYPE — throwaway. Hold-to-peek: the current tab tilts back in 3D
+     (pivoting from its own top edge, so perspective foreshortening opens up
+     screen space beneath it) while three small "mini-panes" rise into view
+     below, showing live-updating, faithfully-scaled copies of the other
+     tabs' content. Release to snap back to the normal full-size flat view.
+     Goal: glance at background activity without losing track of, or
+     switching away from, the tab you're actually in.
+
+     Reuses the WebGL/lighting technique proven in ../tab-flip-3d
+     (PerspectiveCamera + MeshStandardMaterial + ambient/directional light on
+     Slug geometry) — see that prototype's NOTES.md for why perspective and
+     real lighting matter here, not a CSS fake. Sidebar chrome matches
+     ../pane-focus-depth (same live-screenshot-sampled colors), extended to
+     four tabs so there are always exactly three "others" to show. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tab-peek-3d prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; overflow: hidden; }
+  body {
+    display: flex;
+    font: 13px/1.6 "JetBrains Mono", Menlo, monospace; color: #c9d1d9;
+  }
+
+  /* --- Sidebar: identical chrome to ../pane-focus-depth --- */
+  .sidebar {
+    flex: 0 0 17%; min-width: 200px; max-width: 280px;
+    background: #21222b; display: flex; flex-direction: column;
+  }
+  .sidebar .titlebar {
+    flex: none; height: 40px; display: flex; align-items: center;
+    gap: 8px; padding: 0 14px;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.red { background: #ff5f57; } .dot.yellow { background: #febc2e; } .dot.green { background: #28c840; }
+  .titlebar .plus { margin-left: auto; color: #6e7681; font-size: 16px; user-select: none; }
+  .sidebar .tabs { flex: 1; overflow: hidden; padding: 4px 0; }
+  .tab-row {
+    display: flex; gap: 10px; padding: 10px 14px 10px 12px; cursor: pointer;
+    border-left: 3px solid transparent; transition: background 160ms ease, border-color 160ms ease;
+  }
+  .tab-row .num { color: #606a95; flex: none; }
+  .tab-row .info { min-width: 0; }
+  .tab-row .name { color: #9198b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row .meta { color: #646f9d; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab-row.selected { background: #444657; border-left-color: #b393ef; }
+  .tab-row.selected .name { color: #eaeaea; font-weight: 600; }
+  .tab-row.selected .num { color: #b393ef; }
+
+  /* --- Main content: a WebGL canvas hosting the tilt+reveal scene --- */
+  .right { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .stage { flex: 1; min-width: 0; position: relative; }
+  .stage canvas { display: block; }
+  .hint {
+    flex: none; text-align: center; color: #6e7681; font-size: 12px;
+    padding: 6px 0 14px; user-select: none;
+  }
+  .hint kbd {
+    background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+    padding: 1px 6px; color: #c9d1d9;
+  }
+  #loading {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #8b949e; font: 14px "JetBrains Mono", Menlo, monospace; z-index: 5;
+  }
+
+  /* --- Tuning gizmo: tilt angle + transition duration --- */
+  .gizmo {
+    position: absolute; top: 10px; left: 10px; z-index: 10;
+    display: flex; align-items: center; gap: 14px;
+    background: #161b22ee; border: 1px solid #30363d; border-radius: 8px;
+    padding: 6px 12px; font: 12px "JetBrains Mono", Menlo, monospace; color: #c9d1d9;
+  }
+  .gizmo label { display: flex; align-items: center; gap: 8px; }
+  .gizmo input[type="range"] { width: 110px; accent-color: #b393ef; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.module.js",
+    "three-slug": "./node_modules/three-slug/src/index.js",
+    "opentype.js": "./node_modules/opentype.js/dist/opentype.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div class="sidebar">
+  <div class="titlebar">
+    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+    <span class="plus">+</span>
+  </div>
+  <div class="tabs">
+    <div class="tab-row" data-pane="0">
+      <span class="num">1</span>
+      <div class="info">
+        <div class="name">main</div>
+        <div class="meta">laban</div>
+        <div class="meta">spinner-motion-implementation</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="1">
+      <span class="num">2</span>
+      <div class="info">
+        <div class="name">tests</div>
+        <div class="meta">swift test --filter Slug</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="2">
+      <span class="num">3</span>
+      <div class="info">
+        <div class="name">build</div>
+        <div class="meta">./scripts/build-app</div>
+      </div>
+    </div>
+    <div class="tab-row" data-pane="3">
+      <span class="num">4</span>
+      <div class="info">
+        <div class="name">logs</div>
+        <div class="meta">tail -f laban.log</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="right">
+  <div class="stage">
+    <div id="loading">generating slug font…</div>
+    <div class="gizmo">
+      <label for="tilt-slider">tilt <input type="range" id="tilt-slider" min="10" max="45" step="1" value="26"> <span id="tilt-label">26°</span></label>
+      <label for="duration-slider">duration <input type="range" id="duration-slider" min="120" max="900" step="10" value="320"> <span id="duration-label">320ms</span></label>
+    </div>
+  </div>
+  <div class="hint">hold <kbd>Space</kbd> to peek at the other tabs · click a sidebar row or mini-pane to switch</div>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
