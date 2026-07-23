@@ -125,6 +125,11 @@ public struct TerminalSurfaceFrameRequest {
   public var userCursorBlinkEnabled: Bool
   public var spinnerMotionSmoothingEnabled: Bool
   public var effectiveRendererIsSlug: Bool
+  /// User setting for the sidebar hover preview
+  /// (`HoverPreviewSettings.enabled`). Combined with `effectiveRendererIsSlug`
+  /// at `sidebarCommands`'s call site — both must hold for a preview panel to
+  /// be resolved (docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md).
+  public var hoverPreviewEnabled: Bool
 
   public init(
     frame: Int,
@@ -156,7 +161,8 @@ public struct TerminalSurfaceFrameRequest {
     userCursorStyle: CursorSettings.Style = .block,
     userCursorBlinkEnabled: Bool = false,
     spinnerMotionSmoothingEnabled: Bool = false,
-    effectiveRendererIsSlug: Bool = false
+    effectiveRendererIsSlug: Bool = false,
+    hoverPreviewEnabled: Bool = false
   ) {
     self.frame = frame
     self.viewportWidth = viewportWidth
@@ -188,6 +194,7 @@ public struct TerminalSurfaceFrameRequest {
     self.userCursorBlinkEnabled = userCursorBlinkEnabled
     self.spinnerMotionSmoothingEnabled = spinnerMotionSmoothingEnabled
     self.effectiveRendererIsSlug = effectiveRendererIsSlug
+    self.hoverPreviewEnabled = hoverPreviewEnabled
   }
 }
 
@@ -922,13 +929,16 @@ public final class TerminalSurfaceController {
 
     var commands = sidebarCommands(
       activeTabId: activeTab.id,
+      viewportWidth: request.viewportWidth,
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
       scrollOffset: request.sidebarScrollOffset,
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
-      reduceMotion: request.reduceMotion
+      reduceMotion: request.reduceMotion,
+      effectiveRendererIsSlug: request.effectiveRendererIsSlug,
+      hoverPreviewEnabled: request.hoverPreviewEnabled
     )
 
     guard let session = model.session(forTab: activeTab.id) else {
@@ -1150,13 +1160,16 @@ public final class TerminalSurfaceController {
 
     var commands = sidebarCommands(
       activeTabId: activeTab.id,
+      viewportWidth: request.viewportWidth,
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
       scrollOffset: request.sidebarScrollOffset,
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
-      reduceMotion: request.reduceMotion
+      reduceMotion: request.reduceMotion,
+      effectiveRendererIsSlug: request.effectiveRendererIsSlug,
+      hoverPreviewEnabled: request.hoverPreviewEnabled
     )
 
     let rows = max(snapshot.rows, 1)
@@ -1239,19 +1252,42 @@ public final class TerminalSurfaceController {
 
   public func sidebarCommands(
     activeTabId: Tab.ID?,
+    viewportWidth: CGFloat = 0,
     viewportHeight: CGFloat,
     topInset: CGFloat = 0,
     scrollOffset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
     dragIndicator: SidebarProducer.DragIndicator? = nil,
     now: Date = Date(),
-    reduceMotion: Bool = false
+    reduceMotion: Bool = false,
+    effectiveRendererIsSlug: Bool = false,
+    hoverPreviewEnabled: Bool = false
   ) -> [FrameCommand] {
     let tabs = model.tabs
     let producer = SidebarProducer(
       sidebarWidth: sidebarWidth,
       cellWidth: sidebarCellWidth,
       cellHeight: sidebarCellHeight)
+
+    // Resolved outside `build()`/`SidebarCacheSignature`: scrollback content
+    // changes far more often (every session write) than the rest of the
+    // sidebar's memoization inputs (tab titles/status), so the preview is
+    // recomputed on every call and appended after the memo lookup below
+    // rather than invalidating the whole-sidebar cache on every keystroke in
+    // the hovered tab. See execplans/active/sidebar-hover-preview.md,
+    // Decision Log.
+    let hoverPreview: SidebarProducer.HoverPreview? = {
+      guard effectiveRendererIsSlug, hoverPreviewEnabled,
+        let hoveredTabId, hoveredTabId != activeTabId,
+        previewCellWidth > 0, previewCellHeight > 0,
+        let session = model.session(forTab: hoveredTabId),
+        let block = session.scrollbackBlock(rowOffset: 0, maxRows: 500)
+      else { return nil }
+      return SidebarProducer.HoverPreview(
+        tabId: hoveredTabId, lines: block.lines(), viewportWidth: viewportWidth,
+        cellWidth: previewCellWidth, cellHeight: previewCellHeight)
+    }()
+
     func build() -> SidebarProducer.Output {
       sidebarRebuildCountForTesting += 1
       return producer.output(
@@ -1313,7 +1349,8 @@ public final class TerminalSurfaceController {
 
     // Animate the markers on the memoized commands. No-op when nothing needs
     // action; Reduce Motion shows the full-opacity base form unmodified.
-    return reduceMotion
+    let baseCommands =
+      reduceMotion
       ? output.commands
       : SidebarProducer.retintPulseMarkers(
         output, at: now,
@@ -1321,6 +1358,11 @@ public final class TerminalSurfaceController {
         cellWidth: sidebarCellWidth,
         cellHeight: sidebarCellHeight,
         maxX: sidebarWidth)
+    let previewCommands = SidebarProducer.hoverPreviewCommands(
+      tabs: tabs, activeTabId: activeTabId, height: viewportHeight, topInset: topInset,
+      scrollOffset: scrollOffset, rowHeight: producer.rowHeight, sidebarWidth: sidebarWidth,
+      hoverPreview: hoverPreview)
+    return baseCommands + previewCommands
   }
 
   private static func withAlpha(_ color: UInt32, _ alpha: UInt8) -> UInt32 {

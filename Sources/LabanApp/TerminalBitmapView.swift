@@ -329,6 +329,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var vectorTextWeightObserver: NSObjectProtocol?
   private var vectorSmoothScrollObserver: NSObjectProtocol?
   private var spinnerMotionSmoothingSettingsObserver: NSObjectProtocol?
+  private var hoverPreviewSettingsObserver: NSObjectProtocol?
   private var screenParametersObserver: NSObjectProtocol?
   private var fontChangeObserver: NSObjectProtocol?
   /// Persisted font name as of the last time this view reconciled with
@@ -955,6 +956,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       if SpinnerMotionSmoothingSettings.enabled, let slug = self.backend as? SlugGlyphRenderer {
         slug.prewarmMotionPipelines()
       }
+      self.renderInvalidated = true
+      self.surfaceController.invalidateSessionSyncCache()
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    hoverPreviewSettingsObserver = NotificationCenter.default.addObserver(
+      forName: HoverPreviewSettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
       self.renderInvalidated = true
       self.surfaceController.invalidateSessionSyncCache()
       if self.window != nil {
@@ -1719,7 +1731,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       userCursorStyle: CursorSettings.style,
       userCursorBlinkEnabled: CursorSettings.blinkEnabled,
       spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
-      effectiveRendererIsSlug: targetBackend is SlugGlyphRenderer)
+      effectiveRendererIsSlug: targetBackend is SlugGlyphRenderer,
+      hoverPreviewEnabled: HoverPreviewSettings.enabled)
 
     let surfaceFrame: TerminalSurfaceFrame?
     if let remoteFrame {
@@ -3232,7 +3245,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       userCursorStyle: CursorSettings.style,
       userCursorBlinkEnabled: CursorSettings.blinkEnabled,
       spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
-      effectiveRendererIsSlug: backend is SlugGlyphRenderer
+      effectiveRendererIsSlug: backend is SlugGlyphRenderer,
+      hoverPreviewEnabled: HoverPreviewSettings.enabled
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
