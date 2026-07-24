@@ -504,6 +504,34 @@ the renderer boundary in product/architecture documentation.
 
 ## Surprises & Discoveries
 
+- (2026-07-24) An independent external review, run while preparing this
+  branch for merge (after the UI checkbox was already removed), found two
+  pre-existing issues in the capability this plan kept latent. Verified
+  against the code, not taken on faith; not fixed here — both are inside
+  detector/remote-snapshot internals well outside what was asked for
+  (remove the product surface, question always-on costs), and the feature
+  is unreachable from the UI regardless of these bugs.
+  - **Remote (laband) spinner motion is effectively one-shot.**
+    `spinnerMotionTransitions` (`TerminalSurfaceController.swift`) only
+    re-observes cell state on the remote path when
+    `spinnerMotionLastRemoteDirty[sessionID] != remote.dirty` changes,
+    mirroring the local path's `dirtyGeneration` check. But
+    `LabandSnapshotRingLayout.swift:930` hardcodes `dirty: true`
+    unconditionally on every remote snapshot response, so after the first
+    observation the stored value is permanently `true` and the comparison
+    never flips again — every later frame takes the `activeTransitions(at:)`
+    branch instead of observing new state. A fix needs a real
+    generation/sequence signal on `LabandSnapshotResponse` (mirroring
+    `Session.dirtyGeneration()`), not a sticky bool.
+  - **Full-grid cell-state cost when actually enabled.** Each dirty
+    generation calls `producer.spinnerCellStates(from:)`
+    (`FrameProducer.swift`), which visits every cell of the grid and builds a
+    full `[SpinnerMotionCellKey: SpinnerMotionCellState]` dictionary
+    (`reserveCapacity(rows * cols)`) before the detector narrows to the
+    qualifying region; the detector also retains a full-grid
+    `previousCells` copy. On a large grid at spinner cadence this is real
+    per-generation allocation and UTF-8 decoding, though it only runs at all
+    when the (now UI-unreachable) setting is on.
 - Observation: the live Slug instance already has `effectKind` and
   `effectStart`, and Slug already owns a `timeSeconds` uniform, live-band
   damage, remaining-time publication, and a settle-frame pump.

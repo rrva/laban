@@ -205,6 +205,50 @@ instant the mouse leaves the row or the setting/renderer changes.
 
 ## Surprises & Discoveries
 
+- Observation: an independent external review (run by the user outside this
+  session, findings pasted in for triage) caught a real regression Review
+  Gate item 6 (`HoverPreviewKeyboardPeekTests`) didn't, because that test
+  suite calls `beginOrAdvancePeek`/`commitPeek` directly rather than through
+  `executeAppCommand`: the `.selectNextTab`/`.selectPreviousTab` cases called
+  `beginOrAdvancePeek` unconditionally, with no check against
+  `HoverPreviewSettings.enabled` or effective-renderer-is-Slug. Since the
+  setting defaults off and most users aren't on the Slug renderer, this meant
+  Ctrl+Tab/Cmd+Option+←/→ stopped switching tabs *immediately* for virtually
+  everyone — deferred to modifier release via the peek mechanism, with no
+  panel ever showing to explain the delay (the eligibility check that gates
+  the panel was never consulted before deciding whether to peek at all).
+  Fixed by adding a `hoverPreviewEffectivelyEnabled` computed property
+  (factored out of the existing `hoverPreviewState` debug-endpoint logic) and
+  branching on it in `executeAppCommand`: eligible → peek, ineligible →
+  the original instant `selectRelativeTab(delta:)`. `executeAppCommand`'s
+  access level was loosened from `private` to `internal` (matching the
+  existing precedent for `beginOrAdvancePeek`/`commitPeek`) so a new test,
+  `testTabCycleCommandInstantSwitchesWhenHoverPreviewNotEffectivelyEnabled`,
+  can exercise the branch directly; the peek-eligible branch remains covered
+  only indirectly (this test target has no precedent for constructing a
+  Slug-backed `TerminalBitmapView`) by the existing state-machine tests plus
+  `HoverPreviewRendererGateTests` at the core layer.
+- The same external review raised several lower-severity, not-yet-actioned
+  findings worth a future look rather than more surgery on fragile rendering
+  code this late in the branch:
+  - `TerminalSurfaceController.hoverPreviewOverlayCommands` runs
+    `FrameProducer.commands(from:)` over the *entire* hovered session's
+    snapshot, then clips rows to the panel after the fact, rather than
+    producing only the bottom N rows the panel can show. Holding hover on a
+    busy background tab costs roughly a second full `FrameProducer` pass per
+    frame, not a cheap scrollback-tail read.
+  - Preview text truncation (`String(text.prefix(availableCells))`) counts
+    Swift `Character`s, not display columns, so wide CJK/emoji runs will
+    over- or under-fill the panel relative to the real terminal's column
+    budget — a known v1 simplification, not a new gap.
+  - `MainWindowController` always constructs `previewFontAtlas` and threads
+    it into the Slug backend even when the hover-preview setting is off — a
+    small, one-time (not per-frame) cost; lazy-creating it on first enable
+    would remove it entirely.
+  - `SlugGlyphRenderer`'s `overlayMaskRects` collection scans every frame's
+    commands for `.preedit`/`.sidebarPreview` rects regardless of whether
+    either is active; cheap when the resulting list is empty, but still an
+    always-on scan proportional to command count.
 - Observation: manual testing of Milestone 7 (keyboard hold-to-peek) found that
   neither of the two documented trigger chords actually reached
   `TerminalBitmapView.keyDown` in the real app, despite `HoverPreviewKeyboardPeekTests`
