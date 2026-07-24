@@ -266,6 +266,26 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// only affordances (close glyph). Updated from mouseMoved /
   /// mouseExited; nil when the cursor isn't inside any sidebar tab row.
   private var hoveredSidebarTabId: Tab.ID?
+  /// Hold-to-peek keyboard cycling (Ctrl+Tab, Cmd+Option+←/→, Cmd+Shift+[/]):
+  /// the tab the user would land on if they released the chord right now.
+  /// A SEPARATE property from `hoveredSidebarTabId` rather than reusing it —
+  /// mouse movement over the sidebar during a peek must not silently steal
+  /// or clear the peek target, and `selectTab(at:)`'s own hover-clearing
+  /// (below) must not erase a peek this same call is about to commit.
+  /// Non-nil only between the first cycle keypress and the matching
+  /// modifier release; nil the rest of the time, same invariant as
+  /// `hoveredSidebarTabId`.
+  // Not `private`: exercised directly by HoverPreviewKeyboardPeekTests, since
+  // this test target has no existing precedent for simulating raw
+  // NSEvent-driven keyDown/flagsChanged (see that file's header comment).
+  var peekedSidebarTabId: Tab.ID?
+  /// The modifier(s) that must ALL still be held for the current peek to
+  /// stay open; releasing any one of them (checked in `flagsChanged`)
+  /// commits the peek. Set fresh on every cycle keypress so it always
+  /// matches whichever chord actually triggered it (Ctrl+Tab vs.
+  /// Cmd+Option+←/→ vs. Cmd+Shift+[/] all route to the same `AppCommand`
+  /// but hold different modifiers).
+  var peekCommitModifiers: NSEvent.ModifierFlags = []
   private var sidebarScrollResidualPx: CGFloat = 0
   private var targetSidebarScrollOffset: Double = 0
   private var displayedSidebarScrollOffset: Double = 0
@@ -1422,9 +1442,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let rendererEligible = currentBackend is SlugGlyphRenderer
     let effectiveEnabled = HoverPreviewSettings.enabled && rendererEligible
     let activeTabId = model.activeTab?.id
+    let effectivelyHoveredTabId = peekedSidebarTabId ?? hoveredSidebarTabId
     let previewedTabId =
-      (effectiveEnabled && hoveredSidebarTabId != nil && hoveredSidebarTabId != activeTabId)
-      ? hoveredSidebarTabId : nil
+      (effectiveEnabled && effectivelyHoveredTabId != nil
+        && effectivelyHoveredTabId != activeTabId)
+      ? effectivelyHoveredTabId : nil
     return HoverPreviewStateResponse(
       configured: HoverPreviewSettings.enabled,
       effectiveRenderer: currentBackend.rendererStatus.effectiveRenderer,
@@ -1721,7 +1743,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         right: Self.contentInsets.right),
       sidebarTopInset: Self.titlebarReservedHeight,
       sidebarScrollOffset: sidebarScrollOffset,
-      hoveredSidebarTabId: hoveredSidebarTabId,
+      hoveredSidebarTabId: peekedSidebarTabId ?? hoveredSidebarTabId,
       sidebarDragIndicator: sidebarDragIndicator,
       contentYOffset: scrollContentYOffset,
       cursorBlinkVisible: blinkDriver.phaseVisible,
@@ -2813,7 +2835,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       polling: .none,
       markInactiveDirtyRendered: true,
       noteOutputOnDirty: true,
-      hoveredTabId: hoveredSidebarTabId)
+      hoveredTabId: peekedSidebarTabId ?? hoveredSidebarTabId)
     frameModelChanged = sync.modelChanged
     if sync.modelChanged {
       renderInvalidated = true
@@ -3232,7 +3254,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right),
       sidebarTopInset: Self.titlebarReservedHeight,
       sidebarScrollOffset: sidebarScrollFrame.offset,
-      hoveredSidebarTabId: hoveredSidebarTabId,
+      hoveredSidebarTabId: peekedSidebarTabId ?? hoveredSidebarTabId,
       sidebarDragIndicator: sidebarDragIndicator,
       contentYOffset: scrollContentYOffset,
       cursorBlinkVisible: blinkDriver.phaseVisible,
@@ -4113,6 +4135,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       coalescedZoomScrollSettle = nil
       applyZoomMagnification(delta: 0, phase: .ended)
     }
+    // Commit a hold-to-peek tab cycle the instant any modifier it depends on
+    // lifts — not a fixed chord, since Ctrl+Tab and Cmd+Option+←/→ track
+    // different modifiers (see `peekCommitModifiers`'s doc comment).
+    if let peekedSidebarTabId, !event.modifierFlags.isSuperset(of: peekCommitModifiers) {
+      commitPeek(tabId: peekedSidebarTabId)
+    }
   }
 
   private func updateHoverCursor(at pt: NSPoint, modifierFlags: NSEvent.ModifierFlags = []) {
@@ -4426,6 +4454,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // doesn't keep showing a background tab the user's attention has
     // already moved away from.
     setHoveredSidebarTab(nil)
+    peekedSidebarTabId = nil
+    peekCommitModifiers = []
     invalidateRenderAndWake()
     return true
   }
@@ -4435,8 +4465,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     selectTabPreservingSelection(model.tabs[index].id)
     // See the comment in `selectTabFromExternalNavigation` — keyboard
     // shortcuts (Cmd+1…9, Ctrl+Tab, Cmd+Option+arrows) activate a tab
-    // independent of wherever the mouse happens to be resting.
+    // independent of wherever the mouse happens to be resting. Also
+    // defensively clears any in-progress peek: `commitPeek` already clears
+    // it before calling here, so this is a no-op on that path, but a direct
+    // jump (Cmd+1…9) arriving mid-peek (e.g. two chords pressed at once)
+    // must not leave a stale peek target behind.
     setHoveredSidebarTab(nil)
+    peekedSidebarTabId = nil
+    peekCommitModifiers = []
     invalidateRenderAndWake()
   }
 
@@ -4454,6 +4490,42 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     let nextIndex = (currentIndex + delta + tabs.count) % tabs.count
     selectTab(at: nextIndex)
+  }
+
+  /// Keyboard-cycle hold-to-peek (Ctrl+Tab, Cmd+Option+←/→, Cmd+Shift+[/]):
+  /// advances which tab is previewed without committing to it, mirroring
+  /// macOS's own Cmd+Tab app-switcher (hold, tap repeatedly to cycle,
+  /// release to commit). Never calls `selectTab(at:)` — that only happens
+  /// once, in `commitPeek`, when `flagsChanged` observes the triggering
+  /// chord's modifier(s) being released. OS key-repeat means this can fire
+  /// many times per second while the key is held down; each call just
+  /// advances the panel's target by one more step, same as a real tap
+  /// would, so a fast repeat and a fast series of taps are indistinguishable
+  /// here by design.
+  func beginOrAdvancePeek(delta: Int, triggerModifiers: NSEvent.ModifierFlags) {
+    let tabs = model.tabs
+    guard tabs.count > 1 else { return }
+    let baseId = peekedSidebarTabId ?? model.activeTab?.id
+    guard let baseId, let currentIndex = tabs.firstIndex(where: { $0.id == baseId }) else {
+      return
+    }
+    let nextIndex = (currentIndex + delta + tabs.count) % tabs.count
+    peekedSidebarTabId = tabs[nextIndex].id
+    // Only the modifiers this specific chord actually holds matter for
+    // deciding when to commit — e.g. Ctrl+Tab must not wait for Command to
+    // lift, and Cmd+Option+→ must not wait for Control.
+    peekCommitModifiers = triggerModifiers.intersection([.control, .command, .option, .shift])
+    invalidateRenderAndWake()
+  }
+
+  /// Ends the current peek. Called from `flagsChanged` once any tracked
+  /// modifier is released; `tabId` is `nil` only if a peek was never in
+  /// progress, in which case this is a no-op.
+  func commitPeek(tabId: Tab.ID?) {
+    peekedSidebarTabId = nil
+    peekCommitModifiers = []
+    guard let tabId, let index = model.tabs.firstIndex(where: { $0.id == tabId }) else { return }
+    selectTab(at: index)
   }
 
   @discardableResult
@@ -5432,7 +5504,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let descriptor = TerminalKeyDescriptor(keyDown: event)
     switch descriptor.route(hasMarkedText: hasMarkedText()) {
     case .appCommand(let cmd):
-      executeAppCommand(cmd)
+      executeAppCommand(cmd, triggerModifiers: event.modifierFlags)
     case .swallowCommand:
       recordInput(kind: "key", route: "ignored", key: descriptor.key.map(String.init(describing:)))
       break
@@ -5647,7 +5719,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     )
   }
 
-  private func executeAppCommand(_ command: AppCommand) {
+  private func executeAppCommand(
+    _ command: AppCommand, triggerModifiers: NSEvent.ModifierFlags = []
+  ) {
     recordInput(
       kind: "key",
       route: "appCommand",
@@ -5663,9 +5737,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case .selectLastTab:
       selectLastTab()
     case .selectNextTab:
-      selectRelativeTab(delta: 1)
+      beginOrAdvancePeek(delta: 1, triggerModifiers: triggerModifiers)
     case .selectPreviousTab:
-      selectRelativeTab(delta: -1)
+      beginOrAdvancePeek(delta: -1, triggerModifiers: triggerModifiers)
     case .copy:
       copy(nil)
     case .paste:
