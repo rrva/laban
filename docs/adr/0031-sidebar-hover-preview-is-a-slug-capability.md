@@ -66,10 +66,10 @@ properties differ in how they're set.
   `TerminalSurfaceFrameRequest.hoveredSidebarTabId` into
   `TerminalSurfaceController.makeFrame(_:)`, which passes it to two sibling
   functions: `sidebarCommands(hoveredTabId:)`
-  (`Sources/LabanCore/TerminalSurfaceController.swift:1288`, unchanged sidebar
+  (`Sources/LabanCore/TerminalSurfaceController.swift:1299`, unchanged sidebar
   chrome — tab rows, close-✕, drag indicator) and the private
   `hoverPreviewOverlayCommands(hoveredTabId:...)`
-  (`Sources/LabanCore/TerminalSurfaceController.swift:1396`, new — resolves
+  (`Sources/LabanCore/TerminalSurfaceController.swift:1407`, new — resolves
   and gates the preview panel). No new hover plumbing is introduced; the
   feature only adds a second consumer of that existing signal.
 - Recent-content resolution is intentionally **not** renderer-neutral text:
