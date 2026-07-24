@@ -2139,8 +2139,18 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     waveRegions: inout [SlugWaveRegionGPU],
     damageBands: DirtyYRangeSet?
   ) {
-    let preeditMaskRects = commands.compactMap { command -> CGRect? in
+    // Rects that hide any OTHER source's glyphs underneath them, because
+    // that source's own text is about to draw over the same cells and the
+    // renderer draws all solids before any glyphs (see `render()`): every
+    // glyph pass runs strictly after every solid pass, regardless of a
+    // command's position in `commands`, so a later-drawn opaque background
+    // rect can never occlude an earlier *glyph* the way it occludes an
+    // earlier *rect*. `.preedit` (IME composition) and `.sidebarPreview`
+    // (hover-preview panel) both need this: floating text UI drawn over
+    // live terminal/sidebar glyphs that would otherwise show through.
+    let overlayMaskRects = commands.compactMap { command -> CGRect? in
       if case .rect(let rect, _, .preedit, _) = command { return rect }
+      if case .rect(let rect, _, .sidebarPreview, _) = command { return rect }
       return nil
     }
     frameLiveGlyphEffects.removeAll(keepingCapacity: true)
@@ -2212,7 +2222,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           effectDuration: effectDuration,
           foregroundTransition: foregroundTransition,
           foregroundWave: foregroundWave,
-          preeditMaskRects: preeditMaskRects,
+          overlayMaskRects: overlayMaskRects,
           solids: &solids,
           glyphs: &glyphs,
           motionGlyphs: &motionGlyphs,
@@ -2361,7 +2371,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     effectDuration: Float? = nil,
     foregroundTransition: GlyphForegroundTransition? = nil,
     foregroundWave: GlyphForegroundWave? = nil,
-    preeditMaskRects: [CGRect],
+    overlayMaskRects: [CGRect],
     solids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
     motionGlyphs: inout [SlugGlyphMotionGPUInstance],
@@ -2404,8 +2414,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let cellRect = CGRect(
         x: cellOriginX, y: origin.y,
         width: cellAdvance, height: activeAtlas.cellSize.height)
-      if source != .sidebar, source != .preedit,
-        preeditMaskRects.contains(where: { $0.intersects(cellRect) })
+      if source != .sidebar, source != .preedit, source != .sidebarPreview,
+        overlayMaskRects.contains(where: { $0.intersects(cellRect) })
       {
         continue
       }

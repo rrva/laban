@@ -471,6 +471,84 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     assertPixel(selectedTextBackground, differsFrom: unselectedBackground, tolerance: 12)
   }
 
+  /// Regression test for execplans/active/sidebar-hover-preview.md's
+  /// "transparent background and wrong z-index" bug: `SlugGlyphRenderer`
+  /// draws every `.rect` (any source) in one earlier pass, then every
+  /// `.glyphRun` (any source) in a strictly later pass — so a
+  /// later-appended `.sidebarPreview` background rect can win against an
+  /// earlier terminal background rect (both solids), but can never win
+  /// against the terminal's own glyph text, which draws in the *same*
+  /// later glyph pass regardless of command order. Without masking, the
+  /// terminal's white "HELLO" ink ends up layered on top of the preview
+  /// panel's dark background. The fix extends the existing `.preedit`
+  /// occlusion-mask mechanism to `.sidebarPreview` rects.
+  func testHoverPreviewPanelMasksUnderlyingTerminalGlyph() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let pixelWidth = 200
+    let pixelHeight = 100
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 24),
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: 1))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+
+    let terminalBg: UInt32 = 0x00_00_FF_FF  // pure blue
+    let terminalFg: UInt32 = 0xFFFF_FFFF  // pure white ink
+    let panelBg: UInt32 = 0x40_40_40_FF  // dark gray, distinct from both
+    let previewFg: UInt32 = 0x00_FF_00_FF  // green, distinct from white
+
+    // The preview panel deliberately covers the ENTIRE frame here so the
+    // test needs no CG-vs-image Y-flip math: if masking works, not a single
+    // output pixel should show the terminal's white ink or blue background
+    // anywhere, because the opaque panel (a later solid) covers all of it
+    // and the terminal's glyph (a later-pass glyph) must be suppressed
+    // underneath rather than drawn on top of that panel.
+    let fullFrame = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
+    XCTAssertTrue(
+      renderer.render(
+        [
+          .rect(fullFrame, color: terminalBg, source: .terminal, compositing: .replace),
+          .glyphRun(
+            origin: CGPoint(x: 8, y: 40), text: "HELLO",
+            foreground: terminalFg, background: terminalBg,
+            attributes: [], source: .terminal),
+          .rect(fullFrame, color: panelBg, source: .sidebarPreview, compositing: .replace),
+          .glyphRun(
+            origin: CGPoint(x: 8, y: 10), text: "X",
+            foreground: previewFg, background: panelBg,
+            attributes: [], source: .sidebarPreview),
+        ],
+        damage: .full))
+
+    let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+    var sawTerminalBlue = false
+    var sawTerminalWhiteInk = false
+    for y in 0..<image.height {
+      for x in 0..<image.width {
+        let p = image.pixel(x: x, y: y)
+        if Int(p.b) > Int(p.r) + 60, Int(p.b) > Int(p.g) + 60 {
+          sawTerminalBlue = true
+        }
+        if Int(p.r) > 220, Int(p.g) > 220, Int(p.b) > 220 {
+          sawTerminalWhiteInk = true
+        }
+      }
+    }
+    XCTAssertFalse(
+      sawTerminalBlue,
+      "the opaque preview panel must fully cover the terminal's blue background")
+    XCTAssertFalse(
+      sawTerminalWhiteInk,
+      "the terminal's own glyph must not be drawn over the preview panel — "
+        + "glyphs draw in a pass strictly after all rects, so an unmasked terminal "
+        + "glyph would show through even though the panel's rect is drawn later")
+  }
+
   func testSlugRendersColorEmojiFallbackPixels() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
