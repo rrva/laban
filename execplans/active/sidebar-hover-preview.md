@@ -1085,15 +1085,25 @@ any sibling env vars for forcing other renderers).
 - [ ] Run `swift test --filter SidebarProducerTests`; expect 100% pass
       including the 3 new hover-preview cases from Milestone 3.
 - [ ] Run `swift test --filter HoverPreviewSettingsTests`; expect 100% pass.
-- [ ] With `LABAN_RENDERER` forcing a non-Slug renderer and
-      `LabanSidebarHoverPreviewEnabled` set to `YES`, hover a background tab
-      in the running app and confirm **no** preview panel appears (the
-      Slug-only gate holds even when the setting is on).
-- [ ] With the Slug renderer active and the setting off, hover a background
-      tab and confirm no preview panel appears (the setting gate holds
-      independent of renderer).
-- [ ] With the Slug renderer active and the setting on, hover the **active**
-      tab's own row and confirm no preview panel appears.
+- [ ] Run `swift test --filter HoverPreviewRendererGateTests`; expect 100%
+      pass. This is the mechanical replacement (added after the first review
+      round) for what used to be three manual live-app steps: non-Slug
+      renderer + setting on → no preview; Slug + setting off → no preview;
+      Slug + setting on + hovering the active tab's own row → no preview;
+      plus a positive control proving the other three aren't vacuous.
+- [ ] Run `swift test --filter HoverPreviewKeyboardPeekTests`; expect 100%
+      pass (Milestone 7's peek/advance/commit state machine, including
+      wraparound and the commit-with-nil-tabId no-op case).
+- [ ] `grep -n "keyEquivalentModifierMask" Sources/LabanApp/MenuCommands.swift`
+      — confirm the "Previous Tab"/"Next Tab" `NSMenuItem`s do **not** appear
+      (both must have `keyEquivalent: ""` and no modifier mask). If either
+      has a keyEquivalent again, Cmd+Option+←/→ will silently stop reaching
+      `keyDown` and hold-to-peek will regress exactly as it did before commit
+      `cfcfbacc`.
+- [ ] `grep -n "override func performKeyEquivalent" Sources/LabanApp/TerminalBitmapView.swift`
+      — exactly one hit. Its absence means Ctrl+Tab is being swallowed by
+      AppKit's key-view-loop navigation before `keyDown` ever fires (the
+      regression fixed in commit `98fe8eae`).
 - [ ] `./scripts/check` exits 0.
 - [ ] Re-read `docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md`
       against the final implementation and confirm every file it names still
@@ -1141,15 +1151,28 @@ path (never launched via `open`/shell — the user launches it):
   `previewFontAtlas: FontAtlas` property; `init` and `reconfigureFonts` gain a
   `previewFontAtlas: FontAtlas? = nil` parameter.
 - `Sources/LabanCore/SidebarProducer.swift`: new public nested
-  `HoverPreview` struct; `output(...)` gains `hoverPreview: HoverPreview? =
-  nil`.
-- `Sources/LabanCore/TerminalSurfaceController.swift`: `sidebarCommands(...)`
-  gains `effectiveRendererIsSlug: Bool = false` and `hoverPreviewEnabled: Bool
-  = false`; new `previewCellWidth`/`previewCellHeight: CGFloat` public
-  properties; `TerminalSurfaceFrameRequest` gains `hoverPreviewEnabled: Bool =
-  false`.
+  `HoverPreview` struct (`{tabId: Tab.ID, viewportWidth: CGFloat}`); the panel
+  is built by two standalone static functions,
+  `hoverPreviewPanelRect(...)` (pure geometry) and `hoverPreviewCommands(...)`
+  (chrome rects only), **not** a parameter on `output(...)` — that parameter
+  was removed once it became dead code (commit `aa30bb1a`) after the
+  color-fidelity rewrite moved real content resolution into
+  `TerminalSurfaceController`.
+- `Sources/LabanCore/TerminalSurfaceController.swift`: private
+  `hoverPreviewOverlayCommands(...)` resolves content via
+  `session.snapshot()` + `FrameProducer`; `sidebarCommands(...)` itself no
+  longer takes `viewportWidth`/`effectiveRendererIsSlug`/`hoverPreviewEnabled`
+  (those were dead there too and removed in the same cleanup). New
+  `previewCellWidth`/`previewCellHeight: CGFloat` public properties.
+  `TerminalSurfaceFrameRequest` gains `hoverPreviewEnabled: Bool = false`.
+- `Sources/LabanApp/TerminalBitmapView.swift` (Milestone 7): `peekedSidebarTabId:
+  Tab.ID?` and `peekCommitModifiers: NSEvent.ModifierFlags` (both `internal`
+  for test access); `beginOrAdvancePeek(delta:triggerModifiers:)`,
+  `commitPeek(tabId:)`; `override func performKeyEquivalent(with:)` re-dispatches
+  Control+Tab to `keyDown(with:)`. Every read of "which tab is being
+  previewed" combines `peekedSidebarTabId ?? hoveredSidebarTabId`.
 - Depends on already-existing, unmodified APIs: `AppModel.session(forTab:)`,
-  `Session.scrollbackBlock(rowOffset:maxRows:)`, `ScrollbackBlock.lines()`,
+  `Session.snapshot()` / `laban_snapshot_destroy`, `FrameProducer`,
   `TerminalBitmapView.hoveredSidebarTabId` and its update path, `Theme.current`
   color tokens (`bg1`, `dim0`, `fg0`).
 - No changes required to `SoftwareBackend`, `MetalRenderer`,
