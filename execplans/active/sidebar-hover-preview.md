@@ -79,7 +79,7 @@ instant the mouse leaves the row or the setting/renderer changes.
 - [x] (2026-07-23) Milestone 4: `TerminalSurfaceController` + `TerminalBitmapView` wiring. `sidebarCommands` gained `viewportWidth`, `effectiveRendererIsSlug`, `hoverPreviewEnabled` parameters; resolves `SidebarProducer.HoverPreview` from `model.session(forTab:)` + `Session.scrollbackBlock(rowOffset: 0, maxRows: 500)` when the hovered tab differs from the active tab, and appends `SidebarProducer.hoverPreviewCommands(...)` after the memoized sidebar lookup (bypassing `SidebarCacheSignature`, per Milestone 3's Decision Log). `TerminalSurfaceFrameRequest` gained `hoverPreviewEnabled: Bool = false`; both `TerminalBitmapView` call sites now pass `hoverPreviewEnabled: HoverPreviewSettings.enabled`. Added a `HoverPreviewSettings.didChangeNotification` observer mirroring the spinner-motion one (forces a render retry so toggling the setting takes effect live). Full package build and full `swift test` both pass (0 failures). Built via `./scripts/build-app`, installed to `~/Laban-hover-preview.app` (not launched from the shell). Manual verification pending the user launching the app (see Validation and Acceptance).
 - [x] (2026-07-23) Milestone 5: Settings UI checkbox + debug endpoint + headless parity. See Milestone 5's own section for the full (corrected, larger-than-originally-scoped) file list. Full `swift test` passes.
 - [ ] Milestone 6: Manual verification, polish pass, Review Gate. Manual verification of the four issues found in the first testing round (opacity, live-update, color fidelity, fps) is now confirmed working by the user against the latest build (commit e651b420 + the two follow-on fixes). First Review Gate pass complete (fresh agent, commit `dbfd5c17`): items 1-4, 8 passed; item 9 (ADR drift) failed and is fixed; items 5-7 gained dedicated unit coverage (`HoverPreviewRendererGateTests`) closing the "needs live-app verification" gap. Remaining: a second, clean Review Gate pass after all fixes (including Milestone 7 below), plus a final `./scripts/check` run.
-- [~] (2026-07-24) Milestone 7: keyboard hold-to-peek. Holding Ctrl+Tab / Cmd+Option+←/→ now previews the tab a release would land on instead of switching instantly (`TerminalBitmapView.beginOrAdvancePeek`/`.commitPeek`, gated on `flagsChanged` observing the triggering chord's modifier(s) lift). Shares 100% of the existing panel-rendering path — only a new `peekedSidebarTabId` trigger, combined as `peekedSidebarTabId ?? hoveredSidebarTabId` everywhere the previewed tab is read. 4 new unit tests (`HoverPreviewKeyboardPeekTests`, access-level-loosened white-box tests of the state machine — no NSEvent-simulation precedent existed to test the real `keyDown`/`flagsChanged` dispatch, same gap noted for the earlier keyboard-hover-clear fix). Direct-jump shortcuts (Cmd+1…9) and menu-bar tab actions are unaffected — they still call the original instant-commit `selectTab(at:)`/`selectRelativeTab(delta:)` path. Manual verification found two real bugs — see Surprises & Discoveries: (1) Cmd+Option+←/→ never reached `keyDown` at all because the Tab menu's own keyEquivalent intercepted it first — **fixed and confirmed** (commit `cfcfbacc`). (2) Ctrl+Tab still does not switch tabs at all in manual testing, root cause not yet found — disabling native window-tabbing (`NSWindow.allowsAutomaticWindowTabbing`/`tabbingMode`, uncommitted) did not fix it; a synthetic-event unit test proves `TerminalBitmapView.keyDown`'s own routing/peek logic is correct in isolation, so something between the real keyboard event and that method call is still swallowing it. Diagnostic logging added (uncommitted, temporary) and awaiting a user repro to read from the log file. Milestone not complete until this is resolved.
+- [x] (2026-07-24) Milestone 7: keyboard hold-to-peek. Holding Ctrl+Tab / Cmd+Option+←/→ now previews the tab a release would land on instead of switching instantly (`TerminalBitmapView.beginOrAdvancePeek`/`.commitPeek`, gated on `flagsChanged` observing the triggering chord's modifier(s) lift). Shares 100% of the existing panel-rendering path — only a new `peekedSidebarTabId` trigger, combined as `peekedSidebarTabId ?? hoveredSidebarTabId` everywhere the previewed tab is read. 4 new unit tests (`HoverPreviewKeyboardPeekTests`, access-level-loosened white-box tests of the state machine — no NSEvent-simulation precedent existed to test the real `keyDown`/`flagsChanged` dispatch, same gap noted for the earlier keyboard-hover-clear fix). Direct-jump shortcuts (Cmd+1…9) and menu-bar tab actions are unaffected — they still call the original instant-commit `selectTab(at:)`/`selectRelativeTab(delta:)` path. Manual verification found and fixed two real bugs, both confirmed working by the user — see Surprises & Discoveries: (1) Cmd+Option+←/→ never reached `keyDown` because the Tab menu's own keyEquivalent intercepted it first (commit `cfcfbacc`). (2) Ctrl+Tab never reached `keyDown` either, for an unrelated reason: AppKit reserves Control-Tab for key-view-loop navigation and swallows it in `performKeyEquivalent:`, before `keyDown:` — fixed by overriding `performKeyEquivalent(with:)` to re-dispatch to `keyDown(with:)` for that one chord (commit `98fe8eae`), root-caused via temporary diagnostic logging that showed `flagsChanged` seeing the Control press/release while `keyDown` never fired for the Tab key at all. A related hardening (disabling AppKit's native window tabbing, since Laban's tabs are its own sidebar concept — commit `420cc300`) did not turn out to be the fix, but is kept regardless as legitimate independent hygiene. Full `swift test` (2847 tests) passes.
 
 ## Decision Log
 
@@ -229,24 +229,38 @@ instant the mouse leaves the row or the setting/renderer changes.
      (commit `cfcfbacc`): a menu click still instant-switches (no "hold" concept
      for a mouse click, so that's correct), and the physical chord now reaches
      `keyDown` and routes through `TerminalKeyDescriptor` normally.
-  2. **Ctrl+Tab (still open, unresolved):** has no menu-equivalent conflict (no
-     menu item anywhere registers it) and no OS-level shortcut conflict (user
-     checked System Settings → Keyboard → Keyboard Shortcuts, found nothing; a
-     plain unmodified Tab press and Cmd+T both work normally, so this isn't a
-     broader keyboard regression). Tried disabling AppKit's native
+  2. **Ctrl+Tab (fixed, confirmed by manual test):** had no menu-equivalent
+     conflict (no menu item anywhere registers it) and no OS-level shortcut
+     conflict (user checked System Settings → Keyboard → Keyboard Shortcuts,
+     found nothing; a plain unmodified Tab press and Cmd+T both work normally,
+     ruling out a broader keyboard regression). Disabling AppKit's native
      window-tabbing (`NSWindow.allowsAutomaticWindowTabbing = false` in
      `AppDelegate`, plus `window.tabbingMode = .disallowed` in
-     `MainWindowController` — both uncommitted, since neither is confirmed to
-     matter) on the theory that AppKit auto-adds Ctrl+Tab/Ctrl+Shift+Tab as
-     "Select Next/Previous Tab" key equivalents to any app that sets
-     `NSApp.windowsMenu` (Laban does, in `MenuCommands.swift`); user retested
-     and Ctrl+Tab was still completely inert. Next step: temporary diagnostic
-     logging was added to `TerminalBitmapView.keyDown`/`flagsChanged`
-     (uncommitted, writes to `AppLog.app` — both the unified log and the plain
-     file at `~/Library/Application Support/Laban/log/`) and a user repro is
-     pending to read what, if anything, actually gets logged for a real
-     Ctrl+Tab press. Do not mark Milestone 7 or this plan complete until this
-     is resolved and the diagnostic logging is removed.
+     `MainWindowController`, commit `420cc300`) did not fix it either — kept
+     anyway as legitimate independent hygiene, but ruled out as the cause.
+     Root-caused with temporary diagnostic logging in
+     `TerminalBitmapView.keyDown`/`flagsChanged` (writing to `AppLog.app`,
+     readable from the plain-text file at
+     `~/Library/Application Support/Laban/log/` without needing Console.app):
+     a user repro showed `flagsChanged` firing normally for the Control
+     press/release, but **no `keyDown` entry ever appeared for the Tab key**.
+     This is a third, distinct mechanism from the menu-equivalent conflict
+     above: AppKit reserves Control-Tab / Control-Shift-Tab as a key-view-loop
+     navigation shortcut (moving first responder between views) and swallows
+     it at the `performKeyEquivalent:` stage — earlier in the event pipeline
+     than `keyDown:`, and unrelated to native window tabbing. Fixed by
+     overriding `performKeyEquivalent(with:)` in `TerminalBitmapView` to
+     detect Control+Tab specifically and re-dispatch to `keyDown(with:)`
+     (commit `98fe8eae`), which keeps `TerminalKeyDescriptor.route` as the
+     single place chord-to-command mapping is decided. Diagnostic logging was
+     removed once the fix was confirmed. Lesson for future AppKit keyboard
+     work in this codebase: a chord not reaching `keyDown:` can have more than
+     one independent cause (menu key equivalents, native window tabbing, and
+     key-view-loop navigation all pre-empt `keyDown:` in different ways) —
+     confirm which one with evidence (a synthetic in-process event proves the
+     app's own logic; real-app logging proves what the OS actually delivered)
+     rather than fixing the first plausible-sounding theory and assuming it's
+     the only one.
 - Observation: a third round of user feedback (after the opacity/live-update/color
   fixes were confirmed working) flagged that switching tabs via a keyboard
   shortcut (Cmd+1…9, Ctrl+Tab, Cmd+Option+←/→) while the mouse still rests
