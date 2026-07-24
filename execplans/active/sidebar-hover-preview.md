@@ -1068,11 +1068,11 @@ any sibling env vars for forcing other renderers).
 
 ## Review Gate
 
-- [ ] `grep -rn "sidebarFontAtlas" Sources/LabanRenderer/SlugGlyphRenderer.swift`
+- [x] `grep -rn "sidebarFontAtlas" Sources/LabanRenderer/SlugGlyphRenderer.swift`
       and confirm every site that has a sidebar-atlas branch also has a
       matching preview-atlas branch (no site was updated for sidebar and
       missed for preview).
-- [ ] `grep -rn "switch source" Sources/` returns 5 matches: 2 pre-existing
+- [x] `grep -rn "switch source" Sources/` returns 5 matches: 2 pre-existing
       unrelated ones (`SettingsWindowController.swift`,
       `ControlStateProjections.swift` — neither switches over `FrameSource`)
       and 3 in `Sources/LabanRenderer/SlugGlyphRenderer.swift` this feature
@@ -1082,39 +1082,107 @@ any sibling env vars for forcing other renderers).
       and check each block ends in `default:`. This is what makes them safe
       against a future `FrameSource` case: it falls into `default` rather
       than requiring every switch site to be updated in lockstep.
-- [ ] Run `swift test --filter SidebarProducerTests`; expect 100% pass
+- [x] Run `swift test --filter SidebarProducerTests`; expect 100% pass
       including the 3 new hover-preview cases from Milestone 3.
-- [ ] Run `swift test --filter HoverPreviewSettingsTests`; expect 100% pass.
-- [ ] Run `swift test --filter HoverPreviewRendererGateTests`; expect 100%
+- [x] Run `swift test --filter HoverPreviewSettingsTests`; expect 100% pass.
+- [x] Run `swift test --filter HoverPreviewRendererGateTests`; expect 100%
       pass. This is the mechanical replacement (added after the first review
       round) for what used to be three manual live-app steps: non-Slug
       renderer + setting on → no preview; Slug + setting off → no preview;
       Slug + setting on + hovering the active tab's own row → no preview;
       plus a positive control proving the other three aren't vacuous.
-- [ ] Run `swift test --filter HoverPreviewKeyboardPeekTests`; expect 100%
+- [x] Run `swift test --filter HoverPreviewKeyboardPeekTests`; expect 100%
       pass (Milestone 7's peek/advance/commit state machine, including
       wraparound and the commit-with-nil-tabId no-op case).
-- [ ] `grep -n "keyEquivalentModifierMask" Sources/LabanApp/MenuCommands.swift`
+- [x] `grep -n "keyEquivalentModifierMask" Sources/LabanApp/MenuCommands.swift`
       — confirm the "Previous Tab"/"Next Tab" `NSMenuItem`s do **not** appear
       (both must have `keyEquivalent: ""` and no modifier mask). If either
       has a keyEquivalent again, Cmd+Option+←/→ will silently stop reaching
       `keyDown` and hold-to-peek will regress exactly as it did before commit
       `cfcfbacc`.
-- [ ] `grep -n "override func performKeyEquivalent" Sources/LabanApp/TerminalBitmapView.swift`
+- [x] `grep -n "override func performKeyEquivalent" Sources/LabanApp/TerminalBitmapView.swift`
       — exactly one hit. Its absence means Ctrl+Tab is being swallowed by
       AppKit's key-view-loop navigation before `keyDown` ever fires (the
       regression fixed in commit `98fe8eae`).
-- [ ] `./scripts/check` exits 0.
+- [x] `./scripts/check` exits 0.
 - [ ] Re-read `docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md`
       against the final implementation and confirm every file it names still
       matches reality (renumber/reword any drift found during implementation
       rather than leaving the ADR stale).
 
-Review status: NOT REVIEWED
+Review status: FAILED (2026-07-24) — see findings
 
 Review findings (filled in by the review agent):
 
-(none yet)
+Fresh Review Gate pass at commit `19de71886ee10fd64c98470090eb6706737d55de`.
+Items 1-9 all passed cleanly and exactly as specified:
+(1) every `sidebarFontAtlas` site in `SlugGlyphRenderer.swift` (property decl
+line 407, init param line 718, init assignment lines 914/917,
+`reconfigureFonts` lines 1193/1196/1199, `atlas(for:)` line 2343) has a
+matching `previewFontAtlas` branch alongside it. (2) `grep -rn "switch source"
+Sources/` returns exactly 5 matches — `SettingsWindowController.swift:1766`
+(switches over `TerminalBackdropStyle`, unrelated),
+`ControlStateProjections.swift:218` (switches over `String`, unrelated), and
+`SlugGlyphRenderer.swift:2342/2353/2615` (`atlas(for:)`, `referenceAtlas(for:)`,
+`atlasKind(for:)`), each ending in a `default:` case. (3) `swift test --filter
+SidebarProducerTests`: 52/52 passed, including
+`testHoverPreviewOnActiveTabEmitsNoPreviewCommands`,
+`testHoverPreviewOnBackgroundTabEmitsPanelChromeRects`,
+`testNilHoverPreviewEmitsNoPreviewCommands`. (4) `swift test --filter
+HoverPreviewSettingsTests`: 9/9 passed. (5) `swift test --filter
+HoverPreviewRendererGateTests`: 4/4 passed. (6) `swift test --filter
+HoverPreviewKeyboardPeekTests`: 4/4 passed. (7) `grep -n
+"keyEquivalentModifierMask" Sources/LabanApp/MenuCommands.swift` returns 5
+matches, none for the Tab menu; direct inspection of
+`Sources/LabanApp/MenuCommands.swift:215-226` confirms both "Previous Tab" and
+"Next Tab" `NSMenuItem`s use `keyEquivalent: ""` with no modifier mask, with a
+comment explaining why. (8) `grep -n "override func performKeyEquivalent"
+Sources/LabanApp/TerminalBitmapView.swift` returns exactly one hit, line 5509.
+(9) `./scripts/check` exited 0 (full output scanned for `fail`/`error:`,
+nothing beyond expected zero-failure test-suite summaries).
+
+Item 10 (ADR re-read) did **not** pass: two of the ADR's three `file:line`
+citations have drifted from the actual current source.
+`docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md` line 69 cites
+`sidebarCommands(hoveredTabId:)` at
+`Sources/LabanCore/TerminalSurfaceController.swift:1288`; the function
+actually starts at **line 1299** (`grep -n "func sidebarCommands"
+Sources/LabanCore/TerminalSurfaceController.swift`). The same ADR paragraph's
+line 72 cites the private `hoverPreviewOverlayCommands(hoveredTabId:...)` at
+`Sources/LabanCore/TerminalSurfaceController.swift:1396`; the function
+actually starts at **line 1407** (`grep -n "func hoverPreviewOverlayCommands"
+Sources/LabanCore/TerminalSurfaceController.swift`). Both are off by exactly
+11 lines, and both functions' names, parameter shapes, and described roles
+are otherwise accurate (read in full — `sidebarCommands` at 1299-1306 and
+`hoverPreviewOverlayCommands` at 1407-1415 match the ADR's description
+verbatim); this reads as an unrelated intervening edit shifting line numbers
+in `TerminalSurfaceController.swift` after the ADR was last checked (recent
+history includes commits `e80239a6`/`4f253cec` touching adjacent settings
+code), not a drift in the mechanism itself. Every other claim in the ADR was
+verified against current source and found accurate: the
+`SlugGlyphRenderer.swift:2341`/`:2352` citations for `atlas(for:)`/
+`referenceAtlas(for:)` are exact; the `peekedSidebarTabId ?? hoveredSidebarTabId`
+combination pattern is present at 8 sites in `TerminalBitmapView.swift`
+(e.g. lines 1445, 1746, 2839, 3258); the `overlayMaskRects` occlusion-mask
+mechanism collecting `.preedit`- and `.sidebarPreview`-tagged rects is at
+`SlugGlyphRenderer.swift:2151-2154`, matching the ADR's description exactly;
+`runFontIdentity`'s cache key is a 2-bit `atlasKind(for:)` field as claimed;
+`Session.scrollbackBlock` has zero references left in
+`TerminalSurfaceController.swift`, `SidebarProducer.swift`, or
+`TerminalBitmapView.swift`, confirming the ADR's "no longer used by this
+feature at all" claim; `SidebarProducer.output(...)` (line 184) no longer
+takes a `hoverPreview` parameter, and the standalone
+`hoverPreviewPanelRect(...)`/`hoverPreviewCommands(...)` functions (lines 448,
+475) and the `HoverPreview` struct's narrowed `{tabId, viewportWidth}` shape
+(lines 58-65) exist exactly as the ADR and plan's Interfaces section describe;
+the Settings checkbox disable rule (`SettingsWindowController.swift:875`,
+`slugSelected && !hoverPreviewEnvLocked`) matches; and no
+`sidebarPreview`/`previewFontAtlas`/`HoverPreview` references exist in
+`SoftwareBackend`, `MetalRenderer`, or `VectorGlyphRenderer` files, confirming
+non-Slug renderers are untouched. **Fix needed**: update the two stale
+line-number citations in `docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md`
+(`:1288` → `:1299`, `:1396` → `:1407`) — or reword them to avoid pinning
+exact line numbers that drift — then re-run this Review Gate item.
 
 ## Validation and Acceptance
 
