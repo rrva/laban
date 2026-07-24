@@ -942,16 +942,13 @@ public final class TerminalSurfaceController {
 
     var commands = sidebarCommands(
       activeTabId: activeTab.id,
-      viewportWidth: request.viewportWidth,
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
       scrollOffset: request.sidebarScrollOffset,
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
-      reduceMotion: request.reduceMotion,
-      effectiveRendererIsSlug: request.effectiveRendererIsSlug,
-      hoverPreviewEnabled: request.hoverPreviewEnabled
+      reduceMotion: request.reduceMotion
     )
     // Resolved once; appended last in every return path below (after the
     // terminal pane's own commands where those exist) so the floating panel
@@ -1188,16 +1185,13 @@ public final class TerminalSurfaceController {
 
     var commands = sidebarCommands(
       activeTabId: activeTab.id,
-      viewportWidth: request.viewportWidth,
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
       scrollOffset: request.sidebarScrollOffset,
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
-      reduceMotion: request.reduceMotion,
-      effectiveRendererIsSlug: request.effectiveRendererIsSlug,
-      hoverPreviewEnabled: request.hoverPreviewEnabled
+      reduceMotion: request.reduceMotion
     )
     // Resolved once; appended last, after the terminal pane's own commands
     // below, so the floating panel always paints on top rather than under
@@ -1293,16 +1287,13 @@ public final class TerminalSurfaceController {
 
   public func sidebarCommands(
     activeTabId: Tab.ID?,
-    viewportWidth: CGFloat = 0,
     viewportHeight: CGFloat,
     topInset: CGFloat = 0,
     scrollOffset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
     dragIndicator: SidebarProducer.DragIndicator? = nil,
     now: Date = Date(),
-    reduceMotion: Bool = false,
-    effectiveRendererIsSlug: Bool = false,
-    hoverPreviewEnabled: Bool = false
+    reduceMotion: Bool = false
   ) -> [FrameCommand] {
     let tabs = model.tabs
     let producer = SidebarProducer(

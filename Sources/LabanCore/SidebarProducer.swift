@@ -185,8 +185,7 @@ public struct SidebarProducer {
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
     dragIndicator: DragIndicator? = nil,
-    scrollOffset: CGFloat = 0,
-    hoverPreview: HoverPreview? = nil
+    scrollOffset: CGFloat = 0
   ) -> Output {
     var pulseMarkers: [PulseMarker] = []
     var cmds: [FrameCommand] = []
@@ -401,12 +400,6 @@ public struct SidebarProducer {
           ))
       }
     }
-
-    cmds.append(
-      contentsOf: Self.hoverPreviewCommands(
-        tabs: tabs, activeTabId: activeTabId, height: height, topInset: topInset,
-        scrollOffset: scrollOffset, rowHeight: rowHeight, sidebarWidth: sidebarWidth,
-        hoverPreview: hoverPreview))
 
     // Drop-target accent. Drawn last so it sits on top of every row.
     // The slot range is `[0, tabs.count]`; a value equal to the dragging
