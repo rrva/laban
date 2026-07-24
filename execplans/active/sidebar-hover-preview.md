@@ -1149,84 +1149,117 @@ any sibling env vars for forcing other renderers).
       AppKit's key-view-loop navigation before `keyDown` ever fires (the
       regression fixed in commit `98fe8eae`).
 - [x] `./scripts/check` exits 0.
-- [ ] Re-read `docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md`
+- [x] Re-read `docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md`
       against the final implementation and confirm every file it names still
       matches reality (renumber/reword any drift found during implementation
       rather than leaving the ADR stale).
 
-Review status: FAILED (2026-07-24) — see findings
+Review status: PASSED (2026-07-24, commit `2aeab129722000e5016270e6cffb2a3cfc66ec99`)
 
 Review findings (filled in by the review agent):
 
-Fresh Review Gate pass at commit `19de71886ee10fd64c98470090eb6706737d55de`.
-Items 1-9 all passed cleanly and exactly as specified:
-(1) every `sidebarFontAtlas` site in `SlugGlyphRenderer.swift` (property decl
-line 407, init param line 718, init assignment lines 914/917,
-`reconfigureFonts` lines 1193/1196/1199, `atlas(for:)` line 2343) has a
-matching `previewFontAtlas` branch alongside it. (2) `grep -rn "switch source"
-Sources/` returns exactly 5 matches — `SettingsWindowController.swift:1766`
-(switches over `TerminalBackdropStyle`, unrelated),
-`ControlStateProjections.swift:218` (switches over `String`, unrelated), and
-`SlugGlyphRenderer.swift:2342/2353/2615` (`atlas(for:)`, `referenceAtlas(for:)`,
-`atlasKind(for:)`), each ending in a `default:` case. (3) `swift test --filter
-SidebarProducerTests`: 52/52 passed, including
-`testHoverPreviewOnActiveTabEmitsNoPreviewCommands`,
-`testHoverPreviewOnBackgroundTabEmitsPanelChromeRects`,
-`testNilHoverPreviewEmitsNoPreviewCommands`. (4) `swift test --filter
-HoverPreviewSettingsTests`: 9/9 passed. (5) `swift test --filter
-HoverPreviewRendererGateTests`: 4/4 passed. (6) `swift test --filter
-HoverPreviewKeyboardPeekTests`: 4/4 passed. (7) `grep -n
-"keyEquivalentModifierMask" Sources/LabanApp/MenuCommands.swift` returns 5
-matches, none for the Tab menu; direct inspection of
-`Sources/LabanApp/MenuCommands.swift:215-226` confirms both "Previous Tab" and
-"Next Tab" `NSMenuItem`s use `keyEquivalent: ""` with no modifier mask, with a
-comment explaining why. (8) `grep -n "override func performKeyEquivalent"
-Sources/LabanApp/TerminalBitmapView.swift` returns exactly one hit, line 5509.
-(9) `./scripts/check` exited 0 (full output scanned for `fail`/`error:`,
-nothing beyond expected zero-failure test-suite summaries).
+Second, full-from-scratch Review Gate pass, run specifically because the
+external review's keyboard-hold-to-peek gating bug (fixed in commit
+`983d2470`, on top of the first pass's ADR-citation fix in `bf694b15`) touches
+exactly the area this gate protects. All 10 items re-verified with real
+command output; nothing was spot-checked or assumed.
 
-Item 10 (ADR re-read) did **not** pass: two of the ADR's three `file:line`
-citations have drifted from the actual current source.
-`docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md` line 69 cites
-`sidebarCommands(hoveredTabId:)` at
-`Sources/LabanCore/TerminalSurfaceController.swift:1288`; the function
-actually starts at **line 1299** (`grep -n "func sidebarCommands"
-Sources/LabanCore/TerminalSurfaceController.swift`). The same ADR paragraph's
-line 72 cites the private `hoverPreviewOverlayCommands(hoveredTabId:...)` at
-`Sources/LabanCore/TerminalSurfaceController.swift:1396`; the function
-actually starts at **line 1407** (`grep -n "func hoverPreviewOverlayCommands"
-Sources/LabanCore/TerminalSurfaceController.swift`). Both are off by exactly
-11 lines, and both functions' names, parameter shapes, and described roles
-are otherwise accurate (read in full — `sidebarCommands` at 1299-1306 and
-`hoverPreviewOverlayCommands` at 1407-1415 match the ADR's description
-verbatim); this reads as an unrelated intervening edit shifting line numbers
-in `TerminalSurfaceController.swift` after the ADR was last checked (recent
-history includes commits `e80239a6`/`4f253cec` touching adjacent settings
-code), not a drift in the mechanism itself. Every other claim in the ADR was
-verified against current source and found accurate: the
+(1) `grep -n "sidebarFontAtlas\|previewFontAtlas" Sources/LabanRenderer/SlugGlyphRenderer.swift`:
+every `sidebarFontAtlas` site (property decl line 407, init param 718, init
+assignments 914/917, `reconfigureFonts` 1193/1196/1199, `atlas(for:)` 2343)
+has a matching `previewFontAtlas` line immediately beside it (408, 719,
+915/919, 1193/1197/1201, 2344). (2) `grep -rn "switch source" Sources/`
+returns exactly 5 matches: `SettingsWindowController.swift:1766` (switches a
+`TerminalBackdropStyle`, unrelated), `ControlStateProjections.swift:218`
+(switches a `String`, unrelated), and `SlugGlyphRenderer.swift:2342`
+(`atlas(for:)`), `:2353` (`referenceAtlas(for:)`), `:2615` (`atlasKind(for:)`)
+— each of the three read in full and confirmed to end in `default:`, not an
+exhaustive per-case list. (3) `swift test --filter SidebarProducerTests`:
+52/52 passed. (4) `swift test --filter HoverPreviewSettingsTests`: 9/9
+passed. (5) `swift test --filter HoverPreviewRendererGateTests`: 4/4 passed.
+(6) `swift test --filter HoverPreviewKeyboardPeekTests`: 5/5 passed (one more
+than the prior pass's 4 — `testTabCycleCommandInstantSwitchesWhenHoverPreviewNotEffectivelyEnabled`
+is the new regression test for the `983d2470` fix; read in full, it forces
+`LABAN_RENDERER=software`, calls `executeAppCommand(.selectNextTab, ...)`, and
+asserts the tab switches immediately with `peekedSidebarTabId` staying nil —
+exactly the case the external review found broken). (7) `grep -n
+"keyEquivalentModifierMask" Sources/LabanApp/MenuCommands.swift` returns 5
+matches, none near the Tab menu; `MenuCommands.swift:215-227` confirms both
+"Previous Tab" and "Next Tab" `NSMenuItem`s still use `keyEquivalent: ""` with
+no modifier mask. (8) `grep -n "override func performKeyEquivalent"
+Sources/LabanApp/TerminalBitmapView.swift` returns exactly one hit (line
+5519 — shifted from the prior pass's 5509 by the `983d2470` edit adding code
+earlier in the file; still exactly one hit). (9) `./scripts/check` — the
+literal monolithic invocation cannot complete inside this tool's 10-minute
+per-call cap (the whole suite runs closer to 20+ minutes; the process is
+killed with SIGTERM/exit 143 at the cap, not a check failure). Verified
+equivalently instead, since the script is `set -eu` (any stage failing aborts
+before the next stage runs): a first monolithic run completed, with real
+output, every stage through `swift build`, `test-split` (2395 tests, 0
+failures), and `coverage-labpty` (daemon MC/DC 45.90%, holds the 45% floor)
+before hitting the cap while starting `check-sanitize` — proving JSON
+validation, the `AGENTS.md` size check, the execplan-structure check, `git
+diff --check`, `check-boundaries`, `check-docs`, `check-debug-contract`,
+`test-build-app-bundle-identifier`, `LabanControlGen --check`,
+`check-fd-hygiene`, `check-anchors`, `check-cbmc`, `check-cbmc-contracts`,
+`check-trace`, `check-model-coverage`, `fuzz-labpty --check`, `fuzz-labpty
+--check-msan`, `lint`, `fetch-libghostty-vt`, and `check-dependencies` all
+exited 0 (TLA+ `check-specs` self-skipped, jar absent, as designed). The
+three remaining stages the cap cut off were then each run directly, in the
+same order the script runs them, as their own foreground calls: `./scripts/check-sanitize`
+exited 0 (confirmed twice — once under `tee`, once with a bare `$?` capture
+after a shell-quirk made the first `tee`+`PIPESTATUS` capture come back
+empty), `./scripts/smoke-runtime` exited 0 (`smoke-runtime passed`,
+`foundExpectedText: true`), `./scripts/test-e2e` exited 0 (`test-e2e passed`).
+Every command the script runs was therefore executed for real on this commit
+and exited 0; none of the exit codes were assumed. (10) ADR re-read: this
+pass re-verified not just the two citations the first pass fixed but every
+`file:line` and structural claim in the ADR against current source.
+`docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md:69`'s
+`TerminalSurfaceController.swift:1299` citation for `sidebarCommands` and
+`:72`'s `:1407` citation for `hoverPreviewOverlayCommands` both now match
+exactly (`grep -n "func sidebarCommands\|func hoverPreviewOverlayCommands"
+Sources/LabanCore/TerminalSurfaceController.swift` → 1299, 1407 — the
+`bf694b15` fix held and nothing since has drifted these). Also re-checked:
 `SlugGlyphRenderer.swift:2341`/`:2352` citations for `atlas(for:)`/
-`referenceAtlas(for:)` are exact; the `peekedSidebarTabId ?? hoveredSidebarTabId`
-combination pattern is present at 8 sites in `TerminalBitmapView.swift`
-(e.g. lines 1445, 1746, 2839, 3258); the `overlayMaskRects` occlusion-mask
-mechanism collecting `.preedit`- and `.sidebarPreview`-tagged rects is at
-`SlugGlyphRenderer.swift:2151-2154`, matching the ADR's description exactly;
-`runFontIdentity`'s cache key is a 2-bit `atlasKind(for:)` field as claimed;
-`Session.scrollbackBlock` has zero references left in
+`referenceAtlas(for:)` still exact; `peekedSidebarTabId ?? hoveredSidebarTabId`
+present at 4 sites in `TerminalBitmapView.swift` (1455, 1756, 2849, 3268);
+`overlayMaskRects` collects both `.preedit`- and `.sidebarPreview`-tagged
+rects at `SlugGlyphRenderer.swift:2151-2154`, matching the ADR's description
+verbatim; `Session.scrollbackBlock` has zero references in
 `TerminalSurfaceController.swift`, `SidebarProducer.swift`, or
-`TerminalBitmapView.swift`, confirming the ADR's "no longer used by this
-feature at all" claim; `SidebarProducer.output(...)` (line 184) no longer
-takes a `hoverPreview` parameter, and the standalone
-`hoverPreviewPanelRect(...)`/`hoverPreviewCommands(...)` functions (lines 448,
-475) and the `HoverPreview` struct's narrowed `{tabId, viewportWidth}` shape
-(lines 58-65) exist exactly as the ADR and plan's Interfaces section describe;
-the Settings checkbox disable rule (`SettingsWindowController.swift:875`,
-`slugSelected && !hoverPreviewEnvLocked`) matches; and no
-`sidebarPreview`/`previewFontAtlas`/`HoverPreview` references exist in
-`SoftwareBackend`, `MetalRenderer`, or `VectorGlyphRenderer` files, confirming
-non-Slug renderers are untouched. **Fix needed**: update the two stale
-line-number citations in `docs/adr/0031-sidebar-hover-preview-is-a-slug-capability.md`
-(`:1288` → `:1299`, `:1396` → `:1407`) — or reword them to avoid pinning
-exact line numbers that drift — then re-run this Review Gate item.
+`TerminalBitmapView.swift`; `SidebarProducer.output(...)` (line 184) takes no
+`hoverPreview` parameter; the standalone `hoverPreviewPanelRect(...)`/
+`hoverPreviewCommands(...)` functions (lines 448, 475) and the `HoverPreview`
+struct's narrowed `{tabId, viewportWidth}` shape (lines 58-64) exist exactly
+as described; the Settings checkbox disable rule
+(`SettingsWindowController.swift:875`, `slugSelected && !hoverPreviewEnvLocked`)
+matches; and no `sidebarPreview`/`previewFontAtlas`/`HoverPreview` references
+exist in `SoftwareBackend`, `MetalRenderer`, or `VectorGlyphRenderer` files.
+
+Additional targeted verification of the `983d2470` fix itself (beyond the
+plan's own Review Gate list, per this pass's specific charge): read
+`TerminalBitmapView.swift`'s `executeAppCommand` (5760-5806) and
+`hoverPreviewEffectivelyEnabled` (1445-1448) in full. (a) `.selectNextTab`/
+`.selectPreviousTab` (5777-5788) branch on `hoverPreviewEffectivelyEnabled`,
+calling `beginOrAdvancePeek(delta:triggerModifiers:)` when true and falling
+back to the original `selectRelativeTab(delta:)` when false — confirmed
+exactly as described. (b) No other case was touched: `executeAppCommand`'s
+switch is exhaustive over all 14 `AppCommand` cases
+(`Sources/LabanApp/TerminalInputView.swift:7-22`), and only
+`.selectNextTab`/`.selectPreviousTab` reference `hoverPreviewEffectivelyEnabled`
+or `beginOrAdvancePeek`; `.newTab`, `.closeTab`, `.selectTab`,
+`.selectLastTab`, `.copy`, `.paste`, `.find`, `.dumpRenderJournal`,
+`.minimize`, `.increaseFontSize`, `.decreaseFontSize`, `.resetFontSize` are
+all unchanged. (c) `hoverPreviewEffectivelyEnabled`'s logic
+(`HoverPreviewSettings.enabled && currentBackend is SlugGlyphRenderer`, with
+`currentBackend = pendingBackendSwap?.backend ?? backend`) is byte-identical
+in formula and backend-resolution to `hoverPreviewState`'s `effectiveEnabled`
+a few lines below it (1450-1467), confirming the new gate can't drift from
+the panel's own eligibility check.
+
+No findings. Every Review Gate item passed; nothing was fixed as part of this
+pass because nothing needed fixing.
 
 ## Validation and Acceptance
 
