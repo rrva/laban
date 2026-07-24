@@ -4419,6 +4419,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   func selectTabFromExternalNavigation(_ tabId: Tab.ID) -> Bool {
     guard model.tabs.contains(where: { $0.id == tabId }) else { return false }
     selectTabPreservingSelection(tabId)
+    // Non-mouse-driven activation: the mouse may still be sitting over a
+    // sidebar row unrelated to the tab that just became active (unlike a
+    // sidebar click, where the hovered row and the newly-active tab are
+    // always the same one). Drop the stale hover so the preview panel
+    // doesn't keep showing a background tab the user's attention has
+    // already moved away from.
+    setHoveredSidebarTab(nil)
     invalidateRenderAndWake()
     return true
   }
@@ -4426,6 +4433,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func selectTab(at index: Int) {
     guard index >= 0, index < model.tabs.count else { return }
     selectTabPreservingSelection(model.tabs[index].id)
+    // See the comment in `selectTabFromExternalNavigation` — keyboard
+    // shortcuts (Cmd+1…9, Ctrl+Tab, Cmd+Option+arrows) activate a tab
+    // independent of wherever the mouse happens to be resting.
+    setHoveredSidebarTab(nil)
     invalidateRenderAndWake()
   }
 
