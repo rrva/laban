@@ -1437,6 +1437,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       waveConfidence: wave.confidence)
   }
 
+  /// Same eligibility the hover-preview panel itself uses: the setting on and
+  /// the effective renderer able to draw it at all. Also gates whether a
+  /// keyboard tab-cycle should hold-to-peek — with neither, holding the chord
+  /// would never show anything, so `executeAppCommand` falls back to the
+  /// original instant `selectRelativeTab(delta:)` instead.
+  private var hoverPreviewEffectivelyEnabled: Bool {
+    let currentBackend = pendingBackendSwap?.backend ?? backend
+    return HoverPreviewSettings.enabled && currentBackend is SlugGlyphRenderer
+  }
+
   var hoverPreviewState: HoverPreviewStateResponse? {
     let currentBackend = pendingBackendSwap?.backend ?? backend
     let rendererEligible = currentBackend is SlugGlyphRenderer
@@ -5743,7 +5753,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     )
   }
 
-  private func executeAppCommand(
+  /// Not `private`: the `.selectNextTab`/`.selectPreviousTab` cases branch on
+  /// `hoverPreviewEffectivelyEnabled`, so unlike the rest of this dispatch
+  /// it has real logic worth exercising directly under different
+  /// renderer/setting configurations (see `HoverPreviewKeyboardPeekTests`).
+  func executeAppCommand(
     _ command: AppCommand, triggerModifiers: NSEvent.ModifierFlags = []
   ) {
     recordInput(
@@ -5761,9 +5775,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case .selectLastTab:
       selectLastTab()
     case .selectNextTab:
-      beginOrAdvancePeek(delta: 1, triggerModifiers: triggerModifiers)
+      if hoverPreviewEffectivelyEnabled {
+        beginOrAdvancePeek(delta: 1, triggerModifiers: triggerModifiers)
+      } else {
+        selectRelativeTab(delta: 1)
+      }
     case .selectPreviousTab:
-      beginOrAdvancePeek(delta: -1, triggerModifiers: triggerModifiers)
+      if hoverPreviewEffectivelyEnabled {
+        beginOrAdvancePeek(delta: -1, triggerModifiers: triggerModifiers)
+      } else {
+        selectRelativeTab(delta: -1)
+      }
     case .copy:
       copy(nil)
     case .paste:

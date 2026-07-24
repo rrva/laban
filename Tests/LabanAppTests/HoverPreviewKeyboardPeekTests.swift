@@ -17,11 +17,24 @@ import XCTest
 /// event types (confirmed by search before writing this file), and
 /// building that simulation infrastructure from scratch was judged
 /// disproportionate to this one feature — the same call made for the
-/// keyboard hover-clear fix earlier in this plan. The real `keyDown`/
-/// `flagsChanged` → `executeAppCommand`/`commitPeek` wiring itself is a
-/// thin, direct dispatch with no branching logic of its own, so this still
-/// covers the part most likely to have a real bug: the peek index math and
-/// the multi-modifier commit-tracking.
+/// keyboard hover-clear fix earlier in this plan.
+///
+/// `executeAppCommand` itself (also loosened from `private`) DOES have real
+/// branching logic worth exercising directly: `.selectNextTab`/
+/// `.selectPreviousTab` only hold-to-peek when
+/// `hoverPreviewEffectivelyEnabled` (setting on AND effective renderer is
+/// Slug) — otherwise they must fall back to the original instant
+/// `selectRelativeTab(delta:)`, exactly as they did before this gesture
+/// existed. An external review caught this: the first cut called
+/// `beginOrAdvancePeek` unconditionally, so with the setting at its default
+/// (off) or any non-Slug renderer, Ctrl+Tab/Cmd+Option+←/→ stopped switching
+/// tabs immediately for every user who couldn't see the peek panel at all —
+/// deferred navigation with zero visual feedback. This test target has no
+/// precedent for constructing a Slug-backed `TerminalBitmapView` (GPU/Metal
+/// dependency, unlike `LabanRendererTests`), so only the not-effectively-
+/// enabled branch is covered here; the peek branch itself is covered by the
+/// other tests in this file plus `HoverPreviewRendererGateTests` at the
+/// `TerminalSurfaceController` layer.
 final class HoverPreviewKeyboardPeekTests: XCTestCase {
   private struct Harness {
     let model: AppModel
@@ -123,5 +136,27 @@ final class HoverPreviewKeyboardPeekTests: XCTestCase {
     // Backward from the first tab must wrap to the last.
     harness.view.beginOrAdvancePeek(delta: -1, triggerModifiers: [.control, .shift])
     XCTAssertEqual(harness.view.peekedSidebarTabId, tabs[2].id)
+  }
+
+  func testTabCycleCommandInstantSwitchesWhenHoverPreviewNotEffectivelyEnabled() throws {
+    // makeHarness forces LABAN_RENDERER=software, so `backend is
+    // SlugGlyphRenderer` is false regardless of HoverPreviewSettings.enabled
+    // — hoverPreviewEffectivelyEnabled is false no matter what the setting
+    // says, matching every non-Slug user's actual configuration.
+    let harness = try makeHarness(tabCount: 3)
+    defer { harness.restoreRenderer() }
+    let tabs = harness.model.tabs
+    let startId = try XCTUnwrap(harness.model.activeTab?.id)
+    XCTAssertEqual(startId, tabs[0].id)
+
+    harness.view.executeAppCommand(.selectNextTab, triggerModifiers: [.control])
+
+    XCTAssertEqual(
+      harness.model.activeTab?.id, tabs[1].id,
+      "without an eligible renderer/setting, the chord must switch tabs immediately, "
+        + "exactly as it did before hold-to-peek existed")
+    XCTAssertNil(
+      harness.view.peekedSidebarTabId,
+      "must never enter peek state when the panel could never be shown")
   }
 }
