@@ -205,20 +205,25 @@ enum MenuCommands {
     let tabMenu = NSMenu(title: L10n.tr("Tab"))
     tabItem.submenu = tabMenu
 
+    // No keyEquivalent here (unlike the other menu items in this file): Cmd+Option+←/→
+    // is a hold-to-peek gesture (see `TerminalBitmapView.beginOrAdvancePeek`), and an
+    // NSMenuItem keyEquivalent is a single discrete action with no way to observe the
+    // chord being released. Registering one would have AppKit's key-equivalent matching
+    // intercept the physical key combo ahead of `keyDown`, calling this instant-switch
+    // action directly and making the peek gesture unreachable from the keyboard — the
+    // shortcut still works, routed through TerminalKeyDescriptor instead of the menu.
     let previousItem = NSMenuItem(
       title: L10n.tr("Previous Tab"),
       action: #selector(TerminalBitmapView.selectPreviousTab(_:)),
-      keyEquivalent: UnicodeScalar(UInt32(NSLeftArrowFunctionKey)).map(String.init) ?? ""
+      keyEquivalent: ""
     )
-    previousItem.keyEquivalentModifierMask = [.command, .option]
     tabMenu.addItem(previousItem)
 
     let nextItem = NSMenuItem(
       title: L10n.tr("Next Tab"),
       action: #selector(TerminalBitmapView.selectNextTab(_:)),
-      keyEquivalent: UnicodeScalar(UInt32(NSRightArrowFunctionKey)).map(String.init) ?? ""
+      keyEquivalent: ""
     )
-    nextItem.keyEquivalentModifierMask = [.command, .option]
     tabMenu.addItem(nextItem)
 
     tabMenu.addItem(NSMenuItem.separator())
