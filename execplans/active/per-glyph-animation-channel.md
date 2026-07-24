@@ -229,10 +229,16 @@ comparison in a scenario fixture).
 
 - [x] Plan filed at `execplans/active/per-glyph-animation-channel.md`
 - [x] M0 — animation channel substrate
-- [x] M1 — ink-bloom type-in
+- [x] M1 — ink-bloom type-in (pivoted to keystroke impulse, see above)
 - [ ] M2 — visual bell shake
 - [ ] M3 — observability, E2E, docs
 - [ ] Review Gate passed
+- [x] (2026-07-24) Removed the "Keystroke impulse effect" Settings-window
+  checkbox ahead of merging this branch, taking M1's effect off the current
+  product surface (M1 never had a spec.md entry — M3's docs step was still
+  pending). The animation channel substrate, `GlyphEffectSettings`'s env-var
+  override, debug endpoints, and shader/renderer code are all untouched and
+  still reachable for M2/M3 or a future re-exposure decision.
 
 ## Surprises & Discoveries
 

@@ -106,10 +106,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorOverlapLabel = NSTextField(labelWithString: L10n.tr("Overlap:"))
   private let vectorTextWeightLabel = NSTextField(labelWithString: L10n.tr("Text weight:"))
   private let vectorSmoothScrollLabel = NSTextField(labelWithString: L10n.tr("Smooth scroll:"))
-  private let spinnerMotionSmoothingCheckbox = NSButton(
-    checkboxWithTitle: L10n.tr("Smooth spinner motion"), target: nil, action: nil)
-  private let glyphEffectsCheckbox = NSButton(
-    checkboxWithTitle: L10n.tr("Keystroke impulse effect"), target: nil, action: nil)
   private let hoverPreviewCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Sidebar hover preview"), target: nil, action: nil)
   private var vectorSubpixelCustomGridRow: NSGridRow?
@@ -588,19 +584,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       + "softens slightly while moving). Crisp rasterizes a mask per sub-pixel phase "
       + "(sharper subpixel-AA in motion, a touch more GPU work). Vector renderer only."
 
-    spinnerMotionSmoothingCheckbox.target = self
-    spinnerMotionSmoothingCheckbox.action = #selector(spinnerMotionSmoothingChanged(_:))
-    spinnerMotionSmoothingCheckbox.toolTip = L10n.tr(
-      "Available with Slug Glyph; smooths foreground-color spinner ripples.")
-    spinnerMotionSmoothingCheckbox.setAccessibilityLabel(L10n.tr("Smooth spinner motion"))
-
-    glyphEffectsCheckbox.target = self
-    glyphEffectsCheckbox.action = #selector(glyphEffectsChanged(_:))
-    glyphEffectsCheckbox.toolTip = L10n.tr(
-      "Available with Slug Glyph; freshly output glyphs arrive compressed and tilted, then spring into place."
-    )
-    glyphEffectsCheckbox.setAccessibilityLabel(L10n.tr("Keystroke impulse effect"))
-
     hoverPreviewCheckbox.target = self
     hoverPreviewCheckbox.action = #selector(hoverPreviewChanged(_:))
     hoverPreviewCheckbox.toolTip = L10n.tr(
@@ -715,8 +698,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [vectorOverlapLabel, makeVectorSubpixelCustomRow()],
       [vectorTextWeightLabel, makeVectorTextWeightRow()],
       [vectorSmoothScrollLabel, vectorSmoothScrollPopUp],
-      [NSGridCell.emptyContentView, spinnerMotionSmoothingCheckbox],
-      [NSGridCell.emptyContentView, glyphEffectsCheckbox],
       [NSGridCell.emptyContentView, hoverPreviewCheckbox],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
@@ -889,13 +870,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     vectorSmoothScrollPopUp.isEnabled = smoothScroll
     vectorSmoothScrollLabel.textColor = smoothScroll ? .labelColor : .secondaryLabelColor
 
-    let spinnerMotion = selection == .slugGlyph
-    let envLocked = SpinnerMotionSmoothingSettings.environmentOverride() != nil
-    spinnerMotionSmoothingCheckbox.isEnabled = spinnerMotion && !envLocked
-    let glyphEffectsEnvLocked = GlyphEffectSettings.environmentOverride() != nil
-    glyphEffectsCheckbox.isEnabled = spinnerMotion && !glyphEffectsEnvLocked
+    let slugSelected = selection == .slugGlyph
     let hoverPreviewEnvLocked = HoverPreviewSettings.environmentOverride() != nil
-    hoverPreviewCheckbox.isEnabled = spinnerMotion && !hoverPreviewEnvLocked
+    hoverPreviewCheckbox.isEnabled = slugSelected && !hoverPreviewEnvLocked
   }
 
   private func makeVectorSubpixelCustomRow() -> NSStackView {
@@ -1022,8 +999,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       vectorSmoothScrollPopUp.selectItem(at: row)
     }
     refreshVectorControlsForRenderer(rendererSelection)
-    spinnerMotionSmoothingCheckbox.state = SpinnerMotionSmoothingSettings.enabled ? .on : .off
-    glyphEffectsCheckbox.state = GlyphEffectSettings.enabled ? .on : .off
     hoverPreviewCheckbox.state = HoverPreviewSettings.enabled ? .on : .off
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
@@ -1481,24 +1456,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let row = sender.indexOfSelectedItem
     guard row >= 0, row < vectorSmoothScrollOptions.count else { return }
     VectorSmoothScrollSettings.setCurrent(vectorSmoothScrollOptions[row])
-    refresh()
-  }
-
-  @objc private func spinnerMotionSmoothingChanged(_ sender: NSButton) {
-    let enabled = sender.state == .on
-    guard SpinnerMotionSmoothingSettings.setEnabled(enabled) else {
-      sender.state = SpinnerMotionSmoothingSettings.enabled ? .on : .off
-      return
-    }
-    refresh()
-  }
-
-  @objc private func glyphEffectsChanged(_ sender: NSButton) {
-    let enabled = sender.state == .on
-    guard GlyphEffectSettings.setEnabled(enabled) else {
-      sender.state = GlyphEffectSettings.enabled ? .on : .off
-      return
-    }
     refresh()
   }
 

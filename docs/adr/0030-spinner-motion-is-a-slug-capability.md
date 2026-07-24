@@ -82,6 +82,18 @@ they ignore `foregroundTransition`. Wave teardown reuses the kind-3
 C0-continuous transition path. Implementation:
 `execplans/active/spinner-motion-traveling-wave.md`.
 
+## Amendment (2026-07-24): Settings UI removed, capability kept latent
+
+The "Smooth spinner motion" Settings-window checkbox (`SettingsWindowController.swift`)
+and its `docs/product/spec.md` entry were removed to keep the feature off the
+current product surface; it was never promoted past default-off. Nothing
+described in the Decision section above changed: `SpinnerMotionSmoothingSettings`,
+the renderer/detector/shader pipeline, the traveling-wave amendment, debug
+endpoints, and the `LABAN_SPINNER_MOTION_SMOOTHING_ENABLED` env-var override all
+remain exactly as implemented, so the capability is reachable by env var and
+ready for a future spec.md decision to re-expose it without re-deriving any of
+this ADR's substrate.
+
 ## Applies To New Code
 
 Do not add spinner-motion state, fields, or shaders to non-Slug renderers or to

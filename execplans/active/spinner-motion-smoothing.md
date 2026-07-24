@@ -495,6 +495,12 @@ the renderer boundary in product/architecture documentation.
   `testSparseSourceDoesNotEngageFinelySampledBypass`,
   `testFinelySampledBypassHysteresis`. Diagnostics expose
   `finelySampledBypass`.
+- [x] (2026-07-24) Removed the Settings-window checkbox and the
+  `docs/product/spec.md` entry to take the feature off the current product
+  surface ahead of merging this branch; everything else this plan built
+  (detector, renderer/shader pipeline, traveling-wave amendment, env-var
+  override, debug endpoints) is untouched — see ADR 0030's 2026-07-24
+  amendment.
 
 ## Surprises & Discoveries
 
