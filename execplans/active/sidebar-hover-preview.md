@@ -179,6 +179,77 @@ instant the mouse leaves the row or the setting/renderer changes.
 
 ## Surprises & Discoveries
 
+- Observation: a second round of manual testing found the opacity fix
+  (below) was necessary but not sufficient — the panel background painted
+  correctly relative to OTHER solid rects, but the terminal's own glyph
+  text still rendered through it. Root cause, found by reading `SlugGlyphRenderer.render()`'s
+  actual GPU encode sequence directly (not re-trusting the earlier
+  ordering-only fix): the renderer draws in **two fixed phases**, not one
+  array-order painter's algorithm — ALL `.rect` commands from every source
+  draw in an earlier phase (`replaceSolids` then `solids`,
+  `SlugGlyphRenderer.swift` render() ~1742-1774), THEN ALL `.glyphRun`
+  commands from every source draw in a strictly later, separate phase
+  (~1791+). So no matter where a `.rect` sits in the command array, a
+  *different source's* glyph text — which is always in the later phase —
+  draws over it. Appending the preview last (the earlier fix) only
+  reordered within each phase; it could never make a rect win against
+  another source's glyph. The existing `.preedit` (IME composition) case
+  already solved exactly this problem via an "occlusion mask" mechanism —
+  `preeditMaskRects` (collected once per frame from `.rect(..., .preedit,
+  ...)` commands) makes `appendGlyphRun` skip emitting any OTHER source's
+  glyph cells that intersect those rects, so nothing exists in the later
+  glyph phase to draw over the masked area. Generalized this to
+  `overlayMaskRects` (also collecting `.sidebarPreview` rects) rather than
+  building a genuine third render pass — reuses proven, already-tested
+  machinery instead of duplicating ~150 lines of GPU pipeline setup
+  (subpixel accumulate pass, band-scissored damage, motion-glyph buffers)
+  for a new "always-last" overlay phase. Regression test:
+  `SlugGlyphCorrectnessTests.testHoverPreviewPanelMasksUnderlyingTerminalGlyph`
+  (verified to fail without the fix by temporarily stashing it and
+  re-running, per this plan's own testing discipline).
+  Evidence: `Sources/LabanRenderer/SlugGlyphRenderer.swift` render()'s draw
+  sequence, read directly line-by-line before writing the fix (not
+  inferred from the earlier investigation's summary, which had gotten the
+  "append last" conclusion half right and half wrong).
+- Observation: the same manual-testing round flagged that the preview
+  showed no color ("also the preview lacks color") — a real, load-bearing
+  gap, not a nice-to-have. Root cause: `Session.scrollbackBlock(...).lines()`
+  (the v1 content source) is a plain-`String` accessor built for the FIND
+  feature's text search; it has no per-cell color/attribute data to
+  preserve, by design. Fixed by replacing the scrollback-text content path
+  entirely: `TerminalSurfaceController.hoverPreviewOverlayCommands` now
+  takes the hovered tab's own live `session.snapshot()` and feeds it
+  through `FrameProducer` (`Sources/LabanCore/FrameProducer.swift`) — the
+  SAME cell-reading/run-coalescing code the real terminal pane already
+  uses every frame — configured with the preview's small cell size and
+  positioned at the panel's content rect. `FrameProducer` is reused
+  UNMODIFIED (deliberately: it hardcodes `source: .terminal` throughout a
+  large, hot, correctness-critical function with many call sites, and
+  threading a parameterized `source` through all of them for this one
+  caller was judged not worth the regression risk to the main terminal
+  render path). Its output is post-processed in pure Swift instead:
+  `.rect`/`.glyphRun` commands with `source: .terminal` are relabeled to
+  `.sidebarPreview`, rows that don't fully fit the panel's content rect
+  vertically are dropped (not partially drawn), and each kept glyph run is
+  truncated (by Character count, matching the plan's already-accepted v1
+  truncation simplification, not display-column width) to whatever whole
+  preview cells fit horizontally. This also fixed "high fps, same as main
+  pane" as a side effect: real terminal color/attribute data updates every
+  frame the snapshot changes, same as the main pane, with no separate
+  polling or caching layer to fall behind. `SidebarProducer.HoverPreview`
+  narrowed from `(tabId, lines, viewportWidth, cellWidth, cellHeight)` to
+  `(tabId, viewportWidth)` since `SidebarProducer` now owns only the
+  panel's chrome (border + background); geometry was extracted into a new
+  pure `SidebarProducer.hoverPreviewPanelRect(...)` function shared by the
+  chrome-drawing code and the controller's content-positioning code, so
+  the two never compute the rect differently. `Tests/LabanCoreTests/SidebarProducerTests.swift`'s
+  Milestone 3 hover-preview tests were updated for the narrower shape (one
+  renamed to `testHoverPreviewOnBackgroundTabEmitsPanelChromeRects` and
+  asserts only the 2 chrome rects, since content no longer flows through
+  `SidebarProducer` at all). New regression test:
+  `TerminalSurfaceControllerTests.testHoverPreviewContentPreservesTerminalForegroundColor`
+  (feeds 24-bit-truecolor ANSI red output to the hovered tab, asserts a
+  `.sidebarPreview` glyph run carries that exact color).
 - Observation: Manual testing (Milestone 6) surfaced two real bugs not
   caught by the unit-test suite, because both are about *frame-to-frame*
   behavior across the renderer/controller boundary that no existing test
