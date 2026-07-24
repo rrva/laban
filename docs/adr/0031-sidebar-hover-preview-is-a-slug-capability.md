@@ -22,7 +22,7 @@ size (14pt) and rescale them at render time (`pointScale = activeAtlas.pointSize
 curve cache: `fontAtlas` (terminal size) for `.terminal`-sourced glyph runs and
 `sidebarFontAtlas` (smaller) for `.sidebar`-sourced ones, chosen per
 `FrameCommand.source` via `atlas(for:)`/`referenceAtlas(for:)`
-(`Sources/LabanRenderer/SlugGlyphRenderer.swift:2331` and `:2342`). Laban's other renderers (`software`, `classic` Metal,
+(`Sources/LabanRenderer/SlugGlyphRenderer.swift:2341` and `:2352`). Laban's other renderers (`software`, `classic` Metal,
 `vectorGlyph`) bake glyph coverage bitmaps at a fixed size per atlas build; each
 additional simultaneous size is a distinct, non-free rasterization and cache
 tier for them, not a cheap render-time scale factor.
@@ -48,25 +48,63 @@ and the previewed tab existing and not being the active tab.
 - Hovered-tab detection is unchanged and renderer-neutral: `hoveredSidebarTabId`
   (`Sources/LabanApp/TerminalBitmapView.swift`) already flows through
   `TerminalSurfaceFrameRequest.hoveredSidebarTabId` into
-  `TerminalSurfaceController.sidebarCommands(hoveredTabId:)`
-  (`Sources/LabanCore/TerminalSurfaceController.swift:1253`). No new hover
-  plumbing is introduced; the feature only changes what that existing signal
-  causes to be drawn.
-- Recent-content resolution stays renderer-neutral too:
-  `TerminalSurfaceController` resolves the hovered tab's `Session` via
-  `AppModel.session(forTab:)` and reads `Session.scrollbackBlock(rowOffset:
-  maxRows:)` (`Sources/LabanCore/Session.swift:883`), the same cheap,
-  view-independent scrollback accessor `TerminalSelection` and
-  `ControlStateProjections` already use. This produces plain `[String]` lines
-  with no dependency on any renderer type.
+  `TerminalSurfaceController.makeFrame(_:)`, which passes it to two sibling
+  functions: `sidebarCommands(hoveredTabId:)`
+  (`Sources/LabanCore/TerminalSurfaceController.swift:1288`, unchanged sidebar
+  chrome — tab rows, close-✕, drag indicator) and the private
+  `hoverPreviewOverlayCommands(hoveredTabId:...)`
+  (`Sources/LabanCore/TerminalSurfaceController.swift:1396`, new — resolves
+  and gates the preview panel). No new hover plumbing is introduced; the
+  feature only adds a second consumer of that existing signal.
+- Recent-content resolution is intentionally **not** renderer-neutral text:
+  `hoverPreviewOverlayCommands` resolves the hovered tab's `Session` via
+  `AppModel.session(forTab:)`, takes its live `session.snapshot()`
+  (`Sources/LabanCore/Session.swift`), and feeds it through `FrameProducer`
+  (`Sources/LabanCore/FrameProducer.swift`) — the same cell-reading and
+  run-coalescing code the real terminal pane uses every frame — configured
+  with the preview's own small cell size and positioned at the panel's
+  content rect. `FrameProducer` is reused unmodified (it always emits
+  `source: .terminal`); the result is post-processed in plain Swift to
+  relabel matching commands to `source: .sidebarPreview`, drop grid rows
+  that don't fully fit the panel vertically, and truncate each kept glyph
+  run's text to whatever whole preview cells fit horizontally. This choice
+  (real per-cell terminal colors via the shared cell-reading code, rather
+  than a renderer-neutral plain-`[String]` scrollback dump) was made after
+  the first implementation pass shipped monochrome text and user testing
+  flagged it as a real gap — see `execplans/active/sidebar-hover-preview.md`'s
+  Surprises & Discoveries for the full history. `Session.scrollbackBlock`
+  is no longer used by this feature at all.
 - `FrameCommand.source` (`Sources/LabanRenderer/FrameCommand.swift`) gains one
   new case, `.sidebarPreview`, alongside the existing `.sidebar`/`.terminal`.
-  `SidebarProducer` only emits `.sidebarPreview`-tagged commands when the
-  caller supplies a resolved `HoverPreview` value; when the effective renderer
-  is not Slug or the setting is off, the caller (`sidebarCommands`) never
-  constructs one, so no preview commands are emitted at all — non-Slug
+  `hoverPreviewOverlayCommands` only emits `.sidebarPreview`-tagged commands
+  when its own guard (`effectiveRendererIsSlug`, `hoverPreviewEnabled`, a
+  resolved `hoveredTabId` distinct from the active tab) passes; when the
+  effective renderer is not Slug or the setting is off, it returns `[]`
+  immediately, so no preview commands are emitted at all — non-Slug
   renderers never see the new source case in practice, mirroring ADR 0030's
   "gate at the producer, don't rely on the renderer to ignore it" posture.
+- Because the preview's own opaque background (a `.rect`) and the terminal's
+  own glyph text underneath it are both ordinary commands, `SlugGlyphRenderer`'s
+  fixed two-phase draw order (every `.rect` from every source draws in one
+  earlier phase, then every `.glyphRun` from every source draws in a
+  strictly later phase — see `SlugGlyphRenderer.swift`'s `render()`) means
+  command ordering alone can never make the panel's background occlude
+  another source's glyph text: glyphs always draw after ALL rects,
+  regardless of array position. This feature reuses the same occlusion-mask
+  mechanism `.preedit` (IME composition) already relies on for exactly this
+  problem: `overlayMaskRects` (collected once per frame from `.rect`
+  commands tagged `.preedit` or `.sidebarPreview`) makes `appendGlyphRun`
+  skip emitting any *other* source's glyph cells that intersect those
+  rects, so the terminal's own text is never drawn where the panel sits.
+
+## Content resolution detail: `FrameProducer` reuse (not renderer-specific)
+
+The `session.snapshot()` + `FrameProducer` content path described above is
+itself renderer-neutral — `FrameProducer` has no dependency on which
+renderer backend is active, and none of this section's mechanics are Slug
+capabilities. Content resolution stays in `LabanCore` regardless of which
+renderer draws the result; only the drawing (the third `previewFontAtlas`
+and the `overlayMaskRects` occlusion described above) is Slug-only.
 - `SlugGlyphRenderer` alone resolves `.sidebarPreview` glyph runs against a
   third `previewFontAtlas`/`previewReferenceFontAtlas` pair, added beside the
   existing `sidebarFontAtlas`/`sidebarReferenceFontAtlas` pair and following
@@ -94,8 +132,9 @@ and the previewed tab existing and not being the active tab.
   background tab is a no-op there rather than a degraded or blurry preview.
 - `SlugGlyphRenderer` owns all pixels of the preview panel. The core
   (`TerminalSurfaceController`, `SidebarProducer`) owns hover detection,
-  content resolution, and panel layout math (a `CGRect` plus plain text), never
-  glyph rasterization.
+  content resolution (real per-cell colors, via `FrameProducer` against the
+  hovered tab's live snapshot), and panel layout math (a `CGRect` plus a
+  `[FrameCommand]` list), never glyph rasterization.
 - Non-Slug renderer files (`SoftwareBackend`, `MetalRenderer`,
   `VectorGlyphRenderer`) require no changes at all: they take no new
   parameters and no new `FrameCommand` fields are added, only one new

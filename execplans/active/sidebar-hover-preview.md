@@ -179,6 +179,42 @@ instant the mouse leaves the row or the setting/renderer changes.
 
 ## Surprises & Discoveries
 
+- Observation: a third round of user feedback (after the opacity/live-update/color
+  fixes were confirmed working) flagged that switching tabs via a keyboard
+  shortcut (Cmd+1…9, Ctrl+Tab, Cmd+Option+←/→) while the mouse still rests
+  over an unrelated sidebar row left the hover-preview panel showing that
+  now-stale row. This is a genuinely different case from the existing
+  active-tab-suppression guard (`hoveredTabId != activeTabId` in
+  `TerminalSurfaceController.hoverPreviewOverlayCommands`): that guard only
+  hides the preview when the tab you keyboard-switch *to* happens to be the
+  one you were hovering — it does nothing when you switch to some *other*
+  tab while still hovering a *third*, unrelated row, which is exactly what
+  a rapid keyboard-navigation session looks like. Confirmed via a fresh
+  Explore-agent trace before writing a fix (not assumed): every keyboard
+  tab-switch path already invalidates the render loop correctly and reads
+  `activeTab`/`hoveredSidebarTabId` fresh every frame with no stale
+  caching, so this was not a render-invalidation bug — `hoveredSidebarTabId`
+  (`Sources/LabanApp/TerminalBitmapView.swift`) is simply never cleared by
+  anything except mouse-move/mouse-exit/tab-close, never by an
+  active-tab-change event. Fixed by clearing it explicitly (via the
+  existing private `setHoveredSidebarTab(nil)` helper, same one mouse-exit
+  already uses) at the two AppKit-view entry points a keyboard/non-mouse
+  tab switch always funnels through: `selectTab(at:)` (Cmd+1…9, Ctrl+Tab,
+  Cmd+Option+←/→ — all keyboard shortcuts bottom out here per
+  `TerminalInputView.swift`'s `TerminalKeyDescriptor.route`) and
+  `selectTabFromExternalNavigation(_:)` (native notification responses —
+  included for the same reason: the mouse position is unrelated to which
+  tab a non-mouse trigger just activated). Deliberately did NOT touch the
+  sidebar's own mouse-click tab-selection path (`selectTabPreservingSelection(_:)`'s
+  third caller, the `.selectTab(let id)` case in the sidebar hit-test
+  handler): clicking a row means the mouse is already hovering that exact
+  row, so the existing `hoveredTabId != activeTabId` guard already
+  suppresses correctly there with no extra clearing needed. No automated
+  regression test added: simulating a `mouseMoved(with:)` NSEvent to set
+  hover state has no precedent anywhere in this test suite (confirmed by
+  search), and building that AppKit-event-simulation infrastructure from
+  scratch was judged disproportionate to this one fix; verified by direct
+  code reading plus the user's own manual retest instead.
 - Observation: a second round of manual testing found the opacity fix
   (below) was necessary but not sufficient — the panel background painted
   correctly relative to OTHER solid rects, but the terminal's own glyph
