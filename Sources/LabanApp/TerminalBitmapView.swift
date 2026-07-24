@@ -5494,6 +5494,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     invalidateRenderAndWake()
   }
 
+  // AppKit reserves Control-Tab / Control-Shift-Tab as a key-view-loop
+  // navigation shortcut (moving first responder between views) and swallows
+  // it at the performKeyEquivalent: stage, before it ever becomes a keyDown:
+  // for the first responder — confirmed via diagnostic logging: flagsChanged
+  // sees the Control press/release, but keyDown never fires for the Tab key
+  // at all. This is a different, unrelated mechanism from native window
+  // tabbing (tabbingMode/allowsAutomaticWindowTabbing), which doesn't affect
+  // it. Intercepting here, ahead of that default handling, is the standard
+  // fix; re-dispatching to keyDown(with:) keeps this a single code path with
+  // TerminalKeyDescriptor.route deciding what the chord actually does.
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    guard event.type == .keyDown, event.modifierFlags.contains(.control) else {
+      return super.performKeyEquivalent(with: event)
+    }
+    let descriptor = TerminalKeyDescriptor(keyDown: event)
+    guard descriptor.key == .tab else {
+      return super.performKeyEquivalent(with: event)
+    }
+    keyDown(with: event)
+    return true
+  }
+
   override func keyDown(with event: NSEvent) {
     // Stamp the keystroke so the next render's GPU completion handler can
     // close out an input-to-photon latency sample. Only the most recent
