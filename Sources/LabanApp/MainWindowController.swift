@@ -561,6 +561,14 @@ final class MainWindowController: NSWindowController {
       defer: false
     )
     window.title = "Laban"
+    // Belt-and-suspenders alongside the AppDelegate-wide
+    // `NSWindow.allowsAutomaticWindowTabbing = false`: setting it on the class
+    // only stops new windows joining a tab group, not this window's own
+    // participation in AppKit's native tab key-view machinery (Ctrl+Tab /
+    // Ctrl+Shift+Tab), which otherwise swallows those chords before
+    // `TerminalBitmapView.keyDown` ever sees them. Laban's tabs are the
+    // sidebar's own concept, never native window tabs.
+    window.tabbingMode = .disallowed
     // Transparent titlebar with the contentView extending behind it; the
     // sidebar and terminal-area background rects fill the reserved strip so
     // the chrome looks continuous with the terminal. Traffic lights stay

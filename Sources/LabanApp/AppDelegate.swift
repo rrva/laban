@@ -67,6 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   private var secureInputEngaged = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    // AppKit's native window-tabbing UI is auto-enabled by default and adds its
+    // own invisible-to-us "Select Next/Previous Tab" Window-menu items bound to
+    // Ctrl+Tab / Ctrl+Shift+Tab. With one native window those items are a no-op,
+    // but their key equivalents still intercept the keypress via
+    // performKeyEquivalent: before it ever reaches TerminalBitmapView.keyDown,
+    // silently swallowing Ctrl+Tab everywhere in the app. Laban's tabs are its
+    // own sidebar concept, not native window tabs, so disable this globally
+    // before any window is created.
+    NSWindow.allowsAutomaticWindowTabbing = false
     UNUserNotificationCenter.current().delegate = self
     notificationStateRefresher.refresh()
     AppLog.app.notice("launch \(BuildInfo.summary)")
