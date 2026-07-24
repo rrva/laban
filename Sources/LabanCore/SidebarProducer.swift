@@ -46,27 +46,21 @@ public struct SidebarProducer {
     }
   }
 
-  /// Resolved content for the floating hover-preview panel: the tab being
-  /// previewed, its most recent scrollback lines (oldest first, already
-  /// truncated to a reasonable fetch bound by the caller), and the geometry
-  /// inputs needed to size/position the panel and its text. `cellWidth`/
-  /// `cellHeight` are the PREVIEW font's cell size (from
-  /// `SlugGlyphRenderer.previewFontAtlas.cellSize`), not the sidebar's.
+  /// Which tab's floating hover-preview panel to draw, and how wide the
+  /// full window content area is (needed to size the panel as a fraction of
+  /// the terminal pane). The panel's actual scrollback/grid CONTENT is
+  /// resolved and colored elsewhere (`TerminalSurfaceController.hoverPreviewOverlayCommands`,
+  /// via `FrameProducer` against the previewed tab's own live snapshot, so
+  /// the preview shows real per-cell foreground colors instead of flat
+  /// text) — `SidebarProducer` only owns the panel's chrome (border +
+  /// background), matching its existing "no session access, plain-input"
+  /// design (see execplans/active/sidebar-hover-preview.md, Decision Log).
   public struct HoverPreview: Equatable {
     public var tabId: Tab.ID
-    public var lines: [String]
     public var viewportWidth: CGFloat
-    public var cellWidth: CGFloat
-    public var cellHeight: CGFloat
-    public init(
-      tabId: Tab.ID, lines: [String], viewportWidth: CGFloat,
-      cellWidth: CGFloat, cellHeight: CGFloat
-    ) {
+    public init(tabId: Tab.ID, viewportWidth: CGFloat) {
       self.tabId = tabId
-      self.lines = lines
       self.viewportWidth = viewportWidth
-      self.cellWidth = cellWidth
-      self.cellHeight = cellHeight
     }
   }
 
@@ -451,59 +445,59 @@ public struct SidebarProducer {
   /// and never drawn without resolved preview geometry (cellWidth/cellHeight
   /// <= 0 means the caller has no preview atlas configured yet, e.g. the
   /// effective renderer isn't Slug — see docs/adr/0031).
+  /// Pure geometry: where the floating hover-preview panel sits, or nil
+  /// when it shouldn't render (previewing the active tab, an unknown tab,
+  /// or a pane too small to fit a legible panel). Shared by
+  /// `hoverPreviewCommands` (chrome) and
+  /// `TerminalSurfaceController.hoverPreviewOverlayCommands` (content,
+  /// which needs the same rect to position/bound the previewed tab's own
+  /// live, colored glyph runs).
+  static func hoverPreviewPanelRect(
+    tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat,
+    scrollOffset: CGFloat, rowHeight: CGFloat, sidebarWidth: CGFloat,
+    hoveredTabId: Tab.ID?, viewportWidth: CGFloat
+  ) -> CGRect? {
+    guard let hoveredTabId, hoveredTabId != activeTabId,
+      let rowIndex = tabs.firstIndex(where: { $0.id == hoveredTabId })
+    else { return nil }
+
+    let rowTabY = height - CGFloat(rowIndex + 1) * rowHeight - topInset + scrollOffset
+    let paneWidth = max(0, viewportWidth - sidebarWidth)
+    let paneHeight = max(0, height - topInset)
+    let panelWidth = paneWidth * previewScale
+    let panelHeight = paneHeight * previewScale
+    guard panelWidth >= 2 * previewInset, panelHeight >= 2 * previewInset else { return nil }
+
+    var panelY = rowTabY + rowHeight - panelHeight
+    panelY = min(panelY, height - panelHeight)
+    panelY = max(panelY, 0)
+    return CGRect(
+      x: sidebarWidth + previewGap, y: panelY,
+      width: panelWidth, height: panelHeight)
+  }
+
+  /// The panel's chrome only (border + opaque background) — never its
+  /// content, which `TerminalSurfaceController` builds separately from the
+  /// previewed tab's own live snapshot so it carries real per-cell colors.
   static func hoverPreviewCommands(
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat,
     scrollOffset: CGFloat, rowHeight: CGFloat, sidebarWidth: CGFloat,
     hoverPreview: HoverPreview?
   ) -> [FrameCommand] {
-    guard let preview = hoverPreview, preview.tabId != activeTabId,
-      let rowIndex = tabs.firstIndex(where: { $0.id == preview.tabId }),
-      preview.cellWidth > 0, preview.cellHeight > 0
+    guard let preview = hoverPreview,
+      let panelRect = hoverPreviewPanelRect(
+        tabs: tabs, activeTabId: activeTabId, height: height, topInset: topInset,
+        scrollOffset: scrollOffset, rowHeight: rowHeight, sidebarWidth: sidebarWidth,
+        hoveredTabId: preview.tabId, viewportWidth: preview.viewportWidth)
     else { return [] }
 
-    let rowTabY = height - CGFloat(rowIndex + 1) * rowHeight - topInset + scrollOffset
-    let paneWidth = max(0, preview.viewportWidth - sidebarWidth)
-    let paneHeight = max(0, height - topInset)
-    let panelWidth = paneWidth * previewScale
-    let panelHeight = paneHeight * previewScale
-    guard panelWidth >= 2 * previewInset, panelHeight >= 2 * previewInset else { return [] }
-
-    var panelY = rowTabY + rowHeight - panelHeight
-    panelY = min(panelY, height - panelHeight)
-    panelY = max(panelY, 0)
-    let panelRect = CGRect(
-      x: sidebarWidth + previewGap, y: panelY,
-      width: panelWidth, height: panelHeight)
-
-    var cmds: [FrameCommand] = []
     // Border: a slightly larger rect painted first, background painted on
     // top inset by 1pt, so only a 1pt ring of the border color shows —
     // avoids needing a new FrameCommand case for strokes.
-    cmds.append(
-      .rect(panelRect.insetBy(dx: -1, dy: -1), color: Theme.current.dim0, source: .sidebarPreview))
-    cmds.append(
-      .rect(panelRect, color: Theme.current.bg1, source: .sidebarPreview, compositing: .replace))
-    let maxCols = max(1, Int(floor((panelWidth - 2 * previewInset) / preview.cellWidth)))
-    let maxLines = max(1, Int(floor((panelHeight - 2 * previewInset) / preview.cellHeight)))
-    let shown = preview.lines.suffix(maxLines)
-    for (i, line) in shown.enumerated() {
-      // v1 simplification: truncates by Character count, not display column
-      // width, so a line containing wide (e.g. CJK) characters can overflow
-      // the panel slightly. Matches the browser prototype this plan was
-      // validated against; not attempting grapheme-width-aware truncation
-      // here (see execplans/active/sidebar-hover-preview.md).
-      let truncated = String(line.prefix(maxCols))
-      let y = panelRect.maxY - previewInset - CGFloat(i + 1) * preview.cellHeight
-      cmds.append(
-        .glyphRun(
-          origin: CGPoint(x: panelRect.minX + previewInset, y: y),
-          text: truncated,
-          foreground: Theme.current.fg0,
-          background: Theme.current.bg1,
-          attributes: [],
-          source: .sidebarPreview))
-    }
-    return cmds
+    return [
+      .rect(panelRect.insetBy(dx: -1, dy: -1), color: Theme.current.dim0, source: .sidebarPreview),
+      .rect(panelRect, color: Theme.current.bg1, source: .sidebarPreview, compositing: .replace),
+    ]
   }
 
   public func maxScrollOffset(

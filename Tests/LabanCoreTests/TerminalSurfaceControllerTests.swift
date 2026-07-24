@@ -227,6 +227,64 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       "the preview panel must be drawn after the terminal pane's own commands so it paints on top")
   }
 
+  /// Regression test for the "lacks color" gap: the preview must carry the
+  /// hovered tab's REAL per-cell foreground color (resolved from its live
+  /// snapshot via `FrameProducer`), not a single flat theme color — this is
+  /// what distinguishes it from the earlier plain-`scrollbackBlock().lines()`
+  /// implementation, which had no color information to preserve at all.
+  func testHoverPreviewContentPreservesTerminalForegroundColor() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let activeTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let hoveredTab = try XCTUnwrap(model.activeTab)
+    model.selectTab(activeTab.id)
+
+    let hoveredSession = try XCTUnwrap(model.session(forTab: hoveredTab.id))
+    // 24-bit truecolor red, distinct from any default theme foreground.
+    _ = hoveredSession.write(Array("\u{1B}[38;2;255;0;0mRED\u{1B}[0m".utf8))
+    _ = hoveredSession.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200,
+      previewCellWidth: 4,
+      previewCellHeight: 8)
+    let frame = controller.makeFrame(
+      TerminalSurfaceFrameRequest(
+        frame: 1,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        hoveredSidebarTabId: hoveredTab.id,
+        requireActiveSnapshot: false,
+        surfaceWidth: 800,
+        surfaceHeight: 600,
+        surfaceScale: 1,
+        effectiveRendererIsSlug: true,
+        hoverPreviewEnabled: true))
+
+    let previewForegrounds = try XCTUnwrap(frame).commands.compactMap { command -> UInt32? in
+      if case .glyphRun(_, _, let foreground, _, _, .sidebarPreview, _, _, _, _, _, _, _) = command
+      {
+        return foreground
+      }
+      return nil
+    }
+    XCTAssertTrue(
+      previewForegrounds.contains { rgba in
+        let r = (rgba >> 24) & 0xFF
+        let g = (rgba >> 16) & 0xFF
+        let b = (rgba >> 8) & 0xFF
+        return r > 200 && g < 50 && b < 50
+      },
+      "expected a red (255,0,0) preview glyph run matching the hovered tab's real ANSI "
+        + "foreground color; got \(previewForegrounds.map { String($0, radix: 16) })")
+  }
+
   func testSidebarCommandsMemoizesAndInvalidates() throws {
     var size = LabanTerminalSize()
     size.rows = 4

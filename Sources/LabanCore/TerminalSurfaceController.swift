@@ -1388,6 +1388,20 @@ public final class TerminalSurfaceController {
   /// which runs every frame regardless of hover state. See
   /// execplans/active/sidebar-hover-preview.md, Surprises & Discoveries
   /// (the "paused video" / opacity bug this fixes).
+  /// Builds the hover-preview panel's chrome (border + background) plus its
+  /// CONTENT, resolved from the previewed tab's own live snapshot via
+  /// `FrameProducer` — the same cell-reading/run-coalescing code the real
+  /// terminal pane uses — so the preview shows real per-cell foreground
+  /// colors instead of flat single-color text. `FrameProducer` is reused
+  /// unmodified (still emits `source: .terminal`) rather than reimplementing
+  /// its raw-snapshot cell reading; this function only relabels the result
+  /// to `.sidebarPreview` and bounds it to the panel's content rect, since
+  /// the previewed tab's real grid (terminal-sized rows/cols) is almost
+  /// always larger than the small preview panel. Rows that don't fully fit
+  /// vertically are dropped (not partially drawn); each kept row's text is
+  /// truncated to whatever whole preview-cell columns fit horizontally —
+  /// the same by-Character (not display-column) truncation the plan already
+  /// accepts as a v1 simplification for the sidebar's own title text.
   private func hoverPreviewOverlayCommands(
     activeTabId: Tab.ID?,
     viewportWidth: CGFloat,
@@ -1398,24 +1412,74 @@ public final class TerminalSurfaceController {
     effectiveRendererIsSlug: Bool,
     hoverPreviewEnabled: Bool
   ) -> [FrameCommand] {
-    let hoverPreview: SidebarProducer.HoverPreview? = {
-      guard effectiveRendererIsSlug, hoverPreviewEnabled,
-        let hoveredTabId, hoveredTabId != activeTabId,
-        previewCellWidth > 0, previewCellHeight > 0,
-        let session = model.session(forTab: hoveredTabId),
-        let block = session.scrollbackBlock(rowOffset: 0, maxRows: 500)
-      else { return nil }
-      return SidebarProducer.HoverPreview(
-        tabId: hoveredTabId, lines: block.lines(), viewportWidth: viewportWidth,
-        cellWidth: previewCellWidth, cellHeight: previewCellHeight)
-    }()
-    guard hoverPreview != nil else { return [] }
-    let producer = SidebarProducer(
+    guard effectiveRendererIsSlug, hoverPreviewEnabled,
+      let hoveredTabId, hoveredTabId != activeTabId,
+      previewCellWidth > 0, previewCellHeight > 0
+    else { return [] }
+
+    let chromeProducer = SidebarProducer(
       sidebarWidth: sidebarWidth, cellWidth: sidebarCellWidth, cellHeight: sidebarCellHeight)
-    return SidebarProducer.hoverPreviewCommands(
+    guard
+      let panelRect = SidebarProducer.hoverPreviewPanelRect(
+        tabs: model.tabs, activeTabId: activeTabId, height: viewportHeight, topInset: topInset,
+        scrollOffset: scrollOffset, rowHeight: chromeProducer.rowHeight, sidebarWidth: sidebarWidth,
+        hoveredTabId: hoveredTabId, viewportWidth: viewportWidth)
+    else { return [] }
+    guard let session = model.session(forTab: hoveredTabId), let snap = session.snapshot() else {
+      return []
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    var commands = SidebarProducer.hoverPreviewCommands(
       tabs: model.tabs, activeTabId: activeTabId, height: viewportHeight, topInset: topInset,
-      scrollOffset: scrollOffset, rowHeight: producer.rowHeight, sidebarWidth: sidebarWidth,
-      hoverPreview: hoverPreview)
+      scrollOffset: scrollOffset, rowHeight: chromeProducer.rowHeight, sidebarWidth: sidebarWidth,
+      hoverPreview: SidebarProducer.HoverPreview(tabId: hoveredTabId, viewportWidth: viewportWidth))
+
+    let inset = SidebarProducer.previewInset
+    let contentRect = panelRect.insetBy(dx: inset, dy: inset)
+    guard contentRect.width > 0, contentRect.height > 0 else { return commands }
+
+    let contentProducer = FrameProducer(
+      cellWidth: Int(previewCellWidth), cellHeight: Int(previewCellHeight),
+      originX: contentRect.minX, originY: contentRect.minY)
+    let epsilon: CGFloat = 0.5
+    for command in contentProducer.commands(from: snap, cursorBlinkVisible: false) {
+      switch command {
+      case .rect(let rect, let color, .terminal, let compositing):
+        guard rect.minY >= contentRect.minY - epsilon, rect.maxY <= contentRect.maxY + epsilon,
+          rect.minX < contentRect.maxX
+        else { continue }
+        let clippedWidth = min(rect.maxX, contentRect.maxX) - rect.minX
+        guard clippedWidth > 0 else { continue }
+        commands.append(
+          .rect(
+            CGRect(x: rect.minX, y: rect.minY, width: clippedWidth, height: rect.height),
+            color: color, source: .sidebarPreview, compositing: compositing))
+      case .glyphRun(
+        let origin, let text, let foreground, let background, let attributes, .terminal,
+        let underlineStyle, let underlineColor, let hyperlink, let displayCellCount,
+        let outputTimestampSeconds, let foregroundTransition, let foregroundWave):
+        guard origin.y >= contentRect.minY - epsilon,
+          origin.y + previewCellHeight <= contentRect.maxY + epsilon,
+          origin.x < contentRect.maxX
+        else { continue }
+        let availableCells = max(0, Int((contentRect.maxX - origin.x) / previewCellWidth))
+        guard availableCells > 0 else { continue }
+        let truncated = String(text.prefix(availableCells))
+        guard !truncated.isEmpty else { continue }
+        commands.append(
+          .glyphRun(
+            origin: origin, text: truncated, foreground: foreground, background: background,
+            attributes: attributes, source: .sidebarPreview, underlineStyle: underlineStyle,
+            underlineColor: underlineColor, hyperlink: hyperlink,
+            displayCellCount: displayCellCount,
+            outputTimestampSeconds: outputTimestampSeconds,
+            foregroundTransition: foregroundTransition, foregroundWave: foregroundWave))
+      default:
+        continue
+      }
+    }
+    return commands
   }
 
   private static func withAlpha(_ color: UInt32, _ alpha: UInt8) -> UInt32 {

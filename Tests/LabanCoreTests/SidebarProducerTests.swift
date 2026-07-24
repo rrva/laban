@@ -948,29 +948,26 @@ final class SidebarProducerTests: XCTestCase {
 
   // MARK: - Hover preview (execplans/active/sidebar-hover-preview.md, Milestone 3)
 
-  func testHoverPreviewOnBackgroundTabEmitsPanelAndGlyphCommands() {
+  /// `SidebarProducer` owns only the panel's chrome (border + background);
+  /// its CONTENT is resolved and colored separately by
+  /// `TerminalSurfaceController.hoverPreviewOverlayCommands` from the
+  /// previewed tab's own live snapshot (see execplans/active/sidebar-hover-preview.md,
+  /// Surprises & Discoveries — "lacks color" fix), so this layer's own test
+  /// only asserts the chrome rects, not glyph content.
+  func testHoverPreviewOnBackgroundTabEmitsPanelChromeRects() {
     let tabs = makeTabs(count: 2)
     let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
-    let preview = SidebarProducer.HoverPreview(
-      tabId: tabs[1].id, lines: ["one", "two", "three"], viewportWidth: 800,
-      cellWidth: 4, cellHeight: 8)
+    let preview = SidebarProducer.HoverPreview(tabId: tabs[1].id, viewportWidth: 800)
     let out = p.output(
       tabs: tabs, activeTabId: tabs[0].id, height: 600, hoverPreview: preview)
 
-    let hasPreviewRect = out.commands.contains { cmd in
+    let previewRectCount = out.commands.filter { cmd in
       if case .rect(_, _, let src, _) = cmd, src == .sidebarPreview { return true }
       return false
-    }
-    let hasPreviewGlyph = out.commands.contains { cmd in
-      if case .glyphRun(_, _, _, _, _, let src, _, _, _, _, _, _, _) = cmd,
-        src == .sidebarPreview
-      {
-        return true
-      }
-      return false
-    }
-    XCTAssertTrue(hasPreviewRect, "hovering a background tab must draw a preview panel rect")
-    XCTAssertTrue(hasPreviewGlyph, "hovering a background tab must draw preview text")
+    }.count
+    XCTAssertEqual(
+      previewRectCount, 2,
+      "hovering a background tab must draw exactly the border + background chrome rects")
   }
 
   func testNilHoverPreviewEmitsNoPreviewCommands() {
@@ -992,8 +989,7 @@ final class SidebarProducerTests: XCTestCase {
   func testHoverPreviewOnActiveTabEmitsNoPreviewCommands() {
     let tabs = makeTabs(count: 2)
     let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
-    let preview = SidebarProducer.HoverPreview(
-      tabId: tabs[0].id, lines: ["one"], viewportWidth: 800, cellWidth: 4, cellHeight: 8)
+    let preview = SidebarProducer.HoverPreview(tabId: tabs[0].id, viewportWidth: 800)
     let out = p.output(
       tabs: tabs, activeTabId: tabs[0].id, height: 600, hoverPreview: preview)
 
