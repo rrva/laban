@@ -881,6 +881,7 @@ public final class HeadlessDebugRuntime {
         userCursorStyle: CursorSettings.style,
         userCursorBlinkEnabled: CursorSettings.blinkEnabled,
         spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
+        glyphEffectsEnabled: GlyphEffectSettings.enabled,
         effectiveRendererIsSlug: rendererBackend is SlugGlyphRenderer,
         hoverPreviewEnabled: HoverPreviewSettings.enabled)
     )

@@ -124,6 +124,14 @@ public struct TerminalSurfaceFrameRequest {
   /// frame by the snapshot's blink flag when `cursor_blink_explicit != 0`.
   public var userCursorBlinkEnabled: Bool
   public var spinnerMotionSmoothingEnabled: Bool
+  /// User setting for the keystroke-impulse glyph effect
+  /// (`GlyphEffectSettings.enabled`). Gates `stampFreshOutputTimestamps`'s
+  /// per-row cell fingerprinting and freshness diffing, which is otherwise
+  /// wasted CPU work every frame with output: the fingerprints only matter
+  /// for deciding what `effectKind`/`effectStart` to stamp, and nothing
+  /// downstream reads those fields when the effect is off (`SlugGlyphRenderer`
+  /// separately gates its own GPU-side animation on the same setting).
+  public var glyphEffectsEnabled: Bool
   public var effectiveRendererIsSlug: Bool
   /// User setting for the sidebar hover preview
   /// (`HoverPreviewSettings.enabled`). Combined with `effectiveRendererIsSlug`
@@ -161,6 +169,7 @@ public struct TerminalSurfaceFrameRequest {
     userCursorStyle: CursorSettings.Style = .block,
     userCursorBlinkEnabled: Bool = false,
     spinnerMotionSmoothingEnabled: Bool = false,
+    glyphEffectsEnabled: Bool = false,
     effectiveRendererIsSlug: Bool = false,
     hoverPreviewEnabled: Bool = false
   ) {
@@ -193,6 +202,7 @@ public struct TerminalSurfaceFrameRequest {
     self.userCursorStyle = userCursorStyle
     self.userCursorBlinkEnabled = userCursorBlinkEnabled
     self.spinnerMotionSmoothingEnabled = spinnerMotionSmoothingEnabled
+    self.glyphEffectsEnabled = glyphEffectsEnabled
     self.effectiveRendererIsSlug = effectiveRendererIsSlug
     self.hoverPreviewEnabled = hoverPreviewEnabled
   }
@@ -1133,6 +1143,7 @@ public final class TerminalSurfaceController {
     }
     commands = stampFreshOutputTimestamps(
       commands,
+      enabled: request.glyphEffectsEnabled && !request.reduceMotion,
       session: session,
       snapshot: UnsafePointer(snap),
       originX: sidebarWidth + request.insets.left,
@@ -2057,11 +2068,22 @@ public final class TerminalSurfaceController {
   /// leave the generation unchanged and never create a new stamp.
   private func stampFreshOutputTimestamps(
     _ commands: [FrameCommand],
+    enabled: Bool,
     session: Session,
     snapshot: UnsafePointer<LabanSnapshot>,
     originX: CGFloat,
     originY: CGFloat
   ) -> [FrameCommand] {
+    guard enabled else {
+      // The keystroke-impulse effect is off (setting or Reduce Motion):
+      // skip the per-row cell fingerprinting and freshness diffing below
+      // entirely rather than computing stamps nothing will ever animate.
+      lastCellFingerprints.removeValue(forKey: session.id)
+      outputStampRecords.removeValue(forKey: session.id)
+      outputStampLastGeneration.removeValue(forKey: session.id)
+      lastGlyphEffectStampDiagnostics = .none
+      return commands
+    }
     let generation = session.dirtyGeneration()
     let dirtyRows = Self.dirtyRowIndices(snapshot: snapshot)
     let previousFingerprints = lastCellFingerprints[session.id] ?? [:]

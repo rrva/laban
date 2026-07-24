@@ -1466,7 +1466,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
           requireActiveSnapshot: true,
           surfaceWidth: 360,
           surfaceHeight: 64,
-          surfaceScale: 1))
+          surfaceScale: 1,
+          glyphEffectsEnabled: true))
     }
 
     // Seed cell fingerprints with a settled 16-cell line (threshold for
@@ -1796,7 +1797,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
           requireActiveSnapshot: true,
           surfaceWidth: 360,
           surfaceHeight: 64,
-          surfaceScale: 1))
+          surfaceScale: 1,
+          glyphEffectsEnabled: true))
     }
 
     // First frame after output: the fresh run is stamped at the clock's now.
@@ -1884,7 +1886,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
           requireActiveSnapshot: true,
           surfaceWidth: 360,
           surfaceHeight: 64,
-          surfaceScale: 1))
+          surfaceScale: 1,
+          glyphEffectsEnabled: true))
     }
 
     // Keystroke 1: 'a' lands, cursor-cell strip stamps it at 1.0.
@@ -1975,7 +1978,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
           forceFullDamage: forceFull,
           surfaceWidth: 360,
           surfaceHeight: 96,
-          surfaceScale: 1))
+          surfaceScale: 1,
+          glyphEffectsEnabled: true))
     }
 
     // Settle the first screenful so later frames only see the new row as fresh.

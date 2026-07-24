@@ -1770,6 +1770,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       userCursorStyle: CursorSettings.style,
       userCursorBlinkEnabled: CursorSettings.blinkEnabled,
       spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
+      glyphEffectsEnabled: GlyphEffectSettings.enabled,
       effectiveRendererIsSlug: targetBackend is SlugGlyphRenderer,
       hoverPreviewEnabled: HoverPreviewSettings.enabled)
 
@@ -3285,6 +3286,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       userCursorStyle: CursorSettings.style,
       userCursorBlinkEnabled: CursorSettings.blinkEnabled,
       spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
+      glyphEffectsEnabled: GlyphEffectSettings.enabled,
       effectiveRendererIsSlug: backend is SlugGlyphRenderer,
       hoverPreviewEnabled: HoverPreviewSettings.enabled
     )
