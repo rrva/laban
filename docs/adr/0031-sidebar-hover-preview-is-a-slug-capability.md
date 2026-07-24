@@ -45,6 +45,22 @@ sidebar row) is intentionally a Slug-only capability. It is gated on the
 **effective** renderer being `slugGlyph`, the persisted setting being enabled,
 and the previewed tab existing and not being the active tab.
 
+The panel has two independent triggers sharing all of the same rendering
+infrastructure below: mouse hover (`hoveredSidebarTabId`) and keyboard
+hold-to-peek (`peekedSidebarTabId`, added after initial ship — holding
+Ctrl+Tab or Cmd+Option+←/→ previews the tab the cycle would land on,
+mirroring macOS's own Cmd+Tab app-switcher; releasing the chord commits the
+switch, matching `selectTab(at:)`'s existing behavior). Both are plain
+`Tab.ID?` properties on `TerminalBitmapView`; wherever the panel's content
+needs "which tab is being previewed right now," the two are combined as
+`peekedSidebarTabId ?? hoveredSidebarTabId` (keyboard wins when both are
+somehow set, though in practice a keyboard peek clears mouse hover via the
+same `setHoveredSidebarTab(nil)` call `selectTab(at:)` already made before
+peek existed). Everything below this paragraph — content resolution,
+`.sidebarPreview` gating, the third atlas, the occlusion mask — is shared
+by both triggers unmodified; only the two `TerminalBitmapView`-level
+properties differ in how they're set.
+
 - Hovered-tab detection is unchanged and renderer-neutral: `hoveredSidebarTabId`
   (`Sources/LabanApp/TerminalBitmapView.swift`) already flows through
   `TerminalSurfaceFrameRequest.hoveredSidebarTabId` into

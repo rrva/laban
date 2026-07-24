@@ -15,6 +15,14 @@ blurry scaled screenshot. Move the mouse away and it disappears. The active
 tab's own row never shows a preview (its content is already the whole right
 side of the window).
 
+Milestone 7 adds a second, keyboard-driven trigger for the same panel:
+**hold-to-peek**. Hold Ctrl+Tab or Cmd+Option+←/→ (Laban's existing tab-cycle
+shortcuts) and, instead of switching immediately, the panel shows a preview of
+the tab you'd land on; keep tapping while holding to cycle further; release
+the modifier to commit the switch. This mirrors macOS's own Cmd+Tab
+app-switcher. Direct-jump shortcuts (Cmd+1…9) are unaffected — they have no
+natural "hold" moment to hook into, so they keep switching instantly.
+
 This only works when Laban's `slugGlyph` renderer is the effective renderer
 (see "Term glossary" below) and a new setting is turned on. On any other
 renderer, hovering a tab row behaves exactly as it does today: nothing happens.
@@ -70,9 +78,27 @@ instant the mouse leaves the row or the setting/renderer changes.
 - [x] (2026-07-23) Milestone 3: `SidebarProducer` emits the preview panel from resolved content. Added `SidebarProducer.HoverPreview` (nested struct) and a standalone `static func hoverPreviewCommands(...)` (extracted rather than left inline in `output(...)`, anticipating Milestone 4's memoization-bypass need — see Decision Log) that `output(...)` now calls internally so its own behavior/tests stay consistent. Added 3 tests to `Tests/LabanCoreTests/SidebarProducerTests.swift`: panel+glyph commands present for a background-tab preview, no `.sidebarPreview` commands when `hoverPreview` is nil, no `.sidebarPreview` commands when previewing the active tab's own row. All 52 `SidebarProducerTests` cases pass (49 pre-existing unmodified + 3 new).
 - [x] (2026-07-23) Milestone 4: `TerminalSurfaceController` + `TerminalBitmapView` wiring. `sidebarCommands` gained `viewportWidth`, `effectiveRendererIsSlug`, `hoverPreviewEnabled` parameters; resolves `SidebarProducer.HoverPreview` from `model.session(forTab:)` + `Session.scrollbackBlock(rowOffset: 0, maxRows: 500)` when the hovered tab differs from the active tab, and appends `SidebarProducer.hoverPreviewCommands(...)` after the memoized sidebar lookup (bypassing `SidebarCacheSignature`, per Milestone 3's Decision Log). `TerminalSurfaceFrameRequest` gained `hoverPreviewEnabled: Bool = false`; both `TerminalBitmapView` call sites now pass `hoverPreviewEnabled: HoverPreviewSettings.enabled`. Added a `HoverPreviewSettings.didChangeNotification` observer mirroring the spinner-motion one (forces a render retry so toggling the setting takes effect live). Full package build and full `swift test` both pass (0 failures). Built via `./scripts/build-app`, installed to `~/Laban-hover-preview.app` (not launched from the shell). Manual verification pending the user launching the app (see Validation and Acceptance).
 - [x] (2026-07-23) Milestone 5: Settings UI checkbox + debug endpoint + headless parity. See Milestone 5's own section for the full (corrected, larger-than-originally-scoped) file list. Full `swift test` passes.
-- [ ] Milestone 6: Manual verification, polish pass, Review Gate. Manual verification of the four issues found in the first testing round (opacity, live-update, color fidelity, fps) is now confirmed working by the user against the latest build (commit e651b420 + the two follow-on fixes). Remaining: the three Review Gate renderer/setting-gate scenarios, `./scripts/check`, and the fresh-agent Review Gate itself.
+- [ ] Milestone 6: Manual verification, polish pass, Review Gate. Manual verification of the four issues found in the first testing round (opacity, live-update, color fidelity, fps) is now confirmed working by the user against the latest build (commit e651b420 + the two follow-on fixes). First Review Gate pass complete (fresh agent, commit `dbfd5c17`): items 1-4, 8 passed; item 9 (ADR drift) failed and is fixed; items 5-7 gained dedicated unit coverage (`HoverPreviewRendererGateTests`) closing the "needs live-app verification" gap. Remaining: a second, clean Review Gate pass after all fixes (including Milestone 7 below), plus a final `./scripts/check` run.
+- [x] (2026-07-24) Milestone 7: keyboard hold-to-peek. Holding Ctrl+Tab / Cmd+Option+←/→ now previews the tab a release would land on instead of switching instantly (`TerminalBitmapView.beginOrAdvancePeek`/`.commitPeek`, gated on `flagsChanged` observing the triggering chord's modifier(s) lift). Shares 100% of the existing panel-rendering path — only a new `peekedSidebarTabId` trigger, combined as `peekedSidebarTabId ?? hoveredSidebarTabId` everywhere the previewed tab is read. 4 new unit tests (`HoverPreviewKeyboardPeekTests`, access-level-loosened white-box tests of the state machine — no NSEvent-simulation precedent existed to test the real `keyDown`/`flagsChanged` dispatch, same gap noted for the earlier keyboard-hover-clear fix). Direct-jump shortcuts (Cmd+1…9) and menu-bar tab actions are unaffected — they still call the original instant-commit `selectTab(at:)`/`selectRelativeTab(delta:)` path. Manual verification pending.
 
 ## Decision Log
+
+- Decision: Keyboard-triggered preview uses a hold-to-peek gesture on the
+  existing *cycle* shortcuts (Ctrl+Tab, Cmd+Option+←/→, Cmd+Shift+[/]) —
+  holding previews, releasing commits — rather than (a) a brief preview
+  flash on every keyboard switch including the direct-jump shortcuts
+  (Cmd+1…9), or (b) a dedicated preview-only shortcut with a second
+  keypress to commit.
+  Rationale: direct-jump shortcuts are instant, one-shot activations with no
+  natural "moment" to show a preview during — there's nothing to hold. Cycle
+  shortcuts already have real hold semantics on macOS (this mirrors Cmd+Tab
+  app-switching, a pattern every user already knows), so extending them to
+  preview-then-commit is the smallest change that fits an existing mental
+  model, versus inventing a new shortcut or a timed-flash interaction with
+  its own new questions (how long is "brief"? does Reduce Motion affect it?).
+  User confirmed this choice directly when asked to pick between the three
+  options.
+  Date/Author: 2026-07-24, implementation session.
 
 - Decision: Preview panel size and font size both scale from the *terminal
   content pane's* current size by a fixed ratio (`previewScale = 0.5`), not
