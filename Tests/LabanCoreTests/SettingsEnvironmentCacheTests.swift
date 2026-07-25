@@ -97,26 +97,47 @@ final class SettingsEnvironmentCacheTests: XCTestCase {
     }
   }
 
-  /// The cached accessor must be safe to read concurrently: it is reached from
-  /// the render and present-link threads, not just the main thread. A
-  /// `static let` is initialised once under `swift_once`; this exercises that
-  /// path from many threads at once and asserts a single consistent answer.
-  func testCachedAccessorIsSafeUnderConcurrentReads() {
+  /// These settings are read from the render and present-link threads, not just
+  /// the main thread, so concurrent reads must be safe and must agree.
+  ///
+  /// The hammering deliberately goes through the injected seam against a
+  /// private suite rather than the zero-argument accessor. The accessor reads
+  /// `UserDefaults.standard`, whose persistent domain is shared by every
+  /// concurrently running test *process* under `swift test --parallel`, so
+  /// asserting a stable value from it makes this test hostage to whatever
+  /// another suite happens to write. That is not a hypothetical: asserting on
+  /// the shared domain here failed exactly that way during a full `--parallel`
+  /// run on 2026-07-25.
+  ///
+  /// The cached accessor is still touched once per probe so the `static let`
+  /// initialises under `swift_once` while other threads are running, which is
+  /// the concurrency property actually worth covering.
+  func testConcurrentReadsAreSafeAndConsistent() {
+    let suiteName = "laban-settings-env-cache-tests"
+    guard let defaults = UserDefaults(suiteName: suiteName) else {
+      return XCTFail("could not create the isolated defaults suite")
+    }
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
     for probe in probes {
-      let expected = probe.cached()
-      let results = NSMutableArray()
+      defaults.set(true, forKey: probe.key)
+      _ = probe.cached()
+
       let lock = NSLock()
+      var results: [Bool] = []
+      results.reserveCapacity(200)
       DispatchQueue.concurrentPerform(iterations: 200) { _ in
-        let value = probe.cached()
+        let value = probe.seam(defaults, [:])
         lock.lock()
-        results.add(value)
+        results.append(value)
         lock.unlock()
       }
+
       XCTAssertEqual(results.count, 200, "\(probe.name): lost concurrent reads")
-      for value in results {
-        XCTAssertEqual(
-          value as? Bool, expected, "\(probe.name): inconsistent value under concurrent reads")
-      }
+      XCTAssertTrue(
+        results.allSatisfy { $0 },
+        "\(probe.name): inconsistent value under concurrent reads")
     }
   }
 }
