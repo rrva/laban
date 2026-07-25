@@ -1,0 +1,371 @@
+#!/usr/bin/env python3
+# Answer: does the slug renderer's per-damage-band draw repeat
+# (`SlugGlyphRenderer.repeatingBands`) actually cost GPU time, and does that
+# cost scale with the number of damage bands?
+#
+# The band path binds pipeline+buffers once, then repeats `setScissorRect` +
+# `drawPrimitives` once per disjoint damage band. Every band re-runs the full
+# instance load for its pipeline and discards out-of-band primitives only at
+# rasterization, so the naive worry is that an N-band frame costs N times a
+# full redraw. `DirtyYRangeSet.normalize` guarantees the bands are disjoint,
+# which bounds the covered pixels, but says nothing about the repeated
+# per-instance work.
+#
+# This buckets frames by their effective damage shape and reports the GPU
+# duration of the `laban.slug.content` pass for each bucket. If duration is
+# flat across band counts, the repeat is free and the 4x draw pattern needs no
+# attention. If it climbs with N, a "collapse to .full above N bands"
+# heuristic has a real target to beat.
+#
+# HOW THE JOIN WORKS (all three tables are needed):
+#   os-signpost                     slug.render span -> effective band count
+#   metal-application-encoders-list CPU encode window -> encoder-id
+#   metal-gpu-intervals             encoder-id -> GPU duration
+# Matching runs on encoder-id, not on wall-clock proximity, so frames cannot be
+# misattributed to a neighbour at 120Hz.
+#
+# STAGE SPLIT: metal-gpu-intervals emits one row per shader stage per encoder,
+# with `channel-name` = Vertex / Fragment, so per-frame GPU time splits by
+# stage. That is the sharp test here: repeating draws per band multiplies
+# per-instance vertex work while scissor bounds the fragment work, so the two
+# stages are expected to move in opposite directions. Rows sharing an
+# encoder-id must be grouped by channel, not summed blindly -- summing across
+# stages double-counts a pass and hides exactly the signal you want.
+#
+# (Finer attribution is still unavailable: metal-gpu-counter-intervals,
+# gpu-counter-value, gpu-shader-profiler-interval and
+# metal-shader-profiler-intervals all come back with 0 rows, since M2 has no
+# GPU counters and gpudebug refuses profiling below M3/A17 Pro. So you get
+# per-stage totals, not per-shader attribution.)
+#
+# RECORDING: the CLI cannot do this. See docs/process/profiling-hiccups.md --
+# `xctrace record` hits "log archive is corrupt or incomplete" and that error
+# empties every os_signpost table while leaving the Metal tables intact, so you
+# get GPU timings with nothing to bucket them by. Record from the Instruments
+# GUI in Immediate mode with the "Metal with laban signposts" template.
+#
+# USAGE:
+#   scripts/analyze-band-gpu-cost run.trace
+#   scripts/analyze-band-gpu-cost run.trace --json out.json --keep-exports
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import statistics
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+SIGNPOST_SUBSYSTEM = "com.rrva.laban.render"
+SIGNPOST_NAME = "slug.render"
+CONTENT_LABEL = "laban.slug.content"
+
+SCHEMAS = ["os-signpost", "metal-application-encoders-list", "metal-gpu-intervals"]
+
+
+def export(trace: Path, schema: str, out: Path) -> None:
+    """Export one table. xctrace writes a schema-only husk when a table is
+    empty and still exits 0, so callers must check row counts, not status."""
+    proc = subprocess.run(
+        ["xcrun", "xctrace", "export", "--input", str(trace),
+         "--xpath", f'/trace-toc/run/data/table[@schema="{schema}"]',
+         "--output", str(out)],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.exit(f"xctrace export failed for {schema}:\n{proc.stderr.strip()}")
+
+
+def parse_table(path: Path):
+    """Yield one dict per <row>, keyed by schema column mnemonic.
+
+    Three quirks of the xctrace export format drive this:
+
+    1. Value interning. An element carries its text once with an `id`; later
+       rows re-use that id with an empty body to mean "same value". An empty
+       element is therefore a back-reference, never an empty string.
+    2. `<sentinel/>` marks an ABSENT column but still occupies a column slot,
+       so it must be counted when aligning children against the column list.
+       Skipping it shifts every column after the first null.
+    3. Container elements (process, formatted-label) hold their display text in
+       nested children; the readable form is the `fmt` attribute.
+    """
+    # An element defines a value once as id="N", carrying the raw value as text
+    # and a display form in fmt. Every later use is <tag ref="N"/> with no
+    # content at all. Both forms are needed: numeric columns want the text
+    # (start-time text is 595573916 ns while fmt is "00:00.595.573"), and
+    # container columns want the fmt (a <thread> holds its name in fmt and only
+    # nested elements as text).
+    interned_text: dict[str, str] = {}
+    interned_fmt: dict[str, str] = {}
+    cols: list[str] = []
+    CONTAINER = ("formatted-label", "process", "thread")
+
+    def value_of(el: ET.Element):
+        if el.tag == "sentinel":
+            return None
+        ref = el.get("ref")
+        if ref is not None:
+            if el.tag in CONTAINER:
+                return interned_fmt.get(ref) or interned_text.get(ref)
+            return interned_text.get(ref) or interned_fmt.get(ref)
+        eid, fmt = el.get("id"), el.get("fmt")
+        text = el.text if (el.text and el.text.strip()) else None
+        if eid:
+            if text is not None:
+                interned_text[eid] = text
+            if fmt is not None:
+                interned_fmt[eid] = fmt
+        if el.tag in CONTAINER:
+            return fmt or text
+        return text if text is not None else fmt
+
+    # iterparse + clear: these exports run to tens of MB and a full DOM parse
+    # is both slow and memory-hungry. Rows are streamed and discarded; only the
+    # interning table has to persist across the document.
+    rows = []
+    for _, el in ET.iterparse(path, events=("end",)):
+        if el.tag == "schema" and not cols:
+            cols = [c.findtext("mnemonic") or "" for c in el.findall("col")]
+            el.clear()
+            continue
+        if el.tag != "row":
+            continue
+        rec = {}
+        for idx, child in enumerate(el):
+            if idx >= len(cols):
+                break
+            rec[cols[idx]] = value_of(child)
+        rows.append(rec)
+        el.clear()
+    return cols, rows
+
+
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+BANDS_RE = re.compile(r"eff=(full|bands:(\d+))")
+GLYPHS_RE = re.compile(r"glyphs=(\d+)")
+SOLIDS_RE = re.compile(r"solids=(\d+)")
+
+
+def collect_render_spans(rows):
+    """Pair slug.render Begin/End signposts. The End message carries the
+    EFFECTIVE damage (after accumulation/force-full rules), which is what was
+    actually encoded -- the Begin message's `in=` is only the request."""
+    open_spans, spans = {}, []
+    for r in rows:
+        if (r.get("name") or "") != SIGNPOST_NAME:
+            continue
+        if SIGNPOST_SUBSYSTEM not in (r.get("subsystem") or ""):
+            continue
+        t = num(r.get("time"))
+        if t is None:
+            continue
+        etype = (r.get("event-type") or "").lower()
+        ident = r.get("identifier") or "0"
+        if "begin" in etype:
+            open_spans[ident] = {"begin": t}
+        elif "end" in etype:
+            span = open_spans.pop(ident, None)
+            if span is None:
+                continue
+            msg = r.get("message") or ""
+            m = BANDS_RE.search(msg)
+            if not m:
+                continue
+            g, s = GLYPHS_RE.search(msg), SOLIDS_RE.search(msg)
+            span.update(
+                end=t,
+                shape="full" if m.group(1) == "full" else int(m.group(2)),
+                glyphs=int(g.group(1)) if g else 0,
+                solids=int(s.group(1)) if s else 0,
+                encoders=[],
+            )
+            spans.append(span)
+    spans.sort(key=lambda x: x["begin"])
+    return spans
+
+
+def collect_encodes(rows):
+    """CPU-side encode events for the content pass, carrying encoder-id."""
+    out = []
+    for r in rows:
+        if CONTENT_LABEL not in (r.get("encoder-label") or ""):
+            continue
+        start, eid = num(r.get("start")), r.get("encoder-id")
+        if start is None or not eid:
+            continue
+        out.append({"start": start, "encoder_id": eid})
+    out.sort(key=lambda x: x["start"])
+    return out
+
+
+def collect_gpu_by_encoder(rows):
+    """encoder-id -> total GPU duration for the content pass.
+
+    metal-gpu-intervals emits the slug pass twice: once with cmdbuffer/encoder
+    ids attached and once without. Only the id-bearing rows are usable, and
+    they are the ones that join.
+    """
+    by_enc: dict[str, float] = {}
+    for r in rows:
+        if CONTENT_LABEL not in (r.get("event-label") or ""):
+            continue
+        eid, dur = r.get("encoder-id"), num(r.get("duration"))
+        if not eid or dur is None:
+            continue
+        by_enc[eid] = by_enc.get(eid, 0.0) + dur
+    return by_enc
+
+
+def attach(spans, encodes, gpu_by_enc):
+    """Bind encode events to the signpost span that was open when they were
+    encoded, then look up that encoder's GPU time by id."""
+    i = 0
+    for e in encodes:
+        while i < len(spans) and spans[i]["end"] < e["start"]:
+            i += 1
+        if i >= len(spans):
+            break
+        s = spans[i]
+        if s["begin"] <= e["start"] <= s["end"]:
+            s["encoders"].append(e["encoder_id"])
+
+    frames = []
+    for s in spans:
+        gpu = sum(gpu_by_enc.get(eid, 0.0) for eid in s["encoders"])
+        if not s["encoders"] or gpu <= 0:
+            continue
+        frames.append({
+            "shape": s["shape"],
+            "glyphs": s["glyphs"],
+            "gpu_ns": gpu,
+            "cpu_ns": s["end"] - s["begin"],
+        })
+    return frames
+
+
+def bucket_key(label: str):
+    return (1, 0) if label == "full" else (0, int(label.split(":")[1]))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("trace", type=Path)
+    ap.add_argument("--json", type=Path)
+    ap.add_argument("--keep-exports", action="store_true")
+    args = ap.parse_args()
+
+    if not args.trace.exists():
+        sys.exit(f"no such trace: {args.trace}")
+
+    tmp = Path(tempfile.mkdtemp(prefix="band-gpu-"))
+    tables = {}
+    for s in SCHEMAS:
+        f = tmp / f"{s}.xml"
+        export(args.trace, s, f)
+        tables[s] = parse_table(f)[1]
+
+    sp, enc_rows, gpu_rows = (tables[s] for s in SCHEMAS)
+
+    print(f"os-signpost rows                : {len(sp)}")
+    print(f"metal-application-encoders-list : {len(enc_rows)}")
+    print(f"metal-gpu-intervals rows        : {len(gpu_rows)}")
+
+    if not sp:
+        sys.stderr.write(
+            "\nos-signpost table is EMPTY.\n"
+            "This is the log-archive corruption: it wipes every signpost table\n"
+            "while leaving Metal tables intact. `xctrace record` cannot avoid it.\n"
+            "Re-record from the Instruments GUI in Immediate mode using the\n"
+            '"Metal with laban signposts" template, then File > Save As to a\n'
+            "fresh path. See docs/process/profiling-hiccups.md.\n")
+        return 2
+
+    spans = collect_render_spans(sp)
+    encodes = collect_encodes(enc_rows)
+    gpu_by_enc = collect_gpu_by_encoder(gpu_rows)
+
+    print(f"slug.render spans               : {len(spans)}")
+    print(f"{CONTENT_LABEL} encodes    : {len(encodes)}")
+    print(f"encoders with GPU time          : {len(gpu_by_enc)}")
+
+    if not spans:
+        sys.stderr.write(
+            f"\nNo {SIGNPOST_NAME} spans found. Is the slugGlyph renderer active?\n"
+            "Other backends emit different signposts and pass labels.\n")
+        return 2
+    if not gpu_by_enc:
+        sys.stderr.write(
+            f"\nNo GPU intervals labelled {CONTENT_LABEL}. Select slugGlyph:\n"
+            "  curl -X POST '127.0.0.1:8787/config/renderer?name=slugGlyph'\n")
+        return 2
+
+    frames = attach(spans, encodes, gpu_by_enc)
+    print(f"frames joined                   : {len(frames)}")
+    if not frames:
+        sys.stderr.write("\nNothing joined; encode events fell outside every span.\n")
+        return 2
+
+    buckets: dict[str, list] = {}
+    for f in frames:
+        label = "full" if f["shape"] == "full" else f"bands:{f['shape']}"
+        buckets.setdefault(label, []).append(f)
+
+    hdr = (f"\n{'shape':<12}{'frames':>7}{'gpu p50':>10}{'gpu p90':>10}"
+           f"{'gpu max':>10}{'glyphs':>9}{'cpu p50':>10}")
+    print(hdr)
+    print("-" * (len(hdr) - 1))
+
+    report = {}
+    for label in sorted(buckets, key=bucket_key):
+        fs = buckets[label]
+        g = sorted(f["gpu_ns"] for f in fs)
+        c = sorted(f["cpu_ns"] for f in fs)
+
+        def pct(v, q):
+            return v[min(len(v) - 1, int(len(v) * q))] / 1000.0
+
+        p50, p90, mx = pct(g, .5), pct(g, .9), g[-1] / 1000.0
+        gl = statistics.median(f["glyphs"] for f in fs)
+        cp = pct(c, .5)
+        print(f"{label:<12}{len(fs):>7}{p50:>10.1f}{p90:>10.1f}"
+              f"{mx:>10.1f}{gl:>9.0f}{cp:>10.1f}")
+        report[label] = {"frames": len(fs), "gpu_p50_us": p50, "gpu_p90_us": p90,
+                         "gpu_max_us": mx, "median_glyphs": gl, "cpu_p50_us": cp}
+
+    print("\n(GPU = laban.slug.content pass, microseconds; CPU = slug.render span)")
+
+    bands = sorted((l for l in report if l.startswith("bands:")), key=bucket_key)
+    if len(bands) >= 2:
+        lo, hi = bands[0], bands[-1]
+        a, b = report[lo]["gpu_p50_us"], report[hi]["gpu_p50_us"]
+        n_lo, n_hi = int(lo.split(":")[1]), int(hi.split(":")[1])
+        print(f"\nGPU p50 {lo} -> {hi}: {a:.1f}us -> {b:.1f}us  (x{b/a:.2f} "
+              f"for {n_hi/n_lo:.1f}x the bands)")
+        if b / a < 1.2:
+            print("Flat: the per-band repeat is not costing measurable GPU time.")
+        else:
+            print("Climbing: the repeat has real cost; a band-count cap may pay off.")
+    if "full" in report and bands:
+        print(f"full vs {bands[-1]}: {report['full']['gpu_p50_us']:.1f}us vs "
+              f"{report[bands[-1]]['gpu_p50_us']:.1f}us")
+
+    if args.json:
+        args.json.write_text(json.dumps(report, indent=2))
+        print(f"\nwrote {args.json}")
+    if args.keep_exports:
+        print(f"raw exports in {tmp}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

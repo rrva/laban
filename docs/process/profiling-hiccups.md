@@ -11,7 +11,37 @@ Run issues were detected (trace is still ready to be viewed):
 * [Error] Data stream: Fatal logging system error: The log archive is corrupt or incomplete and cannot be read
 ```
 
-Workaround: the `.trace` bundle is still analyzable. `scripts/analyze-metal-trace` exports the time-profile and Metal interval tables without issues. Treat the warning as noise unless the exported tables themselves are empty.
+Workaround: the `.trace` bundle is still analyzable. `scripts/analyze-metal-trace` exports the time-profile and Metal interval tables without issues. Treat the warning as noise **for the Metal tables only**.
+
+It is not noise for signposts. See the next section.
+
+## The corrupt-log error silently empties every signpost table
+
+This error is not selective. When it fires, the Metal tables are complete and every `os-signpost` table is left as a **schema-only husk with 0 rows**. Nothing warns you at export time: `xctrace export` exits 0 and writes a well-formed file containing no `<row>` elements.
+
+Verified 2026-07-25 on this machine, recording the running app with the correct custom template:
+
+```
+xcrun xctrace record --template "Metal with laban signposts" \
+  --attach <pid> --time-limit 10s --output run.trace
+# -> "Fatal logging system error: The log archive is corrupt or incomplete"
+
+os-signpost         : 0 rows
+metal-gpu-intervals : 29708 rows
+metal-application-intervals : 212 rows
+```
+
+So **`xctrace record` cannot capture Laban's signposts at all**, and the failure looks like "the app emitted nothing" rather than like a recording fault. The template is not the problem: `~/Library/Application Support/Instruments/Templates/Metal with laban signposts.tracetemplate` already contains `com.apple.dt.os-log-signpost-instrument` and pins `dynamicTracingEnabledSubsystems: ["com.rrva.laban.render"]`, which is exactly the subsystem `RenderEncodeSignpost` uses.
+
+To get signposts you must record from the **Instruments GUI in Immediate mode**, then `File > Save As` to a fresh path. Immediate mode is not exposed by the `xctrace` CLI, which is why the CLI path is a dead end. A first save can produce a 0-table husk missing `stores/`; if that happens, re-record rather than trying to repair it.
+
+Always check row counts before trusting a signpost-based analysis:
+
+```sh
+xcrun xctrace export --input run.trace \
+  --xpath '/trace-toc/run/data/table[@schema="os-signpost"]' --output sp.xml
+grep -c '<row>' sp.xml
+```
 
 ## `.trace` is a bundle, not a file
 
@@ -26,11 +56,15 @@ Even with the Metal System Trace template, `metal-shader-profiler-intervals`, `g
 
 Workaround: rely on `metal-gpu-intervals` for pass-level timing (e.g. `Command Buffer 0:laban.slug.content`) and `metal-application-intervals` / `ca-client-buffer-wait-interval` for frame-pacing diagnosis.
 
-## `analyze-metal-trace` does not export `metal-gpu-intervals`
+## `analyze-metal-trace` needs `--deep-gpu` for `metal-gpu-intervals`
 
-The default schema list in `scripts/analyze-metal-trace` does not include `metal-gpu-intervals`, so you do not get per-pass GPU timing for slug/vector passes from the script alone.
+`metal-gpu-intervals` is not in `DEFAULT_SCHEMAS`, so a plain run gives no per-pass GPU timing for slug/vector passes. It *is* in `DEEP_GPU_SCHEMAS`, so pass `--deep-gpu` rather than exporting by hand:
 
-Workaround: export manually and parse the durations:
+```sh
+./scripts/analyze-metal-trace run.trace --deep-gpu --json-output analysis.json
+```
+
+Or export the one table manually:
 
 ```sh
 xcrun xctrace export --input run.trace \
@@ -154,6 +188,82 @@ Common levers:
 - Decouple GPU glyph-bake work from the present command buffer (`vector-drawable-pacing-120hz.md` Milestone 3).
 - Ensure `LabanVectorPresentDisplayLink` is not disabled.
 - Use a fixture session instead of a live shell for reproducible comparisons.
+
+## Recipe: a signpost-correlated GPU trace (Instruments GUI)
+
+This is the only way to get a trace where Laban's own signposts and the Metal GPU timings are both present, so that GPU work can be bucketed by what the renderer thought it was doing. Used to measure the slug damage-band path; the shape generalises to any "why was this frame expensive" question.
+
+`xctrace record` cannot produce this. See the corrupt-log section above.
+
+### 1. Pick the workload first
+
+The comparison is only meaningful if the workload is reproducible and exercises the cases you want to contrast. A live shell tab keeps receiving output, so two recordings are never the same workload. Prefer a fixture session or a frozen command output, and drive motion over the scroll-debug API:
+
+```sh
+scripts/restart-app --scroll-debug
+curl -fsS -X POST '127.0.0.1:8787/config/renderer?name=slugGlyph'
+```
+
+The renderer choice matters: only `slugGlyph` emits `slug.render` signposts and labels its pass `laban.slug.content`. Other backends label passes differently and the analysis will find nothing.
+
+### 2. Record in Immediate mode
+
+1. Open Instruments (`open -a Instruments`, or Xcode > Open Developer Tool).
+2. Choose the **"Metal with laban signposts"** user template. It already bundles the `os_signpost` instrument alongside the Metal instruments and pins `dynamicTracingEnabledSubsystems` to `com.rrva.laban.render`. The stock "Metal System Trace" template records **no** signposts.
+3. Set the target to the running `LabanApp` process.
+4. **File > Recording Options… > Immediate** (default is Deferred). This is the step that makes signposts survive; it has no CLI equivalent.
+5. Record, drive the workload, stop.
+6. **File > Save As** to a fresh path. Do not overwrite an existing `.trace`.
+
+A `.trace` is a directory, not a file, so remove one with `rm -rf`.
+
+### 3. Verify before analysing
+
+A trace that lost its signposts looks exactly like a trace where the app was idle. Always check:
+
+```sh
+xcrun xctrace export --input run.trace \
+  --xpath '/trace-toc/run/data/table[@schema="os-signpost"]' --output sp.xml
+grep -c '<row>' sp.xml     # 0 means re-record, do not try to salvage
+```
+
+If the save produced a husk missing `stores/`, re-record rather than repairing.
+
+### 4. Analyse
+
+```sh
+./scripts/analyze-band-gpu-cost run.trace --json band-cost.json
+```
+
+It buckets frames by the effective damage shape reported in the `slug.render` end message (`eff=full` / `eff=bands:N`) and reports the GPU duration of the `laban.slug.content` pass per bucket. The script refuses to guess: it exits with an explicit diagnostic when the signpost table is empty, when no `slug.render` spans are present (wrong renderer), or when nothing joins.
+
+### Per-stage GPU time is available; per-shader is not
+
+`metal-gpu-intervals` emits **one row per shader stage per encoder**, with `channel-name` set to `Vertex` or `Fragment`. Rows sharing an `encoder-id` are stages of the same pass, so group them by channel rather than summing: summing across stages double-counts the pass and hides the stage signal. This is usually the signal you actually want, since CPU-side and GPU-side costs often move in opposite directions between rendering strategies.
+
+Do not conclude the column is unavailable from a single trace. A trace recorded without the Metal instruments configured (or one covering mostly other processes) can show `channel-name` only on WindowServer rows, which looks like "not supported for our app" but is a recording artifact.
+
+Finer attribution genuinely is unavailable on this machine: `metal-gpu-counter-intervals`, `gpu-counter-value`, `gpu-shader-profiler-interval` and `metal-shader-profiler-intervals` all export 0 rows, M2 has no GPU counters, and `gpudebug profile run` refuses below M3/A17 Pro. So per-stage totals yes, per-shader no.
+
+### Metal frame capture (`gpucapture`) needs no separate bundle
+
+Frame capture must be armed before the process starts: `gpucapture` cannot attach to a running app, and a bundle without `MetalCaptureEnabled` never appears in `gpucapture list`. `build-app --profile` emits that key, and `install-app` always builds with `--profile`, so **every `install-app` bundle is capturable**. There is no need to `ditto` a copy and re-sign it by hand.
+
+The key is deliberately gated on `--profile` rather than set unconditionally. `--profile` bundles are already dev-only (they retain absolute `/Users/...` paths and must not be distributed), so the capture scaffolding never rides into a shipping bundle.
+
+Two consequences worth remembering:
+
+- Do not keep a second hand-made capture bundle around. It shares `CFBundleIdentifier` with the real one, so the two contend for the single-instance lock, and both carry the same `LABANBuildCommit`, which means the build stamp cannot tell you which is running. Disambiguate by bundle path in `ps`.
+- The key keeps Metal's capture scaffolding resident for the process lifetime. Treat GPU timings from a capture-enabled bundle as comparable to each other, not to a shipping build.
+
+### Reading the `xctrace export` XML
+
+Two encoding details will silently corrupt any hand-rolled parser:
+
+- **Back-references.** A value appears once as `<tag id="12" fmt="…">text</tag>`; every later use is `<tag ref="12"/>` with no content. Resolve `ref`, or every row after the first parses as null. Keep the raw text and the `fmt` separately: numeric columns need the text (`start-time` text is nanoseconds, its `fmt` is a formatted clock string) while container columns like `<thread>` carry their name only in `fmt`.
+- **`<sentinel/>` means an absent column** but still occupies a column slot. Skip it when aligning row children against the schema's `<col>` list and every column after the first null shifts by one.
+
+`scripts/analyze-band-gpu-cost` has a `parse_table` that handles both and streams with `iterparse` (a full DOM parse of a 30 MB export takes minutes; streaming takes seconds).
 
 ## In-process CPU sampling vs GPU tracing
 
