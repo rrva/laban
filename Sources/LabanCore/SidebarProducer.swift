@@ -58,9 +58,17 @@ public struct SidebarProducer {
   public struct HoverPreview: Equatable {
     public var tabId: Tab.ID
     public var viewportWidth: CGFloat
-    public init(tabId: Tab.ID, viewportWidth: CGFloat) {
+    /// True when this preview was raised by keyboard hold-to-peek cycling
+    /// (`TerminalBitmapView.peekedSidebarTabId`) rather than mouse hover —
+    /// there is no cursor position to anchor beside, and the user's
+    /// attention is on the terminal pane they're about to switch into, not
+    /// the sidebar row, so `hoverPreviewPanelRect` centers the panel in the
+    /// pane instead of placing it beside the hovered row.
+    public var isKeyboardPeek: Bool
+    public init(tabId: Tab.ID, viewportWidth: CGFloat, isKeyboardPeek: Bool = false) {
       self.tabId = tabId
       self.viewportWidth = viewportWidth
+      self.isKeyboardPeek = isKeyboardPeek
     }
   }
 
@@ -445,22 +453,34 @@ public struct SidebarProducer {
   /// `TerminalSurfaceController.hoverPreviewOverlayCommands` (content,
   /// which needs the same rect to position/bound the previewed tab's own
   /// live, colored glyph runs).
+  ///
+  /// `centered` places the panel in the middle of the terminal pane instead
+  /// of beside the hovered row — used for keyboard hold-to-peek
+  /// (`HoverPreview.isKeyboardPeek`), where there is no cursor position to
+  /// anchor beside and the user is looking at the terminal pane they're
+  /// about to switch into, not the sidebar.
   static func hoverPreviewPanelRect(
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat,
     scrollOffset: CGFloat, rowHeight: CGFloat, sidebarWidth: CGFloat,
-    hoveredTabId: Tab.ID?, viewportWidth: CGFloat
+    hoveredTabId: Tab.ID?, viewportWidth: CGFloat, centered: Bool = false
   ) -> CGRect? {
     guard let hoveredTabId, hoveredTabId != activeTabId,
       let rowIndex = tabs.firstIndex(where: { $0.id == hoveredTabId })
     else { return nil }
 
-    let rowTabY = height - CGFloat(rowIndex + 1) * rowHeight - topInset + scrollOffset
     let paneWidth = max(0, viewportWidth - sidebarWidth)
     let paneHeight = max(0, height - topInset)
     let panelWidth = paneWidth * previewScale
     let panelHeight = paneHeight * previewScale
     guard panelWidth >= 2 * previewInset, panelHeight >= 2 * previewInset else { return nil }
 
+    if centered {
+      return CGRect(
+        x: sidebarWidth + (paneWidth - panelWidth) / 2, y: (height - panelHeight) / 2,
+        width: panelWidth, height: panelHeight)
+    }
+
+    let rowTabY = height - CGFloat(rowIndex + 1) * rowHeight - topInset + scrollOffset
     var panelY = rowTabY + rowHeight - panelHeight
     panelY = min(panelY, height - panelHeight)
     panelY = max(panelY, 0)
@@ -481,7 +501,8 @@ public struct SidebarProducer {
       let panelRect = hoverPreviewPanelRect(
         tabs: tabs, activeTabId: activeTabId, height: height, topInset: topInset,
         scrollOffset: scrollOffset, rowHeight: rowHeight, sidebarWidth: sidebarWidth,
-        hoveredTabId: preview.tabId, viewportWidth: preview.viewportWidth)
+        hoveredTabId: preview.tabId, viewportWidth: preview.viewportWidth,
+        centered: preview.isKeyboardPeek)
     else { return [] }
 
     // Border: a slightly larger rect painted first, background painted on

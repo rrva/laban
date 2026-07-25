@@ -997,4 +997,74 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertTrue(
       commands.isEmpty, "the active tab's own row must never show a preview of itself")
   }
+
+  /// `centered: true` (keyboard hold-to-peek) must place the panel in the
+  /// middle of the terminal pane, not beside the hovered row — there is no
+  /// cursor position to anchor beside during a keyboard-driven switch.
+  func testHoverPreviewPanelRectCentersInPaneWhenCentered() throws {
+    let tabs = makeTabs(count: 2)
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
+    let rect = try XCTUnwrap(
+      SidebarProducer.hoverPreviewPanelRect(
+        tabs: tabs, activeTabId: tabs[0].id, height: 600, topInset: 0, scrollOffset: 0,
+        rowHeight: p.rowHeight, sidebarWidth: p.sidebarWidth,
+        hoveredTabId: tabs[1].id, viewportWidth: 800, centered: true))
+
+    XCTAssertEqual(
+      rect.midX, p.sidebarWidth + (800 - p.sidebarWidth) / 2, accuracy: 0.01,
+      "a centered panel must sit in the horizontal middle of the terminal pane")
+    XCTAssertEqual(
+      rect.midY, 300, accuracy: 0.01,
+      "a centered panel must sit in the vertical middle of the terminal pane")
+  }
+
+  /// Centering must reposition the panel, not resize it or otherwise change
+  /// eligibility (nil vs non-nil) relative to the beside-the-row placement.
+  func testHoverPreviewPanelRectCenteredDiffersOnlyInPositionFromRowAnchoredRect() throws {
+    let tabs = makeTabs(count: 2)
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
+    let besideRow = try XCTUnwrap(
+      SidebarProducer.hoverPreviewPanelRect(
+        tabs: tabs, activeTabId: tabs[0].id, height: 600, topInset: 0, scrollOffset: 0,
+        rowHeight: p.rowHeight, sidebarWidth: p.sidebarWidth,
+        hoveredTabId: tabs[1].id, viewportWidth: 800))
+    let centered = try XCTUnwrap(
+      SidebarProducer.hoverPreviewPanelRect(
+        tabs: tabs, activeTabId: tabs[0].id, height: 600, topInset: 0, scrollOffset: 0,
+        rowHeight: p.rowHeight, sidebarWidth: p.sidebarWidth,
+        hoveredTabId: tabs[1].id, viewportWidth: 800, centered: true))
+
+    XCTAssertEqual(
+      besideRow.size, centered.size,
+      "centering must not change the panel's size, only its position")
+    XCTAssertNotEqual(
+      besideRow.origin, centered.origin,
+      "a keyboard-peek panel must not land in the same place as a mouse-hover panel")
+  }
+
+  /// `HoverPreview.isKeyboardPeek` must reach `hoverPreviewCommands`'s
+  /// emitted background rect, not just the standalone geometry helper.
+  func testHoverPreviewCommandsCenterPanelWhenHoverPreviewIsKeyboardPeek() throws {
+    let tabs = makeTabs(count: 2)
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
+    let preview = SidebarProducer.HoverPreview(
+      tabId: tabs[1].id, viewportWidth: 800, isKeyboardPeek: true)
+    let commands = SidebarProducer.hoverPreviewCommands(
+      tabs: tabs, activeTabId: tabs[0].id, height: 600, topInset: 0, scrollOffset: 0,
+      rowHeight: p.rowHeight, sidebarWidth: p.sidebarWidth, hoverPreview: preview)
+
+    let backgroundRect = try XCTUnwrap(
+      commands.compactMap { command -> CGRect? in
+        guard case .rect(let rect, _, let source, let compositing) = command,
+          source == .sidebarPreview, compositing == .replace
+        else { return nil }
+        return rect
+      }.first)
+    let expected = try XCTUnwrap(
+      SidebarProducer.hoverPreviewPanelRect(
+        tabs: tabs, activeTabId: tabs[0].id, height: 600, topInset: 0, scrollOffset: 0,
+        rowHeight: p.rowHeight, sidebarWidth: p.sidebarWidth,
+        hoveredTabId: tabs[1].id, viewportWidth: 800, centered: true))
+    XCTAssertEqual(backgroundRect, expected)
+  }
 }

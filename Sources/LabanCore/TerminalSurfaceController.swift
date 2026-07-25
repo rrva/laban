@@ -84,6 +84,12 @@ public struct TerminalSurfaceFrameRequest {
   public var sidebarTopInset: CGFloat
   public var sidebarScrollOffset: CGFloat
   public var hoveredSidebarTabId: Tab.ID?
+  /// True when `hoveredSidebarTabId` came from keyboard hold-to-peek cycling
+  /// rather than mouse hover (`TerminalBitmapView.peekedSidebarTabId`).
+  /// Passed to `hoverPreviewOverlayCommands` so the preview panel centers in
+  /// the terminal pane instead of sitting beside the hovered sidebar row —
+  /// there is no cursor position to anchor beside during a keyboard switch.
+  public var hoveredSidebarTabIdIsKeyboardPeek: Bool
   public var sidebarDragIndicator: SidebarProducer.DragIndicator?
   public var contentYOffset: CGFloat
   public var cursorBlinkVisible: Bool
@@ -147,6 +153,7 @@ public struct TerminalSurfaceFrameRequest {
     sidebarTopInset: CGFloat = 0,
     sidebarScrollOffset: CGFloat = 0,
     hoveredSidebarTabId: Tab.ID? = nil,
+    hoveredSidebarTabIdIsKeyboardPeek: Bool = false,
     sidebarDragIndicator: SidebarProducer.DragIndicator? = nil,
     contentYOffset: CGFloat = 0,
     cursorBlinkVisible: Bool = true,
@@ -180,6 +187,7 @@ public struct TerminalSurfaceFrameRequest {
     self.sidebarTopInset = sidebarTopInset
     self.sidebarScrollOffset = sidebarScrollOffset
     self.hoveredSidebarTabId = hoveredSidebarTabId
+    self.hoveredSidebarTabIdIsKeyboardPeek = hoveredSidebarTabIdIsKeyboardPeek
     self.sidebarDragIndicator = sidebarDragIndicator
     self.contentYOffset = contentYOffset
     self.cursorBlinkVisible = cursorBlinkVisible
@@ -970,6 +978,7 @@ public final class TerminalSurfaceController {
       topInset: request.sidebarTopInset,
       scrollOffset: request.sidebarScrollOffset,
       hoveredTabId: request.hoveredSidebarTabId,
+      hoveredTabIdIsKeyboardPeek: request.hoveredSidebarTabIdIsKeyboardPeek,
       effectiveRendererIsSlug: request.effectiveRendererIsSlug,
       hoverPreviewEnabled: request.hoverPreviewEnabled)
 
@@ -1214,6 +1223,7 @@ public final class TerminalSurfaceController {
       topInset: request.sidebarTopInset,
       scrollOffset: request.sidebarScrollOffset,
       hoveredTabId: request.hoveredSidebarTabId,
+      hoveredTabIdIsKeyboardPeek: request.hoveredSidebarTabIdIsKeyboardPeek,
       effectiveRendererIsSlug: request.effectiveRendererIsSlug,
       hoverPreviewEnabled: request.hoverPreviewEnabled)
 
@@ -1411,6 +1421,7 @@ public final class TerminalSurfaceController {
     topInset: CGFloat,
     scrollOffset: CGFloat,
     hoveredTabId: Tab.ID?,
+    hoveredTabIdIsKeyboardPeek: Bool = false,
     effectiveRendererIsSlug: Bool,
     hoverPreviewEnabled: Bool
   ) -> [FrameCommand] {
@@ -1425,7 +1436,8 @@ public final class TerminalSurfaceController {
       let panelRect = SidebarProducer.hoverPreviewPanelRect(
         tabs: model.tabs, activeTabId: activeTabId, height: viewportHeight, topInset: topInset,
         scrollOffset: scrollOffset, rowHeight: chromeProducer.rowHeight, sidebarWidth: sidebarWidth,
-        hoveredTabId: hoveredTabId, viewportWidth: viewportWidth)
+        hoveredTabId: hoveredTabId, viewportWidth: viewportWidth,
+        centered: hoveredTabIdIsKeyboardPeek)
     else { return [] }
     guard let session = model.session(forTab: hoveredTabId), let snap = session.snapshot() else {
       return []
@@ -1435,7 +1447,9 @@ public final class TerminalSurfaceController {
     var commands = SidebarProducer.hoverPreviewCommands(
       tabs: model.tabs, activeTabId: activeTabId, height: viewportHeight, topInset: topInset,
       scrollOffset: scrollOffset, rowHeight: chromeProducer.rowHeight, sidebarWidth: sidebarWidth,
-      hoverPreview: SidebarProducer.HoverPreview(tabId: hoveredTabId, viewportWidth: viewportWidth))
+      hoverPreview: SidebarProducer.HoverPreview(
+        tabId: hoveredTabId, viewportWidth: viewportWidth,
+        isKeyboardPeek: hoveredTabIdIsKeyboardPeek))
 
     let inset = SidebarProducer.previewInset
     let contentRect = panelRect.insetBy(dx: inset, dy: inset)

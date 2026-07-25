@@ -1,3 +1,4 @@
+import CoreGraphics
 import LabanRenderer
 import LabanTerminalCore
 import XCTest
@@ -57,9 +58,21 @@ final class HoverPreviewRendererGateTests: XCTestCase {
     }
   }
 
+  /// The panel's background chrome rect (the `.replace`-composited one —
+  /// see `SidebarProducer.hoverPreviewCommands`), or nil if no panel showed.
+  private func previewBackgroundRect(_ frame: TerminalSurfaceFrame?) -> CGRect? {
+    (frame?.commands ?? []).compactMap { command -> CGRect? in
+      guard case .rect(let rect, _, let source, let compositing) = command,
+        source == .sidebarPreview, compositing == .replace
+      else { return nil }
+      return rect
+    }.first
+  }
+
   private func makeFrame(
     controller: TerminalSurfaceController,
     hoveredTabId: Tab.ID?,
+    isKeyboardPeek: Bool = false,
     effectiveRendererIsSlug: Bool,
     hoverPreviewEnabled: Bool
   ) -> TerminalSurfaceFrame? {
@@ -69,6 +82,7 @@ final class HoverPreviewRendererGateTests: XCTestCase {
         viewportWidth: 800,
         viewportHeight: 600,
         hoveredSidebarTabId: hoveredTabId,
+        hoveredSidebarTabIdIsKeyboardPeek: isKeyboardPeek,
         requireActiveSnapshot: false,
         surfaceWidth: 800,
         surfaceHeight: 600,
@@ -122,5 +136,41 @@ final class HoverPreviewRendererGateTests: XCTestCase {
     XCTAssertFalse(
       hasPreviewCommand(frame),
       "the active tab's own row must never show a preview of itself")
+  }
+
+  /// Keyboard hold-to-peek (`hoveredSidebarTabIdIsKeyboardPeek`) must center
+  /// the panel in the terminal pane rather than beside the hovered row —
+  /// there is no cursor position to anchor beside during a keyboard switch,
+  /// and the user is looking at the terminal pane they're about to land in.
+  func testKeyboardPeekCentersPanelInsteadOfPlacingItBesideTheRow() throws {
+    let (model, _, hoveredTabId) = try makeModelWithTwoTabs()
+    let controller = makeController(model: model)
+
+    let mouseFrame = makeFrame(
+      controller: controller, hoveredTabId: hoveredTabId, isKeyboardPeek: false,
+      effectiveRendererIsSlug: true, hoverPreviewEnabled: true)
+    let keyboardFrame = makeFrame(
+      controller: controller, hoveredTabId: hoveredTabId, isKeyboardPeek: true,
+      effectiveRendererIsSlug: true, hoverPreviewEnabled: true)
+
+    let besideRowRect = try XCTUnwrap(
+      previewBackgroundRect(mouseFrame), "mouse hover must still show the panel beside the row")
+    let centeredRect = try XCTUnwrap(
+      previewBackgroundRect(keyboardFrame), "keyboard peek must still show the panel")
+
+    XCTAssertEqual(
+      besideRowRect.size, centeredRect.size,
+      "centering must reposition the panel, not resize it")
+    XCTAssertNotEqual(
+      besideRowRect.origin, centeredRect.origin,
+      "keyboard peek must not sit in the same place as the mouse-hover panel")
+
+    let paneMidX = 200 + (800 - 200) / 2.0
+    XCTAssertEqual(
+      centeredRect.midX, paneMidX, accuracy: 0.01,
+      "keyboard peek must be horizontally centered in the terminal pane (right of the sidebar)")
+    XCTAssertEqual(
+      centeredRect.midY, 300, accuracy: 0.01,
+      "keyboard peek must be vertically centered in the terminal pane")
   }
 }
