@@ -41,19 +41,38 @@ public enum HoverPreviewSettings {
     }
   }
 
+  /// The env override resolved once, at first use.
+  ///
+  /// A process's environment cannot change after launch, so re-parsing it per
+  /// read is pure waste — and `ProcessInfo.processInfo.environment` is not a
+  /// cheap accessor: it materialises a fresh dictionary of the *entire*
+  /// environment on every access. `enabled` is read from the per-frame render
+  /// path, so this cost lands once per frame.
+  ///
+  /// A `static let` is lazily initialised exactly once under `swift_once`, so
+  /// this stays correct when read off the main thread.
+  private static let cachedEnvironmentOverride: Bool? = environmentOverride()
+
   /// Whether the sidebar hover preview is enabled. Defaults to `false` when
   /// the key is absent. Env override wins over UserDefaults when present.
+  ///
+  /// The UserDefaults read stays live so an external `defaults write` still
+  /// takes effect without a relaunch; only the env half is cached.
   public static var enabled: Bool {
-    enabled(
-      defaults: .standard,
-      environment: ProcessInfo.processInfo.environment)
+    enabled(defaults: .standard, override: cachedEnvironmentOverride)
   }
 
   public static func enabled(
     defaults: UserDefaults,
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) -> Bool {
-    if let override = environmentOverride(environment: environment) {
+    enabled(defaults: defaults, override: environmentOverride(environment: environment))
+  }
+
+  /// Single home for the missing-key default, shared by the cached hot path
+  /// and the injectable test seam so the two cannot drift.
+  private static func enabled(defaults: UserDefaults, override: Bool?) -> Bool {
+    if let override {
       return override
     }
     return (defaults.object(forKey: enabledKey) as? Bool) ?? false
