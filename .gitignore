@@ -18,4 +18,7 @@ Sources/LabanApp/BuildInfo.generated.swift
 __pycache__/
 *.o
 *.d
+*.profraw
 prompt-exports/
+.cachebro/
+.DS_Store
