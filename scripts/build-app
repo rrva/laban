@@ -58,6 +58,17 @@ xml_escape() {
       -e "s/'/\\&apos;/g"
 }
 
+# Metal frame capture has to be armed before the process starts: `gpucapture`
+# cannot attach to an already-running app, and a bundle without this key never
+# appears in `gpucapture list`. Profilable builds are the ones we point GPU
+# tooling at, so arm them there and leave shipping bundles untouched (the key
+# keeps Metal's capture scaffolding resident for the whole process lifetime).
+metal_capture_plist=""
+if [ "$profile_build" = 1 ]; then
+  metal_capture_plist="    <key>MetalCaptureEnabled</key>
+    <true/>"
+fi
+
 update_manifest_plist=""
 if [ -n "$update_manifest_url" ]; then
   update_manifest_plist="    <key>LABANUpdateManifestURL</key>
@@ -243,6 +254,7 @@ cat > "${bundle_dir}/Info.plist" <<EOF
             </array>
         </dict>
     </array>
+${metal_capture_plist}
 ${update_manifest_plist}
 </dict>
 </plist>
