@@ -18,10 +18,23 @@ command -v jq >/dev/null 2>&1 || fail "jq is required to validate JSON"
 # should rerun; a too-wide one only loses cache hits). LABAN_CHECK_NO_MEMO=1
 # forces every stage to run. Known limitation: stages that self-skip when a
 # tool is absent (cbmc, TLA+) stamp that skip as a pass, so after installing
-# such a tool run once with LABAN_CHECK_NO_MEMO=1.
+# such a tool run once with LABAN_CHECK_NO_MEMO=1. Tool UPGRADES do
+# invalidate: the prover/compiler versions below are salted into the relevant
+# stage hashes, so a new cbmc, TLA+ jar, or clang re-proves what it gates.
 memo=./scripts/check-memo
 swift_inputs="-i Sources -i Tests -i Package.swift -i Package.resolved"
 labpty_inputs="-i Sources/Labpty -i Sources/LabanTerminalCore -i proofs -i specs"
+
+# Non-file inputs the hashes must observe. The TLA+ jar lives outside the repo,
+# so it is folded in as a digest rather than an -i path (the git-based file
+# listing cannot see it). Absent tools salt as "none", which matches the
+# stages' own self-skip behavior.
+cbmc_salt="cbmc:$(cbmc --version 2>/dev/null || echo none)"
+gotocc_salt="gotocc:$(goto-cc --version 2>/dev/null | head -n 1 || echo none)"
+cc_salt="cc:$(cc --version 2>/dev/null | head -n 1 || echo none)"
+tla_jar_path="${TLA_JAR:-/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar}"
+tla_salt="tla:$(shasum -a 256 "$tla_jar_path" 2>/dev/null | cut -d' ' -f1 || echo none)"
+java_salt="java:$(java -version 2>&1 | head -n 1 || echo none)"
 
 # One batched jq invocation is far cheaper than one process per file. On
 # failure, fall back to a per-file pass so the error output still names
@@ -67,7 +80,7 @@ $memo controlgen -i Sources -i schemas -i Package.swift -i Package.resolved -- s
 # TLA_JAR explicitly, so a missing jar there is a hard failure.
 if [ -f "${TLA_JAR:-/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar}" ]; then
   # shellcheck disable=SC2086
-  $memo specs $labpty_inputs -i scripts/check-specs -i scripts/gen-control-tla.py -i scripts/gen-reuse-tla.py -i scripts/gen-trace-tla.py -- ./scripts/check-specs
+  $memo specs $labpty_inputs -s "$tla_salt" -s "$java_salt" -i scripts/check-specs -i scripts/gen-control-tla.py -i scripts/gen-reuse-tla.py -i scripts/gen-trace-tla.py -- ./scripts/check-specs
 else
   printf 'check: skipping check-specs (tla2tools.jar not found; install TLA+ Toolbox)\n'
 fi
@@ -75,32 +88,32 @@ fi
 # CBMC bounded model checking of the labpty wire-format decoders. Runs
 # the proofs when cbmc is installed; otherwise degrades to a compile-only
 # drift smoke (see scripts/check-cbmc), so it is safe to call always.
-$memo cbmc $labpty_inputs -i scripts/check-cbmc -- ./scripts/check-cbmc
+$memo cbmc $labpty_inputs -s "$cbmc_salt" -i scripts/check-cbmc -- ./scripts/check-cbmc
 
 # CBMC contract proofs (DFCC): prove the loop-free decoders memory-safe
 # UNBOUNDED — for every input length, not just up to the check-cbmc bound.
 # Self-skips when cbmc/goto-cc are absent.
-$memo cbmc-contracts $labpty_inputs -i scripts/check-cbmc-contracts -- ./scripts/check-cbmc-contracts
+$memo cbmc-contracts $labpty_inputs -s "$cbmc_salt" -s "$gotocc_salt" -i scripts/check-cbmc-contracts -- ./scripts/check-cbmc-contracts
 
 # Runtime trace conformance: drive the daemon's real attachment code, capture
 # the transitions it emits, and replay them through LabptyAttachment.tla with
 # TLC — binding "// Modelled by" to a checked fact. Self-skips to a compile-only
 # drift smoke when the TLA+ jar is absent (CI sets TLA_JAR).
-$memo trace $labpty_inputs -i scripts/check-trace -- ./scripts/check-trace
+$memo trace $labpty_inputs -s "$tla_salt" -s "$java_salt" -s "$cc_salt" -i scripts/check-trace -- ./scripts/check-trace
 
 # Model coverage — the inverse of check-trace: assert the fuzzed seeds actually
 # exercise every model action, so a binding can't pass vacuously on a transition
 # nobody reaches. Fast (C runs + counting, no solver); no TLA+ jar needed.
-$memo model-coverage $labpty_inputs -i scripts/check-model-coverage -- ./scripts/check-model-coverage
+$memo model-coverage $labpty_inputs -s "$cc_salt" -i scripts/check-model-coverage -- ./scripts/check-model-coverage
 
 # Replay the labpty fuzz seed corpus through the decoders under
 # ASan/UBSan — the deterministic, engine-independent form of
 # scripts/fuzz-labpty. A real fuzzing campaign is a manual/CI step:
 # `scripts/fuzz-labpty [seconds]`.
-$memo fuzz $labpty_inputs -i scripts/fuzz-labpty -- ./scripts/fuzz-labpty --check
+$memo fuzz $labpty_inputs -s "$cc_salt" -i scripts/fuzz-labpty -- ./scripts/fuzz-labpty --check
 # Same replay under MemorySanitizer (uninitialized reads). MSan is
 # Linux-only, so this self-skips on macOS and runs in Linux CI.
-$memo fuzz-msan $labpty_inputs -i scripts/fuzz-labpty -- ./scripts/fuzz-labpty --check-msan
+$memo fuzz-msan $labpty_inputs -s "$cc_salt" -i scripts/fuzz-labpty -- ./scripts/fuzz-labpty --check-msan
 
 if [ -f Package.swift ]; then
   $memo lint $swift_inputs -i .swift-format -i scripts/lint -- ./scripts/lint
@@ -117,7 +130,7 @@ if [ -f Package.swift ]; then
   # timing flakes in unrelated tests; see the Decision Log in
   # execplans/active/parallel-test-safety-and-overlapped-check-stages.md.
   if [ -f "$(cc -print-resource-dir)/lib/darwin/libclang_rt.profile_osx.a" ]; then
-    $memo coverage-labpty $swift_inputs -i proofs -i scripts/coverage-labpty -- ./scripts/coverage-labpty --check 45
+    $memo coverage-labpty $swift_inputs -s "$cc_salt" -i proofs -i scripts/coverage-labpty -- ./scripts/coverage-labpty --check 45
   else
     printf 'check: skipping coverage-labpty (darwin profile runtime not found)\n'
   fi

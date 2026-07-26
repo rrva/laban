@@ -87,6 +87,18 @@ labpty formal cluster keys on `Sources/Labpty` + `Sources/LabanTerminalCore` +
   `scripts/check` header. Encoding tool presence into the hash was rejected as
   leaking per-stage knowledge into the wrapper.
   Date/Author: 2026-07-26 / Claude
+- Decision: tool VERSIONS are salted into the hash, revisiting the narrow
+  reading of the decision above. This host runs the real provers (cbmc 6.9.0,
+  goto-cc, TLA+ jar under OpenJDK 11, Apple clang 21), so `swift --version`
+  alone left a gap: upgrading a prover would not re-run the proofs it gates.
+  `check-memo` gained a generic `-s <string>` salt option and `scripts/check`
+  passes `cbmc --version`, `goto-cc --version`, the TLA+ jar's sha256, the
+  JVM banner, and `cc --version` to the stages that depend on them. Per-stage
+  knowledge stays in the caller; the wrapper remains tool-agnostic, which is
+  what the original decision was actually protecting. Absent tools salt as
+  "none", matching the stages' own self-skip, so the install-time limitation
+  above is unchanged.
+  Date/Author: 2026-07-26 / Claude
 
 ## Context and Orientation
 

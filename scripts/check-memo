@@ -40,11 +40,22 @@ fi
 shift
 
 inputs="scripts/check-memo"
+salts=""
 while [ $# -gt 0 ]; do
   case $1 in
     -i)
       # Paths in this repo contain no whitespace; the list is space-joined.
       inputs="$inputs $2"
+      shift 2
+      ;;
+    -s)
+      # Opaque salt folded into the hash. The caller uses this for inputs that
+      # are not files in the repo: prover versions (`cbmc --version`), the
+      # TLA+ jar's digest, the C compiler version. `swift --version` is always
+      # included; everything else is the calling stage's knowledge, passed in
+      # here so the wrapper stays tool-agnostic.
+      salts="$salts
+$2"
       shift 2
       ;;
     --)
@@ -95,6 +106,7 @@ fi
 hash=$(
   {
     swift --version 2>/dev/null || true
+    printf '%s\n' "$salts"
     printf '%s\n' "$file_list" | tr '\n' '\0' | xargs -0 shasum -a 256
   } | shasum -a 256 | cut -d' ' -f1
 )
