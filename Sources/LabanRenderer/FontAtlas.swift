@@ -59,32 +59,60 @@ public final class FontAtlas {
     size * (defaultPreviewPointSize / defaultTerminalPointSize)
   }
 
-  /// Terminal point size from UserDefaults, or `defaultTerminalPointSize`.
-  public static var persistedTerminalPointSize: CGFloat {
-    let stored = UserDefaults.standard.object(forKey: userFontSizeKey) as? Double
+  /// Terminal point size from `defaults`, or `defaultTerminalPointSize`.
+  ///
+  /// The injectable form exists so tests can supply their own suite instead of
+  /// reading the process-wide domain. `swift test --parallel` runs each test
+  /// class in its own process, but every process shares one preferences
+  /// domain, so a suite that save/restores these keys around a test is correct
+  /// alone and destructive alongside others. See
+  /// `execplans/active/test-userdefaults-isolation.md`.
+  public static func terminalPointSize(from defaults: UserDefaults) -> CGFloat {
+    let stored = defaults.object(forKey: userFontSizeKey) as? Double
     guard let stored, stored > 0 else { return defaultTerminalPointSize }
     return CGFloat(stored)
   }
 
+  /// Terminal point size from UserDefaults, or `defaultTerminalPointSize`.
+  public static var persistedTerminalPointSize: CGFloat {
+    terminalPointSize(from: .standard)
+  }
+
+  /// Sidebar point size from `defaults`, scaled to keep the same ratio.
+  public static func sidebarPointSize(from defaults: UserDefaults) -> CGFloat {
+    terminalPointSize(from: defaults) * (defaultSidebarPointSize / defaultTerminalPointSize)
+  }
+
   /// Sidebar point size scaled to keep the same ratio as the defaults.
   public static var persistedSidebarPointSize: CGFloat {
-    persistedTerminalPointSize * (defaultSidebarPointSize / defaultTerminalPointSize)
+    sidebarPointSize(from: .standard)
+  }
+
+  /// Preview point size from `defaults`, scaled to keep the same ratio.
+  public static func previewPointSize(from defaults: UserDefaults) -> CGFloat {
+    terminalPointSize(from: defaults) * (defaultPreviewPointSize / defaultTerminalPointSize)
   }
 
   /// Preview point size scaled to keep the same ratio as the defaults. Used
   /// for the initial `FontAtlas` construction in `MainWindowController`,
   /// mirroring `persistedSidebarPointSize`.
   public static var persistedPreviewPointSize: CGFloat {
-    persistedTerminalPointSize * (defaultPreviewPointSize / defaultTerminalPointSize)
+    previewPointSize(from: .standard)
   }
 
   public static let didChangeNotification = Notification.Name("LabanFontDidChange")
 
-  public convenience init(pointSize: CGFloat = defaultTerminalPointSize) {
+  /// - Parameter defaults: where the user's font pick is read from. Production
+  ///   uses `.standard`; tests inject their own suite so they neither read nor
+  ///   write the domain shared by parallel test processes.
+  public convenience init(
+    pointSize: CGFloat = defaultTerminalPointSize,
+    defaults: UserDefaults = .standard
+  ) {
     self.init(
       font: Self.makeFont(
         pointSize: pointSize,
-        fontName: UserDefaults.standard.string(forKey: Self.userFontKey)),
+        fontName: defaults.string(forKey: Self.userFontKey)),
       pointSize: pointSize)
   }
 

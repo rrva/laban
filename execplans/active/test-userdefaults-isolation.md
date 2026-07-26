@@ -65,12 +65,36 @@ already does.
   collide are visible.
 - [x] (2026-07-25) Harden `SettingsEnvironmentCacheTests` so its concurrency
   case hammers an injected suite instead of `UserDefaults.standard`.
-- [ ] Inventory every `UserDefaults.standard` reference and classify each as
-  test-setup, production-read, or production-write. Baseline: 129 references
-  across 42 test files, 45 across 19 production files.
-- [ ] Add or confirm an injectable `defaults:` seam on each settings type the
-  tests drive. `RendererSelection.persisted(defaults:)` already has one;
-  `ScrollSettings` hardcodes `UserDefaults.standard` and does not.
+- [x] (2026-07-25) Inventory and size the work. 129 references across 42 test
+  files, 45 across 19 production files, ~32 distinct keys behind ~21 settings
+  types. **16 of those types already have a `defaults:` seam**; only 5 need one
+  (`FontAtlas`, `ScrollSettings`, `CursorSettings`,
+  `AttentionNotificationSettings`, `RestoreOnLaunchSettings`). All 42 affected
+  test files sit in the four sequential-shard targets and none in the five
+  parallel-safe ones, so `scripts/test-split`'s existing boundary was drawn
+  exactly along this fault line.
+- [x] (2026-07-26) Milestone 1: `FontAtlas` seam and its direct consumers.
+  Added `terminalPointSize(from:)`, `sidebarPointSize(from:)`,
+  `previewPointSize(from:)` and `init(pointSize:defaults:)`, each keeping the
+  existing `.standard` accessor as a delegating wrapper so production is
+  untouched. Converted `FontAtlasZoomTests`, `GlyphAtlasLadderTests` and
+  `LabanRendererSmokeTests` to private suites; all three dropped out of the
+  `--parallel` failure list across 3 consecutive runs. The wiped-suite pattern
+  also deletes the manual save/restore blocks those tests carried.
+- [ ] Milestone 2: renderer-level injection. `VectorGlyphGammaTests` (fails
+  3/3 under `--parallel`) writes `VectorTextWeightSettings.defaultsKey` and
+  `LabanVectorPresentDisplayLink` *so that the renderer under test reads them*,
+  so a private suite would silently change what the test exercises. The
+  renderer has to accept injected defaults first. Same shape blocks
+  `ContinuousZoomTests` (drives `applyZoomMagnification`, which persists via
+  `TerminalBitmapView`) and `FontSizeActionTests` (drives a headless runtime).
+- [ ] Milestone 3: the non-defaults class. `SlugGlyphDamageTests` fails 3/3
+  with golden-hash mismatches despite zero `UserDefaults.standard` references;
+  the hypothesis is that Milestone 2 fixes it for free by stopping the text
+  weight leak, and it should be re-measured before being investigated.
+- [ ] Add or confirm an injectable `defaults:` seam on the four remaining
+  types: `ScrollSettings`, `CursorSettings`, `AttentionNotificationSettings`,
+  `RestoreOnLaunchSettings`.
 - [ ] Convert the test files, highest-contention keys first: `FontAtlas`
   font/size, `RendererSelection` + `VectorSubpixelLayout`, cursor style,
   emoji rendering, transparency, `ScrollSettings.modeKey`.
@@ -125,3 +149,16 @@ already does.
   golden-image inputs) that per-key defaults isolation will not fix.
 - `swift test --parallel` masks its own exit status when piped, so a run that
   looks green in a `| tail` can be failing. Capture the status explicitly.
+- The leak outlives the run. After a few `--parallel` experiments the
+  `com.apple.dt.xctest.tool` domain was left holding `LabanFontSize = 15`,
+  `LabanMetalPresentDisplayLink = 0`, `LabanEmojiRenderingMode = monochrome`
+  and more, because a test whose `defer` restore lost a race leaves its value
+  persisted on disk. That state then broke a *serial* run of an unrelated
+  suite: `RendererTransparencyIdempotenceTests` failed with "renderer rejected
+  frame" purely because the present display link had been left disabled, and
+  passed immediately after `defaults delete com.apple.dt.xctest.tool`.
+  So a green serial run is not proof of a clean tree, and a red one is not
+  proof of a real regression. When a serial failure appears out of nowhere,
+  read that domain before reading the diff. This also means the eventual fix
+  removes a whole class of "works on my machine" confusion, not just wall-clock
+  time.

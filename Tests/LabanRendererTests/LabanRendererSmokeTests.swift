@@ -205,36 +205,37 @@ final class LabanRendererSmokeTests: XCTestCase {
   }
 
   func testPersistedFontSizeIsReadOnStartup() {
-    let defaults = UserDefaults.standard
-    let previousSize = defaults.object(forKey: FontAtlas.userFontSizeKey)
-    defaults.set(18.0, forKey: FontAtlas.userFontSizeKey)
-    defer {
-      if let previousSize {
-        defaults.set(previousSize, forKey: FontAtlas.userFontSizeKey)
-      } else {
-        defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
-      }
+    // Private suite, not `UserDefaults.standard`: parallel test processes share
+    // one preferences domain, so writing the font keys there races suites that
+    // read them. See `execplans/active/test-userdefaults-isolation.md`.
+    let suiteName = "laban-renderer-smoke-font-size-tests"
+    guard let defaults = UserDefaults(suiteName: suiteName) else {
+      return XCTFail("could not create the isolated defaults suite")
     }
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defaults.set(18.0, forKey: FontAtlas.userFontSizeKey)
 
-    XCTAssertEqual(FontAtlas.persistedTerminalPointSize, 18)
-    XCTAssertEqual(FontAtlas.persistedSidebarPointSize, 18 * (11.0 / 14.0), accuracy: 0.001)
-    let fontAtlas = FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize)
+    XCTAssertEqual(FontAtlas.terminalPointSize(from: defaults), 18)
+    XCTAssertEqual(
+      FontAtlas.sidebarPointSize(from: defaults), 18 * (11.0 / 14.0), accuracy: 0.001)
+    let fontAtlas = FontAtlas(pointSize: FontAtlas.terminalPointSize(from: defaults))
     XCTAssertEqual(fontAtlas.pointSize, 18)
   }
 
   func testNarrowTerminalArrowFallbackDoesNotPaintIntoNextCell() throws {
-    let defaults = UserDefaults.standard
-    let previousFont = defaults.object(forKey: FontAtlas.userFontKey)
-    defaults.set("Helvetica", forKey: FontAtlas.userFontKey)
-    defer {
-      if let previousFont {
-        defaults.set(previousFont, forKey: FontAtlas.userFontKey)
-      } else {
-        defaults.removeObject(forKey: FontAtlas.userFontKey)
-      }
+    // Private suite, not `UserDefaults.standard`: parallel test processes share
+    // one preferences domain, so pinning the probe font there races suites that
+    // read it. See `execplans/active/test-userdefaults-isolation.md`.
+    let suiteName = "laban-renderer-smoke-fallback-tests"
+    guard let defaults = UserDefaults(suiteName: suiteName) else {
+      return XCTFail("could not create the isolated defaults suite")
     }
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defaults.set("Helvetica", forKey: FontAtlas.userFontKey)
 
-    let fontAtlas = FontAtlas(pointSize: 14)
+    let fontAtlas = FontAtlas(pointSize: 14, defaults: defaults)
     guard CTFontCopyPostScriptName(fontAtlas.font) as String == "Helvetica" else {
       throw XCTSkip("Helvetica was not available as a controllable fallback probe font")
     }

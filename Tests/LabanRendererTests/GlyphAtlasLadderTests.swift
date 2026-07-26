@@ -88,19 +88,22 @@ final class GlyphAtlasLadderTests: XCTestCase {
     guard let device = MTLCreateSystemDefaultDevice() else {
       throw XCTSkip("no Metal device available")
     }
-    let defaults = UserDefaults.standard
-    let previousFont = defaults.object(forKey: FontAtlas.userFontKey)
-    defaults.removeObject(forKey: FontAtlas.userFontKey)
-    let active = FontAtlas(pointSize: 14)
-    let activeSidebar = FontAtlas(pointSize: 11)
-    defaults.set("Helvetica", forKey: FontAtlas.userFontKey)
-    defer {
-      if let previousFont {
-        defaults.set(previousFont, forKey: FontAtlas.userFontKey)
-      } else {
-        defaults.removeObject(forKey: FontAtlas.userFontKey)
-      }
+    // A private suite rather than `UserDefaults.standard`: every test process
+    // shares the one on-disk preferences domain under `swift test --parallel`,
+    // so writing `FontAtlas.userFontKey` there races suites that read it. This
+    // test previously failed that way ("10.0" is not equal to "14.0"). Wiping
+    // the suite also replaces the manual save/restore. See
+    // `execplans/active/test-userdefaults-isolation.md`.
+    let suiteName = "laban-glyph-atlas-ladder-tests"
+    guard let defaults = UserDefaults(suiteName: suiteName) else {
+      return XCTFail("could not create the isolated defaults suite")
     }
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let active = FontAtlas(pointSize: 14, defaults: defaults)
+    let activeSidebar = FontAtlas(pointSize: 11, defaults: defaults)
+    defaults.set("Helvetica", forKey: FontAtlas.userFontKey)
 
     let ladder = GlyphAtlasLadder(
       device: device,
@@ -113,7 +116,8 @@ final class GlyphAtlasLadderTests: XCTestCase {
 
     XCTAssertEqual(entry.fontAtlas.fontPostScriptName, active.fontPostScriptName)
     XCTAssertNotEqual(
-      entry.fontAtlas.fontPostScriptName, FontAtlas(pointSize: 20).fontPostScriptName)
+      entry.fontAtlas.fontPostScriptName,
+      FontAtlas(pointSize: 20, defaults: defaults).fontPostScriptName)
   }
 
   func testFullLadderBuildsAllSizesWithinMemoryBudget() throws {
