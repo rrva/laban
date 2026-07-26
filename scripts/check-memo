@@ -1,0 +1,122 @@
+#!/usr/bin/env sh
+# Content-hash memoization for scripts/check stages.
+#
+#   check-memo <stage-name> [-i <input-path>]... -- <command> [args]...
+#
+# Hashes the declared input paths (file contents, recursively), the stage's
+# toolchain (`swift --version`), and this script itself. If the resulting hash
+# matches the stamp left by the last SUCCESSFUL run of <stage-name>, the
+# command is skipped; otherwise it runs, and only a zero exit writes the new
+# stamp. A failing run therefore never masks itself, and reverting an edit
+# restores the old hash so the old pass-stamp becomes valid again, which is
+# correct: those exact bytes did pass.
+#
+# This changes no guarantee. Every stage still gates exactly what it gated
+# before; it just is not re-proven for byte-identical inputs. The correctness
+# burden moves entirely into the input lists in scripts/check: an input list
+# that is too NARROW can skip a stage that should have rerun. When in doubt,
+# over-include: the only cost is a lost cache hit.
+#
+# Escape hatch: LABAN_CHECK_NO_MEMO=1 runs every stage unconditionally and
+# neither reads nor writes stamps. Use it when validating the memoization
+# itself, or after a toolchain change you suspect the hash missed.
+#
+# Stamps live in .artifacts/check-memo/ (gitignored, per-checkout, so git
+# worktrees never share them; see docs/process/worktree-isolation.md).
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+name=${1:?usage: check-memo [-n] <name> [-i path]... -- command...}
+dry_run=0
+if [ "$name" = "-n" ]; then
+  # Dry run: report whether the stage WOULD run or skip, without executing the
+  # command or touching the stamp. For debugging input lists.
+  dry_run=1
+  shift
+  name=${1:?usage: check-memo [-n] <name> [-i path]... -- command...}
+fi
+shift
+
+inputs="scripts/check-memo"
+while [ $# -gt 0 ]; do
+  case $1 in
+    -i)
+      # Paths in this repo contain no whitespace; the list is space-joined.
+      inputs="$inputs $2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      printf 'check-memo: unexpected argument %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+[ $# -gt 0 ] || { printf 'check-memo: missing command after --\n' >&2; exit 2; }
+
+if [ "${LABAN_CHECK_NO_MEMO:-0}" = "1" ]; then
+  exec "$@"
+fi
+
+for p in $inputs; do
+  if [ ! -e "$p" ]; then
+    printf 'check-memo: %s: declared input %s does not exist\n' "$name" "$p" >&2
+    exit 2
+  fi
+done
+
+# The file list comes from git, not find, so that it honours .gitignore. That
+# matters: several stages write their own output back INSIDE a declared input
+# tree (check-specs drops a timestamped run directory into specs/labpty/states,
+# the fuzzer grows proofs/labpty/fuzz/findings). Those paths are gitignored, but
+# a raw `find` hashes them anyway, so every such stage invalidated its own stamp
+# the moment it passed and could never hit the cache. `--cached --others
+# --exclude-standard` keeps tracked and untracked-but-not-ignored files, so a
+# brand new source file still invalidates while build output does not.
+#
+# The list is NUL-delimited and sorted with a pinned locale so the hash is
+# stable across shells and filesystems; shasum output includes each path, so
+# renames invalidate even when contents do not change.
+# shellcheck disable=SC2086
+file_list=$(git ls-files -z --cached --others --exclude-standard -- $inputs | LC_ALL=C sort -z | tr '\0' '\n')
+if [ -z "$file_list" ]; then
+  # Every declared input exists yet git sees no file under any of them, so the
+  # whole input set is ignored. Hashing that would produce a constant, and the
+  # stage would never rerun again. Refuse instead of caching a lie.
+  printf 'check-memo: %s: declared inputs contain no git-visible files\n' "$name" >&2
+  exit 2
+fi
+
+hash=$(
+  {
+    swift --version 2>/dev/null || true
+    printf '%s\n' "$file_list" | tr '\n' '\0' | xargs -0 shasum -a 256
+  } | shasum -a 256 | cut -d' ' -f1
+)
+
+stamp_dir=".artifacts/check-memo"
+stamp="$stamp_dir/$name"
+
+if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$hash" ]; then
+  printf 'check-memo: %s inputs unchanged since last pass; skipping\n' "$name"
+  exit 0
+fi
+
+if [ "$dry_run" = 1 ]; then
+  printf 'check-memo: %s WOULD RUN (no stamp or inputs changed)\n' "$name"
+  exit 0
+fi
+
+if "$@"; then
+  mkdir -p "$stamp_dir"
+  printf '%s' "$hash" > "$stamp"
+else
+  status=$?
+  printf 'check-memo: %s failed (exit %s); no stamp written\n' "$name" "$status" >&2
+  exit "$status"
+fi
