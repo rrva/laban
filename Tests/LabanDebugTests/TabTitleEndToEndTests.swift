@@ -112,7 +112,9 @@ final class TabTitleEndToEndTests: XCTestCase {
     // whatever terminal happened to launch the Laban process. Codex picks its
     // notification backend from this variable; other tools gate progress
     // bars on it.
-    TerminalIdentitySettings.set(.laban)
+    UserDefaults.standard.register(defaults: [
+      TerminalIdentitySettings.defaultsKey: TerminalIdentity.laban.rawValue
+    ])
     defer {
       UserDefaults.standard.register(defaults: [
         TerminalIdentitySettings.defaultsKey: TerminalIdentity.ghosttyCompat.rawValue
@@ -133,7 +135,9 @@ final class TabTitleEndToEndTests: XCTestCase {
     // The ghostty-compat setting claims TERM_PROGRAM=ghostty 1.3.1 so
     // identity-gated features (OSC 9;4 progress bars) light up in tools
     // that only recognize known terminals.
-    TerminalIdentitySettings.set(.ghosttyCompat)
+    UserDefaults.standard.register(defaults: [
+      TerminalIdentitySettings.defaultsKey: TerminalIdentity.ghosttyCompat.rawValue
+    ])
     defer {
       UserDefaults.standard.register(defaults: [
         TerminalIdentitySettings.defaultsKey: TerminalIdentity.ghosttyCompat.rawValue
@@ -157,12 +161,16 @@ final class TabTitleEndToEndTests: XCTestCase {
         TerminalIdentitySettings.defaultsKey: TerminalIdentity.ghosttyCompat.rawValue
       ])
     }
-    TerminalIdentitySettings.set(.laban)
+    UserDefaults.standard.register(defaults: [
+      TerminalIdentitySettings.defaultsKey: TerminalIdentity.laban.rawValue
+    ])
 
     let harness = try TitleHarness(runId: "title-e2e-identity-flip")
     defer { harness.tearDown() }
 
-    TerminalIdentitySettings.set(.ghosttyCompat)
+    UserDefaults.standard.register(defaults: [
+      TerminalIdentitySettings.defaultsKey: TerminalIdentity.ghosttyCompat.rawValue
+    ])
     try harness.newTab()
     try harness.runClient("titleenv 30")
 

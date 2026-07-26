@@ -7,24 +7,25 @@ import XCTest
 final class CJKFontHeadlessTests: XCTestCase {
   private let defaultsKey = CJKFontSettings.defaultsKey
 
+  /// Registers the preference and posts the change notification, mirroring
+  /// `CJKFontSettings.set` minus the persistence. Persisting is what this test
+  /// used to do, and one leaked "Sarasa Term SC" on disk then SHADOWED the
+  /// registration domain for every other suite: registered values are only
+  /// fallbacks, so any persisted value beats them. A register-pinned key
+  /// therefore requires that no test anywhere persists it. See
+  /// `execplans/active/test-userdefaults-isolation.md`.
+  private func registerPreference(_ preference: CJKFontPreference) {
+    UserDefaults.standard.register(defaults: [defaultsKey: preference.rawValue])
+    NotificationCenter.default.post(name: CJKFontSettings.didChangeNotification, object: nil)
+  }
+
   override func tearDown() {
     UserDefaults.standard.register(defaults: [defaultsKey: CJKFontPreference.pingFangSC.rawValue])
     super.tearDown()
   }
 
   func testAtlasReportsUpdatedFallbackOrderAfterPreferenceChange() throws {
-    let saved = UserDefaults.standard.string(forKey: defaultsKey)
-    defer {
-      if let saved {
-        UserDefaults.standard.register(defaults: [defaultsKey: saved])
-      } else {
-        UserDefaults.standard.register(defaults: [
-          defaultsKey: CJKFontPreference.pingFangSC.rawValue
-        ])
-      }
-    }
-
-    CJKFontSettings.set(.pingFangSC)
+    registerPreference(.pingFangSC)
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-cjk-headless-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: artifacts) }
@@ -42,7 +43,7 @@ final class CJKFontHeadlessTests: XCTestCase {
     XCTAssertEqual((initial["fallbackOrder"] as? [String])?[1], "PingFang SC")
 
     let exp = expectation(forNotification: CJKFontSettings.didChangeNotification, object: nil)
-    CJKFontSettings.set(.sarasaTermSC)
+    registerPreference(.sarasaTermSC)
     wait(for: [exp], timeout: 1.0)
 
     let updated = try cjkFont(from: runtime.atlas())

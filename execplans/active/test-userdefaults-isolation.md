@@ -223,3 +223,20 @@ already does.
   read that domain before reading the diff. This also means the eventual fix
   removes a whole class of "works on my machine" confusion, not just wall-clock
   time.
+- The registration domain is a fallback, not an override, and that asymmetry
+  makes the technique all-or-nothing per key. `UserDefaults.standard.register`
+  supplies a value only when nothing is persisted; any value written to disk in
+  the same domain shadows it, and the registering suite never learns it lost.
+  A key is therefore only safely register-pinned once **every** writer of it
+  repo-wide has stopped persisting: a single half-converted test re-poisons the
+  domain for everyone else, and because the leak outlives the process it breaks
+  suites that are otherwise entirely innocent. Observed while validating
+  `check` memoization: `CJKFontHeadlessTests` still called the persisting
+  `CJKFontSettings.set`, leaving `"Sarasa Term SC"` on disk, which shadowed the
+  `"PingFang SC"` that `CJKFontMetricsTests` had registered in
+  `testFallbackOrderPutsUserPreferenceFirst`, failing it.
+  `TabTitleEndToEndTests` had the same
+  half-conversion via `TerminalIdentitySettings.set`. Both now register (the
+  CJK one through a local `registerPreference(_:)` helper that also posts
+  `CJKFontSettings.didChangeNotification`, since registering fires no KVO).
+  When auditing a key, grep for its persisting setter, not just for its reads.
