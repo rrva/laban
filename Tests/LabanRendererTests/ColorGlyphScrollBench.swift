@@ -145,7 +145,11 @@ final class ColorGlyphScrollBench: XCTestCase {
       throw XCTSkip("no Metal device available")
     }
     let savedMode = EmojiRenderingSettings.current()
-    defer { UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: savedMode.rawValue]) }
+    defer {
+      UserDefaults.standard.register(defaults: [
+        EmojiRenderingSettings.defaultsKey: savedMode.rawValue
+      ])
+    }
 
     let fontAtlas = FontAtlas(pointSize: 14)
     let grids: [(String, Int, Int)] = [("160x48", 160, 48), ("240x72", 240, 72)]
@@ -219,7 +223,11 @@ final class ColorGlyphScrollBench: XCTestCase {
   func testSoftwareColorGlyphScrollRegression() throws {
     guard enabled() else { return }
     let savedMode = EmojiRenderingSettings.current()
-    defer { UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: savedMode.rawValue]) }
+    defer {
+      UserDefaults.standard.register(defaults: [
+        EmojiRenderingSettings.defaultsKey: savedMode.rawValue
+      ])
+    }
 
     let fontAtlas = FontAtlas(pointSize: 14)
     let grids: [(String, Int, Int)] = [("160x48", 160, 48), ("240x72", 240, 72)]

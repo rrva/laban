@@ -12,7 +12,6 @@ final class CursorSettingsTests: XCTestCase {
   private var defaults: UserDefaults!
   private var suiteName = ""
 
-
   // MARK: - Setup / teardown
 
   override func setUp() {
