@@ -113,7 +113,11 @@ final class TabTitleEndToEndTests: XCTestCase {
     // notification backend from this variable; other tools gate progress
     // bars on it.
     TerminalIdentitySettings.set(.laban)
-    defer { UserDefaults.standard.removeObject(forKey: TerminalIdentitySettings.defaultsKey) }
+    defer {
+      UserDefaults.standard.register(defaults: [
+        TerminalIdentitySettings.defaultsKey: TerminalIdentity.ghosttyCompat.rawValue
+      ])
+    }
     let harness = try TitleHarness(runId: "title-e2e-term-program")
     defer { harness.tearDown() }
 
@@ -130,7 +134,11 @@ final class TabTitleEndToEndTests: XCTestCase {
     // identity-gated features (OSC 9;4 progress bars) light up in tools
     // that only recognize known terminals.
     TerminalIdentitySettings.set(.ghosttyCompat)
-    defer { UserDefaults.standard.removeObject(forKey: TerminalIdentitySettings.defaultsKey) }
+    defer {
+      UserDefaults.standard.register(defaults: [
+        TerminalIdentitySettings.defaultsKey: TerminalIdentity.ghosttyCompat.rawValue
+      ])
+    }
 
     let harness = try TitleHarness(runId: "title-e2e-ghostty-compat")
     defer { harness.tearDown() }
@@ -144,7 +152,11 @@ final class TabTitleEndToEndTests: XCTestCase {
   func testIdentityChangeAppliesToNextTabWithoutRelaunch() throws {
     // Identity is resolved at spawn time, not captured at launch: flipping
     // the setting must reach the next new tab of the running app.
-    defer { UserDefaults.standard.removeObject(forKey: TerminalIdentitySettings.defaultsKey) }
+    defer {
+      UserDefaults.standard.register(defaults: [
+        TerminalIdentitySettings.defaultsKey: TerminalIdentity.ghosttyCompat.rawValue
+      ])
+    }
     TerminalIdentitySettings.set(.laban)
 
     let harness = try TitleHarness(runId: "title-e2e-identity-flip")

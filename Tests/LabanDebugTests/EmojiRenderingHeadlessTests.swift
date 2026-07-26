@@ -8,11 +8,11 @@ final class EmojiRenderingHeadlessTests: XCTestCase {
 
   override func setUp() {
     super.setUp()
-    UserDefaults.standard.removeObject(forKey: defaultsKey)
+    UserDefaults.standard.register(defaults: [defaultsKey: "monochrome"])
   }
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: defaultsKey)
+    UserDefaults.standard.register(defaults: [defaultsKey: "monochrome"])
     super.tearDown()
   }
 
@@ -26,7 +26,7 @@ final class EmojiRenderingHeadlessTests: XCTestCase {
   }
 
   func testStateAndRenderReportColorEmojiRendering() throws {
-    UserDefaults.standard.set("color", forKey: defaultsKey)
+    UserDefaults.standard.register(defaults: [defaultsKey: "color"])
     let (runtime, artifacts) = try makeRuntime(runId: "emoji-rendering-color")
     defer { try? FileManager.default.removeItem(at: artifacts) }
 

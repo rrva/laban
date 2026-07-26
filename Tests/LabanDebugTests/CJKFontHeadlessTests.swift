@@ -8,7 +8,7 @@ final class CJKFontHeadlessTests: XCTestCase {
   private let defaultsKey = CJKFontSettings.defaultsKey
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: defaultsKey)
+    UserDefaults.standard.register(defaults: [defaultsKey: CJKFontPreference.pingFangSC.rawValue])
     super.tearDown()
   }
 
@@ -16,9 +16,11 @@ final class CJKFontHeadlessTests: XCTestCase {
     let saved = UserDefaults.standard.string(forKey: defaultsKey)
     defer {
       if let saved {
-        UserDefaults.standard.set(saved, forKey: defaultsKey)
+        UserDefaults.standard.register(defaults: [defaultsKey: saved])
       } else {
-        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        UserDefaults.standard.register(defaults: [
+          defaultsKey: CJKFontPreference.pingFangSC.rawValue
+        ])
       }
     }
 

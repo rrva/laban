@@ -115,13 +115,33 @@ already does.
 - [x] (2026-07-26) **`scripts/test-split` measured 345s -> 239s, a 31% drop,
   all three shards green.** Against the 772s `scripts/check` baseline, where
   `test-split` was 45% of total, that is roughly 772s -> ~666s.
-- [ ] Milestone 3b: promote `LabanDebugTests` and `LabanAppTests`, the last
-  two in the sequential shard. 16 files still persist to the shared domain
-  (6 in Debug, 10 in App). Known extra blockers beyond defaults:
-  `ControlSecurityFloorTests` (shared control-server audit state) and
-  `GraphemeWidthHeadlessTests` (shared headless runtime), plus
-  `FontAtlas.userFontKey`, where "absent" is meaningful and so cannot be
-  expressed by registering a value.
+- [ ] Milestone 3b: promote `LabanDebugTests` and `LabanAppTests`. **Attempted
+  2026-07-26 and stopped short**; the registration-domain technique does not
+  generalise here.
+
+  Registering a value is **not** equivalent to the key being absent, and these
+  suites depend on that distinction. `CursorSettingsHeadlessTests
+  .testStateReportsUserSettingsWithDefaults`, `GraphemeWidthHeadlessTests
+  .testAutoStartsFreshSessionWithMode2027Off` and
+  `LabanDebugSmokeTests.testDebugHTTPServerTerminalModesReflectsMode2027Handshake`
+  all report different state for "unset" than for "explicitly set to the
+  default", so converting their `removeObject` calls into
+  `register(defaults:)` made them fail 3/3. Those two conversions were
+  reverted; `TabTitleEndToEndTests`, `EmojiRenderingHeadlessTests` and
+  `CJKFontHeadlessTests` only ever *set* values and were kept.
+
+  So the remaining targets need the headless runtime to accept an injected
+  `UserDefaults`, which is the renderer-injection work Milestone 2 managed to
+  avoid. Same for `FontAtlas.userFontKey` in `FontSizeActionTests`.
+
+  Two further blockers are not about defaults at all: `ControlSecurityFloorTests`
+  (shared control-server audit state) and `CaptureReplayTests`, which is
+  order-dependent — it fails 4/4 when the target is run alone via `--filter`
+  and passes inside the real sequential shard alongside `LabanAppTests`. Any
+  promotion has to fix that ordering dependency first.
+
+  Measured potential if solved: `LabanDebugTests` runs 14-18s under
+  `--parallel` versus 30-37s serial.
 - [ ] Superseded, kept for context: renderer-level injection. `VectorGlyphGammaTests` (fails
   3/3 under `--parallel`) writes `VectorTextWeightSettings.defaultsKey` and
   `LabanVectorPresentDisplayLink` *so that the renderer under test reads them*,
