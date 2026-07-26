@@ -4,37 +4,46 @@ import XCTest
 @testable import LabanCore
 
 final class ScrollSettingsTests: XCTestCase {
+  /// A private, uniquely named suite rather than `UserDefaults.standard`.
+  /// `swift test --parallel` forks per test case and every process shares the
+  /// one on-disk domain, so writing the real key here raced other suites. The
+  /// UUID makes the name unique even against sibling test methods of this same
+  /// class. See `execplans/active/test-userdefaults-isolation.md`.
+  private var defaults: UserDefaults!
+  private var suiteName = ""
 
   override func setUp() {
     super.setUp()
-    UserDefaults.standard.removeObject(forKey: ScrollSettings.modeKey)
+    suiteName = "ScrollSettingsTests-\(UUID().uuidString)"
+    defaults = UserDefaults(suiteName: suiteName)
+    defaults.removePersistentDomain(forName: suiteName)
   }
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: ScrollSettings.modeKey)
+    defaults.removePersistentDomain(forName: suiteName)
     super.tearDown()
   }
 
   func testDefaultModeIsPixelSmooth() {
     XCTAssertEqual(
-      ScrollSettings.mode, .pixelSmooth,
+      ScrollSettings.mode(defaults: defaults), .pixelSmooth,
       "fresh install must default to pixel-smooth scrolling")
   }
 
   func testSetLineQuantizedRoundTrips() {
-    ScrollSettings.setMode(.lineQuantized)
-    XCTAssertEqual(ScrollSettings.mode, .lineQuantized)
+    ScrollSettings.setMode(.lineQuantized, defaults: defaults)
+    XCTAssertEqual(ScrollSettings.mode(defaults: defaults), .lineQuantized)
   }
 
   func testSetPixelSmoothRoundTrips() {
-    ScrollSettings.setMode(.lineQuantized)
-    ScrollSettings.setMode(.pixelSmooth)
-    XCTAssertEqual(ScrollSettings.mode, .pixelSmooth)
+    ScrollSettings.setMode(.lineQuantized, defaults: defaults)
+    ScrollSettings.setMode(.pixelSmooth, defaults: defaults)
+    XCTAssertEqual(ScrollSettings.mode(defaults: defaults), .pixelSmooth)
   }
 
   func testGarbageValueFallsBackToDefault() {
-    UserDefaults.standard.set("warpSpeed", forKey: ScrollSettings.modeKey)
-    XCTAssertEqual(ScrollSettings.mode, .pixelSmooth)
+    defaults.set("warpSpeed", forKey: ScrollSettings.modeKey)
+    XCTAssertEqual(ScrollSettings.mode(defaults: defaults), .pixelSmooth)
   }
 
   func testSetModePostsNotification() {
@@ -44,7 +53,7 @@ final class ScrollSettingsTests: XCTestCase {
     ) { _ in exp.fulfill() }
     defer { NotificationCenter.default.removeObserver(token) }
 
-    ScrollSettings.setMode(.lineQuantized)
+    ScrollSettings.setMode(.lineQuantized, defaults: defaults)
     wait(for: [exp], timeout: 1)
   }
 }

@@ -46,28 +46,36 @@ public enum CursorSettings {
 
   /// The user's preferred cursor style. Defaults to `.block` when the key is
   /// absent (fresh install or removed key).
-  public static var style: Style {
-    guard let raw = UserDefaults.standard.object(forKey: styleKey) as? String,
+  /// Reads and writes take an injectable `defaults` so tests can supply their
+  /// own suite instead of the process-wide domain, which every concurrently
+  /// running test process shares under `swift test --parallel`. Production
+  /// keeps `.standard`. See `execplans/active/test-userdefaults-isolation.md`.
+  public static func style(defaults: UserDefaults) -> Style {
+    guard let raw = defaults.object(forKey: styleKey) as? String,
       let parsed = Style(rawValue: raw)
     else { return .block }
     return parsed
   }
 
+  public static var style: Style { style(defaults: .standard) }
+
   /// Whether cursor blink is enabled. Defaults to `false` (solid) when the key
   /// is absent so an idle focused terminal needs zero blink wakeups.
-  public static var blinkEnabled: Bool {
-    (UserDefaults.standard.object(forKey: blinkKey) as? Bool) ?? false
+  public static func blinkEnabled(defaults: UserDefaults) -> Bool {
+    (defaults.object(forKey: blinkKey) as? Bool) ?? false
   }
+
+  public static var blinkEnabled: Bool { blinkEnabled(defaults: .standard) }
 
   // MARK: - Setters
 
-  public static func setStyle(_ style: Style) {
-    UserDefaults.standard.set(style.rawValue, forKey: styleKey)
+  public static func setStyle(_ style: Style, defaults: UserDefaults = .standard) {
+    defaults.set(style.rawValue, forKey: styleKey)
     NotificationCenter.default.post(name: didChangeNotification, object: nil)
   }
 
-  public static func setBlinkEnabled(_ enabled: Bool) {
-    UserDefaults.standard.set(enabled, forKey: blinkKey)
+  public static func setBlinkEnabled(_ enabled: Bool, defaults: UserDefaults = .standard) {
+    defaults.set(enabled, forKey: blinkKey)
     NotificationCenter.default.post(name: didChangeNotification, object: nil)
   }
 }

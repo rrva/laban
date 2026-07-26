@@ -5,7 +5,7 @@ import XCTest
 
 final class GraphemeWidthSettingsTests: XCTestCase {
   private var defaults: UserDefaults!
-  private let suiteName = "laban-grapheme-width-tests"
+  private let suiteName = "laban-grapheme-width-tests-\(getpid())"
 
   override func setUp() {
     super.setUp()

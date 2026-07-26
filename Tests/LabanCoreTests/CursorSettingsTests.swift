@@ -4,18 +4,26 @@ import XCTest
 @testable import LabanCore
 
 final class CursorSettingsTests: XCTestCase {
+  /// A private, uniquely named suite rather than `UserDefaults.standard`.
+  /// `swift test --parallel` forks per test case and every process shares the
+  /// one on-disk domain, so writing the real keys here raced other suites. The
+  /// UUID keeps the name unique even against sibling methods of this class.
+  /// See `execplans/active/test-userdefaults-isolation.md`.
+  private var defaults: UserDefaults!
+  private var suiteName = ""
+
 
   // MARK: - Setup / teardown
 
   override func setUp() {
     super.setUp()
-    UserDefaults.standard.removeObject(forKey: CursorSettings.styleKey)
-    UserDefaults.standard.removeObject(forKey: CursorSettings.blinkKey)
+    suiteName = "CursorSettingsTests-\(UUID().uuidString)"
+    defaults = UserDefaults(suiteName: suiteName)
+    defaults.removePersistentDomain(forName: suiteName)
   }
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: CursorSettings.styleKey)
-    UserDefaults.standard.removeObject(forKey: CursorSettings.blinkKey)
+    defaults.removePersistentDomain(forName: suiteName)
     super.tearDown()
   }
 
@@ -23,43 +31,43 @@ final class CursorSettingsTests: XCTestCase {
 
   func testDefaultStyleIsBlock() {
     XCTAssertEqual(
-      CursorSettings.style, .block,
+      CursorSettings.style(defaults: defaults), .block,
       "fresh install must default to block cursor")
   }
 
   func testDefaultBlinkIsOff() {
     XCTAssertFalse(
-      CursorSettings.blinkEnabled,
+      CursorSettings.blinkEnabled(defaults: defaults),
       "fresh install must default to blink off so idle terminal needs no wakeups")
   }
 
   // MARK: - Round-trip persistence
 
   func testSetStyleBarRoundTrips() {
-    CursorSettings.setStyle(.bar)
-    XCTAssertEqual(CursorSettings.style, .bar)
+    CursorSettings.setStyle(.bar, defaults: defaults)
+    XCTAssertEqual(CursorSettings.style(defaults: defaults), .bar)
   }
 
   func testSetStyleUnderlineRoundTrips() {
-    CursorSettings.setStyle(.underline)
-    XCTAssertEqual(CursorSettings.style, .underline)
+    CursorSettings.setStyle(.underline, defaults: defaults)
+    XCTAssertEqual(CursorSettings.style(defaults: defaults), .underline)
   }
 
   func testSetStyleBlockRoundTrips() {
-    CursorSettings.setStyle(.bar)
-    CursorSettings.setStyle(.block)
-    XCTAssertEqual(CursorSettings.style, .block)
+    CursorSettings.setStyle(.bar, defaults: defaults)
+    CursorSettings.setStyle(.block, defaults: defaults)
+    XCTAssertEqual(CursorSettings.style(defaults: defaults), .block)
   }
 
   func testSetBlinkEnabledRoundTrips() {
-    CursorSettings.setBlinkEnabled(true)
-    XCTAssertTrue(CursorSettings.blinkEnabled)
+    CursorSettings.setBlinkEnabled(true, defaults: defaults)
+    XCTAssertTrue(CursorSettings.blinkEnabled(defaults: defaults))
   }
 
   func testSetBlinkDisabledRoundTrips() {
-    CursorSettings.setBlinkEnabled(true)
-    CursorSettings.setBlinkEnabled(false)
-    XCTAssertFalse(CursorSettings.blinkEnabled)
+    CursorSettings.setBlinkEnabled(true, defaults: defaults)
+    CursorSettings.setBlinkEnabled(false, defaults: defaults)
+    XCTAssertFalse(CursorSettings.blinkEnabled(defaults: defaults))
   }
 
   // MARK: - Int32 mapping
@@ -91,7 +99,7 @@ final class CursorSettingsTests: XCTestCase {
     ) { _ in exp.fulfill() }
     defer { NotificationCenter.default.removeObserver(token) }
 
-    CursorSettings.setStyle(.bar)
+    CursorSettings.setStyle(.bar, defaults: defaults)
     wait(for: [exp], timeout: 1)
   }
 
@@ -102,7 +110,7 @@ final class CursorSettingsTests: XCTestCase {
     ) { _ in exp.fulfill() }
     defer { NotificationCenter.default.removeObserver(token) }
 
-    CursorSettings.setBlinkEnabled(true)
+    CursorSettings.setBlinkEnabled(true, defaults: defaults)
     wait(for: [exp], timeout: 1)
   }
 
@@ -113,7 +121,7 @@ final class CursorSettingsTests: XCTestCase {
   /// this test documents the expected relationship.)
   func testDefaultBlinkMutationWouldBeDetectable() {
     // With the key absent, the default must be false.
-    XCTAssertFalse(CursorSettings.blinkEnabled)
+    XCTAssertFalse(CursorSettings.blinkEnabled(defaults: defaults))
     // If the implementation stored `true` as the fallback, this assertion fails.
     // A reviewer mutating the source literal from `false` to `true` must see at
     // least this test fail.

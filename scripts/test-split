@@ -20,6 +20,12 @@ cd "$repo_root"
 # `execplans/active/test-userdefaults-isolation.md`.
 parallel_safe='LabandTests|LabptyTests|LabanAgentTests|LabanCLITests|LabanTerminalCoreTests'
 parallel_safe="${parallel_safe}|LabanRendererTests"
+# Joined 2026-07-26 as well. LabanCoreTests needed `ScrollSettings` and
+# `CursorSettings` to grow the same injectable `defaults:` seam the other
+# settings types already had; LabanControlTests already scoped every suite name
+# with a UUID and persisted nothing. Both verified clean across repeated
+# `--parallel` runs with the xctest domain empty afterwards.
+parallel_safe="${parallel_safe}|LabanCoreTests|LabanControlTests"
 
 # Held out of the parallel shard for a reason unrelated to shared state:
 # these first-frame settling tests fail with "settling frame N failed", i.e.
@@ -32,7 +38,7 @@ gpu_serial='VectorGlyphParityTests'
 # NSApplication.shared, or bind a fixed control socket path. Keep them in one
 # sequential, non-parallel invocation so cross-test contamination stays
 # reproducible and debuggable.
-sequential='LabanCoreTests|LabanDebugTests|LabanAppTests|LabanControlTests'
+sequential='LabanDebugTests|LabanAppTests'
 
 run_shard() {
   label=$1

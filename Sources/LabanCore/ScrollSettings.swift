@@ -27,17 +27,23 @@ public enum ScrollSettings {
 
   /// The user's preferred scroll mode. Defaults to `.pixelSmooth` when the
   /// key is absent (fresh install or removed key).
-  public static var mode: Mode {
-    guard let raw = UserDefaults.standard.object(forKey: modeKey) as? String,
+  /// Reads and writes take an injectable `defaults` so tests can supply their
+  /// own suite instead of the process-wide domain, which every concurrently
+  /// running test process shares under `swift test --parallel`. Production
+  /// keeps `.standard`. See `execplans/active/test-userdefaults-isolation.md`.
+  public static func mode(defaults: UserDefaults) -> Mode {
+    guard let raw = defaults.object(forKey: modeKey) as? String,
       let parsed = Mode(rawValue: raw)
     else { return .pixelSmooth }
     return parsed
   }
 
+  public static var mode: Mode { mode(defaults: .standard) }
+
   // MARK: - Setters
 
-  public static func setMode(_ mode: Mode) {
-    UserDefaults.standard.set(mode.rawValue, forKey: modeKey)
+  public static func setMode(_ mode: Mode, defaults: UserDefaults = .standard) {
+    defaults.set(mode.rawValue, forKey: modeKey)
     NotificationCenter.default.post(name: didChangeNotification, object: nil)
   }
 }

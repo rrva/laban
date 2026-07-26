@@ -5,7 +5,7 @@ import XCTest
 
 final class TerminalIdentitySettingsTests: XCTestCase {
   private var defaults: UserDefaults!
-  private let suiteName = "laban-identity-tests"
+  private let suiteName = "laban-identity-tests-\(getpid())"
 
   override func setUp() {
     super.setUp()

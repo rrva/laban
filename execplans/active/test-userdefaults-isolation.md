@@ -104,10 +104,24 @@ already does.
 - [x] (2026-07-26) `LabanRendererTests` promoted to the parallel shard in
   `scripts/test-split`, with `VectorGlyphParityTests` held back in a new
   serial shard. Measured `test-split` 345s -> 313s.
-- [ ] Milestone 3: promote `LabanCoreTests`, `LabanDebugTests` and
-  `LabanAppTests`. These now dominate: with the renderer moved out, the
-  sequential shard is the remaining bottleneck, so this is where the rest of
-  the speedup lives.
+- [x] (2026-07-26) Milestone 3a: `LabanCoreTests` and `LabanControlTests`
+  promoted. `ScrollSettings` and `CursorSettings` grew the same injectable
+  `defaults:` seam the other settings types already had, so their tests inject
+  a UUID-scoped suite and still exercise the real setter rather than a
+  substitute. `LabanControlTests` needed no change: it already scoped every
+  suite name with a UUID and persisted nothing. Both verified across repeated
+  `--parallel` runs (LabanCoreTests 16s, LabanControlTests 5s) with the xctest
+  domain empty afterwards.
+- [x] (2026-07-26) **`scripts/test-split` measured 345s -> 239s, a 31% drop,
+  all three shards green.** Against the 772s `scripts/check` baseline, where
+  `test-split` was 45% of total, that is roughly 772s -> ~666s.
+- [ ] Milestone 3b: promote `LabanDebugTests` and `LabanAppTests`, the last
+  two in the sequential shard. 16 files still persist to the shared domain
+  (6 in Debug, 10 in App). Known extra blockers beyond defaults:
+  `ControlSecurityFloorTests` (shared control-server audit state) and
+  `GraphemeWidthHeadlessTests` (shared headless runtime), plus
+  `FontAtlas.userFontKey`, where "absent" is meaningful and so cannot be
+  expressed by registering a value.
 - [ ] Superseded, kept for context: renderer-level injection. `VectorGlyphGammaTests` (fails
   3/3 under `--parallel`) writes `VectorTextWeightSettings.defaultsKey` and
   `LabanVectorPresentDisplayLink` *so that the renderer under test reads them*,
