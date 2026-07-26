@@ -81,7 +81,34 @@ already does.
   `LabanRendererSmokeTests` to private suites; all three dropped out of the
   `--parallel` failure list across 3 consecutive runs. The wiped-suite pattern
   also deletes the manual save/restore blocks those tests carried.
-- [ ] Milestone 2: renderer-level injection. `VectorGlyphGammaTests` (fails
+- [x] (2026-07-26) Milestone 2: settings the renderer reads from
+  `UserDefaults.standard` are now supplied through the **registration domain**
+  instead of being persisted. `register(defaults:)` is per-process, never
+  reaches disk, and `object(forKey:)` resolves it exactly like a persisted
+  value, so no renderer-level injection was needed after all. Converted
+  `VectorGlyphGammaTests`, `VectorWeightCoreTextParityTests`,
+  `SlugWeightCoreTextParityTests`, `VectorGlyphParityTests`,
+  `SlugGlyphRendererTests`, `SlugGlyphAAFidelityTests`, `ColorEmojiTests`,
+  `CJKFontMetricsTests`, `TranslucentLinearBlendTests`,
+  `ColorGlyphScrollBench`, and both copies of `withTemporaryUserDefault`.
+  `LabanRendererTests` failures under `--parallel` went 8 suites -> 0
+  state-related, and the `com.apple.dt.xctest.tool` domain stays **empty**
+  after 3 consecutive runs.
+- [x] (2026-07-26) Milestone 2b: private suite names must be process-unique.
+  SwiftPM's `--parallel` forks per *test case*, not per class, so sibling test
+  methods sharing a fixed `suiteName` clobber each other through
+  `removePersistentDomain`. That is why `CJKFontSettingsTests` failed
+  intermittently despite already injecting a suite. All fixed names are now
+  pid-scoped, matching the `UUID().uuidString` convention `GPUCellParityTests`
+  and `VectorSubpixelLayoutTests` already used.
+- [x] (2026-07-26) `LabanRendererTests` promoted to the parallel shard in
+  `scripts/test-split`, with `VectorGlyphParityTests` held back in a new
+  serial shard. Measured `test-split` 345s -> 313s.
+- [ ] Milestone 3: promote `LabanCoreTests`, `LabanDebugTests` and
+  `LabanAppTests`. These now dominate: with the renderer moved out, the
+  sequential shard is the remaining bottleneck, so this is where the rest of
+  the speedup lives.
+- [ ] Superseded, kept for context: renderer-level injection. `VectorGlyphGammaTests` (fails
   3/3 under `--parallel`) writes `VectorTextWeightSettings.defaultsKey` and
   `LabanVectorPresentDisplayLink` *so that the renderer under test reads them*,
   so a private suite would silently change what the test exercises. The

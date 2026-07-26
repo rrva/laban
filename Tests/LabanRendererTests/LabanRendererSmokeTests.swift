@@ -208,7 +208,7 @@ final class LabanRendererSmokeTests: XCTestCase {
     // Private suite, not `UserDefaults.standard`: parallel test processes share
     // one preferences domain, so writing the font keys there races suites that
     // read them. See `execplans/active/test-userdefaults-isolation.md`.
-    let suiteName = "laban-renderer-smoke-font-size-tests"
+    let suiteName = "laban-renderer-smoke-font-size-tests-\(getpid())"
     guard let defaults = UserDefaults(suiteName: suiteName) else {
       return XCTFail("could not create the isolated defaults suite")
     }
@@ -227,7 +227,7 @@ final class LabanRendererSmokeTests: XCTestCase {
     // Private suite, not `UserDefaults.standard`: parallel test processes share
     // one preferences domain, so pinning the probe font there races suites that
     // read it. See `execplans/active/test-userdefaults-isolation.md`.
-    let suiteName = "laban-renderer-smoke-fallback-tests"
+    let suiteName = "laban-renderer-smoke-fallback-tests-\(getpid())"
     guard let defaults = UserDefaults(suiteName: suiteName) else {
       return XCTFail("could not create the isolated defaults suite")
     }

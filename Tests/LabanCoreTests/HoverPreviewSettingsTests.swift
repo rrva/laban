@@ -5,7 +5,7 @@ import XCTest
 
 final class HoverPreviewSettingsTests: XCTestCase {
   private var defaults: UserDefaults!
-  private let suiteName = "laban-hover-preview-tests"
+  private let suiteName = "laban-hover-preview-tests-\(getpid())"
 
   override func setUp() {
     super.setUp()

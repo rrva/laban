@@ -7,16 +7,32 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
-# Five targets that only touch per-test mutable state (UUID-scoped temp dirs,
-# env vars in separate worker processes, or per-test UserDefaults suites). Safe
-# to run concurrently as separate worker processes under `swift test --parallel`.
+# Targets that only touch per-test mutable state (UUID/pid-scoped temp dirs and
+# UserDefaults suites, env vars in separate worker processes). Safe to run
+# concurrently as separate worker processes under `swift test --parallel`.
+#
+# LabanRendererTests joined this group on 2026-07-26: its suites no longer
+# persist anything to the shared preferences domain. Settings the renderer reads
+# from `UserDefaults.standard` are now supplied through the per-process
+# registration domain, which never reaches disk, and every private suite name is
+# pid-scoped. Verified by 3 consecutive `--parallel` runs plus a clean
+# `com.apple.dt.xctest.tool` domain afterwards. See
+# `execplans/active/test-userdefaults-isolation.md`.
 parallel_safe='LabandTests|LabptyTests|LabanAgentTests|LabanCLITests|LabanTerminalCoreTests'
+parallel_safe="${parallel_safe}|LabanRendererTests"
 
-# Five targets that either write overlapping UserDefaults.standard keys, touch
+# Held out of the parallel shard for a reason unrelated to shared state:
+# these first-frame settling tests fail with "settling frame N failed", i.e.
+# `render()` returning false, when many test processes drive Metal at once. It
+# is GPU resource contention, not contamination, so isolating defaults cannot
+# fix it. Runs serially in its own shard instead.
+gpu_serial='VectorGlyphParityTests'
+
+# Targets that either write overlapping UserDefaults.standard keys, touch
 # NSApplication.shared, or bind a fixed control socket path. Keep them in one
 # sequential, non-parallel invocation so cross-test contamination stays
 # reproducible and debuggable.
-sequential='LabanCoreTests|LabanRendererTests|LabanDebugTests|LabanAppTests|LabanControlTests'
+sequential='LabanCoreTests|LabanDebugTests|LabanAppTests|LabanControlTests'
 
 run_shard() {
   label=$1
@@ -34,5 +50,6 @@ run_shard() {
   fi
 }
 
-run_shard parallel-safe --parallel --filter "$parallel_safe"
+run_shard parallel-safe --parallel --filter "$parallel_safe" --skip "$gpu_serial"
 run_shard sequential --filter "$sequential"
+run_shard gpu-serial --filter "$gpu_serial"

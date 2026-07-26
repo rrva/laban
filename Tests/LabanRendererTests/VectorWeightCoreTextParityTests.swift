@@ -77,14 +77,14 @@ final class VectorWeightCoreTextParityTests: XCTestCase {
     renderer.setSubpixelLayout(.grayscale)
     let commands = commands(fg: fg, bg: bg)
 
-    VectorTextWeightSettings.setCurrent(0)
+    Self.registerTextWeight(0)
     renderer.refreshTextWeight()
     for _ in 0..<3 {
       XCTAssertTrue(renderer.render(commands, damage: .full))
     }
     let neutral = ink(try decodeRGBA(try XCTUnwrap(renderer.pngData)), bg: bg)
 
-    VectorTextWeightSettings.setCurrent(1)
+    Self.registerTextWeight(1)
     renderer.refreshTextWeight()
     for _ in 0..<3 {
       XCTAssertTrue(renderer.render(commands, damage: .full))
@@ -116,17 +116,25 @@ final class VectorWeightCoreTextParityTests: XCTestCase {
     ]
   }
 
+  /// Restores the production default afterwards by *registering* it rather
+  /// than writing it. The renderer reads the weight from
+  /// `UserDefaults.standard` itself, so it cannot be handed a private suite,
+  /// but the registration domain is per-process and never reaches disk. A
+  /// persisted write here is what used to leave `LabanVectorTextWeight` stuck
+  /// non-default and contaminate unrelated renderer fidelity tests. See
+  /// `execplans/active/test-userdefaults-isolation.md`.
   private func withSavedTextWeight(_ body: () throws -> Void) rethrows {
-    let key = VectorTextWeightSettings.defaultsKey
-    let saved = UserDefaults.standard.object(forKey: key)
     defer {
-      if let saved {
-        UserDefaults.standard.set(saved, forKey: key)
-      } else {
-        UserDefaults.standard.removeObject(forKey: key)
-      }
+      UserDefaults.standard.register(
+        defaults: [VectorTextWeightSettings.defaultsKey: VectorTextWeightSettings.defaultWeight])
     }
     try body()
+  }
+
+  /// Pins the weight process-locally, the registration-domain counterpart of
+  /// `VectorTextWeightSettings.setCurrent`.
+  fileprivate static func registerTextWeight(_ weight: Double) {
+    UserDefaults.standard.register(defaults: [VectorTextWeightSettings.defaultsKey: weight])
   }
 
   /// Total absolute luminance deviation from the background equals ink laid down.

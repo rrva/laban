@@ -19,14 +19,25 @@ final class SlugGlyphAAFidelityTests: XCTestCase {
     "x/mcp/rpg/node_modules 501 10227",
   ]
 
+  /// Pins the production default in the per-process registration domain.
+  ///
+  /// This used to clear the persisted key instead, which is the defensive half
+  /// of a bug whose source was never fixed: a weight probe elsewhere wrote
+  /// `LabanVectorTextWeight` persistently and could leave it non-default. Now
+  /// that no renderer test persists it, this only has to establish the
+  /// baseline. See `execplans/active/test-userdefaults-isolation.md`.
+  private static func registerDefaultTextWeight() {
+    UserDefaults.standard.register(
+      defaults: [VectorTextWeightSettings.defaultsKey: VectorTextWeightSettings.defaultWeight])
+  }
+
   override func setUp() {
     super.setUp()
-    // A crashed weight probe elsewhere can leave this persisted non-default.
-    UserDefaults.standard.removeObject(forKey: VectorTextWeightSettings.defaultsKey)
+    Self.registerDefaultTextWeight()
   }
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: VectorTextWeightSettings.defaultsKey)
+    Self.registerDefaultTextWeight()
     super.tearDown()
   }
 

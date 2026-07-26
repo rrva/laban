@@ -12,15 +12,23 @@ final class VectorGlyphParityTests: XCTestCase {
     fileURLWithPath: ".build/vector-glyph-parity",
     isDirectory: true)
 
+  /// Pins the weight in the per-process registration domain. Nothing here
+  /// writes `UserDefaults.standard` any more: a persisted value is visible to
+  /// every concurrently running test process and is what used to leave
+  /// `LabanVectorTextWeight` stuck non-default. See
+  /// `execplans/active/test-userdefaults-isolation.md`.
+  fileprivate static func registerTextWeight(_ weight: Double) {
+    UserDefaults.standard.register(defaults: [VectorTextWeightSettings.defaultsKey: weight])
+  }
+
   override func setUp() {
     super.setUp()
     try? FileManager.default.removeItem(at: artifactRoot)
-    // A crashed weight probe elsewhere can leave this persisted non-default.
-    UserDefaults.standard.removeObject(forKey: VectorTextWeightSettings.defaultsKey)
+    Self.registerTextWeight(VectorTextWeightSettings.defaultWeight)
   }
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: VectorTextWeightSettings.defaultsKey)
+    Self.registerTextWeight(VectorTextWeightSettings.defaultWeight)
     super.tearDown()
   }
 
@@ -43,16 +51,8 @@ final class VectorGlyphParityTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
-    let key = VectorTextWeightSettings.defaultsKey
-    let saved = UserDefaults.standard.object(forKey: key)
-    VectorTextWeightSettings.setCurrent(0)
-    defer {
-      if let saved {
-        UserDefaults.standard.set(saved, forKey: key)
-      } else {
-        UserDefaults.standard.removeObject(forKey: key)
-      }
-    }
+    Self.registerTextWeight(0)
+    defer { Self.registerTextWeight(VectorTextWeightSettings.defaultWeight) }
 
     let atlas = FontAtlas(pointSize: 24, fontName: nil)
     let renderer = try XCTUnwrap(

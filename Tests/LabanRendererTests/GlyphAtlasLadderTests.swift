@@ -94,7 +94,7 @@ final class GlyphAtlasLadderTests: XCTestCase {
     // test previously failed that way ("10.0" is not equal to "14.0"). Wiping
     // the suite also replaces the manual save/restore. See
     // `execplans/active/test-userdefaults-isolation.md`.
-    let suiteName = "laban-glyph-atlas-ladder-tests"
+    let suiteName = "laban-glyph-atlas-ladder-tests-\(getpid())"
     guard let defaults = UserDefaults(suiteName: suiteName) else {
       return XCTFail("could not create the isolated defaults suite")
     }

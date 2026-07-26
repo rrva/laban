@@ -5,7 +5,7 @@ import XCTest
 
 final class CJKFontSettingsTests: XCTestCase {
   private var defaults: UserDefaults!
-  private let suiteName = "laban-cjk-font-settings-tests"
+  private let suiteName = "laban-cjk-font-settings-tests-\(getpid())"
 
   override func setUp() {
     super.setUp()

@@ -105,7 +105,7 @@ final class ColorGlyphScrollBench: XCTestCase {
 
     // Fresh renderer per case so it picks up the emoji mode at init regardless
     // of how the renderer caches it.
-    EmojiRenderingSettings.set(mode)
+    UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: mode.rawValue])
     guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale) else {
       XCTFail("MetalRenderer.init returned nil")
       return nil
@@ -145,7 +145,7 @@ final class ColorGlyphScrollBench: XCTestCase {
       throw XCTSkip("no Metal device available")
     }
     let savedMode = EmojiRenderingSettings.current()
-    defer { EmojiRenderingSettings.set(savedMode) }
+    defer { UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: savedMode.rawValue]) }
 
     let fontAtlas = FontAtlas(pointSize: 14)
     let grids: [(String, Int, Int)] = [("160x48", 160, 48), ("240x72", 240, 72)]
@@ -191,7 +191,7 @@ final class ColorGlyphScrollBench: XCTestCase {
     let scale: CGFloat = 2
     let pixelW = Int(CGFloat(cols) * cellW * scale)
     let pixelH = Int(CGFloat(rows) * cellH * scale)
-    EmojiRenderingSettings.set(mode)
+    UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: mode.rawValue])
     let surface = BitmapSurface(width: pixelW, height: pixelH, scale: scale)
     let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
     let asciiPrintable = (0x21...0x7E).map { String(UnicodeScalar($0)!) }.joined()
@@ -219,7 +219,7 @@ final class ColorGlyphScrollBench: XCTestCase {
   func testSoftwareColorGlyphScrollRegression() throws {
     guard enabled() else { return }
     let savedMode = EmojiRenderingSettings.current()
-    defer { EmojiRenderingSettings.set(savedMode) }
+    defer { UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: savedMode.rawValue]) }
 
     let fontAtlas = FontAtlas(pointSize: 14)
     let grids: [(String, Int, Int)] = [("160x48", 160, 48), ("240x72", 240, 72)]

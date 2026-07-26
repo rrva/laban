@@ -162,8 +162,8 @@ final class TranslucentLinearBlendTests: XCTestCase {
       throw XCTSkip("Metal-backed renderer unavailable")
     }
     let savedMode = EmojiRenderingSettings.current()
-    EmojiRenderingSettings.set(.color)
-    defer { EmojiRenderingSettings.set(savedMode) }
+    UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: EmojiRenderingMode.color.rawValue])
+    defer { UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: savedMode.rawValue]) }
 
     let fontAtlas = FontAtlas(pointSize: 32)
     let source = try colorGlyphSource(device: device, fontAtlas: fontAtlas, character: "😀")

@@ -5,7 +5,7 @@ import XCTest
 
 final class EmojiRenderingSettingsTests: XCTestCase {
   private var defaults: UserDefaults!
-  private let suiteName = "laban-emoji-rendering-settings-tests"
+  private let suiteName = "laban-emoji-rendering-settings-tests-\(getpid())"
 
   override func setUp() {
     super.setUp()

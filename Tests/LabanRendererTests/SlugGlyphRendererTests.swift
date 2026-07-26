@@ -9,16 +9,22 @@ import XCTest
 final class SlugGlyphCorrectnessTests: XCTestCase {
   private let gammaProbe = "Hglo08B/N"
 
+  /// Registers rather than writes. `EmojiRenderingSettings` is read from
+  /// `UserDefaults.standard` by the renderer, and a persisted value there is
+  /// shared with every concurrently running test process, not just with later
+  /// tests in this one. The registration domain is per-process and never
+  /// reaches disk. See `execplans/active/test-userdefaults-isolation.md`.
+  private static func registerEmojiMode(_ raw: String) {
+    UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: raw])
+  }
+
   override func setUp() {
     super.setUp()
-    // EmojiRenderingSettings lives in UserDefaults.standard, which is shared
-    // across the whole test process. Reset to the default (.monochrome) so a
-    // color/monochrome emoji test can't leak its choice into a later test.
-    UserDefaults.standard.removeObject(forKey: EmojiRenderingSettings.defaultsKey)
+    Self.registerEmojiMode("monochrome")
   }
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: EmojiRenderingSettings.defaultsKey)
+    Self.registerEmojiMode("monochrome")
     super.tearDown()
   }
 
@@ -201,7 +207,7 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
         displayLinked.presentDisplayLinkStats(reset: true),
         "still disabled -> rebuild must not create one")
 
-      UserDefaults.standard.set(true, forKey: "LabanSlugPresentDisplayLink")
+      UserDefaults.standard.register(defaults: ["LabanSlugPresentDisplayLink": true])
       displayLinked.rebuildPresentLink()
       XCTAssertNotNil(
         displayLinked.presentDisplayLinkStats(reset: true),
@@ -553,7 +559,7 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
-    EmojiRenderingSettings.set(.color)
+    Self.registerEmojiMode("color")
     let image = try renderProbeText("🙂", width: 160, height: 120)
     let bounds = try XCTUnwrap(nonBackgroundBounds(image))
     XCTAssertGreaterThan(bounds.width * bounds.height, CGFloat(100))
@@ -564,7 +570,7 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
-    EmojiRenderingSettings.set(.monochrome)
+    Self.registerEmojiMode("monochrome")
     let image = try renderProbeText("🙂", width: 160, height: 120)
     let bounds = try XCTUnwrap(nonBackgroundBounds(image))
     XCTAssertGreaterThan(
@@ -715,14 +721,10 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
-    let key = VectorTextWeightSettings.defaultsKey
-    let saved = UserDefaults.standard.object(forKey: key)
+    // Restore by registering the production default, never by persisting.
     defer {
-      if let saved {
-        UserDefaults.standard.set(saved, forKey: key)
-      } else {
-        UserDefaults.standard.removeObject(forKey: key)
-      }
+      UserDefaults.standard.register(
+        defaults: [VectorTextWeightSettings.defaultsKey: VectorTextWeightSettings.defaultWeight])
     }
 
     let lightInk = try renderWeightProbeInk(weight: 0)
@@ -740,7 +742,7 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
   private func renderWeightProbeInk(weight: Double) throws -> Double {
     let lightBg: UInt32 = 0xF6_EE_DB_FF
     let darkFg: UInt32 = 0x18_22_2A_FF
-    VectorTextWeightSettings.setCurrent(weight)
+    UserDefaults.standard.register(defaults: [VectorTextWeightSettings.defaultsKey: weight])
     let renderer = try XCTUnwrap(
       SlugGlyphRenderer(
         fontAtlas: FontAtlas(pointSize: 16),
@@ -1178,16 +1180,21 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     value: Bool,
     run: () throws -> Void
   ) throws {
+    // Registered, not written. The renderer reads these flags from
+    // `UserDefaults.standard`, so the test cannot hand it a private suite, but
+    // the registration domain is per-process and never reaches disk, so
+    // concurrently running test processes cannot observe it. Persisting them is
+    // what left `LabanMetalPresentDisplayLink = 0` in the shared xctest domain
+    // and failed unrelated suites with "renderer rejected frame" on a purely
+    // serial run. See `execplans/active/test-userdefaults-isolation.md`.
+    //
+    // A registered value cannot be un-registered, so an absent prior value is
+    // restored as `true`: every flag routed through this helper is a
+    // present-display-link toggle that defaults to enabled when unset.
     let defaults = UserDefaults.standard
-    let previous = defaults.object(forKey: key)
-    defaults.set(value, forKey: key)
-    defer {
-      if let previous {
-        defaults.set(previous, forKey: key)
-      } else {
-        defaults.removeObject(forKey: key)
-      }
-    }
+    let previous = defaults.object(forKey: key) as? Bool
+    defaults.register(defaults: [key: value])
+    defer { defaults.register(defaults: [key: previous ?? true]) }
     try run()
   }
 

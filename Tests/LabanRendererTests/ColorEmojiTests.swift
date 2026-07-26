@@ -6,18 +6,27 @@ import XCTest
 @testable import LabanRenderer
 
 final class ColorEmojiTests: XCTestCase {
+  /// Selects the mode in the per-process registration domain instead of
+  /// `EmojiRenderingSettings.set`, which persists. The renderer reads this key
+  /// from `UserDefaults.standard`, so it cannot take a private suite, and a
+  /// persisted value is visible to every concurrently running test process.
+  /// See `execplans/active/test-userdefaults-isolation.md`.
+  fileprivate static func registerEmojiMode(_ mode: EmojiRenderingMode) {
+    UserDefaults.standard.register(defaults: [EmojiRenderingSettings.defaultsKey: mode.rawValue])
+  }
+
   override func setUp() {
     super.setUp()
-    UserDefaults.standard.removeObject(forKey: EmojiRenderingSettings.defaultsKey)
+    Self.registerEmojiMode(.monochrome)
   }
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: EmojiRenderingSettings.defaultsKey)
+    Self.registerEmojiMode(.monochrome)
     super.tearDown()
   }
 
   func testEmojiRendersWithColorPixelsInColorMode() throws {
-    EmojiRenderingSettings.set(.color)
+    Self.registerEmojiMode(.color)
 
     let stats = try renderEmojiAndScanPixels()
 
@@ -29,7 +38,7 @@ final class ColorEmojiTests: XCTestCase {
   }
 
   func testMonochromeModePreservesTintedMaskPath() throws {
-    EmojiRenderingSettings.set(.monochrome)
+    Self.registerEmojiMode(.monochrome)
 
     let stats = try renderEmojiAndScanPixels()
 

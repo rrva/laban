@@ -634,16 +634,21 @@ final class MetalRendererSmokeTests: XCTestCase {
     value: Bool,
     run: () throws -> Void
   ) throws {
+    // Registered, not written. The renderer reads these flags from
+    // `UserDefaults.standard`, so the test cannot hand it a private suite, but
+    // the registration domain is per-process and never reaches disk, so
+    // concurrently running test processes cannot observe it. Persisting them is
+    // what left `LabanMetalPresentDisplayLink = 0` in the shared xctest domain
+    // and failed unrelated suites with "renderer rejected frame" on a purely
+    // serial run. See `execplans/active/test-userdefaults-isolation.md`.
+    //
+    // A registered value cannot be un-registered, so an absent prior value is
+    // restored as `true`: every flag routed through this helper is a
+    // present-display-link toggle that defaults to enabled when unset.
     let defaults = UserDefaults.standard
-    let previous = defaults.object(forKey: key)
-    defaults.set(value, forKey: key)
-    defer {
-      if let previous {
-        defaults.set(previous, forKey: key)
-      } else {
-        defaults.removeObject(forKey: key)
-      }
-    }
+    let previous = defaults.object(forKey: key) as? Bool
+    defaults.register(defaults: [key: value])
+    defer { defaults.register(defaults: [key: previous ?? true]) }
     try run()
   }
 }

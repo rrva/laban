@@ -113,7 +113,7 @@ final class SettingsEnvironmentCacheTests: XCTestCase {
   /// initialises under `swift_once` while other threads are running, which is
   /// the concurrency property actually worth covering.
   func testConcurrentReadsAreSafeAndConsistent() {
-    let suiteName = "laban-settings-env-cache-tests"
+    let suiteName = "laban-settings-env-cache-tests-\(getpid())"
     guard let defaults = UserDefaults(suiteName: suiteName) else {
       return XCTFail("could not create the isolated defaults suite")
     }

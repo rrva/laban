@@ -10,7 +10,7 @@ final class FontAtlasZoomTests: XCTestCase {
   /// setUp/tearDown also removes the need to save and restore the previous
   /// value by hand. See `execplans/active/test-userdefaults-isolation.md`.
   private var defaults: UserDefaults!
-  private let suiteName = "laban-font-atlas-zoom-tests"
+  private let suiteName = "laban-font-atlas-zoom-tests-\(getpid())"
 
   override func setUp() {
     super.setUp()

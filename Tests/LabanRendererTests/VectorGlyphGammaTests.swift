@@ -20,15 +20,19 @@ final class VectorGlyphGammaTests: XCTestCase {
     else {
       throw XCTSkip("no Metal device available")
     }
+    // The renderer reads this weight from `UserDefaults.standard` itself, so
+    // the test cannot simply hand it a private suite. Register the value
+    // instead of writing it: the registration domain is per-process and never
+    // reaches disk, so concurrent test processes cannot see it, while
+    // `object(forKey:)` still resolves it exactly as a persisted value would.
+    // Writing it persistently is what left `LabanVectorTextWeight` stuck
+    // non-default and contaminated unrelated renderer fidelity tests. See
+    // `execplans/active/test-userdefaults-isolation.md`.
     let key = VectorTextWeightSettings.defaultsKey
-    let saved = UserDefaults.standard.object(forKey: key)
-    VectorTextWeightSettings.setCurrent(0)
+    UserDefaults.standard.register(defaults: [key: 0.0])
     defer {
-      if let saved {
-        UserDefaults.standard.set(saved, forKey: key)
-      } else {
-        UserDefaults.standard.removeObject(forKey: key)
-      }
+      UserDefaults.standard.register(
+        defaults: [key: VectorTextWeightSettings.defaultWeight])
     }
 
     let scale: CGFloat = 2
@@ -138,17 +142,15 @@ final class VectorGlyphGammaTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
+    // Registered, not written: the renderer reads this from
+    // `UserDefaults.standard`, and persisting it here previously leaked
+    // `LabanVectorPresentDisplayLink = 0` into the shared xctest domain, which
+    // then failed unrelated suites with "renderer rejected frame" on a purely
+    // serial run. The registration domain is per-process and never persisted.
     let key = "LabanVectorPresentDisplayLink"
-    let saved = UserDefaults.standard.object(forKey: key)
-    defer {
-      if let saved {
-        UserDefaults.standard.set(saved, forKey: key)
-      } else {
-        UserDefaults.standard.removeObject(forKey: key)
-      }
-    }
+    defer { UserDefaults.standard.register(defaults: [key: true]) }
 
-    UserDefaults.standard.set(false, forKey: key)
+    UserDefaults.standard.register(defaults: [key: false])
     let atlas = FontAtlas(pointSize: 14, fontName: nil)
     let renderer = try XCTUnwrap(
       VectorGlyphRenderer(
@@ -167,7 +169,7 @@ final class VectorGlyphGammaTests: XCTestCase {
       displayLinked.presentDisplayLinkStats(reset: true),
       "still disabled -> rebuild must not create one")
 
-    UserDefaults.standard.set(true, forKey: key)
+    UserDefaults.standard.register(defaults: [key: true])
     displayLinked.rebuildPresentLink()
     XCTAssertNotNil(
       displayLinked.presentDisplayLinkStats(reset: true),

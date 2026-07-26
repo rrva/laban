@@ -27,21 +27,23 @@ final class SlugWeightCoreTextParityTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
+    // Registered, not written: the slug renderer reads this weight from
+    // `UserDefaults.standard` itself, so it cannot take a private suite, but
+    // the registration domain is per-process and never reaches disk. Persisting
+    // it is what left `LabanVectorTextWeight` stuck non-default and
+    // contaminated unrelated fidelity tests. See
+    // `execplans/active/test-userdefaults-isolation.md`.
     let key = VectorTextWeightSettings.defaultsKey
-    let saved = UserDefaults.standard.object(forKey: key)
-    defer {
-      if let saved {
-        UserDefaults.standard.set(saved, forKey: key)
-      } else {
-        UserDefaults.standard.removeObject(forKey: key)
-      }
+    func pinWeight(_ weight: Double) {
+      UserDefaults.standard.register(defaults: [key: weight])
     }
+    defer { pinWeight(VectorTextWeightSettings.defaultWeight) }
 
     for c in cases {
       let reference = try inkSoftware(fg: c.fg, bg: c.bg)
-      VectorTextWeightSettings.setCurrent(1.0)
+      pinWeight(1.0)
       let slugWeighted = try inkSlug(fg: c.fg, bg: c.bg)
-      VectorTextWeightSettings.setCurrent(0.0)
+      pinWeight(0.0)
       let slugNeutral = try inkSlug(fg: c.fg, bg: c.bg)
 
       // Slug@1.0 ink must be within ~12% of the software (CoreText) reference.

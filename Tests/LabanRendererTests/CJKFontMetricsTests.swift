@@ -23,19 +23,30 @@ final class CJKFontMetricsTests: XCTestCase {
     XCTAssertEqual(diagnostics.fallbackOrder.last, "CoreText cascade")
   }
 
-  func testFallbackOrderPutsUserPreferenceFirst() {
-    let saved = UserDefaults.standard.string(forKey: CJKFontSettings.defaultsKey)
-    defer {
-      if let saved {
-        UserDefaults.standard.set(saved, forKey: CJKFontSettings.defaultsKey)
-      } else {
-        UserDefaults.standard.removeObject(forKey: CJKFontSettings.defaultsKey)
-      }
-    }
+  /// Selects a CJK preference in the per-process registration domain instead
+  /// of `CJKFontSettings.set`, which persists.
+  ///
+  /// `TerminalCJKFontPolicy` reads this from `UserDefaults.standard`, so these
+  /// tests cannot be handed a private suite. Persisting the key made it
+  /// visible to every concurrently running test process, which is why
+  /// `CJKFontSettingsTests` failed intermittently under `--parallel` despite
+  /// touching no shared state of its own. See
+  /// `execplans/active/test-userdefaults-isolation.md`.
+  fileprivate static func registerPreference(_ preference: CJKFontPreference) {
+    UserDefaults.standard.register(defaults: [CJKFontSettings.defaultsKey: preference.rawValue])
+  }
 
-    CJKFontSettings.set(.sarasaTermSC)
+  fileprivate static func registerCustom(postScriptName: String) {
+    UserDefaults.standard.register(defaults: [
+      CJKFontSettings.defaultsKey: CJKFontPreference.custom.rawValue,
+      CJKFontSettings.customPostScriptNameKey: postScriptName,
+    ])
+  }
+
+  func testFallbackOrderPutsUserPreferenceFirst() {
+    Self.registerPreference(.sarasaTermSC)
     XCTAssertEqual(TerminalCJKFontPolicy.fallbackOrderDescription[1], "Sarasa Term SC")
-    CJKFontSettings.set(.pingFangSC)
+    Self.registerPreference(.pingFangSC)
     XCTAssertEqual(TerminalCJKFontPolicy.fallbackOrderDescription[1], "PingFang SC")
   }
 
@@ -45,21 +56,6 @@ final class CJKFontMetricsTests: XCTestCase {
   }
 
   func testCustomFontIsPreferredInCascade() throws {
-    let savedPreference = UserDefaults.standard.string(forKey: CJKFontSettings.defaultsKey)
-    let savedCustom = UserDefaults.standard.string(forKey: CJKFontSettings.customPostScriptNameKey)
-    defer {
-      if let savedPreference {
-        UserDefaults.standard.set(savedPreference, forKey: CJKFontSettings.defaultsKey)
-      } else {
-        UserDefaults.standard.removeObject(forKey: CJKFontSettings.defaultsKey)
-      }
-      if let savedCustom {
-        UserDefaults.standard.set(savedCustom, forKey: CJKFontSettings.customPostScriptNameKey)
-      } else {
-        UserDefaults.standard.removeObject(forKey: CJKFontSettings.customPostScriptNameKey)
-      }
-    }
-
     let baseFont = CTFontCreateWithName("Helvetica" as CFString, 14, nil)
     guard
       let presetFont = TerminalCJKFontPolicy.resolvedPresetFont(.pingFangSC, baseFont: baseFont)
@@ -67,22 +63,13 @@ final class CJKFontMetricsTests: XCTestCase {
       throw XCTSkip("PingFang SC unavailable")
     }
     let postScriptName = CTFontCopyPostScriptName(presetFont) as String
-    CJKFontSettings.setCustom(postScriptName: postScriptName)
+    Self.registerCustom(postScriptName: postScriptName)
     let selected = TerminalCJKFontPolicy.resolvedPreferenceFont(baseFont: baseFont)
     XCTAssertEqual(CTFontCopyPostScriptName(selected ?? baseFont) as String, postScriptName)
   }
 
   func testUserStatusReportsMissingPreference() {
-    let saved = UserDefaults.standard.string(forKey: CJKFontSettings.defaultsKey)
-    defer {
-      if let saved {
-        UserDefaults.standard.set(saved, forKey: CJKFontSettings.defaultsKey)
-      } else {
-        UserDefaults.standard.removeObject(forKey: CJKFontSettings.defaultsKey)
-      }
-    }
-
-    CJKFontSettings.set(.sarasaTermSC)
+    Self.registerPreference(.sarasaTermSC)
     let baseFont = CTFontCreateWithName("Helvetica" as CFString, 14, nil)
     let status = TerminalCJKFontPolicy.userStatus(baseFont: baseFont, cellWidth: 9)
     if TerminalCJKFontPolicy.isAvailable(.sarasaTermSC, baseFont: baseFont) {
