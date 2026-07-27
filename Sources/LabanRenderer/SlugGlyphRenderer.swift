@@ -1517,6 +1517,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     var solids: [SlugSolidInstance] = []
     var replaceSolids: [SlugSolidInstance] = []
+    var overlaySolids: [SlugSolidInstance] = []
+    var overlayReplaceSolids: [SlugSolidInstance] = []
     var slugGlyphs: [SlugGlyphGPUInstance] = []
     var motionGlyphs: [SlugGlyphMotionGPUInstance] = []
     var rasterGlyphs: [SlugTextureInstance] = []
@@ -1534,6 +1536,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       commands: commands,
       solids: &solids,
       replaceSolids: &replaceSolids,
+      overlaySolids: &overlaySolids,
+      overlayReplaceSolids: &overlayReplaceSolids,
       glyphs: &slugGlyphs,
       motionGlyphs: &motionGlyphs,
       rasterGlyphs: &rasterGlyphs,
@@ -1541,13 +1545,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       waveRegions: &waveRegions,
       damageBands: damageBands)
     updateLiveGlyphEffectState()
-    lastFrameSolidsCount = solids.count + replaceSolids.count
+    lastFrameSolidsCount =
+      solids.count + replaceSolids.count + overlaySolids.count + overlayReplaceSolids.count
     lastFrameSlugGlyphsCount = slugGlyphs.count
     lastFrameMotionGlyphsCount = motionGlyphs.count
     lastFrameSpinnerFallbackSnapCount = frameSpinnerFallbackSnapCount
     lastFrameRasterGlyphsCount = rasterGlyphs.count
     lastFrameColorGlyphsCount = colorGlyphs.count
-    spanSolids = solids.count + replaceSolids.count
+    spanSolids =
+      solids.count + replaceSolids.count + overlaySolids.count + overlayReplaceSolids.count
     spanGlyphs = slugGlyphs.count + motionGlyphs.count
     spanRaster = rasterGlyphs.count
     spanColor = colorGlyphs.count
@@ -1770,6 +1776,47 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           vertexStart: 0,
           vertexCount: 6,
           instanceCount: solids.count)
+      }
+    }
+
+    // Floating preview chrome/content is appended after the active terminal,
+    // but Slug normally groups all replace solids ahead of every source-over
+    // solid. Keep preview solids in their own late pair of batches so a
+    // translucent replacement background cannot be overpainted by opaque
+    // active-terminal cells, selections, cursors, or find highlights.
+    if !overlayReplaceSolids.isEmpty,
+      let overlayReplaceSolidBuffer = makeBuffer(overlayReplaceSolids)
+    {
+      retainedBuffers.append(overlayReplaceSolidBuffer)
+      encoder.setRenderPipelineState(activeReplaceSolidPipeline)
+      encoder.setVertexBuffer(overlayReplaceSolidBuffer, offset: 0, index: 0)
+      encoder.setVertexBytes(
+        &vectorUniforms,
+        length: MemoryLayout<SlugVectorUniforms>.stride,
+        index: 1)
+      repeatingBands(scissorPlan, on: encoder) {
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: overlayReplaceSolids.count)
+      }
+    }
+
+    if !overlaySolids.isEmpty, let overlaySolidBuffer = makeBuffer(overlaySolids) {
+      retainedBuffers.append(overlaySolidBuffer)
+      encoder.setRenderPipelineState(activeSolidPipeline)
+      encoder.setVertexBuffer(overlaySolidBuffer, offset: 0, index: 0)
+      encoder.setVertexBytes(
+        &vectorUniforms,
+        length: MemoryLayout<SlugVectorUniforms>.stride,
+        index: 1)
+      repeatingBands(scissorPlan, on: encoder) {
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: overlaySolids.count)
       }
     }
 
@@ -2132,6 +2179,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     commands: [FrameCommand],
     solids: inout [SlugSolidInstance],
     replaceSolids: inout [SlugSolidInstance],
+    overlaySolids: inout [SlugSolidInstance],
+    overlayReplaceSolids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
     motionGlyphs: inout [SlugGlyphMotionGPUInstance],
     rasterGlyphs: inout [SlugTextureInstance],
@@ -2156,13 +2205,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     frameLiveGlyphEffects.removeAll(keepingCapacity: true)
     for command in commands {
       switch command {
-      case .rect(let rect, let color, _, let compositing):
+      case .rect(let rect, let color, let source, let compositing):
         guard intersectsDamage(minY: rect.minY, maxY: rect.maxY, bands: damageBands) else {
           continue
         }
-        if !surfaceTransparency.isOpaque
-          && replacesDestination(compositing, color: color)
-        {
+        let usesReplacePipeline =
+          !surfaceTransparency.isOpaque && replacesDestination(compositing, color: color)
+        if source == .sidebarPreview {
+          if usesReplacePipeline {
+            overlayReplaceSolids.append(replaceSolid(rect: rect, color: color))
+          } else {
+            overlaySolids.append(solid(rect: rect, color: color))
+          }
+        } else if usesReplacePipeline {
           replaceSolids.append(replaceSolid(rect: rect, color: color))
         } else {
           solids.append(solid(rect: rect, color: color))
@@ -2224,6 +2279,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           foregroundWave: foregroundWave,
           overlayMaskRects: overlayMaskRects,
           solids: &solids,
+          overlaySolids: &overlaySolids,
           glyphs: &glyphs,
           motionGlyphs: &motionGlyphs,
           rasterGlyphs: &rasterGlyphs,
@@ -2373,6 +2429,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     foregroundWave: GlyphForegroundWave? = nil,
     overlayMaskRects: [CGRect],
     solids: inout [SlugSolidInstance],
+    overlaySolids: inout [SlugSolidInstance],
     glyphs: inout [SlugGlyphGPUInstance],
     motionGlyphs: inout [SlugGlyphMotionGPUInstance],
     rasterGlyphs: inout [SlugTextureInstance],
@@ -2521,15 +2578,27 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       }
     }
 
-    appendDecorations(
-      text: text,
-      origin: origin,
-      attributes: attributes,
-      underlineStyle: underlineStyle,
-      underlineColor: underlineColor,
-      atlas: activeAtlas,
-      foreground: foreground,
-      solids: &solids)
+    if source == .sidebarPreview {
+      appendDecorations(
+        text: text,
+        origin: origin,
+        attributes: attributes,
+        underlineStyle: underlineStyle,
+        underlineColor: underlineColor,
+        atlas: activeAtlas,
+        foreground: foreground,
+        solids: &overlaySolids)
+    } else {
+      appendDecorations(
+        text: text,
+        origin: origin,
+        attributes: attributes,
+        underlineStyle: underlineStyle,
+        underlineColor: underlineColor,
+        atlas: activeAtlas,
+        foreground: foreground,
+        solids: &solids)
+    }
   }
 
   private func appendDecorations(

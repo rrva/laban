@@ -10,6 +10,41 @@ import os
 @testable import LabanApp
 
 final class AppSessionCoordinatorTests: XCTestCase {
+  func testOptionalSnapshotIncarnationTrackerInvalidatesRecreatedLogicalSession() {
+    var tracker = OptionalSnapshotIncarnationTracker()
+
+    XCTAssertFalse(
+      tracker.prepare(sessionId: "logical", expectedIncarnationId: "incarnation-a"))
+    XCTAssertFalse(
+      tracker.prepare(sessionId: "logical", expectedIncarnationId: "incarnation-a"))
+    XCTAssertTrue(
+      tracker.prepare(sessionId: "logical", expectedIncarnationId: "incarnation-b"),
+      "a new daemon incarnation must discard the old mapped ring reader")
+
+    tracker.forget(sessionId: "logical")
+    XCTAssertFalse(
+      tracker.prepare(sessionId: "logical", expectedIncarnationId: "incarnation-c"),
+      "a terminated session starts with no stale reader identity")
+  }
+
+  func testOptionalSnapshotFailurePolicyScopesSessionErrorsWithoutHidingTransportFailure() {
+    XCTAssertFalse(
+      OptionalSnapshotFailurePolicy.shouldRetireClient(
+        after: TerminalSessionClientError.sessionNotFound("session")))
+    XCTAssertFalse(
+      OptionalSnapshotFailurePolicy.shouldRetireClient(
+        after: TerminalSessionClientError.sessionNotRunning("session")))
+    XCTAssertFalse(
+      OptionalSnapshotFailurePolicy.shouldRetireClient(
+        after: TerminalSessionClientError.snapshotFailed("session")))
+    XCTAssertTrue(
+      OptionalSnapshotFailurePolicy.shouldRetireClient(after: POSIXError(.EAGAIN)),
+      "an I/O timeout must reconnect because stream framing is no longer trustworthy")
+    XCTAssertTrue(
+      OptionalSnapshotFailurePolicy.shouldRetireClient(
+        after: TerminalSessionClientError.protocolError("invalid frame")))
+  }
+
   func testDaemonAgentAttachedSessionRedeemsC14FromChildEnv() throws {
     setenv(ControlEnvironmentKeys.attachEnvOptIn, "1", 1)
     defer { unsetenv(ControlEnvironmentKeys.attachEnvOptIn) }

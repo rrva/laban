@@ -31,4 +31,26 @@ final class TerminalAttentionDamageTests: XCTestCase {
         scrollAnimating: false,
         fractionalScrollOffset: true))
   }
+
+  func testHoverPreviewForcesFullDamageForItsScaledProjection() {
+    XCTAssertTrue(
+      TerminalBitmapView.shouldForceFullDamage(
+        renderInvalidated: false,
+        tabChanged: false,
+        scrollAnimating: false,
+        fractionalScrollOffset: false,
+        hoverPreviewShowing: true),
+      "preview rows live at different coordinates than the main terminal dirty-row bands")
+  }
+
+  func testEligibleButAbsentHoverPreviewDoesNotForceFullDamage() {
+    XCTAssertFalse(
+      TerminalBitmapView.shouldForceFullDamage(
+        renderInvalidated: false,
+        tabChanged: false,
+        scrollAnimating: false,
+        fractionalScrollOffset: false,
+        hoverPreviewShowing: false),
+      "persistent optional-preview failure must not defeat active-terminal row damage")
+  }
 }

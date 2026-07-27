@@ -555,6 +555,56 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
         + "glyph would show through even though the panel's rect is drawn later")
   }
 
+  func testTranslucentHoverPreviewSolidsPaintAfterActiveTerminalSolids() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let pixelWidth = 120
+    let pixelHeight = 60
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 18),
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: 1,
+        surfaceTransparency: RendererSurfaceTransparency(isOpaque: false)))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    renderer.setSubpixelLayout(.grayscale)
+
+    let fullFrame = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
+    XCTAssertTrue(
+      renderer.render(
+        [
+          .rect(
+            fullFrame, color: 0xFF_00_00_FF, source: .terminal,
+            compositing: .sourceOver),
+          .rect(
+            fullFrame, color: 0x00_00_FF_80, source: .sidebarPreview,
+            compositing: .replace),
+          .rect(
+            CGRect(x: 0, y: 0, width: 30, height: pixelHeight),
+            color: 0x00_FF_00_FF, source: .sidebarPreview,
+            compositing: .sourceOver),
+        ],
+        damage: .full))
+
+    let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+    let translucentPreview = image.pixel(x: 80, y: pixelHeight / 2)
+    XCTAssertLessThan(translucentPreview.r, 10)
+    XCTAssertLessThan(translucentPreview.g, 10)
+    XCTAssertEqual(
+      Int(translucentPreview.b), 0x80, accuracy: 2,
+      "the decoded PNG stores the half-alpha blue canvas premultiplied")
+    XCTAssertEqual(Int(translucentPreview.a), 0x80, accuracy: 2)
+
+    let opaquePreviewCell = image.pixel(x: 15, y: pixelHeight / 2)
+    XCTAssertLessThan(opaquePreviewCell.r, 10)
+    XCTAssertGreaterThan(opaquePreviewCell.g, 240)
+    XCTAssertLessThan(opaquePreviewCell.b, 10)
+    XCTAssertEqual(opaquePreviewCell.a, 0xFF)
+  }
+
   func testSlugRendersColorEmojiFallbackPixels() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

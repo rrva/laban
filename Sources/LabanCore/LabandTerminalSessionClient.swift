@@ -18,10 +18,31 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   private let leaseRenewalQueue = DispatchQueue(label: "laband-lease-renewal")
   private var leaseRenewalTimer: DispatchSourceTimer?
 
-  public init(socketPath: String, autoRenewLeases: Bool = true) throws {
+  public init(
+    socketPath: String,
+    autoRenewLeases: Bool = true,
+    ioTimeoutMilliseconds: Int? = nil
+  ) throws {
     self.socketPath = socketPath
     self.autoRenewLeases = autoRenewLeases
-    self.fd = try Self.connect(socketPath: socketPath)
+    self.fd = try Self.connect(
+      socketPath: socketPath,
+      ioTimeoutMilliseconds: ioTimeoutMilliseconds)
+  }
+
+  /// Open a distinct transport connection to the same daemon. The sibling has
+  /// its own socket lock and ring-reader instances, so optional/background
+  /// traffic cannot hold up latency-critical operations on this client.
+  public func makeIndependentClient(
+    autoRenewLeases: Bool = false,
+    ioTimeoutMilliseconds: Int? = nil
+  ) throws
+    -> LabandTerminalSessionClient
+  {
+    try LabandTerminalSessionClient(
+      socketPath: socketPath,
+      autoRenewLeases: autoRenewLeases,
+      ioTimeoutMilliseconds: ioTimeoutMilliseconds)
   }
 
   deinit {
@@ -33,6 +54,23 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     for sessionId in sessions {
       _ = try? detachSession(sessionId: sessionId)
     }
+    lock.withLock {
+      attachedSessionIds.removeAll()
+      ringReaders.removeAll()
+      leasesBySession.removeAll()
+      leaseRenewalTimer?.cancel()
+      leaseRenewalTimer = nil
+      if fd >= 0 {
+        Darwin.close(fd)
+        fd = -1
+      }
+    }
+  }
+
+  /// Drop a socket whose framing or liveness has already failed. Do not issue
+  /// detach RPCs on that same broken stream; closing the connection is the
+  /// daemon's authoritative signal to release all of this client's attachments.
+  public func closeAfterTransportFailure() {
     lock.withLock {
       attachedSessionIds.removeAll()
       ringReaders.removeAll()
@@ -222,6 +260,24 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     return LabandSnapshotFrame(generation: nil, snapshot: snapshot)
   }
 
+  /// Read only an already attached shared-memory ring. Unlike
+  /// `snapshotFrame`, this never attaches a ring and never falls back to the
+  /// request/response socket, so callers may safely use it in latency-critical
+  /// render paths.
+  public func snapshotFrameFromAttachedRing(sessionId: String) throws -> LabandSnapshotFrame? {
+    try readRingSnapshotFrame(sessionId: sessionId)
+  }
+
+  /// Drop only local state after another connection has terminated the daemon
+  /// session (termination already removes all server-side attachments).
+  public func discardLocalSnapshotAttachment(sessionId: String) {
+    lock.withLock {
+      attachedSessionIds.remove(sessionId)
+      _ = ringReaders.removeValue(forKey: sessionId)
+      leasesBySession.removeValue(forKey: sessionId)
+    }
+  }
+
   public func scrollViewport(sessionId: String, deltaRows: Int) throws -> LabandSessionInfo {
     let lease = currentLease(sessionId: sessionId)
     let response = try send(
@@ -376,8 +432,21 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
       try writeFrame(encoder.encode(request))
       let response = try decoder.decode(LabandResponse.self, from: readFrame())
       guard response.ok else {
-        let message = response.error.map { "\($0.code): \($0.message)" } ?? "unknown error"
-        throw TerminalSessionClientError.protocolError(message)
+        guard let responseError = response.error else {
+          throw TerminalSessionClientError.protocolError("unknown error")
+        }
+        let sessionId = request.sessionId ?? request.logicalSessionId ?? "unknown"
+        switch responseError.code {
+        case "sessionNotFound":
+          throw TerminalSessionClientError.sessionNotFound(sessionId)
+        case "sessionNotRunning":
+          throw TerminalSessionClientError.sessionNotRunning(sessionId)
+        case "snapshotFailed", "snapshotRingFailed":
+          throw TerminalSessionClientError.snapshotFailed(sessionId)
+        default:
+          throw TerminalSessionClientError.protocolError(
+            "\(responseError.code): \(responseError.message)")
+        }
       }
       return response
     }
@@ -428,11 +497,23 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     }
   }
 
-  private static func connect(socketPath: String) throws -> Int32 {
+  private static func connect(
+    socketPath: String,
+    ioTimeoutMilliseconds: Int?
+  ) throws -> Int32 {
     let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     var one: Int32 = 1
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+    if let ioTimeoutMilliseconds {
+      do {
+        try setTimeout(fd: fd, option: SO_RCVTIMEO, milliseconds: ioTimeoutMilliseconds)
+        try setTimeout(fd: fd, option: SO_SNDTIMEO, milliseconds: ioTimeoutMilliseconds)
+      } catch {
+        Darwin.close(fd)
+        throw error
+      }
+    }
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = Array(socketPath.utf8CString)
@@ -456,6 +537,22 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
       throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EIO)
     }
     return fd
+  }
+
+  private static func setTimeout(fd: Int32, option: Int32, milliseconds: Int) throws {
+    let clamped = max(1, milliseconds)
+    var timeout = timeval(
+      tv_sec: clamped / 1_000,
+      tv_usec: Int32((clamped % 1_000) * 1_000))
+    let result = setsockopt(
+      fd,
+      SOL_SOCKET,
+      option,
+      &timeout,
+      socklen_t(MemoryLayout<timeval>.size))
+    guard result == 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
   }
 
   private func readFrame() throws -> Data {

@@ -78,6 +78,10 @@ public enum LabandSnapshotRingLayout {
     public static let ptyDrainMonoNs = 64
     public static let snapshotPublishMonoNs = 72
     public static let titleGeneration = 80
+    /// Terminal default background in RGBA byte order. Zero means unknown so
+    /// readers remain compatible with ABI-v1 writers from before this field
+    /// occupied the previously reserved trailing slot-header bytes.
+    public static let defaultBackgroundRGBA = 88
   }
 
   public enum CellOffset {
@@ -461,6 +465,9 @@ public final class LabandSnapshotRingWriter {
       slot.storeU64(ptyDrainMonoNs, LabandSnapshotRingLayout.SlotHeaderOffset.ptyDrainMonoNs)
       slot.storeU64(publishedAt, LabandSnapshotRingLayout.SlotHeaderOffset.snapshotPublishMonoNs)
       slot.storeU64(generation, LabandSnapshotRingLayout.SlotHeaderOffset.titleGeneration)
+      slot.storeU32(
+        snap.default_background_rgba,
+        LabandSnapshotRingLayout.SlotHeaderOffset.defaultBackgroundRGBA)
       slot.storeU64Release(seqlockComplete, LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
       pointer.storeU64(generation, LabandSnapshotRingLayout.FileHeaderOffset.writerGeneration)
     }
@@ -930,6 +937,8 @@ public final class LabandSnapshotRingReader {
       dirty: true,
       visibleText: visibleRows.joined(separator: "\n"),
       cells: cells,
+      defaultBackgroundRGBA: nonzero(
+        slot.loadU32(LabandSnapshotRingLayout.SlotHeaderOffset.defaultBackgroundRGBA)),
       synchronizedOutput: (flags & LabandSnapshotRingLayout.SlotFlag.synchronizedOutput) != 0,
       mouseTracking: (flags & LabandSnapshotRingLayout.SlotFlag.mouseTracking) != 0,
       mouseTrackingMode: Int(
@@ -953,6 +962,10 @@ public final class LabandSnapshotRingReader {
       slotStride
         - LabandSnapshotRingLayout.stringTableOffset(maxRows: maxRows, maxCols: maxCols))
     return min(Int(raw), capacity)
+  }
+
+  private func nonzero(_ value: UInt32) -> UInt32? {
+    value == 0 ? nil : value
   }
 
   private func readCellText(

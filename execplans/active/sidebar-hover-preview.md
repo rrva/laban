@@ -86,8 +86,50 @@ the sidebar.
 - [x] (2026-07-24) Milestone 6: Manual verification, polish pass, Review Gate. Manual verification of the four issues found in the first testing round (opacity, live-update, color fidelity, fps), the two Milestone 7 keyboard-trigger bugs (menu conflict, performKeyEquivalent), and an external review's hold-to-peek eligibility-gating regression are all confirmed working by the user and/or a fresh review agent. Three Review Gate passes total: round 1 (fresh agent, commit `dbfd5c17`) found the ADR drift item and gained `HoverPreviewRendererGateTests`; round 2 (fresh agent, commit `2823f446`) found two further stale ADR line citations after Milestone 7 landed; round 3 (fresh agent, commit `f1f0c3fe`) passed cleanly against commit `2aeab129` — all 10 checklist items, plus targeted verification of the hold-to-peek eligibility fix, including a live `./scripts/check` run (build, full test suite, sanitize, smoke-runtime, E2E all exit 0). Plan complete.
 - [x] (2026-07-24) Milestone 7: keyboard hold-to-peek. Holding Ctrl+Tab / Cmd+Option+←/→ now previews the tab a release would land on instead of switching instantly (`TerminalBitmapView.beginOrAdvancePeek`/`.commitPeek`, gated on `flagsChanged` observing the triggering chord's modifier(s) lift). Shares 100% of the existing panel-rendering path — only a new `peekedSidebarTabId` trigger, combined as `peekedSidebarTabId ?? hoveredSidebarTabId` everywhere the previewed tab is read. 4 new unit tests (`HoverPreviewKeyboardPeekTests`, access-level-loosened white-box tests of the state machine — no NSEvent-simulation precedent existed to test the real `keyDown`/`flagsChanged` dispatch, same gap noted for the earlier keyboard-hover-clear fix). Direct-jump shortcuts (Cmd+1…9) and menu-bar tab actions are unaffected — they still call the original instant-commit `selectTab(at:)`/`selectRelativeTab(delta:)` path. Manual verification found and fixed two real bugs, both confirmed working by the user — see Surprises & Discoveries: (1) Cmd+Option+←/→ never reached `keyDown` because the Tab menu's own keyEquivalent intercepted it first (commit `cfcfbacc`). (2) Ctrl+Tab never reached `keyDown` either, for an unrelated reason: AppKit reserves Control-Tab for key-view-loop navigation and swallows it in `performKeyEquivalent:`, before `keyDown:` — fixed by overriding `performKeyEquivalent(with:)` to re-dispatch to `keyDown(with:)` for that one chord (commit `98fe8eae`), root-caused via temporary diagnostic logging that showed `flagsChanged` seeing the Control press/release while `keyDown` never fired for the Tab key at all. A related hardening (disabling AppKit's native window tabbing, since Laban's tabs are its own sidebar concept — commit `420cc300`) did not turn out to be the fix, but is kept regardless as legitimate independent hygiene. Full `swift test` (2847 tests) passes.
 - [x] (2026-07-24) Milestone 8: center the panel in the terminal pane for keyboard hold-to-peek, instead of reusing the mouse-hover placement beside the sidebar row. `SidebarProducer.HoverPreview` gained `isKeyboardPeek: Bool = false`; `hoverPreviewPanelRect` gained a `centered: Bool = false` parameter that, when true, positions the panel in the horizontal/vertical middle of the terminal pane (`sidebarWidth + (paneWidth - panelWidth) / 2`, `(height - panelHeight) / 2`) instead of computing `rowTabY` from the hovered row's index — panel size is unchanged, only its position. `TerminalSurfaceFrameRequest` gained `hoveredSidebarTabIdIsKeyboardPeek: Bool = false`; `TerminalSurfaceController.hoverPreviewOverlayCommands` gained a matching `hoveredTabIdIsKeyboardPeek` parameter threaded to both `hoverPreviewPanelRect(centered:)` and the constructed `HoverPreview(isKeyboardPeek:)`. Both `TerminalBitmapView` call sites that build a `TerminalSurfaceFrameRequest` now pass `hoveredSidebarTabIdIsKeyboardPeek: peekedSidebarTabId != nil` — the same `peekedSidebarTabId != nil` check that already distinguishes hold-to-peek from mouse hover elsewhere in that file. 4 new unit tests: `SidebarProducerTests.testHoverPreviewPanelRectCentersInPaneWhenCentered`, `.testHoverPreviewPanelRectCenteredDiffersOnlyInPositionFromRowAnchoredRect`, `.testHoverPreviewCommandsCenterPanelWhenHoverPreviewIsKeyboardPeek` (55 total, all passing), and `HoverPreviewRendererGateTests.testKeyboardPeekCentersPanelInsteadOfPlacingItBesideTheRow` (5 total, all passing) — the last one exercises the same `TerminalSurfaceController.makeFrame` entry point production uses, comparing the mouse-hover and keyboard-peek rects for the same hovered tab to prove position (not just eligibility) differs. Full `swift test` run: only pre-existing, unrelated failure is `ThemeMenuControllerImportTests.testImportThemeFilePickerOpensAtBundledExamples` (confirmed to fail identically with this milestone's changes stashed out, i.e. before this change too).
+- [ ] (2026-07-27) Milestone 9: make keyboard hold-to-peek expose its tentative selection in the sidebar, include the already-active tab as a real keyboard-preview stop, and preserve the previewed terminal's default/per-cell background colors plus the main pane's accessibility/transparency policy. Mouse hover keeps its existing active-tab suppression and close-button behavior. Implementation plus twenty Review Gate fix rounds are complete: the focused keyboard/sidebar/color/Metal/damage/remote-generation/output-coherence suite plus the tentative-selection attention-focus, off-screen keyboard target, local-preview pending-dirty, missing-ring content comparison, too-small-preview, daemon-incarnation, initial-local-coherence, RPC-confirmation-failure, actual-render-state, RPC-ack-metadata, failed-local-preview, optional-warmup, failed-confirmation-backoff, hidden-window-retry, closed-tentative-target, ring-default-background, absent-preview-damage, backoff-cache-only, render-thread-safe optional-fetch, preview-cache identity, independent optional transport, unchanged-fallback wake, reader-isolation, optional-ring polling, optional-attachment cleanup, lazy reconnect, hidden-close hit-gating, vanished-target visibility, hidden-window attempt gating, snapshot-only disconnect cleanup, failed-ring-attach cleanup, recovered-preview full-damage, remote synchronized-output watchdog, preview-settle-under-motion, bounded local snapshot-retry, optional-reader incarnation, optional-socket timeout, and session-scoped optional-failure regressions pass. The first review round found late translucent-solid ordering, parser-only fallback for daemon previews, and stale eligibility highlighting; the second found the filled-border batching inversion, missing background-tab generation invalidation, and scaled-preview partial-damage gaps; the third found that daemon preview output needed its own synchronized-output/fragment-settle holds and a bounded transient snapshot retry; the fourth required stale-while-revalidate so preview-only defers/failures never stall active rendering, plus separation of tentative row selection from actual attention focus; the fifth found retry-deadline coalescing, redundant unchanged-generation daemon decoding, and missing local/labpty preview coherence; the sixth found permanently stale RPC fallback when the snapshot-ring generation is unavailable and an unbounded local repaint loop for non-renderable preview targets; the seventh found dirty-bit-based RPC cache aliasing, a missing RPC settle timestamp, and invisible tentative selection for off-screen keyboard targets; the eighth found generation reuse across daemon incarnations, missed initial local coherence after earlier dirty acknowledgement, stale pending-frame publication after failed RPC quiet confirmation, and debug state reporting eligibility instead of actual rendered commands; the ninth found retained dirty RPC metadata after acknowledgement, failed local previews rearming from rendered-panel identity, and optional preview failure aborting renderer warmup; the tenth found failed-confirmation backoff bypass, invisible-window retry polling, and missing tentative IDs suppressing the committed selection; the eleventh found that ring-backed daemon frames omitted the default background and that eligibility without a panel still forced full damage; the twelfth found a synchronous optional preview RPC on the main render path and pending-frame publication during confirmation backoff; the thirteenth found preview-cache misses masked by active render tracking, shared-lock main-thread blocking, no-op fallback redraws, and concurrent reads of one mutable ring reader; the fourteenth found that the optional-only ring was not polled after attachment and that its transport lacked reconnect plus tab/teardown cleanup; the fifteenth found an invisible close hit target during keyboard peek and failure to reveal the active row after an off-screen tentative target vanished; the sixteenth found hidden-window optional fetches on non-timer render wakes and missing disconnect tracking for snapshot-ring-only attachments; the seventeenth found failed ring attachments retaining daemon clients and recovered local panels inheriting unrelated partial damage; the eighteenth found remote synchronized-output watchdog recovery targeting only local fixtures, preview output settling nested under active-pane motion gates, and a missing guaranteed retry after transient local snapshot failure; the nineteenth found optional ring readers surviving daemon-session reincarnation under the same logical id; the twentieth found a permanently wedged optional fetch on a silent socket and whole-connection teardown for sessions-local preview failures. All fifty-two findings now have fixes and focused coverage. A clean final Review Gate and installed-app verification remain pending; the user manually verified build `6ee691ab+dirty` and explicitly waived additional Computer Use verification.
 
 ## Decision Log
+
+- Decision: Keyboard hold-to-peek owns a separate tentative-selection input
+  to sidebar rendering instead of masquerading as ordinary mouse hover.
+  Rationale: the two interactions deliberately differ. Keyboard preview must
+  move selected-row styling, avoid showing a close button, and permit the
+  committed active tab as a cycle stop; mouse hover must leave the committed
+  row selected, show its existing close affordance, and suppress an active-tab
+  preview. Keeping both identities explicit prevents those contracts from
+  becoming mutually exclusive conditionals on one overloaded hover value.
+  Date/Author: 2026-07-27, implementation session.
+
+- Decision: Preview chrome uses the previewed session's resolved default
+  background, while preview content is rendered through `FrameProducer` with
+  the exact accessibility and background-compositing options of the main pane.
+  Rationale: sharing only raw cell colors is insufficient when the main pane
+  applies terminal-opacity, explicit-cell-background, or accessibility color
+  policy afterward. Reusing those inputs keeps default, explicit per-cell,
+  and foreground colors faithful without a second preview-specific policy.
+  Date/Author: 2026-07-27, implementation session.
+
+- Decision: While a preview is visible, any rendered frame uses full-surface
+  damage, and daemon-backed background previews participate in the existing
+  per-tab snapshot-generation tracker.
+  Rationale: a preview is a second, scaled projection whose row coordinates
+  cannot be represented by the active terminal's dirty-row bands. Likewise,
+  a background daemon tab can advance while the active tab remains clean;
+  checking its generation before the idle render guard and marking it only
+  after its fetched frame renders prevents frozen preview content.
+  Date/Author: 2026-07-27, implementation session.
+
+- Decision: Preview-only coherence holds are stale-while-revalidate on every
+  session tier. A daemon preview reuses its last decoded snapshot; an
+  in-process/labpty preview retains its dirty bit and reuses a cached completed
+  command projection until synchronized output or the fragment-settle window
+  opens. Active-tab rendering continues independently, and a scheduled wake
+  promotes the pending projection without repainting it on every display tick.
+  Rationale: applying the active terminal's coherence gate only to daemon
+  previews both exposed intermediate local redraws and made preview-only holds
+  capable of freezing unrelated active-tab output. Caching the completed
+  projection preserves visual atomicity while keeping the active terminal live.
+  Date/Author: 2026-07-27, implementation session.
 
 - Decision: Keyboard-triggered preview uses a hold-to-peek gesture on the
   existing *cycle* shortcuts (Ctrl+Tab, Cmd+Option+←/→, Cmd+Shift+[/]) —
@@ -1267,6 +1309,148 @@ the panel's own eligibility check.
 No findings. Every Review Gate item passed; nothing was fixed as part of this
 pass because nothing needed fixing.
 
+### Milestone 9 Review Gate
+
+- [x] `swift test --filter HoverPreview` passes, including the keyboard cycle
+      returning to the initially active tab, keyboard-only tentative sidebar
+      highlighting, mouse-hover active-tab suppression, and default/explicit
+      preview background-color fidelity.
+- [x] Inspect both `makeFrame` paths and confirm they pass the same keyboard
+      preview identity, accessibility visual options, and background
+      compositing options to sidebar/preview production.
+- [x] Confirm ordinary mouse hover still passes a real `hoveredTabId`, never a
+      `keyboardPreviewedTabId`, so the close-button behavior and committed-row
+      highlight remain unchanged.
+- [ ] `./scripts/check` exits 0.
+- [ ] Install with `./scripts/install-app`, restart the installed app, and use
+      Computer Use plus the debug/test surface to verify the visible preview
+      and its colors without launching another app copy from the shell.
+- [ ] Run a fresh review agent against the complete diff and resolve every
+      finding before marking Milestone 9 complete.
+
+Milestone 9 review status: FIXES IN PROGRESS (2026-07-27). Twenty fresh
+`autoreview --mode commit` rounds have run against exact temporary-index
+snapshots. Round 1 reported three findings (translucent solid order, remote
+snapshot source, eligibility-gated highlight); round 2 reported three more
+(filled border ordering, daemon preview invalidation, scaled-preview damage).
+Round 3 reported two daemon-specific findings (preview output bypassed the
+active tab's synchronized-output/fragment-settle coherence gates, and a
+transient preview snapshot failure had no guaranteed retry). All are fixed;
+round 4 reported three integration findings (preview failure and preview-only
+coherence defer must never block active-terminal rendering, and tentative
+selection must not replace actual focus in attention classification). The
+preview path now keeps the last successfully rendered daemon frame while it
+waits/retries at a bounded 10 Hz, and attention focus remains committed-model
+state. Round 5 found that a coalesced retry could fire before a later target's
+deadline and be lost, unchanged daemon generations were decoded again on
+unrelated active frames, and local/labpty previews did not share the remote
+coherence policy. Retry timers now re-arm to the latest deadline, clean daemon
+generations reuse their decoded frame, and local/labpty previews retain their
+dirty generation plus last completed command projection across coherence
+holds. Round 6 found that `nil` daemon ring generations were incorrectly
+classified as clean forever and that local previews which could not emit a
+panel could retain dirty state indefinitely. Missing rings now retry bounded
+reattachment through RPC fallback dirty state, successfully rendered preview
+frames acknowledge the daemon session, and preview geometry is proven
+renderable before local dirty ownership is withheld. Round 7 found that a
+fresh RPC snapshot could still alias a stale cache when the daemon dirty bit
+was already clear, RPC fallback lacked a durable output-settle observation
+time, and an off-screen keyboard target could leave no visible selected row.
+RPC fallback now compares the actual preview-rendering content, retains its
+pending frame plus first-observed timestamp across quiet-window confirmation,
+and retries ring attachment at 10 Hz outside the bounded settle hold. Keyboard
+cycling scrolls each tentative target into view synchronously without
+committing it. Round 8 found four further state-coherence issues: snapshot
+generation can repeat after a daemon restart; a newly shown local preview must
+still evaluate synchronized-output and recent-output coherence after its dirty
+bit was acknowledged elsewhere; a failed RPC quiet-confirmation fetch must not
+publish the still-pending frame; and the debug `showing` bit must follow a
+successfully rendered preview command rather than mere eligibility. The remote
+tracker now keys rendering progress by daemon incarnation plus generation, new
+local targets enter the same coherence decision from their sync/timestamp
+state, failed confirmation retains the last completed cache, and actual
+rendered preview identity drives debug state. Round 9 found three failure-path
+regressions: matching RPC content retained stale dirty metadata, failed local
+snapshot allocation rearmed from the debug-facing rendered identity on every
+tick, and optional remote preview failure aborted an otherwise-valid renderer
+warmup. Matching RPC content now adopts the freshly fetched transport metadata,
+local coherence owns a separate per-presentation acknowledgement identity, and
+warmup degrades to the active snapshot without the optional panel. Round 10
+found that a failed quiet-confirmation fetch could let an already-quiet pending
+candidate bypass the new retry deadline, the retry timer could keep polling an
+occluded/minimized/inactive window, and a tentative tab removed mid-chord could
+leave no selected sidebar row. Failed confirmations now carry their own bounded
+not-before deadline, retry wakes require a user-visible window, and both frame
+paths validate the tentative ID while modifier release forces an immediate
+fallback repaint. Round 11 found that the common shared-memory-ring daemon path
+did not transport `defaultBackgroundRGBA`, and that geometry eligibility alone
+kept forcing full damage after optional preview snapshot failure left no panel
+on glass. ABI-v1's reserved slot-header bytes 88-91 now carry the default color
+end-to-end (zero remains the older-writer fallback), mirrored in the normative C
+header and covered by writer/reader roundtrip plus fuzz tests. Ongoing full
+damage now follows the matching actually-rendered preview identity; initial
+show/hide transitions remain full through ordinary invalidation. A twelfth
+review found that a missing-ring fallback could still block the main render
+thread on an unbounded socket read and that confirmation backoff published its
+unconfirmed pending frame. Optional background previews now read only an
+already-mapped ring on main, serialize ring attachment/RPC fallback on a
+background queue, and retain only the last completed cache until the candidate
+is confirmed. Round 13 found that active-tab render tracking could mask a
+missing or stale preview cache, the background RPC still shared the main
+client's blocking socket lock, unchanged fallback responses invalidated the
+whole surface, and the same mutable ring reader could be read concurrently.
+Preview cache is now per tab and compared directly by incarnation/generation;
+optional traffic owns an independent daemon connection and ring readers; and a
+completed background fetch wakes the frame loop without invalidating until its
+content comparison proves pixels changed. Round 14 found that an optional-only
+ring stopped being observed after its first frame, a transient sibling-socket
+creation failure became permanent retry churn, and optional ring attachments
+were not released per tab or during coordinator teardown. Optional-ring frames
+now retain bounded polling until the main generation probe succeeds, while a
+queue-confined lazy transport reconnects after failure and explicitly releases
+terminated-tab state plus all remaining attachments at detach. A fifteenth
+review found that hiding the mouse close glyph during keyboard peek left its
+destructive hit box active, and that releasing after an off-screen tentative
+target vanished could leave the committed active row outside the viewport.
+Sidebar hit testing now disables close results while peeking, and invalid
+commit cleanup synchronously reveals the active row. A sixteenth review found
+that non-timer render wakes could still start optional fetches for hidden
+windows, and that snapshot-ring-only connections were omitted from daemon
+disconnect cleanup. Optional attempts now require a user-visible window at the
+point of use, and successful ring attachments participate in the same client
+attachment bookkeeping as session attach/create. A seventeenth review found
+that failed ring creation could retain a daemon client before the successful
+response bookkeeping existed, and that a local preview panel recovering from
+snapshot failure could inherit unrelated active-terminal partial damage. Ring
+resources are now created before attaching the client, and an absent-to-present
+preview transition upgrades that one rendered frame to full damage. An
+eighteenth review found that remote synchronized-output watchdog expiry reset
+only the local fixture, preview fragment settling was skipped during active-pane
+motion, and a transient local snapshot failure had no guaranteed idle retry.
+Timed-out remote modes are now bypassed until the daemon reports them cleared,
+preview settling runs independently of active scroll/resize, and failed local
+snapshots arm a bounded visibility-gated retry. A nineteenth review found that
+the independent optional transport could retain an old incarnation's mapped
+ring after a logical daemon session was recreated. The transport now scopes its
+reader cache to the expected incarnation, discards on identity change, and
+refuses to publish a mismatched retry. A twentieth review (Claude fallback
+after the Codex engine hit its usage limit before starting) found that a silent
+optional socket could wedge the serial transport forever and that per-session
+failures unnecessarily retired every optional attachment. The independent
+client now has a real one-second I/O timeout, aborts broken framing without RPC,
+and scopes semantic snapshot/session errors to the affected reader. A
+twenty-first clean round is pending.
+
+Milestone 9 broad-check status: the monolithic `./scripts/check` run passed
+every stage through all 1,927 parallel test-shard cases plus the serial app,
+debug, and GPU/vector shards, then stopped producing output inside the
+deterministic `coverage-labpty` decision harness and was interrupted after
+more than 20 minutes. No coverage process was visible by then. The remaining
+stages were run directly and passed: `./scripts/check-sanitize` (286 tests,
+2 skipped, 0 failures), `./scripts/smoke-runtime` (`foundExpectedText: true`),
+and `./scripts/test-e2e`. The literal Milestone 9 `./scripts/check exits 0`
+box stays open because the coverage stage did not return.
+
 ## Validation and Acceptance
 
 The feature is complete when all of the following hold, verified against a
@@ -1315,7 +1499,9 @@ path (never launched via `open`/shell — the user launches it):
   longer takes `viewportWidth`/`effectiveRendererIsSlug`/`hoverPreviewEnabled`
   (those were dead there too and removed in the same cleanup). New
   `previewCellWidth`/`previewCellHeight: CGFloat` public properties.
-  `TerminalSurfaceFrameRequest` gains `hoverPreviewEnabled: Bool = false`.
+  `TerminalSurfaceFrameRequest` gains `hoverPreviewEnabled: Bool = false` and
+  `deferHoverPreviewUpdate: Bool = false`; the latter selects the last
+  completed preview projection without changing tentative sidebar styling.
 - `Sources/LabanApp/TerminalBitmapView.swift` (Milestone 7): `peekedSidebarTabId:
   Tab.ID?` and `peekCommitModifiers: NSEvent.ModifierFlags` (both `internal`
   for test access); `beginOrAdvancePeek(delta:triggerModifiers:)`,

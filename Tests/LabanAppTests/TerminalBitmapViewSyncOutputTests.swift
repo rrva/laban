@@ -9,6 +9,199 @@ import XCTest
 
 final class TerminalBitmapViewSyncOutputTests: XCTestCase {
 
+  func testFailedRPCConfirmationHonorsRetryBackoffAfterQuietWindow() {
+    let observedAt = Date(timeIntervalSinceReferenceDate: 1_000)
+    let retryNotBefore = observedAt.addingTimeInterval(0.2)
+
+    XCTAssertFalse(
+      TerminalBitmapView.remoteHoverPreviewConfirmationReady(
+        observedAt: observedAt,
+        retryNotBefore: retryNotBefore,
+        now: observedAt.addingTimeInterval(0.1)),
+      "an already-quiet candidate must not bypass backoff after confirmation failed")
+    XCTAssertTrue(
+      TerminalBitmapView.remoteHoverPreviewConfirmationReady(
+        observedAt: observedAt,
+        retryNotBefore: retryNotBefore,
+        now: retryNotBefore))
+    XCTAssertTrue(
+      TerminalBitmapView.remoteHoverPreviewConfirmationReady(
+        observedAt: observedAt,
+        retryNotBefore: nil,
+        now: observedAt.addingTimeInterval(
+          TerminalRenderGate.outputSettleQuietSeconds + 0.001)),
+      "the first confirmation may run as soon as its quiet window opens")
+  }
+
+  func testRemotePreviewRetryWakeRequiresVisibleWindowAndEligibleTarget() {
+    XCTAssertTrue(
+      TerminalBitmapView.hoverPreviewSnapshotRetryShouldWake(
+        windowVisibleToUser: true,
+        retryTabId: "preview",
+        eligiblePreviewTabId: "preview"))
+    XCTAssertFalse(
+      TerminalBitmapView.hoverPreviewSnapshotRetryShouldWake(
+        windowVisibleToUser: false,
+        retryTabId: "preview",
+        eligiblePreviewTabId: "preview"),
+      "occluded, minimized, or inactive windows must not poll preview snapshots")
+    XCTAssertFalse(
+      TerminalBitmapView.hoverPreviewSnapshotRetryShouldWake(
+        windowVisibleToUser: true,
+        retryTabId: "preview",
+        eligiblePreviewTabId: nil))
+  }
+
+  func testRemotePreviewSnapshotAttemptRequiresVisibleWindow() {
+    XCTAssertFalse(
+      TerminalBitmapView.remoteHoverPreviewSnapshotShouldAttempt(
+        windowVisibleToUser: false,
+        retryAllowed: true),
+      "non-timer wakes must not poll optional preview transport while hidden")
+    XCTAssertTrue(
+      TerminalBitmapView.remoteHoverPreviewSnapshotShouldAttempt(
+        windowVisibleToUser: true,
+        retryAllowed: true))
+    XCTAssertFalse(
+      TerminalBitmapView.remoteHoverPreviewSnapshotShouldAttempt(
+        windowVisibleToUser: true,
+        retryAllowed: false))
+  }
+
+  func testAcknowledgedFailedLocalPreviewDoesNotRearmAsNewEveryFrame() {
+    XCTAssertTrue(
+      TerminalBitmapView.localHoverPreviewIsNew(
+        targetTabId: "preview",
+        acknowledgedTabId: nil))
+    XCTAssertFalse(
+      TerminalBitmapView.localHoverPreviewIsNew(
+        targetTabId: "preview",
+        acknowledgedTabId: "preview"),
+      "an attempted preview is acknowledged separately from whether panel commands rendered")
+    XCTAssertFalse(
+      TerminalBitmapView.localHoverPreviewIsNew(
+        targetTabId: nil,
+        acknowledgedTabId: nil))
+  }
+
+  func testRecoveredHoverPreviewForcesFullDamageWhenPanelFirstAppears() {
+    let partial = RenderDamage.partial(yRanges: [DirtyYRange(y: 20, height: 10)])
+
+    XCTAssertEqual(
+      TerminalBitmapView.damageForHoverPreviewTransition(
+        proposedDamage: partial,
+        renderedTabId: "preview",
+        previouslyRenderedTabId: nil),
+      .full,
+      "a panel recovering after an absent snapshot must not inherit terminal-row damage")
+    XCTAssertEqual(
+      TerminalBitmapView.damageForHoverPreviewTransition(
+        proposedDamage: partial,
+        renderedTabId: "preview",
+        previouslyRenderedTabId: "preview"),
+      partial,
+      "an unchanged panel keeps the ordinary damage policy")
+    XCTAssertEqual(
+      TerminalBitmapView.damageForHoverPreviewTransition(
+        proposedDamage: partial,
+        renderedTabId: nil,
+        previouslyRenderedTabId: nil),
+      partial,
+      "a failed retry with no panel must not start a full-damage loop")
+  }
+
+  func testRemoteSynchronizedOutputWatchdogBypassSuppressesStuckMode() {
+    XCTAssertTrue(
+      TerminalBitmapView.effectiveRemoteSynchronizedOutput(
+        reportedActive: true,
+        watchdogBypassed: false))
+    XCTAssertFalse(
+      TerminalBitmapView.effectiveRemoteSynchronizedOutput(
+        reportedActive: true,
+        watchdogBypassed: true),
+      "a timed-out daemon flag must not begin another one-second hold")
+    XCTAssertFalse(
+      TerminalBitmapView.effectiveRemoteSynchronizedOutput(
+        reportedActive: false,
+        watchdogBypassed: false))
+  }
+
+  func testPreviewOutputSettleRemainsEligibleDuringActivePaneMotion() {
+    let scrolling = TerminalBitmapView.outputSettleEligibility(
+      tabChanged: false,
+      scrollAnimating: true,
+      renderingResizeFrame: false,
+      hasVisibleHoverPreview: true)
+    XCTAssertFalse(scrolling.activePane)
+    XCTAssertTrue(scrolling.hoverPreview)
+
+    let resizing = TerminalBitmapView.outputSettleEligibility(
+      tabChanged: false,
+      scrollAnimating: false,
+      renderingResizeFrame: true,
+      hasVisibleHoverPreview: true)
+    XCTAssertFalse(resizing.activePane)
+    XCTAssertTrue(resizing.hoverPreview)
+  }
+
+  func testLocalPreviewSnapshotRetryRequiresDueVisibleMatchingTarget() {
+    let now = Date(timeIntervalSinceReferenceDate: 1_000)
+    let notBefore = now.addingTimeInterval(0.1)
+
+    XCTAssertFalse(
+      TerminalBitmapView.localHoverPreviewSnapshotRetryIsDue(
+        windowVisibleToUser: true,
+        retryTabId: "preview",
+        eligiblePreviewTabId: "preview",
+        retryNotBefore: notBefore,
+        now: now))
+    XCTAssertTrue(
+      TerminalBitmapView.localHoverPreviewSnapshotRetryIsDue(
+        windowVisibleToUser: true,
+        retryTabId: "preview",
+        eligiblePreviewTabId: "preview",
+        retryNotBefore: notBefore,
+        now: notBefore))
+    XCTAssertFalse(
+      TerminalBitmapView.localHoverPreviewSnapshotRetryIsDue(
+        windowVisibleToUser: false,
+        retryTabId: "preview",
+        eligiblePreviewTabId: "preview",
+        retryNotBefore: notBefore,
+        now: notBefore))
+    XCTAssertFalse(
+      TerminalBitmapView.localHoverPreviewSnapshotRetryIsDue(
+        windowVisibleToUser: true,
+        retryTabId: "preview",
+        eligiblePreviewTabId: "other",
+        retryNotBefore: notBefore,
+        now: notBefore))
+  }
+
+  func testNewLocalPreviewEvaluatesAcknowledgedOutputCoherence() {
+    XCTAssertTrue(
+      TerminalBitmapView.localHoverPreviewNeedsCoherence(
+        isNewPreview: true,
+        sessionDirty: false,
+        synchronizedOutputActive: true,
+        lastOutputAt: nil),
+      "initial hover during synchronized output must not sample an intermediate snapshot")
+    XCTAssertTrue(
+      TerminalBitmapView.localHoverPreviewNeedsCoherence(
+        isNewPreview: true,
+        sessionDirty: false,
+        synchronizedOutputActive: false,
+        lastOutputAt: Date(timeIntervalSinceReferenceDate: 1_000)),
+      "already-acknowledged background output still needs the settle timestamp evaluated")
+    XCTAssertFalse(
+      TerminalBitmapView.localHoverPreviewNeedsCoherence(
+        isNewPreview: false,
+        sessionDirty: false,
+        synchronizedOutputActive: false,
+        lastOutputAt: Date(timeIntervalSinceReferenceDate: 1_000)),
+      "an unchanged, already-rendered preview must not become dirty on every frame")
+  }
+
   func testSynchronizedOutputGateTimesOutStuckWindow() {
     let start = Date(timeIntervalSinceReferenceDate: 1_000)
     let first = TerminalRenderGate.synchronizedOutputDecision(

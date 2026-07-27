@@ -617,6 +617,13 @@ Slot header v1:
 | `echoAckSeq` | `UInt64` | latest input sequence safe to treat as reflected |
 | `ptyDrainMonoNs` | `UInt64` | monotonic timestamp for PTY drain |
 | `snapshotPublishMonoNs` | `UInt64` | monotonic timestamp for completed slot |
+| `titleGeneration` | `UInt64` | generation of title metadata |
+| `defaultBackgroundRGBA` | `UInt32` | terminal default background; zero means unknown for compatibility with older ABI-v1 writers |
+
+`defaultBackgroundRGBA` occupies bytes 88-91 of the original 96-byte slot
+header, which were reserved and zeroed by older writers. The ABI version stays
+at 1: old readers ignore the field, while new readers interpret an older
+writer's zero as unknown and retain the established theme fallback.
 
 Each dirty row range is two `UInt16` values: inclusive start row and exclusive
 end row. Each cell record is fixed-size and contains a Unicode scalar when the

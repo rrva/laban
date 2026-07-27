@@ -744,8 +744,13 @@ private final class LabandDaemon {
       )
     }
     do {
-      managed.attachClient(request.clientId)
       let writer = try ensureSnapshotRing(managed)
+      // Ring creation can fail (for example when its backing directory is
+      // unavailable). Do not retain the caller as an attached client until
+      // the resource it asked for actually exists: failed clients do not
+      // receive a successful response and therefore cannot participate in
+      // connection-local disconnect bookkeeping.
+      managed.attachClient(request.clientId)
       managed.publishSnapshot()
       return LabandResponse(
         requestId: request.requestId,
@@ -1434,7 +1439,7 @@ private final class UnixSocketServer {
           let key = request.sessionId ?? request.logicalSessionId
         {
           switch request.type {
-          case .attachSession, .createSession:
+          case .attachSession, .createSession, .attachSnapshotRing:
             attachments[key] = clientId
           case .detachSession, .terminateSession:
             attachments.removeValue(forKey: key)

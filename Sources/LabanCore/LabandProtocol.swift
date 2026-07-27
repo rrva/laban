@@ -287,9 +287,9 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
   public var cells: [LabandSnapshotCell]
   /// Default background color the daemon (libghostty) reports for unstyled
   /// cells. Optional for forwards/backwards compatibility: pre-2026-05 daemons
-  /// don't send the field and snapshot-ring reads can't synthesize it without
-  /// an ABI bump. Consumers MUST treat `nil` and `0` as "unknown" and fall
-  /// back to the theme's default terminal background — never to
+  /// don't send the field, and older ABI-v1 snapshot-ring writers leave its
+  /// reserved slot-header field as zero. Consumers MUST treat `nil` and `0` as
+  /// "unknown" and fall back to the theme's default terminal background — never to
   /// `cells.first?.backgroundRGBA`, which can itself be 0 (transparent black)
   /// and leaks the layer-backed view's underlying color through as a black
   /// border.

@@ -5,9 +5,153 @@ import LabanRenderer
 import LabanTerminalCore
 import os
 
+struct OptionalSnapshotIncarnationTracker {
+  private var expectedBySessionId: [String: String] = [:]
+
+  mutating func prepare(sessionId: String, expectedIncarnationId: String) -> Bool {
+    let previous = expectedBySessionId.updateValue(expectedIncarnationId, forKey: sessionId)
+    return previous != nil && previous != expectedIncarnationId
+  }
+
+  mutating func forget(sessionId: String) {
+    expectedBySessionId.removeValue(forKey: sessionId)
+  }
+
+  mutating func removeAll() {
+    expectedBySessionId.removeAll()
+  }
+}
+
+struct OptionalSnapshotFailurePolicy {
+  static func shouldRetireClient(after error: Error) -> Bool {
+    guard let sessionError = error as? TerminalSessionClientError else {
+      // POSIX socket timeouts/disconnects and decode failures leave stream
+      // framing untrustworthy, so the next bounded attempt must reconnect.
+      return true
+    }
+    switch sessionError {
+    case .sessionNotFound, .sessionNotRunning, .snapshotFailed:
+      return false
+    case .createFailed, .writeFailed, .resizeFailed, .protocolError:
+      return true
+    }
+  }
+}
+
+/// Queue-confined, reconnecting transport for optional background snapshots.
+/// It deliberately owns a client separate from the interactive/render client,
+/// so a stuck socket read cannot hold any lock used by AppKit's main thread.
+private final class OptionalLabandSnapshotTransport: @unchecked Sendable {
+  private let queue = DispatchQueue(
+    label: "com.laban.laband.optional-snapshot",
+    qos: .userInitiated)
+  private let makeClient: () throws -> LabandTerminalSessionClient
+  private var client: LabandTerminalSessionClient?
+  private var incarnationTracker = OptionalSnapshotIncarnationTracker()
+  private var closed = false
+
+  init(makeClient: @escaping () throws -> LabandTerminalSessionClient) {
+    self.makeClient = makeClient
+  }
+
+  func snapshotFrame(
+    sessionId: String,
+    expectedIncarnationId: String,
+    completion: @escaping (Result<LabandSnapshotFrame, Error>) -> Void
+  ) {
+    queue.async { [self] in
+      let result: Result<LabandSnapshotFrame, Error>
+      do {
+        guard !closed else {
+          throw TerminalSessionClientError.snapshotFailed(sessionId)
+        }
+        if incarnationTracker.prepare(
+          sessionId: sessionId,
+          expectedIncarnationId: expectedIncarnationId)
+        {
+          // The daemon recreated this logical session. Its previous mmap stays
+          // readable after unlink, so it must be discarded before consulting
+          // snapshotFrame or the old incarnation can be served forever.
+          client?.discardLocalSnapshotAttachment(sessionId: sessionId)
+        }
+        let client: LabandTerminalSessionClient
+        if let existing = self.client {
+          client = existing
+        } else {
+          let connected = try makeClient()
+          self.client = connected
+          client = connected
+        }
+        var frame = try client.snapshotFrame(sessionId: sessionId)
+        if frame.snapshot.incarnationId != expectedIncarnationId {
+          // Defend against an incarnation change racing the mapping update.
+          // Reattach once; a second mismatch is not safe to publish.
+          client.discardLocalSnapshotAttachment(sessionId: sessionId)
+          frame = try client.snapshotFrame(sessionId: sessionId)
+        }
+        guard frame.snapshot.incarnationId == expectedIncarnationId else {
+          throw TerminalSessionClientError.snapshotFailed(sessionId)
+        }
+        result = .success(frame)
+      } catch {
+        if OptionalSnapshotFailurePolicy.shouldRetireClient(after: error) {
+          // A failed connection is not permanent. Retire it on this background
+          // queue so the next bounded retry creates a fresh independent socket.
+          let failedClient = client
+          client = nil
+          failedClient?.closeAfterTransportFailure()
+        } else {
+          // Session termination/reincarnation is local to this logical ID.
+          // Keep unrelated mapped readers and the shared optional socket warm.
+          client?.discardLocalSnapshotAttachment(sessionId: sessionId)
+        }
+        result = .failure(error)
+      }
+      DispatchQueue.main.async {
+        completion(result)
+      }
+    }
+  }
+
+  /// The primary client has successfully terminated the daemon session, which
+  /// also removed every daemon-side attachment. Release this client's local
+  /// mmap/reader without issuing a now-invalid detach RPC.
+  func discardTerminatedSession(_ sessionId: String) {
+    queue.async { [self] in
+      incarnationTracker.forget(sessionId: sessionId)
+      client?.discardLocalSnapshotAttachment(sessionId: sessionId)
+    }
+  }
+
+  func detachSession(_ sessionId: String) {
+    queue.async { [self] in
+      incarnationTracker.forget(sessionId: sessionId)
+      guard let client else { return }
+      do {
+        _ = try client.detachSession(sessionId: sessionId)
+      } catch {
+        AppLog.app.error(
+          "optional snapshot detach failed for \(sessionId): \(String(describing: error))")
+      }
+    }
+  }
+
+  func close() {
+    queue.async { [self] in
+      guard !closed else { return }
+      closed = true
+      let client = self.client
+      self.client = nil
+      incarnationTracker.removeAll()
+      client?.close()
+    }
+  }
+}
+
 final class AppSessionCoordinator {
   private let mode: TerminalSessionBackend
   private let labandClient: LabandTerminalSessionClient?
+  private let optionalSnapshotTransport: OptionalLabandSnapshotTransport?
   private let labptyClient: LabptyTerminalSessionClient?
   private let shellLaunch: ShellIntegrationLaunch
   private let cwdByTabId: [Tab.ID: String]
@@ -85,6 +229,9 @@ final class AppSessionCoordinator {
   ) {
     self.mode = .laband
     self.labandClient = client
+    self.optionalSnapshotTransport = OptionalLabandSnapshotTransport {
+      try client.makeIndependentClient(ioTimeoutMilliseconds: 1_000)
+    }
     self.labptyClient = nil
     self.shellLaunch = shellLaunch
     self.cwdByTabId = cwdByTabId
@@ -107,6 +254,7 @@ final class AppSessionCoordinator {
   ) {
     self.mode = .labpty
     self.labandClient = nil
+    self.optionalSnapshotTransport = nil
     self.labptyClient = labptyClient
     self.shellLaunch = shellLaunch
     self.cwdByTabId = cwdByTabId
@@ -207,12 +355,46 @@ final class AppSessionCoordinator {
     return labandClient.snapshotRingGeneration(sessionId: info.logicalSessionId)
   }
 
+  /// Probe only state that is already mapped for an established tab. This
+  /// performs no daemon RPC and is therefore suitable for optional previews
+  /// in the render loop.
+  func snapshotGenerationFromAttachedRing(for tab: Tab) -> UInt64? {
+    guard let labandClient, let info = sessionInfo(for: tab) else { return nil }
+    return labandClient.snapshotRingGeneration(sessionId: info.logicalSessionId)
+  }
+
+  func snapshotFrameFromAttachedRing(for tab: Tab) throws -> LabandSnapshotFrame? {
+    guard let labandClient, let info = sessionInfo(for: tab) else { return nil }
+    return try labandClient.snapshotFrameFromAttachedRing(sessionId: info.logicalSessionId)
+  }
+
   func snapshotFrame(for tab: Tab, size: LabanTerminalSize) throws -> LabandSnapshotFrame {
     guard let labandClient else {
       throw TerminalSessionClientError.snapshotFailed(tab.id)
     }
     let info = try ensureLabandSession(for: tab, size: size)
     return try labandClient.snapshotFrame(sessionId: info.logicalSessionId)
+  }
+
+  /// Resolve the tab/session mapping on the caller (normally main), then do
+  /// only the thread-safe laband client read on the background queue. The
+  /// completion is always returned on main so view-owned preview state never
+  /// crosses queues.
+  func snapshotFrameForOptionalPreview(
+    for tab: Tab,
+    completion: @escaping (Result<LabandSnapshotFrame, Error>) -> Void
+  ) throws {
+    guard let optionalSnapshotTransport else {
+      throw TerminalSessionClientError.snapshotFailed(tab.id)
+    }
+    guard let info = sessionInfo(for: tab) else {
+      throw TerminalSessionClientError.snapshotFailed(tab.id)
+    }
+    let logicalSessionId = info.logicalSessionId
+    optionalSnapshotTransport.snapshotFrame(
+      sessionId: logicalSessionId,
+      expectedIncarnationId: info.incarnationId,
+      completion: completion)
   }
 
   func write(
@@ -299,16 +481,23 @@ final class AppSessionCoordinator {
     }
 
     guard let labandClient else { return }
+    var didTerminate = false
     do {
       let info = try ensureLabandSession(for: tab, size: fallbackSize())
       logicalSessionId = info.logicalSessionId
       let terminated = try labandClient.terminate(sessionId: info.logicalSessionId)
       store(terminated, for: tab)
+      didTerminate = true
     } catch {
       AppLog.app.error("laband terminate failed for tab \(tab.id): \(String(describing: error))")
     }
     if let logicalSessionId {
       snapshotGenerationMonitor?.untrack(sessionId: logicalSessionId)
+      if didTerminate {
+        optionalSnapshotTransport?.discardTerminatedSession(logicalSessionId)
+      } else {
+        optionalSnapshotTransport?.detachSession(logicalSessionId)
+      }
     }
     removeCachedInfo(for: tab)
   }
@@ -439,6 +628,7 @@ final class AppSessionCoordinator {
     }
     labptyFeedByTabId.removeAll()
     labptyClient?.close()
+    optionalSnapshotTransport?.close()
     labandClient?.close()
     infoByTabId.removeAll()
     infoByLocalSessionId.removeAll()

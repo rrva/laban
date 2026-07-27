@@ -1,19 +1,35 @@
 import LabanCore
 
 struct RemoteSnapshotRenderTracker {
-  private var renderedGenerationByTab: [Tab.ID: UInt64] = [:]
+  private struct RenderedIdentity: Equatable {
+    var incarnationId: String?
+    var generation: UInt64
+  }
+  private var renderedIdentityByTab: [Tab.ID: RenderedIdentity] = [:]
 
-  func terminalDirty(tabId: Tab.ID, generation: UInt64?, fallbackDirty: Bool) -> Bool {
+  func terminalDirty(
+    tabId: Tab.ID,
+    incarnationId: String? = nil,
+    generation: UInt64?,
+    fallbackDirty: Bool
+  ) -> Bool {
     guard let generation else { return fallbackDirty }
-    return renderedGenerationByTab[tabId] != generation
+    return renderedIdentityByTab[tabId]
+      != RenderedIdentity(incarnationId: incarnationId, generation: generation)
   }
 
-  mutating func markRendered(tabId: Tab.ID, generation: UInt64?) {
+  mutating func markRendered(
+    tabId: Tab.ID,
+    incarnationId: String? = nil,
+    generation: UInt64?
+  ) {
     guard let generation else { return }
-    renderedGenerationByTab[tabId] = generation
+    renderedIdentityByTab[tabId] = RenderedIdentity(
+      incarnationId: incarnationId,
+      generation: generation)
   }
 
   mutating func clear(tabId: Tab.ID) {
-    renderedGenerationByTab.removeValue(forKey: tabId)
+    renderedIdentityByTab.removeValue(forKey: tabId)
   }
 }

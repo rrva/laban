@@ -74,6 +74,21 @@ final class SnapshotExplicitBackgroundTests: XCTestCase {
     try assertRemoteIdentity(roundTrip, expectsExplicitIdentity: false)
   }
 
+  func testDefaultBackgroundCrossesABIV1RingReservedHeaderField() throws {
+    let (snapshot, _, _, _) = try makeIdentitySnapshot()
+    defer { laban_snapshot_destroy(snapshot) }
+
+    let roundTrip = try ringRoundTrip(
+      snapshot: snapshot,
+      writerKind: "default-background",
+      emitsExplicitBackgroundIdentity: true)
+
+    XCTAssertEqual(
+      roundTrip.defaultBackgroundRGBA,
+      snapshot.pointee.default_background_rgba,
+      "ring-backed daemon previews must receive the terminal's authoritative default color")
+  }
+
   func testExplicitBackgroundIdentityIsExcludedFromGlyphAttributes() {
     let styleFlags = UInt16(LABAN_CELL_FLAG_BOLD | LABAN_CELL_FLAG_ITALIC)
     let withBackgroundIdentity = styleFlags | explicitBackgroundFlag

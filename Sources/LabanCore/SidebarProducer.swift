@@ -58,6 +58,11 @@ public struct SidebarProducer {
   public struct HoverPreview: Equatable {
     public var tabId: Tab.ID
     public var viewportWidth: CGFloat
+    /// The previewed terminal's resolved default background. Production
+    /// supplies this from the same snapshot and compositing policy as the
+    /// full-size terminal pane; nil keeps the standalone producer's legacy
+    /// sidebar-colored fallback for callers that only exercise geometry.
+    public var backgroundColor: UInt32?
     /// True when this preview was raised by keyboard hold-to-peek cycling
     /// (`TerminalBitmapView.peekedSidebarTabId`) rather than mouse hover —
     /// there is no cursor position to anchor beside, and the user's
@@ -65,9 +70,15 @@ public struct SidebarProducer {
     /// the sidebar row, so `hoverPreviewPanelRect` centers the panel in the
     /// pane instead of placing it beside the hovered row.
     public var isKeyboardPeek: Bool
-    public init(tabId: Tab.ID, viewportWidth: CGFloat, isKeyboardPeek: Bool = false) {
+    public init(
+      tabId: Tab.ID,
+      viewportWidth: CGFloat,
+      backgroundColor: UInt32? = nil,
+      isKeyboardPeek: Bool = false
+    ) {
       self.tabId = tabId
       self.viewportWidth = viewportWidth
+      self.backgroundColor = backgroundColor
       self.isKeyboardPeek = isKeyboardPeek
     }
   }
@@ -95,6 +106,7 @@ public struct SidebarProducer {
   public func commands(
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
+    keyboardPreviewedTabId: Tab.ID? = nil,
     dragIndicator: DragIndicator? = nil,
     scrollOffset: CGFloat = 0,
     now: Date = Date(),
@@ -102,7 +114,8 @@ public struct SidebarProducer {
   ) -> [FrameCommand] {
     let out = output(
       tabs: tabs, activeTabId: activeTabId, height: height, topInset: topInset,
-      hoveredTabId: hoveredTabId, dragIndicator: dragIndicator, scrollOffset: scrollOffset)
+      hoveredTabId: hoveredTabId, keyboardPreviewedTabId: keyboardPreviewedTabId,
+      dragIndicator: dragIndicator, scrollOffset: scrollOffset)
     // Legacy entry point with no per-tab entry times: markers render in
     // their static full-opacity rest form.
     return out.commands
@@ -192,6 +205,7 @@ public struct SidebarProducer {
   public func output(
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
+    keyboardPreviewedTabId: Tab.ID? = nil,
     dragIndicator: DragIndicator? = nil,
     scrollOffset: CGFloat = 0
   ) -> Output {
@@ -228,21 +242,25 @@ public struct SidebarProducer {
       let rowRect = CGRect(x: 0, y: tabY, width: sidebarWidth, height: rowHeight)
         .intersection(visibleRect)
       guard !rowRect.isEmpty else { continue }
-      let isActive = tab.id == activeTabId
+      // During hold-to-peek, the tentative destination owns the selected-row
+      // styling before the model selection is committed. Mouse hover never
+      // sets this value, so it retains the close-button-only behavior.
+      let isVisuallySelected = tab.id == (keyboardPreviewedTabId ?? activeTabId)
+      let isFocused = tab.id == activeTabId
       let isDragging = (draggingIndex == i)
       let meta = tab.titleMetadata
       let agentStatus = meta.agentStatus
       // How urgently this background tab wants the user (a focused tab is always
       // `.none`). `needsAction` additionally washes the whole row faintly toward
       // the theme's attention accent.
-      let attention = TabAttentionClassifier.classify(meta, isActive: isActive)
-      let baseBg = isActive ? Theme.current.bg2 : Theme.current.bg1
+      let attention = TabAttentionClassifier.classify(meta, isActive: isFocused)
+      let baseBg = isVisuallySelected ? Theme.current.bg2 : Theme.current.bg1
       let bg =
         attention == .needsAction
         ? Self.tint(
           baseBg, toward: Theme.current.attention, fraction: Self.needsActionTintFraction)
         : baseBg
-      let fg = isActive ? Theme.current.fg1 : Theme.current.fg0
+      let fg = isVisuallySelected ? Theme.current.fg1 : Theme.current.fg0
 
       cmds.append(
         .rect(
@@ -251,7 +269,7 @@ public struct SidebarProducer {
           source: .sidebar
         ))
 
-      if isActive {
+      if isVisuallySelected {
         let stripe = CGRect(x: 0, y: tabY, width: 3, height: rowHeight)
           .intersection(visibleRect)
         cmds.append(
@@ -344,7 +362,7 @@ public struct SidebarProducer {
       // mid-gesture close); otherwise the slot belongs to the marker, including
       // while dragging (the drag overlay dims it with the rest of the row).
       let showCloseX = (hoveredTabId == tab.id) && !isDragging
-      if !showCloseX && !isActive {
+      if !showCloseX && !isFocused {
         let slot = CGPoint(x: slotX, y: titleY)
         switch attention {
         case .needsAction:
@@ -447,8 +465,10 @@ public struct SidebarProducer {
   /// <= 0 means the caller has no preview atlas configured yet, e.g. the
   /// effective renderer isn't Slug — see docs/adr/0031).
   /// Pure geometry: where the floating hover-preview panel sits, or nil
-  /// when it shouldn't render (previewing the active tab, an unknown tab,
-  /// or a pane too small to fit a legible panel). Shared by
+  /// when it shouldn't render (mouse-hovering the active tab, targeting an
+  /// unknown tab, or using a pane too small to fit a legible panel). A
+  /// centered keyboard preview may target the active tab because it is a
+  /// real stop in the cycle. Shared by
   /// `hoverPreviewCommands` (chrome) and
   /// `TerminalSurfaceController.hoverPreviewOverlayCommands` (content,
   /// which needs the same rect to position/bound the previewed tab's own
@@ -464,7 +484,7 @@ public struct SidebarProducer {
     scrollOffset: CGFloat, rowHeight: CGFloat, sidebarWidth: CGFloat,
     hoveredTabId: Tab.ID?, viewportWidth: CGFloat, centered: Bool = false
   ) -> CGRect? {
-    guard let hoveredTabId, hoveredTabId != activeTabId,
+    guard let hoveredTabId, centered || hoveredTabId != activeTabId,
       let rowIndex = tabs.firstIndex(where: { $0.id == hoveredTabId })
     else { return nil }
 
@@ -489,7 +509,7 @@ public struct SidebarProducer {
       width: panelWidth, height: panelHeight)
   }
 
-  /// The panel's chrome only (border + opaque background) — never its
+  /// The panel's chrome only (border + background) — never its
   /// content, which `TerminalSurfaceController` builds separately from the
   /// previewed tab's own live snapshot so it carries real per-cell colors.
   static func hoverPreviewCommands(
@@ -505,12 +525,51 @@ public struct SidebarProducer {
         centered: preview.isKeyboardPeek)
     else { return [] }
 
-    // Border: a slightly larger rect painted first, background painted on
-    // top inset by 1pt, so only a 1pt ring of the border color shows —
-    // avoids needing a new FrameCommand case for strokes.
+    // Emit the border as a real four-strip ring rather than a filled backing
+    // rectangle. Slug batches replacement and source-over solids separately
+    // on translucent surfaces; non-overlapping geometry keeps the visible
+    // result independent of that batching order while avoiding a new stroke
+    // command type.
+    let borderWidth: CGFloat = 1
+    let borderColor = Theme.current.dim0
     return [
-      .rect(panelRect.insetBy(dx: -1, dy: -1), color: Theme.current.dim0, source: .sidebarPreview),
-      .rect(panelRect, color: Theme.current.bg1, source: .sidebarPreview, compositing: .replace),
+      .rect(
+        CGRect(
+          x: panelRect.minX - borderWidth,
+          y: panelRect.minY - borderWidth,
+          width: borderWidth,
+          height: panelRect.height + 2 * borderWidth),
+        color: borderColor,
+        source: .sidebarPreview),
+      .rect(
+        CGRect(
+          x: panelRect.maxX,
+          y: panelRect.minY - borderWidth,
+          width: borderWidth,
+          height: panelRect.height + 2 * borderWidth),
+        color: borderColor,
+        source: .sidebarPreview),
+      .rect(
+        CGRect(
+          x: panelRect.minX,
+          y: panelRect.minY - borderWidth,
+          width: panelRect.width,
+          height: borderWidth),
+        color: borderColor,
+        source: .sidebarPreview),
+      .rect(
+        CGRect(
+          x: panelRect.minX,
+          y: panelRect.maxY,
+          width: panelRect.width,
+          height: borderWidth),
+        color: borderColor,
+        source: .sidebarPreview),
+      .rect(
+        panelRect,
+        color: preview.backgroundColor ?? Theme.current.bg1,
+        source: .sidebarPreview,
+        compositing: .replace),
     ]
   }
 
@@ -616,7 +675,7 @@ public struct SidebarProducer {
   // accessory now — sidebar hits are exclusively tab select / close.
   public func hitTest(
     at point: CGPoint, tabs: [Tab], height: CGFloat, topInset: CGFloat = 0,
-    scrollOffset: CGFloat = 0
+    scrollOffset: CGFloat = 0, closeTabEnabled: Bool = true
   ) -> HitResult {
     guard point.x >= 0, point.x < sidebarWidth else { return .none }
     guard point.y >= 0, point.y < height - topInset else { return .none }
@@ -635,7 +694,7 @@ public struct SidebarProducer {
       // slot still select the tab.
       let layout = titleLayout(tab: tab, tabY: tabY)
       let closeBoxBottom = layout.baselineY - cellHeight / 2
-      if point.x >= layout.closeBoxLeft, point.y >= closeBoxBottom {
+      if closeTabEnabled, point.x >= layout.closeBoxLeft, point.y >= closeBoxBottom {
         return .closeTab(tab.id)
       }
       return .selectTab(tab.id)

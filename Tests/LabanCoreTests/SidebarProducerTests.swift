@@ -133,6 +133,25 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertEqual(result, .closeTab(tabs[0].id))
   }
 
+  func testHitTestCloseSlotSelectsInsteadWhileKeyboardPeekHidesCloseGlyph() {
+    let tabs = makeTabs(count: 1)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let tabBottomY = h - p.rowHeight
+    let titleBandY = tabBottomY + p.rowHeight - 8
+
+    let result = p.hitTest(
+      at: CGPoint(x: 190, y: titleBandY),
+      tabs: tabs,
+      height: h,
+      closeTabEnabled: false)
+
+    XCTAssertEqual(
+      result,
+      .selectTab(tabs[0].id),
+      "an invisible close affordance must never retain a destructive hit target")
+  }
+
   func testHitTestCloseTabOnSparseFreshTab() {
     // A freshly started tab has no info lines, so the title (and therefore
     // the hover X) is centered vertically in the row — below the midpoint.
@@ -607,6 +626,35 @@ final class SidebarProducerTests: XCTestCase {
     }
   }
 
+  func testKeyboardPreviewSelectionDoesNotChangeAttentionFocus() throws {
+    var active = Tab(id: "active", position: 1, title: "active", isActive: true, sessionId: "s1")
+    active.titleMetadata.activityState = .waiting
+    var preview = Tab(
+      id: "preview", position: 2, title: "preview", isActive: false, sessionId: "s2")
+    preview.titleMetadata.activityState = .waiting
+    let producer = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let height: CGFloat = 600
+    let commands = producer.commands(
+      tabs: [active, preview],
+      activeTabId: active.id,
+      height: height,
+      keyboardPreviewedTabId: preview.id)
+
+    let markerOrigins = commands.compactMap { command -> CGPoint? in
+      guard
+        case .glyphRun(let origin, let text, _, _, _, .sidebar, _, _, _, _, _, _, _) = command,
+        text == "◆"
+      else { return nil }
+      return origin
+    }
+    XCTAssertEqual(markerOrigins.count, 1)
+    let previewRowMinY = height - 2 * producer.rowHeight
+    let previewRowMaxY = previewRowMinY + producer.rowHeight
+    let markerY = try XCTUnwrap(markerOrigins.first).y
+    XCTAssertGreaterThanOrEqual(markerY, previewRowMinY)
+    XCTAssertLessThan(markerY, previewRowMaxY)
+  }
+
   // MARK: - attention tiers (needs-you vs done vs passive)
 
   func testNeedsActionRendersAttentionDiamondAndRowTint() {
@@ -969,13 +1017,22 @@ final class SidebarProducerTests: XCTestCase {
       tabs: tabs, activeTabId: tabs[0].id, height: 600, topInset: 0, scrollOffset: 0,
       rowHeight: p.rowHeight, sidebarWidth: p.sidebarWidth, hoverPreview: preview)
 
-    let previewRectCount = commands.filter { cmd in
-      if case .rect(_, _, let src, _) = cmd, src == .sidebarPreview { return true }
-      return false
-    }.count
+    let previewRects = commands.compactMap { command -> (CGRect, FrameCompositingMode)? in
+      guard case .rect(let rect, _, .sidebarPreview, let compositing) = command else {
+        return nil
+      }
+      return (rect, compositing)
+    }
     XCTAssertEqual(
-      previewRectCount, 2,
-      "hovering a background tab must draw exactly the border + background chrome rects")
+      previewRects.count, 5,
+      "hovering a background tab must draw four border strips plus the background")
+    let backgroundRect = previewRects.first { $0.1 == .replace }?.0
+    XCTAssertNotNil(backgroundRect)
+    for borderRect in previewRects.filter({ $0.1 == .sourceOver }).map(\.0) {
+      XCTAssertTrue(
+        borderRect.intersection(backgroundRect ?? .zero).isEmpty,
+        "border strips must not overlap the translucent preview canvas")
+    }
   }
 
   func testNilHoverPreviewEmitsNoPreviewCommands() {

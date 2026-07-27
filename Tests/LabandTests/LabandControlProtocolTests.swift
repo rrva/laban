@@ -224,6 +224,89 @@ final class LabandControlProtocolTests: XCTestCase {
     launchedDaemon = nil
   }
 
+  func testFailedSnapshotRingAttachDoesNotRetainClient() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let runId = "laband-ring-failure-\(UUID().uuidString)"
+    let socketPath = ".tmp/\(runId)/laband.sock"
+    let journalPath = ".artifacts/runs/\(runId)/laband"
+    let daemon = try launchDaemon(root: root, socketPath: socketPath, journalPath: journalPath)
+    launchedDaemon = daemon
+
+    let owner = try waitForClient(root: root, socketPath: socketPath)
+    defer { owner.close() }
+    let session = try owner.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/cat",
+        argv: ["/bin/cat"],
+        cwd: root.path,
+        rows: 24,
+        cols: 80
+      ))
+    XCTAssertEqual(session.attachedClientCount, 1)
+
+    let blockedRingDirectory = root.appendingPathComponent(journalPath)
+      .appendingPathComponent("snapshot-rings")
+    XCTAssertTrue(
+      FileManager.default.createFile(atPath: blockedRingDirectory.path, contents: Data()))
+
+    let failingClient = try waitForClient(root: root, socketPath: socketPath)
+    XCTAssertThrowsError(
+      try failingClient.attachSnapshotRing(sessionId: session.logicalSessionId))
+    failingClient.close()
+
+    _ = try waitForSessionInfo(
+      client: owner,
+      logicalSessionId: session.logicalSessionId,
+      attachedClientCount: 1)
+
+    _ = try owner.terminate(sessionId: session.logicalSessionId)
+    try owner.shutdownWhenIdle()
+    daemon.waitUntilExit()
+    XCTAssertEqual(daemon.terminationStatus, 0)
+    launchedDaemon = nil
+  }
+
+  func testClientIOTimeoutBoundsSilentDaemonRead() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent(".tmp/laband-silent-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let socketPath = root.appendingPathComponent("laband.sock").path
+    let listenFD = try bindUnixSocketForTest(path: socketPath)
+    defer { Darwin.close(listenFD) }
+
+    let accepted = DispatchSemaphore(value: 0)
+    let serverDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global(qos: .userInitiated).async {
+      let clientFD = Darwin.accept(listenFD, nil, nil)
+      guard clientFD >= 0 else {
+        accepted.signal()
+        serverDone.signal()
+        return
+      }
+      accepted.signal()
+      var header = [UInt8](repeating: 0, count: 4)
+      _ = Darwin.read(clientFD, &header, header.count)
+      usleep(350_000)
+      Darwin.close(clientFD)
+      serverDone.signal()
+    }
+
+    let client = try LabandTerminalSessionClient(
+      socketPath: socketPath,
+      autoRenewLeases: false,
+      ioTimeoutMilliseconds: 100)
+    XCTAssertEqual(accepted.wait(timeout: .now() + 1), .success)
+    let startedAt = Date()
+    XCTAssertThrowsError(try client.hello())
+    XCTAssertLessThan(
+      Date().timeIntervalSince(startedAt),
+      1,
+      "a silent optional daemon must not wedge its serial transport queue")
+    client.closeAfterTransportFailure()
+    XCTAssertEqual(serverDone.wait(timeout: .now() + 1), .success)
+  }
+
   func testClientAttachLifecycleUpdatesAttachedCount() throws {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     let runId = "laband-attach-\(UUID().uuidString)"
@@ -293,6 +376,34 @@ final class LabandControlProtocolTests: XCTestCase {
     process.standardError = Pipe()
     try process.run()
     return process
+  }
+
+  private func bindUnixSocketForTest(path: String) throws -> Int32 {
+    let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(path.utf8CString)
+    guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+      Darwin.close(fd)
+      throw POSIXError(.ENAMETOOLONG)
+    }
+    withUnsafeMutablePointer(to: &addr.sun_path.0) { ptr in
+      for index in 0..<pathBytes.count {
+        ptr.advanced(by: index).pointee = pathBytes[index]
+      }
+    }
+    let bindResult = withUnsafePointer(to: &addr) { ptr in
+      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+        Darwin.bind(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+      }
+    }
+    guard bindResult == 0, Darwin.listen(fd, 1) == 0 else {
+      let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+      Darwin.close(fd)
+      throw error
+    }
+    return fd
   }
 
   private func waitForClient(root: URL, socketPath: String) throws -> LabandTerminalSessionClient {

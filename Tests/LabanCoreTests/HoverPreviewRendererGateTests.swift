@@ -69,6 +69,22 @@ final class HoverPreviewRendererGateTests: XCTestCase {
     }.first
   }
 
+  private func sidebarRowBackground(
+    _ frame: TerminalSurfaceFrame?, tabIndex: Int, viewportHeight: CGFloat = 600
+  ) -> UInt32? {
+    let rowHeight = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16).rowHeight
+    let expectedY = viewportHeight - CGFloat(tabIndex + 1) * rowHeight
+    return (frame?.commands ?? []).compactMap { command -> UInt32? in
+      guard case .rect(let rect, let color, let source, _) = command,
+        source == .sidebar,
+        rect.width == 200,
+        rect.height == rowHeight,
+        abs(rect.minY - expectedY) < 0.01
+      else { return nil }
+      return color
+    }.first
+  }
+
   private func makeFrame(
     controller: TerminalSurfaceController,
     hoveredTabId: Tab.ID?,
@@ -136,6 +152,81 @@ final class HoverPreviewRendererGateTests: XCTestCase {
     XCTAssertFalse(
       hasPreviewCommand(frame),
       "the active tab's own row must never show a preview of itself")
+  }
+
+  func testKeyboardCycleCanPreviewTheAlreadyActiveTab() throws {
+    let (model, activeTabId, _) = try makeModelWithTwoTabs()
+    let controller = makeController(model: model)
+    let frame = makeFrame(
+      controller: controller, hoveredTabId: activeTabId, isKeyboardPeek: true,
+      effectiveRendererIsSlug: true, hoverPreviewEnabled: true)
+
+    XCTAssertTrue(
+      hasPreviewCommand(frame),
+      "the active tab is suppressed for mouse hover but must remain a keyboard-cycle preview stop")
+  }
+
+  func testKeyboardPeekHighlightsTentativeDestinationWithoutChangingMouseHoverStyling() throws {
+    let (model, _, hoveredTabId) = try makeModelWithTwoTabs()
+    let controller = makeController(model: model)
+
+    let mouseFrame = makeFrame(
+      controller: controller, hoveredTabId: hoveredTabId, isKeyboardPeek: false,
+      effectiveRendererIsSlug: true, hoverPreviewEnabled: true)
+    let keyboardFrame = makeFrame(
+      controller: controller, hoveredTabId: hoveredTabId, isKeyboardPeek: true,
+      effectiveRendererIsSlug: true, hoverPreviewEnabled: true)
+
+    XCTAssertEqual(
+      sidebarRowBackground(mouseFrame, tabIndex: 0), Theme.current.bg2,
+      "ordinary mouse hover must leave the committed active row highlighted")
+    XCTAssertEqual(
+      sidebarRowBackground(mouseFrame, tabIndex: 1), Theme.current.bg1,
+      "ordinary mouse hover must not make the hovered row look selected")
+    XCTAssertEqual(
+      sidebarRowBackground(keyboardFrame, tabIndex: 0), Theme.current.bg1,
+      "while peeking, the committed row yields the selected styling to the tentative target")
+    XCTAssertEqual(
+      sidebarRowBackground(keyboardFrame, tabIndex: 1), Theme.current.bg2,
+      "the tab that modifier release would commit must already be highlighted")
+  }
+
+  func testKeyboardPeekHighlightObeysRendererAndSettingGates() throws {
+    let (model, _, hoveredTabId) = try makeModelWithTwoTabs()
+    let controller = makeController(model: model)
+
+    let rendererDisabledFrame = makeFrame(
+      controller: controller, hoveredTabId: hoveredTabId, isKeyboardPeek: true,
+      effectiveRendererIsSlug: false, hoverPreviewEnabled: true)
+    let settingDisabledFrame = makeFrame(
+      controller: controller, hoveredTabId: hoveredTabId, isKeyboardPeek: true,
+      effectiveRendererIsSlug: true, hoverPreviewEnabled: false)
+
+    for frame in [rendererDisabledFrame, settingDisabledFrame] {
+      XCTAssertEqual(
+        sidebarRowBackground(frame, tabIndex: 0), Theme.current.bg2,
+        "an ineligible preview must keep the committed tab highlighted")
+      XCTAssertEqual(
+        sidebarRowBackground(frame, tabIndex: 1), Theme.current.bg1,
+        "an ineligible tentative target must retain ordinary row styling")
+    }
+  }
+
+  func testMissingKeyboardPeekTargetKeepsCommittedSelectionVisible() throws {
+    let (model, _, _) = try makeModelWithTwoTabs()
+    let controller = makeController(model: model)
+
+    let frame = makeFrame(
+      controller: controller,
+      hoveredTabId: "closed-tab",
+      isKeyboardPeek: true,
+      effectiveRendererIsSlug: true,
+      hoverPreviewEnabled: true)
+
+    XCTAssertEqual(
+      sidebarRowBackground(frame, tabIndex: 0), Theme.current.bg2,
+      "a closed tentative target must fall back to the committed active row")
+    XCTAssertFalse(hasPreviewCommand(frame))
   }
 
   /// Keyboard hold-to-peek (`hoveredSidebarTabIdIsKeyboardPeek`) must center

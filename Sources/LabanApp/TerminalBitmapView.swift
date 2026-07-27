@@ -279,6 +279,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   // this test target has no existing precedent for simulating raw
   // NSEvent-driven keyDown/flagsChanged (see that file's header comment).
   var peekedSidebarTabId: Tab.ID?
+  /// Preview target whose panel commands were present in the last frame that
+  /// the backend actually accepted. Eligibility alone is insufficient for the
+  /// debug `showing` contract because remote snapshot failure can intentionally
+  /// leave no panel on glass.
+  private var lastRenderedHoverPreviewTabId: Tab.ID?
+  /// Local preview target whose current presentation has completed one
+  /// coherence attempt. This is deliberately separate from
+  /// `lastRenderedHoverPreviewTabId`: a transient snapshot-allocation failure
+  /// can render a valid active-terminal frame with no preview commands, and
+  /// must not re-arm the same failed preview on every display tick.
+  private var lastAcknowledgedLocalHoverPreviewTabId: Tab.ID?
   /// The modifier(s) that must ALL still be held for the current peek to
   /// stay open; releasing any one of them (checked in `flagsChanged`)
   /// commits the peek. Set fresh on every cycle keypress so it always
@@ -671,14 +682,51 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var pendingTitleApply = false
 
   private var synchronizedOutputHold: TerminalRenderGate.SynchronizedOutputHold?
+  private var hoverPreviewSynchronizedOutputHold: TerminalRenderGate.SynchronizedOutputHold?
+  /// A daemon snapshot can remain stuck in synchronized-output mode after its
+  /// one-second watchdog fires because only the daemon owns that VT. Latch the
+  /// timed-out session locally until a later daemon snapshot reports the mode
+  /// cleared; otherwise every generation begins another one-second hold.
+  private var remoteSynchronizedOutputWatchdogBypassedSessionIds: Set<Session.ID> = []
   var synchronizedOutputHoldForTests: TerminalRenderGate.SynchronizedOutputHold? {
     get { synchronizedOutputHold }
     set { synchronizedOutputHold = newValue }
   }
 
   private var outputSettleHold: TerminalRenderGate.OutputSettleHold?
+  private var hoverPreviewOutputSettleHold: TerminalRenderGate.OutputSettleHold?
   private var outputSettleWakeScheduled = false
   private var synchronizedOutputWakeScheduled = false
+  private var hoverPreviewSnapshotRetryScheduled = false
+  private var localHoverPreviewSnapshotRetryScheduled = false
+  private static let hoverPreviewSnapshotRetryDelay: TimeInterval = 0.1
+  private var hoverPreviewSnapshotRetryTabId: Tab.ID?
+  private var hoverPreviewSnapshotRetryNotBefore = Date.distantPast
+  private var localHoverPreviewSnapshotRetryTabId: Tab.ID?
+  private var localHoverPreviewSnapshotRetryNotBefore = Date.distantPast
+  private var cachedRemoteHoverPreviewFrames: [Tab.ID: LabandSnapshotFrame] = [:]
+  private struct RemoteHoverPreviewFallbackFetch {
+    var token: UInt64
+    var tabId: Tab.ID
+  }
+  private struct CompletedRemoteHoverPreviewFallbackFetch {
+    var tabId: Tab.ID
+    var frame: LabandSnapshotFrame
+    var fetchedAt: Date
+  }
+  private var remoteHoverPreviewFallbackFetchInFlight: RemoteHoverPreviewFallbackFetch?
+  private var completedRemoteHoverPreviewFallbackFetch: CompletedRemoteHoverPreviewFallbackFetch?
+  private var nextRemoteHoverPreviewFallbackFetchToken: UInt64 = 0
+  private struct PendingRemoteHoverPreviewFallback {
+    var tabId: Tab.ID
+    var frame: LabandSnapshotFrame
+    var observedAt: Date
+    /// Nil for the first quiet-window confirmation. A failed confirmation
+    /// records the bounded retry deadline here so the already-quiet candidate
+    /// cannot bypass backoff on every display-link tick.
+    var confirmationRetryNotBefore: Date?
+  }
+  private var pendingRemoteHoverPreviewFallback: PendingRemoteHoverPreviewFallback?
   var outputSettleHoldForTests: TerminalRenderGate.OutputSettleHold? {
     get { outputSettleHold }
     set { outputSettleHold = newValue }
@@ -1454,17 +1502,298 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let effectiveEnabled = HoverPreviewSettings.enabled && rendererEligible
     let activeTabId = model.activeTab?.id
     let effectivelyHoveredTabId = peekedSidebarTabId ?? hoveredSidebarTabId
+    let isKeyboardPeek = peekedSidebarTabId != nil
     let previewedTabId =
       (effectiveEnabled && effectivelyHoveredTabId != nil
-        && effectivelyHoveredTabId != activeTabId)
+        && (isKeyboardPeek || effectivelyHoveredTabId != activeTabId)
+        && model.tabs.contains(where: { $0.id == effectivelyHoveredTabId }))
       ? effectivelyHoveredTabId : nil
+    let showing = Self.hoverPreviewShowing(
+      eligibleTabId: previewedTabId,
+      renderedTabId: lastRenderedHoverPreviewTabId)
     return HoverPreviewStateResponse(
       configured: HoverPreviewSettings.enabled,
       effectiveRenderer: currentBackend.rendererStatus.effectiveRenderer,
       rendererEligible: rendererEligible,
       effectiveEnabled: effectiveEnabled,
       previewedTabId: previewedTabId,
-      showing: previewedTabId != nil)
+      showing: showing)
+  }
+
+  nonisolated static func hoverPreviewShowing(
+    eligibleTabId: Tab.ID?,
+    renderedTabId: Tab.ID?
+  ) -> Bool {
+    eligibleTabId != nil && eligibleTabId == renderedTabId
+  }
+
+  nonisolated static func localHoverPreviewNeedsCoherence(
+    isNewPreview: Bool,
+    sessionDirty: Bool,
+    synchronizedOutputActive: Bool,
+    lastOutputAt: Date?
+  ) -> Bool {
+    sessionDirty
+      || (isNewPreview && (synchronizedOutputActive || lastOutputAt != nil))
+  }
+
+  nonisolated static func localHoverPreviewIsNew(
+    targetTabId: Tab.ID?,
+    acknowledgedTabId: Tab.ID?
+  ) -> Bool {
+    targetTabId != nil && targetTabId != acknowledgedTabId
+  }
+
+  nonisolated static func effectiveRemoteSynchronizedOutput(
+    reportedActive: Bool,
+    watchdogBypassed: Bool
+  ) -> Bool {
+    reportedActive && !watchdogBypassed
+  }
+
+  nonisolated static func localHoverPreviewSnapshotRetryIsDue(
+    windowVisibleToUser: Bool,
+    retryTabId: Tab.ID?,
+    eligiblePreviewTabId: Tab.ID?,
+    retryNotBefore: Date,
+    now: Date
+  ) -> Bool {
+    windowVisibleToUser && retryTabId != nil && retryTabId == eligiblePreviewTabId
+      && now >= retryNotBefore
+  }
+
+  nonisolated static func outputSettleEligibility(
+    tabChanged: Bool,
+    scrollAnimating: Bool,
+    renderingResizeFrame: Bool,
+    hasVisibleHoverPreview: Bool
+  ) -> (activePane: Bool, hoverPreview: Bool) {
+    (
+      activePane: !tabChanged && !scrollAnimating && !renderingResizeFrame,
+      hoverPreview: hasVisibleHoverPreview
+    )
+  }
+
+  nonisolated static func remoteHoverPreviewConfirmationReady(
+    observedAt: Date,
+    retryNotBefore: Date?,
+    now: Date
+  ) -> Bool {
+    guard now.timeIntervalSince(observedAt) >= TerminalRenderGate.outputSettleQuietSeconds else {
+      return false
+    }
+    return retryNotBefore.map { now >= $0 } ?? true
+  }
+
+  nonisolated static func hoverPreviewSnapshotRetryShouldWake(
+    windowVisibleToUser: Bool,
+    retryTabId: Tab.ID?,
+    eligiblePreviewTabId: Tab.ID?
+  ) -> Bool {
+    windowVisibleToUser && retryTabId != nil && eligiblePreviewTabId != nil
+  }
+
+  nonisolated static func remoteHoverPreviewSnapshotShouldAttempt(
+    windowVisibleToUser: Bool,
+    retryAllowed: Bool
+  ) -> Bool {
+    windowVisibleToUser && retryAllowed
+  }
+
+  private func hoverPreviewTab(
+    activeTab: Tab,
+    hoveredTabId: Tab.ID?,
+    isKeyboardPeek: Bool,
+    effectiveRendererIsSlug: Bool,
+    hoverPreviewEnabled: Bool
+  ) -> Tab? {
+    guard effectiveRendererIsSlug, hoverPreviewEnabled,
+      let previewedTabId = hoveredTabId,
+      isKeyboardPeek || previewedTabId != activeTab.id
+    else { return nil }
+    return model.tabs.first(where: { $0.id == previewedTabId })
+  }
+
+  private func cachedRemoteHoverPreviewFrame(for tabId: Tab.ID) -> LabandSnapshotFrame? {
+    cachedRemoteHoverPreviewFrames[tabId]
+  }
+
+  nonisolated static func remoteHoverPreviewContentMatches(
+    _ lhs: LabandSnapshotResponse,
+    _ rhs: LabandSnapshotResponse
+  ) -> Bool {
+    lhs.incarnationId == rhs.incarnationId
+      && lhs.rows == rhs.rows
+      && lhs.cols == rhs.cols
+      && lhs.lifecycleState == rhs.lifecycleState
+      && lhs.exitStatus == rhs.exitStatus
+      && lhs.cells == rhs.cells
+      && lhs.defaultBackgroundRGBA == rhs.defaultBackgroundRGBA
+      && lhs.synchronizedOutput == rhs.synchronizedOutput
+  }
+
+  nonisolated static func resolveRemoteHoverPreviewFallback(
+    cachedFrame: LabandSnapshotFrame?,
+    fetchedFrame: LabandSnapshotFrame
+  ) -> (contentChanged: Bool, frame: LabandSnapshotFrame) {
+    let contentChanged =
+      cachedFrame.map {
+        !remoteHoverPreviewContentMatches($0.snapshot, fetchedFrame.snapshot)
+      } ?? true
+    // Even when the pixels match, retain the newest transport metadata. In
+    // particular, the daemon may have cleared `dirty` after markRendered;
+    // keeping the old frame would make nil-generation fallback look dirty
+    // forever and issue another synchronous acknowledgement on every repaint.
+    return (contentChanged, fetchedFrame)
+  }
+
+  nonisolated static func remoteHoverPreviewRingNeedsRefresh(
+    cachedFrame: LabandSnapshotFrame?,
+    incarnationId: String?,
+    generation: UInt64?
+  ) -> Bool {
+    guard let cachedFrame, let generation else { return true }
+    return cachedFrame.snapshot.incarnationId != incarnationId
+      || cachedFrame.generation != generation
+  }
+
+  nonisolated static func resolveRemoteHoverPreviewBackoff(
+    cachedFrame: LabandSnapshotFrame?,
+    unconfirmedFrame _: LabandSnapshotFrame?
+  ) -> (frame: LabandSnapshotFrame?, terminalDirty: Bool) {
+    // An unconfirmed candidate is deliberately ignored while its retry is
+    // backed off. Publishing it as dirty would let the ordinary settle gate
+    // display bytes that the failed confirmation never validated.
+    (cachedFrame, false)
+  }
+
+  private func canAttemptRemoteHoverPreviewSnapshot(
+    for tabId: Tab.ID,
+    now: Date = Date()
+  ) -> Bool {
+    // A dirty RPC fallback needs one quiet-window confirmation fetch before
+    // it can be presented; otherwise a second fragment can land after the
+    // first observation but before the 10 Hz ring-reattach retry. This faster
+    // path is bounded by output-settle's 25 ms max hold, then ordinary idle
+    // reattachment returns to 10 Hz.
+    if let pendingRemoteHoverPreviewFallback,
+      pendingRemoteHoverPreviewFallback.tabId == tabId,
+      Self.remoteHoverPreviewConfirmationReady(
+        observedAt: pendingRemoteHoverPreviewFallback.observedAt,
+        retryNotBefore: pendingRemoteHoverPreviewFallback.confirmationRetryNotBefore,
+        now: now)
+    {
+      return true
+    }
+    return hoverPreviewSnapshotRetryTabId != tabId || now >= hoverPreviewSnapshotRetryNotBefore
+  }
+
+  @discardableResult
+  private func deferRemoteHoverPreviewSnapshotAttempt(
+    for tabId: Tab.ID,
+    now: Date = Date()
+  ) -> Date {
+    hoverPreviewSnapshotRetryTabId = tabId
+    hoverPreviewSnapshotRetryNotBefore = now.addingTimeInterval(
+      Self.hoverPreviewSnapshotRetryDelay)
+    scheduleHoverPreviewSnapshotRetry()
+    return hoverPreviewSnapshotRetryNotBefore
+  }
+
+  private func clearRemoteHoverPreviewSnapshotFailure() {
+    hoverPreviewSnapshotRetryTabId = nil
+    hoverPreviewSnapshotRetryNotBefore = .distantPast
+  }
+
+  private func deferLocalHoverPreviewSnapshotAttempt(
+    for tabId: Tab.ID,
+    now: Date = Date()
+  ) {
+    localHoverPreviewSnapshotRetryTabId = tabId
+    localHoverPreviewSnapshotRetryNotBefore = now.addingTimeInterval(
+      Self.hoverPreviewSnapshotRetryDelay)
+    scheduleLocalHoverPreviewSnapshotRetry()
+  }
+
+  private func clearLocalHoverPreviewSnapshotFailure() {
+    localHoverPreviewSnapshotRetryTabId = nil
+    localHoverPreviewSnapshotRetryNotBefore = .distantPast
+  }
+
+  private func requestRemoteHoverPreviewFallbackSnapshot(
+    for tab: Tab,
+    using sessionCoordinator: AppSessionCoordinator
+  ) {
+    guard remoteHoverPreviewFallbackFetchInFlight == nil else { return }
+    nextRemoteHoverPreviewFallbackFetchToken &+= 1
+    let token = nextRemoteHoverPreviewFallbackFetchToken
+    remoteHoverPreviewFallbackFetchInFlight = RemoteHoverPreviewFallbackFetch(
+      token: token,
+      tabId: tab.id)
+    do {
+      try sessionCoordinator.snapshotFrameForOptionalPreview(
+        for: tab
+      ) { [weak self] result in
+        guard let self,
+          self.remoteHoverPreviewFallbackFetchInFlight?.token == token
+        else { return }
+        self.remoteHoverPreviewFallbackFetchInFlight = nil
+        switch result {
+        case .success(let frame):
+          self.completedRemoteHoverPreviewFallbackFetch =
+            CompletedRemoteHoverPreviewFallbackFetch(
+              tabId: tab.id,
+              frame: frame,
+              fetchedAt: Date())
+          // Wake to compare against the completed cache on main. Comparison,
+          // not transport success, decides whether pixels need invalidating.
+          self.scheduleRenderRetry()
+        case .failure(let error):
+          AppLog.app.error(
+            "laband hover preview snapshot failed in background: "
+              + "\(String(describing: error))")
+          let retryNotBefore = self.deferRemoteHoverPreviewSnapshotAttempt(for: tab.id)
+          if self.pendingRemoteHoverPreviewFallback?.tabId == tab.id {
+            self.pendingRemoteHoverPreviewFallback?.confirmationRetryNotBefore = retryNotBefore
+          }
+        }
+      }
+    } catch {
+      remoteHoverPreviewFallbackFetchInFlight = nil
+      AppLog.app.error(
+        "laband hover preview snapshot could not be scheduled: "
+          + "\(String(describing: error))")
+      let retryNotBefore = deferRemoteHoverPreviewSnapshotAttempt(for: tab.id)
+      if pendingRemoteHoverPreviewFallback?.tabId == tab.id {
+        pendingRemoteHoverPreviewFallback?.confirmationRetryNotBefore = retryNotBefore
+      }
+    }
+  }
+
+  /// The active laband snapshot belongs only to the selected tab. A hover or
+  /// keyboard preview of another daemon-backed tab must fetch that tab's own
+  /// snapshot frame; the parser-only `Session` retained in `AppModel` is not
+  /// the authoritative remote terminal state. Keeping the generation lets the
+  /// main render loop mark the previewed tab rendered only after those pixels
+  /// reached the renderer. Cycling back to the active tab can reuse the frame
+  /// already fetched for this render.
+  private func resolvedRemoteHoverPreviewFrame(
+    for request: TerminalSurfaceFrameRequest,
+    activeTab: Tab,
+    activeFrame: LabandSnapshotFrame
+  ) -> LabandSnapshotFrame? {
+    guard
+      let previewedTab = hoverPreviewTab(
+        activeTab: activeTab,
+        hoveredTabId: request.hoveredSidebarTabId,
+        isKeyboardPeek: request.hoveredSidebarTabIdIsKeyboardPeek,
+        effectiveRendererIsSlug: request.effectiveRendererIsSlug,
+        hoverPreviewEnabled: request.hoverPreviewEnabled),
+      let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots
+    else { return nil }
+
+    if previewedTab.id == activeTab.id { return activeFrame }
+    return cachedRemoteHoverPreviewFrame(for: previewedTab.id)
   }
 
   var glyphEffectsState: GlyphEffectsStateResponse? {
@@ -1788,11 +2117,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     let surfaceFrame: TerminalSurfaceFrame?
     if let remoteFrame {
+      // Renderer warm-up is part of the main-thread backend swap. Reuse only
+      // an already completed preview (or the active frame for a keyboard peek)
+      // and let the ordinary async preview path refresh background tabs later.
+      let hoverPreviewFrame = resolvedRemoteHoverPreviewFrame(
+        for: request,
+        activeTab: activeTab,
+        activeFrame: remoteFrame)
       surfaceFrame = surfaceController.makeFrame(
         request,
         remoteSnapshot: remoteFrame.snapshot,
         sessionId: session.id,
-        dirtyRanges: remoteFrame.dirtyRanges)
+        dirtyRanges: remoteFrame.dirtyRanges,
+        hoverPreviewSnapshot: hoverPreviewFrame?.snapshot)
     } else {
       surfaceFrame = surfaceController.makeFrame(
         request,
@@ -2372,6 +2709,83 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
+  /// A daemon snapshot can fail transiently or fall back to RPC while its
+  /// shared-memory ring is being reattached. Keep the last completed preview
+  /// on glass and retry attachment at a bounded 10 Hz while any tab is still
+  /// eligible; an immediate async retry would spin the main queue on a
+  /// persistent failure. The retry wake itself does not force a render: a
+  /// successful probe promotes the frame only when its generation/dirty flag
+  /// says the preview actually changed.
+  private func scheduleHoverPreviewSnapshotRetry() {
+    guard !hoverPreviewSnapshotRetryScheduled else { return }
+    hoverPreviewSnapshotRetryScheduled = true
+    let delay = max(0, hoverPreviewSnapshotRetryNotBefore.timeIntervalSinceNow)
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      self.hoverPreviewSnapshotRetryScheduled = false
+      // Another preview target may have failed while this timer was already
+      // pending, moving the shared retry deadline later. Re-arm for that exact
+      // deadline instead of consuming the only retry before the new target is
+      // eligible and leaving it parked forever.
+      if self.hoverPreviewSnapshotRetryNotBefore.timeIntervalSinceNow > 0 {
+        self.scheduleHoverPreviewSnapshotRetry()
+        return
+      }
+      guard self.hoverPreviewSnapshotRetryTabId != nil else { return }
+      let eligiblePreviewTabId = self.model.activeTab.flatMap { activeTab in
+        self.hoverPreviewTab(
+          activeTab: activeTab,
+          hoveredTabId: self.peekedSidebarTabId ?? self.hoveredSidebarTabId,
+          isKeyboardPeek: self.peekedSidebarTabId != nil,
+          effectiveRendererIsSlug: self.backend is SlugGlyphRenderer,
+          hoverPreviewEnabled: HoverPreviewSettings.enabled)?.id
+      }
+      guard
+        Self.hoverPreviewSnapshotRetryShouldWake(
+          windowVisibleToUser: self.animationVisibleToUser,
+          retryTabId: self.hoverPreviewSnapshotRetryTabId,
+          eligiblePreviewTabId: eligiblePreviewTabId)
+      else { return }
+      self.advanceFrame(wake: .renderRetry)
+    }
+  }
+
+  /// Local snapshot allocation can fail transiently even after geometry and
+  /// coherence gates pass. A one-shot bounded wake guarantees another attempt
+  /// without keeping the display link or full-surface invalidation spinning.
+  private func scheduleLocalHoverPreviewSnapshotRetry() {
+    guard !localHoverPreviewSnapshotRetryScheduled else { return }
+    localHoverPreviewSnapshotRetryScheduled = true
+    let delay = max(0, localHoverPreviewSnapshotRetryNotBefore.timeIntervalSinceNow)
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      self.localHoverPreviewSnapshotRetryScheduled = false
+      if self.localHoverPreviewSnapshotRetryNotBefore.timeIntervalSinceNow > 0 {
+        self.scheduleLocalHoverPreviewSnapshotRetry()
+        return
+      }
+      guard self.sessionCoordinator?.usesRemoteSnapshots != true else { return }
+      let eligiblePreviewTabId = self.model.activeTab.flatMap { activeTab in
+        self.hoverPreviewTab(
+          activeTab: activeTab,
+          hoveredTabId: self.peekedSidebarTabId ?? self.hoveredSidebarTabId,
+          isKeyboardPeek: self.peekedSidebarTabId != nil,
+          effectiveRendererIsSlug: self.backend is SlugGlyphRenderer,
+          hoverPreviewEnabled: HoverPreviewSettings.enabled)?.id
+      }
+      guard
+        Self.localHoverPreviewSnapshotRetryIsDue(
+          windowVisibleToUser: self.animationVisibleToUser,
+          retryTabId: self.localHoverPreviewSnapshotRetryTabId,
+          eligiblePreviewTabId: eligiblePreviewTabId,
+          retryNotBefore: self.localHoverPreviewSnapshotRetryNotBefore,
+          now: Date())
+      else { return }
+      self.renderInvalidated = true
+      self.advanceFrame(wake: .renderRetry)
+    }
+  }
+
   /// Invalidate the current frame AND kick the frame loop. With a fully
   /// parked display link, a bare `renderInvalidated = true` is a frozen-frame
   /// bug waiting to happen: nothing repaints until some unrelated wake fires.
@@ -2777,20 +3191,42 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// repaint via the renderer's dedicated sidebar-strip pass
   /// (`repaintSidebarStrip`), so a breathing marker costs a ~200 pt strip, not
   /// full-surface repaints at the 120 Hz output link rate — the structural fix
-  /// for "typing is molasses whenever a tab needs me". Hover and drag already
-  /// set `renderInvalidated`, so they need no entry here.
+  /// for "typing is molasses whenever a tab needs me". Pointer hover and drag
+  /// still set `renderInvalidated`; `hoverPreviewShowing` additionally covers
+  /// later output frames whose scaled preview cannot use main-grid row damage.
   nonisolated static func shouldForceFullDamage(
     renderInvalidated: Bool,
     tabChanged: Bool,
     scrollAnimating: Bool,
-    fractionalScrollOffset: Bool
+    fractionalScrollOffset: Bool,
+    hoverPreviewShowing: Bool = false
   ) -> Bool {
     // fractionalScrollOffset: while rows sit at a sub-cell offset, a
     // partial-damage frame (output, blink, attention) would composite its
     // damaged rows against stale pixels at every undamaged row — the offset
     // shifts everything, so any repaint must be a full repaint.
-    renderInvalidated || tabChanged || scrollAnimating
+    // A preview is a second, scaled projection of snapshot rows at different
+    // coordinates. Dirty-row bands for the full-size terminal cannot safely
+    // describe that projection, so any frame rendered while it is visible
+    // repaints the whole surface.
+    renderInvalidated || tabChanged || scrollAnimating || hoverPreviewShowing
       || fractionalScrollOffset
+  }
+
+  /// A preview panel can first materialize on a frame whose active-terminal
+  /// damage is only partial (notably after a transient local snapshot failure).
+  /// The panel occupies scaled coordinates unrelated to those dirty row bands,
+  /// so its absent-to-present or target-to-target transition must repaint the
+  /// persistent surface in full.
+  nonisolated static func damageForHoverPreviewTransition(
+    proposedDamage: RenderDamage,
+    renderedTabId: Tab.ID?,
+    previouslyRenderedTabId: Tab.ID?
+  ) -> RenderDamage {
+    guard let renderedTabId, renderedTabId != previouslyRenderedTabId else {
+      return proposedDamage
+    }
+    return .full
   }
 
   // MARK: - Frame loop
@@ -2843,12 +3279,32 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     defer { updateDisplayLinkRunState() }
 
     let captureFrame = renderedFrameCount + 1
+    let requestedHoverPreviewTabId = peekedSidebarTabId ?? hoveredSidebarTabId
+    let synchronizedHoverPreviewTabId: Tab.ID? = model.activeTab.flatMap { activeTab in
+      guard
+        let previewedTab = hoverPreviewTab(
+          activeTab: activeTab,
+          hoveredTabId: requestedHoverPreviewTabId,
+          isKeyboardPeek: peekedSidebarTabId != nil,
+          effectiveRendererIsSlug: backend is SlugGlyphRenderer,
+          hoverPreviewEnabled: HoverPreviewSettings.enabled),
+        surfaceController.canRenderHoverPreview(
+          activeTabId: activeTab.id,
+          previewedTabId: previewedTab.id,
+          viewportWidth: bounds.width,
+          viewportHeight: bounds.height,
+          topInset: Self.titlebarReservedHeight,
+          scrollOffset: currentSidebarScrollOffsetForHitTesting(),
+          isKeyboardPeek: peekedSidebarTabId != nil)
+      else { return nil }
+      return previewedTab.id
+    }
     let sync = surfaceController.syncSessions(
       captureFrame: captureFrame,
       polling: .none,
       markInactiveDirtyRendered: true,
       noteOutputOnDirty: true,
-      hoveredTabId: peekedSidebarTabId ?? hoveredSidebarTabId)
+      hoveredTabId: synchronizedHoverPreviewTabId)
     frameModelChanged = sync.modelChanged
     if sync.modelChanged {
       renderInvalidated = true
@@ -2861,6 +3317,26 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     else {
       onViewportUnavailable?()
       return
+    }
+    let visibleHoverPreviewTab = hoverPreviewTab(
+      activeTab: activeTab,
+      hoveredTabId: requestedHoverPreviewTabId,
+      isKeyboardPeek: peekedSidebarTabId != nil,
+      effectiveRendererIsSlug: backend is SlugGlyphRenderer,
+      hoverPreviewEnabled: HoverPreviewSettings.enabled
+    ).flatMap { previewedTab in
+      surfaceController.canRenderHoverPreview(
+        activeTabId: activeTab.id,
+        previewedTabId: previewedTab.id,
+        viewportWidth: bounds.width,
+        viewportHeight: bounds.height,
+        topInset: Self.titlebarReservedHeight,
+        scrollOffset: currentSidebarScrollOffsetForHitTesting(),
+        isKeyboardPeek: peekedSidebarTabId != nil)
+        ? previewedTab : nil
+    }
+    let visibleHoverPreviewSession = visibleHoverPreviewTab.flatMap {
+      model.session(forTab: $0.id)
     }
     // Only worth building when the journal can record it: the interpolation
     // otherwise burns CPU on every display-link tick of an idle terminal.
@@ -2984,8 +3460,201 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     self.scrollAnimating = scrollAnimating
 
+    let renderInvalidatedBeforePreviewUpdate = renderInvalidated
     var remoteFrame: LabandSnapshotFrame?
+    var previewRemoteFrame: LabandSnapshotFrame?
+    var previewRemoteDirtyObservedAt: Date?
+    let localBackgroundPreview =
+      !usingRemoteSessions
+      && visibleHoverPreviewTab.map { $0.id != activeTab.id } == true
+    if !localBackgroundPreview {
+      lastAcknowledgedLocalHoverPreviewTabId = nil
+      clearLocalHoverPreviewSnapshotFailure()
+    } else if Self.localHoverPreviewSnapshotRetryIsDue(
+      windowVisibleToUser: windowVisibleToUser,
+      retryTabId: localHoverPreviewSnapshotRetryTabId,
+      eligiblePreviewTabId: visibleHoverPreviewTab?.id,
+      retryNotBefore: localHoverPreviewSnapshotRetryNotBefore,
+      now: Date()
+    ) {
+      // A parked local preview whose earlier snapshot allocation failed needs
+      // a real invalidation so the retry wake reaches frame construction.
+      renderInvalidated = true
+    }
+    var previewTerminalDirty =
+      localBackgroundPreview
+      && Self.localHoverPreviewNeedsCoherence(
+        isNewPreview: Self.localHoverPreviewIsNew(
+          targetTabId: visibleHoverPreviewTab?.id,
+          acknowledgedTabId: lastAcknowledgedLocalHoverPreviewTabId),
+        sessionDirty: visibleHoverPreviewSession.map { sync.dirtySessionIds.contains($0.id) }
+          == true,
+        synchronizedOutputActive: visibleHoverPreviewSession?.synchronizedOutputActive ?? false,
+        lastOutputAt: visibleHoverPreviewTab?.lastOutputAt)
     if let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
+      if let visibleHoverPreviewTab, visibleHoverPreviewTab.id != activeTab.id {
+        let cachedFrame = cachedRemoteHoverPreviewFrame(for: visibleHoverPreviewTab.id)
+        if completedRemoteHoverPreviewFallbackFetch?.tabId != visibleHoverPreviewTab.id {
+          completedRemoteHoverPreviewFallbackFetch = nil
+        }
+        if Self.remoteHoverPreviewSnapshotShouldAttempt(
+          windowVisibleToUser: windowVisibleToUser,
+          retryAllowed: canAttemptRemoteHoverPreviewSnapshot(for: visibleHoverPreviewTab.id))
+        {
+          do {
+            let previewGeneration = sessionCoordinator.snapshotGenerationFromAttachedRing(
+              for: visibleHoverPreviewTab)
+            if previewGeneration == nil {
+              previewRemoteFrame = cachedFrame
+              previewTerminalDirty = false
+              if let completedFetch = completedRemoteHoverPreviewFallbackFetch,
+                completedFetch.tabId == visibleHoverPreviewTab.id
+              {
+                completedRemoteHoverPreviewFallbackFetch = nil
+                let fetchedFrame = completedFetch.frame
+                if fetchedFrame.generation == nil {
+                  // No shared ring was available, so this frame came from the
+                  // background RPC fallback. Keep the last completed preview
+                  // on glass until a second quiet-window fetch confirms the
+                  // candidate; neither fetch ever blocks the render thread.
+                  deferRemoteHoverPreviewSnapshotAttempt(for: visibleHoverPreviewTab.id)
+                  let resolution = Self.resolveRemoteHoverPreviewFallback(
+                    cachedFrame: cachedFrame,
+                    fetchedFrame: fetchedFrame)
+                  if resolution.contentChanged {
+                    if let pendingRemoteHoverPreviewFallback,
+                      pendingRemoteHoverPreviewFallback.tabId == visibleHoverPreviewTab.id,
+                      Self.remoteHoverPreviewContentMatches(
+                        pendingRemoteHoverPreviewFallback.frame.snapshot,
+                        fetchedFrame.snapshot)
+                    {
+                      previewRemoteFrame = resolution.frame
+                      previewTerminalDirty = true
+                      previewRemoteDirtyObservedAt = pendingRemoteHoverPreviewFallback.observedAt
+                    } else {
+                      pendingRemoteHoverPreviewFallback = PendingRemoteHoverPreviewFallback(
+                        tabId: visibleHoverPreviewTab.id,
+                        frame: fetchedFrame,
+                        observedAt: completedFetch.fetchedAt,
+                        confirmationRetryNotBefore: nil)
+                      scheduleOutputSettleWake(
+                        after: TerminalRenderGate.outputSettleQuietSeconds)
+                    }
+                  } else {
+                    if pendingRemoteHoverPreviewFallback?.tabId == visibleHoverPreviewTab.id {
+                      pendingRemoteHoverPreviewFallback = nil
+                    }
+                    previewRemoteFrame = resolution.frame
+                    cachedRemoteHoverPreviewFrames[visibleHoverPreviewTab.id] = resolution.frame
+                  }
+                } else {
+                  // This generation belongs to the independent optional
+                  // client's ring. The main client's monitor cannot see it,
+                  // so retain bounded 10 Hz polling until the main generation
+                  // probe itself becomes non-nil.
+                  deferRemoteHoverPreviewSnapshotAttempt(for: visibleHoverPreviewTab.id)
+                  if pendingRemoteHoverPreviewFallback?.tabId == visibleHoverPreviewTab.id {
+                    pendingRemoteHoverPreviewFallback = nil
+                  }
+                  let resolution = Self.resolveRemoteHoverPreviewFallback(
+                    cachedFrame: cachedFrame,
+                    fetchedFrame: fetchedFrame)
+                  previewRemoteFrame = resolution.frame
+                  previewTerminalDirty = resolution.contentChanged
+                  if !resolution.contentChanged {
+                    cachedRemoteHoverPreviewFrames[visibleHoverPreviewTab.id] = resolution.frame
+                    remoteSnapshotRenderTracker.markRendered(
+                      tabId: visibleHoverPreviewTab.id,
+                      incarnationId: resolution.frame.snapshot.incarnationId,
+                      generation: resolution.frame.generation)
+                  }
+                }
+              } else {
+                requestRemoteHoverPreviewFallbackSnapshot(
+                  for: visibleHoverPreviewTab,
+                  using: sessionCoordinator)
+              }
+            } else {
+              if pendingRemoteHoverPreviewFallback?.tabId == visibleHoverPreviewTab.id {
+                pendingRemoteHoverPreviewFallback = nil
+              }
+              previewTerminalDirty = Self.remoteHoverPreviewRingNeedsRefresh(
+                cachedFrame: cachedFrame,
+                incarnationId: sessionCoordinator.sessionInfo(for: visibleHoverPreviewTab)?
+                  .incarnationId,
+                generation: previewGeneration)
+            }
+            if previewTerminalDirty, previewRemoteFrame == nil {
+              // The laband monitor wakes for every tracked session, but active
+              // terminal dirtiness only covers the selected tab. Promote a
+              // generation change in the visible background preview to a real
+              // invalidation before the idle render guard below. Read only the
+              // already mapped ring here: if it vanished between probe and
+              // read, the bounded background path handles reattachment/RPC.
+              if let attachedFrame = try sessionCoordinator.snapshotFrameFromAttachedRing(
+                for: visibleHoverPreviewTab)
+              {
+                let resolution = Self.resolveRemoteHoverPreviewFallback(
+                  cachedFrame: cachedFrame,
+                  fetchedFrame: attachedFrame)
+                previewRemoteFrame = resolution.frame
+                clearRemoteHoverPreviewSnapshotFailure()
+                previewTerminalDirty = resolution.contentChanged
+                if resolution.contentChanged {
+                  renderInvalidated = true
+                } else {
+                  cachedRemoteHoverPreviewFrames[visibleHoverPreviewTab.id] = resolution.frame
+                  remoteSnapshotRenderTracker.markRendered(
+                    tabId: visibleHoverPreviewTab.id,
+                    incarnationId: resolution.frame.snapshot.incarnationId,
+                    generation: resolution.frame.generation)
+                }
+              } else {
+                previewRemoteFrame = cachedRemoteHoverPreviewFrame(
+                  for: visibleHoverPreviewTab.id)
+                previewTerminalDirty = false
+                requestRemoteHoverPreviewFallbackSnapshot(
+                  for: visibleHoverPreviewTab,
+                  using: sessionCoordinator)
+              }
+            } else if !previewTerminalDirty, previewRemoteFrame == nil {
+              // A clean generation probe proves the last rendered preview is
+              // still authoritative. Reuse its decoded frame instead of
+              // decoding the same shared-memory snapshot on every unrelated
+              // active-tab repaint (cursor blink, animation, scroll).
+              previewRemoteFrame = cachedRemoteHoverPreviewFrame(
+                for: visibleHoverPreviewTab.id)
+              clearRemoteHoverPreviewSnapshotFailure()
+            }
+          } catch {
+            AppLog.app.error(
+              "laband hover preview snapshot failed before render gates: "
+                + "\(String(describing: error))")
+            let retryNotBefore = deferRemoteHoverPreviewSnapshotAttempt(
+              for: visibleHoverPreviewTab.id)
+            if pendingRemoteHoverPreviewFallback?.tabId == visibleHoverPreviewTab.id {
+              pendingRemoteHoverPreviewFallback?.confirmationRetryNotBefore = retryNotBefore
+            }
+            // A failed quiet-window confirmation proves nothing about bytes
+            // that may have landed after the pending RPC frame. Keep only the
+            // last completed preview on glass; the pending candidate remains
+            // stored for comparison with the next successful bounded retry.
+            previewRemoteFrame = cachedRemoteHoverPreviewFrame(for: visibleHoverPreviewTab.id)
+            previewTerminalDirty = false
+          }
+        } else {
+          // Retry/confirmation backoff never promotes an unconfirmed fallback
+          // candidate. Only a frame that already reached the renderer may be
+          // reused until another bounded background fetch is allowed.
+          let resolution = Self.resolveRemoteHoverPreviewBackoff(
+            cachedFrame: cachedRemoteHoverPreviewFrame(for: visibleHoverPreviewTab.id),
+            unconfirmedFrame: pendingRemoteHoverPreviewFallback?.tabId
+              == visibleHoverPreviewTab.id
+              ? pendingRemoteHoverPreviewFallback?.frame : nil)
+          previewRemoteFrame = resolution.frame
+          previewTerminalDirty = resolution.terminalDirty
+        }
+      }
       do {
         let remoteGeneration = try sessionCoordinator.snapshotGeneration(
           for: activeTab,
@@ -2994,6 +3663,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           activeTerminalDirty
           || remoteSnapshotRenderTracker.terminalDirty(
             tabId: activeTab.id,
+            incarnationId: sessionCoordinator.sessionInfo(for: activeTab)?.incarnationId,
             generation: remoteGeneration,
             fallbackDirty: true)
         if activeTerminalDirty {
@@ -3004,6 +3674,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
             activeTerminalDirty
             || remoteSnapshotRenderTracker.terminalDirty(
               tabId: activeTab.id,
+              incarnationId: remoteFrame?.snapshot.incarnationId,
               generation: remoteFrame?.generation,
               fallbackDirty: remoteFrame?.snapshot.dirty ?? false)
         }
@@ -3015,6 +3686,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     } else {
       remoteFrame = nil
       remoteMouseEncodingByTab.removeAll()
+      remoteSynchronizedOutputWatchdogBypassedSessionIds.removeAll()
     }
     if let remoteFrame {
       cacheRemoteMouseEncoding(remoteFrame.snapshot, for: activeTab.id)
@@ -3023,7 +3695,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let terminalDirty = activeTerminalDirty || (!usingRemoteSessions && session.renderDirty())
 
     let gateNow = Date()
-    if terminalDirty {
+    if terminalDirty || previewTerminalDirty {
       terminalOutputActiveUntil = gateNow.addingTimeInterval(
         Self.terminalOutputDisplayLinkHoldSeconds)
     }
@@ -3033,7 +3705,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // half-drawn frames. In-process keeps reading the live VT.
     let synchronizedOutputActive: Bool
     if let remoteFrame {
-      synchronizedOutputActive = remoteFrame.snapshot.synchronizedOutput ?? false
+      let reportedActive = remoteFrame.snapshot.synchronizedOutput ?? false
+      if !reportedActive {
+        remoteSynchronizedOutputWatchdogBypassedSessionIds.remove(session.id)
+      }
+      synchronizedOutputActive = Self.effectiveRemoteSynchronizedOutput(
+        reportedActive: reportedActive,
+        watchdogBypassed: remoteSynchronizedOutputWatchdogBypassedSessionIds.contains(session.id))
     } else {
       synchronizedOutputActive = session.synchronizedOutputActive
     }
@@ -3045,7 +3723,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       hold: synchronizedOutputHold)
     synchronizedOutputHold = syncGate.hold
     if syncGate.shouldResetMode {
-      _ = session.resetSynchronizedOutput()
+      if remoteFrame != nil {
+        remoteSynchronizedOutputWatchdogBypassedSessionIds.insert(session.id)
+      } else {
+        _ = session.resetSynchronizedOutput()
+      }
     }
     if syncGate.shouldDefer {
       // Hold the previous completed frame during DEC synchronized output. Laban
@@ -3072,12 +3754,77 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         contentYOffset: 0)
       return
     }
+    var deferHoverPreviewUpdate = false
+    if let visibleHoverPreviewTab {
+      let previewSynchronizedOutputActive: Bool
+      if usingRemoteSessions {
+        let reportedActive = previewRemoteFrame?.snapshot.synchronizedOutput ?? false
+        if previewRemoteFrame != nil, !reportedActive {
+          remoteSynchronizedOutputWatchdogBypassedSessionIds.remove(
+            visibleHoverPreviewTab.sessionId)
+        }
+        previewSynchronizedOutputActive = Self.effectiveRemoteSynchronizedOutput(
+          reportedActive: reportedActive,
+          watchdogBypassed: remoteSynchronizedOutputWatchdogBypassedSessionIds.contains(
+            visibleHoverPreviewTab.sessionId))
+      } else {
+        previewSynchronizedOutputActive =
+          visibleHoverPreviewSession?.synchronizedOutputActive ?? false
+      }
+      let previewSyncGate = TerminalRenderGate.synchronizedOutputDecision(
+        terminalDirty: previewTerminalDirty,
+        synchronizedOutputActive: previewSynchronizedOutputActive,
+        sessionId: visibleHoverPreviewTab.sessionId,
+        now: gateNow,
+        hold: hoverPreviewSynchronizedOutputHold)
+      hoverPreviewSynchronizedOutputHold = previewSyncGate.hold
+      if previewSyncGate.shouldResetMode {
+        if usingRemoteSessions {
+          remoteSynchronizedOutputWatchdogBypassedSessionIds.insert(
+            visibleHoverPreviewTab.sessionId)
+        } else {
+          _ = model.session(forTab: visibleHoverPreviewTab.id)?.resetSynchronizedOutput()
+        }
+      }
+      if previewSyncGate.shouldDefer {
+        deferHoverPreviewUpdate = true
+        scheduleSynchronizedOutputWake(
+          after: previewSyncGate.wakeAfter
+            ?? TerminalRenderGate.synchronizedOutputMaxHoldSeconds)
+        recordRenderJournal(
+          event: .skipped,
+          frame: captureFrame,
+          tab: activeTab,
+          session: session,
+          reason: "hoverPreviewSynchronizedOutputDefer",
+          terminalDirty: terminalDirty || previewTerminalDirty,
+          activeTerminalDirty: activeTerminalDirty,
+          renderInvalidated: renderInvalidated,
+          tabChanged: tabChanged,
+          cursorBlinkFrame: cursorBlinkFrame,
+          attentionAnimating: false,
+          scrollAnimating: scrollAnimating,
+          usingRemoteSnapshots: usingRemoteSessions,
+          cellPayloadRequested: false,
+          contentYOffset: 0)
+        previewRemoteFrame = cachedRemoteHoverPreviewFrame(for: visibleHoverPreviewTab.id)
+        previewTerminalDirty = false
+        renderInvalidated = renderInvalidatedBeforePreviewUpdate
+      }
+    } else {
+      hoverPreviewSynchronizedOutputHold = nil
+    }
 
     // PTY output often arrives as related fragments that together form one
     // visual update. Rendering between fragments can expose transient parser
     // states, so wait for a short quiet window while bounding the hold for
     // continuous output.
-    if !tabChanged && !scrollAnimating && !renderingResizeFrame {
+    let settleEligibility = Self.outputSettleEligibility(
+      tabChanged: tabChanged,
+      scrollAnimating: scrollAnimating,
+      renderingResizeFrame: renderingResizeFrame,
+      hasVisibleHoverPreview: visibleHoverPreviewTab != nil)
+    if settleEligibility.activePane {
       let settleGate = TerminalRenderGate.outputSettleDecision(
         terminalDirty: terminalDirty,
         sessionId: session.id,
@@ -3111,6 +3858,58 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       }
     } else {
       outputSettleHold = nil
+    }
+
+    // Preview coherence is independent of motion in the active pane. During a
+    // resize or smooth scroll we still draw the active terminal immediately,
+    // but retain the preview's last completed projection until its own output
+    // reaches a quiet boundary.
+    if settleEligibility.hoverPreview, let visibleHoverPreviewTab {
+      let previewSettleGate = TerminalRenderGate.outputSettleDecision(
+        terminalDirty: previewTerminalDirty,
+        sessionId: visibleHoverPreviewTab.sessionId,
+        lastDirtyAt: previewRemoteFrame?.snapshotPublishedAt(now: gateNow)
+          ?? previewRemoteDirtyObservedAt
+          ?? visibleHoverPreviewTab.lastOutputAt,
+        now: gateNow,
+        hold: hoverPreviewOutputSettleHold,
+        quiet: TerminalRenderGate.settleQuietSeconds(
+          remoteDirtyRanges: previewRemoteFrame?.dirtyRanges))
+      hoverPreviewOutputSettleHold = previewSettleGate.hold
+      if previewSettleGate.shouldDefer {
+        deferHoverPreviewUpdate = true
+        scheduleOutputSettleWake(
+          after: previewSettleGate.wakeAfter
+            ?? TerminalRenderGate.remoteSnapshotOutputSettleQuietSeconds)
+        recordRenderJournal(
+          event: .skipped,
+          frame: captureFrame,
+          tab: activeTab,
+          session: session,
+          reason: "hoverPreviewOutputSettleDefer",
+          terminalDirty: terminalDirty || previewTerminalDirty,
+          activeTerminalDirty: activeTerminalDirty,
+          renderInvalidated: renderInvalidated,
+          tabChanged: tabChanged,
+          cursorBlinkFrame: cursorBlinkFrame,
+          attentionAnimating: false,
+          scrollAnimating: scrollAnimating,
+          usingRemoteSnapshots: usingRemoteSessions,
+          cellPayloadRequested: false,
+          contentYOffset: 0)
+        previewRemoteFrame = cachedRemoteHoverPreviewFrame(for: visibleHoverPreviewTab.id)
+        previewTerminalDirty = false
+        renderInvalidated = renderInvalidatedBeforePreviewUpdate
+      }
+    } else {
+      hoverPreviewOutputSettleHold = nil
+    }
+    if previewTerminalDirty, !deferHoverPreviewUpdate {
+      // A local/labpty preview keeps its session dirty while a coherence gate
+      // is active. Once that gate opens, promote the pending projection to a
+      // render even though the session generation itself is unchanged and no
+      // model mutation remains to carry the wake.
+      renderInvalidated = true
     }
 
     // Track when each tab entered needsAction. The announce-once timeline
@@ -3289,7 +4088,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         renderInvalidated: renderInvalidated,
         tabChanged: tabChanged,
         scrollAnimating: scrollAnimating,
-        fractionalScrollOffset: subCellRows != 0),
+        fractionalScrollOffset: subCellRows != 0,
+        hoverPreviewShowing: Self.hoverPreviewShowing(
+          eligibleTabId: visibleHoverPreviewTab?.id,
+          renderedTabId: lastRenderedHoverPreviewTabId)),
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
       surfaceScale: Double(backend.surfaceScale),
@@ -3301,7 +4103,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
       glyphEffectsEnabled: GlyphEffectSettings.enabled,
       effectiveRendererIsSlug: backend is SlugGlyphRenderer,
-      hoverPreviewEnabled: HoverPreviewSettings.enabled
+      hoverPreviewEnabled: HoverPreviewSettings.enabled,
+      deferHoverPreviewUpdate: deferHoverPreviewUpdate
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
@@ -3331,17 +4134,42 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     let surfaceFrame: TerminalSurfaceFrame?
     if let remoteFrame {
+      if previewRemoteFrame == nil {
+        // Late frame assembly must not reintroduce a synchronous optional-tab
+        // socket read after the pre-gate async path deliberately chose cache.
+        previewRemoteFrame = resolvedRemoteHoverPreviewFrame(
+          for: request,
+          activeTab: activeTab,
+          activeFrame: remoteFrame)
+      }
+      if let visibleHoverPreviewTab, visibleHoverPreviewTab.id != activeTab.id,
+        !previewTerminalDirty, let latePreviewRemoteFrame = previewRemoteFrame,
+        remoteSnapshotRenderTracker.terminalDirty(
+          tabId: visibleHoverPreviewTab.id,
+          incarnationId: latePreviewRemoteFrame.snapshot.incarnationId,
+          generation: latePreviewRemoteFrame.generation,
+          fallbackDirty: false)
+      {
+        // The background generation can advance between the pre-gate probe
+        // and this late fetch for an otherwise unrelated active-tab frame.
+        // Do not let that race bypass synchronized-output/output-settle
+        // coherence: preserve the completed frame and re-enter through the
+        // pre-gate path on the next tick.
+        scheduleOutputSettleWake(after: 0.001)
+        previewRemoteFrame = cachedRemoteHoverPreviewFrame(for: visibleHoverPreviewTab.id)
+      }
       surfaceFrame = surfaceController.makeFrame(
         request,
         remoteSnapshot: remoteFrame.snapshot,
         sessionId: session.id,
-        dirtyRanges: remoteFrame.dirtyRanges)
+        dirtyRanges: remoteFrame.dirtyRanges,
+        hoverPreviewSnapshot: previewRemoteFrame?.snapshot)
     } else {
       surfaceFrame = surfaceController.makeFrame(
         request,
         snapshotCommandsHook: snapshotCommandsHook(captureFrame: captureFrame))
     }
-    guard let surfaceFrame else {
+    guard var surfaceFrame else {
       recordRenderJournal(
         event: .skipped,
         frame: captureFrame,
@@ -3369,6 +4197,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       windowVisibleToUser: windowVisibleToUser,
       cursorVisible: surfaceFrame.cursorVisible)
     let cmds = surfaceFrame.commands + surfaceFrame.overlayCommands
+    let renderedHoverPreviewTabId = visibleHoverPreviewTab.flatMap { tab in
+      cmds.contains(where: { command in
+        switch command {
+        case .rect(_, _, .sidebarPreview, _),
+          .glyphRun(_, _, _, _, _, .sidebarPreview, _, _, _, _, _, _, _):
+          return true
+        default:
+          return false
+        }
+      }) ? tab.id : nil
+    }
+    surfaceFrame.damage = Self.damageForHoverPreviewTransition(
+      proposedDamage: surfaceFrame.damage,
+      renderedTabId: renderedHoverPreviewTabId,
+      previouslyRenderedTabId: lastRenderedHoverPreviewTabId)
     // Compute damage hint from libghostty's per-row dirty bits. Tab changes
     // and renderInvalidated force .full because we may be drawing different
     // content into the persistent target. Otherwise translate dirty rows
@@ -3508,6 +4351,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       commands: cmds,
       rendered: true)
     renderedFrameCount = captureFrame
+    lastRenderedHoverPreviewTabId = renderedHoverPreviewTabId
     syncGlyphEffectAnimatingState()
     if let recorder = captureRecorder {
       // Both software and Metal flow through the same recorder entry now.
@@ -3531,10 +4375,52 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       sessionCoordinator.markRendered(tab: activeTab)
       remoteSnapshotRenderTracker.markRendered(
         tabId: activeTab.id,
+        incarnationId: remoteFrame?.snapshot.incarnationId,
         generation: remoteFrame?.generation)
+      if let visibleHoverPreviewTab, let previewRemoteFrame {
+        if remoteSnapshotRenderTracker.terminalDirty(
+          tabId: visibleHoverPreviewTab.id,
+          incarnationId: previewRemoteFrame.snapshot.incarnationId,
+          generation: previewRemoteFrame.generation,
+          fallbackDirty: previewRemoteFrame.snapshot.dirty)
+        {
+          sessionCoordinator.markRendered(tab: visibleHoverPreviewTab)
+        }
+        if let pendingRemoteHoverPreviewFallback,
+          pendingRemoteHoverPreviewFallback.tabId == visibleHoverPreviewTab.id,
+          Self.remoteHoverPreviewContentMatches(
+            pendingRemoteHoverPreviewFallback.frame.snapshot,
+            previewRemoteFrame.snapshot)
+        {
+          self.pendingRemoteHoverPreviewFallback = nil
+        }
+        cachedRemoteHoverPreviewFrames[visibleHoverPreviewTab.id] = previewRemoteFrame
+        remoteSnapshotRenderTracker.markRendered(
+          tabId: visibleHoverPreviewTab.id,
+          incarnationId: previewRemoteFrame.snapshot.incarnationId,
+          generation: previewRemoteFrame.generation)
+      }
       session.markRendered()
     } else {
       session.markRendered()
+      if !deferHoverPreviewUpdate,
+        let visibleHoverPreviewTab,
+        visibleHoverPreviewTab.id != activeTab.id
+      {
+        // Geometry eligibility was established before sync. Once a fresh
+        // preview attempt reaches the renderer, retire its dirty bit even if
+        // snapshot allocation failed and produced no commands; otherwise a
+        // transient snapshot failure becomes an unbounded full-surface loop.
+        // The failed case separately arms one bounded retry so an idle window
+        // cannot park forever without a panel.
+        _ = visibleHoverPreviewSession?.markRendered()
+        lastAcknowledgedLocalHoverPreviewTabId = visibleHoverPreviewTab.id
+        if renderedHoverPreviewTabId == visibleHoverPreviewTab.id {
+          clearLocalHoverPreviewSnapshotFailure()
+        } else {
+          deferLocalHoverPreviewSnapshotAttempt(for: visibleHoverPreviewTab.id)
+        }
+      }
     }
     gpuCellCommandFallbackPending = false
     renderInvalidated = false
@@ -4191,7 +5077,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     switch sp.hitTest(
       at: pt, tabs: model.tabs, height: bounds.height,
       topInset: Self.titlebarReservedHeight,
-      scrollOffset: currentSidebarScrollOffsetForHitTesting())
+      scrollOffset: currentSidebarScrollOffsetForHitTesting(),
+      closeTabEnabled: peekedSidebarTabId == nil)
     {
     case .selectTab(let id), .closeTab(let id):
       setHoveredSidebarTab(id)
@@ -4226,6 +5113,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func currentSidebarScrollOffsetForHitTesting() -> CGFloat {
     CGFloat(clampedSidebarScrollOffset(displayedSidebarScrollOffset))
+  }
+  var sidebarScrollOffsetForTesting: CGFloat {
+    currentSidebarScrollOffsetForHitTesting()
   }
 
   private func resetSidebarScrollState(to offset: Double = 0) {
@@ -4520,12 +5410,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   func beginOrAdvancePeek(delta: Int, triggerModifiers: NSEvent.ModifierFlags) {
     let tabs = model.tabs
     guard tabs.count > 1 else { return }
-    let baseId = peekedSidebarTabId ?? model.activeTab?.id
+    let baseId =
+      peekedSidebarTabId.flatMap { peekedId in
+        tabs.contains(where: { $0.id == peekedId }) ? peekedId : nil
+      } ?? model.activeTab?.id
     guard let baseId, let currentIndex = tabs.firstIndex(where: { $0.id == baseId }) else {
       return
     }
     let nextIndex = (currentIndex + delta + tabs.count) % tabs.count
     peekedSidebarTabId = tabs[nextIndex].id
+    // Tentative selection replaces the active row's selected styling, so its
+    // destination must be visible immediately; otherwise an off-screen target
+    // leaves the visible sidebar with no highlighted row for the whole hold.
+    ensureSidebarTabVisible(tabs[nextIndex].id, animated: false)
     // Only the modifiers this specific chord actually holds matter for
     // deciding when to commit — e.g. Ctrl+Tab must not wait for Command to
     // lift, and Cmd+Option+→ must not wait for Control.
@@ -4539,7 +5436,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   func commitPeek(tabId: Tab.ID?) {
     peekedSidebarTabId = nil
     peekCommitModifiers = []
-    guard let tabId, let index = model.tabs.firstIndex(where: { $0.id == tabId }) else { return }
+    guard let tabId, let index = model.tabs.firstIndex(where: { $0.id == tabId }) else {
+      // Clearing a vanished tentative target must repaint immediately so the
+      // committed active row regains selected styling and visibility even when
+      // the removed target had scrolled it offscreen.
+      if let activeTab = model.activeTab {
+        ensureSidebarTabVisible(activeTab.id, animated: false)
+      }
+      invalidateRenderAndWake()
+      return
+    }
     selectTab(at: index)
   }
 
@@ -4744,6 +5650,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func pruneClosedTabState(_ tabId: Tab.ID) {
     selectionsByTab.removeValue(forKey: tabId)
     remoteMouseEncodingByTab.removeValue(forKey: tabId)
+    cachedRemoteHoverPreviewFrames.removeValue(forKey: tabId)
     if hoveredSidebarTabId == tabId {
       hoveredSidebarTabId = nil
     }
@@ -7049,7 +7956,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       switch sp.hitTest(
         at: pt, tabs: model.tabs, height: bounds.height,
         topInset: Self.titlebarReservedHeight,
-        scrollOffset: currentSidebarScrollOffsetForHitTesting())
+        scrollOffset: currentSidebarScrollOffsetForHitTesting(),
+        closeTabEnabled: peekedSidebarTabId == nil)
       {
       case .newTab:
         _ = try? createTabPreservingSelection()

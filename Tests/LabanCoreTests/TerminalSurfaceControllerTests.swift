@@ -285,6 +285,328 @@ final class TerminalSurfaceControllerTests: XCTestCase {
         + "foreground color; got \(previewForegrounds.map { String($0, radix: 16) })")
   }
 
+  func testHoverPreviewPreservesDefaultAndExplicitTerminalBackgroundColors() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let activeTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let previewedTab = try XCTUnwrap(model.activeTab)
+    model.selectTab(activeTab.id)
+
+    let previewedSession = try XCTUnwrap(model.session(forTab: previewedTab.id))
+    let input = "\u{1B}]11;#123456\u{07}\u{1B}[48;2;7;8;9mBG\u{1B}[0m"
+    _ = previewedSession.write(Array(input.utf8))
+    _ = previewedSession.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200,
+      previewCellWidth: 4,
+      previewCellHeight: 8)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 800,
+          viewportHeight: 600,
+          hoveredSidebarTabId: previewedTab.id,
+          backgroundCompositingOptions: TerminalBackgroundCompositingOptions(
+            opacity: 0x80, applyToExplicitCellBackgrounds: false),
+          requireActiveSnapshot: false,
+          surfaceWidth: 800,
+          surfaceHeight: 600,
+          surfaceScale: 1,
+          effectiveRendererIsSlug: true,
+          hoverPreviewEnabled: true)))
+
+    let panelBackgrounds = frame.commands.compactMap { command -> UInt32? in
+      guard case .rect(_, let color, .sidebarPreview, let compositing) = command,
+        compositing == .replace
+      else { return nil }
+      return color
+    }
+    XCTAssertTrue(
+      panelBackgrounds.contains(0x12_34_56_80),
+      "the panel canvas must use the previewed terminal's OSC 11 default background "
+        + "with the same opacity policy as the full-size pane; got "
+        + "\(panelBackgrounds.map { String($0, radix: 16) })")
+
+    let glyphBackgrounds = frame.commands.compactMap { command -> UInt32? in
+      guard
+        case .glyphRun(_, _, _, let background, _, .sidebarPreview, _, _, _, _, _, _, _) =
+          command
+      else { return nil }
+      return background
+    }
+    XCTAssertTrue(
+      glyphBackgrounds.contains(0x07_08_09_FF),
+      "an explicit ANSI cell background must remain opaque when the main pane's policy "
+        + "keeps explicit backgrounds opaque; got "
+        + "\(glyphBackgrounds.map { String($0, radix: 16) })")
+  }
+
+  func testDeferredHoverPreviewReusesLastCompletedProjectionUntilNextFreshFrame() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let activeTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let previewedTab = try XCTUnwrap(model.activeTab)
+    model.selectTab(activeTab.id)
+
+    let previewedSession = try XCTUnwrap(model.session(forTab: previewedTab.id))
+    _ = previewedSession.write(Array("\u{1B}[38;2;255;0;0mRED\u{1B}[0m".utf8))
+    _ = previewedSession.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200,
+      previewCellWidth: 4,
+      previewCellHeight: 8)
+    func previewCommands(deferred: Bool, frame: Int) throws -> [FrameCommand] {
+      let result = try XCTUnwrap(
+        controller.makeFrame(
+          TerminalSurfaceFrameRequest(
+            frame: frame,
+            viewportWidth: 800,
+            viewportHeight: 600,
+            hoveredSidebarTabId: previewedTab.id,
+            requireActiveSnapshot: false,
+            surfaceWidth: 800,
+            surfaceHeight: 600,
+            surfaceScale: 1,
+            effectiveRendererIsSlug: true,
+            hoverPreviewEnabled: true,
+            deferHoverPreviewUpdate: deferred)))
+      return result.commands.filter { command in
+        switch command {
+        case .rect(_, _, .sidebarPreview, _),
+          .glyphRun(_, _, _, _, _, .sidebarPreview, _, _, _, _, _, _, _):
+          return true
+        default:
+          return false
+        }
+      }
+    }
+
+    let completed = try previewCommands(deferred: false, frame: 1)
+    XCTAssertTrue(
+      completed.contains { command in
+        guard
+          case .glyphRun(_, let text, let foreground, _, _, .sidebarPreview, _, _, _, _, _, _, _) =
+            command
+        else { return false }
+        return text.contains("RED") && foreground == 0xFF_00_00_FF
+      })
+
+    _ = previewedSession.write(
+      Array("\u{1B}[H\u{1B}[2K\u{1B}[38;2;0;255;0mGREEN\u{1B}[0m".utf8))
+    _ = previewedSession.poll()
+
+    let deferred = try previewCommands(deferred: true, frame: 2)
+    XCTAssertEqual(
+      commandKeys(deferred), commandKeys(completed),
+      "a coherence hold must keep the last completed preview on glass")
+
+    let refreshed = try previewCommands(deferred: false, frame: 3)
+    XCTAssertTrue(
+      refreshed.contains { command in
+        guard
+          case .glyphRun(_, let text, let foreground, _, _, .sidebarPreview, _, _, _, _, _, _, _) =
+            command
+        else { return false }
+        return text.contains("GREEN") && foreground == 0x00_FF_00_FF
+      },
+      "the first non-deferred frame must publish the newly completed preview")
+  }
+
+  func testTooSmallHoverPreviewDoesNotRetainInvisibleBackgroundDirtyState() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let activeTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let previewedTab = try XCTUnwrap(model.activeTab)
+    model.selectTab(activeTab.id)
+    let activeSession = try XCTUnwrap(model.session(forTab: activeTab.id))
+    let previewedSession = try XCTUnwrap(model.session(forTab: previewedTab.id))
+    _ = activeSession.markRendered()
+    _ = previewedSession.markRendered()
+    _ = previewedSession.feedOutput(Array("invisible output".utf8))
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200,
+      previewCellWidth: 4,
+      previewCellHeight: 8)
+    let renderable = controller.canRenderHoverPreview(
+      activeTabId: activeTab.id,
+      previewedTabId: previewedTab.id,
+      viewportWidth: 202,
+      viewportHeight: 30,
+      topInset: 28,
+      scrollOffset: 0,
+      isKeyboardPeek: false)
+    XCTAssertFalse(renderable)
+
+    let result = controller.syncSessions(
+      captureFrame: 1,
+      polling: .none,
+      markInactiveDirtyRendered: true,
+      noteOutputOnDirty: true,
+      recordTitleChanges: false,
+      hoveredTabId: renderable ? previewedTab.id : nil)
+    XCTAssertTrue(result.dirtySessionIds.contains(previewedSession.id))
+    XCTAssertFalse(
+      previewedSession.renderDirty(),
+      "a target that cannot emit preview commands must follow the ordinary inactive-tab path")
+  }
+
+  func testRemoteHoverPreviewUsesPreviewedTabsDaemonSnapshotColors() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let activeTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let previewedTab = try XCTUnwrap(model.activeTab)
+    model.selectTab(activeTab.id)
+    let activeSession = try XCTUnwrap(model.session(forTab: activeTab.id))
+
+    let activeSnapshot = LabandSnapshotResponse(
+      logicalSessionId: activeTab.sessionId,
+      incarnationId: "active",
+      rows: 1,
+      cols: 1,
+      cursorRow: 0,
+      cursorCol: 0,
+      cursorVisible: false,
+      title: "active",
+      lifecycleState: .running,
+      exitStatus: nil,
+      dirty: false,
+      visibleText: "A",
+      cells: [
+        LabandSnapshotCell(
+          row: 0, col: 0, text: "A", flags: 0,
+          foregroundRGBA: 0xFF_00_00_FF, backgroundRGBA: 0x20_20_20_FF)
+      ],
+      defaultBackgroundRGBA: 0x20_20_20_FF)
+    let previewForeground: UInt32 = 0x10_E0_20_FF
+    let previewExplicitBackground: UInt32 = 0xA0_B0_C0_FF
+    let previewSnapshot = LabandSnapshotResponse(
+      logicalSessionId: previewedTab.sessionId,
+      incarnationId: "preview",
+      rows: 1,
+      cols: 1,
+      cursorRow: 0,
+      cursorCol: 0,
+      cursorVisible: false,
+      title: "preview",
+      lifecycleState: .running,
+      exitStatus: nil,
+      dirty: false,
+      visibleText: "R",
+      cells: [
+        LabandSnapshotCell(
+          row: 0, col: 0, text: "R",
+          flags: UInt16(LABAN_CELL_FLAG_EXPLICIT_BACKGROUND),
+          foregroundRGBA: previewForeground,
+          backgroundRGBA: previewExplicitBackground)
+      ],
+      defaultBackgroundRGBA: 0x12_34_56_FF)
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200,
+      previewCellWidth: 4,
+      previewCellHeight: 8)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 800,
+          viewportHeight: 600,
+          hoveredSidebarTabId: previewedTab.id,
+          backgroundCompositingOptions: TerminalBackgroundCompositingOptions(
+            opacity: 0x80, applyToExplicitCellBackgrounds: false),
+          requireActiveSnapshot: false,
+          surfaceWidth: 800,
+          surfaceHeight: 600,
+          surfaceScale: 1,
+          effectiveRendererIsSlug: true,
+          hoverPreviewEnabled: true),
+        remoteSnapshot: activeSnapshot,
+        sessionId: activeSession.id,
+        hoverPreviewSnapshot: previewSnapshot))
+
+    let previewBackgrounds = frame.commands.compactMap { command -> UInt32? in
+      guard case .rect(_, let color, .sidebarPreview, let compositing) = command,
+        compositing == .replace
+      else { return nil }
+      return color
+    }
+    XCTAssertTrue(
+      previewBackgrounds.contains(0x12_34_56_80),
+      "the remote preview canvas must use the previewed daemon tab's default background")
+
+    let previewGlyphs = frame.commands.compactMap { command -> (UInt32, UInt32)? in
+      guard
+        case .glyphRun(
+          _, let text, let foreground, let background, _, .sidebarPreview, _, _, _, _, _, _, _) =
+          command,
+        text.contains("R")
+      else { return nil }
+      return (foreground, background)
+    }
+    XCTAssertTrue(
+      previewGlyphs.contains {
+        $0.0 == previewForeground && $0.1 == previewExplicitBackground
+      },
+      "the remote preview must render foreground and explicit background colors from the "
+        + "previewed daemon tab, not from the active or parser-only local session")
+
+    let frameWithoutPreviewSnapshot = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 2,
+          viewportWidth: 800,
+          viewportHeight: 600,
+          hoveredSidebarTabId: previewedTab.id,
+          requireActiveSnapshot: false,
+          surfaceWidth: 800,
+          surfaceHeight: 600,
+          surfaceScale: 1,
+          effectiveRendererIsSlug: true,
+          hoverPreviewEnabled: true),
+        remoteSnapshot: activeSnapshot,
+        sessionId: activeSession.id))
+    XCTAssertFalse(
+      frameWithoutPreviewSnapshot.commands.contains { command in
+        switch command {
+        case .rect(_, _, .sidebarPreview, _),
+          .glyphRun(_, _, _, _, _, .sidebarPreview, _, _, _, _, _, _, _):
+          return true
+        default:
+          return false
+        }
+      },
+      "a failed or absent daemon preview fetch must suppress the preview instead of falling "
+        + "back to the parser-only local session")
+  }
+
   func testSidebarCommandsMemoizesAndInvalidates() throws {
     var size = LabanTerminalSize()
     size.rows = 4
@@ -1172,6 +1494,32 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(
       hoveredResult.modelChanged,
       "a hovered background tab's continued output must invalidate the frame")
+    XCTAssertTrue(
+      secondSession.renderDirty(),
+      "a hovered tab stays dirty until its preview pixels actually render")
+
+    let pendingResult = controller.syncSessions(
+      captureFrame: 4,
+      polling: .none,
+      markInactiveDirtyRendered: true,
+      noteOutputOnDirty: true,
+      recordTitleChanges: false,
+      hoveredTabId: secondTab.id)
+    XCTAssertEqual(pendingResult.dirtySessionIds, Set([secondSession.id]))
+    XCTAssertFalse(
+      pendingResult.modelChanged,
+      "a pending preview must not force full renders on every display-link tick")
+
+    _ = secondSession.markRendered()
+    let completedResult = controller.syncSessions(
+      captureFrame: 5,
+      polling: .none,
+      markInactiveDirtyRendered: true,
+      noteOutputOnDirty: true,
+      recordTitleChanges: false,
+      hoveredTabId: secondTab.id)
+    XCTAssertTrue(completedResult.dirtySessionIds.isEmpty)
+    XCTAssertFalse(completedResult.modelChanged)
   }
 
   func testSyncSessionsRecordsResolvedTerminalTitleChanges() throws {

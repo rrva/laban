@@ -77,6 +77,23 @@ final class HoverPreviewKeyboardPeekTests: XCTestCase {
     return Harness(model: model, view: view, oldRenderer: oldRenderer)
   }
 
+  func testHoverPreviewShowingRequiresMatchingRenderedPanel() {
+    XCTAssertTrue(
+      TerminalBitmapView.hoverPreviewShowing(
+        eligibleTabId: "tab-2",
+        renderedTabId: "tab-2"))
+    XCTAssertFalse(
+      TerminalBitmapView.hoverPreviewShowing(
+        eligibleTabId: "tab-2",
+        renderedTabId: nil),
+      "eligibility without commands must not claim that a failed remote preview is visible")
+    XCTAssertFalse(
+      TerminalBitmapView.hoverPreviewShowing(
+        eligibleTabId: "tab-3",
+        renderedTabId: "tab-2"),
+      "a stale completed panel for another target is not the current preview")
+  }
+
   func testAdvancingPeekTwiceDoesNotCommitUntilReleased() throws {
     let harness = try makeHarness(tabCount: 3)
     defer { harness.restoreRenderer() }
@@ -128,6 +145,51 @@ final class HoverPreviewKeyboardPeekTests: XCTestCase {
       "flagsChanged firing with no peek in progress must not change the active tab")
   }
 
+  func testClosedPeekTargetClearsAndNextCycleRecoversFromActiveTab() throws {
+    let harness = try makeHarness(tabCount: 3)
+    defer { harness.restoreRenderer() }
+    let activeId = try XCTUnwrap(harness.model.activeTab?.id)
+
+    harness.view.beginOrAdvancePeek(delta: 1, triggerModifiers: [.control])
+    let closedTarget = try XCTUnwrap(harness.view.peekedSidebarTabId)
+    try harness.model.closeTab(closedTarget)
+
+    harness.view.commitPeek(tabId: closedTarget)
+    XCTAssertNil(harness.view.peekedSidebarTabId)
+    XCTAssertEqual(
+      harness.model.activeTab?.id, activeId,
+      "releasing after the tentative tab closes must keep the committed tab")
+
+    harness.view.beginOrAdvancePeek(delta: 1, triggerModifiers: [.control])
+    XCTAssertNotNil(
+      harness.view.peekedSidebarTabId,
+      "the next cycle must restart from the active tab rather than the vanished target")
+    XCTAssertNotEqual(harness.view.peekedSidebarTabId, closedTarget)
+  }
+
+  func testClosedOffscreenPeekTargetRestoresActiveRowVisibility() throws {
+    let harness = try makeHarness(tabCount: 20)
+    defer { harness.restoreRenderer() }
+    harness.view.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
+    let activeId = try XCTUnwrap(harness.model.activeTab?.id)
+
+    for _ in 0..<12 {
+      harness.view.beginOrAdvancePeek(delta: 1, triggerModifiers: [.control])
+    }
+    let closedTarget = try XCTUnwrap(harness.view.peekedSidebarTabId)
+    XCTAssertGreaterThan(harness.view.sidebarScrollOffsetForTesting, 0)
+    try harness.model.closeTab(closedTarget)
+
+    harness.view.commitPeek(tabId: closedTarget)
+
+    XCTAssertEqual(harness.model.activeTab?.id, activeId)
+    XCTAssertEqual(
+      harness.view.sidebarScrollOffsetForTesting,
+      0,
+      accuracy: 0.001,
+      "releasing after the off-screen target vanished must reveal the committed row")
+  }
+
   func testPeekWrapsAroundTabList() throws {
     let harness = try makeHarness(tabCount: 3)
     defer { harness.restoreRenderer() }
@@ -136,6 +198,49 @@ final class HoverPreviewKeyboardPeekTests: XCTestCase {
     // Backward from the first tab must wrap to the last.
     harness.view.beginOrAdvancePeek(delta: -1, triggerModifiers: [.control, .shift])
     XCTAssertEqual(harness.view.peekedSidebarTabId, tabs[2].id)
+  }
+
+  func testPeekCycleIncludesInitiallyActiveTabBeforeStartingAnotherLap() throws {
+    let harness = try makeHarness(tabCount: 3)
+    defer { harness.restoreRenderer() }
+    let tabs = harness.model.tabs
+    let startId = try XCTUnwrap(harness.model.activeTab?.id)
+
+    harness.view.beginOrAdvancePeek(delta: 1, triggerModifiers: [.control])
+    harness.view.beginOrAdvancePeek(delta: 1, triggerModifiers: [.control])
+    harness.view.beginOrAdvancePeek(delta: 1, triggerModifiers: [.control])
+
+    XCTAssertEqual(
+      harness.view.peekedSidebarTabId, tabs[0].id,
+      "the already-active tab must be a real stop in the keyboard preview cycle")
+    XCTAssertEqual(
+      harness.model.activeTab?.id, startId,
+      "cycling back to the active tab still must not commit before modifier release")
+
+    harness.view.beginOrAdvancePeek(delta: 1, triggerModifiers: [.control])
+    XCTAssertEqual(
+      harness.view.peekedSidebarTabId, tabs[1].id,
+      "the next keypress after previewing the active tab must begin the next lap")
+  }
+
+  func testKeyboardPeekImmediatelyScrollsOffscreenDestinationIntoSidebar() throws {
+    let harness = try makeHarness(tabCount: 20)
+    defer { harness.restoreRenderer() }
+    harness.view.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
+
+    for _ in 0..<12 {
+      harness.view.beginOrAdvancePeek(delta: 1, triggerModifiers: [.control])
+    }
+
+    XCTAssertEqual(harness.view.peekedSidebarTabId, harness.model.tabs[12].id)
+    XCTAssertGreaterThan(
+      harness.view.sidebarScrollOffsetForTesting,
+      0,
+      "tentative selection must be scrolled into view before the modifier is released")
+    XCTAssertEqual(
+      harness.model.activeTab?.id,
+      harness.model.tabs[0].id,
+      "making the preview target visible must not commit the tab selection")
   }
 
   func testTabCycleCommandInstantSwitchesWhenHoverPreviewNotEffectivelyEnabled() throws {
