@@ -634,6 +634,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var resizeProbe: AppKitResizeProbe?
   private var resizeAutomationScheduled = false
   var undoManagerForTesting: UndoManager?
+  var windowDragHandlerForTesting: ((NSEvent) -> Void)?
   private var renderingResizeFrame = false
   private var renderRetryScheduled = false
 
@@ -4701,6 +4702,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
+  /// Hand a press in the full-size content titlebar strip back to AppKit's
+  /// native window-move tracker. Keep the chrome-consumption latch armed until
+  /// the matching mouse-up so any drag events AppKit leaves in the responder
+  /// path cannot fall through into terminal selection and edge autoscroll.
+  private func performTitlebarDrag(with event: NSEvent) {
+    if let windowDragHandlerForTesting {
+      windowDragHandlerForTesting(event)
+    } else {
+      window?.performDrag(with: event)
+    }
+  }
+
   /// Toggle between the screen's visible frame and the previously saved
   /// window frame. Mirrors what the green traffic-light button does, but
   /// tracks the unzoomed frame explicitly so the second double-click
@@ -7001,6 +7014,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   override func mouseDown(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
+    // A native window drag can consume its own mouse-up. Reset defensively at
+    // the next gesture before classifying this press, then re-arm below for
+    // titlebar and sidebar chrome.
+    mouseDownConsumedByChrome = false
     pendingHyperlinkClick = nil
 
     // Reserved titlebar strip sits above both the terminal grid and the
@@ -7015,6 +7032,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       mouseDownConsumedByChrome = true
       if event.clickCount == 2 {
         performTitlebarDoubleClickAction()
+      } else if event.clickCount == 1 {
+        performTitlebarDrag(with: event)
       }
       return
     }

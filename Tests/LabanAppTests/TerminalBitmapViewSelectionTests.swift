@@ -457,6 +457,52 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testTitlebarSinglePressStartsNativeWindowDragWithoutStealingDoubleClick() throws {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+
+    var dragEvents: [NSEvent] = []
+    harness.view.windowDragHandlerForTesting = { dragEvents.append($0) }
+    let point = NSPoint(
+      x: SidebarLayout.defaultWidth + 50,
+      y: harness.view.frame.height - TerminalBitmapView.titlebarReservedHeight / 2)
+
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: point))
+    harness.view.mouseDown(
+      with: mouseEvent(type: .leftMouseDown, at: point, clickCount: 2))
+
+    XCTAssertEqual(dragEvents.count, 1)
+    XCTAssertEqual(dragEvents.first?.locationInWindow, point)
+  }
+
+  func testTitlebarDragDoesNotFallThroughToTerminalSelectionOrAutoscroll() throws {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    harness.view.windowDragHandlerForTesting = { _ in }
+    let titlebarPoint = NSPoint(
+      x: SidebarLayout.defaultWidth + 50,
+      y: harness.view.frame.height - TerminalBitmapView.titlebarReservedHeight / 2)
+    let terminalPoint = point(row: 0, col: 10, in: harness)
+
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: titlebarPoint))
+    harness.view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: terminalPoint))
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: terminalPoint))
+
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "alpha",
+      "a window drag must not extend terminal selection or arm edge autoscroll")
+  }
+
   func testShiftClickExtendsExistingSelectionFocus() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
@@ -853,7 +899,8 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
   private func mouseEvent(
     type: NSEvent.EventType,
     at point: NSPoint,
-    modifierFlags: NSEvent.ModifierFlags = []
+    modifierFlags: NSEvent.ModifierFlags = [],
+    clickCount: Int = 1
   ) -> NSEvent {
     NSEvent.mouseEvent(
       with: type,
@@ -863,7 +910,7 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       windowNumber: 0,
       context: nil,
       eventNumber: 0,
-      clickCount: 1,
+      clickCount: clickCount,
       pressure: 1
     )!
   }
