@@ -301,12 +301,12 @@ public final class HeadlessDebugRuntime {
       initialRecorder = nil
     }
 
-    let shellLaunch = Self.installShellIntegrationOverlay()
+    let shellIntegration = Self.makeShellIntegrationOverlayProvider()
     self.model = try AppModel(
       initialSize: initSize,
       sessionFactory: { size in
         let session = try Self.makeSession(
-          size: size, mode: initialSessionMode, shellLaunch: shellLaunch)
+          size: size, mode: initialSessionMode, shellIntegration: shellIntegration)
         session.captureSink = initialRecorder
         return session
       })
@@ -342,7 +342,7 @@ public final class HeadlessDebugRuntime {
 
       self.model.transcriptDelegate = transcripts
       self.model.restoredSessionFactory = { sz, _, _ in
-        try Self.makeSession(size: sz, mode: initialSessionMode, shellLaunch: shellLaunch)
+        try Self.makeSession(size: sz, mode: initialSessionMode, shellIntegration: shellIntegration)
       }
       let restoreViaLabandPicker = terminalBackend == .laband
       self.model.restoredDeferredSessionFactory = { spec in
@@ -538,37 +538,39 @@ public final class HeadlessDebugRuntime {
   private static func makeSession(
     size: LabanTerminalSize,
     mode: HeadlessSessionMode,
-    shellLaunch: ShellIntegrationLaunch = .passthrough
+    shellIntegration: ShellIntegrationOverlayProvider? = nil
   ) throws -> Session {
     switch mode {
     case .fixture:
       return try Session.fixture(size: size)
     case .realShell:
       // Parity with MainWindowController: thread the shell-integration
-      // overlay env into the spawned shell. The headless harness runs
-      // /bin/sh, which has no overlay, so this is `.passthrough` in
-      // practice — but the subsystem is wired into both runtimes.
-      // Identity is a live setting: resolve per spawn, matching
+      // overlay env into the spawned shell, resolving the launch at spawn
+      // time so the overlay self-heals if its files were deleted. The
+      // headless harness runs /bin/sh, which has no overlay, so this is
+      // `.passthrough` in practice — but the subsystem is wired into both
+      // runtimes. Identity is a live setting: resolve per spawn, matching
       // MainWindowController's spawn-time merge.
+      let launch = shellIntegration?.currentLaunch() ?? .passthrough
       return try Session.debugShell(
         size: size,
         extraEnvironment:
-          shellLaunch.withTerminalIdentity(TerminalIdentitySettings.identity())
+          launch.withTerminalIdentity(TerminalIdentitySettings.identity())
           .environmentOverrides)
     }
   }
 
-  /// Install the OSC 133 overlay for the headless harness's shell, mirroring
-  /// `MainWindowController.installShellIntegrationOverlay`. The harness uses
-  /// `/bin/sh`, which has no overlay, so this returns `.passthrough`; the call
-  /// exists for runtime parity and to exercise the install path headlessly.
-  private static func installShellIntegrationOverlay() -> ShellIntegrationLaunch {
+  /// Create the self-healing overlay owner for the headless harness's shell,
+  /// mirroring `MainWindowController.makeShellIntegrationOverlayProvider`.
+  /// The harness uses `/bin/sh`, which has no overlay, so the provider
+  /// yields `.passthrough`; the call exists for runtime parity and to
+  /// exercise the install path headlessly.
+  private static func makeShellIntegrationOverlayProvider() -> ShellIntegrationOverlayProvider {
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-headless-shell-integration-\(UUID().uuidString)")
-    return
-      (try? ShellIntegrationOverlay.install(
-        shellPath: "/bin/sh", baseDirectory: base,
-        environment: ProcessInfo.processInfo.environment)) ?? .passthrough
+    return ShellIntegrationOverlayProvider(
+      shellPath: "/bin/sh", baseDirectory: base,
+      environment: ProcessInfo.processInfo.environment)
   }
 
   // MARK: - Terminal session client backend

@@ -233,6 +233,38 @@ Second-round fixes (the two former known limitations, now resolved):
   Note: the sibling `tab_status.c` (OSC 21337) still has the original
   string-framing gap; aligning it is out of scope for this plan.
 
+Field-reported fix (2026-07-29):
+
+- **High — a deleted overlay dir made zsh skip the user's `.zshrc`.** The
+  overlay is installed once per process under a per-process temp dir, and
+  every spawn (in-process and labpty/laband `envp` alike) carried the
+  captured `ZDOTDIR` path unchecked. Nothing in macOS reaps
+  `/var/folders/.../T` at runtime (`tmp_cleaner` covers `/tmp` only), but
+  third-party cleaner utilities, disk-pressure purging, or manual cleanup
+  can delete it while the app keeps running. The next tab then spawned with
+  `ZDOTDIR` pointing at a missing directory: zsh finds no `.zshenv` there,
+  then looks for `.zprofile`/`.zshrc` in the same dead dir, so the user's
+  real startup files are silently never sourced (reproduced with
+  `ZDOTDIR=<deleted> zsh -l -i`). Symptom: intermittently, "new tabs didn't
+  source my .zshrc"; developers never see it because frequent relaunches
+  rewrite the overlay. Fixed with `ShellIntegrationOverlayProvider`
+  (LabanCore), which re-validates the overlay's marker files at every spawn
+  and reinstalls when they are gone (full and partial deletion), degrading
+  to `.passthrough` — shell starts unchanged, user config intact — if
+  reinstall fails. Threaded through `MainWindowController`'s factories,
+  `AppSessionCoordinator` (new `shellLaunchProvider` inits; the old
+  `shellLaunch:` inits stay as convenience wrappers), and
+  `HeadlessDebugRuntime`. Tests: `testProviderReinstallsAfterOverlayDeletion`,
+  `testProviderReinstallsAfterPartialDeletion`,
+  `testProviderPassthroughForNonShell`, and the E2E
+  `testRealZshSourcesUserConfigAfterOverlayDeletion` (delete overlay, spawn
+  real zsh, assert a `.zshrc` sentinel file appears and markers still flow).
+  Related but deliberately not changed: the labpty daemon merges request
+  `envp` over its own `environ`, so a daemon spawned from an instrumented
+  shell can inherit a stale `ZDOTDIR` — scrubbing it in `build_spawn_env`
+  would also strip a legitimately user-set `ZDOTDIR` for passthrough
+  shells, so that vector stays open pending field evidence.
+
 ## Outcomes & Retrospective
 
 All four milestones shipped as a stack of focused PRs (one behavioral reason

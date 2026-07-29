@@ -243,18 +243,23 @@ final class MainWindowController: NSWindowController {
     // alike. Each shell needs a different launch shape: zsh/fish via env
     // overrides (ZDOTDIR / XDG_DATA_DIRS), bash via an explicit
     // `--rcfile` argv. A shell without an overlay or a failed install yields
-    // a passthrough launch, so the shell starts unchanged.
+    // a passthrough launch, so the shell starts unchanged. The provider
+    // re-validates the overlay's files at every spawn and reinstalls them
+    // if an external cleanup deleted the per-process temp directory —
+    // otherwise a stale ZDOTDIR would make zsh skip the user's .zshrc.
     // See `ShellIntegrationOverlay` and `docs/product/spec.md` §7.
-    let shellLaunch = Self.installShellIntegrationOverlay()
+    let shellIntegration = Self.makeShellIntegrationOverlayProvider()
     // Terminal identity is a live setting: resolve it per spawn so flipping
     // it in Settings reaches the next new tab without relaunching Laban.
-    let spawnLaunch = { shellLaunch.withTerminalIdentity(TerminalIdentitySettings.identity()) }
+    let spawnLaunch = {
+      shellIntegration.currentLaunch().withTerminalIdentity(TerminalIdentitySettings.identity())
+    }
     let backendSelection = try terminalBackendSelection ?? Self.configuredAppTerminalBackend()
     let terminalBackend = backendSelection.backend
     let restoredCwdByTabId = Self.restoredCwdByTabId(from: restoredState)
     let sessionCoordinator = try Self.makeSessionCoordinator(
       backend: terminalBackend,
-      shellLaunch: shellLaunch,
+      shellLaunchProvider: { shellIntegration.currentLaunch() },
       cwdByTabId: restoredCwdByTabId)
 
     let launchCoordinator = ControlSessionLaunchCoordinator()
@@ -281,7 +286,7 @@ final class MainWindowController: NSWindowController {
           let session = try Session.realShell(
             size: size,
             environment: env,
-            launchArgv: shellLaunch.argv,
+            launchArgv: launch.argv,
             sessionID: context.sessionID)
           launchCoordinator.tryRegisterShellPID(sessionID: context.sessionID, session: session)
           return session
@@ -345,8 +350,9 @@ final class MainWindowController: NSWindowController {
         return try Session.fixture(size: spec.size)
       }
       let context = launchCoordinator.prepareLaunch(tabID: spec.tabId, isAgentAttached: false)
+      let launch = spawnLaunch()
       let env = Self.mergeLaunchEnvironment(
-        spawnLaunch().environmentOverrides,
+        launch.environmentOverrides,
         context: context)
       let session = try Session.makeDeferred(
         size: spec.size,
@@ -366,14 +372,14 @@ final class MainWindowController: NSWindowController {
       // overlay in argv (`--rcfile`), so the trailing `exec` after the agent
       // exits must re-apply it. zsh/fish carry it in env (inherited by exec),
       // so resumeExecArgs is nil and the default `-l -i` stands.
-      if let inj = injection, let execArgs = shellLaunch.resumeExecArgs {
+      if let inj = injection, let execArgs = launch.resumeExecArgs {
         injection = RestoreShellInjection(
           command: inj.command, shellPath: inj.shellPath, execArgs: execArgs)
       }
       let rc = session.startSpawn(
         overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil,
         injection: injection,
-        launchArgv: shellLaunch.argv)
+        launchArgv: launch.argv)
       if rc != 0 {
         // Spawn failed — log and surface a banner. The session keeps
         // its VT parser so the tab body is renderable; the user sees
@@ -393,14 +399,15 @@ final class MainWindowController: NSWindowController {
       case .laband, .labpty:
         return try Session.parserOnly(size: size, sessionID: context.sessionID)
       case .inProcess:
+        let launch = spawnLaunch()
         let env = Self.mergeLaunchEnvironment(
-          spawnLaunch().environmentOverrides,
+          launch.environmentOverrides,
           context: context)
         let session = try Session.realShell(
           size: size,
           cwd: cwd,
           environment: env,
-          launchArgv: shellLaunch.argv,
+          launchArgv: launch.argv,
           sessionID: context.sessionID)
         launchCoordinator.tryRegisterShellPID(sessionID: context.sessionID, session: session)
         return session
@@ -416,14 +423,15 @@ final class MainWindowController: NSWindowController {
       case .laband, .labpty:
         return try Session.parserOnly(size: size, sessionID: context.sessionID)
       case .inProcess:
+        let launch = spawnLaunch()
         let env = Self.mergeLaunchEnvironment(
-          spawnLaunch().environmentOverrides,
+          launch.environmentOverrides,
           context: context)
         let session = try Session.realShell(
           size: size,
           cwd: cwd,
           environment: env,
-          launchArgv: shellLaunch.argv,
+          launchArgv: launch.argv,
           sessionID: context.sessionID)
         launchCoordinator.tryRegisterShellPID(sessionID: context.sessionID, session: session)
         return session
@@ -1177,25 +1185,20 @@ final class MainWindowController: NSWindowController {
     }
   }
 
-  /// Generate the OSC 133 rc-overlay for the user's login shell once per
-  /// process and return the env overrides that activate it. The overlay
-  /// lives under a unique per-process temp directory (worktree-isolation
-  /// forbids a global fixed path); the OS reclaims it. Failures degrade to
-  /// no overrides — the shell then launches without integration rather than
-  /// failing to spawn.
-  private static func installShellIntegrationOverlay() -> ShellIntegrationLaunch {
+  /// Create the self-healing owner of the OSC 133 rc-overlay for the user's
+  /// login shell. The overlay lives under a unique per-process temp
+  /// directory (worktree-isolation forbids a global fixed path); the OS
+  /// reclaims it eventually. The provider reinstalls it at spawn time if it
+  /// disappeared, and degrades to `.passthrough` — shells launch unchanged
+  /// with their own startup files — when installing fails.
+  private static func makeShellIntegrationOverlayProvider() -> ShellIntegrationOverlayProvider {
     let shellPath = LoginShell.resolvePath()
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-shell-integration-\(UUID().uuidString)", isDirectory: true)
-    do {
-      return try ShellIntegrationOverlay.install(
-        shellPath: shellPath,
-        baseDirectory: base,
-        environment: ProcessInfo.processInfo.environment)
-    } catch {
-      AppLog.app.error("shell integration overlay install failed: \(String(describing: error))")
-      return .passthrough
-    }
+    return ShellIntegrationOverlayProvider(
+      shellPath: shellPath,
+      baseDirectory: base,
+      environment: ProcessInfo.processInfo.environment)
   }
 
   func detachTerminalSessions() {
@@ -1236,7 +1239,7 @@ final class MainWindowController: NSWindowController {
 
   private static func makeSessionCoordinator(
     backend: TerminalSessionBackend,
-    shellLaunch: ShellIntegrationLaunch,
+    shellLaunchProvider: @escaping () -> ShellIntegrationLaunch,
     cwdByTabId: [Tab.ID: String]
   ) throws -> AppSessionCoordinator? {
     switch backend {
@@ -1246,7 +1249,7 @@ final class MainWindowController: NSWindowController {
       let setup = try connectOrStartLaband()
       return AppSessionCoordinator(
         client: setup.client,
-        shellLaunch: shellLaunch,
+        shellLaunchProvider: shellLaunchProvider,
         cwdByTabId: cwdByTabId,
         labandProcess: setup.process
       )
@@ -1254,7 +1257,7 @@ final class MainWindowController: NSWindowController {
       let setup = try connectOrStartLabpty()
       return AppSessionCoordinator(
         labptyClient: setup.client,
-        shellLaunch: shellLaunch,
+        shellLaunchProvider: shellLaunchProvider,
         cwdByTabId: cwdByTabId,
         labptyProcess: setup.process
       )

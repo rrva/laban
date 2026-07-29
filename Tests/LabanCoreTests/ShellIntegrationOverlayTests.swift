@@ -184,6 +184,113 @@ final class ShellIntegrationOverlayTests: XCTestCase {
       "\(shellPath) never reported exit code 1 (state=\(session.shellIntegrationState()))")
   }
 
+  // MARK: - Self-healing provider
+
+  /// The overlay lives in a per-process temp dir that external cleanup can
+  /// delete while the app keeps running. A spawn carrying the stale ZDOTDIR
+  /// then makes zsh skip the user's .zshrc entirely. The provider must
+  /// reinstall the overlay at spawn time.
+  func testProviderReinstallsAfterOverlayDeletion() throws {
+    let base = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    let provider = ShellIntegrationOverlayProvider(
+      shellPath: "/bin/zsh", baseDirectory: base, environment: [:])
+    let launch = provider.currentLaunch()
+    let overlayDir = base.appendingPathComponent("zsh", isDirectory: true)
+    XCTAssertEqual(launch.environmentOverrides["ZDOTDIR"], overlayDir.path)
+
+    try FileManager.default.removeItem(at: overlayDir)
+
+    let healed = provider.currentLaunch()
+    XCTAssertEqual(healed.environmentOverrides["ZDOTDIR"], overlayDir.path)
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: overlayDir.appendingPathComponent(".zshenv").path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: overlayDir.appendingPathComponent("laban-integration.zsh").path))
+  }
+
+  /// Partial cleanup (hook file gone, .zshenv present) also heals: the
+  /// surviving .zshenv would source a missing hook and silently drop
+  /// integration.
+  func testProviderReinstallsAfterPartialDeletion() throws {
+    let base = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    let provider = ShellIntegrationOverlayProvider(
+      shellPath: "/bin/bash", baseDirectory: base, environment: [:])
+    _ = provider.currentLaunch()
+    let hook = base.appendingPathComponent("bash/laban-integration.bash")
+    try FileManager.default.removeItem(at: hook)
+
+    _ = provider.currentLaunch()
+    XCTAssertTrue(FileManager.default.fileExists(atPath: hook.path))
+  }
+
+  /// A shell without an overlay never gains one, and deleting the base dir
+  /// is a no-op.
+  func testProviderPassthroughForNonShell() throws {
+    let base = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    let provider = ShellIntegrationOverlayProvider(
+      shellPath: "/bin/sh", baseDirectory: base, environment: [:])
+    try FileManager.default.removeItem(at: base)
+    XCTAssertEqual(provider.currentLaunch(), .passthrough)
+  }
+
+  /// End-to-end regression for the reported bug: the overlay dir is deleted
+  /// *after* install but *before* the spawn (the long-running-app case).
+  /// The next spawn must heal the overlay, so the real zsh still sources
+  /// the user's .zshrc (observed via a sentinel file the .zshrc creates)
+  /// and still emits OSC 133 markers.
+  func testRealZshSourcesUserConfigAfterOverlayDeletion() throws {
+    try XCTSkipUnless(
+      FileManager.default.isExecutableFile(atPath: "/bin/zsh"), "/bin/zsh not available")
+
+    let base = try makeTempDir()
+    let home = try makeTempDir()
+    defer {
+      try? FileManager.default.removeItem(at: base)
+      try? FileManager.default.removeItem(at: home)
+    }
+    let sentinel = home.appendingPathComponent("laban-rc-sentinel")
+    try "touch \"$HOME/laban-rc-sentinel\"\n".write(
+      to: home.appendingPathComponent(".zshrc"), atomically: true, encoding: .utf8)
+
+    let provider = ShellIntegrationOverlayProvider(
+      shellPath: "/bin/zsh", baseDirectory: base, environment: [:])
+    _ = provider.currentLaunch()
+    // The failure window: overlay gone, app still running.
+    try FileManager.default.removeItem(at: base.appendingPathComponent("zsh", isDirectory: true))
+
+    var env = provider.currentLaunch().environmentOverrides
+    env["HOME"] = home.path
+    env["TERM"] = "xterm-256color"
+
+    let session = try Session.realShell(
+      size: size24x80, environment: env, launchArgv: ["/bin/zsh", "-i", "-l"])
+    let dirty = OSAllocatedUnfairLock(initialState: 0)
+    guard let runner = session.makeRunner(onDirty: { dirty.withLock { $0 += 1 } }) else {
+      XCTFail("makeRunner returned nil")
+      return
+    }
+    runner.start()
+    defer {
+      _ = session.write(Array("exit\n".utf8))
+      runner.stop()
+      session.close()
+    }
+
+    XCTAssertTrue(
+      waitUntil(3.0) { session.shellIntegrationState().phase != .idle },
+      "zsh never reached a prompt phase — overlay did not heal")
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: sentinel.path),
+      "zsh did not source the user's .zshrc after the overlay dir was deleted")
+  }
+
   // MARK: - Helpers
 
   private var size24x80: LabanTerminalSize {

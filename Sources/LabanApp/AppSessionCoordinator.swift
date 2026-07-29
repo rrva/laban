@@ -153,7 +153,10 @@ final class AppSessionCoordinator {
   private let labandClient: LabandTerminalSessionClient?
   private let optionalSnapshotTransport: OptionalLabandSnapshotTransport?
   private let labptyClient: LabptyTerminalSessionClient?
-  private let shellLaunch: ShellIntegrationLaunch
+  /// Resolved at spawn time so the shell-integration overlay can self-heal
+  /// (reinstall) if its per-process temp directory was deleted while the
+  /// app kept running. Wraps `ShellIntegrationOverlayProvider.currentLaunch`.
+  private let shellLaunchProvider: () -> ShellIntegrationLaunch
   private let cwdByTabId: [Tab.ID: String]
   private var launchCwdOverrideByTabId: [Tab.ID: String] = [:]
   private let supportsThemeApplication: Bool
@@ -221,9 +224,22 @@ final class AppSessionCoordinator {
   // idle now parks 450 ms later, which is invisible to the user.
   private static let labptyActiveQuietNanoseconds: UInt64 = 500_000_000
 
-  init(
+  convenience init(
     client: LabandTerminalSessionClient,
     shellLaunch: ShellIntegrationLaunch,
+    cwdByTabId: [Tab.ID: String] = [:],
+    labandProcess: Process? = nil
+  ) {
+    self.init(
+      client: client,
+      shellLaunchProvider: { shellLaunch },
+      cwdByTabId: cwdByTabId,
+      labandProcess: labandProcess)
+  }
+
+  init(
+    client: LabandTerminalSessionClient,
+    shellLaunchProvider: @escaping () -> ShellIntegrationLaunch,
     cwdByTabId: [Tab.ID: String] = [:],
     labandProcess: Process? = nil
   ) {
@@ -233,7 +249,7 @@ final class AppSessionCoordinator {
       try client.makeIndependentClient(ioTimeoutMilliseconds: 1_000)
     }
     self.labptyClient = nil
-    self.shellLaunch = shellLaunch
+    self.shellLaunchProvider = shellLaunchProvider
     self.cwdByTabId = cwdByTabId
     self.ownedProcess = labandProcess
     let capabilities = (try? client.hello().capabilities) ?? []
@@ -246,9 +262,22 @@ final class AppSessionCoordinator {
     installThemeObserver()
   }
 
-  init(
+  convenience init(
     labptyClient: LabptyTerminalSessionClient,
     shellLaunch: ShellIntegrationLaunch,
+    cwdByTabId: [Tab.ID: String] = [:],
+    labptyProcess: Process? = nil
+  ) {
+    self.init(
+      labptyClient: labptyClient,
+      shellLaunchProvider: { shellLaunch },
+      cwdByTabId: cwdByTabId,
+      labptyProcess: labptyProcess)
+  }
+
+  init(
+    labptyClient: LabptyTerminalSessionClient,
+    shellLaunchProvider: @escaping () -> ShellIntegrationLaunch,
     cwdByTabId: [Tab.ID: String] = [:],
     labptyProcess: Process? = nil
   ) {
@@ -256,7 +285,7 @@ final class AppSessionCoordinator {
     self.labandClient = nil
     self.optionalSnapshotTransport = nil
     self.labptyClient = labptyClient
-    self.shellLaunch = shellLaunch
+    self.shellLaunchProvider = shellLaunchProvider
     self.cwdByTabId = cwdByTabId
     self.ownedProcess = labptyProcess
     self.supportsThemeApplication = false
@@ -568,7 +597,7 @@ final class AppSessionCoordinator {
         let tab = try model.createRestoredTab(
           id: descriptor.logicalSessionId,
           cwd: cwd,
-          launchCommand: shellLaunch.argv?.joined(separator: " ") ?? "",
+          launchCommand: shellLaunchProvider().argv?.joined(separator: " ") ?? "",
           isActive: false)
         _ = try ensureSession(for: tab, session: model.session(forTab: tab.id), size: size)
         adopted.append(tab)
@@ -1265,9 +1294,11 @@ final class AppSessionCoordinator {
 
   /// The launch with the *current* terminal identity merged in. Identity is a
   /// live setting; resolving it per spawn means flipping it in Settings
-  /// reaches the next new session without relaunching Laban.
+  /// reaches the next new session without relaunching Laban. The provider
+  /// also reinstalls the shell-integration overlay if its files were
+  /// deleted since the last spawn.
   private var spawnShellLaunch: ShellIntegrationLaunch {
-    shellLaunch.withTerminalIdentity(TerminalIdentitySettings.identity())
+    shellLaunchProvider().withTerminalIdentity(TerminalIdentitySettings.identity())
   }
 
   private func labptyOpenRequest(
@@ -1277,7 +1308,7 @@ final class AppSessionCoordinator {
     LabptyOpenSessionRequest(
       rows: UInt32(max(1, Int(size.rows))),
       cols: UInt32(max(1, Int(size.cols))),
-      argv: (argvProvider?(tab.id) ?? shellLaunch.argv) ?? [],
+      argv: (argvProvider?(tab.id) ?? shellLaunchProvider().argv) ?? [],
       envp: mergedSpawnEnvironment(for: tab).map { "\($0.key)=\($0.value)" }.sorted(),
       cwd: cwdByLogicalSessionId(tab.id),
       logicalSessionId: tab.id)
@@ -1287,7 +1318,7 @@ final class AppSessionCoordinator {
     for tab: Tab,
     size: LabanTerminalSize
   ) -> TerminalSessionLaunchRequest {
-    let argv = argvProvider?(tab.id) ?? shellLaunch.argv
+    let argv = argvProvider?(tab.id) ?? shellLaunchProvider().argv
     return TerminalSessionLaunchRequest(
       executable: argv?.first,
       argv: argv,

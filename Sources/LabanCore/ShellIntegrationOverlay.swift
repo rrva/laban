@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// How to launch a shell so it emits OSC 133 markers: environment overrides
 /// merged onto the spawn environment, plus an optional explicit argv (for
@@ -280,5 +281,105 @@ public enum ShellIntegrationOverlay {
   /// command, escaping embedded single quotes.
   private static func shellSingleQuote(_ value: String) -> String {
     "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+  }
+
+  /// The files that must exist for the overlay launch of `shellPath` to be
+  /// valid. Empty for shells without an overlay. Used by
+  /// `ShellIntegrationOverlayProvider` to detect that the overlay directory
+  /// was deleted out from under a running process.
+  static func markerPaths(shellPath: String, baseDirectory: URL) -> [URL] {
+    switch Shell.classify(path: shellPath) {
+    case .zsh:
+      let dir = baseDirectory.appendingPathComponent("zsh", isDirectory: true)
+      return [
+        dir.appendingPathComponent(".zshenv"),
+        dir.appendingPathComponent("laban-integration.zsh"),
+      ]
+    case .bash:
+      let dir = baseDirectory.appendingPathComponent("bash", isDirectory: true)
+      return [
+        dir.appendingPathComponent("rcfile.bash"),
+        dir.appendingPathComponent("laban-integration.bash"),
+      ]
+    case .fish:
+      return [
+        baseDirectory.appendingPathComponent(
+          "fish-data/fish/vendor_conf.d/laban-integration.fish")
+      ]
+    case .other:
+      return []
+    }
+  }
+}
+
+/// Self-healing owner of a per-process shell-integration overlay.
+///
+/// The overlay lives in a unique per-process temp directory (worktree
+/// isolation forbids a global fixed path), and nothing stops that directory
+/// from being deleted while the process keeps running — third-party cleaner
+/// utilities wipe per-user temp dirs, and reinstall-on-launch only heals on
+/// relaunch. A spawn that then carries the stale `ZDOTDIR` (or bash
+/// `--rcfile`) points the shell at a directory with no startup files, so
+/// the user's real `.zshrc`/`.bashrc` is never sourced.
+/// `currentLaunch()` re-validates the marker files on every spawn and
+/// reinstalls the overlay when they are gone, so a long-running app heals
+/// without a restart. When reinstalling fails, the launch degrades to
+/// `.passthrough` — the shell starts unchanged with the user's config
+/// intact — and the next call retries.
+public final class ShellIntegrationOverlayProvider: @unchecked Sendable {
+  private let shellPath: String
+  private let baseDirectory: URL
+  private let environment: [String: String]
+  private let markerPaths: [URL]
+  private var launch: ShellIntegrationLaunch
+  private var didLogReinstallFailure = false
+  private let lock = NSLock()
+
+  private static let log = Logger(subsystem: "com.rrva.laban", category: "shell-integration")
+
+  /// Installs the overlay once up front, mirroring the previous
+  /// install-once-at-startup behavior; a failed install starts as
+  /// `.passthrough` and is retried by `currentLaunch()`.
+  public init(shellPath: String, baseDirectory: URL, environment: [String: String]) {
+    self.shellPath = shellPath
+    self.baseDirectory = baseDirectory
+    self.environment = environment
+    self.markerPaths = ShellIntegrationOverlay.markerPaths(
+      shellPath: shellPath, baseDirectory: baseDirectory)
+    do {
+      self.launch = try ShellIntegrationOverlay.install(
+        shellPath: shellPath, baseDirectory: baseDirectory, environment: environment)
+    } catch {
+      Self.log.error(
+        "shell integration overlay install failed: \(String(describing: error), privacy: .public)")
+      self.launch = .passthrough
+    }
+  }
+
+  /// The launch to use for the next spawn. Reinstalls the overlay if its
+  /// files disappeared since the last spawn.
+  public func currentLaunch() -> ShellIntegrationLaunch {
+    lock.lock()
+    defer { lock.unlock() }
+    // No markers: the shell has no overlay (`.other`), so there is nothing
+    // to lose and nothing to heal.
+    guard !markerPaths.isEmpty else { return launch }
+    let intact = markerPaths.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }
+    guard !intact else { return launch }
+    do {
+      launch = try ShellIntegrationOverlay.install(
+        shellPath: shellPath, baseDirectory: baseDirectory, environment: environment)
+      didLogReinstallFailure = false
+      Self.log.info("shell integration overlay reinstalled after its files disappeared")
+    } catch {
+      launch = .passthrough
+      if !didLogReinstallFailure {
+        didLogReinstallFailure = true
+        Self.log.error(
+          "shell integration overlay reinstall failed; spawning shells without integration: \(String(describing: error), privacy: .public)"
+        )
+      }
+    }
+    return launch
   }
 }
