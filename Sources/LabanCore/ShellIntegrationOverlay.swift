@@ -233,10 +233,28 @@ public enum ShellIntegrationOverlay {
       .write(to: dir.appendingPathComponent(".zshenv"), atomically: true, encoding: .utf8)
 
     var env = ["ZDOTDIR": dir.path]
-    if let real = environment["ZDOTDIR"], !real.isEmpty {
+    if let real = realZdotdir(from: environment) {
       env["LABAN_REAL_ZDOTDIR"] = real
     }
     return ShellIntegrationLaunch(environmentOverrides: env, argv: nil)
+  }
+
+  /// The user's real ZDOTDIR as seen by the launching environment. A
+  /// ZDOTDIR that points at a Laban overlay — inherited when Laban is
+  /// launched from inside a Laban tab — is not the user's config dir:
+  /// unwrap the inner `LABAN_REAL_ZDOTDIR` instead, and drop the chain
+  /// entirely when that is also an overlay (or absent), so the overlay
+  /// `.zshenv` falls back to `$HOME`.
+  private static func realZdotdir(from environment: [String: String]) -> String? {
+    func isLabanOverlay(_ value: String?) -> Bool {
+      value?.contains("laban-shell-integration-") ?? false
+    }
+    guard let zdotdir = environment["ZDOTDIR"], !zdotdir.isEmpty else { return nil }
+    if !isLabanOverlay(zdotdir) { return zdotdir }
+    if let inner = environment["LABAN_REAL_ZDOTDIR"], !inner.isEmpty, !isLabanOverlay(inner) {
+      return inner
+    }
+    return nil
   }
 
   private static func installBash(

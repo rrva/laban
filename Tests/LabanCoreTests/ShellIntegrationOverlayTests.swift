@@ -291,6 +291,94 @@ final class ShellIntegrationOverlayTests: XCTestCase {
       "zsh did not source the user's .zshrc after the overlay dir was deleted")
   }
 
+  // MARK: - Self-hosting leaks (laban launched from a laban shell)
+
+  /// A ZDOTDIR that is itself a Laban overlay (Laban launched from inside a
+  /// Laban tab) is not the user's config dir; the chain is dropped so the
+  /// overlay .zshenv falls back to $HOME.
+  func testInstallZshIgnoresLabanOverlayZdotdir() throws {
+    let base = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: base) }
+    let launch = try ShellIntegrationOverlay.install(
+      shellPath: "/bin/zsh", baseDirectory: base,
+      environment: ["ZDOTDIR": "/var/folders/x/T/laban-shell-integration-DEAD/zsh"])
+    XCTAssertNil(launch.environmentOverrides["LABAN_REAL_ZDOTDIR"])
+  }
+
+  /// The inner LABAN_REAL_ZDOTDIR of an inherited overlay chain *is* the
+  /// user's config dir; keep it.
+  func testInstallZshUnwrapsLabanOverlayChain() throws {
+    let base = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: base) }
+    let launch = try ShellIntegrationOverlay.install(
+      shellPath: "/bin/zsh", baseDirectory: base,
+      environment: [
+        "ZDOTDIR": "/var/folders/x/T/laban-shell-integration-DEAD/zsh",
+        "LABAN_REAL_ZDOTDIR": "/Users/u/.config/zsh",
+      ])
+    XCTAssertEqual(
+      launch.environmentOverrides["LABAN_REAL_ZDOTDIR"], "/Users/u/.config/zsh")
+  }
+
+  /// The spawn-env builder scrubs Laban's own integration state from the
+  /// inherited environment (field report: a labpty daemon spawned from an
+  /// instrumented shell carried a stale overlay ZDOTDIR that leaked into
+  /// every child launched without an explicit override). User-set values
+  /// pass through.
+  func testSpawnEnvScrubsInheritedLabanIntegrationState() throws {
+    setenv("ZDOTDIR", "/var/folders/x/T/laban-shell-integration-DEAD/zsh", 1)
+    setenv("LABAN_REAL_ZDOTDIR", "/var/folders/x/T/laban-shell-integration-DEAD/zsh", 1)
+    setenv("LABAN_SHELL_INTEGRATION", "1", 1)
+    defer {
+      unsetenv("ZDOTDIR")
+      unsetenv("LABAN_REAL_ZDOTDIR")
+      unsetenv("LABAN_SHELL_INTEGRATION")
+    }
+    let childEnv = try spawnEnvDump()
+    XCTAssertFalse(childEnv.contains("ZDOTDIR="), "stale overlay ZDOTDIR leaked: \(childEnv)")
+    XCTAssertFalse(childEnv.contains("LABAN_REAL_ZDOTDIR="))
+    XCTAssertFalse(childEnv.contains("LABAN_SHELL_INTEGRATION="))
+  }
+
+  func testSpawnEnvKeepsUserZdotdir() throws {
+    setenv("ZDOTDIR", "/tmp/laban-test-user-zdotdir", 1)
+    defer { unsetenv("ZDOTDIR") }
+    let childEnv = try spawnEnvDump()
+    XCTAssertTrue(
+      childEnv.contains("ZDOTDIR=/tmp/laban-test-user-zdotdir"),
+      "user-set ZDOTDIR must survive: \(childEnv)")
+  }
+
+  /// Spawn `/bin/zsh -c 'env > <file>'` through the real PTY spawn path and
+  /// return the captured child environment.
+  private func spawnEnvDump() throws -> String {
+    let out = try makeTempDir().appendingPathComponent("env.txt")
+    defer { try? FileManager.default.removeItem(at: out.deletingLastPathComponent()) }
+    let home = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: home) }
+
+    let session = try Session.realShell(
+      size: size24x80,
+      environment: ["HOME": home.path, "TERM": "xterm-256color"],
+      launchArgv: ["/bin/zsh", "-c", "env > '\(out.path)'"])
+    let dirty = OSAllocatedUnfairLock(initialState: 0)
+    guard let runner = session.makeRunner(onDirty: { dirty.withLock { $0 += 1 } }) else {
+      XCTFail("makeRunner returned nil")
+      return ""
+    }
+    runner.start()
+    defer {
+      runner.stop()
+      session.close()
+    }
+    XCTAssertTrue(
+      waitUntil(3.0) {
+        (try? String(contentsOf: out, encoding: .utf8))?.contains("HOME=") == true
+      },
+      "child never wrote its env dump")
+    return (try? String(contentsOf: out, encoding: .utf8)) ?? ""
+  }
+
   // MARK: - Helpers
 
   private var size24x80: LabanTerminalSize {

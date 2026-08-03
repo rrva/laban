@@ -112,6 +112,21 @@ static char **build_spawn_env(const char *const *overrides) {
         /* A leaked Windows Terminal marker makes tools suppress features
          * (OSC 9;4 progress checks WT_SESSION explicitly). Never inherit. */
         if (env_entry_has_name(entry, "WT_SESSION")) continue;
+        /* Laban's own shell-integration state must never leak from the
+         * parent environment into a child shell. A ZDOTDIR (or fish
+         * XDG_DATA_DIRS entry) captured from an instrumented parent shell —
+         * e.g. the labpty daemon spawned from inside a Laban tab — points
+         * at a per-process overlay that may already be deleted, and a shell
+         * launched with a dead ZDOTDIR sources no startup files at all.
+         * Only values bearing Laban's overlay signature are dropped; a
+         * user-set ZDOTDIR passes through. The request envp re-adds the
+         * current overlay as an explicit override. */
+        if (env_entry_has_name(entry, "LABAN_REAL_ZDOTDIR")) continue;
+        if (env_entry_has_name(entry, "LABAN_SHELL_INTEGRATION")) continue;
+        if (env_entry_has_name(entry, "ZDOTDIR") &&
+            strstr(entry, "laban-shell-integration-")) continue;
+        if (env_entry_has_name(entry, "XDG_DATA_DIRS") &&
+            strstr(entry, "laban-shell-integration-")) continue;
         /* Non-UTF-8 locale variables are overridden below with a safe default
          * so CJK tools see a usable locale. Drop the inherited entry to avoid
          * a duplicate-name race in getenv(3). LC_ALL is included because it

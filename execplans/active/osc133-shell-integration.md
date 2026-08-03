@@ -264,6 +264,25 @@ Field-reported fix (2026-07-29):
   shell can inherit a stale `ZDOTDIR` — scrubbing it in `build_spawn_env`
   would also strip a legitimately user-set `ZDOTDIR` for passthrough
   shells, so that vector stays open pending field evidence.
+- **High — Laban's own integration state leaked through inherited
+  environments.** Field evidence (2026-08-03) showed a labpty daemon whose
+  frozen environment carried `ZDOTDIR=<laban-shell-integration-…/zsh>`
+  (spawned from inside an instrumented shell) and a broken tab whose
+  still-set `ZDOTDIR` matched that stale overlay with `INTEG` unset — proof
+  the overlay `.zshenv` never ran, so no `.zshrc` either. `build_spawn_env`
+  merges request `envp` over the *daemon's* `environ`, so any spawn without
+  an explicit override (passthrough install, non-overlay shells) inherited
+  the dead path. Two fixes: (1) `build_spawn_env` in `session_lifecycle.c`
+  now drops inherited `LABAN_REAL_ZDOTDIR`/`LABAN_SHELL_INTEGRATION` and any
+  `ZDOTDIR`/`XDG_DATA_DIRS` value bearing the `laban-shell-integration-`
+  signature — user-set values still pass through; (2) `installZsh` no longer
+  records an inherited laban-overlay `ZDOTDIR` as the user's real config dir
+  (it unwraps the inner `LABAN_REAL_ZDOTDIR`, else drops the chain so the
+  overlay falls back to `$HOME`). Tests: `testInstallZshIgnoresLabanOverlayZdotdir`,
+  `testInstallZshUnwrapsLabanOverlayChain`,
+  `testSpawnEnvScrubsInheritedLabanIntegrationState`,
+  `testSpawnEnvKeepsUserZdotdir`. The overlay self-heal shipped in 0.7.4;
+  this scrub lands in the following release.
 
 ## Outcomes & Retrospective
 
