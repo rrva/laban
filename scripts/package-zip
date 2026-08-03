@@ -13,7 +13,8 @@ Environment:
   LABAN_UPDATE_MANIFEST_URL   Public update JSON URL stamped into Info.plist.
                               Defaults to the public Laban manifest on Google Drive.
   LABAN_RELEASE_DIR           Zip output directory. Defaults to .artifacts/release.
-  LABAN_CODESIGN_IDENTITY     Optional signing identity. Defaults to ad-hoc signing.
+  LABAN_CODESIGN_IDENTITY     Signing identity. Defaults to the release
+                              identity below; set to "-" for ad-hoc signing.
   LABAN_SKIP_CODESIGN         Defaults to 0. Skipped bundles may not launch.
   LABAN_BUILD_CONFIG          Swift build config (debug|release). Defaults to release
                               for distribution; release builds emit no in-binary DWARF.
@@ -25,6 +26,14 @@ EOF
 
 app_version=$1
 [ -n "$app_version" ] || usage
+
+# Release builds are signed with the distribution identity by default so a
+# downloaded zip carries a valid Developer ID signature. The identity is
+# public information (it is embedded in every signed binary), so keeping
+# the default here is not a secret leak; build-app's ad-hoc default for
+# local dev builds is unchanged. Set LABAN_CODESIGN_IDENTITY=- for ad-hoc.
+release_codesign_identity="Developer ID Application: Ragnar Rova (3563RJWBQP)"
+export LABAN_CODESIGN_IDENTITY=${LABAN_CODESIGN_IDENTITY:-$release_codesign_identity}
 
 export LABAN_APP_VERSION=$app_version
 export LABAN_BUILD_NUMBER=${LABAN_BUILD_NUMBER:-1}
@@ -91,12 +100,14 @@ fi
 # Final hygiene gate on the whole bundle (build-app already gates the
 # binary). Catches identifying strings that might land in xattrs, the
 # Info.plist, or the SwiftPM resource bundles that get copied in.
-# The `NSHumanReadableCopyright` notice (`© <year> Ragnar Rova`) is a
-# deliberate, public credit, so that exact form is exempt; the developer name
-# anywhere else — or a host path / team id — is still treated as a leak.
+# Two deliberate, public forms are exempt: the `NSHumanReadableCopyright`
+# notice (`© <year> Ragnar Rova`) and the code-signature-embedded release
+# identity (`Developer ID Application: Ragnar Rova (3563RJWBQP)`), which is
+# present in every properly signed binary. The developer name anywhere else
+# — or a host path / personal team id — is still treated as a leak.
 forbidden=$(LC_ALL=C find "$app_bundle" -type f -print0 |
   xargs -0 grep -aHInE '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' |
-  grep -vE '©[[:space:]]+[0-9]{4}[[:space:]]+Ragnar Rova' || true)
+  grep -vE '©[[:space:]]+[0-9]{4}[[:space:]]+Ragnar Rova|Developer ID Application: Ragnar Rova \(3563RJWBQP\)' || true)
 if [ -n "$forbidden" ]; then
   printf 'package-zip failed: identifying strings present in:\n%s\n' "$forbidden" >&2
   exit 1

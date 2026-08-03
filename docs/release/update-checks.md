@@ -157,10 +157,12 @@ Build a release zip with the app version and manifest URL:
 ./scripts/package-zip 0.1.0
 ```
 
-It writes `.artifacts/release/Laban-0.1.0.zip`. The app bundle is ad-hoc signed
-by default so local launch checks and downloaded zips do not carry a stale
-post-build signature. Set `LABAN_CODESIGN_IDENTITY` to use a developer identity
-instead. Upload that zip and put its public URL in the manifest's `link` field.
+It writes `.artifacts/release/Laban-0.1.0.zip`. Release zips are signed with
+the distribution identity by default (`Developer ID Application: Ragnar Rova
+(3563RJWBQP)`, persisted as the default in `scripts/package-zip`) so downloaded
+zips carry a valid Developer ID signature. Set `LABAN_CODESIGN_IDENTITY=-` for
+an ad-hoc signed build, or any other identity to override. Upload that zip and
+put its public URL in the manifest's `link` field.
 
 The package script stamps the public Laban manifest URL by default:
 
