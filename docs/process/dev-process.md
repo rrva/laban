@@ -260,6 +260,13 @@ Start and stop recording with `Cmd+Shift+R` or
 the manifest path on stop. A useful manual repro should include typed input,
 resize, scrollback movement, and a TUI when relevant.
 
+Unless `LABAN_CAPTURE_DIR` overrides it, interactive captures land in
+`~/Library/Logs/Laban/captures/appkit-<UTC>/` — this is the common location to
+check when a user reports a rendering or input issue from a live session. Each
+run directory holds `streams/pty-input.bin`, `streams/pty-output.bin`,
+`streams/terminal-response.bin`, `frames/`, `timeline.ndjson`, and
+`manifest.json`.
+
 `LABAN_CAPTURE_SCREENSHOTS=final|all|none|composite` selects the screenshot
 policy (default `final`). `composite` is the low-perturbation mode for
 timing-sensitive repros (e.g. resize flicker): it records no in-app pixel
