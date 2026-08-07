@@ -5024,7 +5024,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   override func flagsChanged(with event: NSEvent) {
-    let pt = convert(event.locationInWindow, from: nil)
+    // `event.locationInWindow` is meaningless for flagsChanged (observed as
+    // the constant (0,0) window point): the cursor never moved, only the
+    // modifier state did. Ask the window where the mouse actually is.
+    let pt = convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
     updateHoverCursor(at: pt, modifierFlags: event.modifierFlags)
     // Releasing Command ends a Cmd+scroll zoom. A phase-less scroll stream has no
     // `.ended` event, so without this the gesture only commits on the quiet
