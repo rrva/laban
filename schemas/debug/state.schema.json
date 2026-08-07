@@ -91,6 +91,7 @@
             "authorizationDenied",
             "deliveryFailed",
             "restoreSuppression",
+            "mergedIntoAwaitEpisode",
             null
           ]
         },

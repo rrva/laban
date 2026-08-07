@@ -181,6 +181,42 @@ final class AppModelTests: XCTestCase {
       AppModel.isUrgentNotification("Approval needed — waiting for your input"))
   }
 
+  func testCompletionNotificationBannerBodyIsReworded() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("initial tab must have a session")
+      return
+    }
+    var events: [AttentionNotificationEvent] = []
+    model.onAttentionNotification = { events.append($0) }
+
+    // Stock completion phrasing is reworded so "done, ready for more" is
+    // unmistakable in the native banner.
+    session.feedOutput(
+      Array("\u{1b}]9;Claude Code: Claude is waiting for your input\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(events.last?.category, .completion)
+    XCTAssertEqual(events.last?.body, AppModel.turnCompleteNotificationText)
+
+    session.feedOutput(Array("\u{1b}]9;Agent turn complete\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(events.last?.category, .completion)
+    XCTAssertEqual(events.last?.body, AppModel.turnCompleteNotificationText)
+
+    // A blocking request keeps the agent's reason verbatim.
+    session.feedOutput(Array("\u{1b}]9;Claude needs your permission\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(events.last?.category, .needsAction)
+    XCTAssertEqual(events.last?.body, "Claude needs your permission")
+
+    // A completion message carrying extra content (a summary) stays verbatim.
+    session.feedOutput(Array("\u{1b}]9;Turn complete: edited 3 files\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(events.last?.category, .completion)
+    XCTAssertEqual(events.last?.body, "Turn complete: edited 3 files")
+  }
+
   func testOSC9NotificationBadgesTabAndClearsOnViewing() throws {
     let model = try makeModel()
     try model.createTab()  // tab[1] is now active; tab[0] is a background tab
@@ -477,6 +513,50 @@ final class AppModelTests: XCTestCase {
     session.feedOutput(Array("\u{1b}]9;Still needs your approval\u{07}".utf8))
     pumpMainQueue()
     XCTAssertEqual(banners.count, 2)
+  }
+
+  func testMergedCompletionOSCDoesNotEmitDuplicateBannerEvent() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("initial tab must have a session")
+      return
+    }
+    var events: [AttentionNotificationEvent] = []
+    model.onAttentionNotification = { events.append($0) }
+
+    // The title flip raises the synthetic badge and its (single) completion
+    // attention event.
+    try model.updateTerminalTitle("✳ Pick an option", forTab: tabId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events[0].source, .tabAttention)
+    XCTAssertEqual(events[0].category, .completion)
+
+    // The agent's debounced turn-complete OSC (~60s later for Claude Code)
+    // merges into the episode: badge text refreshes, but no second banner
+    // event fires — the flip's banner already announced this wait.
+    session.feedOutput(
+      Array("\u{1b}]9;Claude Code: Claude is waiting for your input\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(
+      events.count, 1, "a merged non-urgent OSC must not emit a duplicate banner event")
+    XCTAssertEqual(
+      model.tabs.first { $0.id == tabId }?.titleMetadata.notification?.text,
+      "Claude Code: Claude is waiting for your input")
+    let suppressed = try XCTUnwrap(model.recentAttentionNotificationDecisions.last)
+    XCTAssertEqual(suppressed.event.source, .osc)
+    XCTAssertEqual(suppressed.event.category, .completion)
+    XCTAssertEqual(suppressed.action, .suppressed)
+    XCTAssertEqual(suppressed.suppressionReason, .mergedIntoAwaitEpisode)
+
+    // A blocking OSC in the same episode still banners.
+    session.feedOutput(Array("\u{1b}]9;Claude needs your permission\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(events.count, 2)
+    XCTAssertEqual(events[1].source, .osc)
+    XCTAssertEqual(events[1].category, .needsAction)
   }
 
   func testAwaitMarkerBannerSkippedForFrontmostTab() throws {

@@ -44,6 +44,7 @@ public final class TabStateJournal {
     "banner.suppressed.authorizationDenied"
   public static let bannerSuppressedDeliveryFailedNote = "banner.suppressed.deliveryFailed"
   public static let bannerSuppressedRestoreNote = "banner.suppressed.restoreSuppression"
+  public static let bannerSuppressedMergedNote = "banner.suppressed.mergedIntoAwaitEpisode"
   public static let daemonRecoveryNote = "daemon.recovery"
   public static let automationAutoQuitArmedNote = "automation.autoquit.armed"
 
@@ -65,6 +66,8 @@ public final class TabStateJournal {
       return bannerSuppressedDeliveryFailedNote
     case .restoreSuppression:
       return bannerSuppressedRestoreNote
+    case .mergedIntoAwaitEpisode:
+      return bannerSuppressedMergedNote
     }
   }
 

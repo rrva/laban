@@ -2162,9 +2162,19 @@ public final class AppModel {
           tabId: tabId,
           source: .osc,
           category: urgent ? .needsAction : .completion,
-          body: text,
+          body: Self.attentionBannerBody(forAgentText: text, urgent: urgent),
           dedupeKey: "osc:\(tabId):\(urgent ? "needsAction" : "completion"):\(text)")
       else { return }
+      // A merged non-urgent OSC is the agent's debounced echo of a wait the
+      // title-flip banner already announced (~60s earlier for Claude Code):
+      // record the suppression instead of posting a duplicate banner. A
+      // blocking request inside the episode still banners.
+      if outcome == .mergedIntoAwaitEpisode && !urgent {
+        recordAttentionNotificationDecision(
+          AttentionNotificationDecision(
+            event: event, action: .suppressed, suppressionReason: .mergedIntoAwaitEpisode))
+        return
+      }
       broadcastAttentionNotification(event)
     case .ignored:
       let urgent = Self.isUrgentNotification(text)
@@ -2173,7 +2183,7 @@ public final class AppModel {
           tabId: tabId,
           source: .osc,
           category: urgent ? .needsAction : .completion,
-          body: text,
+          body: Self.attentionBannerBody(forAgentText: text, urgent: urgent),
           dedupeKey: "osc:\(tabId):restore:\(text)")
       else { return }
       recordAttentionNotificationDecision(
@@ -2217,6 +2227,33 @@ public final class AppModel {
 
   public static let awaitingInputNotificationText = "Awaiting your input"
 
+  /// Laban-authored wording for a completion banner. Stock agent completion
+  /// OSCs ("Claude is waiting for your input", "turn complete") read like a
+  /// blocking prompt even though the turn merely finished, leaving it unclear
+  /// whether the user must act — so the banner says what happened plainly.
+  public static let turnCompleteNotificationText = "Turn complete — ready for your input"
+
+  /// Native-banner wording for an agent OSC notification. A blocking request
+  /// keeps the agent's reason verbatim (it is the call to action); a stock
+  /// completion phrase — optionally behind an agent label like "Claude Code:" —
+  /// is reworded so "done, ready for more" is unmistakable. A completion
+  /// message carrying extra content (e.g. a Codex summary) stays verbatim.
+  static func attentionBannerBody(forAgentText text: String, urgent: Bool) -> String {
+    guard !urgent else { return text }
+    var core = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if let colon = core.firstIndex(of: ":") {
+      core = core[core.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+    }
+    core = core.trimmingCharacters(in: CharacterSet(charactersIn: ".!"))
+    switch core {
+    case "claude is waiting for your input", "waiting for your input",
+      "turn complete", "agent turn complete", "task complete":
+      return turnCompleteNotificationText
+    default:
+      return text
+    }
+  }
+
   struct AwaitEpisode {
     /// The flip raised the informational synthetic badge (it was backgrounded
     /// and outside the restore-grace window).
@@ -2239,7 +2276,7 @@ public final class AppModel {
   /// banners come from `isUrgentNotification` when the OSC arrives. Both
   /// inherit seen-clearing (select / app-active) and restore-grace
   /// suppression; the debounced OSC merges into the badge without inflating
-  /// the unread count.
+  /// the unread count or posting a duplicate banner.
   private var awaitEpisodeByTab: [Tab.ID: AwaitEpisode] = [:]
 
   /// Diffs each tab's terminal title against the awaiting-input predicate
@@ -2268,13 +2305,17 @@ public final class AppModel {
     for tabId in endedRaised { clearStaleSyntheticBadge(forTab: tabId) }
   }
 
-  /// Sets an informational awaiting-input badge on a background tab. Native
-  /// banners are reserved for urgent OSC (permission/approval); the flip
-  /// itself does not broadcast. Skipped when the user is already watching the
-  /// tab (`isTabFrontmost`), when a notification is already pending (the user
-  /// has an unseen badge either way), or during the restore-time suppression
-  /// window (a relaunch restores a wall of idle "✳" agent tabs that must not
-  /// all light up).
+  /// Sets an informational awaiting-input badge on a background tab and
+  /// broadcasts the completion-category attention event — a native banner
+  /// posts only when completion banners are enabled and the tab is not
+  /// frontmost (the policy point in MainWindowController). When the agent's
+  /// own debounced OSC arrives later inside the episode, a non-urgent one
+  /// merges into the badge without a duplicate banner (see
+  /// `broadcastAgentNotificationIfNeeded`). Skipped when the user is already
+  /// watching the tab (`isTabFrontmost`), when a notification is already
+  /// pending (the user has an unseen badge either way), or during the
+  /// restore-time suppression window (a relaunch restores a wall of idle "✳"
+  /// agent tabs that must not all light up).
   private func raiseSyntheticAttention(forTab tabId: Tab.ID) {
     if isTabFrontmost?(tabId) == true { return }
     let event: AttentionNotificationEvent? = withModelLock {

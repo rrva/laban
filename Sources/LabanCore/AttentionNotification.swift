@@ -59,6 +59,10 @@ public enum AttentionNotificationSuppressionReason: String, Codable, Equatable, 
   case authorizationDenied
   case deliveryFailed
   case restoreSuppression
+  /// The agent's debounced OSC arrived inside an await episode whose title-flip
+  /// banner already announced the wait; a non-urgent merge carries no new call
+  /// to action, so a second banner would be a duplicate.
+  case mergedIntoAwaitEpisode
 }
 
 public struct AttentionNotificationDecision: Codable, Equatable, Sendable {
