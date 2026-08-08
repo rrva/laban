@@ -62,17 +62,21 @@ public enum TerminalHyperlink {
       if lineRow == row {
         guard let cellRange = rowText.cellRanges[col] else { return nil }
         clickedBounds = (
-          lower: text.count + rowText.text.distance(
-            from: rowText.text.startIndex, to: cellRange.lowerBound),
-          upper: text.count + rowText.text.distance(
-            from: rowText.text.startIndex, to: cellRange.upperBound)
+          lower: text.count
+            + rowText.text.distance(
+              from: rowText.text.startIndex, to: cellRange.lowerBound),
+          upper: text.count
+            + rowText.text.distance(
+              from: rowText.text.startIndex, to: cellRange.upperBound)
         )
       }
       text += rowText.text
     }
     guard let clickedBounds else { return nil }
-    let clickedRange = text.index(text.startIndex, offsetBy: clickedBounds.lower)
-      ..< text.index(text.startIndex, offsetBy: clickedBounds.upper)
+    let clickedRange =
+      text.index(
+        text.startIndex, offsetBy: clickedBounds.lower)..<text.index(
+        text.startIndex, offsetBy: clickedBounds.upper)
 
     let pattern = #"https?://[^\s<>"']+"#
     var searchRange = text.startIndex..<text.endIndex
