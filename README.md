@@ -118,7 +118,23 @@ Result:    .artifacts/runs/<run-id>/result.json
 
 ## Debugging and agent control
 
-Start a headless debug server:
+### Using the `laban` CLI
+
+For a running windowed Laban, the bundled `laban` CLI is the everyday way in
+(in `Laban.app/Contents/MacOS`; `laban install-cli` puts a shim on your
+PATH). It discovers the running app's socket and token for you.
+`laban status --json` shows app state, `laban session get-text --screen
+--max-lines 40` reads the visible grid, `laban session screenshot` captures
+the window, and `laban propose --purpose "..." -- CMD` submits a command for
+the user to approve in the app; the CLI never types into your session
+directly. Session reads prompt for a one-time in-app approval. `laban --help`
+lists everything.
+
+### Raw HTTP from a headless server
+
+Everything the CLI does rides on an HTTP debug contract you can also drive
+directly, with no window server, from CI, or with plain curl. Start a
+headless debug server:
 
 ```sh
 ./scripts/run-debug
@@ -153,16 +169,6 @@ curl "${AUTH[@]}" -X POST http://localhost/debug/wait \
   -H 'Content-Type: application/json' \
   -d '{"timeoutMs":5000,"condition":{"kind":"textVisible","text":"ok"}}'
 ```
-
-Against a live windowed Laban you don't need raw curl at all: the bundled
-`laban` CLI (in `Laban.app/Contents/MacOS`; `laban install-cli` puts a shim
-on your PATH) discovers the running app's socket and token for you.
-`laban status --json` shows app state, `laban session get-text --screen
---max-lines 40` reads the visible grid, `laban session screenshot` captures
-the window, and `laban propose --purpose "..." -- CMD` submits a command for
-the user to approve in the app; the CLI never types into your session
-directly. Session reads prompt for a one-time in-app approval. `laban --help`
-lists everything.
 
 For repeatable flows, point the scenario runner at a JSON fixture. It boots
 a headless server, executes every step, writes a report, and shuts the
