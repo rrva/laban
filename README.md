@@ -23,21 +23,22 @@ and CI.
   socket (no TCP port is ever opened), so "check what happened in my session"
   is a query, not a copy-paste. The same terminal boots headless too: CI can
   type, wait on conditions, and take screenshots without a window server.
-- **A real terminal.** VT parsing is libghostty's, not hand-rolled. True
-  color, hyperlinks, mouse, synchronized output, and modern key protocols
-  work as they would in any modern terminal.
-- **A native Mac app.** AppKit, not Electron. Native text input (including
-  layout-specific Option characters), vertical tabs, JetBrains Mono and
-  Selenized (Light or Dark, following system appearance) as defaults.
+- **A real terminal.** VT parsing comes from libghostty-vt, Ghostty's
+  terminal core; the rendering, daemons, and app around it are Laban's own.
+  True color, hyperlinks, mouse, synchronized output, and modern key
+  protocols work as they would in any modern terminal.
 - **Text that stays sharp.** A vector renderer mode draws glyphs from font
   curves on the GPU, not scaled bitmaps, so text is crisp at any zoom or
   display scale.
+- **A native Mac app.** AppKit, not Electron. Native text input (including
+  layout-specific Option characters), vertical tabs, JetBrains Mono and
+  Selenized (Light or Dark, following system appearance) as defaults.
 - **One command to trust a change.** `./scripts/check` runs everything:
   schemas, docs, debug-contract drift, formatting, build, unit tests, a
   runtime smoke test, and a headless end-to-end debug-server scenario.
 
-> **Status: alpha.** APIs, scripts, debug endpoints, and on-disk artifact
-> formats change without notice. Not yet a daily-driver replacement.
+> **Status: beta.** APIs, scripts, debug endpoints, and on-disk artifact
+> formats change without notice.
 
 ## Build
 
@@ -94,7 +95,7 @@ open .build/laban/Laban.app
 ```
 
 Drag it into `/Applications` if you want it on your dock. (It's an ad-hoc
-signed alpha build, so the first launch may need a right-click → **Open**.)
+signed build, so the first launch may need a right-click → **Open**.)
 
 ### Headless, one shot
 
