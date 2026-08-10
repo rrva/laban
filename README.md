@@ -10,6 +10,23 @@ queryable and controllable over a local HTTP control plane. It behaves like a
 normal terminal for humans, and like a deterministic test fixture for agents
 and CI.
 
+## Why you'd want it
+
+- **Your sessions outlive the app.** Shells run in a small background daemon,
+  not inside the window. Quit Laban, upgrade it, or let it crash: everything
+  keeps running, and reopening drops you back exactly where you were,
+  scrollback and all.
+- **Never lose a working agent.** A Claude Code or Codex run that has been
+  going for an hour survives a terminal restart untouched.
+- **Text that stays sharp.** A vector renderer mode draws glyphs from font
+  curves on the GPU, not scaled bitmaps, so text is crisp at any zoom or
+  display scale.
+- **Feels like a real terminal.** Modern VT behavior (true color, hyperlinks,
+  mouse, synchronized output) in a fast native Mac app, not a web view.
+- **Agents can see what you see.** Tools can inspect and drive the same
+  terminal you're looking at, so "check what happened in my session" is a
+  query, not a copy-paste.
+
 ## Why Laban
 
 - **HTTP control plane.** A debug server on a Unix domain socket (no TCP port
@@ -23,7 +40,7 @@ and CI.
   protocols work as they would in any modern terminal.
 - **macOS-native.** AppKit, not Electron. Native text input (including
   layout-specific Option characters), vertical tabs, JetBrains Mono and
-  Selenized Light as defaults.
+  Selenized (Light or Dark, following system appearance) as defaults.
 - **One gate for everything.** `./scripts/check` runs schemas, docs,
   debug-contract drift, formatting, build, unit tests, a runtime smoke test,
   and a headless end-to-end debug-server scenario.
