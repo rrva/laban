@@ -21,8 +21,9 @@ and CI.
 - **Agents can see what you see.** Tabs, cursor, scrollback, rendered frames,
   and the event log are all queryable and drivable as JSON over a local Unix
   socket (no TCP port is ever opened), so "check what happened in my session"
-  is a query, not a copy-paste. The same terminal boots headless too: CI can
-  type, wait on conditions, and take screenshots without a window server.
+  is a query, not a copy-paste. A bundled `laban` CLI makes those queries
+  one-liners. The same terminal boots headless too: CI can type, wait on
+  conditions, and take screenshots without a window server.
 - **A real terminal.** VT parsing comes from libghostty-vt, Ghostty's
   terminal core; the rendering, daemons, and app around it are Laban's own.
   True color, hyperlinks, mouse, synchronized output, and modern key
@@ -152,6 +153,16 @@ curl "${AUTH[@]}" -X POST http://localhost/debug/wait \
   -H 'Content-Type: application/json' \
   -d '{"timeoutMs":5000,"condition":{"kind":"textVisible","text":"ok"}}'
 ```
+
+Against a live windowed Laban you don't need raw curl at all: the bundled
+`laban` CLI (in `Laban.app/Contents/MacOS`; `laban install-cli` puts a shim
+on your PATH) discovers the running app's socket and token for you.
+`laban status --json` shows app state, `laban session get-text --screen
+--max-lines 40` reads the visible grid, `laban session screenshot` captures
+the window, and `laban propose --purpose "..." -- CMD` submits a command for
+the user to approve in the app; the CLI never types into your session
+directly. Session reads prompt for a one-time in-app approval. `laban --help`
+lists everything.
 
 For repeatable flows, point the scenario runner at a JSON fixture. It boots
 a headless server, executes every step, writes a report, and shuts the
