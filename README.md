@@ -28,12 +28,21 @@ and CI.
   terminal core; the rendering, daemons, and app around it are Laban's own.
   True color, hyperlinks, mouse, synchronized output, and modern key
   protocols work as they would in any modern terminal.
-- **Text that stays sharp.** A vector renderer mode draws glyphs from font
-  curves on the GPU, not scaled bitmaps, so text is crisp at any zoom or
-  display scale.
+- **Text that stays sharp.** A vector renderer mode draws glyphs straight
+  from font curves on the GPU. There is no bitmap atlas to re-bake when you
+  zoom or land on a fractional display scale, so text stays pixel-crisp
+  where most terminal renderers go soft. CJK and color emoji deliberately
+  stay on the proven raster path that complex scripts need, and tests hold
+  that line.
 - **A native Mac app.** AppKit, not Electron. Native text input (including
   layout-specific Option characters), vertical tabs, JetBrains Mono and
   Selenized (Light or Dark, following system appearance) as defaults.
+- **Chinese, Japanese, and Korean just work.** A CJK-capable font (PingFang,
+  Noto CJK, or Sarasa) is paired with JetBrains Mono automatically and can
+  be overridden in Settings. Double-width cell layout comes from the
+  conformance-tested terminal core, and native macOS text input means
+  Pinyin and other IMEs keep their normal candidate window and inline
+  composition, backed by CJK-specific tests.
 - **One command to trust a change.** `./scripts/check` runs everything:
   schemas, docs, debug-contract drift, formatting, build, unit tests, a
   runtime smoke test, and a headless end-to-end debug-server scenario.
