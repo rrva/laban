@@ -2,7 +2,7 @@
 
 [![check](https://github.com/rrva/laban/actions/workflows/check.yml/badge.svg)](https://github.com/rrva/laban/actions/workflows/check.yml)
 
-**A macOS terminal designed to be driven by agents.**
+**A native macOS terminal your agents can drive, with sessions that survive quits, crashes, and upgrades.**
 
 Laban is a native macOS terminal where every visible part of the running app
 — tabs, selection, cursor, scrollback, rendered frames, event log — is also
@@ -10,7 +10,7 @@ queryable and controllable over a local HTTP control plane. It behaves like a
 normal terminal for humans, and like a deterministic test fixture for agents
 and CI.
 
-## Why you'd want it
+## Why Laban
 
 - **Your sessions outlive the app.** Shells run in a small background daemon,
   not inside the window. Quit Laban, upgrade it, or let it crash: everything
@@ -18,32 +18,23 @@ and CI.
   scrollback and all.
 - **Never lose a working agent.** A Claude Code or Codex run that has been
   going for an hour survives a terminal restart untouched.
+- **Agents can see what you see.** Tabs, cursor, scrollback, rendered frames,
+  and the event log are all queryable and drivable as JSON over a local Unix
+  socket (no TCP port is ever opened), so "check what happened in my session"
+  is a query, not a copy-paste. The same terminal boots headless too: CI can
+  type, wait on conditions, and take screenshots without a window server.
+- **A real terminal.** VT parsing is libghostty's, not hand-rolled. True
+  color, hyperlinks, mouse, synchronized output, and modern key protocols
+  work as they would in any modern terminal.
+- **A native Mac app.** AppKit, not Electron. Native text input (including
+  layout-specific Option characters), vertical tabs, JetBrains Mono and
+  Selenized (Light or Dark, following system appearance) as defaults.
 - **Text that stays sharp.** A vector renderer mode draws glyphs from font
   curves on the GPU, not scaled bitmaps, so text is crisp at any zoom or
   display scale.
-- **Feels like a real terminal.** Modern VT behavior (true color, hyperlinks,
-  mouse, synchronized output) in a fast native Mac app, not a web view.
-- **Agents can see what you see.** Tools can inspect and drive the same
-  terminal you're looking at, so "check what happened in my session" is a
-  query, not a copy-paste.
-
-## Why Laban
-
-- **HTTP control plane.** A debug server on a Unix domain socket (no TCP port
-  is ever opened) exposes tabs, cursor, scrollback, rendered frames, and event
-  log as JSON. Drive the app with `curl --unix-socket` or replay a scenario
-  from a JSON fixture.
-- **Headless rendering.** Boot the same terminal without a window server.
-  Capture screenshots, diff frame commands, replay sessions — all from CI.
-- **Real terminal behavior.** VT parsing is libghostty's, not hand-rolled.
-  Synchronized output, hyperlinks, mouse, true color, and modern key
-  protocols work as they would in any modern terminal.
-- **macOS-native.** AppKit, not Electron. Native text input (including
-  layout-specific Option characters), vertical tabs, JetBrains Mono and
-  Selenized (Light or Dark, following system appearance) as defaults.
-- **One gate for everything.** `./scripts/check` runs schemas, docs,
-  debug-contract drift, formatting, build, unit tests, a runtime smoke test,
-  and a headless end-to-end debug-server scenario.
+- **One command to trust a change.** `./scripts/check` runs everything:
+  schemas, docs, debug-contract drift, formatting, build, unit tests, a
+  runtime smoke test, and a headless end-to-end debug-server scenario.
 
 > **Status: alpha.** APIs, scripts, debug endpoints, and on-disk artifact
 > formats change without notice. Not yet a daily-driver replacement.
