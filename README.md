@@ -6,15 +6,16 @@
 
 Laban is a native macOS terminal where every visible part of the running app
 — tabs, selection, cursor, scrollback, rendered frames, event log — is also
-queryable and controllable over a loopback HTTP server. It behaves like a
+queryable and controllable over a local HTTP control plane. It behaves like a
 normal terminal for humans, and like a deterministic test fixture for agents
 and CI.
 
 ## Why Laban
 
-- **HTTP control plane.** A loopback debug server exposes tabs, cursor,
-  scrollback, rendered frames, and event log as JSON. Drive the app with
-  `curl` or replay a scenario from a JSON fixture.
+- **HTTP control plane.** A debug server on a Unix domain socket (no TCP port
+  is ever opened) exposes tabs, cursor, scrollback, rendered frames, and event
+  log as JSON. Drive the app with `curl --unix-socket` or replay a scenario
+  from a JSON fixture.
 - **Headless rendering.** Boot the same terminal without a window server.
   Capture screenshots, diff frame commands, replay sessions — all from CI.
 - **Real terminal behavior.** VT parsing is libghostty's, not hand-rolled.
@@ -34,16 +35,28 @@ and CI.
 
 Prerequisites:
 
-- macOS 13 (Ventura) or later
-- Xcode 15 or later (provides the Swift 5.9+ and Metal toolchains)
-- [Zig](https://ziglang.org/download/) 0.15.2 or later — builds the vendored
-  libghostty-vt VT core
-- `jq` — used by `./scripts/check` and the debug examples below
+- macOS 13 (Ventura) or later to *run* the app
+- Xcode 26 or later to *build* it. The renderer's glyph fast path uses
+  `Span`/`UTF8Span`, which only exist in the macOS 26 SDK. They are gated at
+  runtime with `@available(macOS 26, *)` and fall back to a legacy path, so the
+  built app still runs on macOS 13, but the symbols must resolve at compile
+  time. Xcode 16.4 (Swift 6.1) and earlier cannot build this tree.
+- [Zig](https://ziglang.org/download/) **0.15.2 exactly** (not newer): builds
+  the vendored libghostty-vt VT core. `fetch-libghostty-vt` refuses any other
+  version, because the Ghostty pin below does not compile with it.
+- `python3` (ships with macOS): used by `./scripts/build-app` and several
+  `./scripts/check` stages
+- `jq`: used by `./scripts/check` and the debug examples below
 
 Install the tooling, then build:
 
 ```sh
-brew install zig jq
+# The default `zig` formula is 0.16, which fetch-libghostty-vt rejects.
+# zig@0.15 is keg-only, so it must be put on PATH explicitly.
+brew install zig@0.15 jq
+export PATH="$(brew --prefix zig@0.15)/bin:$PATH"
+zig version   # must print exactly 0.15.2
+
 git clone https://github.com/rrva/laban
 cd laban
 ./scripts/fetch-libghostty-vt   # one-time: clone + build the pinned libghostty-vt
@@ -101,29 +114,32 @@ Start a headless debug server:
 ./scripts/run-debug
 ```
 
-The first stdout line is readiness JSON:
+The first stdout line is readiness JSON. `debugServer` is the path to a Unix
+domain socket, not a TCP URL:
 
 ```json
-{"debugServer":"http://127.0.0.1:49321","debugToken":"<bearer>","pid":12345,"runId":"manual-debug"}
+{"debugServer":"/path/to/laban/.tmp/<run-id>/control.sock","debugToken":"<bearer>","pid":12345,"runId":"manual-debug"}
 ```
 
+The server speaks HTTP, but only over that socket: it never binds a TCP port,
+so reach it with `curl --unix-socket` and a dummy `http://localhost` host.
 Every `/debug` request needs `Authorization: Bearer <bearer>`. From there you
 can list capabilities, query state, type input, take screenshots, wait on
 conditions, and capture or replay full sessions:
 
 ```sh
-export DEBUG_URL=http://127.0.0.1:49321
+export DEBUG_URL=<debugServer path from readiness line>
 export DEBUG_TOKEN=<token from readiness line>
-AUTH=(-H "Authorization: Bearer $DEBUG_TOKEN")
+AUTH=(--unix-socket "$DEBUG_URL" -H "Authorization: Bearer $DEBUG_TOKEN")
 
-curl "${AUTH[@]}" "$DEBUG_URL/debug/capabilities" | jq
-curl "${AUTH[@]}" "$DEBUG_URL/debug/state" | jq
+curl "${AUTH[@]}" http://localhost/debug/capabilities | jq
+curl "${AUTH[@]}" http://localhost/debug/state | jq
 
-curl "${AUTH[@]}" -X POST "$DEBUG_URL/debug/actions" \
+curl "${AUTH[@]}" -X POST http://localhost/debug/actions \
   -H 'Content-Type: application/json' \
   -d '{"action":"typeText","text":"printf ok\n"}'
 
-curl "${AUTH[@]}" -X POST "$DEBUG_URL/debug/wait" \
+curl "${AUTH[@]}" -X POST http://localhost/debug/wait \
   -H 'Content-Type: application/json' \
   -d '{"timeoutMs":5000,"condition":{"kind":"textVisible","text":"ok"}}'
 ```

@@ -28,11 +28,12 @@ When the app starts with a debug server, stdout must include exactly one
 machine-readable readiness line:
 
 ```json
-{"debugServer":"http://127.0.0.1:49321","debugToken":"<bearer-token>","pid":12345,"runId":"abc123"}
+{"debugServer":"/path/to/control.sock","debugToken":"<bearer-token>","pid":12345,"runId":"abc123"}
 ```
 
-Agents should parse this line instead of guessing ports and must send the token
-as `Authorization: Bearer <bearer-token>` on every debug request.
+`debugServer` is a Unix domain socket path, not a TCP URL. Agents should parse
+this line instead of guessing socket paths, and must send the token as
+`Authorization: Bearer <bearer-token>` on every debug request.
 
 ## Directory Layout
 

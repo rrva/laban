@@ -86,12 +86,17 @@ app --headless --fixture=fixtures/colored-boxes.json --debug-server=127.0.0.1:0
 
 ## Debug Server Contract
 
-Expose a small HTTP server bound to loopback only. If port `0` is requested,
-the app chooses a free port and prints a single machine-readable line to stdout:
+Expose a small HTTP server bound to a Unix domain socket. No TCP port is
+opened: any `--debug-server=host:port` value is validated for syntax and then
+ignored, and the socket path is derived from the temp or artifacts directory.
+The app prints a single machine-readable line to stdout, where `debugServer`
+is that socket path:
 
 ```json
-{"debugServer":"http://127.0.0.1:49321","debugToken":"<bearer-token>","pid":12345,"runId":"abc123"}
+{"debugServer":"/path/to/control.sock","debugToken":"<bearer-token>","pid":12345,"runId":"abc123"}
 ```
+
+Reach it with `curl --unix-socket "$DEBUG_URL" http://localhost/debug/...`.
 
 Every `/debug` request must include `Authorization: Bearer <bearer-token>`.
 The token is only emitted in the readiness JSON.
