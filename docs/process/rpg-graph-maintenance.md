@@ -1,11 +1,17 @@
 # RPG Semantic Graph — Maintenance & Worktree Strategy
 
-`.rpg/graph.json` is a **committed, generated** semantic code graph built by
+`.rpg/graph.json` is a **local-only, generated** semantic code graph built by
 [rpg-encoder](https://github.com/userFRM/rpg-encoder) and served to agents via
 the `rpg` MCP server. It maps every function/class/method to *what it does*
-(verb-object "features"), plus dependency and containment edges. It is committed
-on purpose — upstream's own guidance — so a fresh clone or worktree inherits a
-fully-lifted graph for free.
+(verb-object "features"), plus dependency and containment edges.
+
+> **Changed 2026-08-10.** The graph used to be committed, on upstream's guidance,
+> so a fresh clone inherited a fully-lifted graph for free. At ~24MB a revision it
+> was about half the packed clone, so before publishing the repository it was
+> purged from history and gitignored. Each checkout now builds and lifts its own
+> graph, and nothing about it travels through git. Sections below that describe
+> merge drivers, `.gitattributes`, or sharing the graph between worktrees are
+> retained only as history.
 
 This doc is the playbook for keeping it fresh **cheaply** and **without merge
 pain** across many git worktrees. Durable policy is in
@@ -177,9 +183,11 @@ Committing the graph is an asset, not a liability:
   search over committed features works immediately; only vector similarity needs
   `embeddings.bin`.
 
-## `.gitattributes` (already applied)
+## `.gitattributes` (no longer applied)
 
-The root `.gitattributes` treats the graph as the generated artifact it is:
+While the graph was committed, the root `.gitattributes` treated it as the
+generated artifact it is. The rule was removed when the graph became
+gitignored, since an ignored path never reaches a merge or a diff:
 
 ```gitattributes
 .rpg/graph.json merge=ours -diff linguist-generated

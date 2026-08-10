@@ -4,6 +4,17 @@ Date: 2026-05-31
 
 ## Status
 
+**Superseded 2026-08-10: `.rpg/graph.json` is no longer committed.** Ahead of
+publishing the repository, the graph was purged from all history and added to
+`.gitignore`. At ~24MB per revision it was roughly half the packed clone, and it
+is fully regenerable (`rpg-encoder update` plus a lift), so a public clone should
+not carry it. Everything below describes the previous policy and is retained for
+history. What still holds: the graph is a *generated* artifact, `main` owns the
+semantic refresh, and lifting uses a cheap small model. What no longer applies:
+the graph travelling through git, the root `.gitattributes` rule (removed, it had
+nothing left to match), the `merge.ours.driver` setup, and the claim that a new
+worktree inherits a pre-paid lift cache — each checkout now builds its own graph.
+
 Accepted. Amended 2026-06-11: the "feature worktrees read, never write" +
 `skip-worktree` clause is retracted — with the pre-commit hook installed
 (`rpg-encoder hook install`, upstream's recommended workflow), feature branches

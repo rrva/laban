@@ -108,8 +108,7 @@ without building via:
 Do not override a linked worktree back to `com.laban.LabanApp` unless the task
 explicitly intends to replace the canonical install.
 
-`.rpg/graph.json` is a committed generated artifact. The pre-commit hook keeps
-its structure current on every branch, and `main` owns semantic refreshes
-(lifting). Do not strip those hunks from commits and do not set
-`skip-worktree`; that makes the hook's `git add` fail and blocks the commit.
+`.rpg/graph.json` is a local-only generated artifact, gitignored since
+2026-08-10. It no longer travels between worktrees, so each checkout builds and
+lifts its own graph and there are no graph hunks in commits to worry about.
 See `docs/process/rpg-graph-maintenance.md` for graph maintenance details.

@@ -15,6 +15,9 @@
 .kimi/worktrees/
 compile_commands.json
 Sources/LabanApp/BuildInfo.generated.swift
+# Generated semantic code graph (rpg-encoder). Local-only: it is ~24MB and
+# regenerable, so committing it dominated clone size. See .rpg/README.md.
+.rpg/graph.json
 __pycache__/
 *.o
 *.d

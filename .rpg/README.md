@@ -4,11 +4,13 @@ This directory contains a **semantic code graph** built by [RPG-Encoder](https:/
 
 ## What is this?
 
-`graph.json` is a pre-built semantic index of this codebase. It maps every function, class, and method to **what it does** (not just what it's called), along with dependency edges and a semantic hierarchy.
+`graph.json` is a semantic index of this codebase. It maps every function, class, and method to **what it does** (not just what it's called), along with dependency edges and a semantic hierarchy.
 
-## Why is this committed?
+## Why isn't this committed?
 
-So you don't have to rebuild it. Anyone who clones this repo gets instant access to:
+It used to be, so that a clone came with the index pre-built. At ~24MB a revision it grew to roughly half the packed repository, and it is fully regenerable, so it was purged from history and gitignored before this repository was published. Build your own copy with `rpg-encoder update` (structure, deterministic and free) followed by a lift pass (semantic features, needs a model). See `docs/process/rpg-graph-maintenance.md`.
+
+Once built, it gives you:
 
 - **Intent-based code search** — find code by *what it does*, not just by name
 - **Dependency exploration** — trace upstream/downstream call chains

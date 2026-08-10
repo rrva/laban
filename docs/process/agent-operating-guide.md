@@ -82,9 +82,10 @@ style, workflow, or verification rules.
   opt back into WMO when a profile must match the exact code shape of a
   distributed release build.
 - `build-app` and `install-app` stamp `Info.plist:LABANBuildCommit` with
-  `<short-sha>[+dirty]`. A dirty tracked tree, including `.rpg/graph.json`,
-  adds `+dirty`; if a just-shipped fix appears missing, verify the running
-  bundle's stamp before debugging source.
+  `<short-sha>[+dirty]`. A dirty tracked tree adds `+dirty`; if a just-shipped
+  fix appears missing, verify the running bundle's stamp before debugging
+  source. (`.rpg/graph.json` no longer counts: it is gitignored, so a
+  regenerated graph leaves the stamp clean.)
 - The bundle sets `LSMultipleInstancesProhibited`. Relaunches must wait for the
   old process to exit before `open`; otherwise Launch Services can reactivate
   the exiting instance and leave nothing running.
