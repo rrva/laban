@@ -1053,6 +1053,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // A display add/remove can strand the renderer's CAMetalDisplayLink on a
       // dead vsync port (frozen presentation, then a CFRunLoop abort when the
       // dead port is serviced). Rebuild it against the current display set.
+      EventLog.shared.log(
+        "render.displayChange", self.presentLinkDebugPayload(reason: "screenParameters"))
       self.rebuildPresentLinksAfterDisplayChange()
       if self.updateDisplayDownsampledState() {
         self.renderInvalidated = true
@@ -1940,6 +1942,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     (pendingBackendSwap?.backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
   }
 
+  /// Payload for display-change EventLog entries: the renderer's present-link
+  /// counters (callbacks/presented/rebuilds/paused) plus the main tick state.
+  /// A display-unplug freeze otherwise leaves no trace of whether the
+  /// CAMetalDisplayLink rebuild notification fired or the link stayed bound
+  /// to the dead display's vsync port.
+  private func presentLinkDebugPayload(reason: String) -> [String: Any] {
+    var payload = debugPresentStats(reset: false)
+    payload["reason"] = reason
+    payload["mainLinkTicking"] = displayLinkIsTicking
+    payload["screen"] = window?.screen?.localizedName ?? "none"
+    return payload
+  }
+
   private func completePendingBackendSwap(token: UInt64) {
     guard var pending = pendingBackendSwap, pending.token == token else { return }
 
@@ -2400,7 +2415,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       center.addObserver(
         forName: NSWindow.didChangeScreenNotification, object: window, queue: .main
       ) { [weak self] _ in
-        self?.rebuildPresentLinksAfterDisplayChange()
+        guard let self else { return }
+        EventLog.shared.log(
+          "render.displayChange", self.presentLinkDebugPayload(reason: "windowScreenChange"))
+        self.rebuildPresentLinksAfterDisplayChange()
       })
     // A terminal window does not receive another key-window notification when
     // Settings is key and the whole app deactivates/reactivates. Observe app

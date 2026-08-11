@@ -127,10 +127,13 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     }
     statsLock.unlock()
     _ = (callbacks, presented)
+    // Live paused state, read after releasing statsLock (debugLinkIsPaused
+    // takes the swap lock; keep the two acquisitions sequential).
+    let pausedNow = debugLinkIsPaused ? 1.0 : 0.0
     guard !s.isEmpty else {
       return [
         "count": 0, "callbacks": Double(callbacks), "presented": Double(presented),
-        "rebuilds": Double(rebuilds),
+        "rebuilds": Double(rebuilds), "paused": pausedNow,
       ]
     }
     let n = s.count
@@ -154,7 +157,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       "callbacks": Double(callbacks), "presented": Double(presented),
       "twoVsyncGaps": Double(twoVsyncGaps), "longerGaps": Double(longerGaps),
       "estimatedMissedVsyncs": Double(estimatedMissedVsyncs),
-      "rebuilds": Double(rebuilds),
+      "rebuilds": Double(rebuilds), "paused": pausedNow,
     ]
   }
 
@@ -334,15 +337,23 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   func rebuild() {
     lock.lock()
     guard started, !stopRequested else {
+      let wasStarted = started
+      let stop = stopRequested
       lock.unlock()
+      // Display-unplug freezes otherwise leave no trace of whether the rebuild
+      // ran; log every request outcome.
+      Self.lifecycleLog.warning(
+        "present link rebuild dropped: started=\(wasStarted) stopRequested=\(stop)")
       return
     }
     guard let rl = runLoop else {
       rebuildPending = true
       lock.unlock()
+      Self.lifecycleLog.log("present link rebuild deferred until run loop capture")
       return
     }
     lock.unlock()
+    Self.lifecycleLog.log("present link rebuild scheduled on present thread")
     CFRunLoopPerformBlock(rl, CFRunLoopMode.defaultMode.rawValue) { [weak self] in
       self?.performRebuildSwap()
     }
@@ -355,6 +366,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     lock.lock()
     guard started, !stopRequested else {
       lock.unlock()
+      Self.lifecycleLog.warning("present link rebuild swap dropped: link stopped")
       return
     }
     let oldLink = link
@@ -372,7 +384,10 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     newLink.add(to: RunLoop.current, forMode: .common)
     statsLock.lock()
     rebuildCount += 1
+    let swaps = rebuildCount
     statsLock.unlock()
+    Self.lifecycleLog.log(
+      "present link swapped onto current display set (rebuilds=\(swaps) paused=\(paused))")
   }
 
   func stop() {
