@@ -35,6 +35,9 @@ profile bundle and dSYM, and take measurably less wall-clock time.
 - [x] Reuse SwiftPM's own emitted `$bin/LabanApp.dSYM` (verified same UUID as
   the linked binary) instead of re-running `dsymutil` in `--profile` mode,
   with a UUID-equality guard and dsymutil fallback if they ever diverge.
+- [x] Drop `-enable-batch-mode` from the `--profile` flags after the Swift
+  Build system became the toolchain default and could no longer plan a
+  batch-mode release target; per-file compilation stays the default.
 - [x] Seed a brand-new git worktree's empty `.build` by cloning
   `.build/checkouts`, `.build/repositories`, and `workspace-state.json` from
   the main checkout via `cp -c` (APFS clonefile) before the first
@@ -106,6 +109,24 @@ nothing needs recompiling.
   faster one; WMO becomes the rarely-needed opt-in for the specific case where
   a profile must match a distributed release build's exact code shape.
   Date/Author: 2026-07-12 / Claude (Sonnet 5), at the user's direction.
+
+- Decision: Drop `-enable-batch-mode`, keeping `-no-whole-module-optimization`
+  as `--profile`'s default.
+  Rationale: Swift 6.4 makes the Swift Build system the default, and it plans
+  a release target as a single WMO "Compilation Requirements" task expecting
+  one `<module>-primary.d`. Batch mode makes the driver emit per-file
+  dependency files instead, so `scripts/install-app` failed outright with
+  `unable to open dependencies file` on LabanRenderer — the fast path had
+  stopped being a path at all. Measured on this toolchain, the leaf-file edit
+  loop (`Sources/LabanApp/TerminalQuickLook.swift`, `build-app --profile`)
+  costs ~38.9s under WMO and ~24.0s with per-file compilation alone, so
+  dropping only the unplannable flag keeps most of the win and restores a
+  working default. Both figures are slower than the ~17.9s/~7.5s measured
+  under the old native build system; that regression is the build system's,
+  not this flag's. The cross-file-inlining caveat and `LABAN_WMO_PROFILE=1`
+  escape hatch are unchanged.
+  Date/Author: 2026-08-16 / Claude (Opus 5), while repairing the build on a
+  Swift 6.4 / macOS 27.0 SDK toolchain.
 
 - Decision: Reuse the `.build/<config>` symlink instead of a second
   `swift build --show-bin-path` call in `build-app`.

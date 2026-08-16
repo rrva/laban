@@ -17,19 +17,26 @@ let _releaseExclusivity: [SwiftSetting] = [
 
 // Whole-module optimization (WMO) recompiles an entire module from scratch on
 // any single-file edit; on LabanApp (the largest target) that dominated local
-// `scripts/build-app --profile` turnaround (a one-line edit cost ~17s under
-// WMO versus ~7s under batch mode, measured). Batch-mode compilation stays
-// release/-O (unlike -Onone debug builds) but compiles per-file, so an edit
-// only recompiles what changed, and is the default for that reason. Batch
-// mode can make different cross-file inlining decisions than WMO, so
-// LABAN_WMO_PROFILE=1 opts back into WMO for a `--profile` build whose code
-// shape must match a distributed release build exactly.
+// `scripts/build-app --profile` turnaround (a one-line edit cost ~39s under
+// WMO versus ~24s per-file, measured under the Swift Build system). Per-file
+// compilation stays release/-O (unlike -Onone debug builds), so an edit only
+// recompiles what changed, and is the default for that reason. It can make
+// different cross-file inlining decisions than WMO, so LABAN_WMO_PROFILE=1
+// opts back into WMO for a `--profile` build whose code shape must match a
+// distributed release build exactly.
+//
+// -enable-batch-mode used to ride along here and cut the loop further, but
+// the Swift Build system plans a release target as one WMO "Compilation
+// Requirements" task that expects a single <module>-primary.d; batch mode
+// makes the driver emit per-file dependency files instead, and the build
+// dies on `unable to open dependencies file`. Per-file compilation alone
+// keeps most of the win and plans correctly.
 let _fastProfile: [SwiftSetting] =
   ProcessInfo.processInfo.environment["LABAN_WMO_PROFILE"] == "1"
   ? []
   : [
     .unsafeFlags(
-      ["-no-whole-module-optimization", "-enable-batch-mode"],
+      ["-no-whole-module-optimization"],
       .when(configuration: .release)
     )
   ]

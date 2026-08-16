@@ -74,13 +74,15 @@ style, workflow, or verification rules.
   `build-app --profile` and replaces `~/Laban.app` plus `~/Laban.app.dSYM` in
   lockstep. Set `LABAN_INSTALL_DIR=/Applications` only when targeting another
   install location.
-- `--profile` compiles with incremental batch-mode by default: a single-file
-  edit rebuilds in seconds instead of recompiling the whole module. It stays a
-  real `-O` release build, so it is still the right choice over a debug
+- `--profile` compiles per-file (non-WMO) by default: a single-file edit
+  rebuilds only what changed instead of recompiling the whole module. It stays
+  a real `-O` release build, so it is still the right choice over a debug
   `-Onone` build for profiling hot paths, but cross-file inlining can differ
   slightly from whole-module optimization (WMO). Set `LABAN_WMO_PROFILE=1` to
   opt back into WMO when a profile must match the exact code shape of a
-  distributed release build.
+  distributed release build. Do not add `-enable-batch-mode` back alongside
+  it: the Swift Build system cannot plan a batch-mode release target and fails
+  with `unable to open dependencies file`.
 - `build-app` and `install-app` stamp `Info.plist:LABANBuildCommit` with
   `<short-sha>[+dirty]`. A dirty tracked tree adds `+dirty`; if a just-shipped
   fix appears missing, verify the running bundle's stamp before debugging
