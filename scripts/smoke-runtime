@@ -59,8 +59,16 @@ done
 # because the LabanRenderer resource bundle was not copied in.
 RES_BUNDLE="$BUILD_ROOT/laban/Laban.app/Contents/Resources/Laban_LabanRenderer.bundle"
 [ -d "$RES_BUNDLE" ] || fail "$RES_BUNDLE missing from .app"
-[ -f "$RES_BUNDLE/JetBrainsMono-Regular.ttf" ] || fail "JetBrainsMono-Regular.ttf missing from $RES_BUNDLE"
-[ -f "$RES_BUNDLE/Shaders.metal" ] || fail "Shaders.metal missing from $RES_BUNDLE"
+# The Swift Build system emits a macOS-style bundle (Contents/Resources/),
+# where the older native build system emitted a flat one. Bundle lookups
+# resolve either, so accept either here rather than pinning one layout.
+if [ -d "$RES_BUNDLE/Contents/Resources" ]; then
+  RES_DIR="$RES_BUNDLE/Contents/Resources"
+else
+  RES_DIR="$RES_BUNDLE"
+fi
+[ -f "$RES_DIR/JetBrainsMono-Regular.ttf" ] || fail "JetBrainsMono-Regular.ttf missing from $RES_DIR"
+[ -f "$RES_DIR/Shaders.metal" ] || fail "Shaders.metal missing from $RES_DIR"
 
 # 3. Binary executable bit (belt-and-suspenders)
 [ -x "$APP_BIN" ] || fail "$APP_BIN is not executable"
