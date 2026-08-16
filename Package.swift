@@ -82,9 +82,14 @@ let package = Package(
       resources: [
         .copy("Resources/JetBrainsMono-Regular.ttf"),
         .copy("Resources/JetBrainsMono-OFL.txt"),
-        .process("Shaders.metal"),
-        .process("VectorGlyphShaders.metal"),
-        .process("TranslucentSurfaceShaders.metal"),
+        // .copy, not .process: the renderer compiles these from source at
+        // startup via makeLibrary(source:), so the .metal text itself has to
+        // reach the bundle. The Swift Build system honours .process by
+        // compiling Metal into default.metallib and dropping the source,
+        // which leaves every makeLibrary(source:) call with nothing to read.
+        .copy("Shaders.metal"),
+        .copy("VectorGlyphShaders.metal"),
+        .copy("TranslucentSurfaceShaders.metal"),
       ],
       swiftSettings: _releaseExclusivity + _fastProfile
     ),

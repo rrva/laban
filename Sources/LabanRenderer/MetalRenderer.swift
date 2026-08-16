@@ -703,9 +703,10 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     let initialAtlasTextureSize = min(
       max(1, glyphAtlasTextureSize),
       Self.maxGlyphAtlasTextureSize)
-    // SwiftPM's .process(metal) just copies the source as a bundle resource;
-    // it does not pre-compile to .metallib. We compile from source on startup
-    // (~1 ms one-time cost) so the renderer ships with no extra build step.
+    // Package.swift ships the shaders as .copy resources, so the bundle holds
+    // the .metal source rather than a pre-compiled .metallib. We compile from
+    // source on startup (~1 ms one-time cost) so the renderer ships with no
+    // extra build step.
     guard
       let url = LabanRendererResources.bundle?.url(
         forResource: "Shaders", withExtension: "metal"),
