@@ -177,9 +177,41 @@ done
 #     's/pub fn verifyIntegrity(self: \*const Page) void {/&\n    return;/' \
 #     "$DEST/src/terminal/page.zig"
 #
+# Zig 0.15.2 bundles LLVM 20's clang headers. Starting with the macOS 27.0
+# SDK, <math.h> no longer defines INFINITY/NAN itself: it re-enters <float.h>
+# with __need_infinity_nan set, an entry point clang only grew in LLVM 21.
+# Zig's own libc++ sub-compilation then dies on "use of undeclared identifier
+# 'INFINITY'" before any of our code is reached. Hand zig a lib directory that
+# symlinks its stock tree and overrides that single header. The shim is inert
+# on SDKs that still define INFINITY themselves, so it stays in place rather
+# than being keyed to an SDK version.
+zig_lib_dir_arg=""
+zig_lib=$(zig env | sed -n 's/^[[:space:]]*\.lib_dir = "\(.*\)",$/\1/p')
+if [ -n "$zig_lib" ] && ! grep -q '__need_infinity_nan' "$zig_lib/include/float.h"; then
+    overlay="$repo_root/.external/zig-lib"
+    rm -rf "$overlay"
+    mkdir -p "$overlay/include"
+    for entry in "$zig_lib"/*; do
+        [ "${entry##*/}" = "include" ] || ln -s "$entry" "$overlay/${entry##*/}"
+    done
+    for entry in "$zig_lib"/include/*; do
+        [ "${entry##*/}" = "float.h" ] || ln -s "$entry" "$overlay/include/${entry##*/}"
+    done
+    {
+        printf '#if defined(__need_infinity_nan)\n'
+        printf '#if !defined(INFINITY)\n#define INFINITY (__builtin_inff())\n#endif\n'
+        printf '#if !defined(NAN)\n#define NAN (__builtin_nanf(""))\n#endif\n'
+        printf '#else\n'
+        cat "$zig_lib/include/float.h"
+        printf '#endif /* __need_infinity_nan */\n'
+    } > "$overlay/include/float.h"
+    zig_lib_dir_arg="--zig-lib-dir $overlay"
+    printf 'fetch-libghostty-vt: shimming zig float.h for __need_infinity_nan SDKs\n'
+fi
+
 printf 'fetch-libghostty-vt: running zig build -Demit-lib-vt -Doptimize=ReleaseFast (this may take a few minutes)\n'
 cd "$repo_root/$DEST"
-zig build -Demit-lib-vt -Doptimize=ReleaseFast
+zig build $zig_lib_dir_arg -Demit-lib-vt -Doptimize=ReleaseFast
 
 cd "$repo_root"
 [ -f "$LIB_OUT" ] || fail "zig build did not produce $LIB_OUT"
