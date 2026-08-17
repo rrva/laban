@@ -32,6 +32,9 @@ if [[ ! -d "$app" ]]; then
   exit 1
 fi
 
+# Bash 3.2 (the system bash this runs under) treats "${arr[@]}" on an empty
+# array as an unbound variable under `set -u`, so every expansion below uses
+# the ${arr[@]+...} guard to expand to nothing when no app args were passed.
 open_args=()
 if [[ $# -gt 0 ]]; then
   open_args=(--args "$@")
@@ -40,7 +43,7 @@ fi
 binary="$app/Contents/MacOS/LabanApp"
 old_pid=$(pgrep -f "$binary" | head -n 1 || true)
 if [[ -z "$old_pid" ]]; then
-  exec /usr/bin/open "$app" "${open_args[@]}"
+  exec /usr/bin/open "$app" ${open_args[@]+"${open_args[@]}"}
 fi
 
 while IFS= read -r stale_label; do
@@ -66,7 +69,7 @@ exit "$status"
 '
 
 /bin/launchctl submit -l "$label" -o "$log" -e "$log" -- \
-  /bin/sh -c "$helper_script" sh "$label" "$old_pid" "$app" "${open_args[@]}"
+  /bin/sh -c "$helper_script" sh "$label" "$old_pid" "$app" ${open_args[@]+"${open_args[@]}"}
 
 /bin/kill "$old_pid" 2>/dev/null || true
 printf 'restart helper_label=%s old_pid=%s log=%s\n' "$label" "$old_pid" "$log"
