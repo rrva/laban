@@ -66,6 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   private var secureInputEngaged = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    // Held letter keys must repeat, not raise the diacritic picker. Register
+    // the opt-out before any window (and therefore any key event) exists.
+    PressAndHoldSettings.disableAccentPanel()
     // AppKit's native window-tabbing UI is auto-enabled by default and adds its
     // own invisible-to-us "Select Next/Previous Tab" Window-menu items bound to
     // Ctrl+Tab / Ctrl+Shift+Tab. With one native window those items are a no-op,
