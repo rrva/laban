@@ -52,6 +52,65 @@ struct PresentParkDecision: Equatable {
   }
 }
 
+/// Pure, GPU-free model of the present link's stall watchdog, so the dead-link
+/// detection and its repair backoff are unit testable without a Metal device.
+/// The link itself just runs the timer and applies the verdict.
+///
+/// Why this exists: a `CAMetalDisplayLink` built while its layer's display is
+/// being torn down binds to a vsync source that never fires, and rebuilding it
+/// during the same notification burst just produces another dead link. Observed
+/// 2026-08-18 (clamshell close onto an external display): seven rebuilds within
+/// 150 ms all bound to the dying built-in display, and the terminal stayed
+/// frozen for 15 minutes until an unrelated display-mode change happened to
+/// trigger an eighth rebuild, which bound to a live display and recovered on its
+/// next vsync. Nothing retried in between, because a rebuild is only ever
+/// requested by a display notification.
+///
+/// A stalled link is distinguishable from a healthy parked one: parking is the
+/// idle path (ADR 0018) and sets `isPaused`, whereas the stall leaves the link
+/// UNPAUSED forever — `notifyContentPublished()` unpauses and arms the
+/// deferred-park budget, but that budget only decrements inside a callback, so
+/// zero callbacks means it never parks again.
+struct PresentStallDecision: Equatable {
+  /// Consecutive checks that saw an unpaused link deliver zero callbacks.
+  private(set) var stalledChecks = 0
+  /// Stalled checks required before the next rebuild. Doubles after each repair
+  /// (capped) so a link that legitimately cannot fire never thrashes.
+  private(set) var threshold: Int
+  /// Lifetime count of rebuilds this watchdog asked for. Surfaced through
+  /// `presentIntervalStats` as `stallRepairs`.
+  private(set) var repairs = 0
+  /// Callback count observed at the previous check.
+  private(set) var lastCallbacks = 0
+
+  let baseThreshold: Int
+  let maxThreshold: Int
+
+  init(baseThreshold: Int, maxThreshold: Int) {
+    self.baseThreshold = baseThreshold
+    self.maxThreshold = maxThreshold
+    self.threshold = baseThreshold
+  }
+
+  /// One watchdog tick. Returns `true` when the link should be rebuilt.
+  mutating func check(paused: Bool, callbacks: Int) -> Bool {
+    defer { lastCallbacks = callbacks }
+    // A parked link is idle, not stalled. Any forward progress clears both the
+    // streak and the backoff earned by earlier repairs.
+    guard !paused, callbacks == lastCallbacks else {
+      stalledChecks = 0
+      threshold = baseThreshold
+      return false
+    }
+    stalledChecks += 1
+    guard stalledChecks >= threshold else { return false }
+    stalledChecks = 0
+    repairs += 1
+    threshold = min(maxThreshold, threshold * 2)
+    return true
+  }
+}
+
 @available(macOS 14.0, *)
 private func configurePresentLink(
   _ link: CAMetalDisplayLink, delegate: any CAMetalDisplayLinkDelegate
@@ -112,6 +171,20 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// A frame normally presents on the very next callback; this is generous slack.
   private static let pendingPresentBudgetCallbacks = 4
 
+  /// Stall-watchdog cadence and backoff. One check per second, and two
+  /// consecutive stalled checks before the first rebuild: a live link holds at
+  /// least the 30 Hz floor of `preferredFrameRateRange`, so ~30 callbacks are
+  /// due per check and zero across two checks is unambiguous rather than a slow
+  /// frame. The cap bounds thrash if rebuilding cannot fix the link.
+  private static let stallCheckInterval: TimeInterval = 1.0
+  private static let stallCheckTolerance: TimeInterval = 0.5
+  private static let stallChecksBeforeRebuild = 2
+  private static let stallChecksMax = 16
+
+  /// Stall-watchdog state (stalled-check streak + repair backoff). Guarded by
+  /// `statsLock`. See `PresentStallDecision`.
+  private var stall: PresentStallDecision
+
   /// Snapshot of present-interval percentiles, optionally clearing the ring.
   func presentIntervalStats(reset: Bool) -> [String: Double] {
     statsLock.lock()
@@ -119,6 +192,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     let callbacks = callbackCount
     let presented = presentedCount
     let rebuilds = rebuildCount
+    let stallRepairs = stall.repairs
     if reset {
       presentIntervalsMs.removeAll(keepingCapacity: true)
       lastPresentTimestamp = nil
@@ -134,6 +208,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       return [
         "count": 0, "callbacks": Double(callbacks), "presented": Double(presented),
         "rebuilds": Double(rebuilds), "paused": pausedNow,
+        "stallRepairs": Double(stallRepairs),
       ]
     }
     let n = s.count
@@ -158,6 +233,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       "twoVsyncGaps": Double(twoVsyncGaps), "longerGaps": Double(longerGaps),
       "estimatedMissedVsyncs": Double(estimatedMissedVsyncs),
       "rebuilds": Double(rebuilds), "paused": pausedNow,
+      "stallRepairs": Double(stallRepairs),
     ]
   }
 
@@ -197,6 +273,8 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     self.layer = layer
     link = CAMetalDisplayLink(metalLayer: layer)
     park = PresentParkDecision(budgetCallbacks: Self.pendingPresentBudgetCallbacks)
+    stall = PresentStallDecision(
+      baseThreshold: Self.stallChecksBeforeRebuild, maxThreshold: Self.stallChecksMax)
     super.init()
     configurePresentLink(link, delegate: self)
   }
@@ -238,11 +316,19 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       // `rebuild()` handles — CFRunLoopRun() sees zero sources/timers and
       // returns, silently ending this thread with no crash and nothing left
       // for `rebuild()` to reach (observed as a permanently frozen terminal
-      // that no display-change notification recovers). A harmless repeating
-      // timer that is never removed keeps the run loop non-empty so it only
-      // ever exits via our own `CFRunLoopStop()` in `stop()`. RunLoop retains
-      // the timer, so no ivar is needed.
-      RunLoop.current.add(Timer(timeInterval: 3600, repeats: true) { _ in }, forMode: .common)
+      // that no display-change notification recovers). The stall watchdog below
+      // doubles as that keepalive: it repeats forever and is never removed, so
+      // the run loop stays non-empty and only ever exits via our own
+      // `CFRunLoopStop()` in `stop()`. RunLoop retains the timer, so no ivar is
+      // needed.
+      let watchdog = Timer(timeInterval: Self.stallCheckInterval, repeats: true) {
+        [weak self] _ in
+        self?.checkForPresentStall()
+      }
+      // Generous tolerance so a parked present thread's wakeups coalesce with
+      // other timers and idle cost stays ~zero (ADR 0026).
+      watchdog.tolerance = Self.stallCheckTolerance
+      RunLoop.current.add(watchdog, forMode: .common)
       // A rebuild requested before this thread captured its run loop is
       // honored now, directly on the present thread.
       if pendingRebuild {
@@ -388,6 +474,33 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     statsLock.unlock()
     Self.lifecycleLog.log(
       "present link swapped onto current display set (rebuilds=\(swaps) paused=\(paused))")
+  }
+
+  /// Stall watchdog, ticking on the present run loop. A rebuild is only ever
+  /// requested by a display notification, but a link rebuilt while its display
+  /// was being torn down is itself dead on arrival, so the burst of
+  /// notifications can end with every link dead and nothing left to retry (see
+  /// `PresentStallDecision`). This is the retry: if the link is unpaused and has
+  /// delivered no callbacks for two checks, swap in a fresh one, which binds to
+  /// whatever display the layer has settled on by then.
+  ///
+  /// Runs on the present thread, so `performRebuildSwap()` is already on the
+  /// thread whose run loop the new link must be added to.
+  private func checkForPresentStall() {
+    lock.lock()
+    let live = started && !stopRequested
+    let paused = link.isPaused
+    lock.unlock()
+    guard live else { return }
+    statsLock.lock()
+    let callbacks = callbackCount
+    let needsRebuild = stall.check(paused: paused, callbacks: callbacks)
+    let repairs = stall.repairs
+    statsLock.unlock()
+    guard needsRebuild else { return }
+    Self.lifecycleLog.error(
+      "present link stalled unpaused at \(callbacks) callbacks; rebuilding (repair=\(repairs))")
+    performRebuildSwap()
   }
 
   func stop() {
