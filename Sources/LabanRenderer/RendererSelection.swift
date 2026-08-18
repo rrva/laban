@@ -31,12 +31,28 @@ public enum RendererSelection: String, Codable, CaseIterable, Sendable {
     }
   }
 
+  /// The renderer a new install gets when no preference is persisted. Slug is
+  /// the analytic-outline backend (ADR 0027): its glyph geometry is size
+  /// independent, so text stays sharp through fractional zoom instead of
+  /// re-baking a size-keyed mask atlas. Existing installs are unaffected — a
+  /// persisted choice always wins, this is only the empty-defaults fallback.
+  ///
+  /// Safe on any machine: `makeRendererBackend` still falls back to classic
+  /// (`slugPipelineUnavailable`) or software (`noMetalDevice`) and reports that
+  /// through `RendererStatus`, so a missing Metal device or shader pipeline
+  /// degrades rather than failing to draw.
+  public static var defaultSelection: RendererSelection {
+    RendererSelection.slugGlyph.isAvailableOnCurrentOS
+      ? .slugGlyph
+      : RendererSelection(metalMode: RendererMode.defaultMode)
+  }
+
   public static func persisted(defaults: UserDefaults = .standard) -> RendererSelection {
     guard let raw = defaults.string(forKey: defaultsKey),
       let selection = RendererSelection(rawValue: raw),
       selection.isAvailableOnCurrentOS
     else {
-      return RendererSelection(metalMode: RendererMode.defaultMode)
+      return defaultSelection
     }
     return selection
   }

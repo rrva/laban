@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import LabanRenderer
 import XCTest
 
@@ -15,6 +16,29 @@ final class RendererSelectionRoutingTests: XCTestCase {
     XCTAssertEqual(RendererSelection(rawValue: "slugGlyph"), .slugGlyph)
     XCTAssertTrue(RendererSelection.slugGlyph.isAvailableOnCurrentOS)
     XCTAssertTrue(RendererSelection.allCases.contains(.slugGlyph))
+  }
+
+  /// A new install (no persisted preference) gets the Slug renderer, so its
+  /// size-independent glyph geometry — sharp text through fractional zoom — is
+  /// what users see without opting in.
+  func testNewInstallDefaultsToSlugGlyph() throws {
+    let suiteName = "laban.tests.renderer-default.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+
+    XCTAssertEqual(RendererSelection.defaultSelection, .slugGlyph)
+    XCTAssertEqual(RendererSelection.persisted(defaults: defaults), .slugGlyph)
+  }
+
+  /// The default must never override a choice the user already made, so
+  /// existing installs keep the renderer they were running.
+  func testPersistedChoiceWinsOverTheDefault() throws {
+    let suiteName = "laban.tests.renderer-default.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+
+    RendererSelection.set(.classic, defaults: defaults)
+    XCTAssertEqual(RendererSelection.persisted(defaults: defaults), .classic)
   }
 
   func testVectorGlyphFactoryReportsRequestedRenderer() {

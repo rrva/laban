@@ -54,16 +54,13 @@ final class RendererModeSettingsTests: XCTestCase {
         L10n.trEn("Vector Glyph Renderer"),
         L10n.trEn("Slug Glyph Renderer"),
       ])
+    // Fresh defaults: the menu checks whatever `defaultSelection` resolves to,
+    // which is Slug on every machine that can run it.
     XCTAssertEqual(submenu.items[0].state, .off)
-    if RendererMode.gpuDriven.isAvailableOnCurrentOS {
-      XCTAssertEqual(submenu.items[1].state, .off)
-      XCTAssertEqual(submenu.items[2].state, .on)
-    } else {
-      XCTAssertEqual(submenu.items[1].state, .on)
-      XCTAssertEqual(submenu.items[2].state, .off)
-    }
+    XCTAssertEqual(submenu.items[1].state, .off)
+    XCTAssertEqual(submenu.items[2].state, .off)
     XCTAssertEqual(submenu.items[3].state, .off)
-    XCTAssertEqual(submenu.items[4].state, .off)
+    XCTAssertEqual(submenu.items[4].state, .on)
 
     controller.selectSoftware(nil)
 

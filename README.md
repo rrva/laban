@@ -28,7 +28,7 @@ and CI.
   terminal core; the rendering, daemons, and app around it are Laban's own.
   True color, hyperlinks, mouse, synchronized output, and modern key
   protocols work as they would in any modern terminal.
-- **Text that stays sharp.** A vector renderer mode draws glyphs straight
+- **Text that stays sharp.** The default renderer draws glyphs straight
   from font curves on the GPU. There is no bitmap atlas to re-bake when you
   zoom or land on a fractional display scale, so text stays pixel-crisp
   where most terminal renderers go soft. CJK and color emoji deliberately
