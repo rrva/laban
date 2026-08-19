@@ -13,6 +13,7 @@
 .claude/worktrees/
 .codex/worktrees/
 .kimi/worktrees/
+.serena/
 compile_commands.json
 Sources/LabanApp/BuildInfo.generated.swift
 # Generated semantic code graph (rpg-encoder). Local-only: it is ~24MB and
