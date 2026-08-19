@@ -485,8 +485,8 @@ Expected `/sample` head after exercising the app (Validation C), captured 2026-0
     <n/a>-T12152355     53471/12152355     1783319916.242392000:    swipr
             1804adbc4 _semaphore_timedwait_trap+0xbc4 (/usr/lib/system/libsystem_kernel.dylib)
             ...
-            10038c764 _$s13LabanRenderer22MetalDrawableSchedulerC10beginFrame... (/Users/rrj/.cursor/worktrees/laban/iufx/.build/laban/Laban.app/Contents/MacOS/LabanApp)
-            1003e7590 _$s13LabanRenderer011VectorGlyphB0C6render_6damage... (/Users/rrj/.cursor/worktrees/laban/iufx/.build/laban/Laban.app/Contents/MacOS/LabanApp)
-            100129cac _$s8LabanApp18TerminalBitmapViewC12advanceFrame4wake... (/Users/rrj/.cursor/worktrees/laban/iufx/.build/laban/Laban.app/Contents/MacOS/LabanApp)
+            10038c764 _$s13LabanRenderer22MetalDrawableSchedulerC10beginFrame... (/Users/user/.cursor/worktrees/laban/iufx/.build/laban/Laban.app/Contents/MacOS/LabanApp)
+            1003e7590 _$s13LabanRenderer011VectorGlyphB0C6render_6damage... (/Users/user/.cursor/worktrees/laban/iufx/.build/laban/Laban.app/Contents/MacOS/LabanApp)
+            100129cac _$s8LabanApp18TerminalBitmapViewC12advanceFrame4wake... (/Users/user/.cursor/worktrees/laban/iufx/.build/laban/Laban.app/Contents/MacOS/LabanApp)
 
 To render pprof instead of perf, `GET /debug/pprof/profile` returns a `pprof`-format profile consumable by Go's pprof tooling and by Speedscope/Firefox Profiler. Not required for acceptance.

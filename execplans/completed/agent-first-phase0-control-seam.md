@@ -709,10 +709,10 @@ Dependencies: only `Foundation`/`Darwin`/`LabanCore` (for `AppModel`) and
       Executed 1 test, with 0 failures (0 unexpected)
 
 - Manual GUI verification completed against an operator-launched
-  `/Users/rrj/Laban.app` with `LABAN_CONTROL_SERVER=1`.
+  `/Users/user/Laban.app` with `LABAN_CONTROL_SERVER=1`.
 
 - Manual GUI HTTP transcript, 2026-06-20 (operator launched
-  `/Users/rrj/Laban.app` with `LABAN_CONTROL_SERVER=1`; bearer token omitted):
+  `/Users/user/Laban.app` with `LABAN_CONTROL_SERVER=1`; bearer token omitted):
 
       stat /tmp/labanctl/control.json
       -rw------- 501:0 /tmp/labanctl/control.json

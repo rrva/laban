@@ -922,7 +922,7 @@ Review status: NOT REVIEWED
 
 ## Concrete Steps
 
-Run every command from `/Users/rrj/wrk/laban`. Milestone ordering is strict.
+Run every command from `/Users/user/wrk/laban`. Milestone ordering is strict.
 Write the failing test first, observe the intended failure, implement, then
 rerun the focused test before broadening.
 

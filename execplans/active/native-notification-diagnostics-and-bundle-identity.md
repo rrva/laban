@@ -6,7 +6,7 @@ This ExecPlan is a living document maintained in accordance with `PLANS.md`. Kee
 
 Laban can currently decide to post a macOS notification, submit it to `UNUserNotificationCenter`, and log the result to an on-disk JSONL file. An agent using the live app-observe control plane cannot query the native authorization and presentation state, cannot trigger the same native test path as the Settings button, and cannot see the bounded sequence of native delivery stages without reading private runtime files. Development and smoke builds also reuse the production bundle identifier, which allows multiple ad hoc-signed copies with different code hashes to accumulate in LaunchServices under one identity.
 
-After this work, an agent can query native notification state through a bounded debug endpoint, request an explicitly authorized native test notification, and poll a privacy-preserving diagnostic event ring through the running app. Headless mode exposes the same endpoint contract while stating that native delivery is unavailable. Development worktrees and smoke builds receive isolated bundle identifiers so their app registrations do not pollute the canonical `/Users/rrj/Laban.app` identity. The app reports factual signing identity fields but does not warn merely because a bundle is ad hoc signed.
+After this work, an agent can query native notification state through a bounded debug endpoint, request an explicitly authorized native test notification, and poll a privacy-preserving diagnostic event ring through the running app. Headless mode exposes the same endpoint contract while stating that native delivery is unavailable. Development worktrees and smoke builds receive isolated bundle identifiers so their app registrations do not pollute the canonical `/Users/user/Laban.app` identity. The app reports factual signing identity fields but does not warn merely because a bundle is ad hoc signed.
 
 The Notifications Settings tab also offers an explicit Focus troubleshooting check. Laban does not inspect Focus at launch, while posting notifications, during background refresh, or when an agent polls notification state. Only pressing the troubleshooting button may request Focus Status permission and read `INFocusStatusCenter`. The result is cached in the same privacy-preserving diagnostic state so the user and an observing agent can see whether macOS reports that the current Focus silences Laban.
 
@@ -16,7 +16,7 @@ Clicking a delivered Laban notification also returns the user to its originating
 
 - [x] (2026-07-13) Reproduced the current failure boundary: recent live events report authorized banner settings, `UNUserNotificationCenter.add` success, and foreground `willPresent` with banner/list/sound options.
 - [x] (2026-07-13) Inspected runtime identity and found six LaunchServices registrations for `com.laban.LabanApp`, all ad hoc signed with distinct CDHashes.
-- [x] (2026-07-13) Unregistered every noncanonical Laban bundle and force-registered `/Users/rrj/Laban.app`; verification now reports exactly one registration.
+- [x] (2026-07-13) Unregistered every noncanonical Laban bundle and force-registered `/Users/user/Laban.app`; verification now reports exactly one registration.
 - [x] (2026-07-13) Read `PLANS.md`, the unified attention notifier plan, product regression contract, debug process, observability, worktree isolation, and agent operating guidance.
 - [x] (2026-07-13) Add shared bounded native-notification diagnostic models and storage.
 - [x] (2026-07-13) Instrument native settings, submission, completion, decision, and foreground presentation stages.
@@ -84,13 +84,13 @@ Clicking a delivered Laban notification also returns the user to its originating
 ## Surprises & Discoveries
 
 - Observation: The running bundle was not signed by a Personal Team certificate. It was ad hoc signed and had a CDHash-only designated requirement.
-  Evidence: `codesign -d -r- /Users/rrj/Laban.app` returned `designated => cdhash ...` with no Team ID.
+  Evidence: `codesign -d -r- /Users/user/Laban.app` returned `designated => cdhash ...` with no Team ID.
 
 - Observation: Laban had already crossed the native delivery boundary successfully.
   Evidence: the event log contained `attention.notification.delivery` with `outcome=added`, followed by `attention.notification.willPresent` with banner/list/sound options.
 
 - Observation: LaunchServices contained six existing bundles with the same identifier and six distinct ad hoc CDHashes.
-  Evidence: read-only `lsregister -dump` parsing found five worktree/smoke bundles plus `/Users/rrj/Laban.app`. After the explicitly authorized cleanup, the same query reports one canonical registration.
+  Evidence: read-only `lsregister -dump` parsing found five worktree/smoke bundles plus `/Users/user/Laban.app`. After the explicitly authorized cleanup, the same query reports one canonical registration.
 
 - Observation: macOS privacy controls block direct inspection of UserNotifications, Focus databases, and historical unified logs from this process.
   Evidence: the reads failed with `Operation not permitted`, so the application itself needs to expose native state through its loopback control plane.
@@ -142,7 +142,7 @@ The phrase app-observe means the low-privilege token used by `laban health`, `la
 
 The phrase diagnostic ring means a fixed-capacity in-memory list of recent metadata records. When capacity is exceeded, the oldest records are discarded. Records must include a monotonic sequence number so callers can request only entries newer than a prior sequence.
 
-The canonical application identity is `com.laban.LabanApp` at `/Users/rrj/Laban.app`. `scripts/build-app` currently hardcodes that identifier into every bundle, including bundles produced in linked worktrees and `.build-smoke`.
+The canonical application identity is `com.laban.LabanApp` at `/Users/user/Laban.app`. `scripts/build-app` currently hardcodes that identifier into every bundle, including bundles produced in linked worktrees and `.build-smoke`.
 
 ## Plan of Work
 
@@ -220,7 +220,7 @@ Implement the notification-center response delegate for `UNNotificationDefaultAc
 
 ## Concrete Steps
 
-Work from `/Users/rrj/wrk/laban`.
+Work from `/Users/user/wrk/laban`.
 
 Before building, check for concurrent Swift builds:
 
@@ -316,7 +316,7 @@ If live endpoint verification is blocked because the installed app is old, verif
 Current forensic baseline:
 
 ```text
-running bundle: /Users/rrj/Laban.app
+running bundle: /Users/user/Laban.app
 bundle id: com.laban.LabanApp
 build commit: 4747bcf1
 signing: ad hoc, no Team ID, CDHash-only designated requirement

@@ -556,7 +556,7 @@ the construction pattern in
   but do not let this plan introduce any *new* failures alongside it).
 
 Automated validation run on 2026-07-01 from
-`/Users/rrj/wrk/laban.worktrees/no-white`:
+`/Users/user/wrk/laban.worktrees/no-white`:
 
 ```sh
 swift test --filter RendererActivationNoBlankWindowTests
@@ -587,7 +587,7 @@ rpg update_rpg + scoped lift/routing
 
 ### Manual, using the live app
 
-From the repository root (`/Users/rrj/wrk/laban` or whichever worktree holds
+From the repository root (`/Users/user/wrk/laban` or whichever worktree holds
 this plan's changes):
 
 ```sh
@@ -642,14 +642,14 @@ grep -i laban` that no stray debug-build processes remain and the user's own
 `~/Laban.app` (if running) was never touched.
 
 Manual validation run on 2026-07-01 from
-`/Users/rrj/wrk/laban.worktrees/no-white`:
+`/Users/user/wrk/laban.worktrees/no-white`:
 
 ```sh
 mkdir -p "$HOME/laban-debug-no-white"
 LABAN_INSTALL_DIR="$HOME/laban-debug-no-white" scripts/install-app
-# Installed profilable release build c07810b+dirty -> /Users/rrj/laban-debug-no-white/Laban.app
+# Installed profilable release build c07810b+dirty -> /Users/user/laban-debug-no-white/Laban.app
 
-# The user's normal /Users/rrj/Laban.app was already running, so for this
+# The user's normal /Users/user/Laban.app was already running, so for this
 # isolated validation copy only:
 plutil -replace CFBundleIdentifier -string com.laban.LabanApp.no-white \
   "$HOME/laban-debug-no-white/Laban.app/Contents/Info.plist"
@@ -679,9 +679,9 @@ open -n "$HOME/laban-debug-no-white/Laban.app" --args --scroll-debug=8797 --no-p
 
 kill 15790
 rm -rf "$HOME/laban-debug-no-white"
-# Confirmed port 8797 closed and no /Users/rrj/laban-debug-no-white process
+# Confirmed port 8797 closed and no /Users/user/laban-debug-no-white process
 # remained. The only remaining LabanApp process was the user's original
-# /Users/rrj/Laban.app.
+# /Users/user/Laban.app.
 ```
 
 ## Surprises & Discoveries
@@ -690,7 +690,7 @@ rm -rf "$HOME/laban-debug-no-white"
   could not find `ghostty/vt/terminal.h`.
   Evidence: `swift test --filter RendererActivationNoBlankWindowTests` failed
   before compilation with the missing header; adding the documented symlink
-  `.external -> /Users/rrj/wrk/laban/.external` fixed the worktree setup.
+  `.external -> /Users/user/wrk/laban/.external` fixed the worktree setup.
 - Observation: a normal user `~/Laban.app` instance was already running during
   live validation. Directly launching the isolated bundle exited before the
   scroll-debug server started, so the manual check used a temporary bundle-id
@@ -698,7 +698,7 @@ rm -rf "$HOME/laban-debug-no-white"
   with `open -n`.
   Evidence: after the isolated copy was re-identified as
   `com.laban.LabanApp.no-white`, port 8797 listened and the screenshot
-  sequence completed while the user's original `/Users/rrj/Laban.app` process
+  sequence completed while the user's original `/Users/user/Laban.app` process
   remained running.
 
 ## Idempotence and Recovery

@@ -100,7 +100,7 @@ oracle. **The spike's job is done; this plan promotes it to a real backend.**
 
 ## Context and Orientation
 
-All paths are repository-relative from the repo root (`/Users/rrj/wrk/laban`).
+All paths are repository-relative from the repo root (`/Users/user/wrk/laban`).
 A reader who knows nothing about this repo needs these facts.
 
 ### Terms
@@ -538,7 +538,7 @@ Acceptance:
   Date/Author: 2026-06-30 / this plan.
 - Decision: Production Slug coverage follows the public Lengyel reference shader
   shape, not the initial 2x2 winding supersample approximation.
-  Rationale: checking `/Users/rrj/wrk/Slug` showed the reference implementation
+  Rationale: checking `/Users/user/wrk/Slug` showed the reference implementation
   combines horizontal and vertical band rays with derivative-scaled root
   coverage. Porting that model and raising the band count to 64 brought the
   160x48 release p99 back under 8.33 ms, while correctness now gates shape
@@ -672,7 +672,7 @@ M1 validation recorded 2026-06-30:
 - Observation: The initial production path used a simpler 2x2 horizontal-band
   winding supersample. It passed correctness but sat on the perf edge: one full
   release run measured 14 pt p99 = 8.417 ms against the 8.333 ms budget. After
-  checking the public reference shaders in `/Users/rrj/wrk/Slug`, production
+  checking the public reference shaders in `/Users/user/wrk/Slug`, production
   Slug was changed to the reference-style horizontal+vertical ray coverage with
   derivative-scaled root weights and 64 bands. The full release bench then
   passed at 9/14/28 pt p99 = 6.569/7.189/8.038 ms. Lesson: the reference AA

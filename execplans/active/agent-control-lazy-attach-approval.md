@@ -31,7 +31,7 @@ replacement for the broker.
 
 The demonstrable result is: start an agent-attached Laban tab, run `codex`
 directly, and then from inside Codex run
-`/Users/rrj/Laban.app/Contents/MacOS/laban session state --json`. Laban prompts
+`/Users/user/Laban.app/Contents/MacOS/laban session state --json`. Laban prompts
 "Allow Codex to observe this Laban session?". Choosing "Allow Once" makes the
 command return the attached session state without exposing token values. Choosing
 "Deny" makes the command fail with a clear denial diagnostic. Choosing "Always
@@ -1069,7 +1069,7 @@ dialog.
 Use this repository root:
 
 ```sh
-cd /Users/rrj/.cursor/worktrees/laban/c2yt
+cd /Users/user/.cursor/worktrees/laban/c2yt
 ```
 
 Recommended implementation order:

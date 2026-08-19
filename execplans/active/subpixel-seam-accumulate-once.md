@@ -1,7 +1,7 @@
 # Subpixel seam accumulate-once compositing
 
 This ExecPlan is a living document maintained in accordance with `PLANS.md`.
-Repository root: `/Users/rrj/wrk/laban`. `PLANS.md` lives at the repo root.
+Repository root: `/Users/user/wrk/laban`. `PLANS.md` lives at the repo root.
 
 ## Purpose / Big Picture
 
@@ -337,7 +337,7 @@ Add `Tests/LabanRendererTests/SubpixelSeamAccumulateTests.swift`:
 
 ## Concrete Steps
 
-Run from the repo root `/Users/rrj/wrk/laban`.
+Run from the repo root `/Users/user/wrk/laban`.
 
 Build the renderer target:
 

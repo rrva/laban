@@ -172,7 +172,7 @@ moment in time.
 
 ## Concrete Steps
 
-Run everything from the repository root `/Users/rrj/wrk/laban`.
+Run everything from the repository root `/Users/user/wrk/laban`.
 
 1. Edit the four files as described in *Plan of Work*.
 2. Run the focused tests:

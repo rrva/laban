@@ -101,7 +101,7 @@ Reuse note (checked 2026-06/07 test files): `Tests/LabanCoreTests/LabptyReconnec
 
 ## Concrete Steps
 
-Work from the repository root (`/Users/rrj/wrk/laban`).
+Work from the repository root (`/Users/user/wrk/laban`).
 
 1. Per milestone: `./scripts/build-app` (must succeed), then `swift test --filter LabanApp` and `swift test --filter Labpty` (expect 0 failures; the known pre-existing `VectorZoomGlyphSizeConsistencyTests` failure lives under a different filter and is documented in the slug hot-path plan). Commit each milestone separately, reason-style single-line message, no em-dashes, Co-Authored-By trailer.
 2. Install and restart for measurement (agents may do this; sessions live in the labpty daemon and survive an app restart):

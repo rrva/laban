@@ -336,7 +336,7 @@ already meet the acceptance bar — record that decision.
 ## Concrete Steps
 
 Run from the repository root. Working dir in the current tree:
-`/Users/rrj/wrk/laban/.claude/worktrees/adaptive-tickling-porcupine`.
+`/Users/user/wrk/laban/.claude/worktrees/adaptive-tickling-porcupine`.
 
 ### Milestone 0 baseline
 

@@ -133,7 +133,7 @@ Definitions used in this plan:
 
 ## Concrete Steps
 
-Work from `/Users/rrj/wrk/laban`.
+Work from `/Users/user/wrk/laban`.
 
 Before building, confirm there is no concurrent Swift build:
 

@@ -53,7 +53,7 @@ without a human hand on the trackpad.
 ## Context and Orientation
 
 A reader who knows nothing about this repo needs these facts. All paths are
-repository-relative from the repo root (`/Users/rrj/wrk/laban`).
+repository-relative from the repo root (`/Users/user/wrk/laban`).
 
 ### Terms
 
@@ -311,7 +311,7 @@ Acceptance (autonomous + observable):
 
 ## Validation and Acceptance
 
-Baseline commands (run from the repo root, `/Users/rrj/wrk/laban`):
+Baseline commands (run from the repo root, `/Users/user/wrk/laban`):
 
 - `swift test --filter VectorGlyph` — vector backend stays green.
 - `swift test --filter Zoom` (or the new test's filter) — the new `zoomPointSize`

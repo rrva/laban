@@ -511,7 +511,7 @@ Review findings (filled in by the review agent):
 
 ## Concrete Steps
 
-All commands run from the repository root `/Users/rrj/wrk/laban`.
+All commands run from the repository root `/Users/user/wrk/laban`.
 
 1. M0: edit `Sources/LabanCore/SpinnerMotion.swift` as described; add
    tests; run `rtk swift test --filter SpinnerMotionDetectorTests` and

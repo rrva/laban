@@ -26,11 +26,11 @@ final class AgentLauncherTests: XCTestCase {
         "LABAN_CONTROL_URL": "present",
         "LABAN_SESSION_ATTACH": "present",
       ],
-      labanExecutablePath: "/Users/rrj/laban/.build/debug/laban")
+      labanExecutablePath: "/Users/user/laban/.build/debug/laban")
 
     XCTAssertEqual(
       invocation.path,
-      "/Users/rrj/laban/.build/debug/laban-agent")
+      "/Users/user/laban/.build/debug/laban-agent")
   }
 
   func testPrepareInvocationArgv() throws {

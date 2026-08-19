@@ -731,7 +731,7 @@ _(empty)_
 
 ## Concrete Steps
 
-Work from `/Users/rrj/wrk/laban`. Prefix repository commands with `rtk`.
+Work from `/Users/user/wrk/laban`. Prefix repository commands with `rtk`.
 
 After M0:
 

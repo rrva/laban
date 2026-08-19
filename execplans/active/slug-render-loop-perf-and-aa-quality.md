@@ -522,7 +522,7 @@ to prove zoom does not re-upload).
 
 ## Concrete Steps
 
-All commands run from the repository root `/Users/rrj/wrk/laban`.
+All commands run from the repository root `/Users/user/wrk/laban`.
 
 Build and test:
 

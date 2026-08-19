@@ -521,7 +521,7 @@ _(empty)_
 
 ## Concrete Steps
 
-From the repo root (`/Users/rrj/wrk/laban`):
+From the repo root (`/Users/user/wrk/laban`):
 
 ```
 # Baseline (must be green before starting)

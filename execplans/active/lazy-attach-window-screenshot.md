@@ -244,7 +244,7 @@ that canonical folder and therefore updates automatically.
 
 ## Concrete Steps
 
-Run all commands from `/Users/rrj/wrk/laban` and preserve unrelated dirty files.
+Run all commands from `/Users/user/wrk/laban` and preserve unrelated dirty files.
 
 1. Add source and tests with focused iteration:
 

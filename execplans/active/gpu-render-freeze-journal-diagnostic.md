@@ -144,7 +144,7 @@ Keep the behavior narrow:
 Work from:
 
 ```sh
-cd /Users/rrj/wrk/laban/.codex/worktrees/gpu-freeze-render-journal
+cd /Users/user/wrk/laban/.codex/worktrees/gpu-freeze-render-journal
 ```
 
 Edit:

@@ -88,7 +88,7 @@ Prereq for smooth scrolling. Plan (detail in ExecPlan):
   each phase. Plus a test that two phases produce distinct masks/entries.
 
 ## Validation and Acceptance
-From repo root `/Users/rrj/wrk/laban`:
+From repo root `/Users/user/wrk/laban`:
 - Autonomous gates added this effort:
   `swift test --filter VectorGlyph` (winding, size/phase sweep, gamma, parity),
   `swift test --filter VectorSubpixel` (policy, fringing, layout),

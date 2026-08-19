@@ -920,7 +920,7 @@ Review findings (filled in by the review agent):
   Review Gate blocker is only the manual Rime/Squirrel IME transcript/screenshots.
 - Manual IME evidence (Apple Pinyin, partial, 2026-06-21): active input source
   `com.apple.inputmethod.SCIM.ITABC`; running bundle
-  `/Users/rrj/Laban.app` stamped `bd3df0d+dirty`; clean tab 12 showed
+  `/Users/user/Laban.app` stamped `bd3df0d+dirty`; clean tab 12 showed
   `zhong wen` as marked preedit while the accessibility value stayed `~$`, then
   Space committed `中文` and the accessibility value became `~$ 中文`. Local
   artifacts: `.artifacts/ime-trust-review/apple-pinyin/transcript.md`,

@@ -22,7 +22,7 @@ After this change, skipped frames will not publish the target prematurely (they 
 We will remove the unsafe `publishLatestTarget(currentTarget)` call from the `.skip` path of `SlugGlyphRenderer.render(_:damage:)`.
 
 **Files to modify**:
-- [SlugGlyphRenderer.swift](file:///Users/rrj/wrk/laban/Sources/LabanRenderer/SlugGlyphRenderer.swift)
+- [SlugGlyphRenderer.swift](file:///Users/user/wrk/laban/Sources/LabanRenderer/SlugGlyphRenderer.swift)
 
 **Description of change**:
 In `SlugGlyphRenderer.render(_:damage:)`, replace the guard else block:
@@ -52,7 +52,7 @@ with:
 We will store `previousClearColor` and check if the clear color changes between frames.
 
 **Files to modify**:
-- [SlugGlyphRenderer.swift](file:///Users/rrj/wrk/laban/Sources/LabanRenderer/SlugGlyphRenderer.swift)
+- [SlugGlyphRenderer.swift](file:///Users/user/wrk/laban/Sources/LabanRenderer/SlugGlyphRenderer.swift)
 
 **Description of change**:
 1. Add `previousClearColor: MTLClearColor?` to the private state of `SlugGlyphRenderer`.

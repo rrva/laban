@@ -77,7 +77,7 @@ Users can now import their own terminal color themes into Laban from a JSON them
 
 ## Concrete Steps
 
-Run from the repository root (`/Users/rrj/wrk/laban`):
+Run from the repository root (`/Users/user/wrk/laban`):
 
 ```sh
 swift build

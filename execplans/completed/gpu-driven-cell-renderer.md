@@ -312,7 +312,7 @@ and is **off by default** (opt-in) until M6 exposes the user setting. Build the 
 with `./scripts/build-app` (debug) or `./scripts/install-app` (profilable release to
 `~/Laban.app`). Run unit tests with `swift test`; run release microbenches with
 `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter <name>`. Work from the repo
-root `/Users/rrj/wrk/laban` (or a git worktree of it).
+root `/Users/user/wrk/laban` (or a git worktree of it).
 
 ### M0 [P0] Renderer-selection scaffold + parity/comparison harness
 

@@ -1913,8 +1913,8 @@ renderer would be a bug to fix, not an acceptable outcome.)
 
 - Observation: `./scripts/install-app` now passes for the current vector glyph
   worktree and installs the profilable release bundle without launching it.
-  Evidence: the command installed `/Users/rrj/Laban.app` with build stamp
-  `e37cb91+dirty`, installed `/Users/rrj/Laban.app.dSYM`, preserved
+  Evidence: the command installed `/Users/user/Laban.app` with build stamp
+  `e37cb91+dirty`, installed `/Users/user/Laban.app.dSYM`, preserved
   `Contents/Resources/Laban_LabanRenderer.bundle/VectorGlyphShaders.metal`, and
   `codesign --verify --deep --strict ~/Laban.app` exits 0. The remaining AppKit
   acceptance work is the manual relaunch/live classic↔vector session-switch

@@ -109,7 +109,7 @@ approval"). It must not break any behavior required by `docs/product/mvp.md`.
 ## Context and Orientation
 
 All paths are relative to the repository root
-(`/Users/rrj/wrk/laban/.claude/worktrees/adaptive-tickling-porcupine` in the
+(`/Users/user/wrk/laban/.claude/worktrees/adaptive-tickling-porcupine` in the
 current working tree; a fresh clone uses its own root).
 
 ### The two per-cell passes
@@ -302,7 +302,7 @@ are the committed targets; Milestone 3 is gated on its own measurement.
 
 Run everything from the repository root. The working directory in the current
 tree is
-`/Users/rrj/wrk/laban/.claude/worktrees/adaptive-tickling-porcupine`.
+`/Users/user/wrk/laban/.claude/worktrees/adaptive-tickling-porcupine`.
 
 ### Milestone 0: baseline
 

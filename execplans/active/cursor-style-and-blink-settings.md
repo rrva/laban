@@ -524,7 +524,7 @@ e.g. `Blink must own its wakeups so the display link can park`).
 
 ## Concrete Steps
 
-Run everything from the repository root (`/Users/rrj/wrk/laban`).
+Run everything from the repository root (`/Users/user/wrk/laban`).
 
 1. Implement each milestone, then run its focused tests; each should end
    `Test Suite ... passed` with 0 failures:

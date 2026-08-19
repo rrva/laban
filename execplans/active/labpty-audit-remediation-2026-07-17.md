@@ -187,7 +187,7 @@ the process documentation so every statement about CI matches the workflow.
 
 ## Concrete Steps
 
-Run commands from `/Users/rrj/wrk/laban`.
+Run commands from `/Users/user/wrk/laban`.
 
 1. Implement daemon, Swift, test, spec, workflow, and documentation patches
    with `apply_patch`.

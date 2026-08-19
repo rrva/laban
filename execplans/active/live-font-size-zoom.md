@@ -359,7 +359,7 @@ swap; only genuinely new non-ASCII glyphs rasterize later), and the ladder's
 
 ## Concrete Steps
 
-All commands run from the repository root `/Users/rrj/wrk/laban`.
+All commands run from the repository root `/Users/user/wrk/laban`.
 
 1. Build and test cycle used throughout:
 

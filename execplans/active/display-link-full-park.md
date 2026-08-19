@@ -1327,7 +1327,7 @@ local `main` before building or measuring.
 
 Build and focused tests (run after each milestone):
 
-    cd /Users/rrj/wrk/laban    # or the worktree root
+    cd /Users/user/wrk/laban    # or the worktree root
     rtk swift test --filter TerminalIdlePolicyTests
     rtk swift test --filter TerminalSurfaceControllerTests
     rtk swift test --filter TerminalBitmapViewWakeTests
@@ -1351,7 +1351,7 @@ Verify the running bundle before trusting any observation
 
     /usr/libexec/PlistBuddy -c 'Print LABANBuildCommit' \
       ~/Laban.app/Contents/Info.plist
-    git -C /Users/rrj/wrk/laban rev-parse --short HEAD
+    git -C /Users/user/wrk/laban rev-parse --short HEAD
 
 ## Validation and Acceptance
 

@@ -37,17 +37,17 @@ final class AppDelegateRestartTests: XCTestCase {
   func testRelaunchPassesBundlePathWithSpacesAsArgument() {
     let command = AppDelegate.relaunchCommand(
       pid: 1,
-      bundlePath: "/Users/rrj/My Apps/Laban.app"
+      bundlePath: "/Users/user/My Apps/Laban.app"
     )
-    XCTAssertEqual(command.arguments.dropFirst(4).first, "/Users/rrj/My Apps/Laban.app")
+    XCTAssertEqual(command.arguments.dropFirst(4).first, "/Users/user/My Apps/Laban.app")
   }
 
   func testRelaunchPassesSingleQuoteInBundlePathAsArgument() {
     let command = AppDelegate.relaunchCommand(
       pid: 1,
-      bundlePath: "/Users/rrj/o'brien/Laban.app"
+      bundlePath: "/Users/user/o'brien/Laban.app"
     )
-    XCTAssertEqual(command.arguments.dropFirst(4).first, "/Users/rrj/o'brien/Laban.app")
+    XCTAssertEqual(command.arguments.dropFirst(4).first, "/Users/user/o'brien/Laban.app")
   }
 
   func testRelaunchForwardsLaunchArgumentsAfterBundlePath() {

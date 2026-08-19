@@ -47,7 +47,7 @@ prove both the fix and the no-regression claim without a human hand on the track
 ## Context and Orientation
 
 A reader who knows nothing about this repo needs these facts. All paths are
-repository-relative from the repo root (`/Users/rrj/wrk/laban`).
+repository-relative from the repo root (`/Users/user/wrk/laban`).
 
 ### Terms
 
@@ -509,7 +509,7 @@ exclusive with the scroll-phase path, enforced by the M2 tripwire).
 
 ## Validation and Acceptance
 
-Baseline commands (run from the repo root, `/Users/rrj/wrk/laban`):
+Baseline commands (run from the repo root, `/Users/user/wrk/laban`):
 
 - `swift test --filter VectorGlyph` — vector backend stays green throughout.
 - `swift test --filter VectorScrollFrameTimeBench` and

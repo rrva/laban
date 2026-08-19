@@ -1112,7 +1112,7 @@ Acceptance for Milestone 5:
 
 Work from the repository root:
 
-    cd /Users/rrj/.cursor/worktrees/laban/c2yt
+    cd /Users/user/.cursor/worktrees/laban/c2yt
 
 1. Confirm current state:
 
@@ -1500,7 +1500,7 @@ Live probe evidence from 2026-07-07:
     LABAN_CONTROL_URL=present
     LABAN_SESSION_ATTACH=present
     laban-agent=missing
-    /Users/rrj/Laban.app/Contents/MacOS/laban-agent exists
+    /Users/user/Laban.app/Contents/MacOS/laban-agent exists
     .build/debug/laban-agent --control-attach -> 401
     control.json mode=600
     app-observe /debug/state -> 200

@@ -84,7 +84,7 @@ externally visible and run the visual parity fixture against the renderer paths.
 
 ## Concrete Steps
 
-From `/Users/rrj/wrk/laban.worktrees/pre-edit`:
+From `/Users/user/wrk/laban.worktrees/pre-edit`:
 
 1. Run `rtk swift test --filter FrameProducerPreeditTests` before and after the
    fix; the new tests must fail before and pass after.

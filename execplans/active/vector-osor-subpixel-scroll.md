@@ -522,7 +522,7 @@ practice.
 ## Validation and Acceptance
 
 Per-milestone acceptance is listed above. Baseline commands (run from the repo root,
-`/Users/rrj/wrk/laban`), each milestone must keep these green:
+`/Users/user/wrk/laban`), each milestone must keep these green:
 
 - `swift test --filter VectorGlyph` — vector backend + size/phase sweeps.
 - `swift test --filter GlyphCurveStore` — outline extraction + CPU oracle.

@@ -893,7 +893,7 @@ final class ControlProcessInfoTests: XCTestCase {
   func testRejectsArbitraryPathNamedLabanAgent() {
     XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/tmp/laban-agent"))
     XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/usr/local/bin/laban-agent"))
-    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/Users/rrj/bin/laban-agent"))
+    XCTAssertFalse(ControlProcessInfo.isLabanAgentExecutable("/Users/user/bin/laban-agent"))
   }
 
   func testRejectsSymlinkToWrongPath() throws {
@@ -932,13 +932,13 @@ final class ControlProcessInfoTests: XCTestCase {
         expectedExecutablePath: expected))
     XCTAssertFalse(
       ControlProcessInfo.isLabanAgentExecutable(
-        "/Users/rrj/Downloads/Laban.app/Contents/MacOS/laban-agent",
+        "/Users/user/Downloads/Laban.app/Contents/MacOS/laban-agent",
         expectedExecutablePath: expected))
   }
 
   func testAcceptsDevBuildPathOnlyWhenAllowed() {
     let devPath =
-      "/Users/rrj/.cursor/worktrees/laban/c2yt/.build/arm64-apple-macosx/debug/laban-agent"
+      "/Users/user/.cursor/worktrees/laban/c2yt/.build/arm64-apple-macosx/debug/laban-agent"
     XCTAssertTrue(
       ControlProcessInfo.isLabanAgentExecutable(
         devPath,

@@ -716,7 +716,7 @@ added by the prior plan) covering:
 ## Concrete Steps
 
 All commands below run from the repository root,
-`/Users/rrj/wrk/laban` (or the equivalent path on whichever machine/worktree
+`/Users/user/wrk/laban` (or the equivalent path on whichever machine/worktree
 holds this work — this repository uses git worktrees for isolated builds; see
 `docs/process/worktree-isolation.md` if you are setting one up fresh).
 

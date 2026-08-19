@@ -127,7 +127,7 @@ Caveats to handle: (a) the subpixel accumulate pass uses the same instance list 
 
 ## Concrete Steps
 
-Work from the repository root (`/Users/rrj/wrk/laban`).
+Work from the repository root (`/Users/user/wrk/laban`).
 
 1. Build and test after each milestone:
 
