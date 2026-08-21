@@ -1,0 +1,65 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/publish-release <version>
+
+Publish .artifacts/release/Laban-<version>.zip (built by scripts/package-zip)
+as a GitHub release asset on rrva/laban under tag v<version>, then regenerate
+appcast.xml via scripts/make-appcast.
+
+If the tag does not exist yet, `gh release create` creates it pointing at the
+remote default branch HEAD — push the commit you built from first. Release
+notes come from .artifacts/release/Laban-<version>.md when present, else
+`gh --generate-notes`.
+
+This script deliberately performs no local git mutations. Committing and
+pushing the regenerated appcast.xml is the operator's final manual step.
+EOF
+  exit 2
+}
+
+[ "$#" -eq 1 ] || usage
+version=$1
+[ -n "$version" ] || usage
+tag="v${version}"
+zip=".artifacts/release/Laban-${version}.zip"
+notes=".artifacts/release/Laban-${version}.md"
+
+[ -f "$zip" ] || {
+  printf 'publish-release failed: missing %s (run scripts/package-zip %s first)\n' \
+    "$zip" "$version" >&2
+  exit 1
+}
+command -v gh >/dev/null 2>&1 || {
+  printf 'publish-release failed: gh CLI not found\n' >&2
+  exit 1
+}
+
+if gh release view "$tag" >/dev/null 2>&1; then
+  printf 'publish-release: release %s exists; uploading asset\n' "$tag"
+  gh release upload "$tag" "$zip" --clobber
+else
+  if [ -f "$notes" ]; then
+    gh release create "$tag" --title "Laban ${version}" --notes-file "$notes" "$zip"
+  else
+    gh release create "$tag" --title "Laban ${version}" --generate-notes "$zip"
+  fi
+fi
+
+./scripts/make-appcast "$version"
+
+cat <<EOF
+
+publish-release: GitHub release ${tag} is live and appcast.xml is regenerated.
+
+Remaining manual steps (no git mutations were performed):
+  1. Review the appcast.xml diff.
+  2. Commit and push appcast.xml so the feed URL serves the new entry.
+  3. Verify an installed previous release offers the update
+     (Laban menu -> Check for Updates...).
+EOF

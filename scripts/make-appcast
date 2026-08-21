@@ -1,0 +1,77 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/make-appcast <version>
+
+Regenerate the repo-root appcast.xml from the release zips accumulated in
+.artifacts/appcast-archives/, adding an entry for Laban-<version>.zip (built
+by scripts/package-zip). The new entry's enclosure URL points at the GitHub
+release download for tag v<version>; existing entries keep their URLs.
+
+The EdDSA private key signs the new entry. Lookup order:
+  1. SPARKLE_PRIVATE_KEY_FILE, when set
+  2. .artifacts/sparkle/laban-ed25519-private-key, when present
+  3. the login Keychain (Sparkle's default)
+
+Release notes: if .artifacts/release/Laban-<version>.md (or .html/.txt)
+exists, it is picked up as the appcast entry's release notes.
+EOF
+  exit 2
+}
+
+[ "$#" -eq 1 ] || usage
+version=$1
+[ -n "$version" ] || usage
+
+zip=".artifacts/release/Laban-${version}.zip"
+[ -f "$zip" ] || {
+  printf 'make-appcast failed: missing %s (run scripts/package-zip %s first)\n' \
+    "$zip" "$version" >&2
+  exit 1
+}
+
+sparkle_bin=".artifacts/sparkle/bin"
+[ -x "$sparkle_bin/generate_appcast" ] || {
+  printf 'make-appcast failed: %s/generate_appcast not found; unpack the Sparkle tools into .artifacts/sparkle/\n' \
+    "$sparkle_bin" >&2
+  exit 1
+}
+
+archives=".artifacts/appcast-archives"
+mkdir -p "$archives"
+
+# generate_appcast updates an existing feed in place: entries already in the
+# appcast keep their enclosure URLs (each release lives under its own tag),
+# only the new entry gets this release's download prefix. Seed the archives
+# dir from the committed feed so history survives.
+if [ -f appcast.xml ] && [ ! -f "$archives/appcast.xml" ]; then
+  cp appcast.xml "$archives/appcast.xml"
+fi
+
+ln -f "$zip" "$archives/" 2>/dev/null || cp "$zip" "$archives/"
+for ext in md html txt; do
+  notes=".artifacts/release/Laban-${version}.${ext}"
+  [ -f "$notes" ] && { ln -f "$notes" "$archives/" 2>/dev/null || cp "$notes" "$archives/"; }
+done
+
+key_args=""
+if [ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ]; then
+  key_args="--ed-key-file $SPARKLE_PRIVATE_KEY_FILE"
+elif [ -f .artifacts/sparkle/laban-ed25519-private-key ]; then
+  key_args="--ed-key-file .artifacts/sparkle/laban-ed25519-private-key"
+fi
+
+# shellcheck disable=SC2086
+"$sparkle_bin/generate_appcast" $key_args \
+  --download-url-prefix "https://github.com/rrva/laban/releases/download/v${version}/" \
+  "$archives"
+
+cp "$archives/appcast.xml" appcast.xml
+printf 'make-appcast: appcast.xml updated with %s\n' "$version"
+printf 'make-appcast: enclosure signature:\n'
+grep -o 'sparkle:edSignature="[^"]*"' appcast.xml | head -1

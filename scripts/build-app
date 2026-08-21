@@ -13,7 +13,12 @@ dirty=$(
 date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 app_version=${LABAN_APP_VERSION:-0.0.0}
 build_number=${LABAN_BUILD_NUMBER:-0}
-update_manifest_url=${LABAN_UPDATE_MANIFEST_URL:-}
+sparkle_feed_url=${LABAN_SPARKLE_FEED_URL:-}
+# Public half of the EdDSA key Sparkle uses to verify downloaded updates. It
+# is public information (it ships inside every released app), so baking it in
+# here is not a secret leak. The private half never enters the repo: it lives
+# in the maintainer's key file / Keychain (see docs/release/update-checks.md).
+sparkle_public_key="xcKNd45TiWMIJJvqXtH7H4POqTNLwgHjTVrh48lx3u0="
 build_config=${LABAN_BUILD_CONFIG:-debug}
 
 # --profile produces an Instruments-friendly .app: release config with
@@ -69,10 +74,14 @@ if [ "$profile_build" = 1 ]; then
     <true/>"
 fi
 
-update_manifest_plist=""
-if [ -n "$update_manifest_url" ]; then
-  update_manifest_plist="    <key>LABANUpdateManifestURL</key>
-    <string>$(xml_escape "$update_manifest_url")</string>"
+sparkle_plist=""
+if [ -n "$sparkle_feed_url" ]; then
+  sparkle_plist="    <key>SUFeedURL</key>
+    <string>$(xml_escape "$sparkle_feed_url")</string>
+    <key>SUPublicEDKey</key>
+    <string>${sparkle_public_key}</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>"
 fi
 
 # Scrub absolute build-host paths from anything compiled into the binary:
@@ -173,12 +182,54 @@ fi
 # .app's Contents/Resources/. LabanRenderer locates them via
 # LabanRendererResources (Bundle.main.resourceURL is checked first), so
 # the standard macOS layout is what makes a distributed .app stand on
-# its own.
+# its own. Test-target resource bundles (*Tests.bundle) never belong in
+# the app: they carry fixture data that can trip package-zip's
+# identifying-strings gate, and the SwiftBuild engine (Swift 6.4 release
+# builds) emits them into the products dir alongside the real bundles.
 for b in "$bin"/*.bundle; do
   [ -d "$b" ] || continue
+  case "$(basename "$b")" in
+    *Tests.bundle) continue ;;
+  esac
   rm -rf "${bundle_dir}/Resources/$(basename "$b")"
   cp -R "$b" "${bundle_dir}/Resources/"
 done
+
+# Embed Sparkle.framework. SwiftPM emits it next to the built binaries when
+# the LabanApp target links the Sparkle package product. Every bundle embeds
+# it so the framework always matches the linked binary; the updater itself
+# stays inert unless the Info.plist carries a feed URL (release builds only).
+# Skip gracefully when the framework is absent so this script still works if
+# the dependency is removed.
+sparkle_framework="${bundle_dir}/Frameworks/Sparkle.framework"
+if [ -d "$bin/Sparkle.framework" ]; then
+  mkdir -p "${bundle_dir}/Frameworks"
+  rm -rf "$sparkle_framework"
+  cp -R "$bin/Sparkle.framework" "${bundle_dir}/Frameworks/"
+  chmod -R a+rX "$sparkle_framework"
+
+  # SwiftPM stamps LC_RPATH entries pointing into its build directory so
+  # `swift run` can find the framework. The byte scrub below rewrites /Users/
+  # strings in place and would corrupt those load commands, so drop only the
+  # build-machine rpaths (they all live under /Users/) and add the
+  # bundle-relative one instead. System rpaths such as /usr/lib/swift must
+  # stay: Swift back-deployment libraries (e.g. libswiftCompatibilitySpan)
+  # resolve through them.
+  existing_rpaths=$(
+    otool -l "${bundle_dir}/MacOS/LabanApp" |
+      awk '/cmd LC_RPATH/{found=1; next} found && /path /{print $2; found=0}' |
+      sort -u
+  )
+  for rpath in $existing_rpaths; do
+    case "$rpath" in
+      /Users/*) install_name_tool -delete_rpath "$rpath" "${bundle_dir}/MacOS/LabanApp" ;;
+    esac
+  done
+  install_name_tool -add_rpath "@executable_path/../Frameworks" \
+    "${bundle_dir}/MacOS/LabanApp"
+else
+  sparkle_framework=""
+fi
 
 focus_usage_description=$(python3 scripts/gen-localizable-xcstrings.py \
   --focus-usage-description en)
@@ -255,7 +306,7 @@ cat > "${bundle_dir}/Info.plist" <<EOF
         </dict>
     </array>
 ${metal_capture_plist}
-${update_manifest_plist}
+${sparkle_plist}
 </dict>
 </plist>
 EOF
@@ -337,10 +388,29 @@ verify_clean
 fi
 
 verify_signature() {
-  if ! codesign --verify --verbose=4 "$app_bundle" >/dev/null 2>&1; then
+  if ! codesign --verify --deep --strict --verbose=4 "$app_bundle" >/dev/null 2>&1; then
     printf 'build-app failed: codesign verification failed for %s\n' "$app_bundle" >&2
     exit 1
   fi
+}
+
+# Sign Sparkle.framework inside-out: XPC services and helper tools before the
+# framework that contains them, and the framework before the app bundle.
+# CodexBar's Scripts/sparkle_signing_paths.sh is the layout reference.
+sign_sparkle_framework() {
+  [ -n "$sparkle_framework" ] || return 0
+  vdir="$sparkle_framework/Versions/Current"
+  for target in \
+    "$vdir/XPCServices/Downloader.xpc" \
+    "$vdir/XPCServices/Installer.xpc" \
+    "$vdir/Autoupdate" \
+    "$vdir/Updater.app" \
+    "$sparkle_framework"
+  do
+    [ -e "$target" ] || continue
+    # shellcheck disable=SC2086
+    codesign --force $sign_options --sign "$sign_identity" "$target"
+  done
 }
 
 # Sign after every post-link binary mutation. SwiftPM emits an ad-hoc signed
@@ -349,24 +419,29 @@ verify_signature() {
 # dyld can load it.
 if [ "${LABAN_SKIP_CODESIGN:-0}" = "1" ]; then
   printf 'build-app: codesign skipped (LABAN_SKIP_CODESIGN=1; output may not launch)\n'
-elif [ -n "${LABAN_CODESIGN_IDENTITY:-}" ]; then
-  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laban-agent"
-  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laband"
-  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/labpty"
-  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laban"
-  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/LabanApp"
-  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "$app_bundle"
-  verify_signature
-  printf 'build-app: codesigned with %s\n' "$LABAN_CODESIGN_IDENTITY"
 else
-  codesign --force --sign - "${bundle_dir}/MacOS/laban-agent"
-  codesign --force --sign - "${bundle_dir}/MacOS/laband"
-  codesign --force --sign - "${bundle_dir}/MacOS/labpty"
-  codesign --force --sign - "${bundle_dir}/MacOS/laban"
-  codesign --force --sign - "${bundle_dir}/MacOS/LabanApp"
-  codesign --force --sign - "$app_bundle"
+  if [ -n "${LABAN_CODESIGN_IDENTITY:-}" ] && [ "$LABAN_CODESIGN_IDENTITY" != "-" ]; then
+    sign_identity="$LABAN_CODESIGN_IDENTITY"
+    # Hardened runtime + secure timestamp are notarization requirements for
+    # distribution builds. Ad-hoc builds skip them so offline dev builds work.
+    sign_options="--options runtime --timestamp"
+  else
+    sign_identity="-"
+    sign_options=""
+  fi
+  sign_sparkle_framework
+  for product in laban-agent laband labpty laban LabanApp; do
+    # shellcheck disable=SC2086
+    codesign --force $sign_options --sign "$sign_identity" "${bundle_dir}/MacOS/$product"
+  done
+  # shellcheck disable=SC2086
+  codesign --force $sign_options --sign "$sign_identity" "$app_bundle"
   verify_signature
-  printf 'build-app: codesigned ad-hoc\n'
+  if [ "$sign_identity" = "-" ]; then
+    printf 'build-app: codesigned ad-hoc\n'
+  else
+    printf 'build-app: codesigned with %s (hardened runtime)\n' "$sign_identity"
+  fi
 fi
 
 if [ "$profile_build" = 1 ]; then

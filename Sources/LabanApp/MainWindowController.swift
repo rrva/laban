@@ -23,9 +23,6 @@ final class MainWindowController: NSWindowController {
   /// alive on the window controller so the detector timers don't
   /// stop when AppDelegate's local refs go out of scope.
   private(set) var agentObserverHost: AgentObserverHost?
-  /// Auto-update checker. Strong ref so its timer + wake observers
-  /// outlive `makeAndShow`'s local scope.
-  private(set) var updateAutoChecker: UpdateAutoChecker?
   /// Loopback HTTP control surface for diagnosing the overlay scroll-indicator
   /// bug on a live headful instance. Only created when `--scroll-debug` is set;
   /// strong ref so its accept thread outlives `makeAndShow`'s local scope. See
@@ -587,11 +584,10 @@ final class MainWindowController: NSWindowController {
     // (⌃⌘F) take the terminal fullscreen, which a terminal is a prime
     // candidate for. Without fullScreenPrimary AppKit disables toggleFullScreen.
     window.collectionBehavior.insert(.fullScreenPrimary)
-    // Container view hosts the terminal plus a small overlay badge. The
-    // terminal stays the full size; the badge floats in the bottom-left,
-    // sized to its content. Using a sibling instead of a TerminalBitmapView
-    // subview avoids z-order / hit-test issues with the Metal-backed
-    // terminal layer.
+    // Container view hosts the terminal plus overlay views. The
+    // terminal stays the full size; overlays float above it. Using siblings
+    // instead of TerminalBitmapView subviews avoids z-order / hit-test issues
+    // with the Metal-backed terminal layer.
     let containerView = NSView(frame: NSRect(x: 0, y: 0, width: viewW, height: viewH))
     containerView.autoresizesSubviews = true
     let backgroundEffectHost = TerminalBackgroundEffectHost(frame: .zero)
@@ -600,19 +596,10 @@ final class MainWindowController: NSWindowController {
       terminalLeadingInset: SidebarLayout.defaultWidth)
     termView.autoresizingMask = [.width, .height]
     containerView.addSubview(termView)
-    let updateBadge = UpdateBadgeView(
-      frame: NSRect(
-        x: UpdateBadgeView.cornerInset,
-        y: UpdateBadgeView.cornerInset,
-        width: 64,
-        height: UpdateBadgeView.preferredHeight))
-    updateBadge.autoresizingMask = [.maxXMargin, .maxYMargin]
-    containerView.addSubview(updateBadge)
 
     // Overlay scroll indicator: invisible when the viewport is at the live
     // bottom, fades in when the user scrolls back into history. Sibling of
-    // termView (same z-order pattern as updateBadge) so the Metal layer
-    // compositing stays untouched.
+    // termView (not a subview) so the Metal layer compositing stays untouched.
     let scrollIndicator = TerminalScrollIndicatorView(
       frame: NSRect(x: 0, y: 0, width: viewW, height: viewH))
     scrollIndicator.autoresizingMask = [.width, .height]
@@ -762,12 +749,6 @@ final class MainWindowController: NSWindowController {
       sessionCoordinator?.terminalClient
       ?? (terminalBackend == .inProcess ? InProcessTerminalSessionClient() : nil)
     controller.sessionCoordinator = sessionCoordinator
-
-    let autoChecker = UpdateAutoChecker(badge: updateBadge) { manifest in
-      (NSApp.delegate as? AppDelegate)?.showAvailableUpdate(manifest)
-    }
-    autoChecker.start()
-    controller.updateAutoChecker = autoChecker
 
     // All tab-attention notification candidates flow through one policy point:
     // explicit OSC/BEL events and derived attention-state transitions share

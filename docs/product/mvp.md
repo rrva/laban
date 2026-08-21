@@ -342,7 +342,10 @@ artifact, or debug-server concerns.
 ### Packaging
 
 The MVP produces a local developer `.app` bundle. Production signing,
-notarization, sandboxing, and auto-update are deferred.
+notarization, sandboxing, and auto-update were deferred at MVP time.
+Post-MVP, release builds are Developer-ID signed with the hardened runtime,
+optionally notarized, and self-update via Sparkle — see
+`docs/release/update-checks.md`. Sandboxing remains deferred.
 
 macOS CI is required once implementation starts. Non-macOS CI is optional for
 portable core, schema, fixture, or software-renderer tests when it falls out

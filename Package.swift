@@ -60,6 +60,10 @@ let package = Package(
       url: "https://github.com/apple/swift-profile-recorder.git",
       .upToNextMinor(from: "0.3.18")
     ),
+    .package(
+      url: "https://github.com/sparkle-project/Sparkle",
+      .upToNextMinor(from: "2.9.3")
+    ),
   ],
   targets: [
     .target(
@@ -111,6 +115,7 @@ let package = Package(
         "LabanCore", "LabanRenderer", "LabanTerminalCore", "LabanControl",
         .product(name: "ProfileRecorder", package: "swift-profile-recorder"),
         .product(name: "_ProfileRecorderSampleConversion", package: "swift-profile-recorder"),
+        .product(name: "Sparkle", package: "Sparkle"),
       ],
       resources: [
         .copy("Resources/AppIcon.icns"),
@@ -203,7 +208,13 @@ let package = Package(
     .testTarget(
       name: "LabanAppTests",
       dependencies: ["LabanApp", "LabanControl", "LabanDebug", "LabanAgent", "Laband", "Labpty"],
-      exclude: ["Fixtures"]
+      exclude: ["Fixtures"],
+      linkerSettings: [
+        // LabanApp links Sparkle.framework; SwiftPM emits the framework next
+        // to the test bundle (in the products directory), so extend the test
+        // bundle's rpath to find it at load time.
+        .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@loader_path/../../.."])
+      ]
     ),
     .testTarget(
       name: "LabanAgentTests",

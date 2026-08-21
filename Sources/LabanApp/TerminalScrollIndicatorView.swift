@@ -10,7 +10,8 @@ import LabanRenderer
 /// *how far back* they are without reading the thumb.
 ///
 /// The view is a sibling of `TerminalBitmapView` inside the window's
-/// containerView — same z-ordering pattern as `UpdateBadgeView`. It is
+/// containerView, not a subview, so the Metal layer's compositing and
+/// hit-testing stay untouched. It is
 /// click-transparent (`hitTest` returns nil) so terminal selection and
 /// scrolling are unaffected; the right-edge tracking area only delivers
 /// `mouseEntered/mouseExited` to drive hover-reveal.

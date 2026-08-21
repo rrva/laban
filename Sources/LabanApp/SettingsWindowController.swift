@@ -82,6 +82,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     checkboxWithTitle: L10n.tr("Auto-attach agents at launch without approval (advanced)"),
     target: nil,
     action: nil)
+  private let autoUpdateCheckbox = NSButton(
+    checkboxWithTitle: L10n.tr("Automatically check for updates"),
+    target: nil,
+    action: nil)
   private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let scrollModePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let graphemeWidthPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -509,6 +513,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       + "already running in any tab can attach on demand through lazy attach "
       + "(you approve it once). Requires the agent control server to be on."
 
+    autoUpdateCheckbox.target = self
+    autoUpdateCheckbox.action = #selector(autoUpdateChanged(_:))
+    autoUpdateCheckbox.toolTip =
+      "Release builds check the update feed in the background and offer to "
+      + "install new versions. Only available in released builds; local dev "
+      + "builds never check."
+
     cursorStylePopUp.target = self
     cursorStylePopUp.action = #selector(cursorStyleChanged(_:))
     for option in cursorStyleOptions {
@@ -684,6 +695,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel(L10n.tr("Unicode width:")), graphemeWidthPopUp],
       [makeLabel(L10n.tr("Sessions:")), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
+      [NSGridCell.emptyContentView, autoUpdateCheckbox],
       [NSGridCell.emptyContentView, controlServerCheckbox],
       [NSGridCell.emptyContentView, agentAttachedSessionCheckbox],
       [NSGridCell.emptyContentView, profileRecorderCheckbox],
@@ -965,6 +977,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       backendPopUp.selectItem(at: row)
     }
     restoreCheckbox.state = RestoreOnLaunchSettings.isEnabled ? .on : .off
+    autoUpdateCheckbox.isEnabled = UpdaterController.shared.isConfigured
+    autoUpdateCheckbox.state =
+      UpdaterController.shared.automaticallyChecksForUpdates ? .on : .off
     controlServerCheckbox.state = ControlServerSettings.isEnabled ? .on : .off
     agentAttachedSessionCheckbox.state = AgentAttachedSessionSettings.isEnabled() ? .on : .off
     profileRecorderCheckbox.state = ProfileRecorderSettings.persisted() ? .on : .off
@@ -1394,6 +1409,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   @objc private func restoreChanged(_ sender: NSButton) {
     RestoreOnLaunchSettings.set(sender.state == .on)
+  }
+
+  @objc private func autoUpdateChanged(_ sender: NSButton) {
+    UpdaterController.shared.automaticallyChecksForUpdates = sender.state == .on
   }
 
   @objc private func controlServerChanged(_ sender: NSButton) {

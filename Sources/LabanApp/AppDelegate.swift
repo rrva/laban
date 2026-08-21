@@ -53,7 +53,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     },
     themeStore: themeMenuController.importedThemeStore
   )
-  private var updateCheckInFlight = false
   private static let secureKeyboardEntryDefaultsKey = "LabanSecureKeyboardEntry"
   private enum FontPanelPurpose {
     case terminal
@@ -109,6 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
       activeBackend: terminalBackendSelection.backend,
       launchSource: terminalBackendSelection.source)
     MenuCommands.setupMenuBar()
+    // Starts Sparkle's scheduled checks on release builds (feed keys stamped
+    // by scripts/package-zip); a no-op for dev builds with no SUFeedURL.
+    UpdaterController.shared.startIfConfigured()
 
     // Decide whether to restore on this launch:
     //   1. If the user disabled the "Restore on Launch" toggle, start
@@ -580,25 +582,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   }
 
   @objc func checkForUpdates(_ sender: Any?) {
-    guard !updateCheckInFlight else { return }
-    guard let manifestURL = UpdateChecker.configuredManifestURL() else {
+    if UpdaterController.shared.isConfigured {
+      UpdaterController.shared.checkForUpdates(sender)
+    } else {
       showUpdateAlert(
-        title: "Update checks are not configured",
-        message:
-          "Set \(UpdateChecker.manifestURLBundleKey) in the app bundle or \(UpdateChecker.manifestURLDefaultsKey) in user defaults."
-      )
-      return
-    }
-
-    updateCheckInFlight = true
-    AppLog.app.info("update check started: \(manifestURL.absoluteString)")
-    EventLog.shared.log("update.check.start", ["url": manifestURL.absoluteString])
-    UpdateChecker.check(manifestURL: manifestURL, currentVersion: BuildInfo.version) {
-      [weak self] result in
-      DispatchQueue.main.async {
-        self?.updateCheckInFlight = false
-        self?.handleUpdateCheck(result)
-      }
+        title: L10n.tr("Update checks are unavailable"),
+        message: L10n.tr(
+          "Only released builds of Laban check for updates. This build was made for local development."
+        ))
     }
   }
 
@@ -812,51 +803,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
       + "n=0; while /bin/kill -0 \"$old_pid\" 2>/dev/null && [ $n -lt 100 ]; do "
       + "/bin/sleep 0.1; n=$((n+1)); done; exec /usr/bin/open \"$app_path\" \"$@\""
     return ("/bin/sh", ["-c", script, "laban-relaunch", "\(pid)", bundlePath] + openArguments)
-  }
-
-  private func handleUpdateCheck(_ result: Result<UpdateCheckResult, Error>) {
-    switch result {
-    case .success(.available(let manifest)):
-      AppLog.app.info("update available: \(manifest.latest)")
-      EventLog.shared.log(
-        "update.check.available",
-        ["latest": manifest.latest, "current": BuildInfo.version])
-      showAvailableUpdate(manifest)
-    case .success(.upToDate(let manifest)):
-      AppLog.app.info("no update available: latest \(manifest.latest)")
-      EventLog.shared.log(
-        "update.check.current",
-        ["latest": manifest.latest, "current": BuildInfo.version])
-      showUpdateAlert(
-        title: "Laban is up to date",
-        message: "You are running \(BuildInfo.version)."
-      )
-    case .failure(let error):
-      AppLog.app.error("update check failed: \(error.localizedDescription)")
-      EventLog.shared.log("update.check.failed", ["error": error.localizedDescription])
-      showUpdateAlert(
-        title: L10n.tr("Update check failed"),
-        message: error.localizedDescription
-      )
-    }
-  }
-
-  func showAvailableUpdate(_ manifest: UpdateManifest) {
-    let alert = NSAlert()
-    alert.messageText = String(format: L10n.tr("Laban %@ is available"), manifest.latest)
-    var message = String(format: L10n.tr("You are running %@."), BuildInfo.version)
-    if let notes = manifest.notes, !notes.isEmpty {
-      message += "\n\n\(notes)"
-    }
-    alert.informativeText = message
-    alert.addButton(withTitle: L10n.tr("Open Download"))
-    alert.addButton(withTitle: L10n.tr("Not Now"))
-    if alert.runModal() == .alertFirstButtonReturn {
-      NSWorkspace.shared.open(manifest.downloadURL)
-      EventLog.shared.log(
-        "update.download.open",
-        ["latest": manifest.latest, "url": manifest.downloadURL.absoluteString])
-    }
   }
 
   private func showUpdateAlert(title: String, message: String) {

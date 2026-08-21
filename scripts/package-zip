@@ -9,12 +9,19 @@ usage() {
 usage: scripts/package-zip <version>
 
 Environment:
-  LABAN_BUILD_NUMBER          Build number stamped into Info.plist. Defaults to 1.
-  LABAN_UPDATE_MANIFEST_URL   Public update JSON URL stamped into Info.plist.
-                              Defaults to the public Laban manifest on Google Drive.
+  LABAN_BUILD_NUMBER          Build number stamped into Info.plist. Defaults to
+                              the current epoch seconds (monotonic, so Sparkle
+                              can compare builds).
+  LABAN_SPARKLE_FEED_URL      Sparkle appcast URL stamped into Info.plist as
+                              SUFeedURL. Defaults to the appcast committed on
+                              the main branch. Set empty to omit Sparkle keys.
   LABAN_RELEASE_DIR           Zip output directory. Defaults to .artifacts/release.
   LABAN_CODESIGN_IDENTITY     Signing identity. Defaults to the release
                               identity below; set to "-" for ad-hoc signing.
+  LABAN_NOTARY_PROFILE        notarytool keychain profile. When set, the zip is
+                              submitted for notarization and the app is stapled
+                              before the final zip is produced. When unset, the
+                              zip is left un-notarized (with a loud warning).
   LABAN_SKIP_CODESIGN         Defaults to 0. Skipped bundles may not launch.
   LABAN_BUILD_CONFIG          Swift build config (debug|release). Defaults to release
                               for distribution; release builds emit no in-binary DWARF.
@@ -36,9 +43,12 @@ release_codesign_identity="Developer ID Application: Ragnar Rova (3563RJWBQP)"
 export LABAN_CODESIGN_IDENTITY=${LABAN_CODESIGN_IDENTITY:-$release_codesign_identity}
 
 export LABAN_APP_VERSION=$app_version
-export LABAN_BUILD_NUMBER=${LABAN_BUILD_NUMBER:-1}
-default_update_manifest_url="https://drive.google.com/uc?export=download&id=1021htaI6ngLEoF1ItVLvFJHzP-TczOeG"
-export LABAN_UPDATE_MANIFEST_URL=${LABAN_UPDATE_MANIFEST_URL:-$default_update_manifest_url}
+# Sparkle compares CFBundleVersion, not the marketing version, so the build
+# number must increase between releases. Epoch seconds are monotonic and
+# stateless; LABAN_BUILD_NUMBER overrides.
+export LABAN_BUILD_NUMBER=${LABAN_BUILD_NUMBER:-$(date +%s)}
+default_sparkle_feed_url="https://raw.githubusercontent.com/rrva/laban/main/appcast.xml"
+export LABAN_SPARKLE_FEED_URL=${LABAN_SPARKLE_FEED_URL:-$default_sparkle_feed_url}
 # Distribution builds optimize and skip emitting in-binary DWARF; combined
 # with the prefix-map flags in build-app, this is what lets a public zip
 # stay free of build-host paths.
@@ -113,8 +123,35 @@ if [ -n "$forbidden" ]; then
   exit 1
 fi
 
-rm -f "$tmp_zip" "$zip_path"
-ditto -c -k --sequesterRsrc --keepParent "$app_bundle" "$tmp_zip"
-mv "$tmp_zip" "$zip_path"
+make_zip() {
+  rm -f "$tmp_zip" "$zip_path"
+  ditto -c -k --sequesterRsrc --keepParent "$app_bundle" "$tmp_zip"
+  mv "$tmp_zip" "$zip_path"
+}
+
+make_zip
+
+# Notarize and staple so Gatekeeper accepts the download on other Macs.
+# Sparkle's EdDSA signature proves the update to Sparkle; notarization is
+# what lets macOS launch it at all. The zip is submitted as-is, the ticket
+# is stapled into the app bundle, and the zip is rebuilt from the stapled
+# bundle so the ticket travels with the download.
+if [ -n "${LABAN_NOTARY_PROFILE:-}" ]; then
+  if [ "$LABAN_CODESIGN_IDENTITY" = "-" ]; then
+    printf 'package-zip failed: notarization requires Developer ID signing, not ad-hoc\n' >&2
+    exit 1
+  fi
+  printf 'package-zip: submitting for notarization (profile %s)\n' "$LABAN_NOTARY_PROFILE"
+  xcrun notarytool submit "$zip_path" \
+    --keychain-profile "$LABAN_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$app_bundle"
+  xcrun stapler validate "$app_bundle"
+  make_zip
+  printf 'package-zip: notarized and stapled\n'
+else
+  printf 'package-zip: WARNING: LABAN_NOTARY_PROFILE unset; zip is NOT notarized.\n' >&2
+  printf 'package-zip: Gatekeeper will block it on other Macs. One-time setup:\n' >&2
+  printf 'package-zip:   xcrun notarytool store-credentials <profile-name>\n' >&2
+fi
 
 printf 'package-zip: %s\n' "$zip_path"
