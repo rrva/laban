@@ -44,6 +44,16 @@ xcrun notarytool store-credentials laban-notary
 
 ## Cutting a release
 
+One command runs the whole pipeline (prompts for the login keychain
+password, builds, signs, notarizes, pushes branch + tag, creates the GitHub
+release, and commits + pushes the regenerated appcast):
+
+```sh
+./scripts/release <version>
+```
+
+The same steps spelled out, for when you want to run them individually:
+
 ```sh
 # 1. Optional: write release notes; they feed both the GitHub release body
 #    and the appcast entry.

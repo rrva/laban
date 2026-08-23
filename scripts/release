@@ -1,0 +1,112 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/release <version>
+
+Run the full release pipeline locally. Prereqs (one-time, see
+docs/release/update-checks.md):
+  - a Developer ID Application identity in the login keychain
+  - a notarytool keychain profile (default: laban-notary)
+  - gh CLI authenticated as a user who can create releases on rrva/laban
+  - the Sparkle EdDSA private key (scripts/make-appcast finds it)
+
+The script prompts for the login keychain password, builds and notarizes the
+zip, pushes the branch and tag, creates the GitHub release, regenerates
+appcast.xml, and commits + pushes it.
+
+Environment:
+  LABAN_NOTARY_PROFILE   notarytool profile name (default: laban-notary)
+  LABAN_BUILD_NUMBER     CFBundleVersion override (default: epoch seconds)
+EOF
+  exit 2
+}
+
+[ "$#" -eq 1 ] || usage
+version=$1
+[ -n "$version" ] || usage
+tag="v${version}"
+notary_profile=${LABAN_NOTARY_PROFILE:-laban-notary}
+notes=".artifacts/release/Laban-${version}.md"
+zip=".artifacts/release/Laban-${version}.zip"
+
+step() { printf '\n==> %s\n' "$1"; }
+
+step "0. Preflight"
+if [ ! -f "$notes" ]; then
+  printf 'note: %s not found; the GitHub release will use --generate-notes.\n' "$notes"
+  printf 'Write release notes there first for a curated appcast/release body.\n'
+  printf 'Continue without notes? [y/N] '
+  read -r answer
+  case "$answer" in y|Y) ;; *) exit 1 ;; esac
+fi
+
+# Only tracked-tree cleanliness is required; untracked helper checkouts and
+# local artifacts do not affect the release.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  printf 'release failed: uncommitted changes in tracked files; commit first\n' >&2
+  exit 1
+fi
+
+# Keychain access is what makes this script terminal-run: a locked keychain
+# fails codesign and notarytool with opaque interaction errors.
+security unlock-keychain ~/Library/Keychains/login.keychain-db
+
+if ! security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+  printf 'release failed: no Developer ID Application identity in the login keychain.\n' >&2
+  printf 'See docs/release/update-checks.md (certificate recovery section).\n' >&2
+  exit 1
+fi
+
+if ! xcrun notarytool history --keychain-profile "$notary_profile" --limit 1 >/dev/null 2>&1; then
+  printf 'release failed: notarytool profile %s missing. Create it with:\n' "$notary_profile" >&2
+  printf '  xcrun notarytool store-credentials %s --apple-id <apple-id> --team-id 3563RJWBQP\n' "$notary_profile" >&2
+  exit 1
+fi
+
+if git rev-parse "$tag" >/dev/null 2>&1; then
+  printf 'release failed: tag %s already exists locally\n' "$tag" >&2
+  exit 1
+fi
+
+step "1. Build, sign (Developer ID + hardened runtime), notarize, staple, zip"
+# LABAN_WMO_PROFILE=1: batch-mode release flags currently fail under Swift
+# 6.4's SwiftBuild engine; WMO also matches the distributed-release code
+# shape documented in Package.swift.
+LABAN_WMO_PROFILE=1 LABAN_NOTARY_PROFILE="$notary_profile" \
+  ./scripts/package-zip "$version"
+
+step "2. Verify the packaged bundle"
+app_bundle=".build/laban/Laban.app"
+plutil -lint "$app_bundle/Contents/Info.plist" >/dev/null
+codesign --verify --deep --strict "$app_bundle"
+xcrun stapler validate "$app_bundle"
+printf 'feed: %s\n' "$(plutil -extract SUFeedURL raw -o - "$app_bundle/Contents/Info.plist")"
+printf 'version: %s (%s)\n' \
+  "$(plutil -extract CFBundleShortVersionString raw -o - "$app_bundle/Contents/Info.plist")" \
+  "$(plutil -extract CFBundleVersion raw -o - "$app_bundle/Contents/Info.plist")"
+
+step "3. Push branch and tag $tag"
+branch=$(git rev-parse --abbrev-ref HEAD)
+git push origin "$branch"
+git tag -a "$tag" -m "Laban $version"
+git push origin "$tag"
+
+step "4. Create GitHub release, upload zip, regenerate appcast.xml"
+./scripts/publish-release "$version"
+
+step "5. Commit and push appcast.xml"
+git add appcast.xml
+git commit -m "Publish appcast entry for $version"
+git push origin "$branch"
+
+cat <<EOF
+
+release: $tag is live.
+Final proof: on a machine running the previous release, Laban menu ->
+Check for Updates... should offer $version and install it.
+EOF
