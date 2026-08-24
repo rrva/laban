@@ -38,3 +38,19 @@ public enum RenderFailureReason: String, Codable, Equatable, Sendable {
     }
   }
 }
+
+/// A GPU backend that reports why its last `render(...)` returned `false`.
+///
+/// The host (`TerminalBitmapView`) applies one backpressure policy to every
+/// backend: a backpressure failure is paced or parked, anything else is
+/// retried. It needs the reason to make that call, and a backend that does not
+/// supply one is indistinguishable from a non-backpressure failure — which
+/// turns a single busy GPU pipeline into an unbounded immediate-retry loop that
+/// blocks the main thread in `MetalDrawableScheduler.beginFrame`.
+///
+/// This is a protocol rather than a chain of concrete casts at the call site so
+/// that a new backend cannot opt out of the policy by being absent from a list;
+/// `RenderFailureReasonTests` asserts every shipped GPU backend conforms.
+public protocol RenderFailureReporting: AnyObject {
+  var lastRenderFailureReason: RenderFailureReason? { get }
+}

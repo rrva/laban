@@ -647,7 +647,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   var undoManagerForTesting: UndoManager?
   var windowDragHandlerForTesting: ((NSEvent) -> Void)?
   private var renderingResizeFrame = false
-  private var renderRetryScheduled = false
+  /// The one pending coalesced render retry, or nil when none is scheduled.
+  /// Held as a `DispatchWorkItem` so an immediate request can cancel a paced one
+  /// instead of being coalesced away behind it.
+  private var renderRetryWorkItem: DispatchWorkItem?
+  /// Whether the pending retry is the slowed-down repair attempt rather than a
+  /// next-main-loop-turn one.
+  private var renderRetryIsPaced = false
+  /// Consecutive frames whose backend `render(...)` returned false, reset by any
+  /// frame that renders. Drives `renderFailureRetryDelay`.
+  private var consecutiveBackendRenderFailures = 0
 
   /// Hook for the overlay scroll indicator (sibling view in the window
   /// containerView). Called every frame from `advanceFrame` with the active
@@ -2717,14 +2726,45 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
-  private func scheduleRenderRetry() {
-    guard !renderRetryScheduled else { return }
-    renderRetryScheduled = true
-    DispatchQueue.main.async { [weak self] in
+  /// Schedule one coalesced frame. `delay` of zero means the next main-loop
+  /// turn, which is the latency path for anything that invalidates while the
+  /// display link is parked (a keystroke, a selection drag). A non-zero delay is
+  /// only used by `scheduleRenderRetryAfterBackendFailure`.
+  ///
+  /// An immediate request PRE-EMPTS a pending paced one: a paced retry is a
+  /// slow repair attempt for a frame the backend keeps refusing, and real input
+  /// arriving in that state must not wait it out.
+  private func scheduleRenderRetry(after delay: TimeInterval = 0) {
+    if let pending = renderRetryWorkItem {
+      guard delay <= 0, renderRetryIsPaced else { return }
+      pending.cancel()
+      renderRetryWorkItem = nil
+    }
+    let item = DispatchWorkItem { [weak self] in
       guard let self else { return }
-      self.renderRetryScheduled = false
+      self.renderRetryWorkItem = nil
+      self.renderRetryIsPaced = false
       self.advanceFrame(wake: .renderRetry)
     }
+    renderRetryWorkItem = item
+    renderRetryIsPaced = delay > 0
+    if delay > 0 {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    } else {
+      DispatchQueue.main.async(execute: item)
+    }
+  }
+
+  /// Retry a frame the backend just refused. Identical to `scheduleRenderRetry`
+  /// for the first failures and paced after that, so a backend that keeps
+  /// refusing the same frame cannot pin the main thread — each attempt can
+  /// block it for up to 16 ms inside `MetalDrawableScheduler.beginFrame`, and
+  /// an unpaced loop leaves nothing for input events. The counter resets on any
+  /// frame that renders.
+  private func scheduleRenderRetryAfterBackendFailure() {
+    scheduleRenderRetry(
+      after: TerminalRenderGate.renderFailureRetryDelay(
+        consecutiveFailures: consecutiveBackendRenderFailures))
   }
 
   /// A daemon snapshot can fail transiently or fall back to RPC while its
@@ -4286,9 +4326,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       if let payloadFailure = (backend as? MetalRenderer)?.lastGPUCellPayloadBuildFailure {
         autoDumpGPUCellPayloadFailure(payloadFailure)
       }
-      let failureReason =
-        (backend as? MetalRenderer)?.lastRenderFailureReason
-        ?? (backend as? SlugGlyphRenderer)?.lastRenderFailureReason
+      consecutiveBackendRenderFailures += 1
+      // Read through `RenderFailureReporting`, never a chain of concrete casts:
+      // a backend missing from such a chain reports no reason, which reads as a
+      // non-backpressure failure and drops into the unbounded immediate retry
+      // below. That is exactly how the vector backend spun 291 failed attempts
+      // at ~57/s on one frame while the main thread sat in `beginFrame`'s wait.
+      let failureReason = (backend as? RenderFailureReporting)?.lastRenderFailureReason
       // GPU/compositor backpressure gets one display-link-paced retry. If that
       // retry finds no work except the carried invalidation, park instead of
       // sustaining a no-progress render loop.
@@ -4318,7 +4362,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           // behavior the GPU-freeze plan introduced (an unconditional
           // immediate retry is what turned one slow drawable into bursts).
           if !displayLinkPolicyState().shouldRun {
-            scheduleRenderRetry()
+            scheduleRenderRetryAfterBackendFailure()
           }
         }
       } else {
@@ -4328,7 +4372,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         {
           gpuCellCommandFallbackPending = true
         }
-        scheduleRenderRetry()
+        scheduleRenderRetryAfterBackendFailure()
       }
       return
     }
@@ -4368,6 +4412,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       surfaceFrame: surfaceFrame,
       commands: cmds,
       rendered: true)
+    consecutiveBackendRenderFailures = 0
     renderedFrameCount = captureFrame
     lastRenderedHoverPreviewTabId = renderedHoverPreviewTabId
     syncGlyphEffectAnimatingState()
@@ -4664,8 +4709,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         tabChanged: tabChanged,
         scrollAnimating: scrollAnimating,
         rendered: rendered,
-        renderFailureReason: (backend as? MetalRenderer)?.lastRenderFailureReason
-          ?? (backend as? SlugGlyphRenderer)?.lastRenderFailureReason,
+        renderFailureReason: (backend as? RenderFailureReporting)?.lastRenderFailureReason,
         metalFrameCompletions: gpuFrameCompletionCount,
         now: Date()))
     guard let detection else { return }

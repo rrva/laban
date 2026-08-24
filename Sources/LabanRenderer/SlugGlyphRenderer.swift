@@ -292,7 +292,9 @@ private enum SlugTranslucentPipelineCache {
 /// Ordinary outline glyphs use reference-size curve geometry plus horizontal and
 /// vertical band lists; color emoji and high-complexity CJK cells fall back to
 /// the existing raster atlas paths.
-public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRenderer {
+public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRenderer,
+  RenderFailureReporting
+{
   public static let referencePointSize: CGFloat = 14
 
   private static let bandCount = 64

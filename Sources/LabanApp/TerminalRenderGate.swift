@@ -29,6 +29,32 @@ enum TerminalRenderGate {
     var shouldPark: Bool
   }
 
+  /// Failures that still retry on the next main-loop turn before the retry
+  /// drops to `pacedRenderFailureRetrySeconds`. A single transient miss must
+  /// repaint immediately — with the display link parked that retry is the
+  /// latency path for a keystroke — so the fast path is preserved for the first
+  /// attempts and only a repeating failure is slowed down.
+  static let immediateRenderFailureRetries = 2
+  /// Retry cadence once a backend keeps refusing the same frame. Matches the
+  /// parked display link's own floor (`TerminalIdlePolicy`), so a stuck render
+  /// costs about what an idle window costs.
+  static let pacedRenderFailureRetrySeconds: TimeInterval =
+    1.0 / TimeInterval(TerminalIdlePolicy.idleDisplayLinkFramesPerSecond)
+
+  /// How long to wait before re-attempting a frame whose backend `render(...)`
+  /// returned false, given how many consecutive frames have now failed.
+  ///
+  /// Zero means "next main-loop turn". A non-zero delay exists because that
+  /// immediate retry is unbounded: `MetalDrawableScheduler.beginFrame` blocks
+  /// the main thread for up to 16 ms per non-scroll attempt, so a failure that
+  /// repeats leaves the main thread unavailable ~16 ms out of every 17 ms and a
+  /// tab click waits seconds to be serviced. Slowing the retry keeps a repair
+  /// path alive (the failure may clear on its own with no other wake) at a cost
+  /// input latency does not notice.
+  static func renderFailureRetryDelay(consecutiveFailures: Int) -> TimeInterval {
+    consecutiveFailures <= immediateRenderFailureRetries ? 0 : pacedRenderFailureRetrySeconds
+  }
+
   static let synchronizedOutputMaxHoldSeconds: TimeInterval = 1.0
   static let outputSettleQuietSeconds: TimeInterval = 0.012
   static let remoteSnapshotOutputSettleQuietSeconds: TimeInterval = 0.008

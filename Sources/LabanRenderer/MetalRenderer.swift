@@ -89,7 +89,9 @@ private final class FrameCompletion: @unchecked Sendable {
 /// GPU renderer backed by `CAMetalLayer`. One device, one queue, one library.
 /// Two pipelines (solid quad + textured glyph quad). Two draw calls per
 /// "scissor span" — clip changes flush, everything else batches.
-public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer {
+public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer,
+  RenderFailureReporting
+{
   private static let maxGlyphAtlasTextureSize = 16_384
 
   /// A/B override for the classic damage-scoped instance rebuild. Kept

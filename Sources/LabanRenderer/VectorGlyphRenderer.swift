@@ -65,7 +65,9 @@ private struct VectorMaskDescriptorKey: Hashable {
   var dilateQ: Int = 0
 }
 
-public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRenderer {
+public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRenderer,
+  RenderFailureReporting
+{
   private static let syntheticItalicShear: CGFloat = 0.18
   private static let maxInlineInstanceBytes = 4096
   // Per-side stem dilation in device pixels at text weight 1.0, keyed by
@@ -98,6 +100,13 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   /// the main thread, serializes frames to one in flight, and drops a scroll
   /// tick rather than blocking on it.
   private let drawableScheduler: MetalDrawableScheduler
+  /// Why the last `render(...)` returned `false`, or nil after a frame that
+  /// succeeded. The host reads this through `RenderFailureReporting` to decide
+  /// whether the miss was GPU backpressure (wait for the pipeline) or a real
+  /// failure (retry). Without it every miss looks like a real failure and the
+  /// host retries immediately, which pins the main thread in
+  /// `MetalDrawableScheduler.beginFrame`'s 16 ms wait.
+  public private(set) var lastRenderFailureReason: RenderFailureReason?
   /// macOS 14+ fast path: when present, the renderer publishes each rendered
   /// target here and this link presents it from its own thread, so `render()`
   /// never calls `nextDrawable()` (ADR 0026). Nil on macOS 13 and when the fast
@@ -1056,6 +1065,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
 
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
+    lastRenderFailureReason = nil
     let dropIfBusy = dropNextFrameWhenBusy
     dropNextFrameWhenBusy = false
 
@@ -1070,14 +1080,22 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
       let scheduledFrame = drawableScheduler.beginFrame(
         needsFullFrame: needsFullFrame, dropIfBusy: dropIfBusy)
     else {
-      // Pipeline at capacity and this frame opted into dropping: the target
+      // Pipeline at capacity: either this frame opted into dropping, or a
+      // non-scroll frame waited out `beginFrame`'s 16 ms budget. The target
       // still shows the previous frame, repainted next tick from newer state.
+      // Reporting the reason is what keeps the host from retrying this in a
+      // tight loop — each attempt blocks its main thread for that same budget.
+      lastRenderFailureReason = .previousFrameInFlight
       return false
     }
 
-    guard let frameTargets = ensureFrameTargets(),
-      let commandBuffer = queue.makeCommandBuffer()
-    else {
+    guard let frameTargets = ensureFrameTargets() else {
+      lastRenderFailureReason = .targetTextureUnavailable
+      scheduledFrame.finish()
+      return false
+    }
+    guard let commandBuffer = queue.makeCommandBuffer() else {
+      lastRenderFailureReason = .commandBufferUnavailable
       scheduledFrame.finish()
       return false
     }
@@ -1114,6 +1132,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         commandBuffer: commandBuffer,
         retainedInstanceBuffers: &retainedInstanceBuffers)
     else {
+      lastRenderFailureReason = .fullRedrawProducedNoContent
       scheduledFrame.finish()
       return false
     }
@@ -1122,6 +1141,7 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
         encodeLinearPremultipliedResolve(
           from: contentTarget, to: target, commandBuffer: commandBuffer)
       else {
+        lastRenderFailureReason = .fullRedrawProducedNoContent
         scheduledFrame.finish()
         return false
       }

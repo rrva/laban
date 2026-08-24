@@ -20,6 +20,26 @@ final class RenderFailureReasonTests: XCTestCase {
     XCTAssertFalse(RenderFailureReason.targetTextureUnavailable.isGPUBackpressure)
   }
 
+  /// Every GPU backend must report a failure reason. The host reads it through
+  /// `RenderFailureReporting` to tell backpressure (wait) from a real failure
+  /// (retry); a backend that reports nothing looks like a real failure and gets
+  /// retried immediately and unboundedly, blocking the main thread in
+  /// `MetalDrawableScheduler.beginFrame`'s 16 ms wait on every attempt. This is
+  /// a type-level check on purpose: it fails the moment a new backend is added
+  /// without adopting the protocol, with no Metal device required.
+  func testEveryGPUBackendReportsFailureReasons() {
+    let backends: [(String, Any.Type)] = [
+      ("MetalRenderer", MetalRenderer.self),
+      ("SlugGlyphRenderer", SlugGlyphRenderer.self),
+      ("VectorGlyphRenderer", VectorGlyphRenderer.self),
+    ]
+    for (name, type) in backends {
+      XCTAssertTrue(
+        type is RenderFailureReporting.Type,
+        "\(name) must conform to RenderFailureReporting")
+    }
+  }
+
   /// Every case must be classified — a new failure reason should force a
   /// deliberate pace-or-retry decision here rather than silently defaulting.
   func testEveryReasonIsClassified() {
