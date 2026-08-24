@@ -71,6 +71,13 @@ final class RenderJournal {
     /// across them = the slot was leaked by a path that never signalled.
     /// Optional so old dumps still decode.
     var gpuFrameCompletions: Int?
+    /// New vector glyph-mask bakes encoded into this frame's command buffer.
+    /// Each is a compute dispatch, and at rest they are UNCAPPED (the per-frame
+    /// cap applies only while scrolling), so a frame that first paints an
+    /// unfamiliar screen — a tab switch — can encode the whole screen's bakes
+    /// into one buffer. Pair with `gpuFrameCompletions`: a large count on a
+    /// frame whose completion then stalls is that burst. Vector backend only.
+    var maskBakes: Int?
     var freeze: FreezeSnapshot?
     var rendered: Bool?
   }
@@ -395,6 +402,7 @@ final class RenderJournal {
     gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure? = nil,
     renderFailureReason: RenderFailureReason? = nil,
     gpuFrameCompletions: Int? = nil,
+    maskBakes: Int? = nil,
     freeze: FreezeSnapshot? = nil,
     rendered: Bool? = nil
   ) -> Entry {
@@ -441,6 +449,7 @@ final class RenderJournal {
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
       gpuFrameCompletions: gpuFrameCompletions,
+      maskBakes: maskBakes,
       freeze: freeze,
       rendered: rendered)
   }

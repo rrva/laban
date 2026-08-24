@@ -4702,6 +4702,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
       gpuFrameCompletions: gpuFrameCompletionCount,
+      maskBakes: (backend as? VectorGlyphRenderer)?.lastMaskBakeDispatchCount,
       freeze: freeze,
       rendered: rendered)
     renderJournal.record(entry)
