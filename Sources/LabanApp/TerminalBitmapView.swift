@@ -2726,6 +2726,60 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
+  /// Serial background queue for capture PNG deflates. Serial so encodes stay
+  /// in frame order and only one full-surface image is alive at a time, and
+  /// separate from the frame loop so a capture never runs libpng on the main
+  /// thread. Drained by `drainPendingCaptureEncodes()` before a capture is
+  /// finalized.
+  private static let capturePNGEncodeQueue = DispatchQueue(
+    label: "laban.capture.png-encode", qos: .utility)
+
+  /// Hand one rendered frame to the capture recorder.
+  ///
+  /// The pixel copy has to happen inline — the next frame overwrites the
+  /// backend's target — but the PNG deflate does not, and the deflate is what
+  /// used to cost the main thread hundreds of milliseconds per captured frame
+  /// (the stall watchdog recorded it as `advanceFrame → pngData →
+  /// waitUntilCompleted`). The frame's place in the timeline is stamped here,
+  /// in the frame loop, so moving the encode off-thread cannot reorder the
+  /// artifact: `seq` and `timeNs` still describe when the frame was rendered.
+  private func recordCapturedFrame(recorder: CaptureRecorder, frame: Int) {
+    let width = backend.surfaceWidth
+    let height = backend.surfaceHeight
+    let scale = Double(backend.surfaceScale)
+    let backendName = backend.rendererStatus.effectiveRenderer
+    // `.composite` records no in-app pixels — its frames come from composited
+    // window grabs — so it never pays for a readback at all.
+    guard recorder.needsRenderedPixelReadback else {
+      recorder.recordRenderedFrame(
+        frame: frame, pngData: nil, width: width, height: height, scale: scale,
+        backend: backendName)
+      return
+    }
+    let seq = recorder.nextSequence()
+    let timeNs = CaptureClock.nowNs()
+    guard let snapshot = backend.renderedPixelSnapshot() else {
+      // Backends with no raw-pixel path (software) encode inline; their
+      // `pngData` is a bitmap realisation, not a GPU wait plus a deflate.
+      recorder.recordRenderedFrame(
+        frame: frame, pngData: backend.pngData, width: width, height: height, scale: scale,
+        backend: backendName, seq: seq, timeNs: timeNs)
+      return
+    }
+    Self.capturePNGEncodeQueue.async {
+      recorder.recordRenderedFrame(
+        frame: frame, pngData: snapshot.encodePNG(), width: width, height: height,
+        scale: scale, backend: backendName, seq: seq, timeNs: timeNs)
+    }
+  }
+
+  /// Block until every queued capture encode has been handed to the recorder.
+  /// Must run before a capture is finalized, otherwise `finish()` could close
+  /// the artifact while the last frames are still deflating and drop them.
+  private func drainPendingCaptureEncodes() {
+    Self.capturePNGEncodeQueue.sync {}
+  }
+
   /// Schedule one coalesced frame. `delay` of zero means the next main-loop
   /// turn, which is the latency path for anything that invalidates while the
   /// display link is parked (a keystroke, a selection drag). A non-zero delay is
@@ -4417,18 +4471,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     lastRenderedHoverPreviewTabId = renderedHoverPreviewTabId
     syncGlyphEffectAnimatingState()
     if let recorder = captureRecorder {
-      // Both software and Metal flow through the same recorder entry now.
-      // Pulling pngData triggers a CGImage realisation on software and a
-      // blit-readback + GPU-pipeline wait on Metal — only pay that when
-      // the policy consumes in-app pixels; `.composite` observes the
-      // composited window instead and leaves the render path alone.
-      recorder.recordRenderedFrame(
-        frame: captureFrame,
-        pngData: recorder.needsRenderedPixelReadback ? backend.pngData : nil,
-        width: backend.surfaceWidth,
-        height: backend.surfaceHeight,
-        scale: Double(backend.surfaceScale),
-        backend: backend.rendererStatus.effectiveRenderer)
+      recordCapturedFrame(recorder: recorder, frame: captureFrame)
     }
     if !backendSelfPresents {
       needsDisplay = true
@@ -9292,6 +9335,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // recorder before finish drains and closes the artifact.
       compositeGrabber?.stop()
       compositeGrabber = nil
+      // Frames encode on a background queue; let the queued ones land before
+      // finish() closes the artifact, or the tail of the capture goes missing.
+      drainPendingCaptureEncodes()
       let png = recorder.needsRenderedPixelReadback ? backend.pngData : nil
       do {
         let manifest = try recorder.finish(

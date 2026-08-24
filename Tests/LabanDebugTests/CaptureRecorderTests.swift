@@ -229,6 +229,49 @@ final class CaptureRecorderTests: XCTestCase {
       .appendingPathComponent("laban-capture-recorder-\(UUID().uuidString)")
   }
 
+  /// A capture frame's PNG is deflated on a background queue, so the timeline
+  /// event is written later than the frame was rendered. The caller stamps the
+  /// two ordering keys in the frame loop and passes them through; without that,
+  /// a deferred encode would place the frame after events that actually came
+  /// later, and `timeNs` would describe the deflate rather than the frame.
+  func testRenderedFrameKeepsCallerSuppliedOrderingKeys() throws {
+    let root = tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recorder = try CaptureRecorder(artifactRoot: root, name: "ordering")
+
+    let seq = recorder.nextSequence()
+    let renderedAt: UInt64 = 12_345_678
+    // Something else reaches the timeline before the deferred encode lands.
+    recorder.record(CaptureTimelineEvent(kind: .frameRendered, frame: 99))
+    recorder.recordRenderedFrame(
+      frame: 7, pngData: nil, width: 4, height: 2, scale: 1, backend: "vectorGlyph",
+      seq: seq, timeNs: renderedAt)
+    _ = try recorder.finish()
+
+    let events = try timelineEvents(root.appendingPathComponent("ordering/timeline.ndjson"))
+    let deferred = try XCTUnwrap(events.first { $0.frame == 7 })
+    XCTAssertEqual(deferred.seq, seq)
+    XCTAssertEqual(deferred.timeNs, renderedAt)
+    let later = try XCTUnwrap(events.first { $0.frame == 99 })
+    XCTAssertGreaterThan(later.seq, deferred.seq, "the reserved seq must still sort first")
+  }
+
+  /// Defaulted ordering keys keep the original stamp-at-write behavior for
+  /// every caller that still records inline.
+  func testRenderedFrameStampsOrderingKeysWhenCallerOmitsThem() throws {
+    let root = tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recorder = try CaptureRecorder(artifactRoot: root, name: "defaults")
+    recorder.recordRenderedFrame(
+      frame: 3, pngData: nil, width: 4, height: 2, scale: 1, backend: "software")
+    _ = try recorder.finish()
+
+    let events = try timelineEvents(root.appendingPathComponent("defaults/timeline.ndjson"))
+    let event = try XCTUnwrap(events.first { $0.frame == 3 })
+    XCTAssertGreaterThanOrEqual(event.seq, 0)
+    XCTAssertGreaterThan(event.timeNs, 0)
+  }
+
   private func timelineEvents(_ url: URL) throws -> [CaptureTimelineEvent] {
     let decoder = JSONDecoder()
     return try String(contentsOf: url, encoding: .utf8)

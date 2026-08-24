@@ -180,7 +180,20 @@ public protocol RendererBackend: AnyObject {
   var presentationImage: CGImage? { get }
 
   /// PNG bytes of the most recent rendered frame for screenshots / capture.
+  /// Does the whole job synchronously — GPU wait, CPU copy, PNG deflate — so it
+  /// belongs on one-off paths (a debug screenshot, a journal dump), not in a
+  /// per-frame loop on the main thread. Per-frame callers want
+  /// `renderedPixelSnapshot()` instead.
   var pngData: Data? { get }
+
+  /// The cheap half of `pngData`: wait only as long as it takes to get this
+  /// frame's pixels onto the CPU, and hand back the raw bytes so the caller can
+  /// run the PNG deflate wherever it likes — typically a background queue.
+  ///
+  /// The copy cannot be deferred (the next frame overwrites the target), but the
+  /// encode can, and the encode is the expensive part. Returns nil for backends
+  /// with no raw-pixel path; those callers fall back to `pngData`.
+  func renderedPixelSnapshot() -> RenderedPixelSnapshot?
 
   /// Called after a backend has completed a frame. GPU backends fire this from
   /// their command-buffer completion path; CPU/readback backends fire it after
@@ -200,6 +213,10 @@ public protocol RendererBackend: AnyObject {
 }
 
 extension RendererBackend {
+  /// Backends without a raw-pixel path (the software backend already holds an
+  /// encoded bitmap) opt out; callers fall back to `pngData`.
+  public func renderedPixelSnapshot() -> RenderedPixelSnapshot? { nil }
+
   public var rendererStatus: RendererStatus {
     RendererStatus(configuredRenderer: "software", effectiveRenderer: "software")
   }

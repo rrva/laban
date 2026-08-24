@@ -746,40 +746,18 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     gestureZoomAnchor = anchor
   }
 
-  public var pngData: Data? {
+  public func renderedPixelSnapshot() -> RenderedPixelSnapshot? {
+    // Capture / screenshot callers can ask at any time; the GPU may not have
+    // finished the most recent render, so block until it has rather than
+    // serializing a half-written frame. Only the copy happens here — the PNG
+    // deflate is the caller's to schedule.
     lastCommandBuffer?.waitUntilCompleted()
     guard let targetTexture else { return nil }
-    let bytesPerRow = targetTexture.width * 4
-    var bytes = [UInt8](repeating: 0, count: bytesPerRow * targetTexture.height)
-    bytes.withUnsafeMutableBytes { raw in
-      guard let base = raw.baseAddress else { return }
-      targetTexture.getBytes(
-        base,
-        bytesPerRow: bytesPerRow,
-        from: MTLRegionMake2D(0, 0, targetTexture.width, targetTexture.height),
-        mipmapLevel: 0)
-    }
+    return RenderedPixelSnapshot.read(from: targetTexture)
+  }
 
-    let bitmapInfo =
-      CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-    // Tag sRGB: the target texture is an sRGB-encoded surface (bgra8Unorm_srgb
-    // layer), so the readback bytes are sRGB. A deviceRGB tag mis-tags them as
-    // display-native and oversaturates the PNG/screenshot on wide-gamut panels.
-    guard let provider = CGDataProvider(data: Data(bytes) as CFData),
-      let image = CGImage(
-        width: targetTexture.width,
-        height: targetTexture.height,
-        bitsPerComponent: 8,
-        bitsPerPixel: 32,
-        bytesPerRow: bytesPerRow,
-        space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
-        provider: provider,
-        decode: nil,
-        shouldInterpolate: false,
-        intent: .defaultIntent)
-    else { return nil }
-    return PNGEncoder.encode(image)
+  public var pngData: Data? {
+    renderedPixelSnapshot()?.encodePNG()
   }
 
   @discardableResult

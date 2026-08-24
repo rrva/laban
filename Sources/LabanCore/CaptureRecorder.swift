@@ -341,13 +341,21 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
   /// Backend-neutral rendered-frame recorder: anything that can produce
   /// PNG bytes + surface metrics can call this. Software callers pipe the
   /// `BitmapSurface.pngData` accessor; Metal callers pipe a blit-readback PNG.
+  ///
+  /// `seq` and `timeNs` exist so a caller that encodes the PNG on a background
+  /// queue can still stamp the frame's place in the timeline from the frame loop
+  /// itself. Both ordering keys then describe when the frame was *rendered*, not
+  /// when its deflate happened to finish. Left at their defaults, the event is
+  /// stamped at write time exactly as before.
   public func recordRenderedFrame(
     frame: Int,
     pngData: Data?,
     width: Int,
     height: Int,
     scale: Double,
-    backend: String
+    backend: String,
+    seq: Int = -1,
+    timeNs: UInt64 = 0
   ) {
     let pixelHash = pngData.map(CaptureHash.sha256)
     let payload = CapturedRenderFrame(
@@ -363,7 +371,7 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
       _ = try? writeSidecar(data: data, relativePath: rel)
     }
     lock.lock()
-    var event = CaptureTimelineEvent(kind: .frameRendered, frame: frame)
+    var event = CaptureTimelineEvent(seq: seq, timeNs: timeNs, kind: .frameRendered, frame: frame)
     event.width = width
     event.height = height
     event.scale = scale

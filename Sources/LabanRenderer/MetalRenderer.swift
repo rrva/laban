@@ -126,9 +126,13 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   /// Last-frame readback for screenshots / capture. Returns nil when
   /// `captureMode` is off (the drawable→CPU blit is skipped to keep
   /// cursor-blink frames cheap).
-  public var pngData: Data? {
+  public func renderedPixelSnapshot() -> RenderedPixelSnapshot? {
     lastFrameCompletion?.wait()
-    return readback.pngData(waitingFor: lastCmdBuf)
+    return readback.pixelSnapshot(waitingFor: lastCmdBuf)
+  }
+
+  public var pngData: Data? {
+    renderedPixelSnapshot()?.encodePNG()
   }
 
   public struct RenderInstanceCounts: Equatable, Sendable {

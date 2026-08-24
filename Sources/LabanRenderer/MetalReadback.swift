@@ -62,49 +62,18 @@ final class MetalReadback {
     return ensureTexture(width: width, height: height)
   }
 
-  func pngData(waitingFor commandBuffer: MTLCommandBuffer?) -> Data? {
+  func pixelSnapshot(waitingFor commandBuffer: MTLCommandBuffer?) -> RenderedPixelSnapshot? {
     guard let texture else { return nil }
-    // Capture / screenshot callers can read pngData any time; the GPU might
+    // Capture / screenshot callers can read pixels any time; the GPU might
     // not have finished the most recent render yet. Block until it has so
-    // we never serialize a stale frame.
+    // we never serialize a stale frame. Only the copy happens here — the PNG
+    // deflate is left to the caller, which can run it off the main thread.
     commandBuffer?.waitUntilCompleted()
+    return RenderedPixelSnapshot.read(from: texture)
+  }
 
-    let width = texture.width
-    let height = texture.height
-    let bytesPerRow = width * 4
-    var bytes = [UInt8](repeating: 0, count: bytesPerRow * height)
-    bytes.withUnsafeMutableBytes { ptr in
-      if let base = ptr.baseAddress {
-        texture.getBytes(
-          base,
-          bytesPerRow: bytesPerRow,
-          from: MTLRegionMake2D(0, 0, width, height),
-          mipmapLevel: 0)
-      }
-    }
-
-    let bitmapInfo: UInt32 =
-      CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-    // Tag sRGB: MetalRenderer composites in encoded-sRGB space (no
-    // linearization) into a bgra8Unorm target, so the readback bytes are
-    // sRGB-encoded. A deviceRGB tag mis-tags them as display-native and
-    // oversaturates the PNG/screenshot on wide-gamut panels.
-    guard
-      let provider = CGDataProvider(data: Data(bytes) as CFData),
-      let image = CGImage(
-        width: width,
-        height: height,
-        bitsPerComponent: 8,
-        bitsPerPixel: 32,
-        bytesPerRow: bytesPerRow,
-        space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
-        provider: provider,
-        decode: nil,
-        shouldInterpolate: false,
-        intent: .defaultIntent)
-    else { return nil }
-    return PNGEncoder.encode(image)
+  func pngData(waitingFor commandBuffer: MTLCommandBuffer?) -> Data? {
+    pixelSnapshot(waitingFor: commandBuffer)?.encodePNG()
   }
 
   private func ensureTexture(width: Int, height: Int) -> MTLTexture? {
