@@ -145,6 +145,10 @@ typedef struct {
     char payload[OSC133_PAYLOAD_MAX];
     size_t payload_len;
     int payload_overflow;
+    /* Interactive-mode mask recorded at OSC 133 D ("command end") and
+     * cleared at the next A ("prompt start"): a dead-TUI recovery. See
+     * osc133.c. Zero means "nothing stuck" and also "no command ended". */
+    unsigned reset_mask;
 } LabanOSC133Scanner;
 
 /* OSC host-integration scanner. Sniffs a small set of OSCs out of the PTY byte

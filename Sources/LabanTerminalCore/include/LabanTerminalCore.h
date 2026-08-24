@@ -435,6 +435,17 @@ int laban_session_set_tab_status_callback(
  * action letter or exit code, so Laban scans for it directly. The callback
  * fires on whichever thread drove `laban_session_poll` /
  * `laban_session_feed_output`. Pass NULL for `callback` to disable.
+ *
+ * The scanner is also behavioral, independent of whether a callback is
+ * registered: when a D ("command end") left interactive modes enabled —
+ * mouse tracking (9/1000/1002/1003), focus reporting (1004), or a hidden
+ * cursor (25 off) — the next A ("prompt start") resets them. This recovers
+ * from a mouse-tracking TUI that died without its teardown sequences (e.g.
+ * a dropped ssh connection): without it, drag-selecting at the returned
+ * shell prompt forwards SGR mouse reports the shell echoes as text. The
+ * mask is recorded at D, so modes a shell deliberately enables from its
+ * prompt hook (between D and A) are not cleared. The callback fires after
+ * the reset, so observers see post-reset state.
  */
 typedef enum {
     LABAN_OSC133_PROMPT_START = 0,   /* 'A' — fresh prompt about to draw */

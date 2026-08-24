@@ -569,6 +569,82 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  /// Snapshot accessor for the OSC 133 prompt-reset tests: the interactive
+  /// mode flags the dead-TUI recovery reads and writes.
+  private func interactiveModeFlags(
+    _ session: OpaquePointer
+  ) -> (mouseTracking: Int32, focusReporting: Int32, cursorVisible: Int32)? {
+    var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+    guard laban_session_snapshot(session, &snapshot) == 0, let snap = snapshot else {
+      return nil
+    }
+    defer { laban_snapshot_destroy(snap) }
+    return (snap.pointee.mouse_tracking, snap.pointee.focus_reporting, snap.pointee.cursor_visible)
+  }
+
+  /// Dead-TUI recovery (execplans/active/osc133-prompt-mode-reset.md): a
+  /// mouse-tracking TUI that dies without its teardown sequences leaves mouse
+  /// tracking, focus reporting, and a hidden cursor stuck on at the shell
+  /// prompt, so drag-selecting types SGR mouse reports into zsh. The OSC 133
+  /// scanner records the stuck modes at command end (D) and clears them at
+  /// the next prompt start (A). No OSC 133 callback is registered here, which
+  /// also proves the reset is behavioral, not observer-driven.
+  func testPromptResetClearsStuckModesAfterCommandEnd() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // The dead-TUI signature: mouse + focus reporting on, cursor hidden.
+    writeBytes(session, Array("\u{1B}[?1002h\u{1B}[?1006h\u{1B}[?1004h\u{1B}[?25l".utf8))
+    var flags = interactiveModeFlags(session)
+    XCTAssertEqual(flags?.mouseTracking, 1, "mouse tracking on before the reset")
+    XCTAssertEqual(flags?.focusReporting, 1, "focus reporting on before the reset")
+    XCTAssertEqual(flags?.cursorVisible, 0, "cursor hidden before the reset")
+
+    // The shell reports the command's end and the fresh prompt.
+    writeBytes(session, Array("\u{1B}]133;D;0\u{07}\u{1B}]133;A\u{07}".utf8))
+    flags = interactiveModeFlags(session)
+    XCTAssertEqual(flags?.mouseTracking, 0, "prompt reset must clear mouse tracking")
+    XCTAssertEqual(flags?.focusReporting, 0, "prompt reset must clear focus reporting")
+    XCTAssertEqual(flags?.cursorVisible, 1, "prompt reset must restore the cursor")
+  }
+
+  /// A prompt start with no preceding command end (first prompt, or an app
+  /// emitting its own A) must not touch interactive modes: the reset mask is
+  /// only armed by D.
+  func testPromptResetSkipsBarePromptStart() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1B}[?1002h\u{1B}[?1004h".utf8))
+    writeBytes(session, Array("\u{1B}]133;A\u{07}".utf8))
+    let flags = interactiveModeFlags(session)
+    XCTAssertEqual(flags?.mouseTracking, 1, "bare A must leave mouse tracking on")
+    XCTAssertEqual(flags?.focusReporting, 1, "bare A must leave focus reporting on")
+  }
+
+  /// The reset mask is sampled at D, so a mode a shell enables from its own
+  /// prompt hook *between* D and A was off at D and must survive the reset.
+  func testPromptResetSparesModesEnabledBetweenCommandEndAndPrompt() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1B}]133;D;0\u{07}".utf8))
+    writeBytes(session, Array("\u{1B}[?1002h".utf8))
+    writeBytes(session, Array("\u{1B}]133;A\u{07}".utf8))
+    let flags = interactiveModeFlags(session)
+    XCTAssertEqual(
+      flags?.mouseTracking, 1, "mouse mode enabled after D must survive the prompt reset")
+  }
+
   func testBellCallbackFiresAndCountTracksBel() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

@@ -1,10 +1,59 @@
 #include "session_internal.h"
 
+/* Dead-TUI recovery: interactive modes a *finished command* left enabled.
+ * Recorded in LabanOSC133Scanner.reset_mask at OSC 133 D and applied at the
+ * next A. A shell prompt never legitimately wants mouse reports, focus
+ * reports, or a hidden cursor; a well-behaved TUI re-asserts its modes on
+ * its next launch, so clearing them at the prompt is safe. Recording the
+ * mask at D (rather than reading modes at A) spares a shell that enables
+ * mouse reporting from its own prompt hook between D and A — the mode was
+ * off at D, so nothing is cleared. */
+enum {
+    O133_RESET_MOUSE = 1u << 0, /* any of X10/1000/1002/1003 was on at D */
+    O133_RESET_FOCUS = 1u << 1, /* 1004 (focus in/out) was on at D */
+    O133_RESET_CURSOR = 1u << 2 /* 25 (cursor visible) was OFF at D */
+};
+
+static int mode_active_locked(LabanSession *s, GhosttyMode mode) {
+    int active = 0;
+    if (laban_session_mode_active_locked(s, mode, &active) != 0) return 0;
+    return active;
+}
+
+static unsigned stuck_interactive_modes_locked(LabanSession *s) {
+    unsigned mask = 0;
+    if (mode_active_locked(s, GHOSTTY_MODE_X10_MOUSE)
+        || mode_active_locked(s, GHOSTTY_MODE_NORMAL_MOUSE)
+        || mode_active_locked(s, GHOSTTY_MODE_BUTTON_MOUSE)
+        || mode_active_locked(s, GHOSTTY_MODE_ANY_MOUSE)) {
+        mask |= O133_RESET_MOUSE;
+    }
+    if (mode_active_locked(s, GHOSTTY_MODE_FOCUS_EVENT)) mask |= O133_RESET_FOCUS;
+    if (!mode_active_locked(s, GHOSTTY_MODE_CURSOR_VISIBLE)) mask |= O133_RESET_CURSOR;
+    return mask;
+}
+
+static void reset_interactive_modes_locked(LabanSession *s, unsigned mask) {
+    if (mask & O133_RESET_MOUSE) {
+        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_X10_MOUSE, false);
+        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_NORMAL_MOUSE, false);
+        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_BUTTON_MOUSE, false);
+        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_ANY_MOUSE, false);
+    }
+    if (mask & O133_RESET_FOCUS) {
+        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_FOCUS_EVENT, false);
+    }
+    if (mask & O133_RESET_CURSOR) {
+        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_CURSOR_VISIBLE, true);
+    }
+}
+
 /* Parse the buffered OSC 133 payload (everything after `133;`, e.g. "A",
- * "B", "C", "D", or "D;0") and fire the callback for the A/B/C/D subset.
- * Unknown actions are ignored. */
+ * "B", "C", "D", or "D;0"), apply the dead-TUI mode reset, and fire the
+ * callback for the A/B/C/D subset. Unknown actions are ignored. Runs under
+ * the session lock (the scan happens inside laban_vt_write_capture). */
 static void parse_osc133_payload(LabanSession *s, const char *payload, size_t len) {
-    if (!s->osc133_callback || len == 0) return;
+    if (len == 0) return;
 
     LabanOSC133Action action;
     switch (payload[0]) {
@@ -14,6 +63,22 @@ static void parse_osc133_payload(LabanSession *s, const char *payload, size_t le
     case 'D': action = LABAN_OSC133_COMMAND_END; break;
     default: return; /* L/I/N/P and unknown actions are not reported */
     }
+
+    /* Prompt-reset policy, before the callback so observers see post-reset
+     * state. D records what the finished command left on; the next A clears
+     * it. The mask doubles as the "a command ran" flag, so a bare A (first
+     * prompt, or an app emitting its own A without D) resets nothing. */
+    if (action == LABAN_OSC133_COMMAND_END) {
+        s->osc133_scanner.reset_mask = stuck_interactive_modes_locked(s);
+    } else if (action == LABAN_OSC133_PROMPT_START) {
+        unsigned mask = s->osc133_scanner.reset_mask;
+        if (mask) {
+            s->osc133_scanner.reset_mask = 0;
+            reset_interactive_modes_locked(s, mask);
+        }
+    }
+
+    if (!s->osc133_callback) return;
 
     int has_exit_code = 0;
     int exit_code = 0;
@@ -57,7 +122,10 @@ static OSC133State dispatch_after_esc(LabanOSC133Scanner *sc, uint8_t b) {
 }
 
 void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len) {
-    if (!s->osc133_callback) return;
+    /* No callback gate: the scanner is behavioral, not just observational —
+     * the dead-TUI mode reset in parse_osc133_payload must run even when no
+     * observer is attached (daemon, fixture, dump tools). Same policy as the
+     * cursor-override scanner in decscusr.c. */
     LabanOSC133Scanner *sc = &s->osc133_scanner;
     for (size_t i = 0; i < len; i++) {
         uint8_t b = bytes[i];
