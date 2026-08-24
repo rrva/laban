@@ -51,6 +51,24 @@ enum TerminalRenderGate {
   /// tab click waits seconds to be serviced. Slowing the retry keeps a repair
   /// path alive (the failure may clear on its own with no other wake) at a cost
   /// input latency does not notice.
+  /// Should a completed GPU frame wake the frame loop?
+  ///
+  /// A completion is the moment the one-frame-in-flight slot frees, so it is the
+  /// moment a frame refused for `previousFrameInFlight` can finally be drawn.
+  /// Without a wake those frames wait for an unrelated event — a keystroke, PTY
+  /// output, a display tick — and with the display link parked that can be
+  /// seconds. Since the publish to the present link also happens in the
+  /// completion handler, the window meanwhile shows whatever was presented
+  /// *before* the slow frame: a single slow frame becomes a frozen window rather
+  /// than a late one.
+  ///
+  /// Gated on a refusal having actually happened. A frame that renders clears
+  /// the counter, so a healthy pipeline — which completes a frame every tick —
+  /// never re-triggers, and this cannot become a self-sustaining render loop.
+  static func shouldWakeFrameLoopOnCompletion(consecutiveBackendRenderFailures: Int) -> Bool {
+    consecutiveBackendRenderFailures > 0
+  }
+
   static func renderFailureRetryDelay(consecutiveFailures: Int) -> TimeInterval {
     consecutiveFailures <= immediateRenderFailureRetries ? 0 : pacedRenderFailureRetrySeconds
   }

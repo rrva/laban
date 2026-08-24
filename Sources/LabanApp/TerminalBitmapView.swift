@@ -1459,6 +1459,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         self.gpuFreezeDetector.noteMetalFrameCompleted(
           completionCount: self.gpuFrameCompletionCount)
         self.recordInputLatencyIfPending()
+        self.wakeFrameLoopIfCapacityJustFreed()
       }
     }
   }
@@ -2771,6 +2772,26 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         frame: frame, pngData: snapshot.encodePNG(), width: width, height: height,
         scale: scale, backend: backendName, seq: seq, timeNs: timeNs)
     }
+  }
+
+  /// A completed GPU frame is the moment the one-frame-in-flight slot frees, so
+  /// it is the moment a frame refused for `previousFrameInFlight` can finally be
+  /// drawn. Without this the refused frames just wait for an unrelated wake — a
+  /// keystroke, PTY output, a display tick — and with the link parked that can
+  /// be seconds. It is what turned a single slow frame into a window frozen on
+  /// the *previous* tab's content: the publish to the present link happens in
+  /// this same completion handler, so nothing new reaches the screen while the
+  /// slow frame runs, and nothing redraws once it lands.
+  ///
+  /// Gated on a refusal having actually happened. `consecutiveBackendRenderFailures`
+  /// is cleared by any frame that renders, so a healthy pipeline never
+  /// re-triggers here and this cannot become a self-sustaining loop.
+  private func wakeFrameLoopIfCapacityJustFreed() {
+    guard
+      TerminalRenderGate.shouldWakeFrameLoopOnCompletion(
+        consecutiveBackendRenderFailures: consecutiveBackendRenderFailures)
+    else { return }
+    scheduleRenderRetry()
   }
 
   /// Block until every queued capture encode has been handed to the recorder.
