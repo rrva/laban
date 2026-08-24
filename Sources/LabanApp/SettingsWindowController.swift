@@ -112,6 +112,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorSmoothScrollLabel = NSTextField(labelWithString: L10n.tr("Smooth scroll:"))
   private let hoverPreviewCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Sidebar hover preview"), target: nil, action: nil)
+  private let sidebarVisibleCheckbox = NSButton(
+    checkboxWithTitle: L10n.tr("Show tab sidebar"), target: nil, action: nil)
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Option as Meta"), target: nil, action: nil)
@@ -595,6 +597,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       + "softens slightly while moving). Crisp rasterizes a mask per sub-pixel phase "
       + "(sharper subpixel-AA in motion, a touch more GPU work). Vector renderer only."
 
+    sidebarVisibleCheckbox.target = self
+    sidebarVisibleCheckbox.action = #selector(sidebarVisibleChanged(_:))
+    sidebarVisibleCheckbox.toolTip = L10n.tr(
+      "Hide the tab sidebar and give its width back to the terminal.")
+    sidebarVisibleCheckbox.setAccessibilityLabel(L10n.tr("Show tab sidebar"))
+
     hoverPreviewCheckbox.target = self
     hoverPreviewCheckbox.action = #selector(hoverPreviewChanged(_:))
     hoverPreviewCheckbox.toolTip = L10n.tr(
@@ -710,6 +718,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [vectorOverlapLabel, makeVectorSubpixelCustomRow()],
       [vectorTextWeightLabel, makeVectorTextWeightRow()],
       [vectorSmoothScrollLabel, vectorSmoothScrollPopUp],
+      [makeLabel(L10n.tr("Sidebar:")), sidebarVisibleCheckbox],
       [NSGridCell.emptyContentView, hoverPreviewCheckbox],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
@@ -884,7 +893,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     let slugSelected = selection == .slugGlyph
     let hoverPreviewEnvLocked = HoverPreviewSettings.environmentOverride() != nil
-    hoverPreviewCheckbox.isEnabled = slugSelected && !hoverPreviewEnvLocked
+    let sidebarVisible = SidebarVisibilitySettings.visible
+    sidebarVisibleCheckbox.isEnabled = SidebarVisibilitySettings.environmentOverride() == nil
+    // Nothing to hover when the sidebar is hidden.
+    hoverPreviewCheckbox.isEnabled = slugSelected && sidebarVisible && !hoverPreviewEnvLocked
   }
 
   private func makeVectorSubpixelCustomRow() -> NSStackView {
@@ -1014,6 +1026,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       vectorSmoothScrollPopUp.selectItem(at: row)
     }
     refreshVectorControlsForRenderer(rendererSelection)
+    sidebarVisibleCheckbox.state = SidebarVisibilitySettings.visible ? .on : .off
     hoverPreviewCheckbox.state = HoverPreviewSettings.enabled ? .on : .off
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
@@ -1475,6 +1488,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let row = sender.indexOfSelectedItem
     guard row >= 0, row < vectorSmoothScrollOptions.count else { return }
     VectorSmoothScrollSettings.setCurrent(vectorSmoothScrollOptions[row])
+    refresh()
+  }
+
+  @objc private func sidebarVisibleChanged(_ sender: NSButton) {
+    let visible = sender.state == .on
+    guard SidebarVisibilitySettings.setVisible(visible) else {
+      // Env override owns the value; snap the control back rather than showing
+      // a state the app will not honour.
+      sender.state = SidebarVisibilitySettings.visible ? .on : .off
+      return
+    }
     refresh()
   }
 

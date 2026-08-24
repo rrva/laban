@@ -221,7 +221,8 @@ final class MainWindowController: NSWindowController {
     let cellW = Int(cellSize.width)
     let cellH = Int(cellSize.height)
 
-    let sidebarWidth = SidebarLayout.defaultWidth
+    let sidebarWidth = SidebarVisibilitySettings.effectiveWidth(
+      SidebarLayout.defaultWidth, visible: SidebarVisibilitySettings.visible)
     let insets = TerminalBitmapView.contentInsets
     let viewW: CGFloat = 1200
     // Bumped by `titlebarReservedHeight` so the terminal grid keeps roughly
@@ -593,7 +594,13 @@ final class MainWindowController: NSWindowController {
     let backgroundEffectHost = TerminalBackgroundEffectHost(frame: .zero)
     backgroundEffectHost.install(
       in: containerView,
-      terminalLeadingInset: SidebarLayout.defaultWidth)
+      terminalLeadingInset: SidebarVisibilitySettings.effectiveWidth(
+        SidebarLayout.defaultWidth, visible: SidebarVisibilitySettings.visible))
+    // Keep the background/blur plane pinned to the sidebar's trailing edge as
+    // the sidebar is switched on and off, so its strip is never left uncovered.
+    termView.onSidebarWidthChanged = { [weak backgroundEffectHost] width in
+      backgroundEffectHost?.setTerminalLeadingInset(width)
+    }
     termView.autoresizingMask = [.width, .height]
     containerView.addSubview(termView)
 

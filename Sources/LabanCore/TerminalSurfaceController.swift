@@ -1394,6 +1394,10 @@ public final class TerminalSurfaceController {
     now: Date = Date(),
     reduceMotion: Bool = false
   ) -> [FrameCommand] {
+    // Switched off (`SidebarVisibilitySettings`): no width, no chrome. One guard
+    // here covers every emission path, including the memo below, so a hidden
+    // sidebar costs nothing per frame rather than building a zero-width panel.
+    guard sidebarWidth > 0 else { return [] }
     let tabs = model.tabs
     let producer = SidebarProducer(
       sidebarWidth: sidebarWidth,

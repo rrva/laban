@@ -177,7 +177,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var pendingColdLaunchAtlas: ColdLaunchPrewarmedAtlases? = nil
   private(set) var cellWidth: Int
   private(set) var cellHeight: Int
-  private let sidebarWidth: CGFloat = SidebarLayout.defaultWidth
+  /// The sidebar's current width, or zero while the sidebar is switched off
+  /// (`SidebarVisibilitySettings`). Cached rather than read per use: every
+  /// geometry, hit-test and mouse-routing site consults it, several of them per
+  /// frame, and a `UserDefaults` read is not free. Kept in step by
+  /// `sidebarVisibilityObserver`.
+  ///
+  /// Zero is the whole mechanism. `pt.x < sidebarWidth` stops matching, so no
+  /// click, hover, drag or scroll can land in the sidebar; `termW = w -
+  /// sidebarWidth …` hands the space to the terminal grid, which reflows to more
+  /// columns. No second "is the sidebar on" flag threads through those sites.
+  private var sidebarWidth: CGFloat = SidebarVisibilitySettings.effectiveWidth(
+    SidebarLayout.defaultWidth, visible: SidebarVisibilitySettings.visible)
   private let surfaceController: TerminalSurfaceController
   private let sessionCoordinator: AppSessionCoordinator?
   // Vsync-aligned tick.
@@ -361,6 +372,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var vectorSmoothScrollObserver: NSObjectProtocol?
   private var spinnerMotionSmoothingSettingsObserver: NSObjectProtocol?
   private var hoverPreviewSettingsObserver: NSObjectProtocol?
+  private var sidebarVisibilityObserver: NSObjectProtocol?
   private var screenParametersObserver: NSObjectProtocol?
   private var fontChangeObserver: NSObjectProtocol?
   /// Persisted font name as of the last time this view reconciled with
@@ -657,6 +669,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Consecutive frames whose backend `render(...)` returned false, reset by any
   /// frame that renders. Drives `renderFailureRetryDelay`.
   private var consecutiveBackendRenderFailures = 0
+
+  /// Called with the sidebar's new width whenever it changes, so the window can
+  /// re-inset chrome that is pinned beside the sidebar — the background/blur
+  /// plane starts at the sidebar's trailing edge and would otherwise leave a
+  /// 200pt gap once the sidebar is switched off.
+  var onSidebarWidthChanged: ((CGFloat) -> Void)?
 
   /// Hook for the overlay scroll indicator (sibling view in the window
   /// containerView). Called every frame from `advanceFrame` with the active
@@ -1050,6 +1068,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       if self.window != nil {
         self.scheduleRenderRetry()
       }
+    }
+
+    // Turning the sidebar off changes the terminal's width, so this is a
+    // geometry change, not just a repaint: reapply the layout so libghostty is
+    // resized (and the child SIGWINCH'd) to the new column count in the same
+    // turn the setting flips.
+    sidebarVisibilityObserver = NotificationCenter.default.addObserver(
+      forName: SidebarVisibilitySettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.applySidebarVisibility()
     }
 
     // A display-mode change (Default <-> More Space) or moving the window to a
@@ -5235,6 +5263,35 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func setHoveredSidebarTab(_ id: Tab.ID?) {
     guard hoveredSidebarTabId != id else { return }
     hoveredSidebarTabId = id
+    invalidateRenderAndWake()
+  }
+
+  /// Reconcile the cached sidebar width with the setting and reflow.
+  ///
+  /// Width is what every sidebar surface keys off, so updating it is the whole
+  /// toggle; the rest is making the change take effect now instead of at the
+  /// next resize. `applySurfaceGeometry()` recomputes the terminal grid from the
+  /// new width and resizes the session, which is what makes the shell see the
+  /// wider (or narrower) window.
+  private func applySidebarVisibility() {
+    let width = SidebarVisibilitySettings.effectiveWidth(
+      SidebarLayout.defaultWidth, visible: SidebarVisibilitySettings.visible)
+    guard width != sidebarWidth else { return }
+    sidebarWidth = width
+    surfaceController.sidebarWidth = width
+    // A hidden sidebar cannot own hover, drag or scroll state; leaving any of
+    // it set would keep a stale highlight or an in-flight reorder alive across
+    // the toggle.
+    hoveredSidebarTabId = nil
+    peekedSidebarTabId = nil
+    sidebarDragState = nil
+    resetSidebarScrollState()
+    onSidebarWidthChanged?(width)
+    // Re-run the layout at the same size: `setFrameSize` recomputes the terminal
+    // grid from `sidebarWidth` and resizes the model and sessions, which is what
+    // SIGWINCHes the shell to the new column count.
+    setFrameSize(frame.size)
+    surfaceController.invalidateSessionSyncCache()
     invalidateRenderAndWake()
   }
 

@@ -190,6 +190,15 @@ final class TerminalBackgroundEffectHost: NSView {
     NSLayoutConstraint.activate(placementConstraints)
   }
 
+  /// Move the host's leading edge, so hiding the sidebar hands its strip to the
+  /// background/blur plane instead of leaving it uncovered.
+  func setTerminalLeadingInset(_ inset: CGFloat) {
+    guard let leading = placementConstraints.first(where: { $0.firstAttribute == .leading })
+    else { return }
+    guard leading.constant != inset else { return }
+    leading.constant = inset
+  }
+
   func apply(
     _ style: TerminalBackdropStyle,
     imageAsset: TerminalResolvedBackgroundImage? = nil,
