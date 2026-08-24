@@ -587,6 +587,35 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   /// While scrolling this is bounded by `maxMaskBakeDispatchesPerFrame`; at rest
   /// it is unbounded (static first paint is immediate).
   public private(set) var lastMaskBakeDispatchCount = 0
+  /// GPU execution time of the most recently completed frame
+  /// (`gpuEndTime - gpuStartTime`), and the wall-clock from `commit()` to its
+  /// completion handler running. Together they separate a command buffer that
+  /// genuinely executes for a long time from one that merely sits queued or
+  /// whose completion is reported late — the difference between a GPU/driver
+  /// problem and a scheduling one when a tab-switch frame's completion stalls
+  /// and, with it, the publish that puts the frame on screen.
+  private let frameTimingLock = NSLock()
+  private var lastFrameGPUmsStorage: Double = 0
+  private var lastFrameCommitToCompletionMsStorage: Double = 0
+  public var lastFrameGPUms: Double {
+    frameTimingLock.lock()
+    defer { frameTimingLock.unlock() }
+    return lastFrameGPUmsStorage
+  }
+  public var lastFrameCommitToCompletionMs: Double {
+    frameTimingLock.lock()
+    defer { frameTimingLock.unlock() }
+    return lastFrameCommitToCompletionMsStorage
+  }
+
+  private func noteFrameCompleted(_ buffer: MTLCommandBuffer, committedAt: UInt64) {
+    let wallMs = Double(DispatchTime.now().uptimeNanoseconds &- committedAt) / 1_000_000.0
+    let gpuMs = max(0, (buffer.gpuEndTime - buffer.gpuStartTime) * 1000.0)
+    frameTimingLock.lock()
+    lastFrameGPUmsStorage = gpuMs
+    lastFrameCommitToCompletionMsStorage = wallMs
+    frameTimingLock.unlock()
+  }
   private var maskBakeDispatchesThisFrame = 0
   /// Reusable per-draw instance buffers, recycled across frames. The vector path
   /// used to `device.makeBuffer(bytes:)` a fresh buffer for every glyph/solid/
@@ -1151,8 +1180,10 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
     if #available(macOS 14.0, *), presentDisplayLink != nil {
       let completion = onFrameCompleted
       let buffersToRetain = retainedInstanceBuffers
-      commandBuffer.addCompletedHandler { [weak self] _ in
+      let committedAt = DispatchTime.now().uptimeNanoseconds
+      commandBuffer.addCompletedHandler { [weak self] buffer in
         _ = buffersToRetain
+        self?.noteFrameCompleted(buffer, committedAt: committedAt)
         // Publish only after the GPU finished writing this target, so the present
         // thread never blits a half-rendered texture. The present link reads it on
         // its next vsync callback; its run state is driven by the host policy via

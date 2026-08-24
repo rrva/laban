@@ -78,6 +78,14 @@ final class RenderJournal {
     /// into one buffer. Pair with `gpuFrameCompletions`: a large count on a
     /// frame whose completion then stalls is that burst. Vector backend only.
     var maskBakes: Int?
+    /// The previously completed vector frame's GPU execution time, and the
+    /// wall-clock from its `commit()` to its completion handler. A tab-switch
+    /// frame whose completion stalls blocks the publish that puts it on screen;
+    /// these say whether the GPU was executing that whole time (`gpuMs` large)
+    /// or the buffer merely sat queued / was reported late (`gpuMs` small,
+    /// `commitToCompletionMs` large). Vector backend only.
+    var lastFrameGPUms: Double?
+    var lastFrameCommitToCompletionMs: Double?
     var freeze: FreezeSnapshot?
     var rendered: Bool?
   }
@@ -403,6 +411,8 @@ final class RenderJournal {
     renderFailureReason: RenderFailureReason? = nil,
     gpuFrameCompletions: Int? = nil,
     maskBakes: Int? = nil,
+    lastFrameGPUms: Double? = nil,
+    lastFrameCommitToCompletionMs: Double? = nil,
     freeze: FreezeSnapshot? = nil,
     rendered: Bool? = nil
   ) -> Entry {
@@ -450,6 +460,8 @@ final class RenderJournal {
       renderFailureReason: renderFailureReason,
       gpuFrameCompletions: gpuFrameCompletions,
       maskBakes: maskBakes,
+      lastFrameGPUms: lastFrameGPUms,
+      lastFrameCommitToCompletionMs: lastFrameCommitToCompletionMs,
       freeze: freeze,
       rendered: rendered)
   }

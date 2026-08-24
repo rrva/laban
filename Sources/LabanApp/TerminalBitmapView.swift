@@ -4647,6 +4647,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let gpuCellPayloadFailure =
       includesMetalFailureDetails ? metalRenderer?.lastGPUCellPayloadBuildFailure : nil
     let slugRenderer = backend as? SlugGlyphRenderer
+    let vectorGlyphRenderer = backend as? VectorGlyphRenderer
     // Through `RenderFailureReporting`, not a chain of concrete casts. This was
     // the third copy of that chain, and the one that mattered most: a backend
     // missing from it reports no reason, so the journal recorded *that* a frame
@@ -4702,7 +4703,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
       gpuFrameCompletions: gpuFrameCompletionCount,
-      maskBakes: (backend as? VectorGlyphRenderer)?.lastMaskBakeDispatchCount,
+      maskBakes: vectorGlyphRenderer?.lastMaskBakeDispatchCount,
+      lastFrameGPUms: vectorGlyphRenderer?.lastFrameGPUms,
+      lastFrameCommitToCompletionMs: vectorGlyphRenderer?.lastFrameCommitToCompletionMs,
       freeze: freeze,
       rendered: rendered)
     renderJournal.record(entry)
