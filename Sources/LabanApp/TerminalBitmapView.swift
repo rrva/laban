@@ -4647,10 +4647,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let gpuCellPayloadFailure =
       includesMetalFailureDetails ? metalRenderer?.lastGPUCellPayloadBuildFailure : nil
     let slugRenderer = backend as? SlugGlyphRenderer
+    // Through `RenderFailureReporting`, not a chain of concrete casts. This was
+    // the third copy of that chain, and the one that mattered most: a backend
+    // missing from it reports no reason, so the journal recorded *that* a frame
+    // was refused but never why — leaving a refusal that repeats for seconds
+    // after a tab switch undiagnosable from the artifact.
     let renderFailureReason =
       includesMetalFailureDetails
-      ? (metalRenderer?.lastRenderFailureReason
-        ?? slugRenderer?.lastRenderFailureReason)
+      ? (backend as? RenderFailureReporting)?.lastRenderFailureReason
       : nil
     let commandList = surfaceFrame?.commands ?? commands
     let overlayCommands = surfaceFrame?.overlayCommands ?? []

@@ -57,6 +57,11 @@ final class RenderJournal {
     var metalInstances: MetalInstanceCounts?
     var drawableAcquire: MetalDrawableAcquireDiagnostic?
     var gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure?
+    /// Why the backend refused this frame, when `reason` is
+    /// `backendRenderReturnedFalse`. The field and its plumbing existed from the
+    /// start but `TerminalBitmapView.recordRenderJournal` never passed it, so a
+    /// dump recorded only *that* a frame was refused — leaving a repeating
+    /// refusal, the shape of a slow tab switch, undiagnosable from the artifact.
     var renderFailureReason: RenderFailureReason?
     var freeze: FreezeSnapshot?
     var rendered: Bool?

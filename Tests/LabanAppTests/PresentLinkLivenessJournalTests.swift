@@ -41,6 +41,22 @@ final class PresentLinkLivenessJournalTests: XCTestCase {
     XCTAssertNil(decoded.presentLink)
   }
 
+  /// A refused frame must carry WHY it was refused. The field and its plumbing
+  /// existed, but the value came from a cast chain naming only `MetalRenderer`
+  /// and `SlugGlyphRenderer` — the third copy of that defect — so every vector
+  /// refusal recorded a nil reason. That is the difference between "the GPU is
+  /// busy, wait" and "something is wrong" when a refusal repeats for seconds.
+  func testRefusedFrameCarriesItsFailureReason() throws {
+    let entry = try journal().makeEntry(
+      event: .renderFailed, frame: 9, tabId: "tab", sessionId: "s",
+      reason: "backendRenderReturnedFalse",
+      renderFailureReason: .previousFrameInFlight)
+    let decoded = try JSONDecoder().decode(
+      RenderJournal.Entry.self, from: JSONEncoder().encode(entry))
+    XCTAssertEqual(decoded.renderFailureReason, .previousFrameInFlight)
+    XCTAssertEqual(decoded.reason, "backendRenderReturnedFalse")
+  }
+
   /// The two readings that matter when a frame renders but nothing appears:
   /// a frame is published and waiting (`pendingPresentBudget > 0`) while the
   /// link is parked, and the stall watchdog has had to rebuild a dead link.
