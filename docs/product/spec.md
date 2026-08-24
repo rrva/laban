@@ -138,7 +138,12 @@ The default monospace font stack or bundled font must cover the glyphs common te
 
 Inline image protocols are terminal-core state, not ad hoc UI state. The terminal core owns image IDs, storage limits, and placement metadata; the renderer maps visible placements to cell coordinates. A production renderer caches uploaded image resources by image identity and destroys renderer resources only after in-flight frames no longer reference them.
 
-The optional vector glyph renderer scrolls smoothly at sub-pixel precision: when the viewport sits at a fractional row offset (momentum or precise-trackpad scrolling), glyphs render at their true fractional position rather than snapping to the device-pixel grid, so motion glides instead of stepping row to row. It does this by rasterizing and caching a glyph mask per quantized sub-pixel phase and placing the pixel-aligned quad with that phase baked in, so resting frames stay crisp while in-motion frames stay smooth. The mask cache is bounded (eviction plus a per-frame rasterization budget) so churn during a fast scroll cannot grow GPU memory without limit or stall the frame. This is a quality property of the vector backend only; the classic renderer keeps its existing pixel-snapped scroll.
+The vector glyph renderer is retired (ADR 0033) and no longer selectable; any
+persisted preference for it migrates to Slug Glyph on launch. It rasterized a
+glyph mask per quantized sub-pixel phase to glide fractional-offset scrolling,
+but that mask-baking cost model produced multi-second GPU frames when first
+painting an unfamiliar screen, and Slug's analytic, size-independent outlines
+reach the same sharpness goal without it.
 
 ## 20. Terminal effects and title requirements
 

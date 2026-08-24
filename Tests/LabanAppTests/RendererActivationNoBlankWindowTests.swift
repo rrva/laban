@@ -29,60 +29,65 @@ final class RendererActivationNoBlankWindowTests: XCTestCase {
     super.tearDown()
   }
 
-  func testFirstVectorActivationNeverInstallsBlankLayer() throws {
+  func testFirstGlyphRendererActivationNeverInstallsBlankLayer() throws {
     let harness = BackendHarness()
     let classic = ControlledBackend(selection: .classic)
-    let vector = ControlledBackend(selection: .vectorGlyph)
+    let glyphBackend = ControlledBackend(selection: .slugGlyph)
     harness.enqueue(classic)
-    harness.enqueue(vector)
+    harness.enqueue(glyphBackend)
     TerminalBitmapView.backendFactoryForTesting = harness.makeBackend
     RendererSelection.set(.classic)
 
     let view = try makeView()
     XCTAssertTrue(view.layer === classic.layer)
 
-    view.applyRendererSelection(.vectorGlyph)
+    view.applyRendererSelection(.slugGlyph)
 
-    XCTAssertEqual(view.rendererSelection, .vectorGlyph)
-    XCTAssertEqual(RendererSelection.persisted(), .vectorGlyph)
-    XCTAssertEqual(view.debugPendingRendererSwapSelection, .vectorGlyph)
+    XCTAssertEqual(view.rendererSelection, .slugGlyph)
+    XCTAssertEqual(RendererSelection.persisted(), .slugGlyph)
+    XCTAssertEqual(view.debugPendingRendererSwapSelection, .slugGlyph)
     XCTAssertTrue(view.layer === classic.layer)
-    XCTAssertEqual(vector.renderCount, 1)
-    XCTAssertEqual(vector.renderedDamages, [.full])
+    XCTAssertEqual(glyphBackend.renderCount, 1)
+    XCTAssertEqual(glyphBackend.renderedDamages, [.full])
 
-    vector.completeFrame()
+    glyphBackend.completeFrame()
     drainMainQueue()
 
     XCTAssertNil(view.debugPendingRendererSwapSelection)
-    XCTAssertTrue(view.layer === vector.layer)
+    XCTAssertTrue(view.layer === glyphBackend.layer)
   }
 
   func testRendererSwapAbandonsStalePendingSwapOnRapidReselection() throws {
+    // Needs three DISTINCT renderers: the point is that reselecting mid-swap
+    // abandons the first pending backend, so the first and second targets must
+    // not be the same renderer. (This used software → vector → slug before
+    // vector was retired; classic stands in for the abandoned middle step.)
     let harness = BackendHarness()
-    let classic = ControlledBackend(selection: .classic)
-    let vector = ControlledBackend(selection: .vectorGlyph)
+    let software = ControlledBackend(selection: .software)
+    let abandoned = ControlledBackend(selection: .classic)
     let slug = ControlledBackend(selection: .slugGlyph)
-    harness.enqueue(classic)
-    harness.enqueue(vector)
+    harness.enqueue(software)
+    harness.enqueue(abandoned)
     harness.enqueue(slug)
     TerminalBitmapView.backendFactoryForTesting = harness.makeBackend
-    RendererSelection.set(.classic)
+    RendererSelection.set(.software)
 
     let view = try makeView()
 
-    view.applyRendererSelection(.vectorGlyph)
-    XCTAssertEqual(view.debugPendingRendererSwapSelection, .vectorGlyph)
-    XCTAssertTrue(view.layer === classic.layer)
+    view.applyRendererSelection(.classic)
+    XCTAssertEqual(view.debugPendingRendererSwapSelection, .classic)
+    XCTAssertTrue(view.layer === software.layer)
 
     view.applyRendererSelection(.slugGlyph)
     XCTAssertEqual(view.rendererSelection, .slugGlyph)
     XCTAssertEqual(view.debugPendingRendererSwapSelection, .slugGlyph)
-    XCTAssertTrue(view.layer === classic.layer)
+    XCTAssertTrue(view.layer === software.layer)
 
-    vector.completeFrame()
+    // The abandoned backend finishing must not install itself.
+    abandoned.completeFrame()
     drainMainQueue()
     XCTAssertEqual(view.debugPendingRendererSwapSelection, .slugGlyph)
-    XCTAssertTrue(view.layer === classic.layer)
+    XCTAssertTrue(view.layer === software.layer)
 
     slug.completeFrame()
     drainMainQueue()
@@ -94,42 +99,42 @@ final class RendererActivationNoBlankWindowTests: XCTestCase {
   func testRendererSwapFallsBackImmediatelyWhenFirstRenderFails() throws {
     let harness = BackendHarness()
     let classic = ControlledBackend(selection: .classic)
-    let vector = ControlledBackend(selection: .vectorGlyph, renderResult: false)
+    let glyphBackend = ControlledBackend(selection: .slugGlyph, renderResult: false)
     harness.enqueue(classic)
-    harness.enqueue(vector)
+    harness.enqueue(glyphBackend)
     TerminalBitmapView.backendFactoryForTesting = harness.makeBackend
     RendererSelection.set(.classic)
 
     let view = try makeView()
 
-    view.applyRendererSelection(.vectorGlyph)
+    view.applyRendererSelection(.slugGlyph)
 
     XCTAssertNil(view.debugPendingRendererSwapSelection)
-    XCTAssertTrue(view.layer === vector.layer)
-    XCTAssertEqual(view.rendererSelection, .vectorGlyph)
-    XCTAssertEqual(vector.renderCount, 1)
-    XCTAssertEqual(vector.renderedDamages, [.full])
+    XCTAssertTrue(view.layer === glyphBackend.layer)
+    XCTAssertEqual(view.rendererSelection, .slugGlyph)
+    XCTAssertEqual(glyphBackend.renderCount, 1)
+    XCTAssertEqual(glyphBackend.renderedDamages, [.full])
   }
 
   func testScreenChangeRebuildsVisibleAndPendingRendererLinks() throws {
     let harness = BackendHarness()
     let classic = ControlledBackend(selection: .classic)
-    let vector = ControlledBackend(selection: .vectorGlyph)
+    let glyphBackend = ControlledBackend(selection: .slugGlyph)
     harness.enqueue(classic)
-    harness.enqueue(vector)
+    harness.enqueue(glyphBackend)
     TerminalBitmapView.backendFactoryForTesting = harness.makeBackend
     RendererSelection.set(.classic)
     let view = try makeView()
 
-    view.applyRendererSelection(.vectorGlyph)
-    XCTAssertEqual(view.debugPendingRendererSwapSelection, .vectorGlyph)
+    view.applyRendererSelection(.slugGlyph)
+    XCTAssertEqual(view.debugPendingRendererSwapSelection, .slugGlyph)
 
     NotificationCenter.default.post(
       name: NSApplication.didChangeScreenParametersNotification, object: nil)
 
     XCTAssertEqual(classic.presentLinkRebuildCount, 1)
     XCTAssertEqual(
-      vector.presentLinkRebuildCount, 1,
+      glyphBackend.presentLinkRebuildCount, 1,
       "a renderer warming behind the visible backend must not retain a stale display link")
   }
 

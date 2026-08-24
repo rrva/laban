@@ -7,12 +7,12 @@ import XCTest
 
 @testable import LabanApp
 
-/// A cold launch with `.vectorGlyph` (or `.slugGlyph`) persisted must show a
+/// A cold launch with `.slugGlyph` persisted must show a
 /// fast temporary backend immediately (no blank/white window) while the real
-/// vector/slug glyph atlas prewarms in the background, then seamlessly become
+/// glyphBackend/slug glyph atlas prewarms in the background, then seamlessly become
 /// the real renderer. These tests drive that flow deterministically via
 /// `debugPerformColdLaunchSwapSynchronously`. See
-/// execplans/active/vector-glyph-cold-launch-stall.md.
+/// execplans/active/glyphBackend-glyph-cold-launch-stall.md.
 final class ColdLaunchFastBackendTests: XCTestCase {
   private var oldRendererEnv: String?
 
@@ -36,47 +36,47 @@ final class ColdLaunchFastBackendTests: XCTestCase {
     super.tearDown()
   }
 
-  /// With `.vectorGlyph` persisted, the view immediately shows the fast
+  /// With `.slugGlyph` persisted, the view immediately shows the fast
   /// temporary backend (classic Metal) while still reporting the user's real
-  /// persisted choice (`rendererSelection == .vectorGlyph`).
-  func testColdLaunchWithVectorGlyphPersistedShowsFastBackendImmediately() throws {
+  /// persisted choice (`rendererSelection == .slugGlyph`).
+  func testColdLaunchWithSlugGlyphPersistedShowsFastBackendImmediately() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
-    RendererSelection.set(.vectorGlyph)
+    RendererSelection.set(.slugGlyph)
 
     let view = try makeView()
 
-    XCTAssertEqual(view.rendererSelection, .vectorGlyph)
-    XCTAssertEqual(RendererSelection.persisted(), .vectorGlyph)
+    XCTAssertEqual(view.rendererSelection, .slugGlyph)
+    XCTAssertEqual(RendererSelection.persisted(), .slugGlyph)
     XCTAssertTrue(
       view.usesMetalBackend,
-      "cold launch must show the fast Metal backend first, not the real vector renderer")
+      "cold launch must show the fast Metal backend first, not the real glyphBackend renderer")
     XCTAssertFalse(
-      view.debugBackendEffectiveRenderer == .vectorGlyph,
-      "the real vector backend must not be active yet while the prewarm runs")
+      view.debugBackendEffectiveRenderer == .slugGlyph,
+      "the real glyphBackend backend must not be active yet while the prewarm runs")
   }
 
   /// After the cold-launch prewarm completes (driven synchronously here), the
-  /// view swaps to the real vector renderer.
-  func testColdLaunchWithVectorGlyphPersistedEventuallyBecomesVectorGlyph() throws {
+  /// view swaps to the real glyphBackend renderer.
+  func testColdLaunchWithSlugGlyphPersistedEventuallyBecomesSlugGlyph() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
-    RendererSelection.set(.vectorGlyph)
+    RendererSelection.set(.slugGlyph)
 
     let view = try makeView()
-    XCTAssertEqual(view.rendererSelection, .vectorGlyph)
+    XCTAssertEqual(view.rendererSelection, .slugGlyph)
 
     let didSwap = view.debugPerformColdLaunchSwapSynchronously(scale: 1)
     XCTAssertTrue(didSwap, "a cold-launch swap must have been pending")
 
     XCTAssertEqual(
-      try XCTUnwrap(view.debugBackendEffectiveRenderer), .vectorGlyph)
-    XCTAssertEqual(view.rendererSelection, .vectorGlyph)
+      try XCTUnwrap(view.debugBackendEffectiveRenderer), .slugGlyph)
+    XCTAssertEqual(view.rendererSelection, .slugGlyph)
     XCTAssertFalse(
       view.usesMetalBackend,
-      "the vector renderer is not a MetalRenderer")
+      "the glyphBackend renderer is not a MetalRenderer")
   }
 
   /// The same cold-launch fast-then-real flow must work for `.slugGlyph`.
@@ -125,7 +125,7 @@ final class ColdLaunchFastBackendTests: XCTestCase {
     XCTAssertEqual(view.backgroundCompositingOptionsForTesting.opacity, 179)
   }
 
-  /// A non-vector/slug persisted selection must take the unchanged path: no
+  /// A non-glyphBackend/slug persisted selection must take the unchanged path: no
   /// cold-launch deferral, the real backend is constructed directly, and no
   /// cold-launch swap is pending.
   func testColdLaunchWithClassicPersistedDoesNotDefer() throws {

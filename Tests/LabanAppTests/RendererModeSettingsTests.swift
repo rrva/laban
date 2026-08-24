@@ -51,7 +51,6 @@ final class RendererModeSettingsTests: XCTestCase {
         L10n.trEn("Classic Metal Renderer"),
         RendererMode.gpuDriven.isAvailableOnCurrentOS
           ? L10n.trEn("GPU-driven Renderer") : L10n.trEn("GPU-driven Renderer (requires macOS 26)"),
-        L10n.trEn("Vector Glyph Renderer"),
         L10n.trEn("Slug Glyph Renderer"),
       ])
     // Fresh defaults: the menu checks whatever `defaultSelection` resolves to,
@@ -59,8 +58,7 @@ final class RendererModeSettingsTests: XCTestCase {
     XCTAssertEqual(submenu.items[0].state, .off)
     XCTAssertEqual(submenu.items[1].state, .off)
     XCTAssertEqual(submenu.items[2].state, .off)
-    XCTAssertEqual(submenu.items[3].state, .off)
-    XCTAssertEqual(submenu.items[4].state, .on)
+    XCTAssertEqual(submenu.items[3].state, .on)
 
     controller.selectSoftware(nil)
 
@@ -69,7 +67,6 @@ final class RendererModeSettingsTests: XCTestCase {
     XCTAssertEqual(submenu.items[0].state, .on)
     XCTAssertEqual(submenu.items[1].state, .off)
     XCTAssertEqual(submenu.items[3].state, .off)
-    XCTAssertEqual(submenu.items[4].state, .off)
 
     let gpuItem = submenu.items[2]
     if #available(macOS 26, *) {
@@ -84,7 +81,6 @@ final class RendererModeSettingsTests: XCTestCase {
       XCTAssertEqual(submenu.items[1].state, .off)
       XCTAssertEqual(gpuItem.state, .on)
       XCTAssertEqual(submenu.items[3].state, .off)
-      XCTAssertEqual(submenu.items[4].state, .off)
 
       controller.selectClassic(nil)
 
@@ -94,22 +90,16 @@ final class RendererModeSettingsTests: XCTestCase {
       XCTAssertEqual(submenu.items[1].state, .on)
       XCTAssertEqual(gpuItem.state, .off)
       XCTAssertEqual(submenu.items[3].state, .off)
-      XCTAssertEqual(submenu.items[4].state, .off)
     } else {
       XCTAssertEqual(gpuItem.title, "GPU-driven Renderer (requires macOS 26)")
       XCTAssertFalse(gpuItem.isEnabled)
       XCTAssertEqual(gpuItem.state, .off)
     }
 
-    controller.selectVectorGlyph(nil)
-
-    XCTAssertEqual(RendererSelection.persisted(defaults: defaults), .vectorGlyph)
-    XCTAssertEqual(applied.last, .vectorGlyph)
-    XCTAssertEqual(submenu.items[0].state, .off)
-    XCTAssertEqual(submenu.items[1].state, .off)
-    XCTAssertEqual(submenu.items[2].state, .off)
-    XCTAssertEqual(submenu.items[3].state, .on)
-    XCTAssertEqual(submenu.items[4].state, .off)
+    // The Vector Glyph item is gone: the renderer is retired (ADR 0033) and the
+    // menu now carries software / classic / gpu-driven / slug only.
+    XCTAssertEqual(submenu.items.count, 4)
+    XCTAssertFalse(submenu.items.contains { $0.title.contains("Vector") })
 
     controller.selectSlugGlyph(nil)
 
@@ -118,8 +108,7 @@ final class RendererModeSettingsTests: XCTestCase {
     XCTAssertEqual(submenu.items[0].state, .off)
     XCTAssertEqual(submenu.items[1].state, .off)
     XCTAssertEqual(submenu.items[2].state, .off)
-    XCTAssertEqual(submenu.items[3].state, .off)
-    XCTAssertEqual(submenu.items[4].state, .on)
+    XCTAssertEqual(submenu.items[3].state, .on)
   }
 
   func testRendererSelectionSoftwarePersistsAndUsesSoftwareBackend() throws {
@@ -223,7 +212,11 @@ final class RendererModeSettingsTests: XCTestCase {
     XCTAssertTrue(model.session(forTab: activeTab.id) === activeSession)
   }
 
-  func testVectorGlyphSwitchPreservesActiveSessionIdentity() throws {
+  /// A live renderer switch must not disturb session identity. This used to
+  /// exercise `vectorGlyph`, which is retired (ADR 0033); Slug is the switch
+  /// target users can actually reach now. `RetiredRendererMigrationTests` covers
+  /// what happens when the retired value is requested.
+  func testGlyphRendererSwitchPreservesActiveSessionIdentity() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
@@ -245,10 +238,10 @@ final class RendererModeSettingsTests: XCTestCase {
     let activeTab = try XCTUnwrap(model.activeTab)
     let activeSession = try XCTUnwrap(model.session(forTab: activeTab.id))
 
-    view.applyRendererSelection(.vectorGlyph)
+    view.applyRendererSelection(.slugGlyph)
 
-    XCTAssertEqual(view.rendererSelection, .vectorGlyph)
-    XCTAssertEqual(RendererSelection.persisted(), .vectorGlyph)
+    XCTAssertEqual(view.rendererSelection, .slugGlyph)
+    XCTAssertEqual(RendererSelection.persisted(), .slugGlyph)
     XCTAssertEqual(model.activeTab?.id, activeTab.id)
     XCTAssertTrue(model.session(forTab: activeTab.id) === activeSession)
   }

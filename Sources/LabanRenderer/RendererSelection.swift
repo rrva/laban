@@ -47,6 +47,30 @@ public enum RendererSelection: String, Codable, CaseIterable, Sendable {
       : RendererSelection(metalMode: RendererMode.defaultMode)
   }
 
+  /// Renderers a user can still choose. `vectorGlyph` is retired (ADR 0033) and
+  /// is absent here, so no picker or menu can offer it; the case itself remains
+  /// so an existing persisted value still decodes and can be migrated forward,
+  /// and so the fidelity/parity harnesses can keep instantiating the backend
+  /// directly for comparison.
+  public static var selectableCases: [RendererSelection] {
+    allCases.filter { $0 != .vectorGlyph }
+  }
+
+  /// Map a retired selection onto its replacement.
+  ///
+  /// `vectorGlyph` bakes a glyph mask per glyph and, at rest, gives every
+  /// first-seen glyph the full 512-sample accumulation with no per-frame budget
+  /// — the scrolling path caps this, the at-rest path never did. First-painting
+  /// an unfamiliar screen (switching to a tab) could therefore encode seconds of
+  /// GPU compute into one command buffer; measured at 9.7 s on 2026-08-24. Until
+  /// that buffer completes it holds the one-frame-in-flight slot and, because
+  /// the publish happens in its completion handler, the window keeps showing the
+  /// previous tab. Slug has no mask atlas and no accumulation, so the cost model
+  /// does not exist there. See ADR 0033.
+  public static func migratingRetired(_ selection: RendererSelection) -> RendererSelection {
+    selection == .vectorGlyph ? .slugGlyph : selection
+  }
+
   public static func persisted(defaults: UserDefaults = .standard) -> RendererSelection {
     guard let raw = defaults.string(forKey: defaultsKey),
       let selection = RendererSelection(rawValue: raw),
@@ -54,11 +78,12 @@ public enum RendererSelection: String, Codable, CaseIterable, Sendable {
     else {
       return defaultSelection
     }
-    return selection
+    return migratingRetired(selection)
   }
 
   public static func set(_ selection: RendererSelection, defaults: UserDefaults = .standard) {
-    let resolved = selection.isAvailableOnCurrentOS ? selection : .classic
+    let migrated = migratingRetired(selection)
+    let resolved = migrated.isAvailableOnCurrentOS ? migrated : .classic
     defaults.set(resolved.rawValue, forKey: defaultsKey)
   }
 

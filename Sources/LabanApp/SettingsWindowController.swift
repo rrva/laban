@@ -155,7 +155,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private var singleThemeGridRow: NSGridRow?
   private var darkThemeGridRow: NSGridRow?
   private var lightThemeGridRow: NSGridRow?
-  private let rendererOptions: [RendererSelection] = RendererSelection.allCases
+  private let rendererOptions: [RendererSelection] = RendererSelection.selectableCases
   private let backendOptions: [TerminalSessionBackend] = [.inProcess, .labpty, .laband]
   private let identityOptions: [TerminalIdentity] = [.laban, .ghosttyCompat]
   private let cursorStyleOptions: [CursorSettings.Style] = CursorSettings.Style.allCases
