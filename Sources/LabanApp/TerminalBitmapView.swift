@@ -4666,6 +4666,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       surface: renderJournalSurfaceSnapshot(),
       window: renderJournalWindowSnapshot(),
       displayLink: renderJournalDisplayLinkSnapshot(),
+      presentLink: (backend as? DisplayLinkPresentingRenderer)?.presentLinkLiveness(),
       frameState: RenderJournal.FrameStateSnapshot(
         terminalDirty: terminalDirty,
         activeTerminalDirty: activeTerminalDirty,
@@ -5447,6 +5448,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func selectTabPreservingSelection(_ tabId: Tab.ID) {
     syncSelectionStateToActiveTab()
     guard model.activeTab?.id != tabId else { return }
+    // Stamp the activation so the next frame's GPU completion handler closes an
+    // input-to-photon sample for it. Only `keyDown` armed this before, so a tab
+    // switch — the one interaction users describe as slow — produced no latency
+    // number anywhere in the app. Every activation route funnels through here
+    // (sidebar click, keyboard, menu, external navigation), so one stamp covers
+    // them all; a keystroke that lands in the same turn simply re-stamps to the
+    // later, more accurate moment.
+    pendingInputAt = ContinuousClock.now
     // Abandon any in-flight IME composition before leaving this tab. One
     // view hosts every tab, so AppKit never auto-discards marked text on a
     // tab switch; a leaked composition would force later keystrokes down

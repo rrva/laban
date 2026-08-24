@@ -494,6 +494,13 @@ public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRe
   /// `VectorPresentDisplayLink.rebuild()`. If the link was never created
   /// (an earlier `device.makeCommandQueue()` failure), try to create it now
   /// instead of silently doing nothing. No-op on the legacy path.
+  public func presentLinkLiveness() -> PresentLinkLiveness? {
+    if #available(macOS 14.0, *) {
+      return presentDisplayLink?.liveness()
+    }
+    return nil
+  }
+
   public func rebuildPresentLink() {
     if #available(macOS 14.0, *) {
       guard let link = presentDisplayLink else {

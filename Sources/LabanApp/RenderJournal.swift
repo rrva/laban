@@ -34,6 +34,13 @@ final class RenderJournal {
     var surface: SurfaceSnapshot?
     var window: WindowSnapshot?
     var displayLink: DisplayLinkSnapshot?
+    /// The renderer-owned present link's liveness, when the backend has one.
+    /// `displayLink` above describes only the MAIN link — the one that decides
+    /// when to *produce* a frame. A frame recorded as `rendered` is not
+    /// necessarily on screen: the main link parks by design after a one-shot
+    /// content change such as a tab switch, and whether the pixels landed
+    /// depends on this second link. Optional so old dumps still decode.
+    var presentLink: PresentLinkLiveness?
     var frameState: FrameStateSnapshot?
     var viewport: ViewportSnapshot?
     var scroll: ScrollSnapshot?
@@ -359,6 +366,7 @@ final class RenderJournal {
     surface: SurfaceSnapshot? = nil,
     window: WindowSnapshot? = nil,
     displayLink: DisplayLinkSnapshot? = nil,
+    presentLink: PresentLinkLiveness? = nil,
     frameState: FrameStateSnapshot? = nil,
     viewport: ViewportSnapshot? = nil,
     scroll: ScrollSnapshot? = nil,
@@ -402,6 +410,7 @@ final class RenderJournal {
       surface: surface,
       window: window,
       displayLink: displayLink,
+      presentLink: presentLink,
       frameState: frameState,
       viewport: viewport,
       scroll: scroll,

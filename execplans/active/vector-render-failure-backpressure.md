@@ -272,3 +272,64 @@ implying the narrower meaning.
 This ordering matters: widening the gate before the failure reasons existed
 would have achieved nothing, because `isNoProgressFailure(nil)` is `false`, so a
 vector failure would have reset the streak on every sample.
+
+## Follow-up: the journal could not see presentation
+
+Three fixes later the reported symptom — slow tab switching — was still present,
+and the evidence said the render path was innocent:
+
+- Zero main-thread stalls in 37 minutes of use (`~/laban-watchdog/`), against 12
+  in a 20-minute window before the fixes.
+- Zero `Hangs` and zero `hang-risks` rows in an Instruments trace of the live
+  process, with the time profiler putting Laban at 0.37% CPU.
+- Every tab-switch frame in two journal dumps rendered *immediately*, on the
+  `modelMutation` wake, in the same second as the switch.
+- GPU work trivial: `present-blit` p50 0.095 ms, drawable waits max 0.64 ms,
+  encoding p95 2.96 ms.
+
+Two blind spots explain why none of that could confirm or deny the complaint:
+
+1. **The journal never described the present link.** Its `displayLink` block is
+   the host's main `CADisplayLink` — the link that decides when to *produce* a
+   frame. Laban's GPU backends present through a second, renderer-owned
+   `CAMetalDisplayLink` (`VectorPresentDisplayLink`), and a frame recorded as
+   `rendered` is not necessarily on screen: the main link parks by design after
+   a one-shot content change such as a tab switch, so whether the pixels landed
+   depends entirely on the second link. `PresentLinkLiveness` now records its
+   paused state, host intent, pending-present budget, callback and present
+   counts, rebuilds, and stall repairs on every journal entry. Read across
+   entries, `pendingPresentBudget > 0` with `callbacks` not advancing is a
+   published frame waiting on a link that is not firing, and `stallRepairs > 0`
+   means the watchdog already had to rebuild a link that stalled unpaused.
+2. **Tab activation was never timed.** `pendingInputAt`, which feeds the
+   input-to-photon samples, was armed only in `keyDown` — so the one interaction
+   users call slow produced no latency number anywhere. It is now armed in
+   `selectTabPreservingSelection`, which every activation route funnels through.
+
+Deliberately cheap: `presentLinkLiveness()` avoids `presentIntervalStats`, which
+sorts a ring of up to 4096 samples and is far too expensive per journaled frame.
+
+### Ruled out along the way
+
+- **Glyph-mask eviction.** The leading theory from the original triage (masks
+  aging out at `maskEvictionTTLFrames = 240` and re-baking at
+  `maxMaskBakeDispatchesPerFrame = 24`) does not survive reading or measurement:
+  the dispatch cap only applies while `scrollPhaseOffset != .zero`, so a tab
+  switch at rest is not throttled at all. A probe rendering a cold screen after
+  a warm one measured ~20 ms per frame and the same bake count whether cold,
+  warm, or after more than 240 frames of other content.
+- **Synchronized-output holds.** `synchronizedOutputMaxHoldSeconds` is 1.0, so a
+  TUI mid-update could plausibly stall a frame for a second, but both dumps
+  contain only two `synchronizedOutputDefer` entries and neither is near a tab
+  switch.
+
+### Still open
+
+The user reports that switching the renderer away and back to `slugGlyph`
+resolves the phenomenon. That points at `vectorGlyph` specifically — the backend
+this install runs only because it predates `5dcfc118`, which made Slug the
+default for new installs. A probe of a *static* vector screen measured ~20 ms per
+frame with a non-zero new-mask bake count on every frame, which would mean masks
+are not being reused across frames; that measurement is from a synthetic harness
+and is not yet confirmed against the real app, so it is recorded as a lead, not
+a finding.

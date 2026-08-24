@@ -934,6 +934,13 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
   /// Rebuild the present link after a display reconfiguration; see
   /// `VectorPresentDisplayLink.rebuild()`. No-op on the legacy path.
+  public func presentLinkLiveness() -> PresentLinkLiveness? {
+    if #available(macOS 14.0, *) {
+      return presentDisplayLink?.liveness()
+    }
+    return nil
+  }
+
   public func rebuildPresentLink() {
     if #available(macOS 14.0, *) {
       presentDisplayLink?.rebuild()

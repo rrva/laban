@@ -117,6 +117,17 @@ public protocol DisplayLinkPresentingRenderer: AnyObject {
   /// eventually aborts its run loop on the dead vsync port; the host view
   /// calls this from its screen-change observers. No-op on the legacy path.
   func rebuildPresentLink()
+
+  /// Cheap liveness snapshot of the renderer-owned present link for the render
+  /// journal. Nil on the legacy path, where the frame render presents directly
+  /// and there is no second link to describe.
+  func presentLinkLiveness() -> PresentLinkLiveness?
+}
+
+extension DisplayLinkPresentingRenderer {
+  /// Conformers with no present link (test doubles, legacy presenters) report
+  /// nothing rather than being forced to fake a snapshot.
+  public func presentLinkLiveness() -> PresentLinkLiveness? { nil }
 }
 
 /// Common surface contract for swappable rendering backends.

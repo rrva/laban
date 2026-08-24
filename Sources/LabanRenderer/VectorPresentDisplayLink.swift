@@ -20,6 +20,36 @@ import QuartzCore
 /// same signal, so when the terminal parks the present thread stops firing and
 /// costs ~zero CPU (the previous self-detected idle never actually parked).
 /// Preserves the event-driven park-when-idle contract of ADR 0018.
+/// Cheap, sort-free snapshot of the present link's liveness, for the render
+/// journal.
+///
+/// The journal's `displayLink` block describes the host's MAIN `CADisplayLink`
+/// — the one that decides when to *produce* a frame. Presentation is a second,
+/// renderer-owned link (this file), and its state was invisible to the journal.
+/// That blind spot is why a frame recorded as `rendered` could still not be on
+/// screen: the main link parks by design after a one-shot content change, and
+/// whether the pixels actually landed depends entirely on this link.
+///
+/// Read these together: `pendingPresentBudget > 0` with `callbacks` not
+/// advancing across entries means a published frame is waiting on a link that
+/// is not firing, and `stallRepairs > 0` means the watchdog has already had to
+/// rebuild a link that stalled unpaused.
+public struct PresentLinkLiveness: Codable, Equatable, Sendable {
+  /// Whether the underlying `CAMetalDisplayLink` is paused right now.
+  public var paused: Bool
+  /// The host idle policy's last intent: true = the terminal is active.
+  public var hostWantsRunning: Bool
+  /// Vsync callbacks still budgeted to flush a published-but-unpresented frame.
+  /// Non-zero means a frame is published and waiting to reach the screen.
+  public var pendingPresentBudget: Int
+  /// Lifetime vsync callbacks taken, and how many of those actually presented.
+  public var callbacks: Int
+  public var presented: Int
+  /// Lifetime link rebuilds, and how many of those the stall watchdog forced.
+  public var rebuilds: Int
+  public var stallRepairs: Int
+}
+
 /// Pure, GPU-free model of the present link's deferred-park decision, so the
 /// "don't park while a freshly published frame is unpresented" logic is unit
 /// testable without a Metal device. The link itself just applies `wantsPaused`.
@@ -400,6 +430,29 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     let link = self.link
     lock.unlock()
     if link.isPaused { link.isPaused = false }
+  }
+
+  /// Sort-free liveness snapshot for the render journal. Deliberately avoids
+  /// `presentIntervalStats`, which sorts a ring of up to 4096 samples — far too
+  /// expensive to run on every journaled frame.
+  func liveness() -> PresentLinkLiveness {
+    statsLock.lock()
+    let park = self.park
+    let callbacks = callbackCount
+    let presented = presentedCount
+    let rebuilds = rebuildCount
+    let repairs = stall.repairs
+    statsLock.unlock()
+    // Read paused after releasing statsLock: it takes the swap lock, and the
+    // two acquisitions must stay sequential.
+    return PresentLinkLiveness(
+      paused: debugLinkIsPaused,
+      hostWantsRunning: park.hostWantsRunning,
+      pendingPresentBudget: park.pendingBudget,
+      callbacks: callbacks,
+      presented: presented,
+      rebuilds: rebuilds,
+      stallRepairs: repairs)
   }
 
   /// Test/debug seam: the live link's paused state, read under the swap lock.
