@@ -588,7 +588,14 @@ final class GPURenderFreezeDetector {
     var frame: Int
     var tabId: String?
     var sessionId: String?
-    var gpuDriven: Bool
+    /// Whether the frame came from a GPU backend at all. The detector's
+    /// evidence is a render-failure reason plus the GPU frame-completion count,
+    /// and every Metal backend supplies both; the software backend renders
+    /// synchronously, never reports these reasons, and cannot exhibit the loop.
+    /// This is deliberately NOT "the opt-in gpuDriven mode": the no-progress
+    /// loop is a property of the host's retry policy, not of one glyph path,
+    /// and it was observed in production on the `vectorGlyph` backend.
+    var gpuBackend: Bool
     var terminalDirty: Bool
     var activeTerminalDirty: Bool
     var renderInvalidated: Bool
@@ -644,7 +651,7 @@ final class GPURenderFreezeDetector {
   func sample(_ sample: Sample) -> Detection? {
     noteMetalFrameCompleted(completionCount: sample.metalFrameCompletions)
 
-    guard sample.gpuDriven else {
+    guard sample.gpuBackend else {
       reset()
       return nil
     }

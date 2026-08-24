@@ -40,6 +40,17 @@ final class RenderFailureReasonTests: XCTestCase {
     }
   }
 
+  /// The software backend must NOT conform. `GPURenderFreezeDetector`'s gate is
+  /// `backend is RenderFailureReporting`, so conformance is what decides which
+  /// backends the no-progress detector watches; a synchronous CPU backend never
+  /// exhibits the loop and would only add noise. This also proves the
+  /// conformance check above discriminates rather than passing vacuously.
+  func testSoftwareBackendDoesNotReportGPUFailureReasons() {
+    XCTAssertFalse(
+      (SoftwareBackend.self as Any.Type) is RenderFailureReporting.Type,
+      "SoftwareBackend must stay outside the GPU no-progress detector's gate")
+  }
+
   /// Every case must be classified — a new failure reason should force a
   /// deliberate pace-or-retry decision here rather than silently defaulting.
   func testEveryReasonIsClassified() {

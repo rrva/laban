@@ -321,20 +321,20 @@ final class RenderJournalTests: XCTestCase {
     XCTAssertEqual(decoded.freeze, freeze)
   }
 
-  func testGPUFreezeDetectorIgnoresClassicAndCursorOnlyFailures() {
+  func testGPUFreezeDetectorIgnoresSoftwareAndCursorOnlyFailures() {
     let detector = GPURenderFreezeDetector(noProgressThreshold: 1)
 
     XCTAssertNil(
       detector.sample(
         freezeSample(
-          gpuDriven: false,
+          gpuBackend: false,
           terminalDirty: true,
           rendered: false,
           renderFailureReason: .previousFrameInFlight)))
     XCTAssertNil(
       detector.sample(
         freezeSample(
-          gpuDriven: true,
+          gpuBackend: true,
           terminalDirty: false,
           activeTerminalDirty: false,
           renderInvalidated: false,
@@ -508,11 +508,63 @@ extension JSONDecoder {
   }
 }
 
+/// The detector used to be gated on the opt-in `gpuDriven` renderer mode, which
+/// left the no-progress retry loop undetectable on `vectorGlyph` — the backend
+/// existing installs actually run, and where the loop was observed in
+/// production (291 consecutive refusals of one frame across five seconds,
+/// 2026-08-24). The gate is now "any GPU backend", so a non-`gpuDriven` Metal
+/// backend reaches the same detection.
+final class GPURenderFreezeDetectorBackendCoverageTests: XCTestCase {
+
+  func testNonGPUDrivenMetalBackendStillReachesDetection() {
+    let detector = GPURenderFreezeDetector(noProgressThreshold: 2, duplicateThrottleSeconds: 60)
+    // Two consecutive refusals of a frame that still has visible work pending —
+    // the vector-backend signature, on a backend that is not `gpuDriven`.
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          gpuBackend: true,
+          terminalDirty: true,
+          rendered: false,
+          renderFailureReason: .previousFrameInFlight)))
+    let detection = detector.sample(
+      freezeSample(
+        gpuBackend: true,
+        terminalDirty: true,
+        rendered: false,
+        renderFailureReason: .previousFrameInFlight))
+    XCTAssertNotNil(detection)
+    XCTAssertEqual(detection?.freeze.noProgressStreak, 2)
+    XCTAssertEqual(detection?.freeze.renderFailureReason, .previousFrameInFlight)
+  }
+
+  /// A rendered frame is progress: it must clear the streak so ordinary
+  /// drop-and-repaint cadence never accumulates toward a false dump.
+  func testRenderedFrameClearsTheStreak() {
+    let detector = GPURenderFreezeDetector(noProgressThreshold: 2, duplicateThrottleSeconds: 60)
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          gpuBackend: true, terminalDirty: true, rendered: false,
+          renderFailureReason: .previousFrameInFlight)))
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          gpuBackend: true, terminalDirty: true, rendered: true,
+          renderFailureReason: nil)))
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          gpuBackend: true, terminalDirty: true, rendered: false,
+          renderFailureReason: .previousFrameInFlight)))
+  }
+}
+
 private func freezeSample(
   frame: Int = 1,
   tabId: String = "tab",
   sessionId: String = "session",
-  gpuDriven: Bool = true,
+  gpuBackend: Bool = true,
   terminalDirty: Bool = true,
   activeTerminalDirty: Bool = true,
   renderInvalidated: Bool = false,
@@ -527,7 +579,7 @@ private func freezeSample(
     frame: frame,
     tabId: tabId,
     sessionId: sessionId,
-    gpuDriven: gpuDriven,
+    gpuBackend: gpuBackend,
     terminalDirty: terminalDirty,
     activeTerminalDirty: activeTerminalDirty,
     renderInvalidated: renderInvalidated,

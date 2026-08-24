@@ -4695,14 +4695,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     rendered: Bool
   ) {
     guard gpuFreezeAutoDumpEnabled else { return }
-    let rendererStatus = backend.rendererStatus
-    let gpuDriven = rendererStatus.effectiveRenderer == RendererMode.gpuDriven.rawValue
+    // Every Metal backend can spin the no-progress retry loop this detector
+    // exists to catch — it is a property of the host's failure handling, not of
+    // one glyph path. Gating on the opt-in `gpuDriven` mode left the loop
+    // undetectable on `vectorGlyph`, the backend existing installs actually run,
+    // which is where it was eventually observed. `RenderFailureReporting`
+    // conformance is exactly the set of backends that supply the evidence the
+    // detector needs; `SoftwareBackend` deliberately does not conform.
+    let gpuBackend = backend is RenderFailureReporting
     let detection = gpuFreezeDetector.sample(
       GPURenderFreezeDetector.Sample(
         frame: frame,
         tabId: tab.id,
         sessionId: session.id,
-        gpuDriven: gpuDriven,
+        gpuBackend: gpuBackend,
         terminalDirty: terminalDirty,
         activeTerminalDirty: activeTerminalDirty,
         renderInvalidated: renderInvalidated,

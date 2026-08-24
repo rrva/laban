@@ -191,10 +191,13 @@ retry.
   (non-scroll frames "never drop"), but it means the cost of a retry loop on
   this path is a blocked main thread, not merely wasted CPU.
 - The GPU freeze detector reads the failure reason through the same cast chain,
-  so it was blind to vector failures too. Fixing it changes nothing for the
-  vector backend *today* — `GPURenderFreezeDetector.sample` early-returns unless
-  `sample.gpuDriven`, and `vectorGlyph` is not `gpuDriven` — but it removes the
-  second copy of the defect rather than leaving one behind.
+  so it was blind to vector failures too. Fixing the lookup was not enough on its
+  own: `GPURenderFreezeDetector.sample` also early-returned unless
+  `sample.gpuDriven`, and only `MetalRenderer` in `gpuDriven` mode ever sets
+  `effectiveRenderer == "gpuDriven"` — so the detector built to catch this exact
+  no-progress loop was disabled for `classic`, `vectorGlyph`, and `slugGlyph`
+  alike. Widened to "any GPU backend" in a follow-up commit; see
+  `Follow-up: freeze-detector coverage` below.
 - `swift test` reports two failures in `CJKFontSettingsTests`
   (`testDefaultPreferenceIsPingFangSC`, `testSetPresetClearsCustomPostScriptName`)
   that predate this change and are unrelated to it. They are a test-isolation
@@ -241,3 +244,31 @@ Behavioral acceptance, in the running app:
 
 The pre-change failure is also directly visible in the archived dumps named
 above, which remain the regression reference for this signature.
+
+## Follow-up: freeze-detector coverage
+
+`GPURenderFreezeDetector` exists to notice exactly the loop this plan fixes: a
+streak of frames that have visible work pending, do not render, and fail with a
+no-progress reason. It never fired during the reproduction because
+`TerminalBitmapView.sampleGPUFreezeDetector` gated it on
+
+    rendererStatus.effectiveRenderer == RendererMode.gpuDriven.rawValue
+
+and only `MetalRenderer` in `gpuDriven` mode ever reports that string. The
+`classic`, `vectorGlyph`, and `slugGlyph` backends were all outside the gate.
+The gate came from the detector's origin (`execplans/active/`
+`gpu-render-freeze-journal-diagnostic.md`, which was written for a freeze
+specific to the opt-in `gpuDriven` renderer), but the loop it detects belongs to
+the host's retry policy, not to any one glyph path.
+
+The gate is now `backend is RenderFailureReporting` — exactly the set of
+backends that supply the two pieces of evidence the detector consumes (a
+render-failure reason and a GPU frame-completion count). `SoftwareBackend`
+renders synchronously, never reports those reasons, and stays outside the gate;
+`RenderFailureReasonTests` asserts both halves of that so the gate cannot drift.
+`Sample.gpuDriven` was renamed to `Sample.gpuBackend` to stop the field's name
+implying the narrower meaning.
+
+This ordering matters: widening the gate before the failure reasons existed
+would have achieved nothing, because `isNoProgressFailure(nil)` is `false`, so a
+vector failure would have reset the streak on every sample.
