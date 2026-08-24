@@ -63,6 +63,14 @@ final class RenderJournal {
     /// dump recorded only *that* a frame was refused — leaving a repeating
     /// refusal, the shape of a slow tab switch, undiagnosable from the artifact.
     var renderFailureReason: RenderFailureReason?
+    /// Lifetime count of GPU frames whose completion handler has run. The
+    /// decisive reading when frames are refused with `previousFrameInFlight`:
+    /// that reason means the one-frame-in-flight semaphore is still held, and
+    /// this says whether the GPU is retiring work at all. Frozen across a run of
+    /// refusals = the committed frame genuinely never completed; advancing
+    /// across them = the slot was leaked by a path that never signalled.
+    /// Optional so old dumps still decode.
+    var gpuFrameCompletions: Int?
     var freeze: FreezeSnapshot?
     var rendered: Bool?
   }
@@ -386,6 +394,7 @@ final class RenderJournal {
     drawableAcquire: MetalDrawableAcquireDiagnostic? = nil,
     gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure? = nil,
     renderFailureReason: RenderFailureReason? = nil,
+    gpuFrameCompletions: Int? = nil,
     freeze: FreezeSnapshot? = nil,
     rendered: Bool? = nil
   ) -> Entry {
@@ -431,6 +440,7 @@ final class RenderJournal {
       drawableAcquire: drawableAcquireForEvent,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
+      gpuFrameCompletions: gpuFrameCompletions,
       freeze: freeze,
       rendered: rendered)
   }

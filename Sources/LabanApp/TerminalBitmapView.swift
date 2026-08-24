@@ -4701,6 +4701,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       drawableAcquire: metalRenderer?.lastDrawableAcquireDiagnostic,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
+      gpuFrameCompletions: gpuFrameCompletionCount,
       freeze: freeze,
       rendered: rendered)
     renderJournal.record(entry)

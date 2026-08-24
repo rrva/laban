@@ -57,6 +57,24 @@ final class PresentLinkLivenessJournalTests: XCTestCase {
     XCTAssertEqual(decoded.reason, "backendRenderReturnedFalse")
   }
 
+  /// `previousFrameInFlight` says the one-frame-in-flight semaphore is held; it
+  /// does not say whether the GPU is retiring work. Pairing the refusal with the
+  /// completion count separates "the committed frame genuinely never completed"
+  /// (count frozen across the run of refusals) from "the slot was leaked by a
+  /// path that never signalled" (count advancing) — a distinction a dump could
+  /// not make while a real tab switch sat refused for five seconds.
+  func testRefusedFrameCarriesGPUCompletionCount() throws {
+    let entry = try journal().makeEntry(
+      event: .renderFailed, frame: 11, tabId: "tab", sessionId: "s",
+      reason: "backendRenderReturnedFalse",
+      renderFailureReason: .previousFrameInFlight,
+      gpuFrameCompletions: 3606)
+    let decoded = try JSONDecoder().decode(
+      RenderJournal.Entry.self, from: JSONEncoder().encode(entry))
+    XCTAssertEqual(decoded.gpuFrameCompletions, 3606)
+    XCTAssertEqual(decoded.renderFailureReason, .previousFrameInFlight)
+  }
+
   /// The two readings that matter when a frame renders but nothing appears:
   /// a frame is published and waiting (`pendingPresentBudget > 0`) while the
   /// link is parked, and the stall watchdog has had to rebuild a dead link.
