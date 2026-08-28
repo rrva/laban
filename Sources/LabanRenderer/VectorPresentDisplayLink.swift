@@ -48,6 +48,11 @@ public struct PresentLinkLiveness: Codable, Equatable, Sendable {
   /// Lifetime link rebuilds, and how many of those the stall watchdog forced.
   public var rebuilds: Int
   public var stallRepairs: Int
+  /// Seconds (monotonic clock) since the last vsync callback fired, measured at
+  /// snapshot time; nil if the link never fired. Makes "frozen since when"
+  /// readable from any single journal entry without diffing counters across
+  /// entries. Optional so old journal dumps still decode.
+  public var lastCallbackAgeSeconds: Double? = nil
 }
 
 /// Pure, GPU-free model of the present link's deferred-park decision, so the
@@ -193,6 +198,9 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// published target). Surfaced through `presentIntervalStats`.
   private var callbackCount = 0
   private var presentedCount = 0
+  /// Monotonic timestamp of the most recent vsync callback; guarded by
+  /// `statsLock`. Surfaced through `liveness()` as `lastCallbackAgeSeconds`.
+  private var lastCallbackAt: CFTimeInterval?
 
   /// Deferred-park decision state (host intent + pending-present budget). Guarded
   /// by `statsLock`. See `PresentParkDecision`.
@@ -442,7 +450,9 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     let presented = presentedCount
     let rebuilds = rebuildCount
     let repairs = stall.repairs
+    let lastCallbackAt = self.lastCallbackAt
     statsLock.unlock()
+    let lastCallbackAge = lastCallbackAt.map { CACurrentMediaTime() - $0 }
     // Read paused after releasing statsLock: it takes the swap lock, and the
     // two acquisitions must stay sequential.
     return PresentLinkLiveness(
@@ -452,7 +462,8 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       callbacks: callbacks,
       presented: presented,
       rebuilds: rebuilds,
-      stallRepairs: repairs)
+      stallRepairs: repairs,
+      lastCallbackAgeSeconds: lastCallbackAge)
   }
 
   /// Test/debug seam: the live link's paused state, read under the swap lock.
@@ -584,6 +595,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     statsLock.lock()
     callbackCount += 1
     if presented { presentedCount += 1 }
+    lastCallbackAt = CACurrentMediaTime()
     // Resolve the deferred-park budget: a successful present clears it (the
     // freshly published frame is now on screen); otherwise it decrements so a
     // stuck pending (e.g. drawable-size mismatch after resize, onPresent always

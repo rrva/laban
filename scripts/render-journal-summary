@@ -36,6 +36,7 @@ def main() -> int:
     print_counts(entries)
     print_state(entries)
     print_display_link(entries)
+    print_present_link(entries)
     print_glyph_effect(entries)
     print_spinner_motion(entries)
     print_drawables(entries)
@@ -155,6 +156,27 @@ def print_display_link(entries: list[dict[str, Any]]) -> None:
             f"p95={percentile(intervals, 95):.2f} "
             f"max={max(intervals):.2f}"
         )
+    print()
+
+
+def print_present_link(entries: list[dict[str, Any]]) -> None:
+    links = [entry.get("presentLink") for entry in entries if isinstance(entry.get("presentLink"), dict)]
+    print("presentLink:")
+    if not links:
+        print("  unavailable")
+        print()
+        return
+    first_link, last_link = links[0], links[-1]
+    for key in ("callbacks", "presented", "rebuilds", "stallRepairs"):
+        print(f"  {key}: {first_link.get(key, '-')} -> {last_link.get(key, '-')}")
+    frozen = (
+        first_link.get("callbacks") is not None
+        and first_link.get("callbacks") == last_link.get("callbacks")
+    )
+    print(f"  callbacksFrozenAcrossDump: {frozen}")
+    ages = number_list(link.get("lastCallbackAgeSeconds") for link in links)
+    if ages:
+        print(f"  lastCallbackAgeSeconds: min={min(ages):.2f} max={max(ages):.2f}")
     print()
 
 
@@ -292,6 +314,10 @@ def print_window(entries: list[dict[str, Any]]) -> None:
     print_counter(
         "  backingScaleFactor",
         Counter(str(window.get("backingScaleFactor", "-")) for window in windows),
+    )
+    print_counter(
+        "  screenDisplayID",
+        Counter(str(window.get("screenDisplayID", "-")) for window in windows),
     )
     print()
 

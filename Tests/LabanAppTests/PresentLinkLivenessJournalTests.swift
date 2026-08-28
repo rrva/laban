@@ -89,4 +89,18 @@ final class PresentLinkLivenessJournalTests: XCTestCase {
     XCTAssertGreaterThan(waiting.pendingPresentBudget, 0)
     XCTAssertEqual(idle.pendingPresentBudget, 0)
   }
+
+  /// Liveness JSON written before `lastCallbackAgeSeconds` existed must still
+  /// decode (as nil), so old dumps stay readable next to new ones.
+  func testLivenessWithoutCallbackAgeStillDecodes() throws {
+    let legacyJSON = """
+      {"paused":false,"hostWantsRunning":true,"pendingPresentBudget":0,
+       "callbacks":33435,"presented":10850,"rebuilds":733,"stallRepairs":716}
+      """
+    let decoded = try JSONDecoder().decode(
+      PresentLinkLiveness.self, from: Data(legacyJSON.utf8))
+    XCTAssertEqual(decoded.callbacks, 33435)
+    XCTAssertEqual(decoded.stallRepairs, 716)
+    XCTAssertNil(decoded.lastCallbackAgeSeconds)
+  }
 }

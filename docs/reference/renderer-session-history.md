@@ -23,6 +23,34 @@ stall**, reached by separating three concerns that earlier bugs kept entangling:
    defer/publish path must wake itself or frames hang (the bug class this current
    session fixed for startup/tab-switch).
 
+## Incident 2026-08-27 — display-unplug freeze: present-link rebuilds never recover
+
+- **Symptom:** presentation froze when macOS forcibly moved the window from an
+  external display to the built-in one (user unplugged the monitor, ~18:06–18:25
+  local). The terminal showed stale pixels for ~12.5 h while accepting input
+  blind; only an app relaunch recovered.
+- **Evidence (render journal dumps `2026-08-28T045725432Z`/`…045732058Z`):**
+  `presentLink.callbacks`/`presented` pinned at 33435/10850 from the unplug
+  onward, while frames kept rendering (frames 12129→12341, GPU completions
+  advancing, dump PNG shows fresh content including the blind-typed text). The
+  stall watchdog fired **716 repairs over 12.5 h** — every rebuilt
+  `CAMetalDisplayLink` was dead on arrival. Run loop alive (watchdog timer kept
+  firing), links unpaused, window visible/key on the internal display, main
+  `CADisplayLink` ticking at 120 Hz.
+- **Lesson (refutes a documented assumption):** `PresentStallDecision`'s premise
+  — a quiet-time rebuild "binds to whatever display the layer has settled on by
+  then" — is empirically false. Once the layer's display vanishes, recreating
+  `CAMetalDisplayLink(metalLayer:)` against the same layer rebinds to the dead
+  vsync source indefinitely; only a real display-set change (as in the 2026-08-18
+  clamshell incident) or a relaunch makes CoreAnimation re-evaluate the binding.
+- **Open fix direction (chosen: instrument first):** escalate past link swaps
+  once the watchdog proves the stall unrecoverable (K repairs, zero callbacks) —
+  tear the link down so Slug's classic `nextDrawable()` path presents again, and
+  re-arm the fast path on the next display change. New instrumentation for the
+  next repro: `window.screenDisplayID` in every journal entry and
+  `render.displayChange` payload, and `presentLink.lastCallbackAgeSeconds`
+  (frozen-since age readable from any single entry).
+
 ## Session 0ddefe71 — render-stall: Claude progress bars freeze until scroll
 
 Not vector-renderer work; a render-stall episode, but the most reusable one.

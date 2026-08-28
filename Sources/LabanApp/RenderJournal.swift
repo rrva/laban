@@ -117,6 +117,11 @@ final class RenderJournal {
     var visibleToUser: Bool
     var backingScaleFactor: Double
     var screenName: String?
+    /// `CGDirectDisplayID` of the window's screen. Display-unplug freezes
+    /// otherwise leave no record of *when* the window changed displays, or of
+    /// whether present-link callbacks kept advancing after the move. Optional
+    /// so old journal dumps still decode.
+    var screenDisplayID: UInt32? = nil
   }
 
   struct DisplayLinkSnapshot: Codable, Equatable, Sendable {

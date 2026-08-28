@@ -1990,6 +1990,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     payload["reason"] = reason
     payload["mainLinkTicking"] = displayLinkIsTicking
     payload["screen"] = window?.screen?.localizedName ?? "none"
+    if let displayID = currentScreenDisplayID() {
+      payload["screenDisplayID"] = displayID
+    }
     return payload
   }
 
@@ -5013,7 +5016,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       occlusionVisible: occlusionVisible,
       visibleToUser: animationVisibleToUser,
       backingScaleFactor: Double(window?.backingScaleFactor ?? backend.surfaceScale),
-      screenName: window?.screen?.localizedName)
+      screenName: window?.screen?.localizedName,
+      screenDisplayID: currentScreenDisplayID())
+  }
+
+  /// The `CGDirectDisplayID` of the window's current screen, if any.
+  private func currentScreenDisplayID() -> UInt32? {
+    (window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+      .uint32Value
   }
 
   private func renderJournalDisplayLinkSnapshot() -> RenderJournal.DisplayLinkSnapshot {
@@ -5264,6 +5274,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     guard hoveredSidebarTabId != id else { return }
     hoveredSidebarTabId = id
     invalidateRenderAndWake()
+  }
+
+  /// View ▸ Show Sidebar. Writes the setting; the change notification drives
+  /// `applySidebarVisibility`, so the menu path and the Settings path converge
+  /// on one code path rather than each doing their own reflow.
+  @objc func toggleSidebarVisible(_ sender: Any?) {
+    SidebarVisibilitySettings.setVisible(!SidebarVisibilitySettings.visible)
   }
 
   /// Reconcile the cached sidebar width with the setting and reflow.
@@ -9521,6 +9538,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Mutate the persistent Debug-menu item's title in place (Start/Stop PTY
   /// Capture) rather than rebuilding the menu — the Show/Hide Sidebar pattern.
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    // A checked item, the way macOS shows chrome visibility (Finder's
+    // View ▸ Show Sidebar). Resolved at menu time so an external
+    // `defaults write` or a second window cannot leave a stale checkmark.
+    if menuItem.action == #selector(TerminalBitmapView.toggleSidebarVisible(_:)) {
+      menuItem.state = SidebarVisibilitySettings.visible ? .on : .off
+      // The env override owns the value; offering a control that would be
+      // refused is worse than greying it out.
+      return SidebarVisibilitySettings.environmentOverride() == nil
+    }
     if menuItem.action == #selector(TerminalBitmapView.toggleCapture(_:)) {
       menuItem.title = TerminalCaptureIndicator.menuTitle(active: isCaptureActive)
       return true
