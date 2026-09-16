@@ -1,0 +1,23 @@
+Sources/LabanApp/RenderJournal.swift
+  s_de132dada4a110::t_5186bdc0011b1b 81-88,414-415,463-464
+Sources/LabanApp/TerminalBitmapView.swift
+  s_de132dada4a110::t_ee3011808c88f1 4650,4706-4708
+Sources/LabanRenderer/VectorGlyphRenderer.swift
+  s_de132dada4a110::t_8ea52b63e38fd6 590-618,1183-1184,1186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4301db5f2522cec3ccfaca4e769cafd45782c94d",
+  "prompts": {},
+  "sessions": {
+    "s_de132dada4a110": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_de132dada4a110",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
