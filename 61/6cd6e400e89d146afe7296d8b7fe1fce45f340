@@ -1,0 +1,33 @@
+Sources/LabanApp/SettingsWindowController.swift
+  s_15784e8596d2b5::t_8923dbfa79cc3b 158
+Sources/LabanRenderer/RendererSelection.swift
+  s_15784e8596d2b5::t_e26cf5a7efd138 50-73,81,85-86
+Tests/LabanAppTests/ColdLaunchFastBackendTests.swift
+  s_15784e8596d2b5::t_bc38b667cef932 10,12,15,39,41-42,46,50-51,54,56-57,61-62,66,69,75-76,79,128
+Tests/LabanAppTests/RendererActivationNoBlankWindowTests.swift
+  s_15784e8596d2b5::t_672e68efd53d16 32,35,37,44,46-48,50-51,53,57,61-64,66-67,69-70,73,77-79,84,86-87,90,102,104,110,113-116,122,124,129-130,137
+Tests/LabanAppTests/RendererModeSettingsTests.swift
+  s_15784e8596d2b5::t_8d38187f9ccb77 61,99-102,111,215-219,241,243-244
+Tests/LabanAppTests/RetiredRendererMigrationTests.swift
+  s_15784e8596d2b5::t_7dd97bf6dd8ed5 1-71
+docs/adr/0033-vector-glyph-renderer-is-retired.md
+  s_15784e8596d2b5::t_3c4d4742e008f7 1-89
+docs/product/spec.md
+  s_15784e8596d2b5::t_f085f737d4a053 141-146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "616cd6e400e89d146afe7296d8b7fe1fce45f340",
+  "prompts": {},
+  "sessions": {
+    "s_15784e8596d2b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_15784e8596d2b5",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
