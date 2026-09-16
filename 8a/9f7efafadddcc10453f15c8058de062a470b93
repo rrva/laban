@@ -1,0 +1,21 @@
+Sources/LabanApp/RenderJournal.swift
+  s_005f66becee18c::t_b32533b5859647 74-80,405,452
+Sources/LabanApp/TerminalBitmapView.swift
+  s_005f66becee18c::t_201abc88bade3c 4705
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8a9f7efafadddcc10453f15c8058de062a470b93",
+  "prompts": {},
+  "sessions": {
+    "s_005f66becee18c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_005f66becee18c",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
