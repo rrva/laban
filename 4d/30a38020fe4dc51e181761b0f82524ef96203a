@@ -1,0 +1,24 @@
+Sources/LabanApp/RenderJournal.swift
+  h_5045ed1a731aeb 120-124
+Sources/LabanApp/TerminalBitmapView.swift
+  h_5045ed1a731aeb 1993-1995,5019-5026,5279-5285,9541-9549
+Sources/LabanRenderer/VectorPresentDisplayLink.swift
+  h_5045ed1a731aeb 51-55,201-203,453,455,465-466,598
+Tests/LabanAppTests/PresentLinkLivenessJournalTests.swift
+  h_5045ed1a731aeb 92-105
+docs/reference/renderer-session-history.md
+  h_5045ed1a731aeb 26-53
+scripts/render-journal-summary
+  h_5045ed1a731aeb 39,162-182,318-321
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4d30a38020fe4dc51e181761b0f82524ef96203a",
+  "prompts": {},
+  "humans": {
+    "h_5045ed1a731aeb": {
+      "author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
