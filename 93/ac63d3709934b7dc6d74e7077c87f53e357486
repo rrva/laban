@@ -1,0 +1,19 @@
+execplans/active/agent-multiplexer-terminal-capability-gaps.md
+  s_642f8b0569bdaa::t_082bc3c918b9c2 1-214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "93ac63d3709934b7dc6d74e7077c87f53e357486",
+  "prompts": {},
+  "sessions": {
+    "s_642f8b0569bdaa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_642f8b0569bdaa",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
