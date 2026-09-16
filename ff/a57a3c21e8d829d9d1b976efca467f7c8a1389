@@ -1,0 +1,23 @@
+Sources/LabanApp/RenderJournal.swift
+  s_45bb8e7bcf7b67::t_45bb9bd8c9dd9d 66-73,397,443
+Sources/LabanApp/TerminalBitmapView.swift
+  s_45bb8e7bcf7b67::t_d1057a7fb1714d 4704
+Tests/LabanAppTests/PresentLinkLivenessJournalTests.swift
+  s_45bb8e7bcf7b67::t_51c79eec6f8a40 60-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ffa57a3c21e8d829d9d1b976efca467f7c8a1389",
+  "prompts": {},
+  "sessions": {
+    "s_45bb8e7bcf7b67": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_45bb8e7bcf7b67",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
