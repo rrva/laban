@@ -1,0 +1,22 @@
+Sources/LabanTerminalCore/include/LabanTerminalCore.h
+  h_5045ed1a731aeb 438-448
+Sources/LabanTerminalCore/osc133.c
+  h_5045ed1a731aeb 3-50,52-54,56,67-82,125-128
+Sources/LabanTerminalCore/session_internal.h
+  h_5045ed1a731aeb 148-151
+Tests/LabanTerminalCoreTests/LabanSessionTests.swift
+  h_5045ed1a731aeb 572-647
+execplans/active/osc133-prompt-mode-reset.md
+  h_5045ed1a731aeb 1-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b9b79ef82263ef84d890ef625fd649e21bccf632",
+  "prompts": {},
+  "humans": {
+    "h_5045ed1a731aeb": {
+      "author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
