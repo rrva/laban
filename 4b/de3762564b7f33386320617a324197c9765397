@@ -1,0 +1,25 @@
+Sources/LabanApp/TerminalBitmapView.swift
+  s_895cc3ca786dc3::t_269c0fb1c0ec01 1462,2777-2796
+Sources/LabanApp/TerminalRenderGate.swift
+  s_895cc3ca786dc3::t_cb14ad7520a588 54-71
+Tests/LabanAppTests/FrameCompletionWakeTests.swift
+  s_895cc3ca786dc3::t_964dac9879fd94 1-48
+execplans/active/frame-completion-wake.md
+  s_895cc3ca786dc3::t_a990e9ded00fd9 1-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4bde3762564b7f33386320617a324197c9765397",
+  "prompts": {},
+  "sessions": {
+    "s_895cc3ca786dc3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_895cc3ca786dc3",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
