@@ -1,0 +1,33 @@
+Sources/LabanApp/MainWindowController.swift
+  s_75b6068036896f::t_e1c2919e4bcc6a 224-225,597-603
+Sources/LabanApp/SettingsWindowController.swift
+  s_75b6068036896f::t_a7cf8e2409931e 115-116,600-605,721,896-899,1029,1494-1504
+Sources/LabanApp/TerminalBackgroundEffectHost.swift
+  s_75b6068036896f::t_4424cdf3e2186c 193-201
+Sources/LabanApp/TerminalBitmapView.swift
+  s_75b6068036896f::t_cd059131ee0f7f 180-191,375,673-678,1073-1082,5269-5297
+Sources/LabanCore/SidebarVisibilitySettings.swift
+  s_75b6068036896f::t_f01531a0f12f42 1-96
+Sources/LabanCore/TerminalSurfaceController.swift
+  s_75b6068036896f::t_5e27b57f996834 1397-1400
+Tests/LabanCoreTests/HiddenSidebarSurfaceTests.swift
+  s_75b6068036896f::t_c3c3aec14bf3c9 1-71
+Tests/LabanCoreTests/SidebarVisibilitySettingsTests.swift
+  s_75b6068036896f::t_816aa49aa97ccc 1-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "21930544571bde82b0eba21fa72af6c5c1a53124",
+  "prompts": {},
+  "sessions": {
+    "s_75b6068036896f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_75b6068036896f",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
