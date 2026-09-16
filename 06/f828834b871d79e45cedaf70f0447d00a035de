@@ -1,0 +1,27 @@
+Sources/LabanApp/RenderJournal.swift
+  s_e13efc5ba1bdd5::t_fca22419be145f 591-598,654
+Sources/LabanApp/TerminalBitmapView.swift
+  s_e13efc5ba1bdd5::t_2515c7cbbca0ee 4698-4705,4711
+Tests/LabanAppTests/RenderJournalTests.swift
+  s_e13efc5ba1bdd5::t_9e5c688d8a575f 324,330,337,511-562,567,582
+Tests/LabanRendererTests/RenderFailureReasonTests.swift
+  s_e13efc5ba1bdd5::t_4dd50587ecc57d 43-53
+execplans/active/vector-render-failure-backpressure.md
+  s_e13efc5ba1bdd5::t_c38b1967de2639 194-200,247-274
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "06f828834b871d79e45cedaf70f0447d00a035de",
+  "prompts": {},
+  "sessions": {
+    "s_e13efc5ba1bdd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_e13efc5ba1bdd5",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
