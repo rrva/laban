@@ -1,0 +1,39 @@
+Sources/LabanApp/TerminalBitmapView.swift
+  s_62bf3210b0f499::t_a446ca227b9db9 2729-2782,4474,9338-9340
+Sources/LabanCore/CaptureRecorder.swift
+  s_62bf3210b0f499::t_0a1dd6cddbf4b7 344-349,356-358,374
+Sources/LabanRenderer/MetalReadback.swift
+  s_62bf3210b0f499::t_e6901425d69609 65,67,69-70,72-73,75-76
+Sources/LabanRenderer/MetalRenderer.swift
+  s_62bf3210b0f499::t_9fdb177849a627 129,131-135
+Sources/LabanRenderer/RenderedPixelSnapshot.swift
+  s_62bf3210b0f499::t_76dc23b632b7bc 1-81
+Sources/LabanRenderer/RendererBackend.swift
+  s_62bf3210b0f499::t_c754c576fa0399 183-186,189-197,216-219
+Sources/LabanRenderer/SlugGlyphRenderer.swift
+  s_62bf3210b0f499::t_edf7d82de47168 1139-1141,1144-1145,1147-1148
+Sources/LabanRenderer/VectorGlyphRenderer.swift
+  s_62bf3210b0f499::t_11eb95df0b6d6f 749-753,756-757,759-760
+Tests/LabanDebugTests/CaptureRecorderTests.swift
+  s_62bf3210b0f499::t_0fd9e4da26a4bd 232-274
+Tests/LabanRendererTests/RenderedPixelSnapshotTests.swift
+  s_62bf3210b0f499::t_ae47d698629811 1-60
+execplans/active/capture-png-encode-off-main-thread.md
+  s_62bf3210b0f499::t_ccc527698dd712 1-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ae38aa2c6640dc5a08985ab344e2e985d5164867",
+  "prompts": {},
+  "sessions": {
+    "s_62bf3210b0f499": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_62bf3210b0f499",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
