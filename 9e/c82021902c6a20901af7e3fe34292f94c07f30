@@ -1,0 +1,35 @@
+Sources/LabanApp/RenderJournal.swift
+  s_02002b156fd7e1::t_9e8b3f17181b79 37-43,369,413
+Sources/LabanApp/TerminalBitmapView.swift
+  s_02002b156fd7e1::t_2c07ceca6626d4 4669,5451-5458
+Sources/LabanRenderer/MetalRenderer.swift
+  s_02002b156fd7e1::t_0ff3419b7c657e 937-943
+Sources/LabanRenderer/RendererBackend.swift
+  s_02002b156fd7e1::t_4301fff99ac995 120-130
+Sources/LabanRenderer/SlugGlyphRenderer.swift
+  s_02002b156fd7e1::t_d444850979250e 1083-1089
+Sources/LabanRenderer/VectorGlyphRenderer.swift
+  s_02002b156fd7e1::t_0d77bcf5885c05 497-503
+Sources/LabanRenderer/VectorPresentDisplayLink.swift
+  s_02002b156fd7e1::t_9cdef3d29faa2b 23-52,435-457
+Tests/LabanAppTests/PresentLinkLivenessJournalTests.swift
+  s_02002b156fd7e1::t_619357d1b3deee 1-58
+execplans/active/vector-render-failure-backpressure.md
+  s_02002b156fd7e1::t_b56b9bb24d649f 275-335
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9ec82021902c6a20901af7e3fe34292f94c07f30",
+  "prompts": {},
+  "sessions": {
+    "s_02002b156fd7e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_02002b156fd7e1",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
