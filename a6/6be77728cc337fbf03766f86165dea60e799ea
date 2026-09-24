@@ -1,0 +1,39 @@
+Sources/LabanTerminalCore/kitty_graphics.c
+  s_b9b171a32edb6d::t_c184acc667b0de 1-366
+Sources/Laband/main.swift
+  s_b9b171a32edb6d::t_89eb18a9227bae 1632-1636
+Sources/LabanTerminalCore/session_internal.h
+  s_b9b171a32edb6d::t_9a1085cc2223c0 21-22,82-90,326-335
+  s_b9b171a32edb6d::t_9f85f7b4c0273f 336
+Tests/LabanTerminalCoreTests/LabanKittyGraphicsTests.swift
+  s_b9b171a32edb6d::t_0563382ff3cda8 1-218
+Sources/LabanTerminalCore/include/LabanTerminalCore.h
+  s_b9b171a32edb6d::t_47ec955ff30834 4
+  s_b9b171a32edb6d::t_0ba7aa0a92654d 104-146,215-221
+  s_b9b171a32edb6d::t_f833d311d3a36a 341-361
+Package.swift
+  s_b9b171a32edb6d::t_7141751327266f 83-87
+Sources/LabanTerminalCore/snapshot.c
+  s_b9b171a32edb6d::t_cf8505a5f4b4b5 681-699,707,723-725
+  s_b9b171a32edb6d::t_67166abf3ddc99 726,744,823
+Sources/LabanTerminalCore/session_lifecycle.c
+  s_b9b171a32edb6d::t_67166abf3ddc99 372,454-457
+execplans/active/kitty-graphics-rendering.md
+  s_b9b171a32edb6d::t_8d116d19757dd3 52-66,147-159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a66be77728cc337fbf03766f86165dea60e799ea",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
