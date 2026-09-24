@@ -1,0 +1,26 @@
+scripts/publish-release
+  s_00c9eddc0fe887::t_d74822a76c4379 31,44-50,53-54,57-58,60-61
+docs/release/update-checks.md
+  s_00c9eddc0fe887::t_e0730cd76e15d2 36-44,74-76,78
+scripts/package-dmg
+  s_00c9eddc0fe887::t_c00505ef6496be 1-71,81-82,85-97,108-118
+  s_00c9eddc0fe887::t_4058293463f545 72-80,83-84,98-107
+scripts/release
+  s_00c9eddc0fe887::t_8b504eaca01ae6 83-85,91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "409ed84f7959d4b5d7bfc5926c8668765b518bf6",
+  "prompts": {},
+  "sessions": {
+    "s_00c9eddc0fe887": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "888b66d7-32ad-4555-9d28-59256edd6dce",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
