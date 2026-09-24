@@ -1,0 +1,19 @@
+scripts/build-app
+  s_4932f46dadbd5d::t_120ab946723022 292-293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6abbd55cb261d8f0e84b2553a13df87fe3fa389d",
+  "prompts": {},
+  "sessions": {
+    "s_4932f46dadbd5d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15b8f041-1584-4623-8f6e-11903f1b65fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
