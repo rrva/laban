@@ -120,9 +120,15 @@ Compare with the screenshots stored under the artifacts named in
   - agent-multiplexer plan M3/M4 are checked off;
   - `KittyGraphicsSettingsTests` (3). Full `swift test`: 3,348 passed; the
     same 14 failures that already fail on `main`.
-- [ ] Milestone 5 (installed app): run `scripts/kitty-graphics-demo`,
-  scroll/`clear`/delete, and show an image inside a herdr pane.
-- [ ] Review Gate passed.
+- [x] (2026-09-25) Milestone 5 (installed app, build `33190702`, Slug
+  renderer): `scripts/kitty-graphics-demo` shows the checker, the chunked PNG
+  with its transparent surround, and the translucent bar under text.
+  Scrolling away and back keeps images with their text, `clear` removes them
+  with the screen, and `printf '\033_Ga=d\033\\'` removes only the images.
+- [ ] Milestone 5 (installed app): an image shown inside a herdr pane.
+- [x] (2026-09-25) Review Gate passed (review 2, at `696f2147`). Review 1
+  failed only because its `texturedQuad` item had not excluded the retired
+  `VectorGlyphRenderer`.
 
 ## Decision Log
 
@@ -689,32 +695,54 @@ vendored checkout to the pin and reapplies all patches.
 A fresh agent performs these checks after Milestone 5 (see `PLANS.md`,
 "Review gate and review-fix loop").
 
-- [ ] Run `swift test --filter LabanKittyGraphicsTests`,
+- [x] Run `swift test --filter LabanKittyGraphicsTests`,
   `swift test --filter KittyImageParityTests` and
   `swift test --filter LabanSessionTests`; expect 0 failures in each.
-- [ ] Run `grep -rn "GhosttyKittyGraphics\|ghostty_kitty_graphics" Sources |
+- [x] Run `grep -rn "GhosttyKittyGraphics\|ghostty_kitty_graphics" Sources |
   grep -v "Sources/LabanTerminalCore/"`; expect zero hits (ADR 0004: only the
   C core touches libghostty handles).
-- [ ] Run `grep -n "KITTY_IMAGE_MEDIUM_FILE" Sources/LabanTerminalCore/*.c`;
+- [x] Run `grep -n "KITTY_IMAGE_MEDIUM_FILE" Sources/LabanTerminalCore/*.c`;
   expect every hit to set the value to false.
-- [ ] Run `grep -rn "case .texturedQuad" Sources/LabanRenderer | grep -v
+- [x] Run `grep -rn "case .texturedQuad" Sources/LabanRenderer | grep -v
   VectorGlyphRenderer.swift`; expect no hit whose body is only `break`.
   `VectorGlyphRenderer` is retired (ADR 0033) and not selectable, so it is
-  excluded: also run `grep -n 'filter { $0 != .vectorGlyph }'
+  excluded: also run `grep -nF 'filter { $0 != .vectorGlyph }'
   Sources/LabanRenderer/RendererSelection.swift` and expect exactly one hit
   (`selectableCases` leaves it out).
-- [ ] Run the headless fixture command in Concrete Steps; expect exit 0.
+- [x] Run the headless fixture command in Concrete Steps; expect exit 0.
   Then copy `fixtures/kitty-graphics.fixture.json` to a temporary file with
   `"kittyGraphics": false` and run the same command on the copy; expect exit
   1 with four `pixel probe failed` lines (the image is absent). The fixture's
   `terminal.kittyGraphics` overrides the user default, so the user default
   cannot serve as this control.
-- [ ] Run `./scripts/check-dependencies`; expect `check-dependencies passed`.
-- [ ] Open `docs/adr/0035-kitty-graphics-rendering.md`; expect sections
+- [x] Run `./scripts/check-dependencies`; expect `check-dependencies passed`.
+- [x] Open `docs/adr/0035-kitty-graphics-rendering.md`; expect sections
   Status, Context, Decision, Consequences, Applies To New Code, and an index
   line for it in `docs/adr/README.md`.
 
-Review status: NOT REVIEWED (re-review pending after review 1)
+Review status: PASSED 2026-09-24T22:04Z at 696f2147
+
+Review 2 findings (filled in by the review agent):
+
+- PASS tests: after `swift build --build-tests`, `swift test --skip-build
+  --filter` each exit 0; LabanKittyGraphicsTests 9 tests,
+  KittyImageParityTests 2 tests, LabanSessionTests 113 tests, 0 failures.
+- PASS ADR 0004 grep: zero hits outside `Sources/LabanTerminalCore/`.
+- PASS file medium: single hit `Sources/LabanTerminalCore/kitty_graphics.c:141`,
+  passed `&file_medium` set by `bool file_medium = false;` (line 140).
+- PASS texturedQuad: remaining hits MetalRenderer.swift:3017/3874/4150 and
+  SlugGlyphRenderer.swift:2355 call `appendImageQuad`/draw layers,
+  SoftwareRenderer.swift:121 calls `drawImage`; none is only `break`.
+  `/usr/bin/grep -n 'filter { $0 != .vectorGlyph }'` gives exactly one hit,
+  `RendererSelection.swift:56`. (The session's `grep` shell function wraps
+  ugrep and returns 0 hits for that pattern; system grep and `grep -F` both
+  return the one hit.)
+- PASS fixture: committed fixture exits 0 (`headless run complete`). A copy
+  with `"kittyGraphics": false` exits 1 with exactly 4 `pixel probe failed`
+  lines (cells [2,1] [6,1] [2,3] [6,3] got 103C48FF).
+- PASS `./scripts/check-dependencies` exit 0, printed `check-dependencies passed`.
+- PASS ADR: 0035 has Status (l5), Context (l11), Decision (l28), Consequences
+  (l68), Applies To New Code (l81); indexed at `docs/adr/README.md:43`.
 
 Review 1 (FAILED 2026-09-24T22:03Z at 2bfe2b8a). Findings (filled in by the
 review agent):
