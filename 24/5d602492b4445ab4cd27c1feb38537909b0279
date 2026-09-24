@@ -1,0 +1,19 @@
+Sources/LabanApp/MainWindowController.swift
+  s_a07b4db937b417::t_281eedbe35f35a 754-760,1057-1059
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "245d602492b4445ab4cd27c1feb38537909b0279",
+  "prompts": {},
+  "sessions": {
+    "s_a07b4db937b417": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2c430f31-a4aa-4bd6-a50d-73d27c91de8c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
