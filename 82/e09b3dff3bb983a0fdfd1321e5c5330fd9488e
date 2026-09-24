@@ -1,0 +1,23 @@
+Tests/LabanTerminalCoreTests/LabanSessionTests.swift
+  s_b9b171a32edb6d::t_0e54ce66604d63 3482-3504
+Sources/LabanTerminalCore/session_lifecycle.c
+  s_b9b171a32edb6d::t_fdc6b6741bfef0 453-461
+execplans/active/kitty-graphics-rendering.md
+  s_b9b171a32edb6d::t_eb53d04c9941a2 48-51,126-133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "82e09b3dff3bb983a0fdfd1321e5c5330fd9488e",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
