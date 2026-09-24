@@ -1,0 +1,19 @@
+execplans/active/kitty-graphics-rendering.md
+  s_b9b171a32edb6d::t_c5e0721d4ccbcb 1-578
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1ed39957b96c96503d412c2fcd01a73c6989fa23",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
