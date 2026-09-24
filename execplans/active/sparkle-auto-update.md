@@ -352,8 +352,11 @@ build Sparkle-updates to the new one — recorded as the final runbook step in
 
 ## Interfaces and Dependencies
 
-- SwiftPM package `https://github.com/sparkle-project/Sparkle`, `from: 2.9.3`,
-  product `Sparkle`, linked only into the `LabanApp` target.
+- SwiftPM package `https://github.com/sparkle-project/Sparkle`, `from: 2.9.6`
+  (`.upToNextMinor`), product `Sparkle`, linked only into the `LabanApp`
+  target. `scripts/check-dependencies` allows it only at the version and
+  revision `Package.resolved` pins: `2.9.6` / revision
+  `ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a`.
 - New internal API (all in `Sources/LabanApp/UpdaterController.swift`):
   - `SparkleUpdatePolicy.isConfigured(bundle: Bundle) -> Bool`
   - `UpdaterController.startIfConfigured()`

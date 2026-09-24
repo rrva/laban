@@ -14,13 +14,20 @@ FETCH = ROOT / "scripts/fetch-libghostty-vt"
 WORKFLOW = ROOT / ".github/workflows/check.yml"
 ADR = ROOT / "docs/adr/0001-libghostty-vt-owns-vt-parsing.md"
 PROFILE_DOC = ROOT / "docs/process/profiling-hiccups.md"
+SPARKLE_DOC = ROOT / "execplans/active/sparkle-auto-update.md"
 ALLOWED_SWIFTPM_DEPENDENCIES = {
     "swift-profile-recorder": {
         "url": "https://github.com/apple/swift-profile-recorder.git",
         "version": "0.3.18",
         "revision": "e110ba85da7d43a47b0e964726e84fddcf720192",
         "doc": PROFILE_DOC,
-    }
+    },
+    "sparkle": {
+        "url": "https://github.com/sparkle-project/Sparkle",
+        "version": "2.9.6",
+        "revision": "ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a",
+        "doc": SPARKLE_DOC,
+    },
 }
 
 
@@ -69,7 +76,8 @@ def main() -> int:
 
     pins = resolved_pins()
     for dep_url, dep_version in dependencies:
-        identity = dep_url.removesuffix(".git").rstrip("/").split("/")[-1]
+        # SwiftPM identities are the lowercased last URL path component.
+        identity = dep_url.removesuffix(".git").rstrip("/").split("/")[-1].lower()
         allowed = ALLOWED_SWIFTPM_DEPENDENCIES.get(identity)
         if not allowed:
             fail(errors, f"Package.swift declares unapproved SwiftPM dependency: {dep_url}")

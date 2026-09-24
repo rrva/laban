@@ -69,7 +69,7 @@ let package = Package(
     ),
     .package(
       url: "https://github.com/sparkle-project/Sparkle",
-      .upToNextMinor(from: "2.9.3")
+      .upToNextMinor(from: "2.9.6")
     ),
   ],
   targets: [
