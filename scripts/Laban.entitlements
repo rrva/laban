@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Hardened-runtime opt-ins for Developer ID builds. Programs launched in
-  Laban's shells run with Laban as their TCC responsible process, so without
+  Hardened-runtime opt-ins for Developer ID builds, applied to LabanApp only.
+  LabanApp is the TCC responsible process for labpty and everything it forks,
+  so programs run in Laban's shells get these checked against LabanApp; without
   these, osascript, audio/video capture and personal-data CLIs are denied in
   notarized builds even when the user grants the privacy permission.
 -->

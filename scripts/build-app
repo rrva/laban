@@ -424,8 +424,8 @@ else
     # Hardened runtime + secure timestamp are notarization requirements for
     # distribution builds. Ad-hoc builds skip them so offline dev builds work.
     sign_options="--options runtime --timestamp"
-    # labpty forks the shells and LabanApp is their responsible process, so
-    # both carry the hardened-runtime opt-ins terminal programs rely on.
+    # TCC checks the responsible process, not the parent. LabanApp spawns
+    # labpty, so it is responsible for every shell and program labpty forks.
     entitlement_options="--entitlements $repo_root/scripts/Laban.entitlements"
   else
     sign_identity="-"
@@ -436,7 +436,7 @@ else
   for product in laban-agent laband labpty laban LabanApp; do
     product_options=""
     case "$product" in
-      labpty|LabanApp) product_options="$entitlement_options" ;;
+      LabanApp) product_options="$entitlement_options" ;;
     esac
     # shellcheck disable=SC2086
     codesign --force $sign_options $product_options --sign "$sign_identity" \
