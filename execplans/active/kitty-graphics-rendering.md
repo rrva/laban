@@ -700,9 +700,11 @@ A fresh agent performs these checks after Milestone 5 (see `PLANS.md`,
 - [ ] Run `grep -rn "case .texturedQuad" Sources/LabanRenderer`; expect no
   hit whose body is only `break`.
 - [ ] Run the headless fixture command in Concrete Steps; expect exit 0.
-  Run it again with `LabanKittyGraphicsEnabled` set to false via
-  `defaults write`; expect a probe failure (the image is absent), then
-  `defaults delete` the key.
+  Then copy `fixtures/kitty-graphics.fixture.json` to a temporary file with
+  `"kittyGraphics": false` and run the same command on the copy; expect exit
+  1 with four `pixel probe failed` lines (the image is absent). The fixture's
+  `terminal.kittyGraphics` overrides the user default, so the user default
+  cannot serve as this control.
 - [ ] Run `./scripts/check-dependencies`; expect `check-dependencies passed`.
 - [ ] Open `docs/adr/0035-kitty-graphics-rendering.md`; expect sections
   Status, Context, Decision, Consequences, Applies To New Code, and an index
