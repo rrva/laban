@@ -191,6 +191,18 @@ enum MenuCommands {
       ))
     viewMenu.addItem(NSMenuItem.separator())
 
+    // Chrome visibility belongs in View, not Settings, and macOS spells this
+    // one Control-Command-S (Finder ▸ View ▸ Show Sidebar). Validated into a
+    // checked item by `TerminalBitmapView.validateMenuItem`.
+    let sidebarItem = NSMenuItem(
+      title: L10n.tr("Show Sidebar"),
+      action: #selector(TerminalBitmapView.toggleSidebarVisible(_:)),
+      keyEquivalent: "s"
+    )
+    sidebarItem.keyEquivalentModifierMask = [.command, .control]
+    viewMenu.addItem(sidebarItem)
+    viewMenu.addItem(NSMenuItem.separator())
+
     let fullScreenItem = NSMenuItem(
       title: L10n.tr("Enter Full Screen"),
       action: #selector(NSWindow.toggleFullScreen(_:)),
