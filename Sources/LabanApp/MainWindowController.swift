@@ -751,6 +751,13 @@ final class MainWindowController: NSWindowController {
     controller.scrollIndicator = scrollIndicator
     controller.syncPillTextSourceToRenderer()
     controller.refreshLiveControlEnvironment()
+    // The control projection offsets selection rects by the sidebar width, so
+    // it has to follow View ▸ Show Sidebar, not just the launch-time value.
+    let applySidebarInset = termView.onSidebarWidthChanged
+    termView.onSidebarWidthChanged = { [weak controller] width in
+      applySidebarInset?(width)
+      controller?.refreshLiveControlEnvironment()
+    }
     controller.terminalBackend = terminalBackend
     controller.terminalSessionClient =
       sessionCoordinator?.terminalClient
@@ -1047,7 +1054,9 @@ final class MainWindowController: NSWindowController {
       LiveControlEnvironment(
         cellWidth: termView.cellWidth,
         cellHeight: termView.cellHeight,
-        sidebarWidth: Int(SidebarLayout.defaultWidth),
+        sidebarWidth: Int(
+          SidebarVisibilitySettings.effectiveWidth(
+            SidebarLayout.defaultWidth, visible: SidebarVisibilitySettings.visible)),
         frame: 0,
         windowWidth: max(1, Int(termView.bounds.width)),
         windowHeight: max(1, Int(termView.bounds.height)),
