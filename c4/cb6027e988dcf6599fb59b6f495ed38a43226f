@@ -1,0 +1,26 @@
+Sources/LabanTerminalCore/kitty_graphics.c
+  s_b9b171a32edb6d::t_2845c927a998d1 120-121,203-208
+  s_b9b171a32edb6d::t_ebc619e7bb55c7 209-210
+Sources/LabanTerminalCore/snapshot.c
+  s_b9b171a32edb6d::t_2845c927a998d1 696,760-766,834-835
+Tests/LabanTerminalCoreTests/LabanKittyGraphicsTests.swift
+  s_b9b171a32edb6d::t_8a635296963548 167-200
+Sources/LabanTerminalCore/session_internal.h
+  s_b9b171a32edb6d::t_2845c927a998d1 90-91,338-343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c4cb6027e988dcf6599fb59b6f495ed38a43226f",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
