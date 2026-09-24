@@ -198,6 +198,37 @@ final class LabanKittyGraphicsTests: XCTestCase {
     XCTAssertEqual(laban_session_mark_rendered(session), 0)
   }
 
+  /// 1x1 GIF. ImageIO would decode it; the Kitty PNG path must not.
+  private let gifBase64 = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="
+
+  func testNonPNGBytesSentAsPNGAreRejected() throws {
+    let session = try makeSession()
+    defer { laban_session_destroy(session) }
+    write(session, "\u{1b}_Gi=9,a=T,f=100,q=2;\(gifBase64)\u{1b}\\")
+    XCTAssertEqual(try snapshotPlacements(session).count, 0, "a GIF must not decode as PNG")
+  }
+
+  func testPNGAcceptanceChecksSignatureAndDecodedSize() throws {
+    func acceptable(_ bytes: [UInt8]) -> Bool {
+      bytes.withUnsafeBufferPointer { laban_kitty_png_acceptable($0.baseAddress, $0.count) }
+    }
+    func header(width: UInt32, height: UInt32) -> [UInt8] {
+      let be = { (v: UInt32) in [24, 16, 8, 0].map { UInt8((v >> UInt32($0)) & 0xFF) } }
+      return [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] + be(13) + Array("IHDR".utf8)
+        + be(width) + be(height) + [8, 6, 0, 0, 0]
+    }
+    let png = try XCTUnwrap(Data(base64Encoded: redHalfAlphaPNGBase64))
+    XCTAssertTrue(acceptable(Array(png)))
+    XCTAssertFalse(acceptable(Array(try XCTUnwrap(Data(base64Encoded: gifBase64)))), "GIF")
+    XCTAssertFalse(acceptable(Array(png.prefix(20))), "truncated before the dimensions")
+    XCTAssertTrue(acceptable(header(width: 4000, height: 4000)), "64 MB budget: 4000x4000 fits")
+    XCTAssertFalse(
+      acceptable(header(width: 5000, height: 5000)),
+      "100 MB decoded exceeds the 64 MB budget before any allocation")
+    XCTAssertFalse(acceptable(header(width: 20000, height: 1)), "over the dimension cap")
+    XCTAssertFalse(acceptable(header(width: 0, height: 16)), "zero width")
+  }
+
   // MARK: - Helpers
 
   private func makeSession(rows: Int32 = 24, cols: Int32 = 80) throws -> OpaquePointer {

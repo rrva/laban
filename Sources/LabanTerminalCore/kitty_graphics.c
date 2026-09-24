@@ -17,8 +17,7 @@
  * alternate screen; exceeding the budget evicts the oldest images. */
 #define LABAN_KITTY_IMAGE_STORAGE_LIMIT ((uint64_t)64 * 1000 * 1000)
 
-/* Refuse PNGs whose decoded size would be absurd (10k x 10k RGBA = 400 MB,
- * already past the storage budget). */
+/* Refuse PNGs wider or taller than this regardless of budget. */
 #define LABAN_KITTY_PNG_MAX_DIMENSION 10000u
 
 /* -1 = unset (the environment decides), 0 = disabled, 1 = enabled. */
@@ -35,6 +34,25 @@ bool laban_kitty_graphics_enabled(void) {
     return env && strcmp(env, "1") == 0;
 }
 
+static uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+bool laban_kitty_png_acceptable(const uint8_t *data, size_t data_len) {
+    static const uint8_t signature[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
+    /* Signature, then the IHDR chunk: length (13), "IHDR", width, height. */
+    if (!data || data_len < 24) return false;
+    if (memcmp(data, signature, sizeof(signature)) != 0) return false;
+    if (read_be32(data + 8) != 13 || memcmp(data + 12, "IHDR", 4) != 0) return false;
+    uint64_t width = read_be32(data + 16);
+    uint64_t height = read_be32(data + 20);
+    if (width == 0 || height == 0 ||
+        width > LABAN_KITTY_PNG_MAX_DIMENSION || height > LABAN_KITTY_PNG_MAX_DIMENSION) {
+        return false;
+    }
+    return width * height * 4 <= LABAN_KITTY_IMAGE_STORAGE_LIMIT;
+}
+
 /* Decodes PNG bytes to straight-alpha RGBA8 in a buffer from `allocator`,
  * which libghostty then owns. CoreGraphics only draws into premultiplied
  * RGBA, so draw premultiplied and convert in place. */
@@ -42,7 +60,7 @@ static bool laban_decode_png(void *userdata, const GhosttyAllocator *allocator,
                              const uint8_t *data, size_t data_len,
                              GhosttySysImage *out) {
     (void)userdata;
-    if (!data || data_len == 0 || !out) return false;
+    if (!out || !laban_kitty_png_acceptable(data, data_len)) return false;
 
     bool ok = false;
     CFDataRef cf_data = NULL;
@@ -57,6 +75,9 @@ static bool laban_decode_png(void *userdata, const GhosttyAllocator *allocator,
     if (!cf_data) goto done;
     source = CGImageSourceCreateWithData(cf_data, NULL);
     if (!source) goto done;
+    /* ImageIO sniffs the content; decode only what it also identifies as PNG. */
+    CFStringRef type = CGImageSourceGetType(source);
+    if (!type || CFStringCompare(type, CFSTR("public.png"), 0) != kCFCompareEqualTo) goto done;
     image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
     if (!image) goto done;
 
