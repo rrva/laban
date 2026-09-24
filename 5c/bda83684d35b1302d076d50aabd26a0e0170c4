@@ -1,0 +1,23 @@
+Tests/LabanAppTests/SidebarMenuToggleTests.swift
+  s_a07b4db937b417::t_9ed700cc8c8433 81-91
+Sources/LabanApp/TerminalBitmapView.swift
+  s_a07b4db937b417::t_f6986c4a4a8e90 871-872
+  s_a07b4db937b417::t_5f425dc6692fc8 868-870,5343-5346
+  s_a07b4db937b417::t_a815552c16bb52 5347
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5cbda83684d35b1302d076d50aabd26a0e0170c4",
+  "prompts": {},
+  "sessions": {
+    "s_a07b4db937b417": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2c430f31-a4aa-4bd6-a50d-73d27c91de8c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
