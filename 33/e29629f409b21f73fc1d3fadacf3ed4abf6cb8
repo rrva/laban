@@ -1,0 +1,21 @@
+execplans/completed/sparkle-auto-update.md
+  s_b9b171a32edb6d::t_625ccf9f802787 154-167
+scripts/check-dependencies
+  s_b9b171a32edb6d::t_de0c5b124caac5 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "33e29629f409b21f73fc1d3fadacf3ed4abf6cb8",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
