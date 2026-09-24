@@ -697,8 +697,12 @@ A fresh agent performs these checks after Milestone 5 (see `PLANS.md`,
   C core touches libghostty handles).
 - [ ] Run `grep -n "KITTY_IMAGE_MEDIUM_FILE" Sources/LabanTerminalCore/*.c`;
   expect every hit to set the value to false.
-- [ ] Run `grep -rn "case .texturedQuad" Sources/LabanRenderer`; expect no
-  hit whose body is only `break`.
+- [ ] Run `grep -rn "case .texturedQuad" Sources/LabanRenderer | grep -v
+  VectorGlyphRenderer.swift`; expect no hit whose body is only `break`.
+  `VectorGlyphRenderer` is retired (ADR 0033) and not selectable, so it is
+  excluded: also run `grep -n 'filter { $0 != .vectorGlyph }'
+  Sources/LabanRenderer/RendererSelection.swift` and expect exactly one hit
+  (`selectableCases` leaves it out).
 - [ ] Run the headless fixture command in Concrete Steps; expect exit 0.
   Then copy `fixtures/kitty-graphics.fixture.json` to a temporary file with
   `"kittyGraphics": false` and run the same command on the copy; expect exit
@@ -710,4 +714,26 @@ A fresh agent performs these checks after Milestone 5 (see `PLANS.md`,
   Status, Context, Decision, Consequences, Applies To New Code, and an index
   line for it in `docs/adr/README.md`.
 
-Review status: NOT REVIEWED
+Review status: NOT REVIEWED (re-review pending after review 1)
+
+Review 1 (FAILED 2026-09-24T22:03Z at 2bfe2b8a). Findings (filled in by the
+review agent):
+
+- PASS tests: `swift test --skip-build --filter` each exit 0; LabanKittyGraphicsTests
+  9 tests, KittyImageParityTests 2 tests, LabanSessionTests 113 tests, 0 failures.
+- PASS ADR 0004 grep: zero hits outside `Sources/LabanTerminalCore/`.
+- PASS file medium: single hit `Sources/LabanTerminalCore/kitty_graphics.c:141`,
+  set from `bool file_medium = false;` (line 139).
+- FAIL texturedQuad: `Sources/LabanRenderer/VectorGlyphRenderer.swift:1501` is
+  `case .texturedQuad, .waveRegion:` followed only by `break`. The other hits
+  (MetalRenderer.swift:3017/3874/4150, SlugGlyphRenderer.swift:2355,
+  SoftwareRenderer.swift:121) draw the image. Plan line 310 calls `vectorGlyph`
+  retired (ADR 0033) and out of scope, but the gate item has no exclusion. Fix
+  it by drawing images there, or by rewording the gate item to exclude
+  VectorGlyphRenderer explicitly and giving the reason.
+- PASS fixture: the committed fixture exits 0. The copy with
+  `"kittyGraphics": false` exits 1 with exactly 4 `pixel probe failed` lines
+  (cells [2,1] [6,1] [2,3] [6,3] got 103C48FF).
+- PASS `./scripts/check-dependencies` printed `check-dependencies passed`.
+- PASS ADR: 0035 has Status, Context, Decision, Consequences, and Applies To New
+  Code; it is indexed at `docs/adr/README.md:43`.

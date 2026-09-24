@@ -82,8 +82,10 @@ The design had to respect the following:
 
 1. Only `LabanTerminalCore` touches `ghostty_kitty_graphics_*` and
    `GhosttyKittyGraphics*` handles.
-2. New renderers draw `.texturedQuad` in all three `ImageLayer`s through
-   `FrameImageStore`; a `case .texturedQuad: break` is a bug.
+2. Every selectable renderer (`RendererSelection.selectableCases`) draws
+   `.texturedQuad` in all three `ImageLayer`s through `FrameImageStore`; a
+   `case .texturedQuad: break` there is a bug. The retired
+   `VectorGlyphRenderer` (ADR 0033) is exempt.
 3. Keep `GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE` false unless a new ADR
    accepts the local-file-read exposure.
 4. Key image caches by resource id (image generation). Never compare pixels
