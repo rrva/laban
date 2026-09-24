@@ -138,6 +138,8 @@ The default monospace font stack or bundled font must cover the glyphs common te
 
 Inline image protocols are terminal-core state, not ad hoc UI state. The terminal core owns image IDs, storage limits, and placement metadata; the renderer maps visible placements to cell coordinates. A production renderer caches uploaded image resources by image identity and destroys renderer resources only after in-flight frames no longer reference them.
 
+Laban supports the Kitty graphics protocol (ADR 0035), on by default and switchable off with the `LabanKittyGraphicsEnabled` user default. Programs can transmit images inline, through shared memory, or as temporary files; the plain file transmission medium stays off, because it would let whatever writes to the terminal (a remote host, a `cat`-ed file) make Laban read arbitrary local paths. Images are stored per screen up to 64 MB each, with the oldest evicted beyond that. Placements draw in the protocol's three z bands (below cell backgrounds, between backgrounds and text, above text), scroll and clip with the text, and render identically in every selectable renderer and in the headless runtime. Animation and Unicode-placeholder placements are not yet drawn. Multi-client `laband` sessions report no graphics support. A session with graphics disabled neither stores images nor answers protocol queries, so programs fall back to text.
+
 The vector glyph renderer is retired (ADR 0033) and no longer selectable; any
 persisted preference for it migrates to Slug Glyph on launch. It rasterized a
 glyph mask per quantized sub-pixel phase to glide fractional-offset scrolling,

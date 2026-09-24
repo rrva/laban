@@ -3486,9 +3486,10 @@ final class LabanSessionTests: XCTestCase {
     }
     defer { laban_session_destroy(session) }
 
-    // Laban cannot draw Kitty images yet, so it must not claim support:
-    // programs probe with a=q and only fall back to text art when no OK
-    // arrives (execplans/active/kitty-graphics-rendering.md, Milestone 0).
+    // With Kitty graphics disabled (the terminal core's default until a host
+    // applies KittyGraphicsSettings; laband always) a session must not claim
+    // support: programs probe with a=q and only fall back to text art when no
+    // OK arrives (execplans/active/kitty-graphics-rendering.md, Milestone 0).
     writeBytes(session, Array("\u{1b}_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u{1b}\\".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8), "",

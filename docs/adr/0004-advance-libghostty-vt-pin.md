@@ -67,7 +67,8 @@ Evaluate upstream additions conservatively:
 ## Applies To New Code
 
 1. Keep `LabanTerminalCore` as the only layer that holds raw libghostty handles.
-2. Do not bind Kitty graphics helpers until the product docs include graphics
+2. (Superseded by `docs/adr/0035-kitty-graphics-rendering.md`, which binds
+   them.) Do not bind Kitty graphics helpers until the product docs include graphics
    display behavior.
 3. Prefer existing Ghostty terminal-mode synchronization before adding
    Laban-side mode mirrors for key or mouse encoding.

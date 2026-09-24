@@ -62,10 +62,13 @@ agent multiplexers:
   `Tests/LabanTerminalCoreTests/`.
 - [ ] M2 — Host Appearance Reporting: Implement `CSI ? 996 n` query replies and live
   DEC Mode 2031 `CSI ? 997;1/2 n` notifications in `osc_host.c`.
-- [ ] M3 — OSC 4 Palette Query Responses: Implement `OSC 4;<idx>;?` handling in `osc_host.c`.
-- [ ] M4 — Kitty Graphics Rendering Pipeline: Implement Kitty graphics consumption
-  in `LabanTerminalCore` and textured quad rendering in `MetalRenderer` (aligning
-  with M2 of `kimi-code-terminal-capability-gaps.md`).
+- [x] (2026-09-24) M3 — OSC 4 Palette Query Responses: libghostty answers
+  `OSC 4;<idx>;?` itself since the Ghostty `7c40388b` pin (ADR 0034); covered by
+  `LabanSessionTests.testOSC4PaletteQueryRepliesWithPaletteEntry`. No
+  `osc_host.c` change needed.
+- [x] (2026-09-24) M4 — Kitty Graphics Rendering Pipeline: delivered by
+  `execplans/active/kitty-graphics-rendering.md` (ADR 0035) for every selectable
+  renderer. Animation and Unicode placeholders remain that plan's Milestone 4.
 - [ ] M5 — Workspace Multiplexer Session Resume Adapter in `AgentSupport.swift`.
 - [ ] Review Gate passed.
 
@@ -104,7 +107,7 @@ Every path is repository-relative to `~/wrk/laban`.
 | **OSC 9/99 Notifications** | `\x1b]9;<msg>\x1b\`, `\x1b]99;...\x1b\` | ✅ Supported | None (parsed in `osc_host.c:272` and posted to macOS) |
 | **Host Appearance Mode 2031** | `CSI ? 2031 h/l`, `CSI ? 996 n` -> `CSI ? 997;1/2 n` | ❌ Gap | Implement responder in `osc_host.c` (Milestone M2) |
 | **OSC 4 Palette Queries** | `\x1b]4;<idx>;?\x1b\` -> `\x1b]4;<idx>;rgb:...\x1b\` | ❌ Gap | Implement responder in `osc_host.c` (Milestone M3) |
-| **Kitty Graphics Protocol** | `\x1b_G...;payload\x1b\` | ⚠️ Partial | Renderer ignores quads (Milestone M4) |
+| **Kitty Graphics Protocol** | `\x1b_G...;payload\x1b\` | ✅ Supported | Static images in every renderer (ADR 0035); animation and Unicode placeholders pending |
 | **Workspace Restore Adapter** | Process restore / auto-reattach invocation | ❌ Missing | Add adapter to `AgentSupport.swift` (Milestone M5) |
 
 ## Decision Log

@@ -276,6 +276,10 @@ public final class HeadlessDebugRuntime {
     var initialRows = 24
     var initialCols = 80
 
+    // Parity with AppDelegate: the persisted Kitty graphics setting, which a
+    // fixture's `terminal.kittyGraphics` may override below.
+    KittyGraphicsSettings.applyProcessWide()
+
     var runner: FixtureRunner? = nil
     if let url = fixtureURL {
       let r = try FixtureRunner.load(from: url)

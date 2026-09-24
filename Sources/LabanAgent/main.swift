@@ -772,6 +772,7 @@ initialSize.cols = Int32(runner.fixture.initialSize.cols)
 initialSize.cell_width = Int32(cellW)
 initialSize.cell_height = Int32(cellH)
 
+KittyGraphicsSettings.applyProcessWide()
 runner.applyTerminalOptions()
 
 let model: AppModel

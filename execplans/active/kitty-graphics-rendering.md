@@ -107,8 +107,21 @@ Compare with the screenshots stored under the artifacts named in
     on `main`.
 - [ ] Milestone 4 (prototype first): animation playback and Unicode
   placeholders through a local libghostty-vt patch.
-- [ ] Milestone 5: enable by default, demo script, docs (spec, ADR 0035,
-  ADR 0004 amendment), installed-app check including herdr.
+- [x] (2026-09-24) Milestone 5 (code and docs):
+  - `KittyGraphicsSettings` (default on; `LabanKittyGraphicsEnabled` user
+    default, with the `LABAN_KITTY_GRAPHICS` env override) is applied at
+    startup by `AppDelegate`, `HeadlessDebugRuntime` and `laban-agent`;
+    `laband` forces it off;
+  - `scripts/kitty-graphics-demo` (checker, chunked 64x64 PNG from
+    `fixtures/kitty-graphics/gradient-disc-64.png`, translucent z=-1 bar
+    under text), whose output renders correctly in a headless run;
+  - spec.md now describes the behavior; new ADR 0035 with an index line;
+    ADR 0004 rule 2 is marked superseded;
+  - agent-multiplexer plan M3/M4 are checked off;
+  - `KittyGraphicsSettingsTests` (3). Full `swift test`: 3,348 passed; the
+    same 14 failures that already fail on `main`.
+- [ ] Milestone 5 (installed app): run `scripts/kitty-graphics-demo`,
+  scroll/`clear`/delete, and show an image inside a herdr pane.
 - [ ] Review Gate passed.
 
 ## Decision Log

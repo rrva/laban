@@ -1,0 +1,66 @@
+#!/bin/sh
+# Show Kitty graphics protocol images in the current terminal, to check
+# Laban's inline image support by eye (execplans/active/kitty-graphics-rendering.md).
+#
+#   scripts/kitty-graphics-demo
+#
+# Draws, top to bottom:
+#   1. a 2x2 RGB checker (red, green / blue, white) scaled to 8x4 cells;
+#   2. a 64x64 PNG (a gradient disc with a transparent surround), sent in
+#      several chunks the way real tools transmit large images;
+#   3. a translucent magenta bar behind a line of text (z=-1: below text,
+#      above cell backgrounds).
+# Then deletes nothing: scroll, resize or `clear` to see images follow the
+# text; `printf '\033_Ga=d\033\\'` deletes them all.
+#
+# Requires only POSIX sh, base64 and fold. In a terminal without Kitty
+# graphics the escape sequences are ignored and only the captions show.
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+png="$repo_root/fixtures/kitty-graphics/gradient-disc-64.png"
+
+# One graphics command: ESC _ G <keys> ; <payload> ESC \
+kitty() {
+    printf '\033_G%s;%s\033\\' "$1" "$2"
+}
+
+# Transmit and display base64 data, split into the protocol's 4096-byte
+# chunks: every chunk but the last carries m=1; keys go on the first only.
+kitty_chunked() {
+    keys=$1
+    data=$2
+    first=1
+    printf '%s' "$data" | fold -w 4096 | {
+        chunks=$(cat)
+        count=$(printf '%s\n' "$chunks" | wc -l | tr -d ' ')
+        index=0
+        printf '%s\n' "$chunks" | while IFS= read -r chunk; do
+            index=$((index + 1))
+            more=1
+            [ "$index" -eq "$count" ] && more=0
+            if [ "$first" -eq 1 ]; then
+                kitty "$keys,m=$more" "$chunk"
+                first=0
+            else
+                kitty "m=$more" "$chunk"
+            fi
+        done
+    }
+}
+
+printf 'Kitty graphics demo\n\n'
+
+printf '1. 2x2 RGB checker scaled to 8x4 cells:\n'
+kitty 'a=T,f=24,s=2,v=2,c=8,r=4,q=2' '/wAAAP8AAAD/////'
+printf '\n\n'
+
+printf '2. 64x64 PNG with alpha, sent in chunks:\n'
+kitty_chunked 'a=T,f=100,q=2' "$(base64 < "$png" | tr -d '\n')"
+printf '\n\n'
+
+printf '3. Translucent image behind text (z=-1):\n'
+# 1x1 RGBA magenta at 50%% alpha, stretched over 44x1 cells; C=1 leaves the
+# cursor in place so the text prints over it.
+kitty 'a=T,f=32,s=1,v=1,c=44,r=1,z=-1,C=1,q=2' '/wD/gA=='
+printf 'text drawn over a translucent kitty image\n\n'

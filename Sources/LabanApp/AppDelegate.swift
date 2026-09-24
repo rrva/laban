@@ -66,6 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   private var secureInputEngaged = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    // Kitty graphics is fixed per session at creation: set it before any
+    // window (and therefore any terminal session) exists.
+    KittyGraphicsSettings.applyProcessWide()
     // Held letter keys must repeat, not raise the diacritic picker. Register
     // the opt-out before any window (and therefore any key event) exists.
     PressAndHoldSettings.disableAccentPanel()
