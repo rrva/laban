@@ -289,6 +289,8 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <true/>
     <key>NSFocusStatusUsageDescription</key>
     <string>$(xml_escape "$focus_usage_description")</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Programs you run in Laban, such as ssh, connect to devices on your local network.</string>
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 Ragnar Rova</string>
     <key>CFBundleURLTypes</key>
