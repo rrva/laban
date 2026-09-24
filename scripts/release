@@ -80,11 +80,15 @@ step "1. Build, sign (Developer ID + hardened runtime), notarize, staple, zip"
 LABAN_WMO_PROFILE=1 LABAN_NOTARY_PROFILE="$notary_profile" \
   ./scripts/package-zip "$version"
 
+step "1b. Wrap the notarized app in a drag-to-Applications DMG, notarize, staple"
+LABAN_NOTARY_PROFILE="$notary_profile" ./scripts/package-dmg "$version"
+
 step "2. Verify the packaged bundle"
 app_bundle=".build/laban/Laban.app"
 plutil -lint "$app_bundle/Contents/Info.plist" >/dev/null
 codesign --verify --deep --strict "$app_bundle"
 xcrun stapler validate "$app_bundle"
+xcrun stapler validate ".artifacts/release/Laban-${version}.dmg"
 printf 'feed: %s\n' "$(plutil -extract SUFeedURL raw -o - "$app_bundle/Contents/Info.plist")"
 printf 'version: %s (%s)\n' \
   "$(plutil -extract CFBundleShortVersionString raw -o - "$app_bundle/Contents/Info.plist")" \

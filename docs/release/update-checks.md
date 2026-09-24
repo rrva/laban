@@ -33,6 +33,15 @@ instead of checking.
 - **Notarization**: independent of Sparkle. Gatekeeper requires it for the
   downloaded zip to launch on other Macs, so `package-zip` notarizes when
   `LABAN_NOTARY_PROFILE` is set.
+- **Downloads**: each release carries two assets. `Laban-<version>.dmg` is the
+  download for people (drag-to-Applications window); link to it. The zip is
+  the Sparkle enclosure only. `scripts/package-dmg` builds the DMG from the
+  notarized zip, so both hold the identical app, then signs, notarizes, and
+  staples the DMG itself. The image is APFS on purpose: HFS+ normalizes file
+  names to Unicode NFD, which breaks the code seal over the bundled
+  `rosé-pine*` themes. A DMG matters because an app run straight out of
+  `~/Downloads` is translocated to a read-only path where Sparkle cannot
+  update it.
 
 One-time setup:
 
@@ -62,8 +71,11 @@ $EDITOR .artifacts/release/Laban-<version>.md
 # 2. Build, sign (Developer ID + hardened runtime), notarize, staple, zip.
 LABAN_NOTARY_PROFILE=laban-notary ./scripts/package-zip <version>
 
+# 2b. Wrap that app in a DMG; sign, notarize, staple the DMG.
+LABAN_NOTARY_PROFILE=laban-notary ./scripts/package-dmg <version>
+
 # 3. Commit and push the code, and push/create the tag v<version>.
-# 4. Create the GitHub release, upload the zip, regenerate appcast.xml.
+# 4. Create the GitHub release, upload the zip and DMG, regenerate appcast.xml.
 ./scripts/publish-release <version>
 
 # 5. Review, commit, and push appcast.xml (the script does not touch git).

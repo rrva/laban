@@ -28,6 +28,7 @@ version=$1
 [ -n "$version" ] || usage
 tag="v${version}"
 zip=".artifacts/release/Laban-${version}.zip"
+dmg=".artifacts/release/Laban-${version}.dmg"
 notes=".artifacts/release/Laban-${version}.md"
 
 [ -f "$zip" ] || {
@@ -40,14 +41,24 @@ command -v gh >/dev/null 2>&1 || {
   exit 1
 }
 
+# The DMG (scripts/package-dmg) is the download for people; the zip stays the
+# Sparkle enclosure. Attach the DMG whenever it has been built.
+assets="$zip"
+if [ -f "$dmg" ]; then
+  assets="$zip $dmg"
+fi
+
 if gh release view "$tag" >/dev/null 2>&1; then
   printf 'publish-release: release %s exists; uploading asset\n' "$tag"
-  gh release upload "$tag" "$zip" --clobber
+  # shellcheck disable=SC2086
+  gh release upload "$tag" $assets --clobber
 else
   if [ -f "$notes" ]; then
-    gh release create "$tag" --title "Laban ${version}" --notes-file "$notes" "$zip"
+    # shellcheck disable=SC2086
+    gh release create "$tag" --title "Laban ${version}" --notes-file "$notes" $assets
   else
-    gh release create "$tag" --title "Laban ${version}" --generate-notes "$zip"
+    # shellcheck disable=SC2086
+    gh release create "$tag" --title "Laban ${version}" --generate-notes $assets
   fi
 fi
 

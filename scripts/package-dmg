@@ -1,0 +1,118 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/package-dmg <version>
+
+Wrap the app from .artifacts/release/Laban-<version>.zip (built by
+scripts/package-zip) in a drag-to-Applications disk image next to it:
+.artifacts/release/Laban-<version>.dmg.
+
+The DMG is the download for people; the zip stays the Sparkle enclosure.
+Building from the zip, not from .build, guarantees both carry the identical
+(already stapled) app.
+
+Environment:
+  LABAN_CODESIGN_IDENTITY     Signing identity for the DMG. Defaults to the
+                              release identity; "-" skips signing.
+  LABAN_NOTARY_PROFILE        notarytool keychain profile. When set, the DMG is
+                              notarized and stapled; when unset it is left
+                              un-notarized (with a loud warning).
+  LABAN_RELEASE_DIR           Input/output directory. Defaults to .artifacts/release.
+EOF
+  exit 2
+}
+
+[ "$#" -eq 1 ] || usage
+version=$1
+[ -n "$version" ] || usage
+
+release_codesign_identity="Developer ID Application: Ragnar Rova (3563RJWBQP)"
+sign_identity=${LABAN_CODESIGN_IDENTITY:-$release_codesign_identity}
+release_dir=${LABAN_RELEASE_DIR:-.artifacts/release}
+zip="${release_dir}/Laban-${version}.zip"
+dmg="${release_dir}/Laban-${version}.dmg"
+
+[ -f "$zip" ] || {
+  printf 'package-dmg failed: missing %s (run scripts/package-zip %s first)\n' \
+    "$zip" "$version" >&2
+  exit 1
+}
+
+staging=$(mktemp -d "${TMPDIR:-/tmp}/laban-dmg.XXXXXX")
+trap 'rm -rf "$staging"' EXIT
+
+ditto -x -k "$zip" "$staging"
+[ -d "$staging/Laban.app" ] || {
+  printf 'package-dmg failed: %s does not contain Laban.app\n' "$zip" >&2
+  exit 1
+}
+stamped_version=$(plutil -extract CFBundleShortVersionString raw -o - \
+  "$staging/Laban.app/Contents/Info.plist")
+if [ "$stamped_version" != "$version" ]; then
+  printf 'package-dmg failed: expected version %s, got %s\n' "$version" "$stamped_version" >&2
+  exit 1
+fi
+codesign --verify --deep --strict "$staging/Laban.app"
+
+# The Applications alias is what turns the mounted image into the familiar
+# drag-to-install window. Running straight from ~/Downloads instead gets the
+# app translocated to a read-only path, where Sparkle cannot update it.
+ln -s /Applications "$staging/Applications"
+
+# APFS, not HFS+: HFS+ rewrites file names into Unicode NFD, which renames the
+# bundled `rosé-pine*` themes out from under the code seal and gets the DMG
+# rejected by notarization ("The signature of the binary is invalid").
+rm -f "$dmg" "${dmg}.tmp.dmg"
+hdiutil create -volname "Laban ${version}" -srcfolder "$staging" \
+  -fs APFS -format UDZO -ov "${dmg}.tmp.dmg" >/dev/null
+
+# Verify the app as it sits inside the image before spending a notarization
+# round-trip on it: the filesystem conversion is what can break the seal.
+mountpoint=$(mktemp -d "${TMPDIR:-/tmp}/laban-dmg-mnt.XXXXXX")
+hdiutil attach -nobrowse -readonly -mountpoint "$mountpoint" "${dmg}.tmp.dmg" >/dev/null
+if ! codesign --verify --deep --strict "$mountpoint/Laban.app"; then
+  hdiutil detach "$mountpoint" >/dev/null
+  printf 'package-dmg failed: Laban.app signature does not survive the disk image\n' >&2
+  exit 1
+fi
+hdiutil detach "$mountpoint" >/dev/null
+rmdir "$mountpoint"
+mv "${dmg}.tmp.dmg" "$dmg"
+
+if [ "$sign_identity" != "-" ]; then
+  codesign --force --timestamp --sign "$sign_identity" "$dmg"
+  codesign --verify --strict "$dmg"
+fi
+
+if [ -n "${LABAN_NOTARY_PROFILE:-}" ]; then
+  if [ "$sign_identity" = "-" ]; then
+    printf 'package-dmg failed: notarization requires Developer ID signing, not ad-hoc\n' >&2
+    exit 1
+  fi
+  printf 'package-dmg: submitting for notarization (profile %s)\n' "$LABAN_NOTARY_PROFILE"
+  # `notarytool submit --wait` exits 0 even when Apple answers "Invalid", so
+  # check the verdict here and point at the log instead of failing at staple.
+  submit_output=$(xcrun notarytool submit "$dmg" \
+    --keychain-profile "$LABAN_NOTARY_PROFILE" --wait 2>&1) || true
+  printf '%s\n' "$submit_output" | grep -v 'Current status: In Progress'
+  if ! printf '%s\n' "$submit_output" | grep -q 'status: Accepted'; then
+    submission_id=$(printf '%s\n' "$submit_output" | awk '/^  id: /{print $2; exit}')
+    printf 'package-dmg failed: notarization did not accept the DMG; see\n' >&2
+    printf '  xcrun notarytool log %s --keychain-profile %s\n' \
+      "$submission_id" "$LABAN_NOTARY_PROFILE" >&2
+    exit 1
+  fi
+  xcrun stapler staple "$dmg"
+  xcrun stapler validate "$dmg"
+  spctl --assess --type open --context context:primary-signature "$dmg"
+  printf 'package-dmg: notarized and stapled\n'
+else
+  printf 'package-dmg: WARNING: LABAN_NOTARY_PROFILE unset; DMG is NOT notarized.\n' >&2
+fi
+
+printf 'package-dmg: %s\n' "$dmg"
