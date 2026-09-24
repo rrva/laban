@@ -111,7 +111,7 @@ Current state (pre-change):
   `Curve25519.Signing.PrivateKey`), verified by a successful `sign_update
   --ed-key-file` run. The user can later import it into the Keychain with
   `generate_keys -f <file>` and/or stash it in a Passwords-app entry.
-  Public key (SUPublicEDKey): `xcKNd45TiWMIJJvqXtH7H4POqTNLwgHjTVrh48lx3u0=`
+  Public key (SUPublicEDKey): `oVK33s2gbGeLRwFVg5rGG3hrUDHLIZWDLz6tJ2wm1Ao=`
   Date/Author: 2026-08-20 / implementation discovery.
 
 ## Progress

@@ -18,7 +18,7 @@ sparkle_feed_url=${LABAN_SPARKLE_FEED_URL:-}
 # is public information (it ships inside every released app), so baking it in
 # here is not a secret leak. The private half never enters the repo: it lives
 # in the maintainer's key file / Keychain (see docs/release/update-checks.md).
-sparkle_public_key="xcKNd45TiWMIJJvqXtH7H4POqTNLwgHjTVrh48lx3u0="
+sparkle_public_key="oVK33s2gbGeLRwFVg5rGG3hrUDHLIZWDLz6tJ2wm1Ao="
 build_config=${LABAN_BUILD_CONFIG:-debug}
 
 # --profile produces an Instruments-friendly .app: release config with
