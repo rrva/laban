@@ -1,0 +1,23 @@
+Sources/LabanApp/MenuCommands.swift
+  s_a07b4db937b417::t_59feadf52756f2 194-205
+Sources/LabanApp/SettingsWindowController.swift
+  s_a07b4db937b417::t_8d47c3c3dbf410 601,887
+Tests/LabanAppTests/SidebarMenuToggleTests.swift
+  s_a07b4db937b417::t_dd07f9cef0464f 1-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c33bdc843f84ca6414364d85486b3846255eff0d",
+  "prompts": {},
+  "sessions": {
+    "s_a07b4db937b417": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2c430f31-a4aa-4bd6-a50d-73d27c91de8c",
+        "model": "unknown"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
