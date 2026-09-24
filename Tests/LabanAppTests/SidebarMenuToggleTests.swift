@@ -78,6 +78,17 @@ final class SidebarMenuToggleTests: XCTestCase {
     XCTAssertTrue(SidebarVisibilitySettings.visible)
   }
 
+  /// Launching with the sidebar already hidden must not draw a sidebar that
+  /// hit-testing ignores: the drawn width and the hit-test width start equal.
+  func testLaunchingWithTheSidebarHiddenDrawsNoSidebar() throws {
+    defer { SidebarVisibilitySettings.setVisible(true) }
+    SidebarVisibilitySettings.setVisible(false)
+
+    let widths = try makeTerminalView().sidebarWidthsForTesting
+    XCTAssertEqual(widths.hitTest, 0)
+    XCTAssertEqual(widths.drawn, 0)
+  }
+
   private func makeTerminalView() throws -> TerminalBitmapView {
     var size = LabanTerminalSize()
     size.rows = 5

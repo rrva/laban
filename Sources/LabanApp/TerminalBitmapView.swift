@@ -865,7 +865,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       model: model,
       cellWidth: cellWidth,
       cellHeight: cellHeight,
-      sidebarWidth: SidebarLayout.defaultWidth,
+      // Must match `self.sidebarWidth`: the surface draws the sidebar at this
+      // width while hit-testing uses the view's copy, so a launch with the
+      // sidebar hidden would otherwise paint a sidebar that ignores clicks.
+      sidebarWidth: SidebarVisibilitySettings.effectiveWidth(
+        SidebarLayout.defaultWidth, visible: SidebarVisibilitySettings.visible),
       sidebarCellWidth: sidebarFontAtlas.cellSize.width,
       sidebarCellHeight: sidebarFontAtlas.cellSize.height,
       previewCellWidth: self.previewFontAtlas.cellSize.width,
@@ -5335,6 +5339,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
   var sidebarScrollOffsetForTesting: CGFloat {
     currentSidebarScrollOffsetForHitTesting()
+  }
+  /// The width hit-testing uses and the width the surface draws, which must
+  /// never disagree.
+  var sidebarWidthsForTesting: (hitTest: CGFloat, drawn: CGFloat) {
+    (sidebarWidth, surfaceController.sidebarWidth)
   }
 
   private func resetSidebarScrollState(to offset: Double = 0) {
