@@ -1,0 +1,19 @@
+scripts/make-appcast
+  s_00c9eddc0fe887::t_2f81fbc69fd862 69-71,74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5492ae81bc363e070cce2ad78eb11c11372ff662",
+  "prompts": {},
+  "sessions": {
+    "s_00c9eddc0fe887": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "888b66d7-32ad-4555-9d28-59256edd6dce",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
