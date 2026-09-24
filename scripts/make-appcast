@@ -66,8 +66,12 @@ elif [ -f .artifacts/sparkle/laban-ed25519-private-key ]; then
   key_args="--ed-key-file .artifacts/sparkle/laban-ed25519-private-key"
 fi
 
+# Embed the notes in the feed: without this, generate_appcast emits a
+# releaseNotesLink under the feed's own URL prefix (raw.githubusercontent.com
+# /main/Laban-<version>.md), a file nothing publishes, so the update window 404s.
 # shellcheck disable=SC2086
 "$sparkle_bin/generate_appcast" $key_args \
+  --embed-release-notes \
   --download-url-prefix "https://github.com/rrva/laban/releases/download/v${version}/" \
   "$archives"
 
