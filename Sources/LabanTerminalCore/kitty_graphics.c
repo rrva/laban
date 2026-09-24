@@ -117,6 +117,8 @@ void laban_kitty_configure_terminal(LabanSession *s) {
     s->kitty_placement_iter = NULL;
     s->kitty_last_snapshot_signature = 0;
     s->kitty_last_rendered_signature = 0;
+    s->kitty_last_snapshot_storage_generation = 0;
+    s->kitty_last_rendered_storage_generation = 0;
 
     if (!s->kitty_enabled) {
         /* libghostty enables the protocol by default (10 MB). A zero limit
@@ -196,6 +198,14 @@ static GhosttyKittyGraphics kitty_graphics_locked(LabanSession *s) {
         return NULL;
     }
     return graphics;
+}
+
+uint64_t laban_kitty_storage_generation_locked(LabanSession *s) {
+    GhosttyKittyGraphics graphics = kitty_graphics_locked(s);
+    if (!graphics) return 0;
+    uint64_t generation = 0;
+    ghostty_kitty_graphics_get(graphics, GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION, &generation);
+    return generation;
 }
 
 int laban_kitty_collect_placements_locked(

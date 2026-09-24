@@ -87,6 +87,8 @@ int laban_kitty_collect_placements_locked(
     LabanSession *s, LabanImagePlacement **out_placements, size_t *out_count,
     uint64_t *out_storage_generation, uint64_t *out_signature);
 void laban_kitty_free_resources(LabanSession *s);
+/* Current storage generation (0 when disabled); cheap, no iteration. */
+uint64_t laban_kitty_storage_generation_locked(LabanSession *s);
 
 /* Vectorized skip for the raw-output scanners below (tab_status.c, osc133.c,
  * osc_host.c). In their bulk "skip" states the state machines react only to
@@ -333,6 +335,12 @@ struct LabanSession {
     GhosttyKittyGraphicsPlacementIterator kitty_placement_iter;
     uint64_t kitty_last_snapshot_signature;
     uint64_t kitty_last_rendered_signature;
+    /* libghostty's storage generation changes on every transmit, placement
+     * and delete, but image changes do not mark libghostty's render state
+     * dirty. laban_session_render_dirty compares it against the value the last
+     * rendered snapshot observed, so image-only output still gets a frame. */
+    uint64_t kitty_last_snapshot_storage_generation;
+    uint64_t kitty_last_rendered_storage_generation;
 
     int capture_fd;      /* file descriptor for PTY-byte capture; -1 if inactive */
     LabanCaptureBytesCallback capture_callback;

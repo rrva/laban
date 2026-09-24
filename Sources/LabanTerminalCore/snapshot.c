@@ -693,6 +693,7 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         return -1;
     }
     s->kitty_last_snapshot_signature = kitty_signature;
+    s->kitty_last_snapshot_storage_generation = kitty_storage_generation;
     if (kitty_signature != s->kitty_last_rendered_signature && dirty_rows && rows > 0) {
         memset(dirty_rows, 1, (size_t)rows);
     }
@@ -756,6 +757,13 @@ int laban_session_render_dirty(LabanSession *session, int *out_dirty) {
     ghostty_render_state_get(session->render_state,
         GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty_state);
     *out_dirty = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
+    /* Image transmits, placements and deletes leave the render state clean;
+       a storage generation the last rendered frame has not seen needs one. */
+    if (!*out_dirty && session->kitty_enabled &&
+        laban_kitty_storage_generation_locked(session)
+            != session->kitty_last_rendered_storage_generation) {
+        *out_dirty = 1;
+    }
     return 0;
 }
 
@@ -823,6 +831,8 @@ int laban_session_mark_rendered(LabanSession *session) {
         session->last_rendered_viewport_offset_valid = 1;
     }
     session->kitty_last_rendered_signature = session->kitty_last_snapshot_signature;
+    session->kitty_last_rendered_storage_generation =
+        session->kitty_last_snapshot_storage_generation;
 
     return 0;
 }

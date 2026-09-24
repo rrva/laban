@@ -164,6 +164,40 @@ final class LabanKittyGraphicsTests: XCTestCase {
     XCTAssertTrue(try dirtyRows(session).allSatisfy { $0 != 0 }, "deleting an image forces full damage")
   }
 
+  /// The app renders a session only when `laban_session_render_dirty` says
+  /// so. Image changes without accompanying text (a placement with C=1, a
+  /// delete) must still report dirty, or they only appear on the next
+  /// unrelated repaint.
+  func testImageOnlyChangesReportRenderDirty() throws {
+    let session = try makeSession()
+    defer { laban_session_destroy(session) }
+    // Transmit without displaying, then settle to a rendered, idle state.
+    write(session, "\u{1b}_Gi=7,a=t,f=24,s=2,v=2,q=2;\(checkerBase64)\u{1b}\\")
+    renderAndMark(session)
+    XCTAssertFalse(renderDirty(session), "idle after rendering")
+
+    write(session, "\u{1b}_Ga=p,i=7,C=1,q=2\u{1b}\\")
+    XCTAssertTrue(renderDirty(session), "placing an image (cursor unmoved) needs a frame")
+    renderAndMark(session)
+    XCTAssertFalse(renderDirty(session), "the rendered placement is not re-dirtied")
+
+    write(session, "\u{1b}_Ga=d,d=A,q=2\u{1b}\\")
+    XCTAssertTrue(renderDirty(session), "deleting an image needs a frame")
+    renderAndMark(session)
+    XCTAssertFalse(renderDirty(session))
+  }
+
+  private func renderDirty(_ session: OpaquePointer) -> Bool {
+    var dirty: Int32 = 0
+    XCTAssertEqual(laban_session_render_dirty(session, &dirty), 0)
+    return dirty != 0
+  }
+
+  private func renderAndMark(_ session: OpaquePointer) {
+    _ = try? snapshotPlacements(session)
+    XCTAssertEqual(laban_session_mark_rendered(session), 0)
+  }
+
   // MARK: - Helpers
 
   private func makeSession(rows: Int32 = 24, cols: Int32 = 80) throws -> OpaquePointer {
