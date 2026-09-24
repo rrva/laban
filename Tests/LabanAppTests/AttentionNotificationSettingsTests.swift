@@ -14,20 +14,20 @@ final class AttentionNotificationSettingsTests: XCTestCase {
     super.tearDown()
   }
 
-  func testDefaultsFavorActionNeededOnly() {
+  func testDefaultsFavorAgentNeedsActionAndCompletion() {
     XCTAssertTrue(AttentionNotificationSettings.isEnabled(for: .needsAction))
-    XCTAssertFalse(AttentionNotificationSettings.isEnabled(for: .completion))
+    XCTAssertTrue(AttentionNotificationSettings.isEnabled(for: .completion))
     XCTAssertFalse(AttentionNotificationSettings.isEnabled(for: .passive))
     XCTAssertFalse(AttentionNotificationSettings.soundEnabled)
   }
 
-  func testSetCategoryEnabledPersistsPreference() {
-    AttentionNotificationSettings.setEnabled(true, for: .completion)
+  func testSetCategoryDisabledPersistsPreference() {
+    AttentionNotificationSettings.setEnabled(false, for: .completion)
 
-    XCTAssertTrue(AttentionNotificationSettings.isEnabled(for: .completion))
+    XCTAssertFalse(AttentionNotificationSettings.isEnabled(for: .completion))
     XCTAssertEqual(
       UserDefaults.standard.object(forKey: AttentionNotificationSettings.completionKey) as? Bool,
-      true)
+      false)
   }
 
   func testSetCategoryDisabledRoundTrips() {

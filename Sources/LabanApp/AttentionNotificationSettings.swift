@@ -18,7 +18,7 @@ enum AttentionNotificationSettings {
   }
 
   static var completionEnabled: Bool {
-    bool(forKey: completionKey, defaultValue: false)
+    bool(forKey: completionKey, defaultValue: true)
   }
 
   static var passiveEnabled: Bool {
