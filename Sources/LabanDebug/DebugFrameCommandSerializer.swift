@@ -63,10 +63,12 @@ struct DebugFrameCommandSerializer {
       return FrameCommandResponse(
         id: id, index: index, kind: "clip", source: "unknown",
         rect: Self.rectResponse(rect))
-    case .texturedQuad(let rect, let resourceId, let source):
+    case .texturedQuad(let rect, let resourceId, let source, let layer, let sourceRect):
       return FrameCommandResponse(
         id: id, index: index, kind: "texturedQuad", source: source.rawValue,
-        rect: Self.rectResponse(rect), resourceId: String(resourceId))
+        rect: Self.rectResponse(rect), resourceId: String(resourceId),
+        imageLayer: Self.imageLayerName(layer),
+        sourceRect: sourceRect.isNull ? nil : Self.rectResponse(sourceRect))
     }
   }
 
@@ -110,7 +112,7 @@ struct DebugFrameCommandSerializer {
       return TraceCommand(
         id: id, index: index, kind: "clip",
         source: "unknown", rect: Self.rectResponse(rect))
-    case .texturedQuad(let rect, _, let source):
+    case .texturedQuad(let rect, _, let source, _, _):
       return TraceCommand(
         id: id, index: index, kind: "texturedQuad",
         source: source.rawValue, rect: Self.rectResponse(rect))
@@ -118,6 +120,14 @@ struct DebugFrameCommandSerializer {
       return TraceCommand(
         id: id, index: index, kind: "waveRegion", source: "terminal",
         rect: nil, text: nil, sourceRefs: nil, attributes: nil)
+    }
+  }
+
+  static func imageLayerName(_ layer: ImageLayer) -> String {
+    switch layer {
+    case .belowBackground: return "belowBackground"
+    case .belowText: return "belowText"
+    case .aboveText: return "aboveText"
     }
   }
 

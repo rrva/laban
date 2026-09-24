@@ -128,4 +128,26 @@ final class FixtureRunnerTests: XCTestCase {
       text.contains("hello mvp"),
       "visible text should contain 'hello mvp'; got: \(text.prefix(200))")
   }
+
+  func testKittyGraphicsFixtureDecodesTerminalOptionsAndPixelProbes() throws {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("fixtures/kitty-graphics.fixture.json")
+    let fixture = try FixtureRunner.load(from: url).fixture
+    XCTAssertEqual(fixture.terminal?.kittyGraphics, true)
+    let probes = try XCTUnwrap(fixture.expect?.pixelProbes)
+    XCTAssertEqual(probes.first, FixturePixelProbe(cell: [2, 1], is: [255, 0, 0, 255], tolerance: 8))
+    XCTAssertEqual(probes.last, FixturePixelProbe(cell: [20, 1], not: [255, 0, 0, 255]))
+  }
+
+  func testPixelProbeMatching() {
+    let red = FixturePixelProbe(x: 0, y: 0, is: [255, 0, 0, 255], tolerance: 8)
+    XCTAssertTrue(red.matches(0xFA04_00FF))
+    XCTAssertFalse(red.matches(0xF000_00FF), "15 off in red exceeds tolerance 8")
+    let exact = FixturePixelProbe(x: 0, y: 0, is: [255, 0, 0, 255])
+    XCTAssertFalse(exact.matches(0xFE00_00FF), "tolerance defaults to 0")
+    let notRed = FixturePixelProbe(x: 0, y: 0, not: [255, 0, 0, 255])
+    XCTAssertTrue(notRed.matches(0x1030_40FF))
+    XCTAssertFalse(notRed.matches(0xFF00_00FF))
+  }
 }

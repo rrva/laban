@@ -70,7 +70,10 @@ extension HeadlessDebugRuntime {
             images: lastDrawStats.images,
             cursor: lastDrawStats.cursor
           ),
-          emojiRendering: emojiRenderingSettingsResponse()
+          emojiRendering: emojiRenderingSettingsResponse(),
+          kittyGraphics: KittyGraphicsResponse(
+            enabled: laban_kitty_graphics_enabled(),
+            storedImages: FrameImageStore.shared.count)
         ))
     }
   }

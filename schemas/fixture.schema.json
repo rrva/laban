@@ -17,6 +17,13 @@
         "rows": {"type": "integer", "minimum": 1}
       }
     },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kittyGraphics": {"type": "boolean"}
+      }
+    },
     "steps": {
       "type": "array",
       "minItems": 1,
@@ -84,17 +91,33 @@
     },
     "pixelProbe": {
       "type": "object",
-      "required": ["x", "y", "not"],
+      "description": "Position: x/y in screenshot pixels (top-left origin) or cell = [column, row] in terminal cells, fractional allowed. Assertion: exactly one of is (match within tolerance per channel) or not.",
+      "oneOf": [
+        {"required": ["x", "y"]},
+        {"required": ["cell"]}
+      ],
+      "allOf": [
+        {"oneOf": [{"required": ["is"]}, {"required": ["not"]}]}
+      ],
       "properties": {
         "x": {"type": "integer", "minimum": 0},
         "y": {"type": "integer", "minimum": 0},
-        "not": {
+        "cell": {
           "type": "array",
-          "items": {"type": "integer", "minimum": 0, "maximum": 255},
-          "minItems": 4,
-          "maxItems": 4
-        }
+          "items": {"type": "number", "minimum": 0},
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "is": {"$ref": "#/$defs/rgba"},
+        "not": {"$ref": "#/$defs/rgba"},
+        "tolerance": {"type": "integer", "minimum": 0, "maximum": 255}
       }
+    },
+    "rgba": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 0, "maximum": 255},
+      "minItems": 4,
+      "maxItems": 4
     }
   }
 }

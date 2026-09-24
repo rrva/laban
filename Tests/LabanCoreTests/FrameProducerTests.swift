@@ -389,9 +389,11 @@ final class FrameProducerTests: XCTestCase {
     let cmd: FrameCommand = .texturedQuad(
       rect: CGRect(x: 0, y: 0, width: 16, height: 16),
       resourceId: 7,
-      source: .image
+      source: .image,
+      layer: .aboveText,
+      sourceRect: .null
     )
-    if case .texturedQuad(_, let rid, let src) = cmd {
+    if case .texturedQuad(_, let rid, let src, _, _) = cmd {
       XCTAssertEqual(rid, 7)
       XCTAssertEqual(src, .image)
     } else {

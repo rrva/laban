@@ -54,10 +54,64 @@ extension FixtureStep: Codable {
   }
 }
 
+/// One screenshot color assertion. The position is either `x`/`y` in
+/// screenshot pixels (top-left origin) or `cell` = [column, row] in terminal
+/// cells, fractional values allowed (`[0.5, 0.5]` is the centre of the first
+/// cell). Exactly one of `is` (the pixel must match within `tolerance` per
+/// channel) or `not` (the pixel must differ from the color) is set; colors
+/// are [r, g, b, a].
+public struct FixturePixelProbe: Codable, Equatable {
+  public let x: Int?
+  public let y: Int?
+  public let cell: [Double]?
+  public let `is`: [Int]?
+  public let not: [Int]?
+  public let tolerance: Int?
+
+  public init(
+    x: Int? = nil, y: Int? = nil, cell: [Double]? = nil, is expected: [Int]? = nil,
+    not excluded: [Int]? = nil, tolerance: Int? = nil
+  ) {
+    self.x = x
+    self.y = y
+    self.cell = cell
+    self.is = expected
+    self.not = excluded
+    self.tolerance = tolerance
+  }
+
+  /// Whether `rgba` (0xRRGGBBAA) satisfies the probe.
+  public func matches(_ rgba: UInt32) -> Bool {
+    let actual = [24, 16, 8, 0].map { Int((rgba >> UInt32($0)) & 0xFF) }
+    if let expected = self.is, expected.count == 4 {
+      let limit = tolerance ?? 0
+      return zip(actual, expected).allSatisfy { abs($0 - $1) <= limit }
+    }
+    if let excluded = not, excluded.count == 4 {
+      return actual != excluded
+    }
+    return false
+  }
+
+  public var description: String {
+    let position =
+      cell.map { "cell \($0)" } ?? "(\(x ?? -1), \(y ?? -1))"
+    if let expected = self.is { return "\(position) is \(expected) ±\(tolerance ?? 0)" }
+    return "\(position) not \(not ?? [])"
+  }
+}
+
 public struct FixtureExpect: Codable {
   public let title: String?
   public let nonEmptyScreenshot: Bool?
   public let containsText: [String]?
+  public let pixelProbes: [FixturePixelProbe]?
+}
+
+/// Terminal features a fixture needs switched on before its session exists.
+public struct FixtureTerminalOptions: Codable, Equatable {
+  /// Enables the Kitty graphics protocol (process-wide gate) for the run.
+  public let kittyGraphics: Bool?
 }
 
 public struct Fixture: Codable {
@@ -65,6 +119,7 @@ public struct Fixture: Codable {
   public let version: Int
   public let description: String?
   public let initialSize: FixtureInitialSize
+  public let terminal: FixtureTerminalOptions?
   public let steps: [FixtureStep]
   public let expect: FixtureExpect?
 }
@@ -91,6 +146,14 @@ public struct FixtureRunner {
     let data = try Data(contentsOf: url)
     let fixture = try JSONDecoder().decode(Fixture.self, from: data)
     return FixtureRunner(fixture: fixture)
+  }
+
+  /// Applies `fixture.terminal` process-wide. Call before creating the
+  /// fixture's session: terminal features are fixed at session creation.
+  public func applyTerminalOptions() {
+    if let kittyGraphics = fixture.terminal?.kittyGraphics {
+      laban_set_kitty_graphics_enabled(kittyGraphics)
+    }
   }
 
   // Applies all fixture steps to the active session; returns the sum of waitFrames counts.

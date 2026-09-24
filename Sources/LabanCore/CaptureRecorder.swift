@@ -57,6 +57,8 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
   private var sequence = 0
   private var eventCount = 0
   private var frames: Set<Int> = []
+  /// Image resource ids whose pixels are already in `images/`.
+  private var savedImageIds: Set<UInt64> = []
   private var finished = false
   private var interrupted = false
 
@@ -267,6 +269,7 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
     guard let data = try? FrameCommandCaptureCodec.encoder.encode(payload) else { return nil }
     let rel = String(format: "frames/frame-%06d.commands.json", frame)
     guard let hash = try? writeSidecar(data: data, relativePath: rel) else { return nil }
+    recordImages(referencedBy: commands)
     lock.lock()
     defer { lock.unlock() }
     frames.insert(frame)
@@ -280,6 +283,22 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
     event.backend = backend
     writeEventLocked(event)
     return CaptureFrameRef(path: rel, sha256: hash, commandCount: commands.count)
+  }
+
+  /// Saves the pixels of every image a frame references, once per resource
+  /// id, so renderer replay can draw `texturedQuad`s in a process that never
+  /// held the images (`CaptureImageSidecar`).
+  private func recordImages(referencedBy commands: [FrameCommand]) {
+    for command in commands {
+      guard case .texturedQuad(_, let resourceId, _, _, _) = command else { continue }
+      lock.lock()
+      let isNew = savedImageIds.insert(resourceId).inserted
+      lock.unlock()
+      guard isNew, let image = FrameImageStore.shared.image(for: resourceId) else { continue }
+      _ = try? writeSidecar(
+        data: CaptureImageSidecar.encode(image),
+        relativePath: CaptureImageSidecar.relativePath(for: resourceId))
+    }
   }
 
   @discardableResult
@@ -749,6 +768,11 @@ public struct CapturedFrameCommand: Codable, Equatable, Sendable {
   public var compositing: UInt8? = nil
   /// Monotonic keystroke-impulse stamp when present; omitted when unstamped.
   public var outputTimestampSeconds: Double? = nil
+  /// texturedQuad only: `ImageLayer` raw value and the sampled image-pixel
+  /// rectangle. Missing in captures written before Kitty graphics; decode
+  /// then falls back to an above-text quad over the whole image.
+  public var imageLayer: UInt8? = nil
+  public var sourceRect: CapturedRect? = nil
 }
 
 public struct CapturedRect: Codable, Equatable, Sendable {
@@ -766,6 +790,32 @@ public struct CapturedRect: Codable, Equatable, Sendable {
 
   public var cgRect: CGRect {
     CGRect(x: x, y: y, width: width, height: height)
+  }
+}
+
+/// Pixels of one `texturedQuad` image in a capture: `images/image-<id>.rgba`,
+/// an 8-byte header (width, height as little-endian UInt32) followed by
+/// straight RGBA8 rows top to bottom.
+public enum CaptureImageSidecar {
+  public static func relativePath(for resourceId: UInt64) -> String {
+    "images/image-\(resourceId).rgba"
+  }
+
+  public static func encode(_ image: FrameImage) -> Data {
+    var data = Data(capacity: 8 + image.rgba.count)
+    withUnsafeBytes(of: UInt32(image.width).littleEndian) { data.append(contentsOf: $0) }
+    withUnsafeBytes(of: UInt32(image.height).littleEndian) { data.append(contentsOf: $0) }
+    data.append(image.rgba)
+    return data
+  }
+
+  public static func decode(_ data: Data) -> FrameImage? {
+    guard data.count >= 8 else { return nil }
+    let bytes = [UInt8](data.prefix(8))
+    let width = Int(UInt32(bytes[0]) | UInt32(bytes[1]) << 8 | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24)
+    let height = Int(UInt32(bytes[4]) | UInt32(bytes[5]) << 8 | UInt32(bytes[6]) << 16 | UInt32(bytes[7]) << 24)
+    guard width > 0, height > 0, data.count == 8 + width * height * 4 else { return nil }
+    return FrameImage(width: width, height: height, rgba: Data(data.dropFirst(8)))
   }
 }
 
@@ -817,10 +867,11 @@ public enum FrameCommandCaptureCodec {
       case .clip(let rect):
         return CapturedFrameCommand(
           index: index, kind: "clip", source: "unknown", rect: CapturedRect(rect))
-      case .texturedQuad(let rect, let resourceId, let source):
+      case .texturedQuad(let rect, let resourceId, let source, let layer, let sourceRect):
         return CapturedFrameCommand(
           index: index, kind: "texturedQuad", source: source.rawValue,
-          rect: CapturedRect(rect), resourceId: resourceId)
+          rect: CapturedRect(rect), resourceId: resourceId,
+          imageLayer: layer.rawValue, sourceRect: CapturedRect(sourceRect))
       case .waveRegion:
         // Slug-only GPU sampling payload; replaying the cell's authoritative
         // colors needs nothing from it, so capture only its presence (decode
@@ -877,7 +928,10 @@ public enum FrameCommandCaptureCodec {
         return .clip(rect.cgRect)
       case "texturedQuad":
         guard let rect = item.rect, let resourceId = item.resourceId else { return nil }
-        return .texturedQuad(rect: rect.cgRect, resourceId: resourceId, source: source)
+        return .texturedQuad(
+          rect: rect.cgRect, resourceId: resourceId, source: source,
+          layer: item.imageLayer.flatMap(ImageLayer.init(rawValue:)) ?? .aboveText,
+          sourceRect: item.sourceRect?.cgRect ?? .null)
       default:
         return nil
       }

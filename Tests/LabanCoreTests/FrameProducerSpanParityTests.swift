@@ -45,8 +45,9 @@ final class FrameProducerSpanParityTests: XCTestCase {
       return "findSelected|\(r(rect))|\(color)"
     case .clip(let rect):
       return "clip|\(r(rect))"
-    case .texturedQuad(let rect, let resourceId, let source):
-      return "texturedQuad|\(r(rect))|\(resourceId)|\(source.rawValue)"
+    case .texturedQuad(let rect, let resourceId, let source, let layer, let sourceRect):
+      return
+        "texturedQuad|\(r(rect))|\(resourceId)|\(source.rawValue)|\(layer.rawValue)|\(r(sourceRect))"
     case .waveRegion:
       return "waveRegion"
     }

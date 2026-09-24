@@ -219,6 +219,11 @@ typedef struct {
     size_t image_placement_count;
     /* Storage-wide Kitty graphics generation; 0 when disabled. */
     uint64_t kitty_graphics_generation;
+    /* Cell size in device pixels as last given to laban_session_resize (0
+     * until then). Image placement pixel sizes and offsets are in these
+     * units; divide by them to convert to cells. */
+    uint32_t cell_width_px;
+    uint32_t cell_height_px;
 } LabanSnapshot;
 
 /* Creates a terminal session. On failure, *out_session is set to NULL. */

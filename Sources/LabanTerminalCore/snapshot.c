@@ -723,6 +723,8 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     snap->image_placements = placements;
     snap->image_placement_count = placement_count;
     snap->kitty_graphics_generation = kitty_storage_generation;
+    snap->cell_width_px = s->cell_width;
+    snap->cell_height_px = s->cell_height;
 
     *out_snapshot = snap;
     return 0;

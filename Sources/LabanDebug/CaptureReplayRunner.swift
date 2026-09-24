@@ -45,6 +45,9 @@ public enum CaptureReplayError: Error, Equatable, CustomStringConvertible, Senda
 public final class CaptureReplayRunner {
   private let captureURL: URL
   private let mode: CaptureReplayMode
+  /// Images renderer replay put into `FrameImageStore.shared`; removed again
+  /// when the replay finishes.
+  private var replayLoadedImageIds: Set<UInt64> = []
   private let fileManager = FileManager.default
 
   public init(captureURL: URL, mode: CaptureReplayMode = .both) {
@@ -403,6 +406,10 @@ public final class CaptureReplayRunner {
   private func runRendererReplay(events: [CaptureTimelineEvent]) throws -> (
     framesCompared: Int, mismatches: [CaptureReplayMismatch]
   ) {
+    defer {
+      FrameImageStore.shared.remove(replayLoadedImageIds)
+      replayLoadedImageIds.removeAll()
+    }
     var screenshotsByFrame: [Int: CaptureTimelineEvent] = [:]
     for event in events where event.kind == CaptureEventKind.screenshotCaptured.rawValue {
       if let frame = event.frame {
@@ -416,6 +423,7 @@ public final class CaptureReplayRunner {
       guard let path = event.path else { continue }
       let recorded = try loadFrameCommands(relativePath: path)
       let commands = FrameCommandCaptureCodec.commands(from: recorded.commands)
+      loadCapturedImages(referencedBy: commands)
       let surface = BitmapSurface(
         width: max(recorded.surface.width, 1),
         height: max(recorded.surface.height, 1),
@@ -643,6 +651,22 @@ public final class CaptureReplayRunner {
     }
 
     return events
+  }
+
+  /// Puts the captured pixels of every image the frame references into the
+  /// shared store (unless a live producer already holds them) so the replay
+  /// renderer draws the same `texturedQuad`s as the recorded frame.
+  private func loadCapturedImages(referencedBy commands: [FrameCommand]) {
+    for command in commands {
+      guard case .texturedQuad(_, let resourceId, _, _, _) = command,
+        !FrameImageStore.shared.contains(resourceId),
+        let data = try? Data(
+          contentsOf: sidecarURL(relativePath: CaptureImageSidecar.relativePath(for: resourceId))),
+        let image = CaptureImageSidecar.decode(data)
+      else { continue }
+      FrameImageStore.shared.put(image, for: resourceId)
+      replayLoadedImageIds.insert(resourceId)
+    }
   }
 
   private func loadFrameCommands(relativePath: String) throws -> CapturedFrameCommands {

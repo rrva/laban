@@ -64,8 +64,25 @@ Compare with the screenshots stored under the artifacts named in
   `LabanKittyGraphicsTests` (9 tests) pass. A mutation that disables the
   damage marking makes the damage test fail. Full `swift test`: 3,322 passed.
   The 14 failures are exactly the ones that already fail on `main`.
-- [ ] Milestone 2: frame commands, software renderer, headless debug state,
-  and a fixture with pixel probes.
+- [x] (2026-09-24) Milestone 2:
+  - `FrameCommand.texturedQuad` gained `layer` and `sourceRect`;
+  - `FrameImageStore` (LabanRenderer) and `KittyImagePublisher` (LabanCore,
+    run from `Session.snapshot()`) publish pixels;
+  - `FrameProducer` emits each layer at its place in the command stream and
+    in `overlayCommands`, clipped to the grid;
+  - `SoftwareRenderer` draws the quads;
+  - `/debug/render` has a `kittyGraphics` block;
+  - captures save image pixels (`images/image-<id>.rgba`) and renderer replay
+    loads them;
+  - fixtures gained `terminal.kittyGraphics` and cell-based `is`/`not` pixel
+    probes, which `laban-agent` enforces (exit 1 on failure);
+  - `fixtures/kitty-graphics.fixture.json` passes, and fails all four image
+    probes with the gate off.
+
+  New tests: `KittyGraphicsFrameTests` (8), `SoftwareRendererImageTests` (3),
+  `KittyGraphicsHeadlessTests` (2) and 2 `FixtureRunnerTests`. Full
+  `swift test`: 3,340 passed; the same 14 failures that already fail on
+  `main`.
 - [ ] Milestone 3: Metal renderers (Slug Glyph, classic/gpuDriven), with a
   cross-renderer parity test.
 - [ ] Milestone 4 (prototype first): animation playback and Unicode
@@ -136,7 +153,42 @@ Compare with the screenshots stored under the artifacts named in
   the ring is a separate, ABI-versioned change under ADR 0006.
   Date/Author: 2026-09-24 / Claude.
 
+- Decision: Pixels reach renderers through a process-wide
+  `FrameImageStore` in LabanRenderer, keyed by `resourceId` = libghostty image
+  generation, rather than through a new `RendererBackend` API.
+  Rationale: LabanRenderer cannot depend on LabanCore, and generation stamps
+  are unique across the whole process, so one store serves every session and
+  renderer without collisions or protocol changes. `KittyImagePublisher`
+  (one per `Session`, called from `Session.snapshot()`, the single snapshot
+  funnel) copies each generation once. It retires ids unreferenced for 120
+  snapshots and removes everything when the session closes.
+  Date/Author: 2026-09-24 / Claude.
+
+- Decision: Captures store each image's pixels once, as
+  `images/image-<id>.rgba` (an 8-byte width/height header plus RGBA), and
+  renderer replay loads them into the store.
+  Rationale: Replay runs in a process that never held the images. Without the
+  pixels, replayed image frames mismatch; `KittyGraphicsHeadlessTests` proves
+  both directions.
+  Date/Author: 2026-09-24 / Claude.
+
 ## Surprises & Discoveries
+
+- Observation: `laban-agent` and `HeadlessDebugRuntime` created sessions
+  without cell pixel sizes and never resized them, so image quads would have
+  been silently skipped headless.
+  Resolution: `laban_session_create` now forwards a supplied cell size to
+  `ghostty_terminal_resize`, and both headless paths supply the font's cell
+  size at creation. `testNoCellPixelGeometryMeansNoQuads` pins the skip
+  behavior.
+
+- Observation: Smooth scaling blends pixels from outside a source crop into
+  the crop's edge. `SoftwareRendererImageTests.testSourceRectCropsTheImage`
+  caught it.
+  Resolution: the software renderer crops the CGImage to the whole-pixel
+  bounds of the source rect, then maps any fractional remainder by clipping.
+  Metal (Milestone 3) needs the same care: clamp sampling to the crop,
+  inset by half a texel.
 
 - Observation: Before Milestone 0, Laban acknowledged both graphics queries
   and transmits it never drew.

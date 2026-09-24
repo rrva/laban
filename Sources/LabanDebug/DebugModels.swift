@@ -147,6 +147,15 @@ struct RenderResponse: Encodable {
   var damage: [RectResponse]
   var lastDraw: DrawStatsResponse
   var emojiRendering: EmojiRenderingSettingsResponse
+  var kittyGraphics: KittyGraphicsResponse
+}
+
+/// Kitty graphics state: whether sessions created now get the protocol, and
+/// how many image generations are published for renderers process-wide.
+/// `lastDraw.images` counts the quads the last frame drew.
+struct KittyGraphicsResponse: Encodable {
+  var enabled: Bool
+  var storedImages: Int
 }
 
 struct AtlasCellResponse: Encodable {
@@ -207,6 +216,9 @@ struct FrameCommandResponse: Encodable {
   var underlineStyle: String?
   var underlineColor: [Int]?
   var hyperlink: String?
+  /// texturedQuad only.
+  var imageLayer: String? = nil
+  var sourceRect: RectResponse? = nil
 }
 
 struct FrameCommandsResponse: Encodable {

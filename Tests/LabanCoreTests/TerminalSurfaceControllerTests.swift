@@ -79,8 +79,9 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       return "findSelected|\(rectKey(rect))|\(color)"
     case .clip(let rect):
       return "clip|\(rectKey(rect))"
-    case .texturedQuad(let rect, let resourceId, let source):
-      return "texturedQuad|\(rectKey(rect))|\(resourceId)|\(source.rawValue)"
+    case .texturedQuad(let rect, let resourceId, let source, let layer, let sourceRect):
+      return
+        "texturedQuad|\(rectKey(rect))|\(resourceId)|\(source.rawValue)|\(layer.rawValue)|\(rectKey(sourceRect))"
     case .waveRegion:
       return "waveRegion"
     }

@@ -71,6 +71,9 @@ public final class Session {
   /// `laban_session_poll` is not covered here — it stays caller-ordered
   /// (stop the runner before `close()`), as `makeRunner` documents.
   private let handleLock = NSRecursiveLock()
+  /// Kitty graphics image pixels for this session's snapshots; guarded by
+  /// `handleLock`.
+  private let kittyImagePublisher = KittyImagePublisher()
   private let fixtureMode: Bool
   private let callbackState: SessionCallbackState
   private var captureCallbackUserdata: UnsafeMutableRawPointer?
@@ -533,6 +536,7 @@ public final class Session {
       clearClipboardCallbacks(handle: h)
       clearWorkingDirectoryCallback(handle: h)
       clearShellIntegrationCallback(handle: h)
+      kittyImagePublisher.removeAll()
       laban_session_destroy(h)
       handle = nil
     }
@@ -644,7 +648,10 @@ public final class Session {
     defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     var snap: UnsafeMutablePointer<LabanSnapshot>?
-    guard laban_session_snapshot(h, &snap) == 0 else { return nil }
+    guard laban_session_snapshot(h, &snap) == 0, let snap else { return nil }
+    if snap.pointee.image_placement_count > 0 || kittyImagePublisher.publishedCount > 0 {
+      kittyImagePublisher.publish(snapshot: snap, session: h)
+    }
     return snap
   }
 

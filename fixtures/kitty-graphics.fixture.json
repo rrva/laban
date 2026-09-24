@@ -1,0 +1,33 @@
+{
+  "name": "kitty-graphics",
+  "version": 1,
+  "description": "Kitty graphics protocol: a 2x2 RGB checker (red, green / blue, white) transmitted and displayed at the cursor, scaled to 8x4 cells. Probes the centre of each quadrant and a cell outside the image (execplans/active/kitty-graphics-rendering.md).",
+  "initialSize": {
+    "cols": 80,
+    "rows": 24
+  },
+  "terminal": {
+    "kittyGraphics": true
+  },
+  "steps": [
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "\u001b_Gi=7,a=T,f=24,s=2,v=2,c=8,r=4,q=2;/wAAAP8AAAD/////\u001b\\"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "nonEmptyScreenshot": true,
+    "pixelProbes": [
+      {"cell": [2, 1], "is": [255, 0, 0, 255], "tolerance": 8},
+      {"cell": [6, 1], "is": [0, 255, 0, 255], "tolerance": 8},
+      {"cell": [2, 3], "is": [0, 0, 255, 255], "tolerance": 8},
+      {"cell": [6, 3], "is": [255, 255, 255, 255], "tolerance": 8},
+      {"cell": [20, 1], "not": [255, 0, 0, 255]}
+    ]
+  }
+}

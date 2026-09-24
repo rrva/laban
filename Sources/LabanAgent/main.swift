@@ -228,6 +228,9 @@ struct HeadlessResult: Encodable {
   let terminalCols: Int
   let screenshotPath: String
   let foundExpectedText: Bool?
+  /// Descriptions of `expect.pixelProbes` that did not match; nil when the
+  /// fixture has no probes.
+  let pixelProbeFailures: [String]?
 
   func encode(to encoder: Encoder) throws {
     var c = encoder.container(keyedBy: CodingKeys.self)
@@ -239,11 +242,12 @@ struct HeadlessResult: Encodable {
     try c.encode(terminalCols, forKey: .terminalCols)
     try c.encode(screenshotPath, forKey: .screenshotPath)
     try c.encodeIfPresent(foundExpectedText, forKey: .foundExpectedText)
+    try c.encodeIfPresent(pixelProbeFailures, forKey: .pixelProbeFailures)
   }
 
   private enum CodingKeys: String, CodingKey {
     case mode, frameCount, activeTabId, activeSessionId
-    case terminalRows, terminalCols, screenshotPath, foundExpectedText
+    case terminalRows, terminalCols, screenshotPath, foundExpectedText, pixelProbeFailures
   }
 }
 
@@ -756,9 +760,19 @@ if let tempPath = args.tempDir {
   }
 }
 
+let fontAtlas = FontAtlas(pointSize: 14)
+let cellSize = fontAtlas.cellSize
+let cellW = Int(cellSize.width)
+let cellH = Int(cellSize.height)
+
 var initialSize = LabanTerminalSize()
 initialSize.rows = Int32(runner.fixture.initialSize.rows)
 initialSize.cols = Int32(runner.fixture.initialSize.cols)
+// Cell pixel geometry lets the terminal core size Kitty graphics placements.
+initialSize.cell_width = Int32(cellW)
+initialSize.cell_height = Int32(cellH)
+
+runner.applyTerminalOptions()
 
 let model: AppModel
 do {
@@ -785,10 +799,6 @@ defer { laban_snapshot_destroy(snap) }
 let rows = Int(snap.pointee.rows)
 let cols = Int(snap.pointee.cols)
 
-let fontAtlas = FontAtlas(pointSize: 14)
-let cellSize = fontAtlas.cellSize
-let cellW = Int(cellSize.width)
-let cellH = Int(cellSize.height)
 let sidebarWidth: CGFloat = 200
 let bitmapW = max(Int(sidebarWidth) + cols * cellW, 1)
 let bitmapH = max(rows * cellH, 1)
@@ -830,6 +840,35 @@ if let containsText = runner.fixture.expect?.containsText, !containsText.isEmpty
   foundExpectedText = nil
 }
 
+// Pixel probes read the rendered surface (bottom-left origin); fixture
+// coordinates are top-left, and cell probes are relative to the terminal grid
+// to the right of the sidebar.
+let pixelProbeFailures: [String]?
+if let probes = runner.fixture.expect?.pixelProbes, !probes.isEmpty {
+  pixelProbeFailures = probes.compactMap { probe -> String? in
+    let point: (x: Int, y: Int)?
+    if let cell = probe.cell, cell.count == 2 {
+      point = (
+        Int(sidebarWidth + CGFloat(cell[0]) * CGFloat(cellW)),
+        Int(CGFloat(cell[1]) * CGFloat(cellH))
+      )
+    } else if let x = probe.x, let y = probe.y {
+      point = (x, y)
+    } else {
+      point = nil
+    }
+    guard let point, let pixel = surface.pixel(x: point.x, y: bitmapH - 1 - point.y) else {
+      return "\(probe.description): outside the screenshot"
+    }
+    guard probe.matches(pixel) else {
+      return "\(probe.description): got \(String(format: "%08X", pixel))"
+    }
+    return nil
+  }
+} else {
+  pixelProbeFailures = nil
+}
+
 let result = HeadlessResult(
   mode: "headless",
   frameCount: stepsFrameCount + 1,
@@ -838,7 +877,8 @@ let result = HeadlessResult(
   terminalRows: rows,
   terminalCols: cols,
   screenshotPath: screenshotURL.path,
-  foundExpectedText: foundExpectedText
+  foundExpectedText: foundExpectedText,
+  pixelProbeFailures: pixelProbeFailures
 )
 
 let enc = JSONEncoder()
@@ -862,4 +902,8 @@ print("  screenshot: \(screenshotURL.path)")
 print("  result: \(resultURL.path)")
 if let found = foundExpectedText {
   print("  foundExpectedText: \(found)")
+}
+if let failures = pixelProbeFailures {
+  for failure in failures { print("  pixel probe failed: \(failure)") }
+  if !failures.isEmpty { exit(1) }
 }

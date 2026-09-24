@@ -463,6 +463,12 @@ int laban_session_create(
     s->rows        = rows;
     s->cell_width  = (uint32_t)(initial_size.cell_width  > 0 ? initial_size.cell_width  : 0);
     s->cell_height = (uint32_t)(initial_size.cell_height > 0 ? initial_size.cell_height : 0);
+    /* libghostty only learns cell pixel geometry through resize; without it
+       Kitty graphics placements have no pixel size until the first
+       laban_session_resize. */
+    if (s->cell_width > 0 && s->cell_height > 0) {
+        ghostty_terminal_resize(s->terminal, cols, rows, s->cell_width, s->cell_height);
+    }
 
     /* Register effects so capability probes (DA1/DA2/DSR/XTWINOPS/XTVERSION)
        reach the child process — without these, tmux and vim hang on startup. */

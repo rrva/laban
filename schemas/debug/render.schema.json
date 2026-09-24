@@ -39,6 +39,15 @@
         "images": {"type": "integer", "minimum": 0},
         "cursor": {"type": "boolean"}
       }
+    },
+    "kittyGraphics": {
+      "type": "object",
+      "required": ["enabled", "storedImages"],
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "storedImages": {"type": "integer", "minimum": 0}
+      }
     }
   },
   "$defs": {

@@ -577,6 +577,10 @@ public struct FrameProducer {
       return cmds
     }
 
+    // Kitty graphics below cell backgrounds: explicit backgrounds (replace
+    // compositing) cover them; default-background cells show them.
+    appendImageQuads(.belowBackground, snapshot: snapshot, rows: rows, cols: cols, into: &cmds)
+
     // ---- Pass 1: Background rects for all rows ----
     for row in 0..<rows {
       let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
@@ -622,6 +626,9 @@ public struct FrameProducer {
           ))
       }
     }
+
+    // Kitty graphics between cell backgrounds and text.
+    appendImageQuads(.belowText, snapshot: snapshot, rows: rows, cols: cols, into: &cmds)
 
     // ---- Pass 2: Selection highlight rects ----
     if let sel = selection {
@@ -698,6 +705,10 @@ public struct FrameProducer {
         foregroundWave: foregroundWave)
     }
 
+    // Kitty graphics above text (the protocol default, z >= 0). IME
+    // composition and the cursor stay on top.
+    appendImageQuads(.aboveText, snapshot: snapshot, rows: rows, cols: cols, into: &cmds)
+
     let activePreeditLayout = preedit.flatMap {
       preeditLayout(
         text: $0,
@@ -745,6 +756,63 @@ public struct FrameProducer {
     return cmds
   }
 
+  /// Appends a `texturedQuad` for every visible Kitty graphics placement in
+  /// `layer`, clipped to the terminal grid. Placements are in device pixels
+  /// (`cell_*_px` per cell); frame rects are in points with a bottom-left
+  /// origin, like cell rows. The source rect is cropped by the same fraction
+  /// as the destination, so every renderer samples exactly the visible part.
+  private func appendImageQuads(
+    _ layer: ImageLayer,
+    snapshot: LabanSnapshot,
+    rows: Int,
+    cols: Int,
+    into cmds: inout [FrameCommand]
+  ) {
+    guard snapshot.image_placement_count > 0, let placements = snapshot.image_placements,
+      snapshot.cell_width_px > 0, snapshot.cell_height_px > 0
+    else { return }
+    let cw = CGFloat(cellWidth)
+    let ch = CGFloat(cellHeight)
+    let scaleX = cw / CGFloat(snapshot.cell_width_px)
+    let scaleY = ch / CGFloat(snapshot.cell_height_px)
+    let gridWidth = CGFloat(cols) * cw
+    let gridHeight = CGFloat(rows) * ch
+
+    for i in 0..<snapshot.image_placement_count {
+      let p = placements[i]
+      guard p.layer == Int32(layer.rawValue), p.pixel_width > 0, p.pixel_height > 0 else {
+        continue
+      }
+      // Top-left-origin geometry within the grid, in points.
+      let left = CGFloat(p.viewport_col) * cw + CGFloat(p.x_offset_px) * scaleX
+      let top = CGFloat(p.viewport_row) * ch + CGFloat(p.y_offset_px) * scaleY
+      let width = CGFloat(p.pixel_width) * scaleX
+      let height = CGFloat(p.pixel_height) * scaleY
+      let clippedLeft = max(left, 0)
+      let clippedTop = max(top, 0)
+      let clippedRight = min(left + width, gridWidth)
+      let clippedBottom = min(top + height, gridHeight)
+      guard clippedRight > clippedLeft, clippedBottom > clippedTop else { continue }
+
+      let sourceWidth = CGFloat(p.source_width)
+      let sourceHeight = CGFloat(p.source_height)
+      let sourceRect = CGRect(
+        x: CGFloat(p.source_x) + (clippedLeft - left) / width * sourceWidth,
+        y: CGFloat(p.source_y) + (clippedTop - top) / height * sourceHeight,
+        width: (clippedRight - clippedLeft) / width * sourceWidth,
+        height: (clippedBottom - clippedTop) / height * sourceHeight)
+      let rect = CGRect(
+        x: originX + clippedLeft,
+        y: originY + gridHeight - clippedBottom + contentYOffset,
+        width: clippedRight - clippedLeft,
+        height: clippedBottom - clippedTop)
+      cmds.append(
+        .texturedQuad(
+          rect: rect, resourceId: p.image_generation, source: .image,
+          layer: layer, sourceRect: sourceRect))
+    }
+  }
+
   public func overlayCommands(
     from snap: UnsafePointer<LabanSnapshot>,
     selection: TerminalSelection?,
@@ -764,7 +832,13 @@ public struct FrameProducer {
     guard rows > 0, cols > 0 else { return [] }
 
     var cmds: [FrameCommand] = []
-    cmds.reserveCapacity(4)
+    cmds.reserveCapacity(4 + snapshot.image_placement_count)
+
+    // Kitty graphics ride the overlay list on the cell-payload path; payload
+    // renderers draw each `ImageLayer` at its place in their pipeline.
+    appendImageQuads(.belowBackground, snapshot: snapshot, rows: rows, cols: cols, into: &cmds)
+    appendImageQuads(.belowText, snapshot: snapshot, rows: rows, cols: cols, into: &cmds)
+    appendImageQuads(.aboveText, snapshot: snapshot, rows: rows, cols: cols, into: &cmds)
 
     if let sel = selection {
       for rect in sel.cgRects(

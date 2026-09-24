@@ -242,5 +242,21 @@ public enum FrameCommand: Sendable {
   case findMatch(CGRect, color: UInt32)
   case findSelected(CGRect, color: UInt32)
   case clip(CGRect)
-  case texturedQuad(rect: CGRect, resourceId: UInt64, source: FrameSource)
+  /// An image drawn into `rect` (points, frame coordinates), sampling
+  /// `sourceRect` (image pixels, top-left origin) of the image that
+  /// `FrameImageStore.shared` holds under `resourceId`. Kitty graphics
+  /// placements use the image's generation stamp as `resourceId`; `layer`
+  /// says where the quad sits relative to cell backgrounds and text.
+  case texturedQuad(
+    rect: CGRect, resourceId: UInt64, source: FrameSource,
+    layer: ImageLayer, sourceRect: CGRect)
+}
+
+/// Kitty graphics z bands. Command-stream renderers draw quads in stream
+/// order (FrameProducer emits each band at its place); bucketing renderers
+/// draw each band at the matching point of their pipeline.
+public enum ImageLayer: UInt8, Sendable {
+  case belowBackground = 1
+  case belowText = 2
+  case aboveText = 3
 }

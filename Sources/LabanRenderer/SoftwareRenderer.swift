@@ -118,16 +118,50 @@ public final class SoftwareRenderer {
       case .clip(let rect):
         ctx.clip(to: rect)
 
-      case .texturedQuad:
-        // Kitty graphics / image quads are deferred; command is accepted
-        // but not drawn by the software renderer in this shard.
-        break
+      case .texturedQuad(let rect, let resourceId, _, _, let sourceRect):
+        // Layers need no special handling: FrameProducer emits each image
+        // layer at its place in the command stream.
+        drawImage(resourceId, sourceRect: sourceRect, in: rect, context: ctx)
 
       case .waveRegion:
         // Slug-only sampling payload; the software renderer ignores it.
         break
       }
     }
+    ctx.restoreGState()
+  }
+
+  /// Draws the `sourceRect` part of a stored image into `rect`. The image is
+  /// first cropped to the whole-pixel bounds of `sourceRect`, so smoothing
+  /// never blends in pixels outside the protocol's crop; the (possibly
+  /// fractional, when a placement is clipped by the grid edge) remainder is
+  /// mapped exactly by clipping to `rect` and drawing the crop at the matching
+  /// scale. A missing image (not yet published, or already retired) draws
+  /// nothing.
+  private func drawImage(
+    _ resourceId: UInt64, sourceRect: CGRect, in rect: CGRect, context ctx: CGContext
+  ) {
+    guard let image = FrameImageStore.shared.image(for: resourceId),
+      let cgImage = image.cgImage, rect.width > 0, rect.height > 0
+    else { return }
+    let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+    let source =
+      sourceRect.isNull || sourceRect.isEmpty ? bounds : sourceRect.intersection(bounds)
+    let crop = source.integral.intersection(bounds)
+    guard !source.isEmpty, !crop.isEmpty, let cropped = cgImage.cropping(to: crop) else { return }
+    let scaleX = rect.width / source.width
+    let scaleY = rect.height / source.height
+    // Frame coordinates are bottom-up; image coordinates are top-down.
+    let height = crop.height * scaleY
+    let top = rect.maxY + (source.minY - crop.minY) * scaleY
+    let drawRect = CGRect(
+      x: rect.minX - (source.minX - crop.minX) * scaleX, y: top - height,
+      width: crop.width * scaleX, height: height)
+    ctx.saveGState()
+    ctx.setBlendMode(.normal)
+    ctx.interpolationQuality = .default
+    ctx.clip(to: rect)
+    ctx.draw(cropped, in: drawRect)
     ctx.restoreGState()
   }
 

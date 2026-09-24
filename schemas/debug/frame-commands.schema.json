@@ -64,6 +64,8 @@
         },
         "text": {"type": "string"},
         "resourceId": {"type": "string"},
+        "imageLayer": {"enum": ["belowBackground", "belowText", "aboveText"]},
+        "sourceRect": {"$ref": "#/$defs/rect"},
         "sourceRefs": {
           "type": "array",
           "items": {"type": "string"}

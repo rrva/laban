@@ -281,12 +281,17 @@ public final class HeadlessDebugRuntime {
       let r = try FixtureRunner.load(from: url)
       initialRows = r.fixture.initialSize.rows
       initialCols = r.fixture.initialSize.cols
+      r.applyTerminalOptions()
       runner = r
     }
 
     var initSize = LabanTerminalSize()
     initSize.rows = Int32(initialRows)
     initSize.cols = Int32(initialCols)
+    // Cell pixel geometry lets the terminal core size Kitty graphics
+    // placements before the first resize.
+    initSize.cell_width = Int32(fa.cellSize.width)
+    initSize.cell_height = Int32(fa.cellSize.height)
 
     let initialRecorder: CaptureRecorder?
     if let captureName {

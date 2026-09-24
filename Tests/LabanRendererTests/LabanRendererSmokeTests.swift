@@ -29,7 +29,8 @@ final class LabanRendererSmokeTests: XCTestCase {
       .cursor(rect, color: 0x3A4D_53FF),
       .selection(rect, color: 0xECE3_CC80),
       .clip(rect),
-      .texturedQuad(rect: rect, resourceId: 42, source: .image),
+      .texturedQuad(
+        rect: rect, resourceId: 42, source: .image, layer: .aboveText, sourceRect: .null),
     ]
     XCTAssertEqual(cmds.count, 6)
   }
@@ -38,11 +39,15 @@ final class LabanRendererSmokeTests: XCTestCase {
     let quad = FrameCommand.texturedQuad(
       rect: CGRect(x: 1, y: 2, width: 16, height: 16),
       resourceId: 99,
-      source: .image
+      source: .image,
+      layer: .belowText,
+      sourceRect: CGRect(x: 0, y: 0, width: 2, height: 2)
     )
-    if case .texturedQuad(_, let resourceId, let source) = quad {
+    if case .texturedQuad(_, let resourceId, let source, let layer, let sourceRect) = quad {
       XCTAssertEqual(resourceId, 99)
       XCTAssertEqual(source, .image)
+      XCTAssertEqual(layer, .belowText)
+      XCTAssertEqual(sourceRect, CGRect(x: 0, y: 0, width: 2, height: 2))
     } else {
       XCTFail("expected texturedQuad")
     }
