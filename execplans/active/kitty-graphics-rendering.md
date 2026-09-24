@@ -49,8 +49,21 @@ Compare with the screenshots stored under the artifacts named in
   rendering exists (storage limit 0 in `laban_session_create`), with
   `testKittyGraphicsQueryGetsNoReplyWhileRenderingIsDisabled`. All 207
   `LabanTerminalCoreTests` pass.
-- [ ] Milestone 1: terminal core. PNG decoding, gated enablement, placements
-  in `LabanSnapshot`, a pixel-copy API, and damage on graphics changes.
+- [x] (2026-09-24) Milestone 1: terminal core, in
+  `Sources/LabanTerminalCore/kitty_graphics.c`:
+  - the gate (`laban_set_kitty_graphics_enabled`, else
+    `LABAN_KITTY_GRAPHICS=1`; `laband` forces it off);
+  - an ImageIO PNG decoder that returns straight alpha;
+  - the medium policy (shared memory and temp files on, plain `file` off) and
+    the 64 MB-per-screen limit;
+  - sorted `LabanImagePlacement`s in `LabanSnapshot`;
+  - `laban_session_kitty_image_copy`;
+  - full damage whenever the visible placement signature differs from the
+    last rendered one.
+
+  `LabanKittyGraphicsTests` (9 tests) pass. A mutation that disables the
+  damage marking makes the damage test fail. Full `swift test`: 3,322 passed.
+  The 14 failures are exactly the ones that already fail on `main`.
 - [ ] Milestone 2: frame commands, software renderer, headless debug state,
   and a fixture with pixel probes.
 - [ ] Milestone 3: Metal renderers (Slug Glyph, classic/gpuDriven), with a
@@ -130,6 +143,19 @@ Compare with the screenshots stored under the artifacts named in
   Evidence: `testKittyGraphicsQueryGetsNoReplyWhileRenderingIsDisabled`
   failed before the fix with replies `ESC _Gi=31;OK ESC \` (to the `a=q`
   query) and `ESC _Gi=32;OK ESC \` (to an `a=T` transmit), and passes after.
+
+- Observation: libghostty only knows the cell pixel size through
+  `ghostty_terminal_resize`; `laban_session_create` does not pass it. Until
+  the first resize, placements have no pixel size. Real tabs resize
+  immediately. Tests call `laban_session_resize` after create.
+  Evidence: `LabanKittyGraphicsTests.makeSession`.
+
+- Observation: Damage uses the planned full-damage fallback. A 64-bit FNV-1a
+  signature over the sorted, zero-padded placement records (geometry plus
+  image generation) is compared against the last rendered signature, using
+  the snapshot-observed / rendered-committed pattern that `snapshot.c`
+  already uses for screen swaps and viewport scrolls. Row-precise image
+  damage is left for Milestone 3, if profiling asks for it.
 
 ## Context and Orientation
 

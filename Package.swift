@@ -80,7 +80,11 @@ let package = Package(
         .unsafeFlags(["-I\(_vtInclude)"])
       ],
       linkerSettings: [
-        .unsafeFlags(["\(_vtLib)/libghostty-vt.a"])
+        .unsafeFlags(["\(_vtLib)/libghostty-vt.a"]),
+        // Kitty graphics PNG decoding (kitty_graphics.c).
+        .linkedFramework("Accelerate"),
+        .linkedFramework("CoreGraphics"),
+        .linkedFramework("ImageIO"),
       ]
     ),
     .target(

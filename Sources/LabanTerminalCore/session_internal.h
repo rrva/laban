@@ -18,6 +18,8 @@
 #include <ghostty/vt/size_report.h>
 #include <ghostty/vt/key/encoder.h>
 #include <ghostty/vt/key/event.h>
+#include <ghostty/vt/kitty_graphics.h>
+#include <ghostty/vt/sys.h>
 #include <stdbool.h>
 #include <util.h>
 #include <sys/ioctl.h>
@@ -76,6 +78,15 @@ static inline GhosttyResult laban_terminal_mode_set(GhosttyTerminal t, GhosttyMo
     GhosttyTerminalModeConfig cfg = { .mode = mode, .value = value };
     return ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_MODE, &cfg);
 }
+
+/* Kitty graphics (kitty_graphics.c). */
+void laban_kitty_configure_terminal(LabanSession *s);
+/* Collects visible placements under the session lock. Returns 0 and sets the
+ * outputs (placements may be NULL with count 0); -1 on allocation failure. */
+int laban_kitty_collect_placements_locked(
+    LabanSession *s, LabanImagePlacement **out_placements, size_t *out_count,
+    uint64_t *out_storage_generation, uint64_t *out_signature);
+void laban_kitty_free_resources(LabanSession *s);
 
 /* Vectorized skip for the raw-output scanners below (tab_status.c, osc133.c,
  * osc_host.c). In their bulk "skip" states the state machines react only to
@@ -311,6 +322,17 @@ struct LabanSession {
     int last_snapshot_dirty_rows_valid;
     uint64_t dirty_generation;
     uint64_t last_snapshot_dirty_generation;
+
+    /* Kitty graphics (kitty_graphics.c). kitty_enabled is fixed at create.
+     * The placement iterator is allocated on first use and reused. The
+     * placement signature hashes every visible placement's geometry and image
+     * generation; a snapshot whose signature differs from the last *rendered*
+     * one forces full damage (same snapshot-observed / rendered-committed
+     * pattern as the active screen and viewport offset above). */
+    int kitty_enabled;
+    GhosttyKittyGraphicsPlacementIterator kitty_placement_iter;
+    uint64_t kitty_last_snapshot_signature;
+    uint64_t kitty_last_rendered_signature;
 
     int capture_fd;      /* file descriptor for PTY-byte capture; -1 if inactive */
     LabanCaptureBytesCallback capture_callback;

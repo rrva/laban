@@ -1629,6 +1629,11 @@ private final class LabandXPCListener: NSObject, NSXPCListenerDelegate {
 struct LabandMain {
   static func main() {
     signal(SIGPIPE, SIG_IGN)
+    // Tier 2 multi-client snapshots (the LBNDSS01 ring) carry no Kitty
+    // graphics, so laband's terminals must neither store images nor answer
+    // the protocol, whatever LABAN_KITTY_GRAPHICS says
+    // (execplans/active/kitty-graphics-rendering.md).
+    laban_set_kitty_graphics_enabled(false)
     do {
       let args = try LabandArguments.parse(CommandLine.arguments)
       try FileManager.default.createDirectory(

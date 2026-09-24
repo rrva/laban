@@ -678,6 +678,25 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         }
     }
 
+    /* Kitty graphics placements. Images are not row-local cell content, so
+     * any change in what is visible (a placement added, moved, cropped or
+     * deleted, or an image's pixels replaced) forces full damage against the
+     * last *rendered* placement set, like the screen/viewport checks above. */
+    LabanImagePlacement *placements = NULL;
+    size_t placement_count = 0;
+    uint64_t kitty_storage_generation = 0, kitty_signature = 0;
+    if (laban_kitty_collect_placements_locked(s, &placements, &placement_count,
+            &kitty_storage_generation, &kitty_signature) != 0) {
+        snap->dirty_rows = dirty_rows;
+        snap->wrapped_rows = wrapped_rows;
+        laban_snapshot_destroy(snap);
+        return -1;
+    }
+    s->kitty_last_snapshot_signature = kitty_signature;
+    if (kitty_signature != s->kitty_last_rendered_signature && dirty_rows && rows > 0) {
+        memset(dirty_rows, 1, (size_t)rows);
+    }
+
     if (store_last_snapshot_dirty_rows(s, dirty_rows, dirty_rows ? (size_t)rows : 0) != 0) {
         snap->utf8_storage = utf8_storage;
         snap->cells = cells;
@@ -685,6 +704,7 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         snap->hyperlink_count = hyperlink_count;
         snap->dirty_rows = dirty_rows;
         snap->wrapped_rows = wrapped_rows;
+        snap->image_placements = placements;
         laban_snapshot_destroy(snap);
         return -1;
     }
@@ -699,6 +719,10 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
      * program-reported libghostty value. */
     snap->cursor_style_explicit = s->cursor_style_overridden;
     snap->cursor_blink_explicit = s->cursor_blink_overridden;
+
+    snap->image_placements = placements;
+    snap->image_placement_count = placement_count;
+    snap->kitty_graphics_generation = kitty_storage_generation;
 
     *out_snapshot = snap;
     return 0;
@@ -717,6 +741,7 @@ void laban_snapshot_destroy(LabanSnapshot *snap) {
     }
     free((void *)snap->dirty_rows);
     free((void *)snap->wrapped_rows);
+    free((void *)snap->image_placements);
     free(snap);
 }
 
@@ -795,6 +820,7 @@ int laban_session_mark_rendered(LabanSession *session) {
         session->last_rendered_viewport_offset = session->last_snapshot_viewport_offset;
         session->last_rendered_viewport_offset_valid = 1;
     }
+    session->kitty_last_rendered_signature = session->kitty_last_snapshot_signature;
 
     return 0;
 }

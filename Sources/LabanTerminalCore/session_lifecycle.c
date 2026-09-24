@@ -369,6 +369,7 @@ int laban_pty_open(
 }
 
 static void free_ghostty_resources(LabanSession *s) {
+    laban_kitty_free_resources(s);
     ghostty_render_state_row_cells_free(s->row_cells);
     ghostty_render_state_row_iterator_free(s->row_iter);
     ghostty_render_state_free(s->render_state);
@@ -450,14 +451,10 @@ int laban_session_create(
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
                          &scrollback_max_bytes);
 
-    /* The embedded library enables Kitty graphics with a 10 MB budget by
-       default and would acknowledge queries and transmits that Laban never
-       draws. A zero limit disables the protocol entirely, so programs fall
-       back to text art until rendering lands
-       (execplans/active/kitty-graphics-rendering.md). */
-    uint64_t kitty_image_storage_limit = 0;
-    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
-                         &kitty_image_storage_limit);
+    /* Kitty graphics: enabled per the process-wide gate, otherwise the
+       storage limit is zeroed so nothing is stored or acknowledged
+       (kitty_graphics.c). */
+    laban_kitty_configure_terminal(s);
 
     /* Cache geometry for the SIZE effect; also picks up cell pixel sizes
        if the caller supplied them at create time (otherwise updated on

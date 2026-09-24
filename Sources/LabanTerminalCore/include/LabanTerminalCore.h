@@ -1,6 +1,7 @@
 #ifndef LABAN_TERMINAL_CORE_H
 #define LABAN_TERMINAL_CORE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -100,6 +101,49 @@ typedef struct {
     uint8_t  wide;                /* LABAN_CELL_WIDE_* */
 } LabanCell;
 
+/* Kitty graphics placement layers (LabanImagePlacement.layer), matching the
+ * protocol's z bands: below cell backgrounds, between backgrounds and text,
+ * and above text. */
+enum {
+    LABAN_IMAGE_LAYER_BELOW_BACKGROUND = 1,
+    LABAN_IMAGE_LAYER_BELOW_TEXT = 2,
+    LABAN_IMAGE_LAYER_ABOVE_TEXT = 3
+};
+
+/* One visible Kitty graphics placement, in viewport coordinates. Placements
+ * carry no pixels: fetch them with laban_session_kitty_image_copy, keyed by
+ * (image_id, image_generation), which changes whenever the image's pixels
+ * change. viewport_row/col may be negative when the placement is partly
+ * scrolled or clipped off the top/left. */
+typedef struct {
+    uint32_t image_id;
+    uint32_t placement_id;
+    uint64_t image_generation;
+    int32_t  layer;              /* LABAN_IMAGE_LAYER_* */
+    int32_t  z;                  /* protocol z-index, for stable ordering */
+    int32_t  viewport_col;
+    int32_t  viewport_row;
+    uint32_t x_offset_px;        /* offset within the first cell */
+    uint32_t y_offset_px;
+    uint32_t pixel_width;        /* destination size in pixels */
+    uint32_t pixel_height;
+    uint32_t grid_cols;          /* cells the placement covers */
+    uint32_t grid_rows;
+    uint32_t source_x;           /* resolved crop within the image, pixels */
+    uint32_t source_y;
+    uint32_t source_width;
+    uint32_t source_height;
+} LabanImagePlacement;
+
+/* Straight-alpha RGBA8 pixels of one Kitty graphics image, owned by the
+ * caller; free with laban_kitty_image_free. */
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint64_t generation;
+    uint8_t *rgba;               /* width * height * 4 bytes */
+} LabanKittyImage;
+
 /*
  * LabanSnapshot.status values:
  *   0 = running
@@ -168,6 +212,13 @@ typedef struct {
      * setting or the program's libghostty-reported value. */
     int cursor_style_explicit;
     int cursor_blink_explicit;
+    /* Visible Kitty graphics placements, sorted by (layer, z, image_id,
+     * placement_id). Owned by the snapshot; NULL with count 0 when Kitty
+     * graphics are disabled or nothing is visible. */
+    const LabanImagePlacement *image_placements;
+    size_t image_placement_count;
+    /* Storage-wide Kitty graphics generation; 0 when disabled. */
+    uint64_t kitty_graphics_generation;
 } LabanSnapshot;
 
 /* Creates a terminal session. On failure, *out_session is set to NULL. */
@@ -286,6 +337,27 @@ int laban_session_feed_output(LabanSession *session, const uint8_t *bytes, size_
 /* Allocates a render snapshot. On failure, *out_snapshot is set to NULL. */
 int laban_session_snapshot(LabanSession *session, LabanSnapshot **out_snapshot);
 void laban_snapshot_destroy(LabanSnapshot *snapshot);
+
+/* --- Kitty graphics --- */
+
+/* Process-wide switch for Kitty graphics in sessions created afterwards.
+ * Until a caller sets it, the LABAN_KITTY_GRAPHICS=1 environment variable
+ * decides (default: disabled). Disabled sessions set libghostty's image
+ * storage limit to 0, so they neither store images nor answer protocol
+ * queries. Existing sessions are not changed. */
+void laban_set_kitty_graphics_enabled(bool enabled);
+bool laban_kitty_graphics_enabled(void);
+
+/* Copies the pixels of one stored image as straight-alpha RGBA8. Returns 0 on
+ * success; -1 when the image no longer exists, its pixels are still loading,
+ * or its generation differs from expected_generation (retry with the next
+ * snapshot's placements). */
+int laban_session_kitty_image_copy(
+    LabanSession *session,
+    uint32_t image_id,
+    uint64_t expected_generation,
+    LabanKittyImage *out_image);
+void laban_kitty_image_free(LabanKittyImage *image);
 
 /* Dirty lifecycle: lightweight query and snapshot-backed render marking. */
 int laban_session_render_dirty(LabanSession *session, int *out_dirty);
