@@ -1,0 +1,19 @@
+scripts/check-dependencies
+  s_b9b171a32edb6d::t_2f9e9b899a38bf 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e2d8d4aad80bd5da93cd95f4e5cb1fd9f9692a69",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
