@@ -1,0 +1,90 @@
+Tests/LabanCoreTests/TerminalSurfaceControllerTests.swift
+  s_b9b171a32edb6d::t_b340a01c0b62af 82-84
+Sources/LabanTerminalCore/include/LabanTerminalCore.h
+  s_b9b171a32edb6d::t_26b78388dafcc3 222-226
+Sources/LabanDebug/HeadlessDebugRuntime.swift
+  s_b9b171a32edb6d::t_9a4792d8b1eb98 284
+  s_b9b171a32edb6d::t_b262c5103d2532 291-294
+Sources/LabanCore/CaptureRecorder.swift
+  s_b9b171a32edb6d::t_cee5035c7ec308 60-61,272,288-303,796-819
+  s_b9b171a32edb6d::t_e456c540fdc22d 771-775,870,873-874,931-934
+  s_b9b171a32edb6d::t_1f24f035254ee6 820-821
+Tests/LabanRendererTests/SoftwareRendererImageTests.swift
+  s_b9b171a32edb6d::t_9015183fb02fc4 1-88
+Tests/LabanRendererTests/LabanRendererSmokeTests.swift
+  s_b9b171a32edb6d::t_b340a01c0b62af 32-33,42-44,46,49-50
+Sources/LabanCore/KittyImagePublisher.swift
+  s_b9b171a32edb6d::t_e7490e5abca4e1 1-75
+Sources/LabanDebug/DebugFrameCommandSerializer.swift
+  s_b9b171a32edb6d::t_4fb27d1f3236fb 66,69-71,115,126-130
+  s_b9b171a32edb6d::t_55ea780abe7516 131-133
+Tests/LabanCoreTests/FrameProducerTests.swift
+  s_b9b171a32edb6d::t_b340a01c0b62af 392-394,396
+schemas/fixture.schema.json
+  s_b9b171a32edb6d::t_7e3d9e5962b0f9 20-26,94-101,105,107-113,115-120
+Sources/LabanRenderer/SoftwareRenderer.swift
+  s_b9b171a32edb6d::t_2e5d988ebfcbca 134-140,147,149-151,154-159,164
+  s_b9b171a32edb6d::t_be043e8cb120ba 121-124,141-146,148,152-153,160-163
+  s_b9b171a32edb6d::t_3d8b5d44a20b0d 165-167
+Sources/LabanRenderer/FrameCommand.swift
+  s_b9b171a32edb6d::t_1e2412aa3cec79 245-261
+Tests/LabanCoreTests/FrameProducerSpanParityTests.swift
+  s_b9b171a32edb6d::t_b340a01c0b62af 48-50
+Sources/LabanAgent/main.swift
+  s_b9b171a32edb6d::t_b262c5103d2532 763-767,771-773
+  s_b9b171a32edb6d::t_9a4792d8b1eb98 231-233,245,250,775,843-871,880-881,906-908
+  s_b9b171a32edb6d::t_d5e5e72a1273be 774,909
+Tests/LabanCoreTests/FixtureRunnerTests.swift
+  s_b9b171a32edb6d::t_d200619253f985 131-152
+Sources/LabanCore/FrameProducer.swift
+  s_b9b171a32edb6d::t_cbffb200dc56dc 580-583,630-632,708-711,759-815,835-841
+Sources/LabanTerminalCore/snapshot.c
+  s_b9b171a32edb6d::t_26b78388dafcc3 726-727
+schemas/debug/render.schema.json
+  s_b9b171a32edb6d::t_4877e695e7a084 42-50
+Sources/LabanDebug/DebugModels.swift
+  s_b9b171a32edb6d::t_4fb27d1f3236fb 219-221
+  s_b9b171a32edb6d::t_4877e695e7a084 150-158
+Sources/LabanCore/Session.swift
+  s_b9b171a32edb6d::t_47c3c45e1eea7e 74-76,539,651-654
+fixtures/kitty-graphics.fixture.json
+  s_b9b171a32edb6d::t_ea37d34168a6f9 1-33
+schemas/debug/frame-commands.schema.json
+  s_b9b171a32edb6d::t_51cb4ba34b0ff8 67-68
+Sources/LabanDebug/CaptureReplayRunner.swift
+  s_b9b171a32edb6d::t_fd46d02209f047 48-50,409-412
+  s_b9b171a32edb6d::t_cee5035c7ec308 426,656-669
+  s_b9b171a32edb6d::t_e1ec4d4fa999ae 670-671
+Sources/LabanTerminalCore/session_lifecycle.c
+  s_b9b171a32edb6d::t_b262c5103d2532 466-471
+Tests/LabanDebugTests/KittyGraphicsHeadlessTests.swift
+  s_b9b171a32edb6d::t_06861ad245dce7 34
+  s_b9b171a32edb6d::t_649a76947a1dbd 1-33,35-93
+Tests/LabanCoreTests/KittyGraphicsFrameTests.swift
+  s_b9b171a32edb6d::t_81bbff808f37b1 1-235
+Sources/LabanCore/FixtureRunner.swift
+  s_b9b171a32edb6d::t_4876b6e272615a 57-103,108-114,122,151-157
+  s_b9b171a32edb6d::t_a191316fae8099 158
+Sources/LabanDebug/DebugRenderEndpoints.swift
+  s_b9b171a32edb6d::t_4877e695e7a084 73-76
+Sources/LabanRenderer/FrameImageStore.swift
+  s_b9b171a32edb6d::t_096feb7ee7a124 1-85
+execplans/active/kitty-graphics-rendering.md
+  s_b9b171a32edb6d::t_35b6c6ce547976 67-85,156-174,177-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9dadd909d7e821828878be159fff3e284155e5ea",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
