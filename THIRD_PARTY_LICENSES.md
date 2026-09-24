@@ -14,10 +14,10 @@ The terminal VT parsing core. Fetched and built from source at build time by
 linked into the shipped binary.
 
 - **Upstream:** https://github.com/ghostty-org/ghostty
-- **Pinned commit:** `46d54ed673a004df09078bee56e809421a82370e`
+- **Pinned commit:** `7c40388b2c63b7dcc5d6c9b9804e40fb2574444f`
 - **License:** MIT
 
-Laban applies two small local patches to the pinned source before building.
+Laban applies three small local patches to the pinned source before building.
 Both live as reviewable diffs under [`patches/`](patches/) and are applied by
 the fetch script:
 
@@ -26,6 +26,9 @@ the fetch script:
   [`docs/adr/0011-libghostty-alt-screen-clear-uses-primary-pen.md`](docs/adr/0011-libghostty-alt-screen-clear-uses-primary-pen.md)).
 - `libghostty-vt-0002-stream-log-scope-and-mode-debug.patch` — renames the log
   scope and downgrades unimplemented-mode warnings to debug.
+- `libghostty-vt-0003-decxcpr-cursor-position-report.patch` — answers DECXCPR
+  (`CSI ? 6 n`) with the DEC-private `CSI ? row ; col R` form (see
+  [`docs/adr/0019-libghostty-answers-decxcpr.md`](docs/adr/0019-libghostty-answers-decxcpr.md)).
 
 ```
 MIT License

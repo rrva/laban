@@ -1,19 +1,20 @@
 diff --git a/src/terminal/device_status.zig b/src/terminal/device_status.zig
-index 42b4bf0..3abed6f 100644
+index 9d158f3..8a7c036 100644
 --- a/src/terminal/device_status.zig
 +++ b/src/terminal/device_status.zig
-@@ -70,5 +70,6 @@ const Entry = struct {
+@@ -112,6 +112,7 @@ const Entry = struct {
  const entries: []const Entry = &.{
      .{ .name = "operating_status", .value = 5 },
      .{ .name = "cursor_position", .value = 6 },
 +    .{ .name = "cursor_position_dec", .value = 6, .question = true },
      .{ .name = "color_scheme", .value = 996, .question = true },
+     .{ .name = "visibility", .value = 998, .question = true },
  };
 diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
-index f68f088..ccb0d87 100644
+index a643b0c..e164110 100644
 --- a/src/terminal/stream_terminal.zig
 +++ b/src/terminal/stream_terminal.zig
-@@ -302,7 +302,7 @@ pub const Handler = struct {
+@@ -1381,7 +1381,7 @@ pub const Handler = struct {
          switch (req) {
              .operating_status => self.writePty("\x1B[0n"),
  
@@ -22,7 +23,7 @@ index f68f088..ccb0d87 100644
                  const pos: struct {
                      x: usize,
                      y: usize,
-@@ -314,11 +314,20 @@ pub const Handler = struct {
+@@ -1393,11 +1393,20 @@ pub const Handler = struct {
                      .y = self.terminal.screens.active.cursor.y,
                  };
  
@@ -48,10 +49,10 @@ index f68f088..ccb0d87 100644
              },
  
 diff --git a/src/termio/stream_handler.zig b/src/termio/stream_handler.zig
-index fb3a6b3..c71f296 100644
+index f302614..0ca7b0a 100644
 --- a/src/termio/stream_handler.zig
 +++ b/src/termio/stream_handler.zig
-@@ -841,7 +841,7 @@ pub const StreamHandler = struct {
+@@ -819,7 +819,7 @@ pub const StreamHandler = struct {
          switch (req) {
              .operating_status => self.messageWriter(.{ .write_stable = "\x1B[0n" }),
  
@@ -60,7 +61,7 @@ index fb3a6b3..c71f296 100644
                  const pos: struct {
                      x: usize,
                      y: usize,
-@@ -856,11 +856,21 @@ pub const StreamHandler = struct {
+@@ -834,11 +834,21 @@ pub const StreamHandler = struct {
                  // Response always is at least 4 chars, so this leaves the
                  // remainder for the row/column as base-10 numbers. This
                  // will support a very large terminal.

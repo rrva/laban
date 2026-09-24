@@ -1,8 +1,8 @@
 diff --git a/src/terminal/stream.zig b/src/terminal/stream.zig
-index 9771334..6e7366b 100644
+index 8e8672c..8b28853 100644
 --- a/src/terminal/stream.zig
 +++ b/src/terminal/stream.zig
-@@ -19,7 +19,7 @@ const sgr = @import("sgr.zig");
+@@ -20,7 +20,7 @@ const continuationpkg = @import("stream_continuation.zig");
  const UTF8Decoder = @import("UTF8Decoder.zig");
  const MouseShape = @import("mouse.zig").Shape;
  
@@ -11,20 +11,20 @@ index 9771334..6e7366b 100644
  
  /// Flip this to true when you want verbose debug output for
  /// debugging terminal stream issues. In addition to louder
-@@ -1380,7 +1380,7 @@ pub fn Stream(comptime H: type) type {
+@@ -2000,7 +2000,7 @@ pub fn Stream(comptime H: type) type {
                          if (modes.modeFromInt(mode_int, ansi_mode)) |mode| {
                              self.handler.vt(.set_mode, .{ .mode = mode });
                          } else {
--                            log.warn("unimplemented mode: {}", .{mode_int});
+-                            logUnsupportedOnce("unimplemented mode: {}", .{mode_int}, mode_int);
 +                            log.debug("unimplemented mode: {}", .{mode_int});
                          }
                      }
                  },
-@@ -1401,7 +1401,7 @@ pub fn Stream(comptime H: type) type {
+@@ -2021,7 +2021,7 @@ pub fn Stream(comptime H: type) type {
                          if (modes.modeFromInt(mode_int, ansi_mode)) |mode| {
                              self.handler.vt(.reset_mode, .{ .mode = mode });
                          } else {
--                            log.warn("unimplemented mode: {}", .{mode_int});
+-                            logUnsupportedOnce("unimplemented mode: {}", .{mode_int}, mode_int);
 +                            log.debug("unimplemented mode: {}", .{mode_int});
                          }
                      }

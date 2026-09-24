@@ -3,13 +3,13 @@
 
 /* OSC host-integration scanner.
  *
- * libghostty-vt parses OSC 7/9/10/11/52 but its VT-only C API neither delivers
- * nor answers them. Laban therefore scans the raw PTY output stream for these in
- * parallel with libghostty — the same observe-and-act pattern as osc133.c /
- * tab_status.c — and:
- *   - replies to `OSC 10 ; ?` / `OSC 11 ; ?` with the session's effective
- *     foreground/background color, so an agent TUI (e.g. Codex) can match its
- *     theme to Laban's window;
+ * libghostty-vt parses OSC 7/9/10/11/52; Laban leaves their delivery callbacks
+ * unset and instead scans the raw PTY output stream for these in parallel with
+ * libghostty — the same observe-and-act pattern as osc133.c / tab_status.c —
+ * and:
+ *   - replies to `OSC 10 ; ?` / `OSC 11 ; ?` / `OSC 12 ; ?` when no color is
+ *     configured (libghostty answers configured colors itself), so an agent
+ *     TUI (e.g. Codex) can always match its theme to Laban's window;
  *   - delivers `OSC 9 ; <text>` to the registered notification callback;
  *   - bridges `OSC 52 ; <Pc> ; <Pd>` to the macOS clipboard (set base64 /
  *     answer a `?` read query — write always on, read opt-in); and
@@ -26,16 +26,18 @@
  * client takes the CPR as its fence and the stray OSC reply corrupts the
  * next reader (gh: "unexpected escape sequence ['\x1b' ']']"). */
 
-/* Reply to OSC 10;? (foreground) / OSC 11;? (background) / OSC 12;? (cursor)
- * with the session's effective theme color. ghostty_terminal_get returns the
- * OSC override or the configured default WITHOUT touching render-state
- * dirtiness (unlike ghostty_render_state_colors_get, which would steal frames
- * from the renderer). Laban's ThemePaletteInjector feeds OSC 10/11 sets at
- * session start, so this is the exact theme fg/bg. When no color is
- * configured, synthesize a scheme-appropriate black/white value so the
- * querying app always receives a usable reply (Codex requires BOTH 10 and 11
- * or it defaults to a dark theme); an unset cursor color tracks the ink, so
- * its fallback follows the foreground. */
+/* Fallback reply to OSC 10;? (foreground) / OSC 11;? (background) / OSC 12;?
+ * (cursor). libghostty answers these queries itself, inline and in stream
+ * order, whenever the color is configured (a cursor query falls back to the
+ * foreground), echoing the query's own BEL/ST terminator. Laban's
+ * ThemePaletteInjector feeds OSC 10/11 sets at session start, so that is the
+ * normal path. This responder covers only the case libghostty stays silent:
+ * no color configured. It synthesizes a scheme-appropriate black/white value
+ * so the querying app always receives a usable reply (Codex requires BOTH 10
+ * and 11 or it defaults to a dark theme). ghostty_terminal_get reads the
+ * configured color WITHOUT touching render-state dirtiness (unlike reading
+ * GHOSTTY_RENDER_STATE_DATA_COLORS, which would steal frames from the
+ * renderer). */
 static void respond_osc_color_query(LabanSession *s, int osc_number) {
     GhosttyColorRgb rgb;
     GhosttyResult r;
@@ -48,14 +50,18 @@ static void respond_osc_color_query(LabanSession *s, int osc_number) {
     } else {
         r = ghostty_terminal_get(
             s->terminal, GHOSTTY_TERMINAL_DATA_COLOR_CURSOR, &rgb);
+        if (r != GHOSTTY_SUCCESS) {
+            r = ghostty_terminal_get(
+                s->terminal, GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND, &rgb);
+        }
     }
-    if (r != GHOSTTY_SUCCESS) {
-        int light = (s->color_scheme == LABAN_COLOR_SCHEME_LIGHT);
-        uint8_t fg = light ? 0x00 : 0xff;  /* dark on light / light on dark */
-        uint8_t bg = light ? 0xff : 0x00;
-        uint8_t v = (osc_number == 11) ? bg : fg;
-        rgb.r = rgb.g = rgb.b = v;
-    }
+    if (r == GHOSTTY_SUCCESS) return;  /* libghostty already replied */
+
+    int light = (s->color_scheme == LABAN_COLOR_SCHEME_LIGHT);
+    uint8_t fg = light ? 0x00 : 0xff;  /* dark on light / light on dark */
+    uint8_t bg = light ? 0xff : 0x00;
+    uint8_t v = (osc_number == 11) ? bg : fg;
+    rgb.r = rgb.g = rgb.b = v;
 
     /* xterm canonical reply: ESC ] <n> ; rgb:RRRR/GGGG/BBBB ESC \
      * Each 8-bit channel is widened to 16-bit by repetition (c -> cc). Codex's

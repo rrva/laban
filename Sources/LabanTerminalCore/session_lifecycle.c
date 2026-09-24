@@ -441,10 +441,14 @@ int laban_session_create(
      * spawn reads them much later. NULL when none were given. */
     s->stored_envp = dup_envp(config->envp);
 
-    GhosttyTerminalOptions opts = { .cols = cols, .rows = rows, .max_scrollback = 10000000 };
-
-    GhosttyResult r = ghostty_terminal_new(NULL, &s->terminal, opts);
+    GhosttyResult r = ghostty_terminal_new(NULL, &s->terminal, cols, rows);
     if (r != GHOSTTY_SUCCESS) { free(s); return -1; }
+
+    /* Upstream's default scrollback budget is ~10 KB; keep ~10 MB of history
+       (page-granular, so the effective limit rounds to whole pages). */
+    size_t scrollback_max_bytes = 10000000;
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+                         &scrollback_max_bytes);
 
     /* Cache geometry for the SIZE effect; also picks up cell pixel sizes
        if the caller supplied them at create time (otherwise updated on

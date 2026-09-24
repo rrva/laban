@@ -60,6 +60,23 @@
         __attribute__((cleanup(laban_session_unlock_cleanup_))) = (s);  \
     (void)_session_lock_guard
 
+/* Terminal mode access. Upstream folded the dedicated mode getter/setter into
+ * ghostty_terminal_get/set with a GhosttyTerminalModeConfig; these keep the
+ * call sites as one-liners. */
+static inline GhosttyResult laban_terminal_mode_get(GhosttyTerminal t, GhosttyMode mode,
+                                                    bool *out_value) {
+    GhosttyTerminalModeConfig cfg = { .mode = mode, .value = false };
+    GhosttyResult r = ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_MODE, &cfg);
+    if (r == GHOSTTY_SUCCESS && out_value) *out_value = cfg.value;
+    return r;
+}
+
+static inline GhosttyResult laban_terminal_mode_set(GhosttyTerminal t, GhosttyMode mode,
+                                                    bool value) {
+    GhosttyTerminalModeConfig cfg = { .mode = mode, .value = value };
+    return ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_MODE, &cfg);
+}
+
 /* Vectorized skip for the raw-output scanners below (tab_status.c, osc133.c,
  * osc_host.c). In their bulk "skip" states the state machines react only to
  * ESC — plus BEL inside OSC/DCS string bodies — so instead of stepping the

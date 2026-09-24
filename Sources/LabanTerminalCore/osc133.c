@@ -35,16 +35,16 @@ static unsigned stuck_interactive_modes_locked(LabanSession *s) {
 
 static void reset_interactive_modes_locked(LabanSession *s, unsigned mask) {
     if (mask & O133_RESET_MOUSE) {
-        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_X10_MOUSE, false);
-        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_NORMAL_MOUSE, false);
-        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_BUTTON_MOUSE, false);
-        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_ANY_MOUSE, false);
+        laban_terminal_mode_set(s->terminal, GHOSTTY_MODE_X10_MOUSE, false);
+        laban_terminal_mode_set(s->terminal, GHOSTTY_MODE_NORMAL_MOUSE, false);
+        laban_terminal_mode_set(s->terminal, GHOSTTY_MODE_BUTTON_MOUSE, false);
+        laban_terminal_mode_set(s->terminal, GHOSTTY_MODE_ANY_MOUSE, false);
     }
     if (mask & O133_RESET_FOCUS) {
-        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_FOCUS_EVENT, false);
+        laban_terminal_mode_set(s->terminal, GHOSTTY_MODE_FOCUS_EVENT, false);
     }
     if (mask & O133_RESET_CURSOR) {
-        ghostty_terminal_mode_set(s->terminal, GHOSTTY_MODE_CURSOR_VISIBLE, true);
+        laban_terminal_mode_set(s->terminal, GHOSTTY_MODE_CURSOR_VISIBLE, true);
     }
 }
 

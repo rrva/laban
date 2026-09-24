@@ -60,9 +60,9 @@ Prerequisites:
   runtime with `@available(macOS 26, *)` and fall back to a legacy path, so the
   built app still runs on macOS 13, but the symbols must resolve at compile
   time. Xcode 16.4 (Swift 6.1) and earlier cannot build this tree.
-- [Zig](https://ziglang.org/download/) **0.15.2 exactly** (not newer): builds
-  the vendored libghostty-vt VT core. `fetch-libghostty-vt` refuses any other
-  version, because the Ghostty pin below does not compile with it.
+- [Zig](https://ziglang.org/download/) **0.16.0 exactly**: builds the vendored
+  libghostty-vt VT core. `fetch-libghostty-vt` refuses any other version,
+  because the Ghostty pin does not compile with it.
 - `python3` (ships with macOS): used by `./scripts/build-app` and several
   `./scripts/check` stages
 - `jq`: used by `./scripts/check` and the debug examples below
@@ -70,11 +70,9 @@ Prerequisites:
 Install the tooling, then build:
 
 ```sh
-# The default `zig` formula is 0.16, which fetch-libghostty-vt rejects.
-# zig@0.15 is keg-only, so it must be put on PATH explicitly.
-brew install zig@0.15 jq
-export PATH="$(brew --prefix zig@0.15)/bin:$PATH"
-zig version   # must print exactly 0.15.2
+# If zig@0.15 is still linked from an older checkout: brew unlink zig@0.15
+brew install zig@0.16 jq
+zig version   # must print exactly 0.16.0
 
 git clone https://github.com/rrva/laban
 cd laban

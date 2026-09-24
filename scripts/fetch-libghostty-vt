@@ -1,11 +1,11 @@
 #!/usr/bin/env sh
 # Fetch and build libghostty-vt from source.
-# Pin: Ghostty commit 46d54ed673a004df09078bee56e809421a82370e (main snapshot, 2026-05-20)
+# Pin: Ghostty commit 7c40388b2c63b7dcc5d6c9b9804e40fb2574444f (main snapshot, 2026-09-24)
 # Artifacts written to .external/libghostty-vt/zig-out/ (git-ignored).
-# Requires: git, Zig 0.15.2
+# Requires: git, Zig 0.16.0
 set -eu
 
-GHOSTTY_COMMIT="46d54ed673a004df09078bee56e809421a82370e"
+GHOSTTY_COMMIT="7c40388b2c63b7dcc5d6c9b9804e40fb2574444f"
 GHOSTTY_URL="https://github.com/ghostty-org/ghostty"
 DEST=".external/libghostty-vt"
 LIB_OUT="$DEST/zig-out/lib/libghostty-vt.a"
@@ -85,10 +85,10 @@ fi
 # reject the wrong toolchain before changing the shared vendored checkout or
 # removing its last successful stamp.
 command -v zig >/dev/null 2>&1 \
-    || fail "Zig 0.15.2 is required. Install via https://ziglang.org/download/"
+    || fail "Zig 0.16.0 is required. Install via https://ziglang.org/download/"
 zig_version=$(zig version 2>/dev/null || echo "unknown")
-if [ "$zig_version" != "0.15.2" ]; then
-    fail "Ghostty pin $GHOSTTY_COMMIT requires Zig 0.15.2 exactly; found $zig_version"
+if [ "$zig_version" != "0.16.0" ]; then
+    fail "Ghostty pin $GHOSTTY_COMMIT requires Zig 0.16.0 exactly; found $zig_version"
 fi
 
 # Clone or reset to the pinned commit.
@@ -177,9 +177,10 @@ done
 #     's/pub fn verifyIntegrity(self: \*const Page) void {/&\n    return;/' \
 #     "$DEST/src/terminal/page.zig"
 #
-# Zig 0.15.2 bundles LLVM 20's clang headers. Starting with the macOS 27.0
-# SDK, <math.h> no longer defines INFINITY/NAN itself: it re-enters <float.h>
-# with __need_infinity_nan set, an entry point clang only grew in LLVM 21.
+# Zig's bundled clang headers (still true of Zig 0.16.0) predate the macOS
+# 27.0 SDK: <math.h> no longer defines INFINITY/NAN itself and instead
+# re-enters <float.h> with __need_infinity_nan set, an entry point Zig's
+# float.h lacks.
 # Zig's own libc++ sub-compilation then dies on "use of undeclared identifier
 # 'INFINITY'" before any of our code is reached. Hand zig a lib directory that
 # symlinks its stock tree and overrides that single header. The shim is inert

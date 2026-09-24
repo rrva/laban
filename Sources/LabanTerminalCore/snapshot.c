@@ -150,7 +150,7 @@ static uint32_t resolve_style_color_rgba(
         }
         case GHOSTTY_STYLE_COLOR_PALETTE: {
             GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
-            ghostty_render_state_colors_get(render_state, &colors);
+            ghostty_render_state_get(render_state, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
             uint8_t idx = color.value.palette;
             GhosttyColorRgb rgb = colors.palette[idx];
             return ((uint32_t)rgb.r << 24) |
@@ -228,7 +228,7 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
 
     /* Default colors from render state. */
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
-    ghostty_render_state_colors_get(s->render_state, &colors);
+    ghostty_render_state_get(s->render_state, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
     uint32_t default_fg = ((uint32_t)colors.foreground.r << 24) |
                           ((uint32_t)colors.foreground.g << 16) |
                           ((uint32_t)colors.foreground.b << 8) | 0xFF;

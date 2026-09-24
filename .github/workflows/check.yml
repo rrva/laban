@@ -8,7 +8,7 @@ on:
 # Ghostty commit pinned in scripts/fetch-libghostty-vt. Bump this when that
 # pin changes so the cache key invalidates.
 env:
-  GHOSTTY_COMMIT: 46d54ed673a004df09078bee56e809421a82370e
+  GHOSTTY_COMMIT: 7c40388b2c63b7dcc5d6c9b9804e40fb2574444f
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
@@ -87,9 +87,9 @@ jobs:
           path: .external/libghostty-vt/zig-out
           key: libghostty-vt-zigout-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_COMMIT }}-${{ hashFiles('scripts/fetch-libghostty-vt', 'patches/libghostty-vt-*.patch') }}
 
-      - name: Install Zig 0.15
+      - name: Install Zig 0.16
         if: steps.cache-vt.outputs.cache-hit != 'true'
-        run: brew install zig@0.15
+        run: brew install zig@0.16
 
       - name: Fetch and build libghostty-vt
         if: steps.cache-vt.outputs.cache-hit != 'true'

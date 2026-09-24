@@ -36,14 +36,16 @@ library. The concrete PTY launch mechanism is governed by
 
 ## Decision
 
-**libghostty-vt at commit `46d54ed673a004df09078bee56e809421a82370e` is the
+**libghostty-vt at commit `7c40388b2c63b7dcc5d6c9b9804e40fb2574444f` is the
 VT parsing library for `LabanTerminalCore`. GhosttyKit is not used.
 `LabanTerminalCore` owns the PTY and child process lifecycle.**
 
 The pin was advanced from
 `fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b` to
 `46d54ed673a004df09078bee56e809421a82370e` by
-`docs/adr/0004-advance-libghostty-vt-pin.md`.
+`docs/adr/0004-advance-libghostty-vt-pin.md`, then to
+`7c40388b2c63b7dcc5d6c9b9804e40fb2574444f` by
+`docs/adr/0034-advance-libghostty-vt-pin-to-zig-0-16.md`.
 
 ### Rules
 
@@ -82,7 +84,7 @@ The pin was advanced from
 
 - The terminal core is headless from day one. `laban-agent`, fixture sessions,
   and unit tests all work without a screen or AppKit event loop.
-- Zig (>= 0.15.2) is a build-time requirement for any developer or CI machine
+- Zig (exactly 0.16.0 for the current pin) is a build-time requirement for any developer or CI machine
   that needs to build from source. The fetch script checks for it.
 - The render-state API uses a "pre-allocate, then populate" iterator pattern.
   Row iterator and row cells container are allocated once per session and reused.

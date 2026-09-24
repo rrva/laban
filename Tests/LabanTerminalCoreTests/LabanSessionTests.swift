@@ -3230,8 +3230,13 @@ final class LabanSessionTests: XCTestCase {
     }
     defer { laban_session_destroy(session) }
 
+    // Per the in-band resize spec, enabling mode 2048 reports the current
+    // size immediately (no cell pixel geometry was supplied yet, so 0x0 px).
     writeBytes(session, Array("\u{1b}[?2048h".utf8))
-    XCTAssertEqual(drainResponse(session), [], "enabling mode 2048 should not reply immediately")
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}[48;24;80;0;0t",
+      "enabling mode 2048 must report the current size")
 
     var size = LabanTerminalSize()
     size.rows = 40
@@ -3376,12 +3381,19 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array("\u{1b}]10;#1a2b3c\u{07}".utf8))
     XCTAssertEqual(drainResponse(session), [], "an OSC 10 set must not produce a reply")
 
-    // Query it (OSC 10;?). Expect the xterm 4-hex reply, ST-terminated.
+    // Query it (OSC 10;?). libghostty answers a configured color with the
+    // xterm 4-hex reply, echoing the query's terminator, exactly once.
     writeBytes(session, Array("\u{1b}]10;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]10;rgb:1a1a/2b2b/3c3c\u{07}",
+      "OSC 10;? must reply once with the effective foreground in rgb:RRRR/GGGG/BBBB")
+
+    writeBytes(session, Array("\u{1b}]10;?\u{1b}\\".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
       "\u{1b}]10;rgb:1a1a/2b2b/3c3c\u{1b}\\",
-      "OSC 10;? must reply with the effective foreground in rgb:RRRR/GGGG/BBBB")
+      "an ST-terminated OSC 10;? must get an ST-terminated reply")
   }
 
   func testOSCBackgroundColorQueryEchoesEffectiveBackground() {
@@ -3396,8 +3408,8 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array("\u{1b}]11;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
-      "\u{1b}]11;rgb:ffff/cccc/0000\u{1b}\\",
-      "OSC 11;? must reply with the effective background")
+      "\u{1b}]11;rgb:ffff/cccc/0000\u{07}",
+      "OSC 11;? must reply once with the effective background")
   }
 
   func testOSCColorReplyPrecedesCursorPositionReplyWithinOneChunk() {
@@ -3463,8 +3475,26 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array("\u{1b}]12;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
-      "\u{1b}]12;rgb:1111/2222/3333\u{1b}\\",
-      "OSC 12;? must reply with the effective cursor color in rgb:RRRR/GGGG/BBBB")
+      "\u{1b}]12;rgb:1111/2222/3333\u{07}",
+      "OSC 12;? must reply once with the effective cursor color in rgb:RRRR/GGGG/BBBB")
+  }
+
+  func testOSC4PaletteQueryRepliesWithPaletteEntry() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // Multiplexers such as herdr probe the host palette with OSC 4;N;? to
+    // theme themselves; libghostty answers from the current palette.
+    writeBytes(session, Array("\u{1b}]4;1;#aa0011\u{07}".utf8))
+    _ = drainResponse(session)
+    writeBytes(session, Array("\u{1b}]4;1;?\u{1b}\\".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]4;1;rgb:aaaa/0000/1111\u{1b}\\",
+      "OSC 4;1;? must reply with palette entry 1")
   }
 
   func testOSCCursorColorQueryFallsBackToSchemeInk() {

@@ -37,7 +37,7 @@ static int laban_session_encode_paste_locked(
     if (!out_bytes && out_capacity > 0) return -1;
 
     bool bracketed = false;
-    ghostty_terminal_mode_get(s->terminal, GHOSTTY_MODE_BRACKETED_PASTE, &bracketed);
+    laban_terminal_mode_get(s->terminal, GHOSTTY_MODE_BRACKETED_PASTE, &bracketed);
 
     if (bracketed) {
         /* Inside the 200~/201~ fence the payload is delivered byte-for-byte:

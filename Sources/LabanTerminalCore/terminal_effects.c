@@ -136,7 +136,7 @@ int laban_session_mode_active_locked(LabanSession *s, GhosttyMode mode, int *out
     if (out_active) *out_active = 0;
     if (!s || !out_active) return -1;
     bool active = false;
-    GhosttyResult r = ghostty_terminal_mode_get(s->terminal, mode, &active);
+    GhosttyResult r = laban_terminal_mode_get(s->terminal, mode, &active);
     if (r != GHOSTTY_SUCCESS) return -1;
     *out_active = active ? 1 : 0;
     return 0;
@@ -189,7 +189,7 @@ int laban_session_synchronized_output_active(LabanSession *s, int *out_active) {
 int laban_session_reset_synchronized_output(LabanSession *s) {
     if (!s) return -1;
     SESSION_LOCK(s);
-    GhosttyResult r = ghostty_terminal_mode_set(
+    GhosttyResult r = laban_terminal_mode_set(
         s->terminal, GHOSTTY_MODE_SYNC_OUTPUT, false);
     return r == GHOSTTY_SUCCESS ? 0 : -1;
 }
@@ -197,7 +197,7 @@ int laban_session_reset_synchronized_output(LabanSession *s) {
 int laban_session_set_grapheme_cluster_mode(LabanSession *s, int enabled) {
     if (!s) return -1;
     SESSION_LOCK(s);
-    GhosttyResult r = ghostty_terminal_mode_set(
+    GhosttyResult r = laban_terminal_mode_set(
         s->terminal, GHOSTTY_MODE_GRAPHEME_CLUSTER, enabled ? true : false);
     return r == GHOSTTY_SUCCESS ? 0 : -1;
 }

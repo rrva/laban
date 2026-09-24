@@ -126,7 +126,7 @@ def main() -> int:
         "content-addressed patch fingerprint": "git hash-object",
         "applied-source validation": "apply --reverse --check",
         "partial-patch recovery": 'reset --hard "$GHOSTTY_COMMIT"',
-        "pinned Zig toolchain check": 'if [ "$zig_version" != "0.15.2" ]',
+        "pinned Zig toolchain check": 'if [ "$zig_version" != "0.16.0" ]',
         "post-build patch stamp": 'mv "$stamp_tmp" "$PATCH_STAMP"',
         "SwiftPM relink trigger": 'touch "$repo_root/$RELINK_INPUT"',
     }
