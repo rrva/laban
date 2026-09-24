@@ -44,14 +44,23 @@ plutil -lint "$PLIST" || fail "Info.plist lint failed"
 actual_bundle_identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")
 [ "$actual_bundle_identifier" = "$SMOKE_BUNDLE_IDENTIFIER" ] \
   || fail "smoke bundle identifier is $actual_bundle_identifier"
-focus_usage_description=$(
-  /usr/libexec/PlistBuddy -c 'Print :NSFocusStatusUsageDescription' "$PLIST")
-[ -n "$focus_usage_description" ] \
-  || fail "NSFocusStatusUsageDescription is missing or empty"
-for locale in en zh-Hans zh-Hant ja ko fr es hi ru de pt-BR it; do
-  info_plist_strings="$BUILD_ROOT/laban/Laban.app/Contents/Resources/$locale.lproj/InfoPlist.strings"
-  [ -s "$info_plist_strings" ] \
-    || fail "localized NSFocusStatusUsageDescription missing for $locale"
+for usage_key in NSFocusStatusUsageDescription NSLocalNetworkUsageDescription \
+  NSAppleEventsUsageDescription NSMicrophoneUsageDescription NSCameraUsageDescription \
+  NSDesktopFolderUsageDescription NSDocumentsFolderUsageDescription \
+  NSDownloadsFolderUsageDescription NSRemovableVolumesUsageDescription \
+  NSNetworkVolumesUsageDescription NSBluetoothAlwaysUsageDescription \
+  NSContactsUsageDescription NSCalendarsUsageDescription \
+  NSCalendarsFullAccessUsageDescription NSRemindersUsageDescription \
+  NSRemindersFullAccessUsageDescription NSPhotoLibraryUsageDescription \
+  NSLocationUsageDescription NSLocationWhenInUseUsageDescription \
+  NSSystemAdministrationUsageDescription; do
+  usage_description=$(/usr/libexec/PlistBuddy -c "Print :$usage_key" "$PLIST" 2>/dev/null || true)
+  [ -n "$usage_description" ] || fail "$usage_key is missing or empty"
+  for locale in en zh-Hans zh-Hant ja ko fr es hi ru de pt-BR it; do
+    info_plist_strings="$BUILD_ROOT/laban/Laban.app/Contents/Resources/$locale.lproj/InfoPlist.strings"
+    grep -q "^\"$usage_key\" = " "$info_plist_strings" 2>/dev/null \
+      || fail "localized $usage_key missing for $locale"
+  done
 done
 
 # 2b. Renderer resource bundle is reachable via Bundle.main.resourceURL.

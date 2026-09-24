@@ -231,10 +231,10 @@ else
   sparkle_framework=""
 fi
 
-focus_usage_description=$(python3 scripts/gen-localizable-xcstrings.py \
-  --focus-usage-description en)
+usage_descriptions_plist=$(python3 scripts/gen-localizable-xcstrings.py \
+  --info-plist-usage-entries)
 python3 scripts/gen-localizable-xcstrings.py \
-  --write-focus-info-plist-strings "${bundle_dir}/Resources"
+  --write-info-plist-strings "${bundle_dir}/Resources"
 
 cat > "${bundle_dir}/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -287,10 +287,7 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <false/>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>NSFocusStatusUsageDescription</key>
-    <string>$(xml_escape "$focus_usage_description")</string>
-    <key>NSLocalNetworkUsageDescription</key>
-    <string>Programs you run in Laban, such as ssh, connect to devices on your local network.</string>
+${usage_descriptions_plist}
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 Ragnar Rova</string>
     <key>CFBundleURLTypes</key>
@@ -427,17 +424,26 @@ else
     # Hardened runtime + secure timestamp are notarization requirements for
     # distribution builds. Ad-hoc builds skip them so offline dev builds work.
     sign_options="--options runtime --timestamp"
+    # labpty forks the shells and LabanApp is their responsible process, so
+    # both carry the hardened-runtime opt-ins terminal programs rely on.
+    entitlement_options="--entitlements $repo_root/scripts/Laban.entitlements"
   else
     sign_identity="-"
     sign_options=""
+    entitlement_options=""
   fi
   sign_sparkle_framework
   for product in laban-agent laband labpty laban LabanApp; do
+    product_options=""
+    case "$product" in
+      labpty|LabanApp) product_options="$entitlement_options" ;;
+    esac
     # shellcheck disable=SC2086
-    codesign --force $sign_options --sign "$sign_identity" "${bundle_dir}/MacOS/$product"
+    codesign --force $sign_options $product_options --sign "$sign_identity" \
+      "${bundle_dir}/MacOS/$product"
   done
   # shellcheck disable=SC2086
-  codesign --force $sign_options --sign "$sign_identity" "$app_bundle"
+  codesign --force $sign_options $entitlement_options --sign "$sign_identity" "$app_bundle"
   verify_signature
   if [ "$sign_identity" = "-" ]; then
     printf 'build-app: codesigned ad-hoc\n'

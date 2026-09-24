@@ -2241,26 +2241,314 @@ def build_xcstrings() -> dict:
     }
 
 
+# Info.plist usage descriptions. Programs launched in Laban's shells inherit
+# Laban as their TCC responsible process, so macOS consults these keys (not the
+# program's) before prompting; a missing key silently denies access.
+# Plist key -> English source. Translations live in INFO_PLIST_TRANSLATIONS.
+LOCAL_NETWORK_USAGE_DESCRIPTION = (
+    "Programs you run in Laban, such as ssh, use this to connect to devices on your local network."
+)
+APPLE_EVENTS_USAGE_DESCRIPTION = (
+    "Programs you run in Laban, such as osascript, use this to control other apps."
+)
+MICROPHONE_USAGE_DESCRIPTION = "Programs you run in Laban use this to record from the microphone."
+CAMERA_USAGE_DESCRIPTION = "Programs you run in Laban use this to capture from the camera."
+DESKTOP_FOLDER_USAGE_DESCRIPTION = (
+    "Programs you run in Laban use this to access files in your Desktop folder."
+)
+DOCUMENTS_FOLDER_USAGE_DESCRIPTION = (
+    "Programs you run in Laban use this to access files in your Documents folder."
+)
+DOWNLOADS_FOLDER_USAGE_DESCRIPTION = (
+    "Programs you run in Laban use this to access files in your Downloads folder."
+)
+REMOVABLE_VOLUMES_USAGE_DESCRIPTION = (
+    "Programs you run in Laban use this to access files on removable volumes."
+)
+NETWORK_VOLUMES_USAGE_DESCRIPTION = (
+    "Programs you run in Laban use this to access files on network volumes."
+)
+BLUETOOTH_USAGE_DESCRIPTION = (
+    "Programs you run in Laban use this to communicate with Bluetooth devices."
+)
+CONTACTS_USAGE_DESCRIPTION = "Programs you run in Laban use this to access your contacts."
+CALENDARS_USAGE_DESCRIPTION = "Programs you run in Laban use this to access your calendars."
+REMINDERS_USAGE_DESCRIPTION = "Programs you run in Laban use this to access your reminders."
+PHOTO_LIBRARY_USAGE_DESCRIPTION = "Programs you run in Laban use this to access your photo library."
+LOCATION_USAGE_DESCRIPTION = "Programs you run in Laban use this to access your location."
+SYSTEM_ADMINISTRATION_USAGE_DESCRIPTION = (
+    "Programs you run in Laban use this to make changes that require administrator privileges."
+)
+
+INFO_PLIST_USAGE_DESCRIPTIONS: dict[str, str] = {
+    "NSFocusStatusUsageDescription": FOCUS_STATUS_USAGE_DESCRIPTION,
+    "NSLocalNetworkUsageDescription": LOCAL_NETWORK_USAGE_DESCRIPTION,
+    "NSAppleEventsUsageDescription": APPLE_EVENTS_USAGE_DESCRIPTION,
+    "NSMicrophoneUsageDescription": MICROPHONE_USAGE_DESCRIPTION,
+    "NSCameraUsageDescription": CAMERA_USAGE_DESCRIPTION,
+    "NSDesktopFolderUsageDescription": DESKTOP_FOLDER_USAGE_DESCRIPTION,
+    "NSDocumentsFolderUsageDescription": DOCUMENTS_FOLDER_USAGE_DESCRIPTION,
+    "NSDownloadsFolderUsageDescription": DOWNLOADS_FOLDER_USAGE_DESCRIPTION,
+    "NSRemovableVolumesUsageDescription": REMOVABLE_VOLUMES_USAGE_DESCRIPTION,
+    "NSNetworkVolumesUsageDescription": NETWORK_VOLUMES_USAGE_DESCRIPTION,
+    "NSBluetoothAlwaysUsageDescription": BLUETOOTH_USAGE_DESCRIPTION,
+    "NSContactsUsageDescription": CONTACTS_USAGE_DESCRIPTION,
+    "NSCalendarsUsageDescription": CALENDARS_USAGE_DESCRIPTION,
+    "NSCalendarsFullAccessUsageDescription": CALENDARS_USAGE_DESCRIPTION,
+    "NSRemindersUsageDescription": REMINDERS_USAGE_DESCRIPTION,
+    "NSRemindersFullAccessUsageDescription": REMINDERS_USAGE_DESCRIPTION,
+    "NSPhotoLibraryUsageDescription": PHOTO_LIBRARY_USAGE_DESCRIPTION,
+    "NSLocationUsageDescription": LOCATION_USAGE_DESCRIPTION,
+    "NSLocationWhenInUseUsageDescription": LOCATION_USAGE_DESCRIPTION,
+    "NSSystemAdministrationUsageDescription": SYSTEM_ADMINISTRATION_USAGE_DESCRIPTION,
+}
+
+# Kept out of TRANSLATIONS: these strings live only in InfoPlist.strings, not
+# in the Swift string catalog.
+INFO_PLIST_TRANSLATIONS: dict[str, dict[str, str]] = {
+    LOCAL_NETWORK_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序（例如 ssh）会使用此权限连接本地网络上的设备。",
+        "zh-Hant": "您在 Laban 中執行的程式（例如 ssh）會使用此權限連接區域網路上的裝置。",
+        "ja": "Laban で実行するプログラム（ssh など）が、ローカルネットワーク上のデバイスに接続するために使用します。",
+        "ko": "Laban에서 실행하는 프로그램(예: ssh)이 로컬 네트워크의 기기에 연결하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban, comme ssh, s’en servent pour se connecter aux appareils de votre réseau local.",
+        "es": "Los programas que ejecutas en Laban, como ssh, lo usan para conectarse a dispositivos de tu red local.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, जैसे ssh, वे इसका उपयोग आपके लोकल नेटवर्क के डिवाइस से कनेक्ट करने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, например ssh, используют это для подключения к устройствам в локальной сети.",
+        "de": "Programme, die Sie in Laban ausführen, etwa ssh, verwenden dies, um sich mit Geräten in Ihrem lokalen Netzwerk zu verbinden.",
+        "pt-BR": "Programas que você executa no Laban, como o ssh, usam isso para se conectar a dispositivos da sua rede local.",
+        "it": "I programmi che esegui in Laban, come ssh, lo usano per connettersi ai dispositivi della tua rete locale.",
+    },
+    APPLE_EVENTS_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序（例如 osascript）会使用此权限控制其他应用。",
+        "zh-Hant": "您在 Laban 中執行的程式（例如 osascript）會使用此權限控制其他 App。",
+        "ja": "Laban で実行するプログラム（osascript など）が、ほかのアプリを操作するために使用します。",
+        "ko": "Laban에서 실행하는 프로그램(예: osascript)이 다른 앱을 제어하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban, comme osascript, s’en servent pour contrôler d’autres apps.",
+        "es": "Los programas que ejecutas en Laban, como osascript, lo usan para controlar otras apps.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, जैसे osascript, वे इसका उपयोग दूसरे ऐप्स को नियंत्रित करने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, например osascript, используют это для управления другими приложениями.",
+        "de": "Programme, die Sie in Laban ausführen, etwa osascript, verwenden dies, um andere Apps zu steuern.",
+        "pt-BR": "Programas que você executa no Laban, como o osascript, usam isso para controlar outros apps.",
+        "it": "I programmi che esegui in Laban, come osascript, lo usano per controllare altre app.",
+    },
+    MICROPHONE_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限通过麦克风录音。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限透過麥克風錄音。",
+        "ja": "Laban で実行するプログラムが、マイクから録音するために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 마이크로 녹음하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour enregistrer depuis le micro.",
+        "es": "Los programas que ejecutas en Laban lo usan para grabar desde el micrófono.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग माइक्रोफ़ोन से रिकॉर्ड करने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для записи с микрофона.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um über das Mikrofon aufzunehmen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para gravar pelo microfone.",
+        "it": "I programmi che esegui in Laban lo usano per registrare dal microfono.",
+    },
+    CAMERA_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限通过摄像头拍摄。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限透過相機拍攝。",
+        "ja": "Laban で実行するプログラムが、カメラで撮影するために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 카메라로 촬영하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour capturer depuis la caméra.",
+        "es": "Los programas que ejecutas en Laban lo usan para capturar desde la cámara.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग कैमरे से कैप्चर करने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для съёмки с камеры.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um mit der Kamera aufzunehmen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para capturar pela câmera.",
+        "it": "I programmi che esegui in Laban lo usano per acquisire dalla fotocamera.",
+    },
+    DESKTOP_FOLDER_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问“桌面”文件夹中的文件。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用「桌面」檔案夾中的檔案。",
+        "ja": "Laban で実行するプログラムが、「デスクトップ」フォルダ内のファイルにアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 데스크탑 폴더의 파일에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder aux fichiers de votre dossier Bureau.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a los archivos de tu carpeta Escritorio.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग आपके डेस्कटॉप फ़ोल्डर की फ़ाइलों तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к файлам в папке «Рабочий стол».",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Dateien in Ihrem Ordner „Schreibtisch“ zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar arquivos da sua pasta Mesa.",
+        "it": "I programmi che esegui in Laban lo usano per accedere ai file nella cartella Scrivania.",
+    },
+    DOCUMENTS_FOLDER_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问“文稿”文件夹中的文件。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用「文件」檔案夾中的檔案。",
+        "ja": "Laban で実行するプログラムが、「書類」フォルダ内のファイルにアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 문서 폴더의 파일에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder aux fichiers de votre dossier Documents.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a los archivos de tu carpeta Documentos.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग आपके दस्तावेज़ फ़ोल्डर की फ़ाइलों तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к файлам в папке «Документы».",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Dateien in Ihrem Ordner „Dokumente“ zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar arquivos da sua pasta Documentos.",
+        "it": "I programmi che esegui in Laban lo usano per accedere ai file nella cartella Documenti.",
+    },
+    DOWNLOADS_FOLDER_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问“下载”文件夹中的文件。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用「下載項目」檔案夾中的檔案。",
+        "ja": "Laban で実行するプログラムが、「ダウンロード」フォルダ内のファイルにアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 다운로드 폴더의 파일에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder aux fichiers de votre dossier Téléchargements.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a los archivos de tu carpeta Descargas.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग आपके डाउनलोड फ़ोल्डर की फ़ाइलों तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к файлам в папке «Загрузки».",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Dateien in Ihrem Ordner „Downloads“ zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar arquivos da sua pasta Transferências.",
+        "it": "I programmi che esegui in Laban lo usano per accedere ai file nella cartella Download.",
+    },
+    REMOVABLE_VOLUMES_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问可移除宗卷上的文件。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用可卸除式卷宗上的檔案。",
+        "ja": "Laban で実行するプログラムが、リムーバブルボリューム上のファイルにアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 이동식 볼륨의 파일에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder aux fichiers des volumes amovibles.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a archivos de volúmenes extraíbles.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग रिमूवेबल वॉल्यूम की फ़ाइलों तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к файлам на съёмных томах.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Dateien auf Wechselmedien zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar arquivos em volumes removíveis.",
+        "it": "I programmi che esegui in Laban lo usano per accedere ai file sui volumi rimovibili.",
+    },
+    NETWORK_VOLUMES_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问网络宗卷上的文件。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用網路卷宗上的檔案。",
+        "ja": "Laban で実行するプログラムが、ネットワークボリューム上のファイルにアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 네트워크 볼륨의 파일에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder aux fichiers des volumes réseau.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a archivos de volúmenes de red.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग नेटवर्क वॉल्यूम की फ़ाइलों तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к файлам на сетевых томах.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Dateien auf Netzwerkvolumes zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar arquivos em volumes de rede.",
+        "it": "I programmi che esegui in Laban lo usano per accedere ai file sui volumi di rete.",
+    },
+    BLUETOOTH_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限与蓝牙设备通信。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限與藍牙裝置通訊。",
+        "ja": "Laban で実行するプログラムが、Bluetooth デバイスと通信するために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 Bluetooth 기기와 통신하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour communiquer avec des appareils Bluetooth.",
+        "es": "Los programas que ejecutas en Laban lo usan para comunicarse con dispositivos Bluetooth.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग Bluetooth डिवाइस से संवाद करने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для связи с устройствами Bluetooth.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um mit Bluetooth-Geräten zu kommunizieren.",
+        "pt-BR": "Programas que você executa no Laban usam isso para se comunicar com dispositivos Bluetooth.",
+        "it": "I programmi che esegui in Laban lo usano per comunicare con i dispositivi Bluetooth.",
+    },
+    CONTACTS_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问您的通讯录。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用您的聯絡人。",
+        "ja": "Laban で実行するプログラムが、連絡先にアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 연락처에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder à vos contacts.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a tus contactos.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग आपके संपर्कों तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к вашим контактам.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Ihre Kontakte zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar seus contatos.",
+        "it": "I programmi che esegui in Laban lo usano per accedere ai tuoi contatti.",
+    },
+    CALENDARS_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问您的日历。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用您的行事曆。",
+        "ja": "Laban で実行するプログラムが、カレンダーにアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 캘린더에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder à vos calendriers.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a tus calendarios.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग आपके कैलेंडर तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к вашим календарям.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Ihre Kalender zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar seus calendários.",
+        "it": "I programmi che esegui in Laban lo usano per accedere ai tuoi calendari.",
+    },
+    REMINDERS_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问您的提醒事项。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用您的提醒事項。",
+        "ja": "Laban で実行するプログラムが、リマインダーにアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 미리 알림에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder à vos rappels.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a tus recordatorios.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग आपके रिमाइंडर तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к вашим напоминаниям.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Ihre Erinnerungen zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar seus lembretes.",
+        "it": "I programmi che esegui in Laban lo usano per accedere ai tuoi promemoria.",
+    },
+    PHOTO_LIBRARY_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问您的照片图库。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用您的照片圖庫。",
+        "ja": "Laban で実行するプログラムが、写真ライブラリにアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 사진 보관함에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder à votre photothèque.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a tu fototeca.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग आपकी फ़ोटो लाइब्रेरी तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к вашей медиатеке фото.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Ihre Fotomediathek zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar sua fototeca.",
+        "it": "I programmi che esegui in Laban lo usano per accedere alla tua libreria foto.",
+    },
+    LOCATION_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限访问您的位置。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限取用您的位置。",
+        "ja": "Laban で実行するプログラムが、位置情報にアクセスするために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 위치 정보에 접근하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour accéder à votre position.",
+        "es": "Los programas que ejecutas en Laban lo usan para acceder a tu ubicación.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग आपके स्थान तक पहुँचने के लिए करते हैं।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для доступа к вашей геопозиции.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um auf Ihren Standort zuzugreifen.",
+        "pt-BR": "Programas que você executa no Laban usam isso para acessar sua localização.",
+        "it": "I programmi che esegui in Laban lo usano per accedere alla tua posizione.",
+    },
+    SYSTEM_ADMINISTRATION_USAGE_DESCRIPTION: {
+        "zh-Hans": "您在 Laban 中运行的程序会使用此权限进行需要管理员权限的更改。",
+        "zh-Hant": "您在 Laban 中執行的程式會使用此權限進行需要管理者權限的變更。",
+        "ja": "Laban で実行するプログラムが、管理者権限が必要な変更を行うために使用します。",
+        "ko": "Laban에서 실행하는 프로그램이 관리자 권한이 필요한 변경을 하는 데 사용합니다.",
+        "fr": "Les programmes que vous exécutez dans Laban s’en servent pour effectuer des modifications nécessitant des privilèges d’administrateur.",
+        "es": "Los programas que ejecutas en Laban lo usan para hacer cambios que requieren privilegios de administrador.",
+        "hi": "Laban में आप जो प्रोग्राम चलाते हैं, वे इसका उपयोग ऐसे बदलाव करने के लिए करते हैं जिनके लिए व्यवस्थापक अधिकार चाहिए।",
+        "ru": "Программы, которые вы запускаете в Laban, используют это для изменений, требующих прав администратора.",
+        "de": "Programme, die Sie in Laban ausführen, verwenden dies, um Änderungen vorzunehmen, die Administratorrechte erfordern.",
+        "pt-BR": "Programas que você executa no Laban usam isso para fazer alterações que exigem privilégios de administrador.",
+        "it": "I programmi che esegui in Laban lo usano per apportare modifiche che richiedono privilegi di amministratore.",
+    },
+}
+
+
 def localized_value(source: str, locale: str) -> str:
     if locale == "en":
         return source
     locales = {
         **TRANSLATIONS.get(source, {}),
         **SUPPLEMENT_DE_PT_IT.get(source, {}),
+        **INFO_PLIST_TRANSLATIONS.get(source, {}),
     }
     return locales.get(locale, source)
 
 
-def write_focus_info_plist_strings(resources: Path) -> None:
+def plist_escape(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def info_plist_usage_entries() -> str:
+    return "".join(
+        f"    <key>{key}</key>\n    <string>{plist_escape(source)}</string>\n"
+        for key, source in INFO_PLIST_USAGE_DESCRIPTIONS.items()
+    )
+
+
+def write_info_plist_strings(resources: Path) -> None:
     for locale in ("en", *LOCALES):
-        value = localized_value(FOCUS_STATUS_USAGE_DESCRIPTION, locale)
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        lines = []
+        for key, source in INFO_PLIST_USAGE_DESCRIPTIONS.items():
+            value = localized_value(source, locale)
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+            lines.append(f'"{key}" = "{escaped}";\n')
         destination = resources / f"{locale}.lproj" / "InfoPlist.strings"
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(
-            f'"NSFocusStatusUsageDescription" = "{escaped}";\n',
-            encoding="utf-8",
-        )
+        destination.write_text("".join(lines), encoding="utf-8")
 
 
 def main() -> None:
@@ -2271,15 +2559,15 @@ def main() -> None:
         action="store_true",
         help="verify that the committed string catalog matches generated output without writing",
     )
-    mode.add_argument("--focus-usage-description", metavar="LOCALE")
-    mode.add_argument("--write-focus-info-plist-strings", type=Path, metavar="RESOURCES")
+    mode.add_argument("--info-plist-usage-entries", action="store_true")
+    mode.add_argument("--write-info-plist-strings", type=Path, metavar="RESOURCES")
     args = parser.parse_args()
 
-    if args.focus_usage_description:
-        print(localized_value(FOCUS_STATUS_USAGE_DESCRIPTION, args.focus_usage_description))
+    if args.info_plist_usage_entries:
+        sys.stdout.write(info_plist_usage_entries())
         return
-    if args.write_focus_info_plist_strings:
-        write_focus_info_plist_strings(args.write_focus_info_plist_strings)
+    if args.write_info_plist_strings:
+        write_info_plist_strings(args.write_info_plist_strings)
         return
 
     generated = json.dumps(build_xcstrings(), ensure_ascii=False, indent=2) + "\n"
