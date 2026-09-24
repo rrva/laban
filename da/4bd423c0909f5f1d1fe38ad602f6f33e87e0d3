@@ -1,0 +1,26 @@
+scripts/Laban.entitlements
+  s_4932f46dadbd5d::t_2a28b30f6bdec2 1-26
+scripts/gen-localizable-xcstrings.py
+  s_4932f46dadbd5d::t_a0037b60b3fe76 2244-2519,2526,2531-2542,2544-2548,2551,2562-2563,2566-2567,2569-2570
+scripts/build-app
+  s_4932f46dadbd5d::t_1acba5effd53b2 427-429,433,437-440,442-443,446
+  s_4932f46dadbd5d::t_cdae4219b2a4fb 234-235,237,290
+scripts/smoke-runtime
+  s_4932f46dadbd5d::t_040592061f4c61 47-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "da4bd423c0909f5f1d1fe38ad602f6f33e87e0d3",
+  "prompts": {},
+  "sessions": {
+    "s_4932f46dadbd5d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15b8f041-1584-4623-8f6e-11903f1b65fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
