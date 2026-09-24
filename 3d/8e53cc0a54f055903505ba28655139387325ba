@@ -1,0 +1,36 @@
+Tests/LabanRendererTests/KittyImageParityTests.swift
+  s_b9b171a32edb6d::t_1251474e485e45 89-91,151,155-156
+  s_b9b171a32edb6d::t_99060007792903 1-88,92-150,152-154,157-207
+Tests/LabanDebugTests/KittyGraphicsHeadlessTests.swift
+  s_b9b171a32edb6d::t_1a48eb8ab0dcb7 1,3,78-117,120-138
+  s_b9b171a32edb6d::t_db59d069de749e 139
+Sources/LabanRenderer/SlugGlyphRenderer.swift
+  s_b9b171a32edb6d::t_98b54b7b6f0ac2 189,219-220,272-279,288-289,406-417,773,877-883,910-911,944-946,1568,1770-1787,1797,1800-1804,1809-1817,1820-1828,2040-2044,2259-2260,2355-2367
+Sources/LabanRenderer/VectorGlyphShaders.metal
+  s_b9b171a32edb6d::t_3ce2e924be2b7e 184-203
+Sources/LabanRenderer/Shaders.metal
+  s_b9b171a32edb6d::t_3ce2e924be2b7e 145-159
+Sources/LabanRenderer/MetalRenderer.swift
+  s_b9b171a32edb6d::t_cfefd3b3366e5e 1498,1805-1880,2046-2048,2087-2088,2257-2259,2349-2350,3014-3019,3874-3877
+  s_b9b171a32edb6d::t_e6683e79611ed3 351-361,739-740,825-843,915-917,2870-2871,3633-3634,3954-3955,4150-4153
+Sources/LabanRenderer/KittyImageTextureCache.swift
+  s_b9b171a32edb6d::t_48bec3917d9d35 1-122
+execplans/active/kitty-graphics-rendering.md
+  s_b9b171a32edb6d::t_a5293472b53347 86-107,232-243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3d8e53cc0a54f055903505ba28655139387325ba",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
