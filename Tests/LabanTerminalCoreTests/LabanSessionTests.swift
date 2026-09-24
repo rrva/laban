@@ -3479,6 +3479,29 @@ final class LabanSessionTests: XCTestCase {
       "OSC 12;? must reply once with the effective cursor color in rgb:RRRR/GGGG/BBBB")
   }
 
+  func testKittyGraphicsQueryGetsNoReplyWhileRenderingIsDisabled() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // Laban cannot draw Kitty images yet, so it must not claim support:
+    // programs probe with a=q and only fall back to text art when no OK
+    // arrives (execplans/active/kitty-graphics-rendering.md, Milestone 0).
+    writeBytes(session, Array("\u{1b}_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u{1b}\\".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8), "",
+      "a Kitty graphics query must get no reply while rendering is disabled")
+
+    // A transmit that asks for an acknowledgement must not be acknowledged
+    // either (2x2 RGB image).
+    writeBytes(session, Array("\u{1b}_Gi=32,a=T,f=24,s=2,v=2;/wAAAP8AAAD/////\u{1b}\\".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8), "",
+      "a Kitty graphics transmit must not be acknowledged while rendering is disabled")
+  }
+
   func testOSC4PaletteQueryRepliesWithPaletteEntry() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

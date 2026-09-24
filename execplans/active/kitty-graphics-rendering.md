@@ -45,8 +45,10 @@ Compare with the screenshots stored under the artifacts named in
 
 ## Progress
 
-- [ ] Milestone 0: stop answering Kitty graphics queries until rendering
-  exists (storage limit 0), with a regression test.
+- [x] (2026-09-24) Milestone 0: stop answering Kitty graphics queries until
+  rendering exists (storage limit 0 in `laban_session_create`), with
+  `testKittyGraphicsQueryGetsNoReplyWhileRenderingIsDisabled`. All 207
+  `LabanTerminalCoreTests` pass.
 - [ ] Milestone 1: terminal core. PNG decoding, gated enablement, placements
   in `LabanSnapshot`, a pixel-copy API, and damage on graphics changes.
 - [ ] Milestone 2: frame commands, software renderer, headless debug state,
@@ -120,6 +122,14 @@ Compare with the screenshots stored under the artifacts named in
   tier. Keeping Tier 2 at 0 keeps it honest, answering no queries. Extending
   the ring is a separate, ABI-versioned change under ADR 0006.
   Date/Author: 2026-09-24 / Claude.
+
+## Surprises & Discoveries
+
+- Observation: Before Milestone 0, Laban acknowledged both graphics queries
+  and transmits it never drew.
+  Evidence: `testKittyGraphicsQueryGetsNoReplyWhileRenderingIsDisabled`
+  failed before the fix with replies `ESC _Gi=31;OK ESC \` (to the `a=q`
+  query) and `ESC _Gi=32;OK ESC \` (to an `a=T` transmit), and passes after.
 
 ## Context and Orientation
 
