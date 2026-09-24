@@ -151,6 +151,20 @@ Current state (pre-change):
       (`/usr/lib/swift` etc.), and exclude `*Tests.bundle` resource bundles
       from the app (they tripped package-zip's identifying-strings gate).
 
+## Outcomes & Retrospective
+
+Completed 2026-09-24. Laban updates itself through Sparkle 2: release builds
+carry the feed URL and EdDSA public key, `scripts/release` builds, signs,
+notarizes and publishes the zip and DMG, and regenerates `appcast.xml`. 0.8.0
+was the first release published this way (appcast commit `241dd917`). Before
+that release the signing key was rotated so that it exists only in the
+Keychain and Passwords (see the Decision Log). Release notes are embedded in
+the appcast so the update window never links to an unpublished file. The DMG
+download (`scripts/package-dmg`) keeps a downloaded app from running
+translocated, where Sparkle cannot update it. `docs/release/update-checks.md`
+is the maintained runbook. The first update from one published build to the
+next happens with 0.8.1, as the runbook's final step describes.
+
 ## Surprises & Discoveries
 
 - Observation: This checkout had no `.external/libghostty-vt` and no zig
