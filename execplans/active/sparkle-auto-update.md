@@ -113,6 +113,14 @@ Current state (pre-change):
   `generate_keys -f <file>` and/or stash it in a Passwords-app entry.
   Public key (SUPublicEDKey): `oVK33s2gbGeLRwFVg5rGG3hrUDHLIZWDLz6tJ2wm1Ao=`
   Date/Author: 2026-08-20 / implementation discovery.
+- Decision: Superseding the key-file decision above, the rotated key
+  (public key `oVK33s2g…`) lives only in the release Mac's login Keychain,
+  with a backup in the Passwords app. `.artifacts/sparkle/` holds no key file,
+  so `scripts/make-appcast` signs through the Keychain.
+  Rationale: The key was rotated before the first release so that no
+  previously copied key file could sign updates. Keeping a new key file on
+  disk would reopen that exposure.
+  Date/Author: 2026-09-24 / key rotation (`e54ca232`).
 
 ## Progress
 

@@ -21,12 +21,16 @@ instead of checking.
   set (done by `scripts/package-zip`).
 - **Keys**: the Info.plist `SUPublicEDKey` (baked into `scripts/build-app`)
   is the public half of an Ed25519 keypair. The private half signs appcast
-  entries and must never enter the repo. It currently lives in
-  `.artifacts/sparkle/laban-ed25519-private-key` (mode 600, gitignored);
-  import it into the login Keychain with
-  `.artifacts/sparkle/bin/generate_keys -f <file>` if you prefer Keychain
-  storage, and keep a backup (a Passwords-app entry works — the file contents
-  are a short base64 string). If the key is ever lost, recovery is possible
+  entries and must never enter the repo. Since the pre-release rotation it
+  exists only in the release Mac's login Keychain, with a backup in the
+  Passwords app (the key is a short base64 string); there is no key file on
+  disk. `scripts/make-appcast` falls back to the Keychain when neither
+  `SPARKLE_PRIVATE_KEY_FILE` nor `.artifacts/sparkle/laban-ed25519-private-key`
+  exists. To set up another release Mac, paste the Passwords entry into a
+  temporary mode-600 file, run `.artifacts/sparkle/bin/generate_keys -f <file>`
+  to import it into that Mac's Keychain, then delete the file. Leaving a key
+  file in `.artifacts/sparkle/` would override the Keychain, so do not restore
+  one there. If the key is ever lost, recovery is possible
   because releases are Developer ID signed: ship an update signed with a new
   EdDSA key under the same Developer ID certificate and Sparkle accepts the
   rotation (change one or the other per release, never both).
