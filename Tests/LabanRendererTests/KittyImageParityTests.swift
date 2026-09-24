@@ -35,7 +35,8 @@ final class KittyImageParityTests: XCTestCase {
   }
 
   /// FrameProducer order: terminal fill, below-background image, explicit
-  /// cell backgrounds, below-text image, (text), above-text image.
+  /// cell backgrounds, below-text image, selection/find/underline solids,
+  /// (text), above-text image.
   private var scene: [FrameCommand] {
     func quad(_ rect: CGRect, _ layer: ImageLayer) -> FrameCommand {
       .texturedQuad(
@@ -54,6 +55,9 @@ final class KittyImageParityTests: XCTestCase {
         CGRect(x: 100, y: 0, width: 40, height: 40), color: 0x00AA_00FF, source: .terminal,
         compositing: .replace),
       quad(CGRect(x: 0, y: 60, width: 80, height: 40), .belowText),
+      // Selection (like find highlights and underlines) draws over below-text
+      // images.
+      .selection(CGRect(x: 0, y: 60, width: 20, height: 10), color: 0xFF00_FFFF),
       quad(CGRect(x: 100, y: 0, width: 40, height: 40), .aboveText),
     ]
   }
@@ -66,6 +70,7 @@ final class KittyImageParityTests: XCTestCase {
     (20, 90, 0xFF0000, "below-text image, top-left quadrant"),
     (60, 90, 0x00FF00, "below-text image, top-right quadrant"),
     (20, 70, 0x0000FF, "below-text image, bottom-left quadrant"),
+    (10, 65, 0xFF00FF, "selection draws over a below-text image"),
     (60, 70, 0xFFFFFF, "below-text image, bottom-right quadrant"),
     (110, 30, 0xFF0000, "above-text image covers an explicit cell background"),
     (130, 10, 0xFFFFFF, "above-text image, bottom-right quadrant"),
@@ -140,8 +145,10 @@ final class KittyImageParityTests: XCTestCase {
         .init(row: row, startCol: 10, colCount: 4, color: 0x00AA_00FF))
     }
     let overlays = scene.filter {
-      if case .texturedQuad = $0 { return true }
-      return false
+      switch $0 {
+      case .texturedQuad, .selection: return true
+      default: return false
+      }
     }
     XCTAssertTrue(renderer.render(overlays, cellPayload: payload, damage: .full))
     renderer.waitForLastFrame()

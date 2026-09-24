@@ -415,6 +415,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// fill) draw under the images, later ones (explicit cell backgrounds) over
   /// them. nil when the frame has no below-background image.
   private var frameBelowBackgroundSplit: (solids: Int, replaceSolids: Int)?
+  /// Same counts at the first below-text image: rects before it (cell
+  /// backgrounds) draw under below-text images, later ones (selection, find
+  /// highlights, decorations, cursor) over them. Opaque Slug keeps all of
+  /// these in the one `solids` batch, so it needs this second split.
+  private var frameBelowTextSplit: (solids: Int, replaceSolids: Int)?
   /// Nil for an always-opaque renderer so default activation compiles no extra
   /// translucent PSOs.
   private var translucentPipelines: SlugTranslucentPipelines?
@@ -1769,11 +1774,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     // Cell backgrounds with Kitty graphics interleaved: default-background
     // fill, below-background images, explicit cell backgrounds, below-text
-    // images. Without images the split is the whole batch and the order is
-    // the plain replace-solids-then-solids order.
+    // images, then selection/find/decoration/cursor solids. Without images
+    // both splits are the whole batch and the order is the plain
+    // replace-solids-then-solids order.
     let activeImagePipeline = isOpaque ? imagePipeline : translucentPipelines?.image
-    let backgroundSplit =
-      frameBelowBackgroundSplit ?? (solids: solids.count, replaceSolids: replaceSolids.count)
+    let textSplit =
+      frameBelowTextSplit ?? (solids: solids.count, replaceSolids: replaceSolids.count)
+    let backgroundSplit = frameBelowBackgroundSplit ?? textSplit
     let replaceSolidBuffer = replaceSolids.isEmpty ? nil : makeBuffer(replaceSolids)
     if let replaceSolidBuffer { retainedBuffers.append(replaceSolidBuffer) }
     let solidBuffer = solids.isEmpty ? nil : makeBuffer(solids)
@@ -1823,9 +1830,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     drawImages(.belowBackground)
     drawSolids(
       replaceSolidBuffer, activeReplaceSolidPipeline,
-      backgroundSplit.replaceSolids..<replaceSolids.count)
-    drawSolids(solidBuffer, activeSolidPipeline, backgroundSplit.solids..<solids.count)
+      backgroundSplit.replaceSolids..<textSplit.replaceSolids)
+    drawSolids(solidBuffer, activeSolidPipeline, backgroundSplit.solids..<textSplit.solids)
     drawImages(.belowText)
+    drawSolids(
+      replaceSolidBuffer, activeReplaceSolidPipeline,
+      textSplit.replaceSolids..<replaceSolids.count)
+    drawSolids(solidBuffer, activeSolidPipeline, textSplit.solids..<solids.count)
 
     // Floating preview chrome/content is appended after the active terminal,
     // but Slug normally groups all replace solids ahead of every source-over
@@ -2258,6 +2269,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     frameLiveGlyphEffects.removeAll(keepingCapacity: true)
     frameImageQuads.removeAll(keepingCapacity: true)
     frameBelowBackgroundSplit = nil
+    frameBelowTextSplit = nil
     for command in commands {
       switch command {
       case .rect(let rect, let color, let source, let compositing):
@@ -2356,6 +2368,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         // Every image is drawn through the damage bands, so none is filtered.
         if imageLayer == .belowBackground, frameBelowBackgroundSplit == nil {
           frameBelowBackgroundSplit = (solids.count, replaceSolids.count)
+        }
+        if imageLayer == .belowText, frameBelowTextSplit == nil {
+          frameBelowTextSplit = (solids.count, replaceSolids.count)
         }
         if let quad = KittyImageQuad.make(
           rect: rect, sourceRect: sourceRect, resourceId: resourceId, layer: imageLayer,
