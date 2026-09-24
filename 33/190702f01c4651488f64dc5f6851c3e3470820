@@ -1,0 +1,43 @@
+Sources/LabanAgent/main.swift
+  s_b9b171a32edb6d::t_302baceb499682 775
+docs/adr/README.md
+  s_b9b171a32edb6d::t_3c10b829ee563d 43
+Tests/LabanCoreTests/KittyGraphicsSettingsTests.swift
+  s_b9b171a32edb6d::t_db988819859c9a 1-40
+Sources/LabanDebug/HeadlessDebugRuntime.swift
+  s_b9b171a32edb6d::t_302baceb499682 279-282
+Sources/LabanCore/KittyGraphicsSettings.swift
+  s_b9b171a32edb6d::t_b3d58239b534ab 1-37
+docs/adr/0035-kitty-graphics-rendering.md
+  s_b9b171a32edb6d::t_f78b5d96cadc70 1-92
+Tests/LabanTerminalCoreTests/LabanSessionTests.swift
+  s_b9b171a32edb6d::t_dec6b69f167f38 3489-3492
+execplans/active/agent-multiplexer-terminal-capability-gaps.md
+  s_b9b171a32edb6d::t_12e0e3cec40e21 65-71,110
+docs/product/spec.md
+  s_b9b171a32edb6d::t_12e0e3cec40e21 141-142
+scripts/kitty-graphics-demo
+  s_b9b171a32edb6d::t_d65ccfe5c7a1ec 1-66
+Sources/LabanApp/AppDelegate.swift
+  s_b9b171a32edb6d::t_302baceb499682 69-71
+docs/adr/0004-advance-libghostty-vt-pin.md
+  s_b9b171a32edb6d::t_12e0e3cec40e21 70-71
+execplans/active/kitty-graphics-rendering.md
+  s_b9b171a32edb6d::t_289a1c19ac3101 110-124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "33190702f01c4651488f64dc5f6851c3e3470820",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
