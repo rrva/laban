@@ -16,7 +16,7 @@ final class EmojiRenderingHeadlessTests: XCTestCase {
     super.tearDown()
   }
 
-  func testStateReportsDefaultMonochromeEmojiRendering() throws {
+  func testStateReportsMonochromeEmojiRendering() throws {
     let (runtime, artifacts) = try makeRuntime(runId: "emoji-rendering-default")
     defer { try? FileManager.default.removeItem(at: artifacts) }
 

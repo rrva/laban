@@ -2,10 +2,10 @@ import Foundation
 
 /// User-facing emoji rendering policy.
 ///
-/// `monochrome` preserves the existing R8-alpha-atlas plus foreground tint path
-/// used by the Metal renderers. `color` enables color/bitmap glyph drawing for
-/// detected emoji/color-font glyphs while leaving ordinary outline glyphs on
-/// the existing monochrome path.
+/// `color` (the default) draws detected emoji/color-font glyphs as color
+/// bitmaps while leaving ordinary outline glyphs on the monochrome path, which
+/// matches what every other macOS terminal shows. `monochrome` routes emoji
+/// through the R8-alpha-atlas plus foreground tint path instead.
 public enum EmojiRenderingMode: String, CaseIterable, Codable, Sendable {
   case monochrome
   case color
@@ -20,7 +20,7 @@ public enum EmojiRenderingSettings {
   public static func current(defaults: UserDefaults = .standard) -> EmojiRenderingMode {
     guard let raw = defaults.string(forKey: defaultsKey),
       let parsed = EmojiRenderingMode(rawValue: raw)
-    else { return .monochrome }
+    else { return .color }
     return parsed
   }
 
