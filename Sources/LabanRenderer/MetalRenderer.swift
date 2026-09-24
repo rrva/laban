@@ -348,6 +348,17 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
   private let colorGlyphPipeline: MTLRenderPipelineState
   private let cellGlyphPipeline: MTLRenderPipelineState
   private let sampler: MTLSamplerState
+  /// Kitty graphics: textured image quads (glyph_vertex + image_fragment),
+  /// linear filtering, per-renderer textures keyed by image resource id.
+  private let imagePipeline: MTLRenderPipelineState
+  private let imageSampler: MTLSamplerState
+  private let kittyImages: KittyImageTextureCache
+  /// Image quads of the frame being encoded, in command order.
+  private var imageQuads: [KittyImageQuad] = []
+  /// Count of `replaceSolidInstances` that draw before below-background
+  /// images (the terminal's default-background fill); the rest (explicit cell
+  /// backgrounds) draw over them. nil when the frame has no such images.
+  private var replaceSolidImageSplit: Int?
   private var glyphAtlas: MetalGlyphAtlas
   private var colorGlyphAtlas: ColorGlyphAtlas
   /// Distinct atlas for sidebar text — same when sidebarFontAtlas ===
@@ -725,7 +736,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       let glyphVS = library.makeFunction(name: "glyph_vertex"),
       let cellGlyphVS = library.makeFunction(name: "cell_glyph_vertex"),
       let glyphFS = library.makeFunction(name: "glyph_fragment"),
-      let colorGlyphFS = library.makeFunction(name: "color_glyph_fragment")
+      let colorGlyphFS = library.makeFunction(name: "color_glyph_fragment"),
+      let imageFS = library.makeFunction(name: "image_fragment")
     else { return nil }
 
     let layer = CAMetalLayer()
@@ -810,6 +822,25 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     colorGlyphAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
     colorGlyphAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
 
+    let imageDesc = MTLRenderPipelineDescriptor()
+    imageDesc.label = "laban.kitty-image-quad"
+    imageDesc.vertexFunction = glyphVS
+    imageDesc.fragmentFunction = imageFS
+    let imageAttachment = imageDesc.colorAttachments[0]!
+    imageAttachment.pixelFormat = layer.pixelFormat
+    imageAttachment.isBlendingEnabled = true
+    imageAttachment.rgbBlendOperation = .add
+    imageAttachment.alphaBlendOperation = .add
+    imageAttachment.sourceRGBBlendFactor = .one
+    imageAttachment.sourceAlphaBlendFactor = .one
+    imageAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+    imageAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+
+    guard
+      let imagePipeline = try? device.makeRenderPipelineState(descriptor: imageDesc),
+      let imageSampler = KittyImageTextureCache.makeSampler(device: device)
+    else { return nil }
+
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDesc),
       let replaceSolidPipeline = try? device.makeRenderPipelineState(
@@ -881,6 +912,9 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     self.colorGlyphPipeline = colorGlyphPipeline
     self.cellGlyphPipeline = cellGlyphPipeline
     self.sampler = sampler
+    self.imagePipeline = imagePipeline
+    self.imageSampler = imageSampler
+    self.kittyImages = KittyImageTextureCache(device: device)
     self.glyphAtlas = atlas
     self.colorGlyphAtlas = colorAtlas
     self.sidebarGlyphAtlas = sidebarGlyphAtlasInstance
@@ -1461,6 +1495,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       scheduledFrame.finish()
     }
     cmdBuf.commit()
+    kittyImages.endFrame()
     lastCmdBuf = cmdBuf
     if waitForFrameCompletion {
       cmdBuf.waitUntilCompleted()
@@ -1767,6 +1802,82 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     }
   }
 
+  /// Resolves one `texturedQuad` into `imageQuads`. The first below-background
+  /// quad fixes the `replaceSolidInstances` split: replace rects appended
+  /// before it (the default-background fill) draw under the images, later
+  /// ones (explicit cell backgrounds) over them. FrameProducer emits
+  /// below-background quads after the terminal-area fill and before cell
+  /// backgrounds, and the payload builder appends them at the same point.
+  private func appendImageQuad(
+    rect: CGRect, sourceRect: CGRect, resourceId: UInt64, layer imageLayer: ImageLayer
+  ) {
+    if imageLayer == .belowBackground, replaceSolidImageSplit == nil {
+      replaceSolidImageSplit = replaceSolidInstances.count
+    }
+    guard
+      let quad = KittyImageQuad.make(
+        rect: rect, sourceRect: sourceRect, resourceId: resourceId, layer: imageLayer,
+        scale: layer.contentsScale, cache: kittyImages)
+    else { return }
+    imageQuads.append(quad)
+  }
+
+  /// Draws the replace-solid batch with this frame's image layers
+  /// interleaved: default background, below-background images, explicit cell
+  /// backgrounds, then below-text images. Each image is one instanced quad
+  /// with its own texture, clipped to the damage bands like every other draw.
+  private func drawReplaceSolidsAndLowerImages(
+    buffer: MTLBuffer?,
+    damage: RenderDamage,
+    target: MTLTexture,
+    surfacePxH: Int,
+    encoder: MTLRenderCommandEncoder
+  ) {
+    let count = replaceSolidInstances.count
+    let split = min(replaceSolidImageSplit ?? count, count)
+    func drawReplaceSolids(_ range: Range<Int>) {
+      guard let buffer, !range.isEmpty else { return }
+      encoder.setRenderPipelineState(replaceSolidPipeline)
+      encoder.setVertexBuffer(
+        buffer, offset: range.lowerBound * MemoryLayout<SolidInstance>.stride, index: 0)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: range.count)
+      }
+    }
+    drawReplaceSolids(0..<split)
+    drawImageQuads(
+      .belowBackground, damage: damage, target: target, surfacePxH: surfacePxH, encoder: encoder)
+    drawReplaceSolids(split..<count)
+    drawImageQuads(
+      .belowText, damage: damage, target: target, surfacePxH: surfacePxH, encoder: encoder)
+  }
+
+  private func drawImageQuads(
+    _ imageLayer: ImageLayer,
+    damage: RenderDamage,
+    target: MTLTexture,
+    surfacePxH: Int,
+    encoder: MTLRenderCommandEncoder
+  ) {
+    guard imageQuads.contains(where: { $0.layer == imageLayer }) else { return }
+    encoder.setRenderPipelineState(imagePipeline)
+    encoder.setFragmentSamplerState(imageSampler, index: 0)
+    for quad in imageQuads where quad.layer == imageLayer {
+      var instance = quad.instance
+      encoder.setVertexBytes(
+        &instance, length: MemoryLayout<KittyImageQuad.Instance>.stride, index: 0)
+      encoder.setFragmentTexture(quad.texture, index: 0)
+      drawThroughDamageScissors(
+        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
+      ) {
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+      }
+    }
+  }
+
   /// Replay a draw once per exact dirty band. A union scissor would also cover
   /// clean rows between disjoint ranges, while recursively encoding one pass
   /// per band would overwrite the shared instance buffers before the command
@@ -1932,17 +2043,9 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           vertexCount: 6, instanceCount: damageEraseInstances.count)
       }
     }
-    if let buf = replaceSolidFrameBuffer {
-      encoder.setRenderPipelineState(replaceSolidPipeline)
-      encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      drawThroughDamageScissors(
-        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
-      ) {
-        encoder.drawPrimitives(
-          type: .triangle, vertexStart: 0,
-          vertexCount: 6, instanceCount: replaceSolidInstances.count)
-      }
-    }
+    drawReplaceSolidsAndLowerImages(
+      buffer: replaceSolidFrameBuffer, damage: damage, target: target,
+      surfacePxH: surfacePxH, encoder: encoder)
 
     if let buf = solidFrameBuffer {
       encoder.setRenderPipelineState(solidPipeline)
@@ -1981,6 +2084,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           vertexCount: 6, instanceCount: colorGlyphInstances.count)
       }
     }
+    drawImageQuads(
+      .aboveText, damage: damage, target: target, surfacePxH: surfacePxH, encoder: encoder)
     if let buf = sidebarGlyphFrameBuffer {
       encoder.setRenderPipelineState(glyphPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
@@ -2149,17 +2254,9 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           vertexCount: 6, instanceCount: damageEraseInstances.count)
       }
     }
-    if let buf = replaceSolidFrameBuffer {
-      encoder.setRenderPipelineState(replaceSolidPipeline)
-      encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      drawThroughDamageScissors(
-        damage, target: target, surfacePxH: surfacePxH, encoder: encoder
-      ) {
-        encoder.drawPrimitives(
-          type: .triangle, vertexStart: 0,
-          vertexCount: 6, instanceCount: replaceSolidInstances.count)
-      }
-    }
+    drawReplaceSolidsAndLowerImages(
+      buffer: replaceSolidFrameBuffer, damage: damage, target: target,
+      surfacePxH: surfacePxH, encoder: encoder)
 
     if let buf = solidFrameBuffer {
       encoder.setRenderPipelineState(solidPipeline)
@@ -2249,6 +2346,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           vertexCount: 6, instanceCount: cellGlyphs.count)
       }
     }
+    drawImageQuads(
+      .aboveText, damage: damage, target: target, surfacePxH: surfacePxH, encoder: encoder)
     encoder.endEncoding()
     return true
   }
@@ -2768,6 +2867,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
     cellGlyphUploadRanges.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
+    imageQuads.removeAll(keepingCapacity: true)
+    replaceSolidImageSplit = nil
 
     guard let geometry = terminalGridGeometry(payload: payload) else {
       cellGlyphs.removeAll(keepingCapacity: true)
@@ -2909,6 +3010,12 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           color: payload.defaultBackground,
           compositing: .replace)
       }
+    }
+    // Kitty graphics ride the overlay commands on the payload path. Below-
+    // background images draw after the default-background fill above and
+    // under the explicit cell backgrounds (background runs) that follow.
+    for case .texturedQuad(let rect, let resourceId, _, let layer, let sourceRect) in commands {
+      appendImageQuad(rect: rect, sourceRect: sourceRect, resourceId: resourceId, layer: layer)
     }
     for run in payload.backgroundRuns {
       let rect = CGRect(
@@ -3523,6 +3630,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
     cellGlyphUploadRanges.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
+    imageQuads.removeAll(keepingCapacity: true)
+    replaceSolidImageSplit = nil
 
     gpuCellCommandRequiresFullRedraw = false
     let geometry = terminalGridGeometry(commands: commands)
@@ -3762,7 +3871,10 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           underlineStyle: underlineStyle, underlineColor: underlineColor,
           appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
 
-      case .texturedQuad, .waveRegion:
+      case .texturedQuad(let rect, let resourceId, _, let layer, let sourceRect):
+        appendImageQuad(rect: rect, sourceRect: sourceRect, resourceId: resourceId, layer: layer)
+
+      case .waveRegion:
         break
       }
     }
@@ -3839,6 +3951,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
     cellGlyphs.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
+    imageQuads.removeAll(keepingCapacity: true)
+    replaceSolidImageSplit = nil
 
     let surfaceH = Float(surfacePxH)
     // FrameProducer issues commands in (cgX, cgY = up-from-bottom) coords
@@ -4033,7 +4147,10 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           underlineStyle: underlineStyle, underlineColor: underlineColor,
           appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
 
-      case .texturedQuad, .waveRegion:
+      case .texturedQuad(let rect, let resourceId, _, let layer, let sourceRect):
+        appendImageQuad(rect: rect, sourceRect: sourceRect, resourceId: resourceId, layer: layer)
+
+      case .waveRegion:
         break
       }
     }

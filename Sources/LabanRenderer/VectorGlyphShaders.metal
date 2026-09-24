@@ -181,6 +181,26 @@ fragment float4 vectorColorGlyphFragment(
     return float4(lin * sample.a, sample.a);
 }
 
+// Kitty graphics image: straight sRGB RGBA in a top-down texture, drawn with
+// vectorGlyphVertex (so it follows gesture zoom like text). `color` carries
+// the uv clamp rect (minU, minV, maxU, maxV) that keeps linear filtering
+// inside the protocol's source crop. Linearized and premultiplied once, which
+// suits both the opaque sRGB target and the translucent linear rgba16Float
+// working target.
+fragment float4 vectorImageFragment(
+    VectorVertexOut in [[stage_in]],
+    texture2d<float> image [[texture(0)]],
+    sampler imageSampler [[sampler(0)]]
+) {
+    float2 uv = clamp(in.uv, in.color.xy, in.color.zw);
+    float4 sample = image.sample(imageSampler, uv);
+    float3 lin = float3(
+        srgb_to_linear(sample.r),
+        srgb_to_linear(sample.g),
+        srgb_to_linear(sample.b));
+    return float4(lin * sample.a, sample.a);
+}
+
 inline float curve_x_at(VectorGlyphCurve curve, float t) {
     float u = 1.0 - t;
     return u * u * curve.p0.x + 2.0 * u * t * curve.p1.x + t * t * curve.p2.x;

@@ -186,6 +186,7 @@ private struct SlugTranslucentPipelines {
   let glyphAlpha: MTLRenderPipelineState
   let rasterGlyph: MTLRenderPipelineState
   let colorGlyph: MTLRenderPipelineState
+  let image: MTLRenderPipelineState
 }
 
 /// Lazily builds only the rgba16Float pipelines Slug's forced-grayscale
@@ -215,7 +216,8 @@ private enum SlugTranslucentPipelineCache {
       let colorGlyphFragment = translucentLibrary.makeFunction(
         name: "translucentVectorColorGlyphFragment"),
       let glyphVertex = library.makeFunction(name: "slugGlyphVertex"),
-      let glyphAlphaFragment = library.makeFunction(name: "slugGlyphAlphaFragment")
+      let glyphAlphaFragment = library.makeFunction(name: "slugGlyphAlphaFragment"),
+      let imageFragment = library.makeFunction(name: "vectorImageFragment")
     else { return nil }
 
     func descriptor(
@@ -267,6 +269,14 @@ private enum SlugTranslucentPipelineCache {
           label: "laban.slug.translucent-color-glyph",
           vertex: textureVertex,
           fragment: colorGlyphFragment,
+          blended: true)),
+      // vectorImageFragment linearizes straight sRGB and premultiplies once,
+      // exactly what the linear rgba16Float working target stores.
+      let image = try? device.makeRenderPipelineState(
+        descriptor: descriptor(
+          label: "laban.slug.translucent-kitty-image",
+          vertex: textureVertex,
+          fragment: imageFragment,
           blended: true))
     else { return nil }
 
@@ -275,7 +285,8 @@ private enum SlugTranslucentPipelineCache {
       replaceSolid: replaceSolid,
       glyphAlpha: glyphAlpha,
       rasterGlyph: rasterGlyph,
-      colorGlyph: colorGlyph)
+      colorGlyph: colorGlyph,
+      image: image)
     lock.lock()
     if let existing = cache[key] {
       lock.unlock()
@@ -392,6 +403,18 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private let subpixelCompositeAdditivePipeline: MTLRenderPipelineState
   private let rasterGlyphPipeline: MTLRenderPipelineState
   private let colorGlyphPipeline: MTLRenderPipelineState
+  /// Kitty graphics: opaque-target image pipeline (the translucent variant
+  /// lives in `SlugTranslucentPipelines.image`), linear sampler, textures.
+  private let imagePipeline: MTLRenderPipelineState
+  private let imageSampler: MTLSamplerState
+  private let kittyImages: KittyImageTextureCache
+  /// Image quads of the frame being built, in command order.
+  private var frameImageQuads: [KittyImageQuad] = []
+  /// `solids` / `replaceSolids` counts when the first below-background image
+  /// appeared in the command stream: rects before it (the default-background
+  /// fill) draw under the images, later ones (explicit cell backgrounds) over
+  /// them. nil when the frame has no below-background image.
+  private var frameBelowBackgroundSplit: (solids: Int, replaceSolids: Int)?
   /// Nil for an always-opaque renderer so default activation compiles no extra
   /// translucent PSOs.
   private var translucentPipelines: SlugTranslucentPipelines?
@@ -747,6 +770,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let textureVertex = library.makeFunction(name: "vectorGlyphVertex"),
       let rasterGlyphFragment = library.makeFunction(name: "vectorRasterGlyphFragment"),
       let colorGlyphFragment = library.makeFunction(name: "vectorColorGlyphFragment"),
+      let imageFragment = library.makeFunction(name: "vectorImageFragment"),
       let glyphVertex = library.makeFunction(name: "slugGlyphVertex"),
       let glyphAlphaFragment = library.makeFunction(name: "slugGlyphAlphaFragment"),
       let glyphCoverageFragment = library.makeFunction(name: "slugGlyphCoverageFragment"),
@@ -850,6 +874,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     colorGlyphDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
     configureSlugAlphaBlend(colorGlyphDescriptor.colorAttachments[0])
 
+    let imageDescriptor = MTLRenderPipelineDescriptor()
+    imageDescriptor.label = "laban.slug.kitty-image"
+    imageDescriptor.vertexFunction = textureVertex
+    imageDescriptor.fragmentFunction = imageFragment
+    imageDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSlugAlphaBlend(imageDescriptor.colorAttachments[0])
+
     let samplerDescriptor = MTLSamplerDescriptor()
     samplerDescriptor.minFilter = .nearest
     samplerDescriptor.magFilter = .nearest
@@ -876,6 +907,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         descriptor: rasterGlyphDescriptor),
       let colorGlyphPipeline = try? device.makeRenderPipelineState(
         descriptor: colorGlyphDescriptor),
+      let imagePipeline = try? device.makeRenderPipelineState(descriptor: imageDescriptor),
+      let imageSampler = KittyImageTextureCache.makeSampler(device: device),
       let sampler = device.makeSamplerState(descriptor: samplerDescriptor)
     else { return nil }
 
@@ -908,6 +941,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     self.subpixelCompositeAdditivePipeline = subpixelCompositeAdditivePipeline
     self.rasterGlyphPipeline = rasterGlyphPipeline
     self.colorGlyphPipeline = colorGlyphPipeline
+    self.imagePipeline = imagePipeline
+    self.imageSampler = imageSampler
+    self.kittyImages = KittyImageTextureCache(device: device)
     self.translucentPipelines = initialTranslucentPipelines
     self.linearPremultipliedResolvePipeline = initialResolvePipeline
     self.sampler = sampler
@@ -1529,6 +1565,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       colorGlyphs: &colorGlyphs,
       waveRegions: &waveRegions,
       damageBands: damageBands)
+    kittyImages.endFrame()
     updateLiveGlyphEffectState()
     lastFrameSolidsCount =
       solids.count + replaceSolids.count + overlaySolids.count + overlayReplaceSolids.count
@@ -1730,10 +1767,24 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       }
     }
 
-    if !replaceSolids.isEmpty, let replaceSolidBuffer = makeBuffer(replaceSolids) {
-      retainedBuffers.append(replaceSolidBuffer)
-      encoder.setRenderPipelineState(activeReplaceSolidPipeline)
-      encoder.setVertexBuffer(replaceSolidBuffer, offset: 0, index: 0)
+    // Cell backgrounds with Kitty graphics interleaved: default-background
+    // fill, below-background images, explicit cell backgrounds, below-text
+    // images. Without images the split is the whole batch and the order is
+    // the plain replace-solids-then-solids order.
+    let activeImagePipeline = isOpaque ? imagePipeline : translucentPipelines?.image
+    let backgroundSplit =
+      frameBelowBackgroundSplit ?? (solids: solids.count, replaceSolids: replaceSolids.count)
+    let replaceSolidBuffer = replaceSolids.isEmpty ? nil : makeBuffer(replaceSolids)
+    if let replaceSolidBuffer { retainedBuffers.append(replaceSolidBuffer) }
+    let solidBuffer = solids.isEmpty ? nil : makeBuffer(solids)
+    if let solidBuffer { retainedBuffers.append(solidBuffer) }
+    func drawSolids(
+      _ buffer: MTLBuffer?, _ pipeline: MTLRenderPipelineState, _ range: Range<Int>
+    ) {
+      guard let buffer, !range.isEmpty else { return }
+      encoder.setRenderPipelineState(pipeline)
+      encoder.setVertexBuffer(
+        buffer, offset: range.lowerBound * MemoryLayout<SlugSolidInstance>.stride, index: 0)
       encoder.setVertexBytes(
         &vectorUniforms,
         length: MemoryLayout<SlugVectorUniforms>.stride,
@@ -1743,26 +1794,38 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           type: .triangle,
           vertexStart: 0,
           vertexCount: 6,
-          instanceCount: replaceSolids.count)
+          instanceCount: range.count)
       }
     }
-
-    if !solids.isEmpty, let solidBuffer = makeBuffer(solids) {
-      retainedBuffers.append(solidBuffer)
-      encoder.setRenderPipelineState(activeSolidPipeline)
-      encoder.setVertexBuffer(solidBuffer, offset: 0, index: 0)
+    func drawImages(_ imageLayer: ImageLayer) {
+      guard let activeImagePipeline,
+        frameImageQuads.contains(where: { $0.layer == imageLayer })
+      else { return }
+      encoder.setRenderPipelineState(activeImagePipeline)
       encoder.setVertexBytes(
         &vectorUniforms,
         length: MemoryLayout<SlugVectorUniforms>.stride,
         index: 1)
-      repeatingBands(scissorPlan, on: encoder) {
-        encoder.drawPrimitives(
-          type: .triangle,
-          vertexStart: 0,
-          vertexCount: 6,
-          instanceCount: solids.count)
+      encoder.setFragmentSamplerState(imageSampler, index: 0)
+      for quad in frameImageQuads where quad.layer == imageLayer {
+        var instance = quad.instance
+        encoder.setVertexBytes(
+          &instance, length: MemoryLayout<KittyImageQuad.Instance>.stride, index: 0)
+        encoder.setFragmentTexture(quad.texture, index: 0)
+        repeatingBands(scissorPlan, on: encoder) {
+          encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        }
       }
     }
+    drawSolids(
+      replaceSolidBuffer, activeReplaceSolidPipeline, 0..<backgroundSplit.replaceSolids)
+    drawSolids(solidBuffer, activeSolidPipeline, 0..<backgroundSplit.solids)
+    drawImages(.belowBackground)
+    drawSolids(
+      replaceSolidBuffer, activeReplaceSolidPipeline,
+      backgroundSplit.replaceSolids..<replaceSolids.count)
+    drawSolids(solidBuffer, activeSolidPipeline, backgroundSplit.solids..<solids.count)
+    drawImages(.belowText)
 
     // Floating preview chrome/content is appended after the active terminal,
     // but Slug normally groups all replace solids ahead of every source-over
@@ -1973,6 +2036,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           instanceCount: colorGlyphs.count)
       }
     }
+
+    // Above-text images. Slug draws the cursor with the background solids,
+    // so an image placed over the cursor covers it (the protocol moves the
+    // cursor past a placement by default).
+    drawImages(.aboveText)
 
     encoder.endEncoding()
 
@@ -2188,6 +2256,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       return nil
     }
     frameLiveGlyphEffects.removeAll(keepingCapacity: true)
+    frameImageQuads.removeAll(keepingCapacity: true)
+    frameBelowBackgroundSplit = nil
     for command in commands {
       switch command {
       case .rect(let rect, let color, let source, let compositing):
@@ -2282,7 +2352,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
             velocityCellsPerSecond: velocityCellsPerSecond,
             epoch: glyphEffectEpochSeconds))
 
-      case .clip, .texturedQuad:
+      case .texturedQuad(let rect, let resourceId, _, let imageLayer, let sourceRect):
+        // Every image is drawn through the damage bands, so none is filtered.
+        if imageLayer == .belowBackground, frameBelowBackgroundSplit == nil {
+          frameBelowBackgroundSplit = (solids.count, replaceSolids.count)
+        }
+        if let quad = KittyImageQuad.make(
+          rect: rect, sourceRect: sourceRect, resourceId: resourceId, layer: imageLayer,
+          scale: scale, cache: kittyImages)
+        {
+          frameImageQuads.append(quad)
+        }
+
+      case .clip:
         break
       }
     }

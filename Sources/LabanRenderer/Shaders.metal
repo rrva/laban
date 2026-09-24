@@ -142,3 +142,18 @@ fragment float4 color_glyph_fragment(
     float4 sample = atlas.sample(atlasSampler, in.uv);
     return float4(sample.rgb * sample.a, sample.a);
 }
+
+// MARK: - Kitty graphics image pipeline
+//
+// Vertex: glyph_vertex (GlyphInstance). The image is straight RGBA in a
+// top-down texture; `color` carries the uv clamp rect (minU, minV, maxU, maxV)
+// that keeps linear filtering inside the protocol's source crop.
+fragment float4 image_fragment(
+    VOut in [[stage_in]],
+    texture2d<float> image [[texture(0)]],
+    sampler imageSampler [[sampler(0)]]
+) {
+    float2 uv = clamp(in.uv, in.color.xy, in.color.zw);
+    float4 sample = image.sample(imageSampler, uv);
+    return float4(sample.rgb * sample.a, sample.a);
+}

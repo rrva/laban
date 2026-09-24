@@ -83,8 +83,28 @@ Compare with the screenshots stored under the artifacts named in
   `KittyGraphicsHeadlessTests` (2) and 2 `FixtureRunnerTests`. Full
   `swift test`: 3,340 passed; the same 14 failures that already fail on
   `main`.
-- [ ] Milestone 3: Metal renderers (Slug Glyph, classic/gpuDriven), with a
-  cross-renderer parity test.
+- [x] (2026-09-24) Milestone 3: Metal renderers.
+  - `KittyImageTextureCache` / `KittyImageQuad` (LabanRenderer) upload each
+    image generation once per renderer and drop textures unused for 120
+    frames.
+  - `image_fragment` (Shaders.metal) and `vectorImageFragment`
+    (VectorGlyphShaders.metal) sample with the uv clamped to the crop's
+    whole-pixel bounds inset by half a texel.
+  - `MetalRenderer` draws the images in the classic, gpuDriven-commands and
+    gpuDriven-payload paths. Slug draws them on its opaque sRGB target and,
+    through `SlugTranslucentPipelines.image`, on the translucent linear
+    rgba16Float target.
+  - The layers interleave with the background batches at a split index
+    recorded where the first below-background quad appears.
+  - `KittyImageParityTests` passes for software, classic, gpuDriven
+    (commands and payload), Slug and translucent Slug, including a
+    partial-damage repaint. Mutations (Slug without above-text images;
+    classic without the split) fail it in every affected path.
+  - `KittyGraphicsHeadlessTests.testMetalRenderersDrawTheFixtureImageWhereSoftwareDoes`
+    drives the real FrameProducer path in the headless runtime. Disabling the
+    Metal image path makes 1800/1800 image pixels differ for each renderer.
+  - Full `swift test`: 3,343 passed; the same 14 failures that already fail
+    on `main`.
 - [ ] Milestone 4 (prototype first): animation playback and Unicode
   placeholders through a local libghostty-vt patch.
 - [ ] Milestone 5: enable by default, demo script, docs (spec, ADR 0035,
@@ -208,6 +228,18 @@ Compare with the screenshots stored under the artifacts named in
   the snapshot-observed / rendered-committed pattern that `snapshot.c`
   already uses for screen swaps and viewport scrolls. Row-precise image
   damage is left for Milestone 3, if profiling asks for it.
+
+- Observation: Slug draws the cursor in the same batch as background
+  solids, before any text, so an above-text image covers a cursor underneath
+  it. `MetalRenderer` draws the cursor in a later pass and keeps it on top.
+  The protocol moves the cursor past a placement by default (unless `C=1`),
+  so this only shows when a program deliberately parks the cursor on an
+  image. Recorded rather than fixed: moving Slug's cursor after text would
+  change cursor appearance for every frame.
+
+- Observation: In opaque mode Slug routes replace-compositing background
+  rects into the source-over `solids` batch; only the translucent path uses
+  `replaceSolids`. The below-background split therefore records both counts.
 
 ## Context and Orientation
 
