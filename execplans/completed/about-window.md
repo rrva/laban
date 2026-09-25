@@ -69,10 +69,27 @@ graphics are disabled.
 
   Deferred by the user's scope choice: Copy Diagnostics and an
   agent-readable endpoint, and input source, shell and control-server rows.
+- [x] (2026-09-25) Restructured into About panel + Help → Diagnostics… +
+  `laban version --verbose` (see Decision Log). New tests:
+  `LabanDiagnosticsTests` (moved and extended), `DiagnosticsWindowTests`,
+  `LabanCLITests.testParseVersionCommands` and
+  `testVersionReportsWithoutTheApp`; `CLICatalogDriftTests` covers the new
+  client-only command.
 - [ ] Installed-app check (signature row shows team `3563RJWBQP`, VT core
   shows `7c40388b2` with 3 patches, self-test 10/10).
 
 ## Decision Log
+
+- Decision: Split the window in three. About goes back to the standard
+  native panel. The diagnostic window becomes Help → Diagnostics…. The same
+  data (`LabanDiagnostics`, moved from LabanApp to LabanCore) is printed by
+  `laban --version` / `laban version --verbose [--json]`.
+  Rationale: The About audience wants identity and credit; a bug reporter or
+  an agent wants everything as pasteable text. One dense window served both
+  badly and could not be read by an agent. This follows Ghostty's split: a
+  minimal About, and `ghostty +version` plus an inspector for details. It
+  also delivers the skipped "Copy Diagnostics" need as CLI output.
+  Date/Author: 2026-09-25 / Claude, with the user.
 
 - Decision: The self-test lives in LabanCore and runs in-process against a
   fixture session, not through the control server.

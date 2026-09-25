@@ -414,11 +414,22 @@ ADR 0023 (LabanApp hosts the server) and ADR 0024 (security model); the phased
 delivery and full intent catalog live in
 `execplans/agent-first-terminal-design.md`.
 
-## 27. About window
+## 27. About, Diagnostics, and `laban version`
 
-"About Laban" opens a window that reports the running build as it actually is,
-so it can serve as the first stop of a bug report. Every value is read from
-the live process, not from constants:
+"About Laban" is the standard native panel: name, version with build commit,
+and a short credit (libghostty-vt, Eric Lengyel's Slug algorithm) pointing to
+Help → Diagnostics…. Build details live in two places that share one source
+(`LabanDiagnostics` in LabanCore):
+
+- **Help → Diagnostics…**, a window for people filing or triaging a bug;
+- **`laban --version`** (one line) and **`laban version --verbose`** (plain text
+  for bug reports, `--json` for agents, `--no-self-test` to skip the probes).
+  The CLI runs from the app bundle and reads the app's `Info.plist` and
+  preferences. It omits what only the running app knows: the renderer, the
+  theme and appearance, the display, update state, and Kitty images in use.
+
+Both report the running build as it actually is. Every value is read from the
+live process and system, not from constants:
 
 - **Build**: version, the build commit stamped into `Info.plist` (with `+dirty`
   for uncommitted builds), build date and age, the code signature (signing
@@ -442,7 +453,7 @@ the live process, not from constants:
   query, OSC 11 and OSC 4 color queries, the color-scheme report, DECRQM for
   modes 2026 and 2004, and the Kitty graphics query (reported as disabled,
   not failed, when graphics are switched off).
-- **Credits**: libghostty-vt (Ghostty, MIT) as the terminal-emulation
+- **Credits** (Diagnostics window): libghostty-vt (Ghostty, MIT) as the terminal-emulation
   foundation, Eric Lengyel's Slug algorithm behind the Slug Glyph renderer,
   JetBrains Mono, Sparkle and the Selenized palette, with an **Open Licenses**
   button that opens the bundled `THIRD_PARTY_LICENSES.md`.

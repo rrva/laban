@@ -43,6 +43,7 @@ enum LabanCLICatalog {
     "proposal status": .intent("commandProposal.get"),
     "proposal cancel": .intent("commandProposal.cancel"),
     "wait proposal": .intent("commandProposal.get"),
+    "version": .clientOnly,
     "help": .clientOnly,
   ]
 
@@ -75,6 +76,7 @@ enum LabanCLICatalog {
     case .proposalStatus: return "proposal status"
     case .proposalCancel: return "proposal cancel"
     case .waitProposal: return "wait proposal"
+    case .version: return "version"
     case .help: return "help"
     }
   }
@@ -106,6 +108,7 @@ enum LabanCLICatalog {
     .proposalStatus(id: "x", json: false),
     .proposalCancel(id: "x", json: false),
     .waitProposal(id: "x", state: "ran", timeoutSeconds: 30, json: false),
+    .version(verbose: true, json: false, selfTest: true),
     .help,
   ]
 }

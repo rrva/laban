@@ -31,8 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     self?.windowController?.applyRendererSelection(selection)
   }
   /// The Settings (⌘,) window, built lazily on first open and reused after.
-  private lazy var aboutWindowController: AboutWindowController = {
-    let controller = AboutWindowController()
+  private lazy var diagnosticsWindowController: DiagnosticsWindowController = {
+    let controller = DiagnosticsWindowController()
     controller.rendererStatus = { [weak self] in
       self?.windowController?.terminalView?.transparencyRendererStatus
     }
@@ -681,11 +681,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     alert.runModal()
   }
 
-  /// "About Laban" in the app menu: build identity, component stack, what
-  /// programs see (with a capability self-test) and credits, all read from
-  /// the running app (`AboutWindowController`).
+  /// "About Laban": the standard native panel with version, build and a short
+  /// credit. Build details, the capability self-test and licenses live in
+  /// Help → Diagnostics… (and `laban version --verbose`).
   @objc func showAbout(_ sender: Any?) {
-    aboutWindowController.present()
+    let credits = NSMutableAttributedString(
+      string:
+        "Terminal emulation by libghostty-vt from the Ghostty project. "
+        + "Slug Glyph rendering after Eric Lengyel's Slug algorithm.\n\n"
+        + L10n.tr("Build details, a capability self-test and licenses: Help → Diagnostics…"),
+      attributes: [
+        .foregroundColor: NSColor.labelColor,
+        .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+      ])
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.alignment = .center
+    credits.addAttribute(
+      .paragraphStyle, value: paragraph, range: NSRange(location: 0, length: credits.length))
+    NSApp.orderFrontStandardAboutPanel(options: [
+      .applicationName: "Laban",
+      .applicationVersion: "\(BuildInfo.version) (\(BuildInfo.commit))",
+      .version: "",
+      .credits: credits,
+    ])
+  }
+
+  /// Help → "Diagnostics…": build, component stack, what programs see (with a
+  /// capability self-test) and credits (`DiagnosticsWindowController`).
+  @objc func showDiagnostics(_ sender: Any?) {
+    diagnosticsWindowController.present()
   }
 
   private func postSettingsTestNotification() {

@@ -337,6 +337,12 @@ enum MenuCommands {
     helpItem.submenu = helpMenu
     helpMenu.addItem(
       NSMenuItem(
+        title: L10n.tr("Diagnostics…"),
+        action: #selector(AppDelegate.showDiagnostics(_:)),
+        keyEquivalent: ""
+      ))
+    helpMenu.addItem(
+      NSMenuItem(
         title: L10n.tr("Reveal Log Folder in Finder"),
         action: #selector(AppDelegate.revealLogFolder(_:)),
         keyEquivalent: ""

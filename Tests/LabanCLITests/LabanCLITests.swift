@@ -20,6 +20,32 @@ final class LabanCLITests: XCTestCase {
       .proposalCancel(id: "abc", json: false))
   }
 
+  func testParseVersionCommands() {
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["--version"]),
+      .success(.version(verbose: false, json: false, selfTest: false)))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["version"]),
+      .success(.version(verbose: false, json: false, selfTest: true)))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["version", "--verbose"]),
+      .success(.version(verbose: true, json: false, selfTest: true)))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["version", "--json", "--no-self-test"]),
+      .success(.version(verbose: true, json: true, selfTest: false)),
+      "--json implies --verbose")
+  }
+
+  func testVersionReportsWithoutTheApp() {
+    XCTAssertTrue(versionReport(verbose: false, json: false, selfTest: false).hasPrefix("laban "))
+    let text = versionReport(verbose: true, json: false, selfTest: true)
+    XCTAssertTrue(text.contains("Terminal engine"), text)
+    XCTAssertTrue(text.contains("Self-test: "), text)
+    let json = versionReport(verbose: true, json: true, selfTest: false)
+    let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+    XCTAssertNotNil(object?["sections"], json)
+  }
+
   func testParseProposalStatusRequiresID() {
     guard case .failure = LabanArgumentParser.parse(["proposal", "status"]) else {
       return XCTFail("proposal status without an id must fail to parse")

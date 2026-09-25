@@ -2,23 +2,23 @@ import AppKit
 import LabanCore
 import LabanRenderer
 
-/// The About window: build identity, the component stack, what programs see
-/// (with a live capability self-test), and credits. Replaces the standard
-/// About panel so the page doubles as the first stop of a bug report.
-final class AboutWindowController: NSWindowController {
+/// Help → Diagnostics…: the build, component stack and what programs are
+/// told, a live capability self-test, and credits. The rows come from
+/// `LabanDiagnostics`, shared with `laban version --verbose`; this window adds
+/// the facts only the running app knows (updates, renderer, theme, display).
+final class DiagnosticsWindowController: NSWindowController {
   /// Live renderer status of the frontmost terminal, nil when no window.
   var rendererStatus: () -> RendererStatus? = { nil }
 
   private let content = NSStackView()
   private var selfTestStack: NSStackView?
-  private var selfTestButton: NSButton?
 
   init() {
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 600, height: 680),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered, defer: false)
-    window.title = L10n.tr("About Laban")
+    window.title = L10n.tr("Diagnostics")
     window.isReleasedWhenClosed = false
     window.minSize = NSSize(width: 520, height: 420)
     super.init(window: window)
@@ -57,47 +57,16 @@ final class AboutWindowController: NSWindowController {
     window?.makeKeyAndOrderFront(nil)
   }
 
-  // MARK: - Sections
+  // MARK: - App-only facts
 
-  private func rebuild() {
-    content.arrangedSubviews.forEach { $0.removeFromSuperview() }
-    content.addArrangedSubview(header())
-    content.addArrangedSubview(section(L10n.tr("Build"), rows: buildRows()))
-    content.addArrangedSubview(section(L10n.tr("Components"), rows: componentRows()))
-    content.addArrangedSubview(programsSection())
-    content.addArrangedSubview(creditsSection())
-  }
-
-  private func header() -> NSView {
-    let icon = NSImageView(image: NSApp.applicationIconImage ?? NSImage())
-    icon.translatesAutoresizingMaskIntoConstraints = false
-    NSLayoutConstraint.activate([
-      icon.widthAnchor.constraint(equalToConstant: 64),
-      icon.heightAnchor.constraint(equalToConstant: 64),
-    ])
-    let name = label("Laban", font: .systemFont(ofSize: 22, weight: .semibold))
-    let version = label(
-      "Version \(BuildInfo.version) (\(BuildInfo.commit))", font: .systemFont(ofSize: 13))
-    let built = label(
-      ["Built \(BuildInfo.date)", BuildInfo.ageDescription()].compactMap { $0 }
-        .joined(separator: " · "),
-      font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
-    let text = NSStackView(views: [name, version, built])
-    text.orientation = .vertical
-    text.alignment = .leading
-    text.spacing = 2
-    let row = NSStackView(views: [icon, text])
-    row.spacing = 14
-    row.alignment = .centerY
-    return row
-  }
-
-  private func buildRows() -> [(String, String)] {
-    let signing = AboutInfo.codeSigning()
+  static func appFacts(
+    renderer status: RendererStatus?, screen: NSScreen?,
+    appearance: NSAppearance = NSApp.effectiveAppearance
+  ) -> LabanDiagnostics.AppFacts {
     let updates: String
     if UpdaterController.shared.isConfigured {
       let last = UpdaterController.shared.lastUpdateCheckDate.map {
-        "last checked \(AboutInfo.relative($0))"
+        "last checked \(LabanDiagnostics.relative($0))"
       }
       let auto =
         UpdaterController.shared.automaticallyChecksForUpdates
@@ -106,61 +75,76 @@ final class AboutWindowController: NSWindowController {
     } else {
       updates = "Off: this build has no update feed"
     }
-    return [
-      ("Signed by", signing.summary),
-      ("Signature", signing.details),
-      ("Updates", updates),
-    ]
-  }
-
-  private func componentRows() -> [(String, String)] {
-    let vt = AboutInfo.vtCore()
-    var rows: [(String, String)] = [
-      ("macOS", AboutInfo.systemSummary()),
-      ("Terminal engine", vt.summary),
-    ]
-    if !vt.patches.isEmpty {
-      rows.append(("Patches", vt.patches.joined(separator: "\n")))
-    }
-    if let status = rendererStatus() {
-      var renderer = status.effectiveRenderer
+    let renderer = status.map { status in
+      var text = status.effectiveRenderer
       if status.configuredRenderer != status.effectiveRenderer {
-        renderer += " (configured: \(status.configuredRenderer))"
+        text += " (configured: \(status.configuredRenderer))"
       }
-      if let reason = status.fallbackReason { renderer += ", fallback: \(reason)" }
-      rows.append(("Renderer", renderer))
+      if let reason = status.fallbackReason { text += ", fallback: \(reason)" }
+      return text
     }
-    rows.append(("Font", AboutInfo.fontSummary()))
-    rows.append(("Theme", AboutInfo.themeSummary()))
-    rows.append(("GPU", AboutInfo.gpuName()))
-    rows.append(("Display", AboutInfo.displaySummary(for: window?.screen ?? NSScreen.main)))
-    let daemons = AboutInfo.sessionDaemons()
-    if daemons.isEmpty {
-      rows.append(("Session daemon", "No labpty session daemon running"))
-    } else {
-      for daemon in daemons {
-        var text = "labpty pid \(daemon.pid), started \(AboutInfo.relative(daemon.startedAt))"
-        if !daemon.isThisAppsBinary {
-          text += "\nLaunched from \(daemon.executablePath)"
-        }
-        if daemon.runsDifferentBuild == true {
-          text += "\nRuns a different build than this app's labpty; it keeps your shells "
-            + "alive and switches to this build when it is next started."
-        }
-        rows.append(("Session daemon", text))
-      }
-    }
-    return rows
+    return LabanDiagnostics.AppFacts(
+      updates: updates, renderer: renderer, theme: themeSummary(appearance: appearance),
+      display: displaySummary(for: screen),
+      kittyImagesInUse: FrameImageStore.shared.count)
   }
 
-  private func programsSection() -> NSView {
-    let rows: [(String, String)] = [
-      ("TERM", AboutInfo.terminalType),
-      ("TERM_PROGRAM", AboutInfo.terminalProgram()),
-      ("Kitty graphics", AboutInfo.kittyGraphicsSummary()),
-    ]
-    let stack = section(L10n.tr("What programs see"), rows: rows)
+  static func themeSummary(appearance: NSAppearance) -> String {
+    let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    let follows = Theme.followsSystemAppearance ? ", follows system appearance" : ""
+    return "\(Theme.current.name) (\(dark ? "dark" : "light") mode\(follows))"
+  }
 
+  static func displaySummary(for screen: NSScreen?) -> String {
+    guard let screen else { return "No display" }
+    let points = screen.frame.size
+    let scale = screen.backingScaleFactor
+    let scaleText =
+      scale == scale.rounded() ? String(Int(scale)) : String(format: "%.1f", scale)
+    return "\(Int(points.width))×\(Int(points.height)) pt @\(scaleText)x, "
+      + "\(screen.maximumFramesPerSecond) Hz"
+  }
+
+  // MARK: - Sections
+
+  private func rebuild() {
+    content.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    content.addArrangedSubview(header())
+    let facts = Self.appFacts(
+      renderer: rendererStatus(), screen: window?.screen ?? NSScreen.main)
+    for section in LabanDiagnostics.sections(app: facts) {
+      let stack = sectionView(
+        L10n.tr(String.LocalizationValue(section.title)),
+        rows: section.rows.map { ($0.label, $0.value) })
+      if section.title == "What programs see" { addSelfTest(to: stack) }
+      content.addArrangedSubview(stack)
+    }
+    content.addArrangedSubview(creditsSection())
+  }
+
+  private func header() -> NSView {
+    let icon = NSImageView(image: NSApp.applicationIconImage ?? NSImage())
+    icon.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      icon.widthAnchor.constraint(equalToConstant: 48),
+      icon.heightAnchor.constraint(equalToConstant: 48),
+    ])
+    let name = label("Laban", font: .systemFont(ofSize: 18, weight: .semibold))
+    let hint = label(
+      "Also available as text: laban version --verbose (add --json for agents).",
+      font: .systemFont(ofSize: 11), color: .secondaryLabelColor)
+    hint.isSelectable = true
+    let text = NSStackView(views: [name, hint])
+    text.orientation = .vertical
+    text.alignment = .leading
+    text.spacing = 2
+    let row = NSStackView(views: [icon, text])
+    row.spacing = 12
+    row.alignment = .centerY
+    return row
+  }
+
+  private func addSelfTest(to stack: NSStackView) {
     let button = NSButton(
       title: L10n.tr("Run Self-Test"), target: self, action: #selector(runSelfTest(_:)))
     button.bezelStyle = .rounded
@@ -176,9 +160,7 @@ final class AboutWindowController: NSWindowController {
     stack.addArrangedSubview(button)
     stack.addArrangedSubview(hint)
     stack.addArrangedSubview(results)
-    selfTestButton = button
     selfTestStack = results
-    return stack
   }
 
   private func creditsSection() -> NSView {
@@ -193,7 +175,7 @@ final class AboutWindowController: NSWindowController {
         + "Selenized (Jan Warchoł), Rosé Pine, Catppuccin, Dracula, Nord, Tokyo Night and "
         + "Gruvbox.",
     ] + [copyright.map { "Laban \($0), MIT License." }].compactMap { $0 }
-    let stack = section(L10n.tr("Credits"), rows: [])
+    let stack = sectionView(L10n.tr("Credits"), rows: [])
     for line in credits {
       stack.addArrangedSubview(label(line, font: .systemFont(ofSize: 12), wraps: true))
     }
@@ -214,7 +196,7 @@ final class AboutWindowController: NSWindowController {
         label("Could not create a scratch terminal session.", font: .systemFont(ofSize: 12)))
       return
     }
-    let summary = Self.selfTestSummary(outcome)
+    let summary = LabanDiagnostics.selfTestSummary(outcome)
     let summaryLabel = label(
       summary.text, font: .systemFont(ofSize: 12, weight: .semibold),
       color: summary.allPassed ? .systemGreen : .systemRed)
@@ -225,16 +207,11 @@ final class AboutWindowController: NSWindowController {
     for result in outcome {
       let mark: String
       let color: NSColor
-      switch result.status {
-      case .passed: (mark, color) = ("✓", .systemGreen)
-      case .failed: (mark, color) = ("✗", .systemRed)
-      case .disabled: (mark, color) = ("–", .secondaryLabelColor)
-      }
       let statusWord: String
       switch result.status {
-      case .passed: statusWord = "Passed"
-      case .failed: statusWord = "Failed"
-      case .disabled: statusWord = "Turned off"
+      case .passed: (mark, color, statusWord) = ("✓", .systemGreen, "Passed")
+      case .failed: (mark, color, statusWord) = ("✗", .systemRed, "Failed")
+      case .disabled: (mark, color, statusWord) = ("–", .secondaryLabelColor, "Turned off")
       }
       let symbol = label(mark, font: .systemFont(ofSize: 12, weight: .bold), color: color)
       let name = label(result.name, font: .systemFont(ofSize: 12))
@@ -260,6 +237,12 @@ final class AboutWindowController: NSWindowController {
   }
 
   @objc private func openLicenses(_ sender: Any?) {
+    Self.openLicenses()
+  }
+
+  /// Opens the bundled `THIRD_PARTY_LICENSES.md` as plain text: a .md file's
+  /// default handler may be Xcode or nothing.
+  static func openLicenses() {
     guard
       let url = Bundle.main.resourceURL?
         .appendingPathComponent("Licenses/THIRD_PARTY_LICENSES.md"),
@@ -268,35 +251,20 @@ final class AboutWindowController: NSWindowController {
       NSSound.beep()
       return
     }
-    // Open as plain text: a .md file's default handler may be Xcode or nothing.
-    let configuration = NSWorkspace.OpenConfiguration()
     if let textEdit = NSWorkspace.shared.urlForApplication(
       withBundleIdentifier: "com.apple.TextEdit")
     {
       NSWorkspace.shared.open(
-        [url], withApplicationAt: textEdit, configuration: configuration,
+        [url], withApplicationAt: textEdit, configuration: NSWorkspace.OpenConfiguration(),
         completionHandler: nil)
     } else {
       NSWorkspace.shared.open(url)
     }
   }
 
-  /// "10 passed", "9 passed, 1 turned off", "8 passed, 2 failed".
-  static func selfTestSummary(
-    _ results: [TerminalCapabilitySelfTest.Result]
-  ) -> (text: String, allPassed: Bool) {
-    let passed = results.filter { $0.status == .passed }.count
-    let failed = results.filter { $0.status == .failed }.count
-    let off = results.filter { $0.status == .disabled }.count
-    var parts = ["\(passed) passed"]
-    if off > 0 { parts.append("\(off) turned off") }
-    if failed > 0 { parts.append("\(failed) failed") }
-    return (parts.joined(separator: ", "), failed == 0)
-  }
-
   // MARK: - Building blocks
 
-  private func section(_ title: String, rows: [(String, String)]) -> NSStackView {
+  private func sectionView(_ title: String, rows: [(String, String)]) -> NSStackView {
     let stack = NSStackView()
     stack.orientation = .vertical
     stack.alignment = .leading
@@ -330,7 +298,8 @@ final class AboutWindowController: NSWindowController {
   private func label(
     _ text: String, font: NSFont, color: NSColor = .labelColor, wraps: Bool = false
   ) -> NSTextField {
-    let field = wraps ? NSTextField(wrappingLabelWithString: text) : NSTextField(labelWithString: text)
+    let field =
+      wraps ? NSTextField(wrappingLabelWithString: text) : NSTextField(labelWithString: text)
     field.font = font
     field.textColor = color
     if wraps { field.preferredMaxLayoutWidth = 420 }

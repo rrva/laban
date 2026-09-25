@@ -24,6 +24,7 @@ enum LabanCommand: Equatable {
   case proposalStatus(id: String, json: Bool)
   case proposalCancel(id: String, json: Bool)
   case waitProposal(id: String, state: String, timeoutSeconds: Double, json: Bool)
+  case version(verbose: Bool, json: Bool, selfTest: Bool)
   case help
 }
 
@@ -41,6 +42,9 @@ struct LabanArgumentParser {
     if command == "--help" || command == "-h" {
       return .success(.help)
     }
+    if command == "--version" {
+      return .success(.version(verbose: false, json: false, selfTest: false))
+    }
 
     // `agent run -- ...` and `propose --purpose ... -- ...` have their own
     // parsing rules and must preserve every word after the `--` separator.
@@ -54,6 +58,8 @@ struct LabanArgumentParser {
     }
 
     var json = false
+    var verbose = false
+    var selfTest = true
     var dryRun = false
     var body: String?
     var prefix: String?
@@ -67,6 +73,12 @@ struct LabanArgumentParser {
         args.remove(at: i)
       case "--dry-run":
         dryRun = true
+        args.remove(at: i)
+      case "--verbose" where command == "version":
+        verbose = true
+        args.remove(at: i)
+      case "--no-self-test" where command == "version":
+        selfTest = false
         args.remove(at: i)
       case "--body":
         args.remove(at: i)
@@ -116,6 +128,8 @@ struct LabanArgumentParser {
       return .success(.completions(shell: shell))
     case "install-cli":
       return .success(.installCLI(prefix: prefix, dryRun: dryRun))
+    case "version":
+      return .success(.version(verbose: verbose || json, json: json, selfTest: selfTest))
     case "help":
       return .success(.help)
     case "session":

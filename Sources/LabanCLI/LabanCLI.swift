@@ -421,6 +421,11 @@ enum LabanCLI {
         sleep: sleep,
         json: json)
 
+    case .version(let verbose, let json, let selfTest):
+      return LabanCLIResult(
+        exitCode: 0, stdout: versionReport(verbose: verbose, json: json, selfTest: selfTest),
+        stderr: "")
+
     case .help:
       return LabanCLIResult(exitCode: 0, stdout: usageText, stderr: "")
     }
@@ -945,6 +950,12 @@ let usageText = """
       request METHOD PATH [--body JSON] [--json]
                                      Send a raw app-observe request.
       completions SHELL              Print shell completions (zsh, bash, fish).
+      --version                      Print the version and build commit.
+      version [--verbose] [--json] [--no-self-test]
+                                     Diagnostics for bug reports: build, signature,
+                                     terminal engine, session daemons, what programs
+                                     see, and a capability self-test (as in
+                                     Help → Diagnostics…). --json implies --verbose.
       install-cli [--prefix PATH] [--dry-run]
                                      Install a shell shim for laban.
 
@@ -1040,4 +1051,23 @@ extension LabanArgumentError: CustomStringConvertible {
       return "missing argument: \(argument)"
     }
   }
+}
+
+/// `laban --version` and `laban version --verbose`: the Diagnostics window's
+/// data (`LabanDiagnostics`) as text or JSON. The CLI runs from the app
+/// bundle's `Contents/MacOS`, so `Bundle.main` and `UserDefaults.standard` are
+/// the app's; facts only the running app knows (renderer, theme, display) are
+/// omitted.
+func versionReport(verbose: Bool, json: Bool, selfTest: Bool) -> String {
+  guard verbose else { return LabanDiagnostics.versionLine() + "\n" }
+  // Mirror the app's startup so the self-test and the Kitty graphics row
+  // reflect the user's setting, not the terminal core's default.
+  KittyGraphicsSettings.applyProcessWide()
+  let sections = LabanDiagnostics.sections()
+  let results = selfTest ? TerminalCapabilitySelfTest.run() : nil
+  if json {
+    return LabanDiagnostics.json(sections: sections, selfTest: results) + "\n"
+  }
+  return LabanDiagnostics.versionLine() + "\n\n"
+    + LabanDiagnostics.text(sections: sections, selfTest: results)
 }

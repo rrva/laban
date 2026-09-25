@@ -21,6 +21,7 @@ private let zshCompletions = """
       'capabilities:List control capabilities'
       'request:Send a raw app-observe request'
       'completions:Print shell completions'
+      'version:Print version and diagnostics'
       'install-cli:Install the laban command shim'
       'session:Session-scoped commands via the agent proxy'
       'context:Print a compact bound-session context bundle'
@@ -39,7 +40,7 @@ private let bashCompletions = """
     local cur prev words cword
     _init_completion || return
 
-    local commands="discover status health capabilities request completions install-cli session context wait propose proposal"
+    local commands="discover status health capabilities request completions version install-cli session context wait propose proposal"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
       COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
@@ -99,6 +100,7 @@ private let fishCompletions = """
   complete -c laban -n '__fish_use_subcommand' -a 'capabilities' -d 'List control capabilities'
   complete -c laban -n '__fish_use_subcommand' -a 'request' -d 'Send a raw app-observe request'
   complete -c laban -n '__fish_use_subcommand' -a 'completions' -d 'Print shell completions'
+  complete -c laban -n '__fish_use_subcommand' -a 'version' -d 'Print version and diagnostics'
   complete -c laban -n '__fish_use_subcommand' -a 'install-cli' -d 'Install the laban command shim'
   complete -c laban -n '__fish_use_subcommand' -a 'session' -d 'Session-scoped commands via the agent proxy'
   complete -c laban -n '__fish_use_subcommand' -a 'context' -d 'Print a compact bound-session context bundle'
