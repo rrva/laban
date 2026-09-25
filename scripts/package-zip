@@ -37,8 +37,9 @@ app_version=$1
 # Release builds are signed with the distribution identity by default so a
 # downloaded zip carries a valid Developer ID signature. The identity is
 # public information (it is embedded in every signed binary), so keeping
-# the default here is not a secret leak; build-app's ad-hoc default for
-# local dev builds is unchanged. Set LABAN_CODESIGN_IDENTITY=- for ad-hoc.
+# the default here is not a secret leak. Passing it explicitly also makes
+# build-app sign for distribution (secure timestamp, no get-task-allow) rather
+# than as a local team build. Set LABAN_CODESIGN_IDENTITY=- for ad-hoc.
 release_codesign_identity="Developer ID Application: Ragnar Rova (3563RJWBQP)"
 export LABAN_CODESIGN_IDENTITY=${LABAN_CODESIGN_IDENTITY:-$release_codesign_identity}
 

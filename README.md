@@ -80,7 +80,12 @@ cd laban
 ./scripts/build-app             # builds LabanApp, laband, labpty into the .app bundle
 ```
 
-`build-app` produces a signed (ad-hoc) bundle at **`.build/laban/Laban.app`**.
+`build-app` produces a signed bundle at **`.build/laban/Laban.app`**. It signs
+with the team's identity (team `3563RJWBQP`; an `Apple Development` certificate
+if present, else `Developer ID Application`) when your keychain has one, with
+the hardened runtime and `get-task-allow` so debuggers and Instruments can
+attach, and ad-hoc otherwise. `LABAN_CODESIGN_IDENTITY` overrides the identity
+(`-` forces ad-hoc); `LABAN_TEAM_ID` changes the team it looks for.
 
 > Always build with `./scripts/build-app`, not a bare `swift build`. The script
 > assembles the `.app` bundle, copies in the `laband`/`labpty` helpers and
@@ -102,8 +107,9 @@ renderer, or as a live, agent-controllable debug server.
 open .build/laban/Laban.app
 ```
 
-Drag it into `/Applications` if you want it on your dock. (It's an ad-hoc
-signed build, so the first launch may need a right-click → **Open**.)
+Drag it into `/Applications` if you want it on your dock. (A local build is not
+notarized, and an ad-hoc one is not team-signed either, so the first launch may
+need a right-click → **Open**.)
 
 ### Headless, one shot
 

@@ -419,22 +419,75 @@ sign_sparkle_framework() {
 if [ "${LABAN_SKIP_CODESIGN:-0}" = "1" ]; then
   printf 'build-app: codesign skipped (LABAN_SKIP_CODESIGN=1; output may not launch)\n'
 else
-  if [ -n "${LABAN_CODESIGN_IDENTITY:-}" ] && [ "$LABAN_CODESIGN_IDENTITY" != "-" ]; then
+  # Identity: an explicit LABAN_CODESIGN_IDENTITY wins ("-" forces ad-hoc;
+  # package-zip passes the release identity). Otherwise sign with the team's
+  # identity when this Mac's keychain has one, so local builds carry the team
+  # ID: TCC grants, keychain items and the hardened runtime then behave as in
+  # a release, and survive rebuilds. Macs without it (CI) fall back to ad-hoc.
+  team_id=${LABAN_TEAM_ID:-3563RJWBQP}
+  helper_entitlement_options=""
+  if [ -n "${LABAN_CODESIGN_IDENTITY:-}" ]; then
     sign_identity="$LABAN_CODESIGN_IDENTITY"
-    # Hardened runtime + secure timestamp are notarization requirements for
-    # distribution builds. Ad-hoc builds skip them so offline dev builds work.
-    sign_options="--options runtime --timestamp"
+    local_team_build=0
+  else
+    # Prefer a development certificate; a Developer ID one also works locally.
+    identities=$(security find-identity -v -p codesigning 2>/dev/null || true)
+    sign_identity=$(printf '%s\n' "$identities" \
+      | sed -n "s/^ *[0-9]*) [0-9A-F]* \"\(Apple Development: .*($team_id)\)\"$/\1/p" | head -n 1)
+    [ -n "$sign_identity" ] || sign_identity=$(printf '%s\n' "$identities" \
+      | sed -n "s/^ *[0-9]*) [0-9A-F]* \"\(Developer ID Application: .*($team_id)\)\"$/\1/p" \
+      | head -n 1)
+    if [ -n "$sign_identity" ]; then
+      local_team_build=1
+    else
+      printf 'build-app: no signing identity for team %s in the keychain; signing ad-hoc\n' \
+        "$team_id"
+      sign_identity="-"
+      local_team_build=0
+    fi
+  fi
+  if [ "$sign_identity" != "-" ]; then
     # TCC checks the responsible process, not the parent. LabanApp spawns
     # labpty, so it is responsible for every shell and program labpty forks.
-    entitlement_options="--entitlements $repo_root/scripts/Laban.entitlements"
+    app_entitlements="$repo_root/scripts/Laban.entitlements"
+    if [ "$local_team_build" = 1 ]; then
+      # Local team builds: hardened runtime like a release, but no secure
+      # timestamp (it needs Apple's timestamp server) and get-task-allow so
+      # lldb and Instruments can attach. Notarization rejects get-task-allow,
+      # which is why distribution builds (explicit identity) never get it.
+      sign_options="--options runtime --timestamp=none"
+      case "$scratch_root" in
+        /*) codesign_dir="$scratch_root/laban/codesign" ;;
+        *) codesign_dir="$repo_root/$scratch_root/laban/codesign" ;;
+      esac
+      mkdir -p "$codesign_dir"
+      app_entitlements_dev="$codesign_dir/LabanApp.dev.entitlements"
+      helper_entitlements_dev="$codesign_dir/helper.dev.entitlements"
+      cp "$app_entitlements" "$app_entitlements_dev"
+      # PlistBuddy, not plutil: plutil reads the dots in the key as a path.
+      /usr/libexec/PlistBuddy -c 'Delete :com.apple.security.get-task-allow' \
+        "$app_entitlements_dev" >/dev/null 2>&1 || true
+      /usr/libexec/PlistBuddy -c 'Add :com.apple.security.get-task-allow bool true' \
+        "$app_entitlements_dev" >/dev/null
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+        '<plist version="1.0"><dict><key>com.apple.security.get-task-allow</key><true/></dict></plist>' \
+        > "$helper_entitlements_dev"
+      entitlement_options="--entitlements $app_entitlements_dev"
+      helper_entitlement_options="--entitlements $helper_entitlements_dev"
+    else
+      # Hardened runtime + secure timestamp are notarization requirements for
+      # distribution builds.
+      sign_options="--options runtime --timestamp"
+      entitlement_options="--entitlements $app_entitlements"
+    fi
   else
-    sign_identity="-"
     sign_options=""
     entitlement_options=""
   fi
   sign_sparkle_framework
   for product in laban-agent laband labpty laban LabanApp; do
-    product_options=""
+    product_options="$helper_entitlement_options"
     case "$product" in
       LabanApp) product_options="$entitlement_options" ;;
     esac
@@ -447,6 +500,9 @@ else
   verify_signature
   if [ "$sign_identity" = "-" ]; then
     printf 'build-app: codesigned ad-hoc\n'
+  elif [ "$local_team_build" = 1 ]; then
+    printf 'build-app: codesigned with %s (hardened runtime, local: get-task-allow, no timestamp)\n' \
+      "$sign_identity"
   else
     printf 'build-app: codesigned with %s (hardened runtime)\n' "$sign_identity"
   fi
