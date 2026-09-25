@@ -56,44 +56,16 @@ SOFTWARE.
 
 ---
 
-## Swift packages (Apache License 2.0)
+## Sparkle
 
-`LabanApp` depends on
-[swift-profile-recorder](https://github.com/apple/swift-profile-recorder),
-which resolves the dependency graph below. All of these are statically linked
-into the shipped binary, and all are licensed under the Apache License 2.0.
-Several carry a `NOTICE.txt` whose attributions are incorporated here by
-reference; each is reproduced verbatim in that package's checkout under
-`.build/checkouts/<package>/`.
+In-app updates. The only SwiftPM dependency; `Sparkle.framework` is embedded
+in the app bundle.
 
-Exact resolved versions are pinned in [`Package.resolved`](Package.resolved).
-
-| Package | Upstream |
-| --- | --- |
-| swift-algorithms | https://github.com/apple/swift-algorithms |
-| swift-argument-parser | https://github.com/apple/swift-argument-parser |
-| swift-asn1 | https://github.com/apple/swift-asn1 |
-| swift-async-algorithms | https://github.com/apple/swift-async-algorithms |
-| swift-atomics | https://github.com/apple/swift-atomics |
-| swift-certificates | https://github.com/apple/swift-certificates |
-| swift-collections | https://github.com/apple/swift-collections |
-| swift-configuration | https://github.com/apple/swift-configuration |
-| swift-crypto | https://github.com/apple/swift-crypto |
-| swift-http-structured-headers | https://github.com/apple/swift-http-structured-headers |
-| swift-http-types | https://github.com/apple/swift-http-types |
-| swift-log | https://github.com/apple/swift-log |
-| swift-nio | https://github.com/apple/swift-nio |
-| swift-nio-extras | https://github.com/apple/swift-nio-extras |
-| swift-nio-http2 | https://github.com/apple/swift-nio-http2 |
-| swift-nio-ssl | https://github.com/apple/swift-nio-ssl |
-| swift-numerics | https://github.com/apple/swift-numerics |
-| swift-profile-recorder | https://github.com/apple/swift-profile-recorder |
-| swift-protobuf | https://github.com/apple/swift-protobuf |
-| swift-service-lifecycle | https://github.com/swift-server/swift-service-lifecycle |
-| swift-system | https://github.com/apple/swift-system |
-
-The Apache License 2.0 is reproduced in full in
-[`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt).
+- **Upstream:** https://github.com/sparkle-project/Sparkle
+- **Version:** pinned in [`Package.resolved`](Package.resolved)
+- **License:** MIT, with the notices of the components Sparkle bundles
+  (bsdiff, sais, ed25519 and others), reproduced in full in
+  [`licenses/Sparkle-LICENSE.txt`](licenses/Sparkle-LICENSE.txt).
 
 ---
 
@@ -126,3 +98,15 @@ The bundled monospace font
 
 - **License:** SIL Open Font License 1.1
 - **Full text:** [`Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt`](Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt)
+
+---
+
+## Acknowledgements
+
+Credits that carry no license obligation:
+
+- **Slug** — the Slug Glyph renderer implements Eric Lengyel's Slug algorithm
+  ("GPU-Centered Font Rendering Directly from Glyph Outlines", *Journal of
+  Computer Graphics Techniques*, 2017). Laban's implementation is its own; the
+  algorithm's patent was dedicated to the public domain (see
+  `docs/adr/0027-slug-glyph-renderer.md`).

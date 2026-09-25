@@ -413,3 +413,32 @@ Warp-style command-block objects. Architecture and security rationale are in
 ADR 0023 (LabanApp hosts the server) and ADR 0024 (security model); the phased
 delivery and full intent catalog live in
 `execplans/agent-first-terminal-design.md`.
+
+## 27. About window
+
+"About Laban" opens a window that reports the running build as it actually is,
+so it can serve as the first stop of a bug report. Every value is read from
+the live process, not from constants:
+
+- **Build**: version, the build commit stamped into `Info.plist` (with `+dirty`
+  for uncommitted builds), build date and age, the code signature (signing
+  certificate, team ID, hardened runtime, notarization), and Sparkle update
+  state (automatic checks, last check; "not configured" for local builds).
+- **Components**: the libghostty-vt commit and the local patches applied to
+  it (stamped by `scripts/build-app` from `scripts/fetch-libghostty-vt`), the
+  effective renderer (with the configured renderer and fallback reason when
+  they differ), the GPU, the display resolution and refresh rate, and any
+  running `labpty` session daemon, flagged when it runs an older build than
+  the installed app.
+- **What programs see**: `TERM`, `TERM_PROGRAM` and its version (noting
+  Ghostty compatibility mode), and Kitty graphics state. A **Run Self-Test**
+  button sends the capability probes programs use to a scratch terminal
+  session (`TerminalCapabilitySelfTest`) and shows each reply with a
+  pass/fail mark: device attributes, XTVERSION, DECXCPR, the Kitty keyboard
+  query, OSC 11 and OSC 4 color queries, the color-scheme report, DECRQM for
+  modes 2026 and 2004, and the Kitty graphics query (reported as disabled,
+  not failed, when graphics are switched off).
+- **Credits**: libghostty-vt (Ghostty, MIT) as the terminal-emulation
+  foundation, Eric Lengyel's Slug algorithm behind the Slug Glyph renderer,
+  JetBrains Mono, Sparkle and the Selenized palette, with an **Open Licenses**
+  button that opens the bundled `THIRD_PARTY_LICENSES.md`.

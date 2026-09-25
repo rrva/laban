@@ -236,6 +236,19 @@ usage_descriptions_plist=$(python3 scripts/gen-localizable-xcstrings.py \
 python3 scripts/gen-localizable-xcstrings.py \
   --write-info-plist-strings "${bundle_dir}/Resources"
 
+# The About window reports the vendored VT core: the Ghostty commit and the
+# local patches, read from the fetch script that pins and applies them.
+ghostty_commit=$(sed -n 's/^GHOSTTY_COMMIT="\([0-9a-f]*\)"$/\1/p' scripts/fetch-libghostty-vt)
+ghostty_patches=$(sed -n 's/^PATCH_ORDER="\(.*\)"$/\1/p' scripts/fetch-libghostty-vt \
+  | tr ' ' '\n' \
+  | while read -r var; do sed -n "s|^${var#\$}=\"patches/\(.*\)\.patch\"$|\1|p" scripts/fetch-libghostty-vt; done \
+  | paste -sd, -)
+
+# License texts for the About window's credits.
+mkdir -p "${bundle_dir}/Resources/Licenses"
+cp -f THIRD_PARTY_LICENSES.md LICENSE "${bundle_dir}/Resources/Licenses/"
+cp -f licenses/*.txt "${bundle_dir}/Resources/Licenses/"
+
 cat > "${bundle_dir}/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -281,6 +294,10 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <string>${sha}${dirty}</string>
     <key>LABANBuildDate</key>
     <string>${date}</string>
+    <key>LABANLibghosttyCommit</key>
+    <string>${ghostty_commit}</string>
+    <key>LABANLibghosttyPatches</key>
+    <string>${ghostty_patches}</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
     <key>ITSAppUsesNonExemptEncryption</key>

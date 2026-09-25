@@ -31,6 +31,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     self?.windowController?.applyRendererSelection(selection)
   }
   /// The Settings (⌘,) window, built lazily on first open and reused after.
+  private lazy var aboutWindowController: AboutWindowController = {
+    let controller = AboutWindowController()
+    controller.rendererStatus = { [weak self] in
+      self?.windowController?.terminalView?.transparencyRendererStatus
+    }
+    return controller
+  }()
   private lazy var settingsWindowController = SettingsWindowController(
     theme: themeMenuController,
     renderer: rendererModeMenuController,
@@ -674,24 +681,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     alert.runModal()
   }
 
-  /// About panel populated from BuildInfo so the version is always live
-  /// against what was actually built. Shown via the standard macOS
-  /// "About Laban" item in the app menu.
+  /// "About Laban" in the app menu: build identity, component stack, what
+  /// programs see (with a capability self-test) and credits, all read from
+  /// the running app (`AboutWindowController`).
   @objc func showAbout(_ sender: Any?) {
-    // Compute the build age against the moment the panel opens so it reads
-    // how stale the running binary is, not a frozen build-time string.
-    let built =
-      BuildInfo.ageDescription().map { "Built \(BuildInfo.date)\n\($0)" }
-      ?? "Built \(BuildInfo.date)"
-    let credits = NSAttributedString(
-      string:
-        "Build \(BuildInfo.commit)\n\(built)\n\nA terminal that aims to be quiet, fast, and honest.",
-      attributes: [.foregroundColor: NSColor.labelColor])
-    NSApp.orderFrontStandardAboutPanel(options: [
-      .applicationName: "Laban",
-      .applicationVersion: BuildInfo.version,
-      .credits: credits,
-    ])
+    aboutWindowController.present()
   }
 
   private func postSettingsTestNotification() {

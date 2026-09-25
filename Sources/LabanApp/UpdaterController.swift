@@ -51,6 +51,12 @@ final class UpdaterController: NSObject {
     controller?.checkForUpdates(sender)
   }
 
+  /// When Sparkle last checked the feed; nil for dev builds or before the
+  /// first check.
+  var lastUpdateCheckDate: Date? {
+    controller?.updater.lastUpdateCheckDate
+  }
+
   var automaticallyChecksForUpdates: Bool {
     get { controller?.updater.automaticallyChecksForUpdates ?? false }
     set { controller?.updater.automaticallyChecksForUpdates = newValue }
