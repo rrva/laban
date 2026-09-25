@@ -1,0 +1,48 @@
+execplans/completed/about-window.md
+  s_b9b171a32edb6d::t_a9a1b8af4a5a35 1-92
+Sources/LabanApp/Resources/Localizable.xcstrings
+  s_b9b171a32edb6d::t_ae78423fe583d8 74-385
+scripts/build-app
+  s_b9b171a32edb6d::t_a141b009eaf3a9 239-251,297-300
+Sources/LabanApp/AboutInfo.swift
+  s_b9b171a32edb6d::t_17506323e9cfe7 1-4,6-181,185,189-204
+  s_b9b171a32edb6d::t_3ad806e7683bb6 5,182-184,186-188
+THIRD_PARTY_LICENSES.md
+  s_b9b171a32edb6d::t_93f32cdd4fbff5 59-68
+  s_b9b171a32edb6d::t_316157ecbdc4cf 101-112
+Sources/LabanCore/TerminalCapabilitySelfTest.swift
+  s_b9b171a32edb6d::t_f36826ed2051fb 1-158
+Tests/LabanCoreTests/TerminalCapabilitySelfTestTests.swift
+  s_b9b171a32edb6d::t_42bed6571a5054 1-35
+docs/product/spec.md
+  s_b9b171a32edb6d::t_bfa8212be70130 416-444
+scripts/gen-localizable-xcstrings.py
+  s_b9b171a32edb6d::t_ae78423fe583d8 42-101
+Sources/LabanApp/UpdaterController.swift
+  s_b9b171a32edb6d::t_95d95e404f7a0e 54-59
+Sources/LabanApp/AboutWindowController.swift
+  s_b9b171a32edb6d::t_3ad806e7683bb6 222
+  s_b9b171a32edb6d::t_7b942b04c1eadb 1-221,223-289
+licenses/Sparkle-LICENSE.txt
+  s_b9b171a32edb6d::t_93f32cdd4fbff5 1-134
+Sources/LabanApp/AppDelegate.swift
+  s_b9b171a32edb6d::t_e9fb28a105b684 34-40,684-686,688
+Tests/LabanAppTests/AboutInfoTests.swift
+  s_b9b171a32edb6d::t_5074b445e4a290 1-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4c4288dd3f18ecc966cbd4cb1237982e5d62de59",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
