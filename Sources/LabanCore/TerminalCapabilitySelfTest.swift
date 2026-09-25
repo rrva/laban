@@ -24,6 +24,13 @@ public enum TerminalCapabilitySelfTest {
     /// The reply with control characters spelled out (`ESC`, `BEL`), or "no
     /// reply".
     public let reply: String
+
+    public init(name: String, purpose: String, status: Status, reply: String) {
+      self.name = name
+      self.purpose = purpose
+      self.status = status
+      self.reply = reply
+    }
   }
 
   struct Probe {
@@ -40,52 +47,52 @@ public enum TerminalCapabilitySelfTest {
   static func probes(kittyGraphicsEnabled: Bool) -> [Probe] {
     [
       Probe(
-        name: "Primary device attributes (DA1)",
+        name: "Identifies as a VT terminal (DA1)",
         purpose: "Programs detect a VT-compatible terminal and wait on this reply.",
         query: "\u{1b}[c",
         accepts: { $0.hasPrefix("\u{1b}[?") && $0.hasSuffix("c") }),
       Probe(
-        name: "Terminal name and version (XTVERSION)",
+        name: "Reports its name (XTVERSION)",
         purpose: "Programs identify the terminal without trusting TERM_PROGRAM.",
         query: "\u{1b}[>q",
         accepts: { $0.hasPrefix("\u{1b}P>|") && $0.hasSuffix("\u{1b}\\") }),
       Probe(
-        name: "Cursor position, DEC form (DECXCPR)",
+        name: "Reports the cursor position (DECXCPR)",
         purpose: "Unambiguous cursor reports that cannot be mistaken for key input.",
         query: "\u{1b}[?6n",
         accepts: { $0 == "\u{1b}[?1;1R" }),
       Probe(
-        name: "Kitty keyboard protocol",
+        name: "Supports precise key reporting (Kitty keyboard)",
         purpose: "Editors and TUIs enable unambiguous key reporting.",
         query: "\u{1b}[?u",
         accepts: { $0.hasPrefix("\u{1b}[?") && $0.hasSuffix("u") }),
       Probe(
-        name: "Background color (OSC 11)",
+        name: "Reports its background color (OSC 11)",
         purpose: "Programs match their theme to the terminal.",
         query: "\u{1b}]11;?\u{1b}\\",
         accepts: { $0.hasPrefix("\u{1b}]11;rgb:") }),
       Probe(
-        name: "Palette color (OSC 4)",
+        name: "Reports its color palette (OSC 4)",
         purpose: "Multiplexers such as herdr adapt to the host palette.",
         query: "\u{1b}]4;1;?\u{1b}\\",
         accepts: { $0.hasPrefix("\u{1b}]4;1;rgb:") }),
       Probe(
-        name: "Light/dark color scheme",
+        name: "Reports light or dark mode (color scheme)",
         purpose: "Programs follow the system appearance live.",
         query: "\u{1b}[?996n",
         accepts: { $0 == "\u{1b}[?997;1n" || $0 == "\u{1b}[?997;2n" }),
       Probe(
-        name: "Synchronized output (mode 2026)",
+        name: "Draws whole frames without tearing (mode 2026)",
         purpose: "Programs draw whole frames without tearing.",
         query: "\u{1b}[?2026$p",
         accepts: { $0 == "\u{1b}[?2026;1$y" || $0 == "\u{1b}[?2026;2$y" }),
       Probe(
-        name: "Bracketed paste (mode 2004)",
+        name: "Marks pasted text (bracketed paste, mode 2004)",
         purpose: "Shells tell pasted text from typed commands.",
         query: "\u{1b}[?2004$p",
         accepts: { $0 == "\u{1b}[?2004;1$y" || $0 == "\u{1b}[?2004;2$y" }),
       Probe(
-        name: "Kitty graphics",
+        name: "Shows inline images (Kitty graphics)",
         purpose: "Programs show inline images instead of text art.",
         query: "\u{1b}_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u{1b}\\",
         accepts: { $0 == "\u{1b}_Gi=31;OK\u{1b}\\" },

@@ -18,7 +18,7 @@ linked into the shipped binary.
 - **License:** MIT
 
 Laban applies three small local patches to the pinned source before building.
-Both live as reviewable diffs under [`patches/`](patches/) and are applied by
+All three live as reviewable diffs under [`patches/`](patches/) and are applied by
 the fetch script:
 
 - `libghostty-vt-0001-alt-screen-clear-uses-primary-pen.patch` — clears the

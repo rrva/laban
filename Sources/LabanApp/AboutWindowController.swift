@@ -104,7 +104,7 @@ final class AboutWindowController: NSWindowController {
         ? "automatic checks on" : "automatic checks off"
       updates = [auto, last].compactMap { $0 }.joined(separator: ", ")
     } else {
-      updates = "Not configured (local build)"
+      updates = "Off: this build has no update feed"
     }
     return [
       ("Signed by", signing.summary),
@@ -115,7 +115,10 @@ final class AboutWindowController: NSWindowController {
 
   private func componentRows() -> [(String, String)] {
     let vt = AboutInfo.vtCore()
-    var rows: [(String, String)] = [("VT core", vt.summary)]
+    var rows: [(String, String)] = [
+      ("macOS", AboutInfo.systemSummary()),
+      ("Terminal engine", vt.summary),
+    ]
     if !vt.patches.isEmpty {
       rows.append(("Patches", vt.patches.joined(separator: "\n")))
     }
@@ -127,17 +130,22 @@ final class AboutWindowController: NSWindowController {
       if let reason = status.fallbackReason { renderer += ", fallback: \(reason)" }
       rows.append(("Renderer", renderer))
     }
+    rows.append(("Font", AboutInfo.fontSummary()))
+    rows.append(("Theme", AboutInfo.themeSummary()))
     rows.append(("GPU", AboutInfo.gpuName()))
     rows.append(("Display", AboutInfo.displaySummary(for: window?.screen ?? NSScreen.main)))
     let daemons = AboutInfo.sessionDaemons()
     if daemons.isEmpty {
-      rows.append(("Session daemon", "Not running (sessions run inside the app)"))
+      rows.append(("Session daemon", "No labpty session daemon running"))
     } else {
       for daemon in daemons {
         var text = "labpty pid \(daemon.pid), started \(AboutInfo.relative(daemon.startedAt))"
-        if daemon.isOlderThanInstalledBinary {
-          text += "\nRunning an older build than the installed app; it keeps your shells "
-            + "alive and upgrades when it is next started."
+        if !daemon.isThisAppsBinary {
+          text += "\nLaunched from \(daemon.executablePath)"
+        }
+        if daemon.runsDifferentBuild == true {
+          text += "\nRuns a different build than this app's labpty; it keeps your shells "
+            + "alive and switches to this build when it is next started."
         }
         rows.append(("Session daemon", text))
       }
@@ -157,8 +165,10 @@ final class AboutWindowController: NSWindowController {
       title: L10n.tr("Run Self-Test"), target: self, action: #selector(runSelfTest(_:)))
     button.bezelStyle = .rounded
     let hint = label(
-      "Sends the capability queries programs use to a scratch terminal and checks each reply.",
-      font: .systemFont(ofSize: 11), color: .secondaryLabelColor)
+      "Sends the queries programs use to detect terminal features to a scratch session of "
+        + "this app's terminal engine, the same one that answers in-process and labpty "
+        + "tabs, and checks each reply.",
+      font: .systemFont(ofSize: 11), color: .secondaryLabelColor, wraps: true)
     let results = NSStackView()
     results.orientation = .vertical
     results.alignment = .leading
@@ -172,14 +182,17 @@ final class AboutWindowController: NSWindowController {
   }
 
   private func creditsSection() -> NSView {
+    let copyright =
+      Bundle.main.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String
     let credits = [
-      "Terminal emulation is libghostty-vt from the Ghostty project (MIT); everything "
-        + "above it (rendering, sessions, agent integration) is Laban.",
+      "Terminal emulation is libghostty-vt from the Ghostty project (MIT). Laban builds "
+        + "its rendering, sessions and agent integration on top.",
       "Slug Glyph rendering implements Eric Lengyel's Slug algorithm (“GPU-Centered Font "
         + "Rendering Directly from Glyph Outlines”, JCGT 2017).",
-      "JetBrains Mono (SIL Open Font License 1.1) · Sparkle (MIT) · Selenized colors by "
-        + "Jan Warchoł.",
-    ]
+      "JetBrains Mono (SIL Open Font License 1.1) · Sparkle (MIT) · color palettes from "
+        + "Selenized (Jan Warchoł), Rosé Pine, Catppuccin, Dracula, Nord, Tokyo Night and "
+        + "Gruvbox.",
+    ] + [copyright.map { "Laban \($0), MIT License." }].compactMap { $0 }
     let stack = section(L10n.tr("Credits"), rows: [])
     for line in credits {
       stack.addArrangedSubview(label(line, font: .systemFont(ofSize: 12), wraps: true))
@@ -201,12 +214,14 @@ final class AboutWindowController: NSWindowController {
         label("Could not create a scratch terminal session.", font: .systemFont(ofSize: 12)))
       return
     }
-    let passed = outcome.filter { $0.status != .failed }.count
-    results.addArrangedSubview(
-      label(
-        "\(passed) of \(outcome.count) as expected",
-        font: .systemFont(ofSize: 12, weight: .semibold),
-        color: passed == outcome.count ? .systemGreen : .systemRed))
+    let summary = Self.selfTestSummary(outcome)
+    let summaryLabel = label(
+      summary.text, font: .systemFont(ofSize: 12, weight: .semibold),
+      color: summary.allPassed ? .systemGreen : .systemRed)
+    results.addArrangedSubview(summaryLabel)
+    NSAccessibility.post(
+      element: summaryLabel, notification: .announcementRequested,
+      userInfo: [.announcement: "Self-test finished. \(summary.text)."])
     for result in outcome {
       let mark: String
       let color: NSColor
@@ -215,19 +230,33 @@ final class AboutWindowController: NSWindowController {
       case .failed: (mark, color) = ("✗", .systemRed)
       case .disabled: (mark, color) = ("–", .secondaryLabelColor)
       }
+      let statusWord: String
+      switch result.status {
+      case .passed: statusWord = "Passed"
+      case .failed: statusWord = "Failed"
+      case .disabled: statusWord = "Turned off"
+      }
       let symbol = label(mark, font: .systemFont(ofSize: 12, weight: .bold), color: color)
       let name = label(result.name, font: .systemFont(ofSize: 12))
-      name.toolTip = result.purpose
+      let replyText = result.status == .disabled ? "turned off" : result.reply
       let reply = label(
-        result.status == .disabled ? "switched off" : result.reply,
-        font: .monospacedSystemFont(ofSize: 11, weight: .regular),
+        replyText, font: .monospacedSystemFont(ofSize: 11, weight: .regular),
         color: .secondaryLabelColor)
       reply.isSelectable = true
-      let row = NSStackView(views: [symbol, name, reply])
-      row.spacing = 8
+      let purpose = label(
+        result.purpose, font: .systemFont(ofSize: 11), color: .secondaryLabelColor, wraps: true)
+      let line = NSStackView(views: [symbol, name, reply])
+      line.spacing = 8
+      let row = NSStackView(views: [line, purpose])
+      row.orientation = .vertical
+      row.alignment = .leading
+      row.spacing = 1
+      row.setAccessibilityElement(true)
+      row.setAccessibilityRole(.group)
+      row.setAccessibilityLabel(
+        "\(statusWord): \(result.name). \(result.purpose) Reply: \(replyText)")
       results.addArrangedSubview(row)
     }
-    selfTestButton?.title = L10n.tr("Run Self-Test")
   }
 
   @objc private func openLicenses(_ sender: Any?) {
@@ -239,7 +268,30 @@ final class AboutWindowController: NSWindowController {
       NSSound.beep()
       return
     }
-    NSWorkspace.shared.open(url)
+    // Open as plain text: a .md file's default handler may be Xcode or nothing.
+    let configuration = NSWorkspace.OpenConfiguration()
+    if let textEdit = NSWorkspace.shared.urlForApplication(
+      withBundleIdentifier: "com.apple.TextEdit")
+    {
+      NSWorkspace.shared.open(
+        [url], withApplicationAt: textEdit, configuration: configuration,
+        completionHandler: nil)
+    } else {
+      NSWorkspace.shared.open(url)
+    }
+  }
+
+  /// "10 passed", "9 passed, 1 turned off", "8 passed, 2 failed".
+  static func selfTestSummary(
+    _ results: [TerminalCapabilitySelfTest.Result]
+  ) -> (text: String, allPassed: Bool) {
+    let passed = results.filter { $0.status == .passed }.count
+    let failed = results.filter { $0.status == .failed }.count
+    let off = results.filter { $0.status == .disabled }.count
+    var parts = ["\(passed) passed"]
+    if off > 0 { parts.append("\(off) turned off") }
+    if failed > 0 { parts.append("\(failed) failed") }
+    return (parts.joined(separator: ", "), failed == 0)
   }
 
   // MARK: - Building blocks
@@ -255,8 +307,11 @@ final class AboutWindowController: NSWindowController {
         views: rows.map { key, value in
           let valueLabel = label(value, font: .systemFont(ofSize: 12), wraps: true)
           valueLabel.isSelectable = true
+          valueLabel.setAccessibilityLabel("\(key): \(value)")
           return [
-            label(key, font: .systemFont(ofSize: 12), color: .secondaryLabelColor),
+            label(
+              L10n.tr(String.LocalizationValue(key)), font: .systemFont(ofSize: 12),
+              color: .secondaryLabelColor),
             valueLabel,
           ]
         })

@@ -50,6 +50,25 @@ graphics are disabled.
 - [x] (2026-09-25) Rendered the window offscreen and reviewed the image; fixed
   the Kitty graphics row to report the applied gate rather than the persisted
   setting.
+- [x] (2026-09-25) Independent feature and bug-hunt reviews. Fixed:
+  - the stale-daemon check (see Decision Log);
+  - daemons launched from another install or a `/private` path were missed
+    (every labpty of the user is now listed, compared without resolving
+    symlinks);
+  - the signature is read from the running code (`SecCodeCopySelf`);
+  - build-app fails when the pin or patch stamps cannot be read;
+  - macOS, font and theme rows added;
+  - plain-language probe names with inline purposes;
+  - "9 passed, 1 turned off" summary instead of counting a turned-off probe
+    as passed;
+  - VoiceOver status words and announcements;
+  - row labels localized;
+  - credits list every palette and Laban's copyright;
+  - the JetBrains Mono OFL is bundled;
+  - licenses open in TextEdit.
+
+  Deferred by the user's scope choice: Copy Diagnostics and an
+  agent-readable endpoint, and input source, shell and control-server rows.
 - [ ] Installed-app check (signature row shows team `3563RJWBQP`, VT core
   shows `7c40388b2` with 3 patches, self-test 10/10).
 
@@ -63,12 +82,19 @@ graphics are disabled.
   control endpoint.
   Date/Author: 2026-09-25 / Claude.
 
-- Decision: Detect a stale session daemon by comparing the daemon's process
-  start time with the installed `labpty` binary's modification time, instead
-  of adding a build field to the labpty hello handshake.
-  Rationale: The labpty protocol is frozen (ADR 0007), and the time
-  comparison answers the question users have ("is my daemon older than this
-  app?") without an ABI change.
+- Decision: Detect a stale session daemon by comparing the identity (device
+  and inode) of the executable the daemon has mapped with the file installed
+  as this app's `labpty`, instead of adding a build field to the labpty hello
+  handshake.
+  Rationale: The labpty protocol is frozen (ADR 0007). The first version
+  compared the process start time with the binary's modification time, but
+  `ditto` (install-app, Sparkle) preserves build-time mtimes, so a daemon
+  restarted between a build and its install was never flagged. A code hash
+  via `SecCodeCopyGuestWithAttributes` also failed: it hashes the file now on
+  disk, not the mapped one. The mapped file's inode is what the process
+  actually runs.
+  Verified live: the pre-install daemon (pid 67765) reports a different build.
+  Date/Author: 2026-09-25 / Claude, after independent review.
   Date/Author: 2026-09-25 / Claude.
 
 - Decision: Credit Eric Lengyel's Slug algorithm, but not the generic

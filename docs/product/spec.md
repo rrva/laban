@@ -424,17 +424,21 @@ the live process, not from constants:
   for uncommitted builds), build date and age, the code signature (signing
   certificate, team ID, hardened runtime, notarization), and Sparkle update
   state (automatic checks, last check; "not configured" for local builds).
-- **Components**: the libghostty-vt commit and the local patches applied to
-  it (stamped by `scripts/build-app` from `scripts/fetch-libghostty-vt`), the
-  effective renderer (with the configured renderer and fallback reason when
-  they differ), the GPU, the display resolution and refresh rate, and any
-  running `labpty` session daemon, flagged when it runs an older build than
-  the installed app.
+- **Components**: macOS version and architecture (noting Rosetta), the
+  libghostty-vt commit and the local patches applied to it (stamped by
+  `scripts/build-app` from `scripts/fetch-libghostty-vt`, which fails the build
+  if they cannot be read), the effective renderer (with the configured renderer
+  and fallback reason when they differ), the terminal font and size, the theme
+  and appearance, the GPU, the display resolution and refresh rate, and every
+  running `labpty` session daemon of the user, with its path when it was not
+  launched from this app and a note when the binary it runs is no longer the
+  installed one.
 - **What programs see**: `TERM`, `TERM_PROGRAM` and its version (noting
   Ghostty compatibility mode), and Kitty graphics state. A **Run Self-Test**
   button sends the capability probes programs use to a scratch terminal
-  session (`TerminalCapabilitySelfTest`) and shows each reply with a
-  pass/fail mark: device attributes, XTVERSION, DECXCPR, the Kitty keyboard
+  session of the app's terminal engine (`TerminalCapabilitySelfTest`; the same
+  engine answers in-process and labpty tabs) and shows each reply with a
+  pass/fail mark and, inline, what the probe means for programs: device attributes, XTVERSION, DECXCPR, the Kitty keyboard
   query, OSC 11 and OSC 4 color queries, the color-scheme report, DECRQM for
   modes 2026 and 2004, and the Kitty graphics query (reported as disabled,
   not failed, when graphics are switched off).

@@ -243,11 +243,19 @@ ghostty_patches=$(sed -n 's/^PATCH_ORDER="\(.*\)"$/\1/p' scripts/fetch-libghostt
   | tr ' ' '\n' \
   | while read -r var; do sed -n "s|^${var#\$}=\"patches/\(.*\)\.patch\"$|\1|p" scripts/fetch-libghostty-vt; done \
   | paste -sd, -)
+patch_vars=$(sed -n 's/^PATCH_ORDER="\(.*\)"$/\1/p' scripts/fetch-libghostty-vt | wc -w | tr -d ' ')
+patch_names=$(printf '%s' "$ghostty_patches" | tr ',' '\n' | grep -c . || true)
+if [ -z "$ghostty_commit" ] || [ "$patch_vars" -eq 0 ] || [ "$patch_names" -ne "$patch_vars" ]; then
+  printf 'build-app failed: could not read the libghostty-vt pin (%s) or its %s patches (%s) from scripts/fetch-libghostty-vt\n' \
+    "${ghostty_commit:-none}" "$patch_vars" "$patch_names" >&2
+  exit 1
+fi
 
 # License texts for the About window's credits.
 mkdir -p "${bundle_dir}/Resources/Licenses"
 cp -f THIRD_PARTY_LICENSES.md LICENSE "${bundle_dir}/Resources/Licenses/"
-cp -f licenses/*.txt "${bundle_dir}/Resources/Licenses/"
+cp -f licenses/*.txt Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt \
+  "${bundle_dir}/Resources/Licenses/"
 
 cat > "${bundle_dir}/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

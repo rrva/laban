@@ -21,7 +21,7 @@ final class TerminalCapabilitySelfTestTests: XCTestCase {
   func testKittyGraphicsReportsDisabledWhenSwitchedOff() throws {
     laban_set_kitty_graphics_enabled(false)
     let results = try XCTUnwrap(TerminalCapabilitySelfTest.run())
-    let graphics = try XCTUnwrap(results.first { $0.name == "Kitty graphics" })
+    let graphics = try XCTUnwrap(results.first { $0.name.contains("Kitty graphics") })
     XCTAssertEqual(graphics.status, .disabled)
     XCTAssertEqual(graphics.reply, "no reply")
   }
