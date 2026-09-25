@@ -1,0 +1,49 @@
+Sources/LabanApp/AboutWindowController.swift
+  s_b9b171a32edb6d::t_cda90da56ed6d3 143-148
+  s_b9b171a32edb6d::t_e982e8db53346e 107,118-121,133-134,139,168-171,185-186,188-189,192-195,217-224,233-238,241,243,246-257,271-294,310
+  s_b9b171a32edb6d::t_584be806dc9cf0 312-314
+Tests/LabanAppTests/AboutInfoTests.swift
+  s_b9b171a32edb6d::t_3f22b0cdfa8187 18-26
+  s_b9b171a32edb6d::t_54ea6befa6c90a 1,3,37-71
+  s_b9b171a32edb6d::t_0d074d3c207539 9-15
+Sources/LabanApp/AboutInfo.swift
+  s_b9b171a32edb6d::t_3f22b0cdfa8187 138-143,155,175,177,186-188,191-194,197-219
+  s_b9b171a32edb6d::t_cda90da56ed6d3 47-53,57-60,67-70,74,88,98,134-137,144,147-148,152-154,161,165-167,170-171,176,178-181,189-190,195-196
+  s_b9b171a32edb6d::t_ca7df1dbe15deb 32-33,220,222-258,289
+  s_b9b171a32edb6d::t_7105ef6d3c9ac7 54-56
+  s_b9b171a32edb6d::t_ef87c338c6f14f 221
+Sources/LabanCore/TerminalCapabilitySelfTest.swift
+  s_b9b171a32edb6d::t_b43f107246eb86 50,55,60,65,70,75,80,85,90,95
+  s_b9b171a32edb6d::t_23452f8b7d7e8d 27-33
+Tests/LabanCoreTests/TerminalCapabilitySelfTestTests.swift
+  s_b9b171a32edb6d::t_b43f107246eb86 24
+execplans/completed/about-window.md
+  s_b9b171a32edb6d::t_e3ace1f506c916 53-71,85-97
+scripts/build-app
+  s_b9b171a32edb6d::t_48a48ce50fa346 257-258
+  s_b9b171a32edb6d::t_125cb432fdd1b2 246-252
+THIRD_PARTY_LICENSES.md
+  s_b9b171a32edb6d::t_48a48ce50fa346 21
+docs/product/spec.md
+  s_b9b171a32edb6d::t_e3ace1f506c916 427-435,439-441
+Sources/LabanApp/Resources/Localizable.xcstrings
+  s_b9b171a32edb6d::t_8b0208e1a176ee 386-957
+scripts/gen-localizable-xcstrings.py
+  s_b9b171a32edb6d::t_2e6eb88c1c99b1 102-211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c9ec450692b30e5cd370de42be29e3a118b18e99",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
