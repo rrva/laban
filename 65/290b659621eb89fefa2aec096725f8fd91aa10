@@ -1,0 +1,25 @@
+scripts/package-zip
+  s_b9b171a32edb6d::t_255cf5f4ce183b 40-42
+scripts/build-app
+  s_b9b171a32edb6d::t_890a4eadff7d2d 422-429,431-449,452-458,463-466,472-483,490,503-505
+  s_b9b171a32edb6d::t_47f5f5b3526562 467-471
+  s_b9b171a32edb6d::t_255cf5f4ce183b 459-462
+README.md
+  s_b9b171a32edb6d::t_e43ca50ab5dc66 83-88,110-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "65290b659621eb89fefa2aec096725f8fd91aa10",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
