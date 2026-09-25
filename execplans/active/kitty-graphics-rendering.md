@@ -260,6 +260,33 @@ Compare with the screenshots stored under the artifacts named in
   rects into the source-over `solids` batch; only the translucent path uses
   `replaceSolids`. The below-background split therefore records both counts.
 
+- Observation: An independent code review after the Review Gate found four
+  defects, each now fixed with a test that fails without the fix:
+  1. Image-only changes (a placement with `C=1`, a delete) never marked the
+     session render-dirty, because libghostty's render state ignores image
+     storage. The app renders only dirty sessions, so those changes waited
+     for unrelated output (`c4cb6027`). `laban_session_render_dirty` now
+     also compares the storage generation against the last rendered one.
+  2. Slug drew below-text images over selection, find highlights,
+     decorations and the cursor, because opaque Slug keeps them in the same
+     `solids` batch as cell backgrounds (`63b1fde7`). A second split at the
+     first below-text quad fixes it; the parity scene now has a selection.
+  3. The "PNG" decoder handed any ImageIO format (GIF, TIFF, HEIC, ...) to
+     ImageIO and could allocate 400 MB before the budget check (`d6ee2640`).
+     `laban_kitty_png_acceptable` requires the PNG signature and a decoded
+     size within the budget before ImageIO sees the bytes.
+  4. Streamed images kept every superseded generation alive for 120
+     snapshots on the CPU and 120 frames on the GPU. Superseded generations
+     now go after 3 snapshots, and textures follow the CPU store.
+  Remaining low-severity review notes, not yet addressed:
+  - above-text images cover IME preedit text in the Metal renderers;
+  - a crafted capture sidecar can overflow `width * height * 4` on decode;
+  - `CaptureRecorder` can mark an image saved before its pixels exist;
+  - a failed pixel copy is never retried;
+  - Slug hover-preview images may draw under the preview panel;
+  - parity probes use only 0/255 channels, so sRGB mistakes would slip by;
+  - two tests can skip their assertions.
+
 ## Context and Orientation
 
 Terms used below:

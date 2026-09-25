@@ -55,8 +55,10 @@ struct KittyImageQuad {
 
 /// Per-renderer GPU textures for `FrameImageStore` images, keyed by resource
 /// id (a libghostty image generation, so new pixels always arrive under a new
-/// id and a cached texture never goes stale). Uploads on first use; textures
-/// no frame has used for `retentionFrames` frames are dropped. Command buffers
+/// id and a cached texture never goes stale). Uploads on first use. A texture
+/// is dropped as soon as its image has left `FrameImageStore` (the publisher
+/// retired it) and the current frame did not use it, or after
+/// `retentionFrames` frames without use. Command buffers
 /// retain the textures they reference, so dropping one here never pulls it
 /// out from under an in-flight frame. Not thread-safe; used from the render
 /// thread only.
@@ -102,11 +104,17 @@ final class KittyImageTextureCache {
 
   /// Call once per rendered frame, after the frame's quads were resolved.
   func endFrame() {
-    frame &+= 1
-    guard !textures.isEmpty else { return }
-    let stale = textures.compactMap { id, entry in
-      frame &- entry.lastUsed > Self.retentionFrames ? id : nil
+    guard !textures.isEmpty else {
+      frame &+= 1
+      return
     }
+    let store = FrameImageStore.shared
+    let stale = textures.compactMap { id, entry -> UInt64? in
+      let usedThisFrame = entry.lastUsed == frame
+      if !usedThisFrame, !store.contains(id) { return id }
+      return frame &- entry.lastUsed > Self.retentionFrames ? id : nil
+    }
+    frame &+= 1
     for id in stale { textures.removeValue(forKey: id) }
   }
 

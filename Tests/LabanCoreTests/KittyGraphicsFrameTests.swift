@@ -141,6 +141,29 @@ final class KittyGraphicsFrameTests: XCTestCase {
     XCTAssertNil(store.image(for: id), "retired after the retention window")
   }
 
+  func testPublisherRetiresSupersededGenerationsQuickly() throws {
+    let session = try makeSession(rows: 10)
+    defer { laban_session_destroy(session) }
+    let store = FrameImageStore()
+    let publisher = KittyImagePublisher(store: store)
+
+    write(session, "\u{1b}_Gi=7,a=T,f=24,s=2,v=2,C=1,q=2;\(checkerBase64)\u{1b}\\")
+    let first = try publish(publisher, session)
+    // A retransmit under the same image id (a streamed frame) yields a new
+    // generation; the old one must not linger for the full retention window.
+    write(session, "\u{1b}_Gi=7,a=T,f=24,s=2,v=2,C=1,q=2;\(checkerBase64)\u{1b}\\")
+    let second = try publish(publisher, session)
+    XCTAssertNotEqual(first, second)
+    for _ in 0..<KittyImagePublisher.supersededRetentionSnapshots {
+      _ = try publish(publisher, session)
+    }
+    XCTAssertNotNil(store.image(for: first), "kept during the short grace")
+    _ = try publish(publisher, session)
+    XCTAssertNil(store.image(for: first), "superseded generation retired after the grace")
+    XCTAssertNotNil(store.image(for: second), "the current generation stays")
+    XCTAssertEqual(store.count, 1)
+  }
+
   func testPublisherRemoveAllClearsItsImages() throws {
     let session = try makeSession(rows: 10)
     defer { laban_session_destroy(session) }
