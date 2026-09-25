@@ -1,0 +1,46 @@
+scripts/profile-transparency-compositor
+  s_b9b171a32edb6d::t_8379a9328803bb 988
+docs/process/dev-process.md
+  s_b9b171a32edb6d::t_bb646c78a30bb9 468
+Tests/LabanAppTests/ProfileTransparencyCompositorContractTests.swift
+  s_b9b171a32edb6d::t_c42fb09b39e5fe 5,25
+scripts/verify-transparency-performance
+  s_b9b171a32edb6d::t_8379a9328803bb 569-573,763
+execplans/completed/in-process-sampling-profiler.md
+  s_b9b171a32edb6d::t_25bd68f2bfb5da 1-498
+Sources/LabanApp/TerminalBitmapView.swift
+  s_b9b171a32edb6d::t_939193f98b6a89 2704
+  s_b9b171a32edb6d::t_b2a28c4e58ee0a 646,2716,2732,9553
+Sources/LabanControl/LabanControlServerRouting.swift
+  s_b9b171a32edb6d::t_4348ffb101cc1a 209
+schemas/debug/action.schema.json
+  s_b9b171a32edb6d::t_e8ad131ba99a6d 41
+Tests/LabanControlTests/TransparencyDiagnosticAuthorizationTests.swift
+  s_b9b171a32edb6d::t_8ad15cd56e7c82 55,102,104,109,116,147
+Sources/LabanApp/TerminalCaptureIndicator.swift
+  s_b9b171a32edb6d::t_b2a28c4e58ee0a 20,25
+execplans/active/terminal-background-transparency.md
+  s_b9b171a32edb6d::t_25bd68f2bfb5da 205-215
+  s_b9b171a32edb6d::t_bb646c78a30bb9 677
+docs/process/profiling-hiccups.md
+  s_b9b171a32edb6d::t_bb646c78a30bb9 268-280,282,285-286
+  s_b9b171a32edb6d::t_221bf099ac3734 287
+execplans/completed/profiler-usability-and-safety.md
+  s_b9b171a32edb6d::t_25bd68f2bfb5da 1-598
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2611b5c888e7c8e993e444e96d5855a227c789bd",
+  "prompts": {},
+  "sessions": {
+    "s_b9b171a32edb6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2984338a-58e2-4790-8bfb-adb0cc1bfc8f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
