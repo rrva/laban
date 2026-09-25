@@ -643,12 +643,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Composited-window grabber, active only while a `.composite` capture
   /// records. Runs off the render path by design.
   private var compositeGrabber: CompositeWindowGrabber?
-  /// On-surface recording pills for PTY capture and CPU profile sampling.
+  /// On-surface recording pill for PTY capture.
   private var captureIndicatorView: TerminalCaptureIndicatorView?
-  private var profileCaptureIndicatorView: TerminalCaptureIndicatorView?
   /// Phase 2 agent-attached pill (TTL while privileged control activity is recent).
   private var agentAttachedIndicatorView: ControlAgentAttachedIndicatorView?
-  private(set) var isProfileCaptureActive = false
   private struct ClosedTabUndoPayload {
     var argv: [String]?
     var cwd: String
@@ -2703,7 +2701,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   /// Single choke point for setting `window?.title`, consulted from both
-  /// `advanceFrame(wake:)` and `refreshRecordingChrome()` (both main-thread
+  /// `advanceFrame(wake:)` and the capture toggles (all main-thread
   /// only, like this method). Composes the current title from live model
   /// state, then asks `windowTitleThrottle` whether to apply it now, defer
   /// it, or do nothing (see `WindowTitleThrottle` for the decision rules).
@@ -2715,8 +2713,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func applyWindowTitleIfNeeded() {
     let title =
       model.windowTitle
-      + TerminalCaptureIndicator.windowTitleSuffix(
-        ptyActive: isCaptureActive, profileActive: isProfileCaptureActive)
+      + TerminalCaptureIndicator.windowTitleSuffix(active: isCaptureActive)
     let nowNs = DispatchTime.now().uptimeNanoseconds
     switch windowTitleThrottle.decide(title: title, nowNs: nowNs) {
     case .apply:
@@ -2732,8 +2729,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         self.pendingTitleApply = false
         let currentTitle =
           self.model.windowTitle
-          + TerminalCaptureIndicator.windowTitleSuffix(
-            ptyActive: self.isCaptureActive, profileActive: self.isProfileCaptureActive)
+          + TerminalCaptureIndicator.windowTitleSuffix(active: self.isCaptureActive)
         let fireNs = DispatchTime.now().uptimeNanoseconds
         self.window?.title = currentTitle
         self.windowTitleThrottle.markApplied(title: currentTitle, nowNs: fireNs)
@@ -9531,19 +9527,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// app-side recorder is the authority: it is attached exactly while capturing.
   var isCaptureActive: Bool { captureRecorder != nil }
 
-  /// Show or hide the "● CPU" pill and window-title suffix while the in-process
-  /// sampling profiler is collecting stacks (~10 s).
-  func setProfileCaptureActive(_ active: Bool) {
-    guard isProfileCaptureActive != active else { return }
-    isProfileCaptureActive = active
-    refreshRecordingChrome()
-  }
-
-  private func refreshRecordingChrome() {
-    applyWindowTitleIfNeeded()
-    updateCaptureIndicator()
-  }
-
   /// Mutate the persistent Debug-menu item's title in place (Start/Stop PTY
   /// Capture) rather than rebuilding the menu — the Show/Hide Sidebar pattern.
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -9567,18 +9550,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return true
   }
 
-  /// Show recording pills while PTY capture and/or profile sampling is active.
+  /// Show the recording pill while a PTY capture is active.
   private func updateCaptureIndicator() {
     setIndicatorVisible(
       &captureIndicatorView,
       active: isCaptureActive,
       text: TerminalCaptureIndicator.ptyPillText,
       accessibilityLabel: "Recording PTY capture")
-    setIndicatorVisible(
-      &profileCaptureIndicatorView,
-      active: isProfileCaptureActive,
-      text: TerminalCaptureIndicator.profilePillText,
-      accessibilityLabel: "Capturing CPU profile")
     layoutCaptureIndicators()
   }
 
@@ -9618,11 +9596,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       y -= agentSize.height + 4
     }
 
-    if let profile = profileCaptureIndicatorView, !profile.isHidden {
-      let x = content.maxX - size.width - margin
-      profile.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
-      y -= size.height + 4
-    }
     if let rec = captureIndicatorView, !rec.isHidden {
       let x = content.maxX - size.width - margin
       rec.frame = NSRect(x: x, y: y, width: size.width, height: size.height)

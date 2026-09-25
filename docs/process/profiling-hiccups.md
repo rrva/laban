@@ -265,47 +265,23 @@ Two encoding details will silently corrupt any hand-rolled parser:
 
 `scripts/analyze-band-gpu-cost` has a `parse_table` that handles both and streams with `iterparse` (a full DOM parse of a 30 MB export takes minutes; streaming takes seconds).
 
-## In-process CPU sampling vs GPU tracing
+## CPU profiling vs GPU tracing
 
-Laban has two complementary profilers. Pick by what you are measuring.
+Laban has no in-process sampling profiler: the swift-profile-recorder
+integration (and its Debug-menu captures, Settings toggle, `--profile-recorder`
+flag and `profile.capture` control action) was removed on 2026-09-25 because it
+was unused, pulled 21 transitive SwiftPM packages, and triggered developer-tools
+prompts. Profile CPU from outside the process instead:
 
-- Use the in-process sampling profiler (swift-profile-recorder; enable via the
-  Settings toggle / `--profile-recorder` / `PROFILE_RECORDER_SERVER_URL[_PATTERN]`,
-  capture with Debug → Capture CPU Profile… or Start CPU Recording) for CPU and
-  host-side work: main-thread hotspots, cell/glyph build, PTY drain, and off-CPU
-  waits (locks, sleeps, blocking syscalls — it records waiting threads too). It
-  needs no ptrace privileges. `Package.swift` allows only the documented
-  `https://github.com/apple/swift-profile-recorder.git` dependency, pinned by
-  `Package.resolved` at version `0.3.18` / revision
-  `e110ba85da7d43a47b0e964726e84fddcf720192`.
+- Use Instruments' Time Profiler (`xctrace record --template 'Time Profiler'
+  --attach <pid>`) or `sample <pid> 10` for CPU and host-side work:
+  main-thread hotspots, cell/glyph build, PTY drain, lock waits. Local builds
+  are team-signed with `get-task-allow` (`scripts/build-app`), so both can
+  attach to an installed build.
 - Use a Metal System Trace (see the scroll-jank sections above) for GPU work:
-  render/compute passes, shader cost, GPU counters, and present timing. The
-  in-process sampler cannot see GPU execution; it only sees the CPU side that
-  encodes and submits.
+  render/compute passes, shader cost, GPU counters, and present timing.
 
 Rule of thumb: if the question is "which Swift/C function is burning CPU or
-blocking?", sample in-process; if it is "which pass/shader is slow on the GPU?",
-take a Metal System Trace.
+blocking?", take a Time Profiler trace; if it is "which pass/shader is slow on
+the GPU?", take a Metal System Trace.
 
-## Sampler baseline overhead
-
-Enabling CPU profile capture is now only a gate: Laban opens no profiler socket,
-starts no listener, and does no sampling while idle. During a capture, the
-sampler and CoreSymbolication work are part of the measured process and can
-appear in the profile. Compare against an idle baseline captured with the same
-sample count and interval, and focus on the application threads or delta that
-motivated the measurement.
-
-The older `ProfileRecorderServer` integration was removed after a recoverable
-Darwin accept error could end its async accept sequence while leaving the
-listening channel alive. The next connection then destroyed an undelivered
-`NIOAsyncChannel` child with an unfinished writer and trapped the app. See
-`docs/upstream/swift-profile-recorder-recoverable-accept-error-crash.md` for the
-upstream-ready report and source-level analysis.
-
-The installed transparency compositor still needs a CPU profile alongside its
-Metal trace. It now starts the bounded `captureProfile` diagnostic control
-action asynchronously with the fixture-only whole-app token it already owns,
-so CPU sampling, Metal tracing, and host CPU measurements overlap without
-restoring a profiler listener. The action is not exposed through session-scoped
-lazy attach because a profile contains stacks from the whole app process.

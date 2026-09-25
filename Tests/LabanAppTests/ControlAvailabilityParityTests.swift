@@ -15,7 +15,6 @@ final class ControlAvailabilityParityTests: XCTestCase {
     "app.stateSummary",
     "notifications.state",
     "notifications.test",
-    "profile.capture",
     "app.accessibility",
     "terminal.modes",
     "find.state",

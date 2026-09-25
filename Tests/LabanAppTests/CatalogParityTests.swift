@@ -13,7 +13,6 @@ final class CatalogParityTests: XCTestCase {
     "app.stateSummary",
     "notifications.state",
     "notifications.test",
-    "profile.capture",
     "app.accessibility",
     "transparency.state",
     "transparency.setBackground",

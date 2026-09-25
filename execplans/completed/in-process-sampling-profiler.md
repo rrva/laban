@@ -1,5 +1,11 @@
 # Integrate an in-process sampling profiler (swift-profile-recorder) into LabanApp
 
+> **REMOVED — 2026-09-25.** The in-process sampling profiler this plan
+> delivered was removed with its swift-profile-recorder dependency: it was
+> unused, pulled 21 transitive SwiftPM packages, and triggered developer-tools
+> prompts. CPU profiling now uses Instruments/`sample` from outside the
+> process (`docs/process/profiling-hiccups.md`). Kept for design history.
+
 This ExecPlan is a living document maintained in accordance with `PLANS.md` (at the repository root). Keep `Progress` and `Validation and Acceptance` current as work proceeds. Add optional sections only when they contain information that will help a fresh contributor.
 
 ## Purpose / Big Picture

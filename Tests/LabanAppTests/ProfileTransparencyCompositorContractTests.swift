@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 
 final class ProfileTransparencyCompositorContractTests: XCTestCase {
-  func testSelfTestExercisesControlPlaneProfileCaptureCommand() throws {
+  func testSelfTestPasses() throws {
     let repositoryRoot = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
@@ -22,6 +22,6 @@ final class ProfileTransparencyCompositorContractTests: XCTestCase {
       decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
 
     XCTAssertEqual(process.terminationStatus, 0, text)
-    XCTAssertTrue(text.contains("profile capture control action passed"), text)
+    XCTAssertTrue(text.contains("self-test passed"), text)
   }
 }

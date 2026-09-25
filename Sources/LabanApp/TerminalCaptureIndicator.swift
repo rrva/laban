@@ -5,7 +5,6 @@ import AppKit
 /// these helpers so the chrome cannot disagree about what is running.
 enum TerminalCaptureIndicator {
   static let ptyPillText = "● REC"
-  static let profilePillText = "● CPU"
 
   /// Backward-compatible alias for the PTY capture pill label.
   static let pillText = ptyPillText
@@ -18,20 +17,12 @@ enum TerminalCaptureIndicator {
 
   /// Window-title suffix while PTY capture is active; empty when idle.
   static func windowTitleSuffix(active: Bool) -> String {
-    windowTitleSuffix(ptyActive: active, profileActive: false)
-  }
-
-  /// Window-title suffix for any combination of PTY and profile capture.
-  static func windowTitleSuffix(ptyActive: Bool, profileActive: Bool) -> String {
-    var parts: [String] = []
-    if ptyActive { parts.append(ptyPillText) }
-    if profileActive { parts.append(profilePillText) }
-    return parts.isEmpty ? "" : " — " + parts.joined(separator: " ")
+    active ? " — " + ptyPillText : ""
   }
 }
 
 /// A small, unobtrusive red pill drawn in the top-right corner of the terminal
-/// surface while a capture or profile sample is running. Hidden when idle.
+/// surface while a PTY capture is running. Hidden when idle.
 /// Mirrors the find-chip subview pattern: a sibling NSView laid out by the
 /// host TerminalBitmapView, not painted into the Metal surface.
 final class TerminalCaptureIndicatorView: NSView {

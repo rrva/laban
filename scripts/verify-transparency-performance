@@ -566,7 +566,11 @@ def validate_compositor_report(
                     fail(f"compositor {case_name} run {index} app CPU median is not below 1.0%")
             window_server_medians[case_name].append(ws_median)
             traces = require_object(run.get("tracePaths"), f"compositor.{case_name}[{index}].tracePaths")
-            require_exact_keys(traces, {"cpuProfile", "metalTrace", "metalAnalysis"}, f"compositor.{case_name}[{index}].tracePaths")
+            # cpuProfile came from the removed in-process sampler; evidence
+            # recorded before its removal may still carry it.
+            trace_keys = set(traces)
+            if not {"metalTrace", "metalAnalysis"} <= trace_keys <= {"cpuProfile", "metalTrace", "metalAnalysis"}:
+                fail(f"compositor.{case_name}[{index}].tracePaths has unexpected keys {sorted(trace_keys)}")
             for trace_name, raw_path in traces.items():
                 trace_path(summary_path, raw_path, f"compositor.{case_name}[{index}].tracePaths.{trace_name}")
 
@@ -756,7 +760,7 @@ def self_test() -> None:
                 runs = []
                 for run in range(1, 6):
                     trace_paths: dict[str, str] = {}
-                    for trace_name, suffix in (("cpuProfile", "perf"), ("metalTrace", "trace"), ("metalAnalysis", "json")):
+                    for trace_name, suffix in (("metalTrace", "trace"), ("metalAnalysis", "json")):
                         path = Path("traces") / f"{case_name}-{run}-{trace_name}.{suffix}"
                         (lane_root / path).parent.mkdir(parents=True, exist_ok=True)
                         (lane_root / path).write_text("evidence", encoding="utf-8")

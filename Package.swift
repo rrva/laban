@@ -64,10 +64,6 @@ let package = Package(
   ],
   dependencies: [
     .package(
-      url: "https://github.com/apple/swift-profile-recorder.git",
-      .upToNextMinor(from: "0.3.18")
-    ),
-    .package(
       url: "https://github.com/sparkle-project/Sparkle",
       .upToNextMinor(from: "2.9.6")
     ),
@@ -129,8 +125,6 @@ let package = Package(
       name: "LabanApp",
       dependencies: [
         "LabanCore", "LabanRenderer", "LabanTerminalCore", "LabanControl",
-        .product(name: "ProfileRecorder", package: "swift-profile-recorder"),
-        .product(name: "_ProfileRecorderSampleConversion", package: "swift-profile-recorder"),
         .product(name: "Sparkle", package: "Sparkle"),
       ],
       resources: [

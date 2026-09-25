@@ -27,9 +27,6 @@ func usage() -> String {
                                run` attach with no approval dialog. Humans can
                                instead let an already-running agent attach on
                                demand via lazy attach (approve once).
-    --profile-recorder          Enable in-process CPU profile capture. Legacy URL
-                               values and PROFILE_RECORDER_SERVER_URL[_PATTERN]
-                               still enable capture, but no socket is opened.
     --smoke                    Print a startup smoke line and exit.
     --help, -h                 Show this help.
   """

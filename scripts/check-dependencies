@@ -13,15 +13,8 @@ PACKAGE_RESOLVED = ROOT / "Package.resolved"
 FETCH = ROOT / "scripts/fetch-libghostty-vt"
 WORKFLOW = ROOT / ".github/workflows/check.yml"
 ADR = ROOT / "docs/adr/0001-libghostty-vt-owns-vt-parsing.md"
-PROFILE_DOC = ROOT / "docs/process/profiling-hiccups.md"
 SPARKLE_DOC = ROOT / "execplans/completed/sparkle-auto-update.md"
 ALLOWED_SWIFTPM_DEPENDENCIES = {
-    "swift-profile-recorder": {
-        "url": "https://github.com/apple/swift-profile-recorder.git",
-        "version": "0.3.18",
-        "revision": "e110ba85da7d43a47b0e964726e84fddcf720192",
-        "doc": PROFILE_DOC,
-    },
     "sparkle": {
         "url": "https://github.com/sparkle-project/Sparkle",
         "version": "2.9.6",

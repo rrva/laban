@@ -134,9 +134,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private var focusSettingsDestination: NativeFocusSettingsDestination?
   private let blinkCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Blink cursor"), target: nil, action: nil)
-  private let profileRecorderCheckbox = NSButton(
-    checkboxWithTitle: L10n.tr("Enable CPU profile capture"), target: nil, action: nil)
-  private let profileRecorderHelpLabel = NSTextField(wrappingLabelWithString: "")
   private let approvalStore = ControlAttachApprovalStore(
     signer: ControlAttachApprovalStore.defaultSigner())
   private let approvalsStackView = NSStackView()
@@ -529,20 +526,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     blinkCheckbox.target = self
     blinkCheckbox.action = #selector(blinkChanged(_:))
 
-    profileRecorderCheckbox.target = self
-    profileRecorderCheckbox.action = #selector(profileRecorderChanged(_:))
-    profileRecorderCheckbox.toolTip =
-      "Allows Debug-menu CPU captures immediately. Sampling runs only during a capture; "
-      + "Laban does not open a profiler listener."
-
-    profileRecorderHelpLabel.isEditable = false
-    profileRecorderHelpLabel.isSelectable = true
-    profileRecorderHelpLabel.isBezeled = false
-    profileRecorderHelpLabel.drawsBackground = false
-    profileRecorderHelpLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-    profileRecorderHelpLabel.textColor = .secondaryLabelColor
-    profileRecorderHelpLabel.preferredMaxLayoutWidth = 420
-
     scrollModePopUp.target = self
     scrollModePopUp.action = #selector(scrollModeChanged(_:))
     for option in scrollModeOptions {
@@ -698,8 +681,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [NSGridCell.emptyContentView, autoUpdateCheckbox],
       [NSGridCell.emptyContentView, controlServerCheckbox],
       [NSGridCell.emptyContentView, agentAttachedSessionCheckbox],
-      [NSGridCell.emptyContentView, profileRecorderCheckbox],
-      [NSGridCell.emptyContentView, profileRecorderHelpLabel],
       [makeLabel(L10n.tr("Identity:")), identityPopUp],
       [NSGridCell.emptyContentView, optionAsMetaCheckbox],
     ])
@@ -984,8 +965,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       UpdaterController.shared.automaticallyChecksForUpdates ? .on : .off
     controlServerCheckbox.state = ControlServerSettings.isEnabled ? .on : .off
     agentAttachedSessionCheckbox.state = AgentAttachedSessionSettings.isEnabled() ? .on : .off
-    profileRecorderCheckbox.state = ProfileRecorderSettings.persisted() ? .on : .off
-    profileRecorderHelpLabel.stringValue = ProfileRecorderSettings.settingsHelpText
     if let row = identityOptions.firstIndex(of: TerminalIdentitySettings.identity()) {
       identityPopUp.selectItem(at: row)
     }
@@ -1425,10 +1404,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   @objc private func agentAttachedSessionChanged(_ sender: NSButton) {
     AgentAttachedSessionSettings.set(sender.state == .on)
-  }
-
-  @objc private func profileRecorderChanged(_ sender: NSButton) {
-    ProfileRecorderSettings.set(sender.state == .on)
   }
 
   @objc private func identityChanged(_ sender: NSPopUpButton) {

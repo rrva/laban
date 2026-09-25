@@ -1,5 +1,11 @@
 # Sampling profiler: usability and safe-by-default follow-ups
 
+> **REMOVED — 2026-09-25.** The in-process sampling profiler this plan
+> delivered was removed with its swift-profile-recorder dependency: it was
+> unused, pulled 21 transitive SwiftPM packages, and triggered developer-tools
+> prompts. CPU profiling now uses Instruments/`sample` from outside the
+> process (`docs/process/profiling-hiccups.md`). Kept for design history.
+
 This ExecPlan is a living document maintained in accordance with `PLANS.md` (at the repository root). Keep `Progress` and `Validation and Acceptance` current as work proceeds. Add optional sections only when they help a fresh contributor.
 
 This plan builds on the completed plan `execplans/active/in-process-sampling-profiler.md`, which added an opt-in in-process sampling profiler (Apple's `swift-profile-recorder`) to the `LabanApp` executable, gated by a `PROFILE_RECORDER_SERVER_URL_PATTERN` environment variable, a `--profile-recorder[=<url>]` command-line switch, and a persisted **Settings** toggle. That plan is checked in; read it for background rather than repeating it here. Terms used below and defined there: "in-process sampling profiler" (a profiler that runs inside the target process and periodically records every thread's call stack, needing no debugger privileges); "UNIX-domain socket" (a socket addressed by a filesystem path); `ProfileRecorderServer` (the upstream HTTP server that serves `/sample`, `/debug/pprof/profile`, `/health` over that socket).
