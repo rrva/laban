@@ -692,6 +692,59 @@ final class LabanSessionTests: XCTestCase {
       "mode a new TUI enables after the prompt in the same write must survive")
   }
 
+  /// A fullscreen program that dies without `CSI ? 1049 l` (its ssh
+  /// connection dropped) leaves the shell prompt on the alternate screen: no
+  /// scrollback, the wheel sends arrow keys, and the next fullscreen program's
+  /// exit reveals a stale main screen. The prompt reset leaves the alternate
+  /// screen and restores the main screen and cursor as a real exit would.
+  func testPromptResetLeavesAlternateScreenAfterCommandEnd() throws {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("main-before\r\n\u{1B}[?1049h\u{1B}[Htui-screen".utf8))
+    XCTAssertEqual(altScreen(session), 1, "the dead program left the alternate screen on")
+
+    writeBytes(session, Array("\u{1B}]133;D;255\u{07}\u{1B}]133;A\u{07}prompt$ ".utf8))
+    XCTAssertEqual(altScreen(session), 0, "the prompt must be back on the main screen")
+    var snap: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snap), 0)
+    let s = try XCTUnwrap(snap)
+    defer { laban_snapshot_destroy(s) }
+    let text = visibleText(from: UnsafePointer(s))
+    XCTAssertEqual(
+      text, "main-before\nprompt$",
+      "main screen restored and the prompt drawn at the cursor saved on entry")
+  }
+
+  /// Only a command that ended on the alternate screen arms the exit: a bare
+  /// A, or a program still running (no D), keeps the alternate screen.
+  func testPromptResetKeepsAlternateScreenWithoutCommandEnd() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1B}[?1049h\u{1B}]133;A\u{07}".utf8))
+    XCTAssertEqual(altScreen(session), 1, "bare A must not leave the alternate screen")
+
+    writeBytes(
+      session,
+      Array("\u{1B}[?1049l\u{1B}]133;D;0\u{07}\u{1B}[?1049h\u{1B}]133;A\u{07}".utf8))
+    XCTAssertEqual(
+      altScreen(session), 1,
+      "a program that entered the alternate screen after D keeps it")
+  }
+
+  private func altScreen(_ session: OpaquePointer) -> Int32? {
+    var state = LabanViewportState()
+    guard laban_session_viewport_state(session, &state) == 0 else { return nil }
+    return state.alt_screen
+  }
+
   func testBellCallbackFiresAndCountTracksBel() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

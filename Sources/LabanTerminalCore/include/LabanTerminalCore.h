@@ -539,8 +539,9 @@ int laban_session_set_tab_status_callback(
  *
  * The scanner is also behavioral, independent of whether a callback is
  * registered: when a D ("command end") left interactive modes enabled —
- * mouse tracking (9/1000/1002/1003), focus reporting (1004), or a hidden
- * cursor (25 off) — the next A ("prompt start") resets them. This recovers
+ * mouse tracking (9/1000/1002/1003), focus reporting (1004), a hidden
+ * cursor (25 off), or the alternate screen (left via its own 1049/1047/47
+ * reset) — the next A ("prompt start") resets them. This recovers
  * from a mouse-tracking TUI that died without its teardown sequences (e.g.
  * a dropped ssh connection): without it, drag-selecting at the returned
  * shell prompt forwards SGR mouse reports the shell echoes as text. The

@@ -3,15 +3,17 @@
 /* Dead-TUI recovery: interactive modes a *finished command* left enabled.
  * Recorded in LabanOSC133Scanner.reset_mask at OSC 133 D and applied at the
  * next A. A shell prompt never legitimately wants mouse reports, focus
- * reports, or a hidden cursor; a well-behaved TUI re-asserts its modes on
- * its next launch, so clearing them at the prompt is safe. Recording the
+ * reports, a hidden cursor, or the alternate screen; a well-behaved TUI
+ * re-asserts its modes on its next launch, so clearing them at the prompt is
+ * safe. Recording the
  * mask at D (rather than reading modes at A) spares a shell that enables
  * mouse reporting from its own prompt hook between D and A — the mode was
  * off at D, so nothing is cleared. */
 enum {
     O133_RESET_MOUSE = 1u << 0, /* any of X10/1000/1002/1003 was on at D */
     O133_RESET_FOCUS = 1u << 1, /* 1004 (focus in/out) was on at D */
-    O133_RESET_CURSOR = 1u << 2 /* 25 (cursor visible) was OFF at D */
+    O133_RESET_CURSOR = 1u << 2, /* 25 (cursor visible) was OFF at D */
+    O133_RESET_ALT_SCREEN = 1u << 3 /* the alternate screen was active at D */
 };
 
 static int mode_active_locked(LabanSession *s, GhosttyMode mode) {
@@ -30,7 +32,28 @@ static unsigned stuck_interactive_modes_locked(LabanSession *s) {
     }
     if (mode_active_locked(s, GHOSTTY_MODE_FOCUS_EVENT)) mask |= O133_RESET_FOCUS;
     if (!mode_active_locked(s, GHOSTTY_MODE_CURSOR_VISIBLE)) mask |= O133_RESET_CURSOR;
+    GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+    if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+            == GHOSTTY_SUCCESS && screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE) {
+        mask |= O133_RESET_ALT_SCREEN;
+    }
     return mask;
+}
+
+/* Leaves the alternate screen the way the dead program should have, by
+ * feeding the parser the reset of whichever mode entered it: 1049 also
+ * restores the cursor saved on entry, so the prompt lands below the main
+ * screen's last output. The cursor-override scanner sees the same bytes, so a
+ * program cursor style is dropped as on any alternate-screen exit. */
+static void leave_alternate_screen_locked(LabanSession *s) {
+    const char *reset = "\x1b[?1049l";
+    if (!mode_active_locked(s, GHOSTTY_MODE_ALT_SCREEN_SAVE)) {
+        if (mode_active_locked(s, GHOSTTY_MODE_ALT_SCREEN)) reset = "\x1b[?1047l";
+        else if (mode_active_locked(s, GHOSTTY_MODE_ALT_SCREEN_LEGACY)) reset = "\x1b[?47l";
+    }
+    size_t len = strlen(reset);
+    laban_scan_cursor_override(s, (const uint8_t *)reset, len);
+    ghostty_terminal_vt_write(s->terminal, (const uint8_t *)reset, len);
 }
 
 static void reset_interactive_modes_locked(LabanSession *s, unsigned mask) {
@@ -45,6 +68,9 @@ static void reset_interactive_modes_locked(LabanSession *s, unsigned mask) {
     }
     if (mask & O133_RESET_CURSOR) {
         laban_terminal_mode_set(s->terminal, GHOSTTY_MODE_CURSOR_VISIBLE, true);
+    }
+    if (mask & O133_RESET_ALT_SCREEN) {
+        leave_alternate_screen_locked(s);
     }
 }
 

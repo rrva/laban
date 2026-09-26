@@ -161,6 +161,8 @@ EOF from the pty, and platform-specific closed-pty errors, mark the session as e
 
 After any failed spawn, close, restore, or render-resource allocation, registries contain only live references. Cleanup paths are safe to call on partially initialized sessions.
 
+A fullscreen program can die without undoing its terminal modes, most often when an ssh connection drops under it. When shell integration reports that a command ended (OSC 133 `D`) with mouse tracking, focus reporting, a hidden cursor, or the alternate screen still active, the next prompt start (OSC 133 `A`) turns them off and leaves the alternate screen as the program's own exit would, restoring the main screen and its saved cursor. A shell prompt never needs these modes, and a live program re-enables them. Modes are judged at each marker's position in the output, so the same recovery happens when a restarted app replays a session's retained output.
+
 ## 22. Find requirements
 
 Command-F opens a small floating find control for the active terminal session.

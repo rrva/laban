@@ -124,6 +124,7 @@ their own stream positions.
 - [x] `swift test --filter LabanSessionTests` passes
 - [x] `swift build` full package passes
 - [x] (2026-09-26) Sample and reset at each marker's stream position so single-chunk reattach replays recover too
+- [x] (2026-09-26) Leave a stuck alternate screen at the prompt (tests 6-7)
 
 ## Validation and Acceptance
 
@@ -147,6 +148,12 @@ New tests in `LabanSessionTests.swift` (all use fixture sessions + snapshots):
 5. `testPromptResetHonorsStreamOrderWithinOneWrite`: within one write, a mode
    enabled between D and A survives, and a mode enabled after A survives.
 
+6. `testPromptResetLeavesAlternateScreenAfterCommandEnd`: main text, then
+   `ESC[?1049h` + alt text, then `D;255` `A` and a prompt → primary screen,
+   visible text is the main text followed by the prompt.
+7. `testPromptResetKeepsAlternateScreenWithoutCommandEnd`: a bare `A`, or a
+   program entering the alternate screen after `D`, keeps it.
+
 Manual end-to-end check (optional but recommended): run the app, run
 `printf '\e[?1002h\e[?1006h'` to simulate a stuck TUI, drag-select text and
 observe SGR garbage at the prompt (bug repro), then run any command (e.g.
@@ -156,6 +163,20 @@ selection must start and no bytes reach the pty.
 Full gate: `swift test --filter LabanSessionTests` and `swift build`.
 
 ## Decision Log
+
+- **Also leave a stuck alternate screen (2026-09-26).** A dead fullscreen
+  program leaves the prompt on the alternate screen: no scrollback, the wheel
+  becomes arrow keys (DEC 1007), and the next fullscreen program's exit reveals
+  a stale main screen (capture `appkit-2026-09-25T14-09-10Z`, herdr after an
+  ssh drop). `D` records `O133_RESET_ALT_SCREEN` when the alternate screen is
+  active; `A` feeds the parser the reset of whichever mode entered it
+  (1049, else 1047, else 47), so 1049 also restores the cursor saved on entry.
+  The same bytes pass the cursor-override scanner, which drops a program
+  cursor style as on any alternate-screen exit. No terminal standard covers
+  this; it extends the existing dead-TUI heuristic and is recorded in
+  `docs/product/spec.md` section 21. Same accepted blind spot as mouse: a
+  program that forwards its inner shell's D/A markers would be kicked off
+  the alternate screen (tmux and herdr do not forward them).
 
 - **Clear at prompt (`A` after `D`), not on child-process exit.** Child exit
   is invisible to the VT layer and would not cover the observed failure (a
