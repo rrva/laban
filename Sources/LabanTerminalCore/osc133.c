@@ -121,11 +121,19 @@ static OSC133State dispatch_after_esc(LabanOSC133Scanner *sc, uint8_t b) {
     return O133_NORMAL;
 }
 
-void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len) {
+size_t laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len) {
     /* No callback gate: the scanner is behavioral, not just observational —
      * the dead-TUI mode reset in parse_osc133_payload must run even when no
      * observer is attached (daemon, fixture, dump tools). Same policy as the
-     * cursor-override scanner in decscusr.c. */
+     * cursor-override scanner in decscusr.c.
+     *
+     * Stops right after each complete marker's terminator and returns the
+     * bytes consumed, leaving the marker pending: the caller must feed those
+     * bytes to libghostty and then call laban_osc133_dispatch_pending_locked,
+     * so D samples the modes as of its own stream position. Sampling at scan
+     * time would read the modes as of the chunk's start, which misses a mode
+     * enable earlier in the same chunk (a reattach replays retained output as
+     * one chunk). */
     LabanOSC133Scanner *sc = &s->osc133_scanner;
     for (size_t i = 0; i < len; i++) {
         uint8_t b = bytes[i];
@@ -160,10 +168,11 @@ void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len) {
             break;
         case O133_BODY_133:
             if (b == 0x07) {
-                if (!sc->payload_overflow) {
-                    parse_osc133_payload(s, sc->payload, sc->payload_len);
-                }
                 sc->state = O133_NORMAL;
+                if (!sc->payload_overflow) {
+                    sc->marker_pending = 1;
+                    return i + 1;
+                }
             } else if (b == 0x1B) {
                 sc->state = O133_BODY_133_AFTER_ESC;
             } else if (sc->payload_len + 1 < OSC133_PAYLOAD_MAX) {
@@ -179,10 +188,11 @@ void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len) {
              * `ESC]...`): dispatch it the same way O133_AFTER_ESC does so the
              * next sequence — possibly another 133 marker — is not lost. */
             if (b == '\\') {
-                if (!sc->payload_overflow) {
-                    parse_osc133_payload(s, sc->payload, sc->payload_len);
-                }
                 sc->state = O133_NORMAL;
+                if (!sc->payload_overflow) {
+                    sc->marker_pending = 1;
+                    return i + 1;
+                }
             } else {
                 sc->state = dispatch_after_esc(sc, b);
             }
@@ -210,6 +220,14 @@ void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len) {
             break;
         }
     }
+    return len;
+}
+
+void laban_osc133_dispatch_pending_locked(LabanSession *s) {
+    LabanOSC133Scanner *sc = &s->osc133_scanner;
+    if (!sc->marker_pending) return;
+    sc->marker_pending = 0;
+    parse_osc133_payload(s, sc->payload, sc->payload_len);
 }
 
 int laban_session_set_osc133_callback(
@@ -227,5 +245,6 @@ int laban_session_set_osc133_callback(
     s->osc133_scanner.payload_len = 0;
     s->osc133_scanner.num_len = 0;
     s->osc133_scanner.payload_overflow = 0;
+    s->osc133_scanner.marker_pending = 0;
     return 0;
 }

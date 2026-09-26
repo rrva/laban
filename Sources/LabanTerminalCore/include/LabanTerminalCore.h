@@ -528,8 +528,11 @@ int laban_session_set_tab_status_callback(
  * a dropped ssh connection): without it, drag-selecting at the returned
  * shell prompt forwards SGR mouse reports the shell echoes as text. The
  * mask is recorded at D, so modes a shell deliberately enables from its
- * prompt hook (between D and A) are not cleared. The callback fires after
- * the reset, so observers see post-reset state.
+ * prompt hook (between D and A) are not cleared. Modes are sampled and
+ * reset at each marker's own position in the stream, even when the marker
+ * shares a feed with earlier output (a reattach replays retained output as
+ * one chunk). The callback fires after the reset, so observers see
+ * post-reset state.
  */
 typedef enum {
     LABAN_OSC133_PROMPT_START = 0,   /* 'A' — fresh prompt about to draw */

@@ -645,6 +645,53 @@ final class LabanSessionTests: XCTestCase {
       flags?.mouseTracking, 1, "mouse mode enabled after D must survive the prompt reset")
   }
 
+  /// A reattach replays retained daemon output as one chunk, so the TUI's
+  /// mode enable, the shell's D, and its A can share a single write. D must
+  /// sample the modes as of its own stream position, not as of the chunk's
+  /// start, or the replayed session keeps mouse tracking stuck on at the
+  /// prompt (zsh then echoes every wheel report as text).
+  func testPromptResetClearsModesEnabledEarlierInTheSameWrite() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(
+      session,
+      Array(
+        "\u{1B}[?1003h\u{1B}[?1006h\u{1B}[?1004h\u{1B}]133;D;255\u{07}\u{1B}]133;A\u{07}".utf8))
+    let flags = interactiveModeFlags(session)
+    XCTAssertEqual(flags?.mouseTracking, 0, "single-write replay must still clear mouse tracking")
+    XCTAssertEqual(flags?.focusReporting, 0, "single-write replay must still clear focus reporting")
+  }
+
+  /// Stream-order sampling cuts both ways within one write: a mode enabled
+  /// between D and A is spared, and a TUI that starts after the prompt keeps
+  /// the mode it just enabled.
+  func testPromptResetHonorsStreamOrderWithinOneWrite() {
+    guard let spared = makeFixtureSession(), let relaunched = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer {
+      laban_session_destroy(spared)
+      laban_session_destroy(relaunched)
+    }
+
+    writeBytes(spared, Array("\u{1B}]133;D;0\u{07}\u{1B}[?1002h\u{1B}]133;A\u{07}".utf8))
+    XCTAssertEqual(
+      interactiveModeFlags(spared)?.mouseTracking, 1,
+      "mode enabled between D and A in the same write must survive")
+
+    writeBytes(
+      relaunched,
+      Array("\u{1B}[?1002h\u{1B}]133;D;0\u{07}\u{1B}]133;A\u{07}\u{1B}[?1002h".utf8))
+    XCTAssertEqual(
+      interactiveModeFlags(relaunched)?.mouseTracking, 1,
+      "mode a new TUI enables after the prompt in the same write must survive")
+  }
+
   func testBellCallbackFiresAndCountTracksBel() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

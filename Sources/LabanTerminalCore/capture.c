@@ -51,16 +51,29 @@ void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
             || s->cursor_override_scanner.state != DS_NORMAL
             || memchr(bytes, 0x1B, len) != NULL);
     if (scan_needed) {
-        laban_scan_tab_status(s, bytes, len);
-        laban_scan_osc133(s, bytes, len);
-        laban_scan_cursor_override(s, bytes, len);
-        /* The osc_host scan owns the vt_write: it flushes bytes into libghostty
-         * up to each interesting OSC terminator before answering, so an OSC
-         * 10/11 color reply still reads post-update state but lands in stream
-         * order relative to replies the parser emits inline (CPR/DA). A
-         * termenv-style `OSC 11;?` + `CSI 6n` fence probe must see the color
-         * reply first (gh auth login aborts on the stray reply otherwise). */
-        laban_scan_osc_host_vt_write(s, bytes, len);
+        /* Split the chunk just past each OSC 133 marker so the marker's
+         * prompt-reset policy reads and writes modes in stream order: the
+         * bytes before it (possibly a mode enable) are parsed first, the
+         * bytes after it (possibly a new TUI's enable) only afterwards. The
+         * other scanners are resumable state machines, so segmenting is
+         * invisible to them. */
+        size_t off = 0;
+        while (off < len) {
+            const uint8_t *seg = bytes + off;
+            size_t n = laban_scan_osc133(s, seg, len - off);
+            laban_scan_tab_status(s, seg, n);
+            laban_scan_cursor_override(s, seg, n);
+            /* The osc_host scan owns the vt_write: it flushes bytes into
+             * libghostty up to each interesting OSC terminator before
+             * answering, so an OSC 10/11 color reply still reads post-update
+             * state but lands in stream order relative to replies the parser
+             * emits inline (CPR/DA). A termenv-style `OSC 11;?` + `CSI 6n`
+             * fence probe must see the color reply first (gh auth login
+             * aborts on the stray reply otherwise). */
+            laban_scan_osc_host_vt_write(s, seg, n);
+            laban_osc133_dispatch_pending_locked(s);
+            off += n;
+        }
     } else {
         ghostty_terminal_vt_write(s->terminal, bytes, len);
     }

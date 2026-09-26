@@ -175,6 +175,9 @@ typedef struct {
     char payload[OSC133_PAYLOAD_MAX];
     size_t payload_len;
     int payload_overflow;
+    /* 1 between the scan that completed a marker and its dispatch, which
+     * runs once libghostty has consumed the bytes through the marker. */
+    int marker_pending;
     /* Interactive-mode mask recorded at OSC 133 D ("command end") and
      * cleared at the next A ("prompt start"): a dead-TUI recovery. See
      * osc133.c. Zero means "nothing stuck" and also "no command ended". */
@@ -469,7 +472,10 @@ void laban_emit_capture_bytes(
     size_t len
 );
 void laban_scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len);
-void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len);
+/* Returns bytes consumed: stops just past a complete OSC 133 marker, which
+ * stays pending until laban_osc133_dispatch_pending_locked. */
+size_t laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len);
+void laban_osc133_dispatch_pending_locked(LabanSession *s);
 /* Scans for host-integration OSCs AND owns the ghostty_terminal_vt_write of
  * the chunk: bytes are flushed into the parser up to each interesting OSC
  * terminator before its dispatch so replies land in stream order relative to

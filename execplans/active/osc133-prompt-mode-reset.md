@@ -99,12 +99,19 @@ Rules, applied in `parse_osc133_payload` in `Sources/LabanTerminalCore/osc133.c`
    `Sources/LabanTerminalCore/include/LabanTerminalCore.h` (the block above
    `LABAN_OSC133_PROMPT_START`, around line 424).
 
-Ordering note (why this is safe): `laban_scan_osc133` runs on a chunk BEFORE
-that chunk is written into libghostty (`capture.c` calls
-`laban_scan_osc_host_vt_write` afterwards). A mode enable that arrives in the
-same chunk after the `A` marker is therefore applied by libghostty after our
-reset and survives; a mode that was on when `D` was scanned was genuinely set
-earlier in the stream.
+Ordering note (superseded 2026-09-26): the original design scanned the
+whole chunk before writing it into libghostty and argued that was safe. It is
+not: `D` then samples the modes as of the chunk's *start*, so a mode enable
+earlier in the same chunk is missed. Live PTY reads are small, so the enable
+usually landed in an earlier chunk, but a labpty reattach replays retained
+output as one chunk of up to 8 MB. Every relaunch after a dead TUI therefore
+brought mouse tracking back at the prompt, and zsh echoed wheel reports as
+text (capture `appkit-2026-09-26T16-39-25Z`, tab transcript
+`3F725B73-B9E2-4E38-8F3D-E7A8814D9C4A.bin`). Now `laban_scan_osc133` stops
+just past each complete marker; `laban_vt_write_capture` feeds that segment
+to the other scanners and libghostty, then calls
+`laban_osc133_dispatch_pending_locked`, so `D` samples and `A` resets modes at
+their own stream positions.
 
 ## Progress
 
@@ -116,6 +123,7 @@ earlier in the stream.
 - [x] Add regression tests in `Tests/LabanTerminalCoreTests/LabanSessionTests.swift`
 - [x] `swift test --filter LabanSessionTests` passes
 - [x] `swift build` full package passes
+- [x] (2026-09-26) Sample and reset at each marker's stream position so single-chunk reattach replays recover too
 
 ## Validation and Acceptance
 
@@ -132,6 +140,12 @@ New tests in `LabanSessionTests.swift` (all use fixture sessions + snapshots):
    `OSC 133;D;0 BEL`, then `ESC[?1002h` (separate write), then `OSC 133;A
    BEL` → `mouse_tracking == 1` (a shell deliberately enabling mouse in its
    prompt hook is not clobbered, because at `D` the mode was off).
+
+4. `testPromptResetClearsModesEnabledEarlierInTheSameWrite`: one write of
+   `ESC[?1003h ESC[?1006h ESC[?1004h OSC 133;D;255 OSC 133;A` → mouse and
+   focus reporting cleared (the reattach-replay regression).
+5. `testPromptResetHonorsStreamOrderWithinOneWrite`: within one write, a mode
+   enabled between D and A survives, and a mode enabled after A survives.
 
 Manual end-to-end check (optional but recommended): run the app, run
 `printf '\e[?1002h\e[?1006h'` to simulate a stuck TUI, drag-select text and
