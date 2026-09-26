@@ -1,0 +1,22 @@
+Tests/LabanAppTests/InitialTerminalSizeTests.swift
+  s_7ca1dcb1a93989::t_945552ef873c03 1-59
+Sources/LabanApp/MainWindowController.swift
+  s_7ca1dcb1a93989::t_d7f8e30bec6e89 210-211,254-256
+  s_7ca1dcb1a93989::t_d0b5f94ee6af54 203-209,212-225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5d5532fa6367c9c4858e7e688ca479a34f29fa29",
+  "prompts": {},
+  "sessions": {
+    "s_7ca1dcb1a93989": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53098e3a-6548-4aa9-b1a1-87f1d274a76b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
