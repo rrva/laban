@@ -200,6 +200,29 @@ final class MainWindowController: NSWindowController {
     return true
   }
 
+  /// The grid every session starts with, before the view lays out and
+  /// resizes it to the window. It carries the cell pixel geometry, not just
+  /// rows and cols: a restart reattach replays the labpty byte ring into a
+  /// session of this size, and without cell pixels a Kitty image sized in
+  /// pixels (no `r=`) spans no rows, so the text that followed it replays
+  /// rows too high and the image lands on top of it.
+  static func initialTerminalSize(
+    viewWidth viewW: CGFloat, viewHeight viewH: CGFloat, sidebarWidth: CGFloat,
+    cellWidth: Int, cellHeight: Int
+  ) -> LabanTerminalSize {
+    let insets = TerminalBitmapView.contentInsets
+    let termW = max(1, Int(viewW - sidebarWidth - insets.left - insets.right))
+    let termH = max(1, Int(viewH - insets.top - insets.bottom))
+    var size = LabanTerminalSize()
+    size.rows = Int32(termH / cellHeight)
+    size.cols = Int32(termW / cellWidth)
+    size.pixel_width = Int32(termW)
+    size.pixel_height = Int32(termH)
+    size.cell_width = Int32(cellWidth)
+    size.cell_height = Int32(cellHeight)
+    return size
+  }
+
   static func makeAndShow(
     restoring restoredState: WorkspaceState? = nil,
     persistenceSyncEnabled: Bool = true,
@@ -223,18 +246,14 @@ final class MainWindowController: NSWindowController {
 
     let sidebarWidth = SidebarVisibilitySettings.effectiveWidth(
       SidebarLayout.defaultWidth, visible: SidebarVisibilitySettings.visible)
-    let insets = TerminalBitmapView.contentInsets
     let viewW: CGFloat = 1200
     // Bumped by `titlebarReservedHeight` so the terminal grid keeps roughly
     // the same default row count after the transparent-titlebar change ate
     // 28 pt of top padding.
     let viewH: CGFloat = 760 + TerminalBitmapView.titlebarReservedHeight
-
-    let termW = max(1, Int(viewW - sidebarWidth - insets.left - insets.right))
-    let termH = max(1, Int(viewH - insets.top - insets.bottom))
-    var size = LabanTerminalSize()
-    size.rows = Int32(termH / cellH)
-    size.cols = Int32(termW / cellW)
+    let size = initialTerminalSize(
+      viewWidth: viewW, viewHeight: viewH, sidebarWidth: sidebarWidth,
+      cellWidth: cellW, cellHeight: cellH)
 
     // Install the OSC 133 shell-integration overlay once per process and
     // thread it into every shell Laban spawns — new tabs and restored tabs
