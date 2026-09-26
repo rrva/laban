@@ -1,0 +1,42 @@
+Tests/LabanTerminalCoreTests/LabanKittyGraphicsTests.swift
+  s_7ca1dcb1a93989::t_66c41b4e812713 93-94,162-163,166-167
+Tests/LabanCoreTests/KittyGraphicsFrameTests.swift
+  s_7ca1dcb1a93989::t_66c41b4e812713 93-94
+Tests/LabanDebugTests/KittyGraphicsHeadlessTests.swift
+  s_7ca1dcb1a93989::t_66c41b4e812713 62-64
+Sources/LabanApp/DiagnosticsWindowController.swift
+  s_7ca1dcb1a93989::t_66c41b4e812713 169-178
+  s_bad324844e8bd3::t_7dbbb3959b6f6a 111,194
+Tests/LabanCoreTests/LabanDiagnosticsTests.swift
+  s_7ca1dcb1a93989::t_66c41b4e812713 13-14,49-50
+Sources/LabanCore/CaptureRecorder.swift
+  s_7ca1dcb1a93989::t_66c41b4e812713 815-818
+Tests/LabanCoreTests/FixtureRunnerTests.swift
+  s_7ca1dcb1a93989::t_66c41b4e812713 139-140
+Sources/LabanCore/LabanDiagnostics.swift
+  s_7ca1dcb1a93989::t_66c41b4e812713 89-90,393-394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ce1af29bcddcc68b8ee76a9eb685b87703f52f1f",
+  "prompts": {},
+  "sessions": {
+    "s_7ca1dcb1a93989": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53098e3a-6548-4aa9-b1a1-87f1d274a76b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    },
+    "s_bad324844e8bd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ed7c9be-d98c-45c4-a34d-8700455889b0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
