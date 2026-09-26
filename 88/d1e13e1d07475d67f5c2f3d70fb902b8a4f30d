@@ -1,0 +1,23 @@
+Tests/LabanRendererTests/GPUCellParityTests.swift
+  s_bad324844e8bd3::t_e00d4b8a77ab39 16-29,33
+Tests/LabanCoreTests/GPUCellRetainedRingRegressionTests.swift
+  s_bad324844e8bd3::t_e00d4b8a77ab39 17-30,33
+Tests/LabanCoreTests/TerminalSurfaceControllerTests.swift
+  s_bad324844e8bd3::t_e00d4b8a77ab39 10-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "88d1e13e1d07475d67f5c2f3d70fb902b8a4f30d",
+  "prompts": {},
+  "sessions": {
+    "s_bad324844e8bd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ed7c9be-d98c-45c4-a34d-8700455889b0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
