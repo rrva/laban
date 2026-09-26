@@ -4730,6 +4730,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       window: renderJournalWindowSnapshot(),
       displayLink: renderJournalDisplayLinkSnapshot(),
       presentLink: (backend as? DisplayLinkPresentingRenderer)?.presentLinkLiveness(),
+      presentFallback: (backend as? DisplayLinkPresentingRenderer)?.presentFallbackState(),
       frameState: RenderJournal.FrameStateSnapshot(
         terminalDirty: terminalDirty,
         activeTerminalDirty: activeTerminalDirty,
@@ -9440,6 +9441,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     } catch {
       AppLog.render.error("render journal dump failed: \(error)")
       EventLog.shared.log("render.journal.dump.failed", ["error": String(describing: error)])
+    }
+  }
+
+  /// Debug-server dump: like the Debug menu item, but reports the result
+  /// instead of showing an alert, so a harness can collect it.
+  func debugDumpRenderJournal() -> [String: Any] {
+    guard renderJournalEnabled else {
+      return [
+        "ok": false, "error": "render journal disabled", "advice": RenderJournal.enablementAdvice(),
+      ]
+    }
+    do {
+      let url = try renderJournal.dump(currentPNG: backend.pngData)
+      return ["ok": true, "path": url.path]
+    } catch {
+      return ["ok": false, "error": String(describing: error)]
     }
   }
 

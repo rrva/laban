@@ -1441,6 +1441,11 @@ reproduces display-unplug presentation freezes without a physical monitor:
   link behaves as if bound to a vanished display (unpaused, zero callbacks,
   every rebuild dead too). `run-display-unplug-repro --simulate-dead-display`
   checks that presentation recovers and re-arms after a display change.
+- `POST /render-journal/dump` — dump the render journal (launch with
+  `LABAN_RENDER_JOURNAL=1`) and return its path. Each entry's `presentFallback`
+  block (`displayLinkPresenting`, `abandons`, `fallbackPresented`) says whether
+  frames still reach the screen after the present link was abandoned, when
+  `presentLink` itself has gone nil; `scripts/render-journal-summary` prints it.
 
 ## Headless Rendering Contract
 

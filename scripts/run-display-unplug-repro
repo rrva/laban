@@ -85,7 +85,7 @@ log "artifacts in $run_dir"
 # plane, and a second mount fails startup with a modal alert.
 # --local-sessions: in-process shells die with this app, so killing it never
 # leaves orphan background sessions for the user's Laban to offer to adopt.
-LABAN_CONTROL_SERVER=0 .build/laban/Laban.app/Contents/MacOS/LabanApp \
+LABAN_CONTROL_SERVER=0 LABAN_RENDER_JOURNAL=1 .build/laban/Laban.app/Contents/MacOS/LabanApp \
   --scroll-debug="$port" --no-persistence --local-sessions \
   >"$run_dir/app.stdout.log" 2>"$run_dir/app.stderr.log" &
 app_pid=$!
@@ -127,6 +127,7 @@ if [ "$simulate" -eq 1 ]; then
   sleep 12
   read -r dead_presented dead_rendered <<<"$(present_delta 3)"
   get /scroll/present-stats >"$run_dir/present-stats.simulated.json"
+  post /render-journal/dump >"$run_dir/journal-dump.simulated.json" || true
   log "after dead display: presented +$dead_presented rendered +$dead_rendered in 3s"
   [ "$dead_rendered" -gt 0 ] || { log "no frames rendered; harness cannot judge presentation"; exit 2; }
   if [ "$dead_presented" -le 0 ]; then
@@ -181,6 +182,7 @@ for cycle in $(seq 1 "$cycles"); do
   sleep 2
   read -r after_presented after_rendered <<<"$(present_delta 3)"
   get /scroll/present-stats >"$run_dir/present-stats.$cycle.json"
+  post /render-journal/dump >"$run_dir/journal-dump.$cycle.json" || true
   get /window/display >"$run_dir/window.$cycle.json"
   log "cycle $cycle: unplugged, window on display $back: presented +$after_presented rendered +$after_rendered in 3s"
   if [ "$after_rendered" -le 0 ]; then

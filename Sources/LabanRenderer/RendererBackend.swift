@@ -123,6 +123,10 @@ public protocol DisplayLinkPresentingRenderer: AnyObject {
   /// and there is no second link to describe.
   func presentLinkLiveness() -> PresentLinkLiveness?
 
+  /// Presenter state that survives the present link being abandoned and
+  /// re-armed, for the render journal. Nil when the backend cannot fall back.
+  func presentFallbackState() -> PresentFallbackState?
+
   /// Debug fault injection: make the present link behave as if bound to a
   /// vanished display (unpaused, zero callbacks, rebuilds dead too). Returns
   /// false when there is no present link to inject into.
@@ -133,6 +137,8 @@ extension DisplayLinkPresentingRenderer {
   /// Conformers with no present link (test doubles, legacy presenters) report
   /// nothing rather than being forced to fake a snapshot.
   public func presentLinkLiveness() -> PresentLinkLiveness? { nil }
+
+  public func presentFallbackState() -> PresentFallbackState? { nil }
 
   public func debugSimulateDeadPresentDisplay() -> Bool { false }
 }

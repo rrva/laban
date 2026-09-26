@@ -37,6 +37,7 @@ def main() -> int:
     print_state(entries)
     print_display_link(entries)
     print_present_link(entries)
+    print_present_fallback(entries)
     print_glyph_effect(entries)
     print_spinner_motion(entries)
     print_drawables(entries)
@@ -177,6 +178,23 @@ def print_present_link(entries: list[dict[str, Any]]) -> None:
     ages = number_list(link.get("lastCallbackAgeSeconds") for link in links)
     if ages:
         print(f"  lastCallbackAgeSeconds: min={min(ages):.2f} max={max(ages):.2f}")
+    print()
+
+
+def print_present_fallback(entries: list[dict[str, Any]]) -> None:
+    states = [
+        entry.get("presentFallback")
+        for entry in entries
+        if isinstance(entry.get("presentFallback"), dict)
+    ]
+    print("presentFallback:")
+    if not states:
+        print("  unavailable")
+        print()
+        return
+    first, last = states[0], states[-1]
+    for key in ("displayLinkPresenting", "abandons", "fallbackPresented"):
+        print(f"  {key}: {first.get(key, '-')} -> {last.get(key, '-')}")
     print()
 
 

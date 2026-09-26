@@ -55,6 +55,26 @@ public struct PresentLinkLiveness: Codable, Equatable, Sendable {
   public var lastCallbackAgeSeconds: Double? = nil
 }
 
+/// How the renderer is presenting, independent of any one present link, for
+/// the render journal. `PresentLinkLiveness` describes the current link and
+/// goes nil once the stall watchdog abandons it; this block survives that, so
+/// a dump from a display unplug says whether frames still reached the screen
+/// through `nextDrawable()` after the link was given up.
+public struct PresentFallbackState: Codable, Equatable, Sendable {
+  /// A `CAMetalDisplayLink` is the presenter right now.
+  public var displayLinkPresenting: Bool
+  /// Lifetime count of present links the stall watchdog abandoned.
+  public var abandons: Int
+  /// Lifetime frames presented through `nextDrawable()` instead of a link.
+  public var fallbackPresented: Int
+
+  public init(displayLinkPresenting: Bool, abandons: Int, fallbackPresented: Int) {
+    self.displayLinkPresenting = displayLinkPresenting
+    self.abandons = abandons
+    self.fallbackPresented = fallbackPresented
+  }
+}
+
 /// Pure, GPU-free model of the present link's deferred-park decision, so the
 /// "don't park while a freshly published frame is unpresented" logic is unit
 /// testable without a Metal device. The link itself just applies `wantsPaused`.

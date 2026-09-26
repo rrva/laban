@@ -1228,6 +1228,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     return stats
   }
 
+  public func presentFallbackState() -> PresentFallbackState? {
+    PresentFallbackState(
+      displayLinkPresenting: presentDisplayLinkStorage != nil,
+      abandons: presentLinkAbandons,
+      fallbackPresented: fallbackPresentedCount)
+  }
+
   public func debugSimulateDeadPresentDisplay() -> Bool {
     guard #available(macOS 14.0, *), let link = presentDisplayLink else { return false }
     link.debugSimulateDeadDisplay()

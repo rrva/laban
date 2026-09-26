@@ -41,6 +41,12 @@ final class RenderJournal {
     /// content change such as a tab switch, and whether the pixels landed
     /// depends on this second link. Optional so old dumps still decode.
     var presentLink: PresentLinkLiveness?
+    /// Presenter state that outlives any one present link: whether a display
+    /// link presents right now, how often the stall watchdog abandoned one,
+    /// and frames presented via `nextDrawable()` since. After an abandonment
+    /// `presentLink` is nil, and this is what says frames still land.
+    /// Optional so old dumps still decode.
+    var presentFallback: PresentFallbackState?
     var frameState: FrameStateSnapshot?
     var viewport: ViewportSnapshot?
     var scroll: ScrollSnapshot?
@@ -400,6 +406,7 @@ final class RenderJournal {
     window: WindowSnapshot? = nil,
     displayLink: DisplayLinkSnapshot? = nil,
     presentLink: PresentLinkLiveness? = nil,
+    presentFallback: PresentFallbackState? = nil,
     frameState: FrameStateSnapshot? = nil,
     viewport: ViewportSnapshot? = nil,
     scroll: ScrollSnapshot? = nil,
@@ -448,6 +455,7 @@ final class RenderJournal {
       window: window,
       displayLink: displayLink,
       presentLink: presentLink,
+      presentFallback: presentFallback,
       frameState: frameState,
       viewport: viewport,
       scroll: scroll,

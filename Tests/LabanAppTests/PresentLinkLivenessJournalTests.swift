@@ -103,4 +103,30 @@ final class PresentLinkLivenessJournalTests: XCTestCase {
     XCTAssertEqual(decoded.stallRepairs, 716)
     XCTAssertNil(decoded.lastCallbackAgeSeconds)
   }
+
+  /// After the stall watchdog abandons a dead present link, the renderer has
+  /// no link to describe, so `presentLink` goes nil — indistinguishable from a
+  /// backend that never had one. The fallback block must say the display link
+  /// was abandoned and whether `nextDrawable()` presents are landing instead,
+  /// or a dump from a real display unplug cannot tell "recovered" from "blind".
+  func testEntryCarriesPresentFallbackAfterAbandonment() throws {
+    let fallback = PresentFallbackState(
+      displayLinkPresenting: false, abandons: 1, fallbackPresented: 147)
+    let entry = try journal().makeEntry(
+      event: .rendered, frame: 50, tabId: "tab", sessionId: "s",
+      presentLink: nil, presentFallback: fallback)
+    let decoded = try JSONDecoder().decode(
+      RenderJournal.Entry.self, from: JSONEncoder().encode(entry))
+    XCTAssertNil(decoded.presentLink)
+    XCTAssertEqual(decoded.presentFallback, fallback)
+  }
+
+  /// Dumps written before the fallback block existed must still decode.
+  func testEntryWithoutPresentFallbackStillDecodes() throws {
+    let entry = try journal().makeEntry(
+      event: .rendered, frame: 8, tabId: "tab", sessionId: "s")
+    let decoded = try JSONDecoder().decode(
+      RenderJournal.Entry.self, from: JSONEncoder().encode(entry))
+    XCTAssertNil(decoded.presentFallback)
+  }
 }

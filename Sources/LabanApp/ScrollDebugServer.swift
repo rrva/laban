@@ -413,6 +413,11 @@ final class ScrollDebugServer {
         let ok = tv.debugSimulateDeadPresentDisplay()
         return Response.json(["ok": ok], status: ok ? 200 : 409)
       }
+    case ("POST", "/render-journal/dump"):
+      return onMain { tv, _, _ in
+        let result = tv.debugDumpRenderJournal()
+        return Response.json(result, status: result["ok"] as? Bool == true ? 200 : 409)
+      }
     case ("GET", "/window/display"):
       return onMain { tv, _, _ in
         var payload = Self.windowDisplayPayload(tv.window)
@@ -622,6 +627,8 @@ final class ScrollDebugServer {
     POST /present-link/simulate-dead-display  fault injection: the present link
                                       acts bound to a vanished display (unpaused,
                                       zero callbacks, every rebuild dead too)
+    POST /render-journal/dump         dump the render journal (needs LABAN_RENDER_JOURNAL=1);
+                                      returns the dump path
     GET  /window/display              the window's display and every attached screen
     POST /window/move?display=ID[&activate=0]  move the window onto display ID
                                       (CGDirectDisplayID) and make it frontmost
