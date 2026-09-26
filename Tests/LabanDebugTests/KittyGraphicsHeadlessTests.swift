@@ -59,8 +59,9 @@ final class KittyGraphicsHeadlessTests: XCTestCase {
     let sidecars = try FileManager.default.contentsOfDirectory(atPath: imagesDir.path)
     XCTAssertEqual(sidecars.count, 1, "the image's pixels are saved once")
     let resourceId = try XCTUnwrap(
-      UInt64(sidecars[0].replacingOccurrences(of: "image-", with: "")
-        .replacingOccurrences(of: ".rgba", with: "")))
+      UInt64(
+        sidecars[0].replacingOccurrences(of: "image-", with: "")
+          .replacingOccurrences(of: ".rgba", with: "")))
 
     // A replay process never held the image: drop it and replay from disk.
     FrameImageStore.shared.remove([resourceId])

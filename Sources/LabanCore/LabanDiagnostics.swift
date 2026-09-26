@@ -86,7 +86,8 @@ public enum LabanDiagnostics {
       kind = .adHoc
     } else {
       // The first certificate is the leaf (the signing certificate).
-      let name = SecCertificateCopySubjectSummary(certificates[0]) as String? ?? "Unknown certificate"
+      let name =
+        SecCertificateCopySubjectSummary(certificates[0]) as String? ?? "Unknown certificate"
       kind = .certificate(name)
     }
     var notarized = false
@@ -389,7 +390,8 @@ public enum LabanDiagnostics {
       var text = "labpty pid \(daemon.pid), started \(relative(daemon.startedAt, now: now))"
       if !daemon.isThisAppsBinary { text += "\nLaunched from \(daemon.executablePath)" }
       if daemon.runsDifferentBuild == true {
-        text += "\nRuns a different build than this app's labpty; it keeps your shells "
+        text +=
+          "\nRuns a different build than this app's labpty; it keeps your shells "
           + "alive and switches to this build when it is next started."
       }
       components.append(Row("Session daemon", text))

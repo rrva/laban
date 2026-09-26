@@ -90,7 +90,8 @@ final class LabanKittyGraphicsTests: XCTestCase {
     defer { laban_session_destroy(session) }
 
     write(session, "\u{1b}_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u{1b}\\")
-    XCTAssertEqual(String(bytes: drainResponse(session), encoding: .utf8), "\u{1b}_Gi=31;OK\u{1b}\\")
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8), "\u{1b}_Gi=31;OK\u{1b}\\")
   }
 
   func testDisabledGateStoresNothingAndAnswersNothing() throws {
@@ -158,10 +159,12 @@ final class LabanKittyGraphicsTests: XCTestCase {
     write(session, "\u{1b}_Gi=7,a=T,f=24,s=2,v=2,c=2,r=1,C=1,q=2;\(checkerBase64)\u{1b}\\")
     XCTAssertTrue(try dirtyRows(session).allSatisfy { $0 != 0 }, "a new image forces full damage")
     XCTAssertEqual(laban_session_mark_rendered(session), 0)
-    XCTAssertFalse(try dirtyRows(session).allSatisfy { $0 != 0 }, "rendered image is not re-damaged")
+    XCTAssertFalse(
+      try dirtyRows(session).allSatisfy { $0 != 0 }, "rendered image is not re-damaged")
 
     write(session, "\u{1b}_Ga=d,d=A,q=2\u{1b}\\")
-    XCTAssertTrue(try dirtyRows(session).allSatisfy { $0 != 0 }, "deleting an image forces full damage")
+    XCTAssertTrue(
+      try dirtyRows(session).allSatisfy { $0 != 0 }, "deleting an image forces full damage")
   }
 
   /// The app renders a session only when `laban_session_render_dirty` says

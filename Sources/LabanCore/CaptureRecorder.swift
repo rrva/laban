@@ -812,8 +812,10 @@ public enum CaptureImageSidecar {
   public static func decode(_ data: Data) -> FrameImage? {
     guard data.count >= 8 else { return nil }
     let bytes = [UInt8](data.prefix(8))
-    let width = Int(UInt32(bytes[0]) | UInt32(bytes[1]) << 8 | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24)
-    let height = Int(UInt32(bytes[4]) | UInt32(bytes[5]) << 8 | UInt32(bytes[6]) << 16 | UInt32(bytes[7]) << 24)
+    let width = Int(
+      UInt32(bytes[0]) | UInt32(bytes[1]) << 8 | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24)
+    let height = Int(
+      UInt32(bytes[4]) | UInt32(bytes[5]) << 8 | UInt32(bytes[6]) << 16 | UInt32(bytes[7]) << 24)
     guard width > 0, height > 0, data.count == 8 + width * height * 4 else { return nil }
     return FrameImage(width: width, height: height, rgba: Data(data.dropFirst(8)))
   }

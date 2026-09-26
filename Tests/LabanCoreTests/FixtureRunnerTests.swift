@@ -136,7 +136,8 @@ final class FixtureRunnerTests: XCTestCase {
     let fixture = try FixtureRunner.load(from: url).fixture
     XCTAssertEqual(fixture.terminal?.kittyGraphics, true)
     let probes = try XCTUnwrap(fixture.expect?.pixelProbes)
-    XCTAssertEqual(probes.first, FixturePixelProbe(cell: [2, 1], is: [255, 0, 0, 255], tolerance: 8))
+    XCTAssertEqual(
+      probes.first, FixturePixelProbe(cell: [2, 1], is: [255, 0, 0, 255], tolerance: 8))
     XCTAssertEqual(probes.last, FixturePixelProbe(cell: [20, 1], not: [255, 0, 0, 255]))
   }
 

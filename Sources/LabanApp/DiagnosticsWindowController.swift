@@ -108,7 +108,7 @@ final class DiagnosticsWindowController: NSWindowController {
   // MARK: - Sections
 
   private func rebuild() {
-    content.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    for view in content.arrangedSubviews { view.removeFromSuperview() }
     content.addArrangedSubview(header())
     let facts = Self.appFacts(
       renderer: rendererStatus(), screen: window?.screen ?? NSScreen.main)
@@ -166,15 +166,16 @@ final class DiagnosticsWindowController: NSWindowController {
   private func creditsSection() -> NSView {
     let copyright =
       Bundle.main.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String
-    let credits = [
-      "Terminal emulation is libghostty-vt from the Ghostty project (MIT). Laban builds "
-        + "its rendering, sessions and agent integration on top.",
-      "Slug Glyph rendering implements Eric Lengyel's Slug algorithm (“GPU-Centered Font "
-        + "Rendering Directly from Glyph Outlines”, JCGT 2017).",
-      "JetBrains Mono (SIL Open Font License 1.1) · Sparkle (MIT) · color palettes from "
-        + "Selenized (Jan Warchoł), Rosé Pine, Catppuccin, Dracula, Nord, Tokyo Night and "
-        + "Gruvbox.",
-    ] + [copyright.map { "Laban \($0), MIT License." }].compactMap { $0 }
+    let credits =
+      [
+        "Terminal emulation is libghostty-vt from the Ghostty project (MIT). Laban builds "
+          + "its rendering, sessions and agent integration on top.",
+        "Slug Glyph rendering implements Eric Lengyel's Slug algorithm (“GPU-Centered Font "
+          + "Rendering Directly from Glyph Outlines”, JCGT 2017).",
+        "JetBrains Mono (SIL Open Font License 1.1) · Sparkle (MIT) · color palettes from "
+          + "Selenized (Jan Warchoł), Rosé Pine, Catppuccin, Dracula, Nord, Tokyo Night and "
+          + "Gruvbox.",
+      ] + [copyright.map { "Laban \($0), MIT License." }].compactMap { $0 }
     let stack = sectionView(L10n.tr("Credits"), rows: [])
     for line in credits {
       stack.addArrangedSubview(label(line, font: .systemFont(ofSize: 12), wraps: true))
@@ -190,7 +191,7 @@ final class DiagnosticsWindowController: NSWindowController {
 
   @objc private func runSelfTest(_ sender: Any?) {
     guard let results = selfTestStack else { return }
-    results.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    for view in results.arrangedSubviews { view.removeFromSuperview() }
     guard let outcome = TerminalCapabilitySelfTest.run() else {
       results.addArrangedSubview(
         label("Could not create a scratch terminal session.", font: .systemFont(ofSize: 12)))

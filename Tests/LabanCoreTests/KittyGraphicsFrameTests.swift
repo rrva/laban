@@ -90,7 +90,8 @@ final class KittyGraphicsFrameTests: XCTestCase {
     let mid = try XCTUnwrap(index(of: .belowText))
     let above = try XCTUnwrap(index(of: .aboveText))
     XCTAssertEqual(explicitBackground, 0, "the terminal-area rect comes first")
-    XCTAssertLessThan(below, try XCTUnwrap(cellBackground), "below-background before cell backgrounds")
+    XCTAssertLessThan(
+      below, try XCTUnwrap(cellBackground), "below-background before cell backgrounds")
     XCTAssertLessThan(try XCTUnwrap(cellBackground), mid, "below-text after cell backgrounds")
     XCTAssertLessThan(mid, try XCTUnwrap(firstGlyph), "below-text before text")
     XCTAssertLessThan(try XCTUnwrap(firstGlyph), above, "above-text after text")

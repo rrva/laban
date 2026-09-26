@@ -10,7 +10,8 @@ final class LabanDiagnosticsTests: XCTestCase {
     let missing = URL(fileURLWithPath: "/nonexistent/laban-\(UUID().uuidString)/labpty")
     let daemons = LabanDiagnostics.sessionDaemons(labptyURL: missing)
     XCTAssertTrue(daemons.allSatisfy { !$0.isThisAppsBinary })
-    XCTAssertTrue(daemons.allSatisfy { $0.runsDifferentBuild == nil }, "no installed hash to compare")
+    XCTAssertTrue(
+      daemons.allSatisfy { $0.runsDifferentBuild == nil }, "no installed hash to compare")
   }
 
   func testMappedExecutableMatchesTheFileOnDisk() throws {
@@ -45,7 +46,8 @@ final class LabanDiagnosticsTests: XCTestCase {
 
     let defaults = UserDefaults(suiteName: "laban-about-font-\(getpid())")!
     defer { defaults.removePersistentDomain(forName: "laban-about-font-\(getpid())") }
-    XCTAssertEqual(LabanDiagnostics.fontSummary(defaults: defaults), "JetBrains Mono (bundled), 14 pt")
+    XCTAssertEqual(
+      LabanDiagnostics.fontSummary(defaults: defaults), "JetBrains Mono (bundled), 14 pt")
     defaults.set("Menlo", forKey: "LabanFontName")
     defaults.set(13.5, forKey: "LabanFontSize")
     XCTAssertEqual(LabanDiagnostics.fontSummary(defaults: defaults), "Menlo, 13.5 pt")
