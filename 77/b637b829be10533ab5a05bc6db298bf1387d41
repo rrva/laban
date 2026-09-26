@@ -1,0 +1,40 @@
+Sources/LabanCore/FixtureRunner.swift
+  s_bad324844e8bd3::t_1e479bd555de64 155
+Sources/LabanCore/KittyPNGDecoder.swift
+  s_bad324844e8bd3::t_1e479bd555de64 1-56
+docs/adr/0035-kitty-graphics-rendering.md
+  s_bad324844e8bd3::t_cd82be6890a93d 40-44
+execplans/active/kitty-graphics-rendering.md
+  s_bad324844e8bd3::t_dccb58bd9efcfa 135-142
+Sources/LabanTerminalCore/kitty_graphics.c
+  s_bad324844e8bd3::t_918b6a034830ad 8-9,54-90,96-97,99-103,105-109
+Package.swift
+  s_bad324844e8bd3::t_918b6a034830ad 79
+Tests/LabanCoreTests/KittyPNGDecoderTests.swift
+  s_bad324844e8bd3::t_75bd3a0cdc3127 1-84
+Sources/LabanCore/KittyGraphicsSettings.swift
+  s_bad324844e8bd3::t_1e479bd555de64 35
+Sources/LabanTerminalCore/include/LabanTerminalCore.h
+  s_bad324844e8bd3::t_918b6a034830ad 375-389
+  s_bad324844e8bd3::t_1e479bd555de64 370-372
+  s_bad324844e8bd3::t_7cb6e2f8cbf2cc 390
+Tests/LabanTerminalCoreTests/LabanKittyGraphicsTests.swift
+  s_bad324844e8bd3::t_11eb04a39bcd96 5-7
+  s_bad324844e8bd3::t_e76ae036e1b21b 187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "77b637b829be10533ab5a05bc6db298bf1387d41",
+  "prompts": {},
+  "sessions": {
+    "s_bad324844e8bd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ed7c9be-d98c-45c4-a34d-8700455889b0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
