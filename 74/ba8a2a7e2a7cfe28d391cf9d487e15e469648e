@@ -1,0 +1,30 @@
+Sources/LabanTerminalCore/osc133.c
+  s_bad324844e8bd3::t_5229a92dd839bb 124,128-136,171,173-174,191,193-194,223-230,248
+Sources/LabanTerminalCore/session_internal.h
+  s_bad324844e8bd3::t_5229a92dd839bb 178-180,475-478
+Sources/LabanTerminalCore/include/LabanTerminalCore.h
+  s_bad324844e8bd3::t_031091cbbb4bf5 531-535
+Sources/LabanTerminalCore/capture.c
+  s_bad324844e8bd3::t_babb08b12264b1 54-76
+Tests/LabanTerminalCoreTests/LabanSessionTests.swift
+  s_bad324844e8bd3::t_fb06cefd74df78 648-694
+execplans/active/osc133-prompt-mode-reset.md
+  s_bad324844e8bd3::t_031091cbbb4bf5 102-114,126,144-148
+  s_bad324844e8bd3::t_a1c53cf5c858e7 149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "74ba8a2a7e2a7cfe28d391cf9d487e15e469648e",
+  "prompts": {},
+  "sessions": {
+    "s_bad324844e8bd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ed7c9be-d98c-45c4-a34d-8700455889b0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
