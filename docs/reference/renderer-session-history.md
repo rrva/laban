@@ -51,6 +51,29 @@ stall**, reached by separating three concerns that earlier bugs kept entangling:
   `render.displayChange` payload, and `presentLink.lastCallbackAgeSeconds`
   (frozen-since age readable from any single entry).
 
+## Follow-up 2026-09-25 — reproducing without a monitor, abandoning the link
+
+- **Harness:** `scripts/run-display-unplug-repro` creates a software display
+  (`scripts/virtual-display.m`, CoreGraphics' private `CGVirtualDisplay`),
+  moves the window onto it via `POST /window/move`, streams output, destroys
+  the display, and checks that the present counter keeps advancing.
+- **Result:** virtual-display unplugs never froze Slug — 1x, 2x, as main
+  display, app active or inactive. A first RED was a harness artifact: an
+  inactive test instance parks its links by policy (`paused=1`), which is not
+  the incident signature (`paused=0`, zero callbacks).
+- **Refuted hypothesis:** drawables never returned by the dead display.
+  Withholding every drawable degrades the link to ~1 callback/s (the
+  drawable-timeout cadence), not the zero callbacks the incident recorded.
+- **Fix:** the incident signature is injected directly
+  (`POST /present-link/simulate-dead-display`: link off the run loop, every
+  rebuild too). Before the fix presentation stays frozen; after it the
+  watchdog abandons the link after one failed rebuild and Slug presents via
+  `nextDrawable()`, re-arming the link on the next display change (ADR 0026).
+- **Test hygiene:** run test instances with `--local-sessions` and
+  `LABAN_CONTROL_SERVER=0`; background-session test instances leave orphan
+  sessions that the user's Laban offers to adopt, and a second control-plane
+  mount fails startup behind a modal alert.
+
 ## Session 0ddefe71 — render-stall: Claude progress bars freeze until scroll
 
 Not vector-renderer work; a render-stall episode, but the most reusable one.

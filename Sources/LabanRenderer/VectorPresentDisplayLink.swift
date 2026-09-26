@@ -107,6 +107,18 @@ struct PresentParkDecision: Equatable {
 /// deferred-park budget, but that budget only decrements inside a callback, so
 /// zero callbacks means it never parks again.
 struct PresentStallDecision: Equatable {
+  enum Verdict: Equatable {
+    /// Firing, parked, or not stalled long enough for a verdict.
+    case healthy
+    /// Swap in a fresh link.
+    case rebuild
+    /// Rebuilding has already failed: give up on the display-link presenter.
+    /// 2026-08-27 (external display unplugged): 716 rebuilds over 12.5 h
+    /// were every one dead on arrival, because a fresh `CAMetalDisplayLink`
+    /// on the same layer rebinds to the vanished display's vsync source.
+    case abandon
+  }
+
   /// Consecutive checks that saw an unpaused link deliver zero callbacks.
   private(set) var stalledChecks = 0
   /// Stalled checks required before the next rebuild. Doubles after each repair
@@ -115,34 +127,41 @@ struct PresentStallDecision: Equatable {
   /// Lifetime count of rebuilds this watchdog asked for. Surfaced through
   /// `presentIntervalStats` as `stallRepairs`.
   private(set) var repairs = 0
+  /// Rebuilds since the link last delivered a callback.
+  private(set) var failedRepairs = 0
   /// Callback count observed at the previous check.
   private(set) var lastCallbacks = 0
 
   let baseThreshold: Int
   let maxThreshold: Int
+  let abandonAfterFailedRepairs: Int
 
-  init(baseThreshold: Int, maxThreshold: Int) {
+  init(baseThreshold: Int, maxThreshold: Int, abandonAfterFailedRepairs: Int) {
     self.baseThreshold = baseThreshold
     self.maxThreshold = maxThreshold
+    self.abandonAfterFailedRepairs = abandonAfterFailedRepairs
     self.threshold = baseThreshold
   }
 
-  /// One watchdog tick. Returns `true` when the link should be rebuilt.
-  mutating func check(paused: Bool, callbacks: Int) -> Bool {
+  /// One watchdog tick.
+  mutating func check(paused: Bool, callbacks: Int) -> Verdict {
     defer { lastCallbacks = callbacks }
-    // A parked link is idle, not stalled. Any forward progress clears both the
-    // streak and the backoff earned by earlier repairs.
+    // A parked link is idle, not stalled. Any forward progress clears the
+    // streak, the backoff, and the failed-repair count.
     guard !paused, callbacks == lastCallbacks else {
       stalledChecks = 0
       threshold = baseThreshold
-      return false
+      if callbacks != lastCallbacks { failedRepairs = 0 }
+      return .healthy
     }
     stalledChecks += 1
-    guard stalledChecks >= threshold else { return false }
+    guard stalledChecks >= threshold else { return .healthy }
     stalledChecks = 0
+    if failedRepairs >= abandonAfterFailedRepairs { return .abandon }
     repairs += 1
+    failedRepairs += 1
     threshold = min(maxThreshold, threshold * 2)
-    return true
+    return .rebuild
   }
 }
 
@@ -218,6 +237,18 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   private static let stallCheckTolerance: TimeInterval = 0.5
   private static let stallChecksBeforeRebuild = 2
   private static let stallChecksMax = 16
+  /// Rebuilds that may stall in turn before the watchdog abandons the link.
+  /// One: a rebuild at ~3 s covers a link that merely bound during the
+  /// teardown burst (2026-08-18); if that one is dead too, rebuilding will
+  /// not help (2026-08-27), so abandon at ~7 s instead of freezing.
+  private static let stallFailedRepairsBeforeAbandon = 1
+
+  /// Called on the present thread when the stall watchdog gives up on the
+  /// link (`PresentStallDecision.Verdict.abandon`), after the link has been
+  /// invalidated. The owner must `stop()` this instance and present some
+  /// other way; this instance never attaches a link again. Without it, an
+  /// abandon verdict is just another rebuild.
+  var onAbandon: (() -> Void)?
 
   /// Stall-watchdog state (stalled-check streak + repair backoff). Guarded by
   /// `statsLock`. See `PresentStallDecision`.
@@ -303,6 +334,9 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// A rebuild requested before the present thread captured its run loop;
   /// consumed inside `start()` once the link is attached. Guarded by `lock`.
   private var rebuildPending = false
+  /// Set on the present thread when the stall watchdog abandons the link;
+  /// from then on no swap may attach a link to the layer. Guarded by `lock`.
+  private var abandoned = false
   /// How many times the link was rebuilt after a display reconfiguration.
   /// Surfaced through `presentIntervalStats` as `rebuilds`.
   private var rebuildCount = 0
@@ -312,7 +346,8 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     link = CAMetalDisplayLink(metalLayer: layer)
     park = PresentParkDecision(budgetCallbacks: Self.pendingPresentBudgetCallbacks)
     stall = PresentStallDecision(
-      baseThreshold: Self.stallChecksBeforeRebuild, maxThreshold: Self.stallChecksMax)
+      baseThreshold: Self.stallChecksBeforeRebuild, maxThreshold: Self.stallChecksMax,
+      abandonAfterFailedRepairs: Self.stallFailedRepairsBeforeAbandon)
     super.init()
     configurePresentLink(link, delegate: self)
   }
@@ -539,9 +574,9 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// that thread's run loop); guards against a stop() that raced the queue.
   private func performRebuildSwap() {
     lock.lock()
-    guard started, !stopRequested else {
+    guard started, !stopRequested, !abandoned else {
       lock.unlock()
-      Self.lifecycleLog.warning("present link rebuild swap dropped: link stopped")
+      Self.lifecycleLog.warning("present link rebuild swap dropped: link stopped or abandoned")
       return
     }
     let oldLink = link
@@ -580,19 +615,45 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// thread whose run loop the new link must be added to.
   private func checkForPresentStall() {
     lock.lock()
-    let live = started && !stopRequested
+    let live = started && !stopRequested && !abandoned
     let paused = link.isPaused
     lock.unlock()
     guard live else { return }
     statsLock.lock()
     let callbacks = callbackCount
-    let needsRebuild = stall.check(paused: paused, callbacks: callbacks)
+    let verdict = stall.check(paused: paused, callbacks: callbacks)
     let repairs = stall.repairs
     statsLock.unlock()
-    guard needsRebuild else { return }
-    Self.lifecycleLog.error(
-      "present link stalled unpaused at \(callbacks) callbacks; rebuilding (repair=\(repairs))")
-    performRebuildSwap()
+    switch verdict {
+    case .healthy:
+      return
+    case .rebuild:
+      Self.lifecycleLog.error(
+        "present link stalled unpaused at \(callbacks) callbacks; rebuilding (repair=\(repairs))")
+      performRebuildSwap()
+    case .abandon:
+      // An owner with no other way to present keeps the old behavior:
+      // rebuilding at the capped backoff is still its only hope.
+      guard let onAbandon else {
+        performRebuildSwap()
+        return
+      }
+      Self.lifecycleLog.error(
+        "present link still stalled after \(repairs) rebuilds at \(callbacks) callbacks; abandoning"
+      )
+      // Detach the link from the layer here, on its own thread, before the
+      // owner hears about it: CoreAnimation raises if `nextDrawable()` is
+      // called on a layer that still has a live CAMetalDisplayLink, and the
+      // owner's fallback is exactly that call. `abandoned` also refuses any
+      // rebuild swap still queued behind this block, which would otherwise
+      // attach a fresh link to the layer again.
+      lock.lock()
+      abandoned = true
+      let link = self.link
+      lock.unlock()
+      link.invalidate()
+      onAbandon()
+    }
   }
 
   func stop() {

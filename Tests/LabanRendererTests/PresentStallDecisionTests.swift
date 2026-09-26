@@ -9,8 +9,9 @@ import XCTest
 /// `PresentStallDecision` is the retry that closes that gap. These gates pin its
 /// logic (the link itself needs a GPU; the decision is pure).
 final class PresentStallDecisionTests: XCTestCase {
-  private func makeDecision() -> PresentStallDecision {
-    PresentStallDecision(baseThreshold: 2, maxThreshold: 16)
+  private func makeDecision(abandonAfterFailedRepairs: Int = .max) -> PresentStallDecision {
+    PresentStallDecision(
+      baseThreshold: 2, maxThreshold: 16, abandonAfterFailedRepairs: abandonAfterFailedRepairs)
   }
 
   /// The exact failure shape: the link is unpaused (a frame was published, so
@@ -19,10 +20,12 @@ final class PresentStallDecisionTests: XCTestCase {
   /// for a rebuild.
   func testUnpausedLinkWithNoCallbacksIsRebuilt() {
     var d = makeDecision()
-    XCTAssertFalse(
-      d.check(paused: false, callbacks: 900), "first check only establishes a baseline")
-    XCTAssertFalse(d.check(paused: false, callbacks: 900), "one stalled check is not yet a verdict")
-    XCTAssertTrue(d.check(paused: false, callbacks: 900), "two stalled checks -> rebuild")
+    XCTAssertEqual(
+      d.check(paused: false, callbacks: 900), .healthy, "first check only establishes a baseline")
+    XCTAssertEqual(
+      d.check(paused: false, callbacks: 900), .healthy, "one stalled check is not yet a verdict")
+    XCTAssertEqual(
+      d.check(paused: false, callbacks: 900), .rebuild, "two stalled checks -> rebuild")
     XCTAssertEqual(d.repairs, 1)
   }
 
@@ -32,7 +35,8 @@ final class PresentStallDecisionTests: XCTestCase {
   func testParkedLinkIsNeverTreatedAsStalled() {
     var d = makeDecision()
     for _ in 0..<50 {
-      XCTAssertFalse(d.check(paused: true, callbacks: 900), "a parked link is idle, not stalled")
+      XCTAssertEqual(
+        d.check(paused: true, callbacks: 900), .healthy, "a parked link is idle, not stalled")
     }
     XCTAssertEqual(d.repairs, 0)
   }
@@ -41,9 +45,10 @@ final class PresentStallDecisionTests: XCTestCase {
   func testForwardProgressClearsTheStreak() {
     var d = makeDecision()
     _ = d.check(paused: false, callbacks: 900)
-    XCTAssertFalse(d.check(paused: false, callbacks: 900), "streak building")
-    XCTAssertFalse(d.check(paused: false, callbacks: 901), "one callback proves the link is alive")
-    XCTAssertFalse(d.check(paused: false, callbacks: 901), "streak restarts from zero")
+    XCTAssertEqual(d.check(paused: false, callbacks: 900), .healthy, "streak building")
+    XCTAssertEqual(
+      d.check(paused: false, callbacks: 901), .healthy, "one callback proves the link is alive")
+    XCTAssertEqual(d.check(paused: false, callbacks: 901), .healthy, "streak restarts from zero")
     XCTAssertEqual(d.repairs, 0)
   }
 
@@ -56,7 +61,7 @@ final class PresentStallDecisionTests: XCTestCase {
     // A permanently dead link: never paused, callbacks frozen.
     for _ in 0..<200 {
       sinceRepair += 1
-      if d.check(paused: false, callbacks: 900) {
+      if d.check(paused: false, callbacks: 900) == .rebuild {
         repairChecks.append(sinceRepair)
         sinceRepair = 0
       }
@@ -71,11 +76,47 @@ final class PresentStallDecisionTests: XCTestCase {
   /// as promptly as the first — a long freeze must not leave the watchdog slow.
   func testBackoffResetsAfterRecovery() {
     var d = makeDecision()
-    while !d.check(paused: false, callbacks: 900) {}  // earn some backoff
+    while d.check(paused: false, callbacks: 900) != .rebuild {}  // earn some backoff
     _ = d.check(paused: false, callbacks: 900)
     _ = d.check(paused: false, callbacks: 901)  // the rebuilt link fires again
 
     _ = d.check(paused: false, callbacks: 901)
-    XCTAssertTrue(d.check(paused: false, callbacks: 901), "back to the base threshold")
+    XCTAssertEqual(d.check(paused: false, callbacks: 901), .rebuild, "back to the base threshold")
+  }
+
+  /// 2026-08-27: after an external display was unplugged, 716 rebuilds over
+  /// 12.5 h were every one dead on arrival — rebuilding a `CAMetalDisplayLink`
+  /// on the same layer rebinds to the dead vsync source. Once a rebuilt link
+  /// has stalled too, the watchdog must stop swapping links and abandon the
+  /// display-link presenter so the renderer presents through `nextDrawable()`.
+  func testAbandonsTheLinkOnceARebuildHasAlsoStalled() {
+    var d = makeDecision(abandonAfterFailedRepairs: 1)
+    var verdicts: [PresentStallDecision.Verdict] = []
+    for _ in 0..<12 {
+      let verdict = d.check(paused: false, callbacks: 900)
+      if verdict != .healthy { verdicts.append(verdict) }
+      if verdict == .abandon { break }
+    }
+    XCTAssertEqual(verdicts, [.rebuild, .abandon], "one rebuild, then give up on the link")
+  }
+
+  /// A rebuild that revives the link resets the failure count: a later,
+  /// unrelated stall gets its own rebuild before any abandonment.
+  func testRecoveredRebuildDoesNotCountTowardAbandonment() {
+    var d = makeDecision(abandonAfterFailedRepairs: 1)
+    while d.check(paused: false, callbacks: 900) != .rebuild {}
+    XCTAssertEqual(d.check(paused: false, callbacks: 960), .healthy, "the rebuilt link fires")
+
+    var next: PresentStallDecision.Verdict = .healthy
+    while next == .healthy { next = d.check(paused: false, callbacks: 960) }
+    XCTAssertEqual(next, .rebuild, "a fresh stall is repaired, not abandoned")
+  }
+
+  /// Abandonment is only ever about a dead link; a parked one never counts.
+  func testParkedLinkNeverAbandoned() {
+    var d = makeDecision(abandonAfterFailedRepairs: 1)
+    for _ in 0..<50 {
+      XCTAssertEqual(d.check(paused: true, callbacks: 900), .healthy)
+    }
   }
 }

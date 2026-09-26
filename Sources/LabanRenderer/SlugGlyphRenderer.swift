@@ -624,6 +624,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var presentDisplayLink: VectorPresentDisplayLink? {
     presentDisplayLinkStorage as? VectorPresentDisplayLink
   }
+  /// Times the stall watchdog gave up on the present link, and frames
+  /// presented through `nextDrawable()` since. Main thread only; surfaced
+  /// through `presentDisplayLinkStats` as `abandons` / `fallbackPresented`.
+  private var presentLinkAbandons = 0
+  private var fallbackPresentedCount = 0
   private var latestPresentedTarget: MTLTexture?
   private let presentTargetLock = NSLock()
   /// Monotonic stamp for each `publishLatestTarget` call, carried by the
@@ -1010,8 +1015,46 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     presentLink.onPresent = { [weak self] drawable in
       self?.presentLatestTarget(into: drawable) ?? false
     }
+    presentLink.onAbandon = { [weak self, weak presentLink] in
+      DispatchQueue.main.async {
+        guard let presentLink else { return }
+        self?.abandonPresentDisplayLink(presentLink)
+      }
+    }
     presentLink.start()
     self.presentDisplayLinkStorage = presentLink
+  }
+
+  /// The present link's stall watchdog proved rebuilding cannot revive it —
+  /// the 2026-08-27 display-unplug freeze, where every rebuilt link stayed
+  /// bound to the vanished display. Drop the link so `render()` presents
+  /// through `nextDrawable()` again (the main-thread display link keeps
+  /// ticking in that state), and put the last published frame on screen
+  /// now rather than at the next content change. The next display change
+  /// re-arms the fast path through `rebuildPresentLink()`.
+  @available(macOS 14.0, *)
+  private func abandonPresentDisplayLink(_ presentLink: VectorPresentDisplayLink) {
+    // A display change may already have re-armed a fresh link.
+    guard presentDisplayLinkStorage === presentLink else { return }
+    presentLink.stop()
+    presentDisplayLinkStorage = nil
+    presentLinkAbandons += 1
+    Self.presentLinkLog.error(
+      "slug present link abandoned; presenting via nextDrawable until the next display change (abandons=\(self.presentLinkAbandons))"
+    )
+    presentTargetLock.lock()
+    let target = latestPresentedTarget
+    presentTargetLock.unlock()
+    guard let target, presentsToLayer,
+      let commandBuffer = queue.makeCommandBuffer(),
+      let drawable = layer.nextDrawable(),
+      drawable.texture.width == target.width,
+      drawable.texture.height == target.height
+    else { return }
+    encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
+    commandBuffer.present(drawable)
+    commandBuffer.commit()
+    fallbackPresentedCount += 1
   }
 
   /// Lazy builds the motion-pipeline variants once. Returns false if any
@@ -1172,10 +1215,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   public func presentDisplayLinkStats(reset: Bool) -> [String: Double]? {
-    if #available(macOS 14.0, *) {
+    guard #available(macOS 14.0, *) else { return nil }
+    guard presentLinkAbandons > 0 else {
       return presentDisplayLink?.presentIntervalStats(reset: reset)
     }
-    return nil
+    // After an abandonment `presented` counts both presenters, so a caller
+    // watching it advance sees frames reach the screen either way.
+    var stats = presentDisplayLink?.presentIntervalStats(reset: reset) ?? [:]
+    stats["presented"] = (stats["presented"] ?? 0) + Double(fallbackPresentedCount)
+    stats["fallbackPresented"] = Double(fallbackPresentedCount)
+    stats["abandons"] = Double(presentLinkAbandons)
+    return stats
   }
 
   public func debugSimulateDeadPresentDisplay() -> Bool {
@@ -2096,6 +2146,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     {
       encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
       commandBuffer.present(drawable)
+      fallbackPresentedCount += 1
     }
 
     // `frameInFlight` is non-Sendable but thread-safe; see its declaration.

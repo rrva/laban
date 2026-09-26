@@ -134,6 +134,19 @@ path plus an untouched, pinned legacy fallback.
   `NSWindow.didChangeScreenNotification`. The swap runs on the present thread,
   preserves the host's run/park intent, and is counted in `presentIntervalStats`
   as `rebuilds`.
+- Rebuilding is not always enough. After an external-display unplug on
+  2026-08-27, 716 watchdog rebuilds over 12.5 h were every one dead on arrival:
+  a fresh `CAMetalDisplayLink` on the same layer stayed bound to the vanished
+  display while the window's `CADisplayLink` ticked normally on the built-in
+  one. So once a rebuilt link has also stalled (~7 s), the watchdog abandons it
+  (`PresentStallDecision.Verdict.abandon`): the link is invalidated on the
+  present thread, the Slug renderer drops it and presents through
+  `nextDrawable()` (legal again once no link is attached), and the next display
+  change re-arms the fast path via `rebuildPresentLink()`. Renderers without an
+  `onAbandon` handler (vector, classic/gpuDriven) keep rebuilding at the capped
+  backoff. Verified with `scripts/run-display-unplug-repro
+  --simulate-dead-display`; a virtual display (`CGVirtualDisplay`) unplug does
+  not reproduce the dead binding, which appears to need real display hardware.
 - Frame-command contract (ADR 0017/0022) and MVP behavior are unchanged; this is a
   presentation/pacing change, not a rendering-semantics change.
 
