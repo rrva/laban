@@ -13,9 +13,24 @@ final class GPUCellParityTests: XCTestCase {
   private let cellH: CGFloat = 19
   private let scale: CGFloat = 1
 
+  /// The cell-payload / GPU-cell path is only taken in monochrome emoji mode
+  /// (color emoji routes through classic glyph commands), and the default is
+  /// color. Pin monochrome in the per-process registration domain; see
+  /// `execplans/active/test-userdefaults-isolation.md`.
+  private static func registerMonochromeEmoji() {
+    UserDefaults.standard.register(
+      defaults: [EmojiRenderingSettings.defaultsKey: EmojiRenderingMode.monochrome.rawValue])
+  }
+
+  override func setUp() {
+    super.setUp()
+    Self.registerMonochromeEmoji()
+  }
+
   override func tearDown() {
     MetalRenderer.useClassicDamageScoped = true
     MetalRenderer.useGPUCellPath = false
+    Self.registerMonochromeEmoji()
     super.tearDown()
   }
 
