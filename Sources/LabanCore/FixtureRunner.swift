@@ -152,6 +152,7 @@ public struct FixtureRunner {
   /// fixture's session: terminal features are fixed at session creation.
   public func applyTerminalOptions() {
     if let kittyGraphics = fixture.terminal?.kittyGraphics {
+      KittyPNGDecoder.install()
       laban_set_kitty_graphics_enabled(kittyGraphics)
     }
   }

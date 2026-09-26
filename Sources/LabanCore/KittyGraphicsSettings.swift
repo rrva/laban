@@ -32,6 +32,7 @@ public enum KittyGraphicsSettings {
     defaults: UserDefaults = .standard,
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) {
+    KittyPNGDecoder.install()
     laban_set_kitty_graphics_enabled(isEnabled(defaults: defaults, environment: environment))
   }
 }

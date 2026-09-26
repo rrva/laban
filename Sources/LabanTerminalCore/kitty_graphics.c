@@ -1,14 +1,12 @@
 #include "session_internal.h"
-#include <Accelerate/Accelerate.h>
-#include <CoreGraphics/CoreGraphics.h>
-#include <ImageIO/ImageIO.h>
 #include <stdatomic.h>
 
 /* Kitty graphics protocol support (execplans/active/kitty-graphics-rendering.md).
  *
  * libghostty-vt parses the protocol, stores images, tracks placements and
  * answers queries. This file enables it per session behind a process-wide
- * gate, installs the PNG decoder libghostty needs, flattens visible
+ * gate, bridges libghostty's PNG decode hook to the decoder the host
+ * registers (platform image code stays out of the core), flattens visible
  * placements into owned LabanImagePlacement records for the snapshot, and
  * copies one image's pixels on demand for renderer texture caches. No
  * libghostty handle leaves this file (ADR 0004). */
@@ -53,76 +51,62 @@ bool laban_kitty_png_acceptable(const uint8_t *data, size_t data_len) {
     return width * height * 4 <= LABAN_KITTY_IMAGE_STORAGE_LIMIT;
 }
 
-/* Decodes PNG bytes to straight-alpha RGBA8 in a buffer from `allocator`,
- * which libghostty then owns. CoreGraphics only draws into premultiplied
- * RGBA, so draw premultiplied and convert in place. */
+static _Atomic(LabanKittyPNGDecoder) g_png_decoder = NULL;
+
+void laban_set_kitty_png_decoder(LabanKittyPNGDecoder decoder) {
+    atomic_store(&g_png_decoder, decoder);
+}
+
+typedef struct {
+    const GhosttyAllocator *allocator;
+    uint8_t *pixels;
+    size_t pixel_len;
+    uint32_t width;
+    uint32_t height;
+} LabanPNGDecodeTarget;
+
+/* Hands the host decoder a zeroed buffer libghostty will own, once, after
+ * re-checking the decoded size against the same caps the header passed. */
+static uint8_t *laban_png_allocate_pixels(void *context, uint32_t width, uint32_t height) {
+    LabanPNGDecodeTarget *target = context;
+    if (!target || target->pixels || width == 0 || height == 0 ||
+        width > LABAN_KITTY_PNG_MAX_DIMENSION || height > LABAN_KITTY_PNG_MAX_DIMENSION) {
+        return NULL;
+    }
+    size_t len = (size_t)width * height * 4;
+    if (len > LABAN_KITTY_IMAGE_STORAGE_LIMIT) return NULL;
+    uint8_t *pixels = ghostty_alloc(target->allocator, len);
+    if (!pixels) return NULL;
+    memset(pixels, 0, len);
+    target->pixels = pixels;
+    target->pixel_len = len;
+    target->width = width;
+    target->height = height;
+    return pixels;
+}
+
+/* libghostty's PNG hook: screens the bytes, then lets the registered host
+ * decoder fill a straight-alpha RGBA8 buffer from `allocator`, which
+ * libghostty then owns. No decoder registered means PNGs are refused. */
 static bool laban_decode_png(void *userdata, const GhosttyAllocator *allocator,
                              const uint8_t *data, size_t data_len,
                              GhosttySysImage *out) {
     (void)userdata;
     if (!out || !laban_kitty_png_acceptable(data, data_len)) return false;
+    LabanKittyPNGDecoder decoder = atomic_load(&g_png_decoder);
+    if (!decoder) return false;
 
-    bool ok = false;
-    CFDataRef cf_data = NULL;
-    CGImageSourceRef source = NULL;
-    CGImageRef image = NULL;
-    CGColorSpaceRef color_space = NULL;
-    CGContextRef context = NULL;
-    uint8_t *pixels = NULL;
-    size_t pixel_len = 0;
-
-    cf_data = CFDataCreateWithBytesNoCopy(NULL, data, (CFIndex)data_len, kCFAllocatorNull);
-    if (!cf_data) goto done;
-    source = CGImageSourceCreateWithData(cf_data, NULL);
-    if (!source) goto done;
-    /* ImageIO sniffs the content; decode only what it also identifies as PNG. */
-    CFStringRef type = CGImageSourceGetType(source);
-    if (!type || CFStringCompare(type, CFSTR("public.png"), 0) != kCFCompareEqualTo) goto done;
-    image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
-    if (!image) goto done;
-
-    size_t width = CGImageGetWidth(image);
-    size_t height = CGImageGetHeight(image);
-    if (width == 0 || height == 0 ||
-        width > LABAN_KITTY_PNG_MAX_DIMENSION || height > LABAN_KITTY_PNG_MAX_DIMENSION) {
-        goto done;
+    LabanPNGDecodeTarget target = { .allocator = allocator };
+    bool ok = decoder(data, data_len, &target, laban_png_allocate_pixels);
+    if (!ok || !target.pixels) {
+        if (target.pixels) ghostty_free(allocator, target.pixels, target.pixel_len);
+        return false;
     }
-    pixel_len = width * height * 4;
-    pixels = ghostty_alloc(allocator, pixel_len);
-    if (!pixels) goto done;
-    memset(pixels, 0, pixel_len);
-
-    color_space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    if (!color_space) goto done;
-    context = CGBitmapContextCreate(
-        pixels, width, height, 8, width * 4, color_space,
-        (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-    if (!context) goto done;
-    CGContextSetBlendMode(context, kCGBlendModeCopy);
-    CGContextDrawImage(context, CGRectMake(0, 0, (CGFloat)width, (CGFloat)height), image);
-
-    vImage_Buffer buffer = {
-        .data = pixels, .height = height, .width = width, .rowBytes = width * 4,
-    };
-    if (vImageUnpremultiplyData_RGBA8888(&buffer, &buffer, kvImageNoFlags) != kvImageNoError) {
-        goto done;
-    }
-
-    out->width = (uint32_t)width;
-    out->height = (uint32_t)height;
-    out->data = pixels;
-    out->data_len = pixel_len;
-    pixels = NULL;  /* ownership moved to libghostty */
-    ok = true;
-
-done:
-    if (pixels) ghostty_free(allocator, pixels, pixel_len);
-    if (context) CGContextRelease(context);
-    if (color_space) CGColorSpaceRelease(color_space);
-    if (image) CGImageRelease(image);
-    if (source) CFRelease(source);
-    if (cf_data) CFRelease(cf_data);
-    return ok;
+    out->width = target.width;
+    out->height = target.height;
+    out->data = target.pixels;
+    out->data_len = target.pixel_len;
+    return true;
 }
 
 static pthread_once_t g_png_decoder_once = PTHREAD_ONCE_INIT;

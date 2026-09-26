@@ -2,8 +2,9 @@ import LabanTerminalCore
 import XCTest
 
 /// Kitty graphics in the terminal core (execplans/active/kitty-graphics-rendering.md,
-/// Milestone 1): enablement gate, PNG decoding, visible placements in the
-/// snapshot, pixel copies, and damage when images change.
+/// Milestone 1): enablement gate, PNG screening, visible placements in the
+/// snapshot, pixel copies, and damage when images change. PNG decoding itself
+/// is the host's (KittyPNGDecoderTests in LabanCoreTests).
 final class LabanKittyGraphicsTests: XCTestCase {
   /// 2x2 RGB image: red, green / blue, white.
   private let checkerBase64 = "/wAAAP8AAAD/////"
@@ -65,24 +66,6 @@ final class LabanKittyGraphicsTests: XCTestCase {
       laban_session_kitty_image_copy(session, 7, p.image_generation &+ 1, &stale), -1,
       "a copy for a stale generation must fail so the caller refetches placements")
     XCTAssertEqual(laban_session_kitty_image_copy(session, 99, p.image_generation, &stale), -1)
-  }
-
-  func testPNGDecodesToStraightAlpha() throws {
-    let session = try makeSession()
-    defer { laban_session_destroy(session) }
-
-    write(session, "\u{1b}_Gi=9,a=T,f=100,q=2;\(redHalfAlphaPNGBase64)\u{1b}\\")
-    let p = try XCTUnwrap(try snapshotPlacements(session).first, "the PNG must decode and place")
-
-    var image = LabanKittyImage()
-    XCTAssertEqual(laban_session_kitty_image_copy(session, 9, p.image_generation, &image), 0)
-    defer { laban_kitty_image_free(&image) }
-    XCTAssertEqual([image.width, image.height], [1, 1])
-    let px = Array(UnsafeBufferPointer(start: image.rgba, count: 4))
-    XCTAssertEqual(px[0], 0xFF, accuracy: 2, "red must not be premultiplied by alpha")
-    XCTAssertEqual(px[1], 0)
-    XCTAssertEqual(px[2], 0)
-    XCTAssertEqual(px[3], 128, accuracy: 1)
   }
 
   func testQueryIsAcknowledgedWhenEnabled() throws {
@@ -201,15 +184,8 @@ final class LabanKittyGraphicsTests: XCTestCase {
     XCTAssertEqual(laban_session_mark_rendered(session), 0)
   }
 
-  /// 1x1 GIF. ImageIO would decode it; the Kitty PNG path must not.
+  /// 1x1 GIF: not a PNG, so it must fail the signature check.
   private let gifBase64 = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="
-
-  func testNonPNGBytesSentAsPNGAreRejected() throws {
-    let session = try makeSession()
-    defer { laban_session_destroy(session) }
-    write(session, "\u{1b}_Gi=9,a=T,f=100,q=2;\(gifBase64)\u{1b}\\")
-    XCTAssertEqual(try snapshotPlacements(session).count, 0, "a GIF must not decode as PNG")
-  }
 
   func testPNGAcceptanceChecksSignatureAndDecodedSize() throws {
     func acceptable(_ bytes: [UInt8]) -> Bool {

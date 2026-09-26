@@ -37,7 +37,11 @@ The design had to respect the following:
     environment variable can turn it off) at startup. `laband` forces it off.
   - Enabled sessions get a 64 MB per-screen limit, and the direct,
     shared-memory and temporary-file mediums. The plain file medium stays off.
-  - An ImageIO decoder, installed once, turns PNGs into straight-alpha RGBA.
+  - An ImageIO decoder turns PNGs into straight-alpha RGBA. The C core keeps
+    libghostty's decode hook, the PNG header screening and the buffer
+    allocation; the ImageIO/CoreGraphics code lives in LabanCore
+    (`KittyPNGDecoder`), registered through `laban_set_kitty_png_decoder`, so
+    platform frameworks stay out of LabanTerminalCore (scripts/check-boundaries).
 - **Snapshots carry placements, not pixels.** `LabanSnapshot` gains owned,
   sorted `LabanImagePlacement` records (viewport cell position, pixel size and
   offsets, crop, layer, image generation) and the cell pixel size.

@@ -132,6 +132,14 @@ Compare with the screenshots stored under the artifacts named in
 
 ## Decision Log
 
+- Decision (2026-09-26): the ImageIO/CoreGraphics PNG decode moves from
+  `kitty_graphics.c` to LabanCore (`KittyPNGDecoder`), registered with
+  `laban_set_kitty_png_decoder` by `KittyGraphicsSettings.applyProcessWide()`
+  and `FixtureRunner`. The core keeps libghostty's hook, the header screening
+  and a size-capped allocator the decoder must draw from.
+  Rationale: `scripts/check-boundaries` forbids platform frameworks in
+  LabanTerminalCore, and the in-core decoder had made `scripts/check` fail.
+
 - Decision: Laban's C terminal core owns all image state. Swift receives an
   owned list of visible placements with each snapshot, plus a separate call
   that copies one image's pixels on a renderer cache miss.

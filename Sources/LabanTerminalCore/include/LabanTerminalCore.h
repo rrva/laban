@@ -367,9 +367,26 @@ void laban_kitty_image_free(LabanKittyImage *image);
 /* Whether `data` may be handed to the PNG decoder: it must carry the PNG
  * signature and an IHDR header whose decoded RGBA size fits both the
  * per-screen image budget and a 10000-pixel dimension cap. Checked before any
- * bytes reach ImageIO, which would otherwise sniff and parse other formats
- * (GIF, TIFF, HEIC, ...) and allocate the full decode first. */
+ * bytes reach the host decoder (ImageIO), which would otherwise sniff and
+ * parse other formats (GIF, TIFF, HEIC, ...) and allocate the full decode
+ * first. */
 bool laban_kitty_png_acceptable(const uint8_t *data, size_t data_len);
+
+/* PNG decoding is supplied by the host so platform image frameworks stay out
+ * of the terminal core. The core calls the decoder only for bytes that pass
+ * laban_kitty_png_acceptable. The decoder must verify the bytes are a PNG,
+ * call `allocate(context, width, height)` exactly once for a zeroed
+ * width*height*4 buffer (NULL when the size exceeds the caps), fill it with
+ * straight-alpha sRGB RGBA8, and return true. Returning false, or never
+ * allocating, rejects the image. Process-wide; with no decoder registered,
+ * PNG transmissions are refused. Set it before sessions receive output. */
+typedef uint8_t *(*LabanKittyPixelAllocator)(void *context, uint32_t width, uint32_t height);
+typedef bool (*LabanKittyPNGDecoder)(
+    const uint8_t *data,
+    size_t data_len,
+    void *context,
+    LabanKittyPixelAllocator allocate);
+void laban_set_kitty_png_decoder(LabanKittyPNGDecoder decoder);
 
 /* Dirty lifecycle: lightweight query and snapshot-backed render marking. */
 int laban_session_render_dirty(LabanSession *session, int *out_dirty);
