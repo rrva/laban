@@ -100,6 +100,12 @@ style, workflow, or verification rules.
 - Local runtime artifacts live under `~/Library/Logs/Laban/`: PTY captures in
   `captures/appkit-<UTC>/streams/`, casts in `casts/`, tab-journal dumps in
   `tab-journal/`, and main-thread stall stacks in `~/laban-watchdog/`.
+- A capture holds only output from after it started. For the history behind a
+  stuck mode, read the tab's full output transcript at
+  `~/Library/Application Support/Laban/transcripts/<tabId>.bin` (the tab id is
+  in the capture's `tab.selected` event) and replay it through
+  `Session.fixture` in a throwaway test. Replay it both chunked and as one
+  write: a relaunch reattach feeds retained output as a single chunk.
 - For capture diagnosis, `terminal-response.bin` proves Laban answered the child
   (CPR, DA, kitty, OSC 10/11), and `GET /debug/tab-journal` is the first stop
   for late badge, banner, title, selection, or status questions.
