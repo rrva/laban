@@ -1,0 +1,49 @@
+docs/process/dev-process.md
+  s_930d5abf6e92a4::t_c0f8ca7086884f 1432-1444
+Sources/LabanRenderer/SlugGlyphRenderer.swift
+  s_930d5abf6e92a4::t_c85bf6520e9f7d 1182,1184-1186
+  s_930d5abf6e92a4::t_bf15277c9d6492 1181,1183
+scripts/run-display-unplug-repro
+  s_930d5abf6e92a4::t_517d5c936ee29c 1-5,8-16,24-30,34-39,43-75,82-83,90-104,108,112,116-117,119,122,156-158,160-166,168-169,172-176,179,183,191-201
+  s_930d5abf6e92a4::t_f0e67babfe3583 84-85,88
+  s_930d5abf6e92a4::t_6dbf210c1e778a 136-153
+  s_930d5abf6e92a4::t_7aacb15e0e3477 17,31,40,118,167,180
+  s_930d5abf6e92a4::t_e2c5797b5fbdff 6,18,32,41,159
+  s_930d5abf6e92a4::t_7891a648ef83b3 81,105-107,109-111,113-115,120-121,170-171,177-178,181-182,184-190
+  s_930d5abf6e92a4::t_9634034feb2cf8 7,19-23,33,42,76-80,123-135,154-155
+  s_930d5abf6e92a4::t_365f7c21a2060a 86-87,89
+Sources/LabanApp/TerminalBitmapView.swift
+  s_930d5abf6e92a4::t_4e35151c55b58c 2630,2634-2635
+  s_930d5abf6e92a4::t_bf15277c9d6492 2631-2633
+Sources/LabanApp/ScrollDebugServer.swift
+  s_930d5abf6e92a4::t_afc5ac30bd862f 418,420,499,501-502
+  s_930d5abf6e92a4::t_7891a648ef83b3 419
+  s_930d5abf6e92a4::t_38da13a19f94d0 416-417,421-428,430-444,452-455,485-498,500,503-513,621,625
+  s_930d5abf6e92a4::t_7aacb15e0e3477 429,445-451,626-627
+  s_930d5abf6e92a4::t_c85bf6520e9f7d 412,415
+  s_930d5abf6e92a4::t_bf15277c9d6492 411,413-414,622-624
+scripts/virtual-display.m
+  s_930d5abf6e92a4::t_e2c5797b5fbdff 9-11,48,73-91
+  s_930d5abf6e92a4::t_9c2af5e37ff7a3 1-8,12-47,49-72,92-109
+Sources/LabanRenderer/RendererBackend.swift
+  s_930d5abf6e92a4::t_c85bf6520e9f7d 125,136
+  s_930d5abf6e92a4::t_bf15277c9d6492 126-129,137
+Sources/LabanRenderer/VectorPresentDisplayLink.swift
+  s_930d5abf6e92a4::t_bf15277c9d6492 469-493,551,560-562
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c9cbbe89f670e5e1c6e717a8292f6c215a40df9c",
+  "prompts": {},
+  "sessions": {
+    "s_930d5abf6e92a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ae60aac-6c81-4cc3-a1a0-e595a9433eec",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
