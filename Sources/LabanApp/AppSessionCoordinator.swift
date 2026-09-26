@@ -773,7 +773,7 @@ final class AppSessionCoordinator {
       ptyHandle: descriptor.ptyHandle,
       reader: reader,
       session: session,
-      isReattach: isReattach,
+      catchUpGrid: isReattach ? (cols: Int(descriptor.cols), rows: Int(descriptor.rows)) : nil,
       onDirty: { [weak self] sessionId in
         self?.noteLabptyOutputActivity()
         self?.onSessionDirty?(sessionId)
@@ -1372,6 +1372,12 @@ private final class LabptyParserFeed {
   // land in the child's input as garbage (post-restart "10;rgb:..." paste).
   // Touched only from `poll()` on the serial timer queue, like `lastOffset`.
   private var catchUpResponseSuppressionPending: Bool
+  // The PTY's grid when a reattach feed started, which is what the retained
+  // output was written for. The catch-up read parses at this grid, not the
+  // session's guessed launch grid: zsh's PROMPT_SP padding otherwise wraps
+  // and the window resize rejoins it as "%   <prompt>", and pixel-sized Kitty
+  // images span the wrong rows. Nil for a feed that opened its session.
+  private let catchUpGrid: (cols: Int, rows: Int)?
   // Touched only from `poll()` on the serial timer queue, like `lastOffset`.
   private var overflowGate = LabptyByteRingOverflowGate()
   // Lock-guarded mirror of `lastOffset`, written by `poll()` right after it
@@ -1385,7 +1391,7 @@ private final class LabptyParserFeed {
     ptyHandle: UInt64,
     reader: LabptyByteRingReader,
     session: Session,
-    isReattach: Bool,
+    catchUpGrid: (cols: Int, rows: Int)?,
     onDirty: @escaping @Sendable (Session.ID) -> Void,
     onOverflow: @escaping @Sendable () -> Void,
     onResponse: @escaping @Sendable ([UInt8]) -> Void
@@ -1393,7 +1399,8 @@ private final class LabptyParserFeed {
     self.ptyHandle = ptyHandle
     self.reader = reader
     self.session = session
-    self.catchUpResponseSuppressionPending = isReattach
+    self.catchUpResponseSuppressionPending = catchUpGrid != nil
+    self.catchUpGrid = catchUpGrid
     self.onDirty = onDirty
     self.onOverflow = onOverflow
     self.onResponse = onResponse
@@ -1506,6 +1513,7 @@ private final class LabptyParserFeed {
     // detached either).
     let replayRead = catchUpResponseSuppressionPending || result.overflowed
     guard result.overflowed || !result.bytes.isEmpty else { return }
+    let catchUpRead = catchUpResponseSuppressionPending
     catchUpResponseSuppressionPending = false
     // The first read positions the cursor from offset 0, so its span covers the
     // session's whole lifetime, not output we dropped live: on a restart
@@ -1534,7 +1542,12 @@ private final class LabptyParserFeed {
     }
     let diagBefore =
       ScrollDiagnostics.shared.isEnabled ? session.viewportState() : nil
-    _ = session.feedOutput(Array(result.bytes))
+    if catchUpRead, let catchUpGrid {
+      session.feedOutput(
+        Array(result.bytes), writtenAtCols: catchUpGrid.cols, rows: catchUpGrid.rows)
+    } else {
+      _ = session.feedOutput(Array(result.bytes))
+    }
     if ScrollDiagnostics.shared.isEnabled, let after = session.viewportState() {
       // Does appending output on the background timer move `viewportOffset` with
       // `totalRows` (follow-output engaged) or leave the offset behind so the

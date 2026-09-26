@@ -749,6 +749,73 @@ final class LabanAppTests: XCTestCase {
         """)
   }
 
+  func testReattachedLabptySessionReplaysAtThePtyGridBeforeTheWindowResize() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-replay-grid")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    let tabId = "replay-grid-tab"
+    // zsh's PROMPT_SP: a `%` padded to exactly the PTY's width, then CR and
+    // erase-line, so on a terminal of that width the prompt overwrites the
+    // `%` row. Parsed on a narrower grid the padding wraps instead, CR lands
+    // on the next row, and widening to the window later rejoins the two rows
+    // into "%<spaces>PROMPT" — the post-restart artifact.
+    let command = [
+      "/bin/sh", "-c",
+      "printf '%%%99s\\r\\033[KPROMPT\\r\\n' ''; exec cat",
+    ]
+    let seedClient = try waitForLabptyClient(socketPath: socketPath)
+    let seedDescriptor = try seedClient.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 100,
+        outputRingCapacity: UInt64(LabptyByteRingLayout.minimumOutputRingCapacity),
+        argv: command,
+        cwd: FileManager.default.currentDirectoryPath,
+        logicalSessionId: tabId))
+    let reader = try LabptyByteRingReader(path: seedDescriptor.byteRingShmPath)
+    try waitForByteRingOffset(reader, atLeast: 108)
+    seedClient.close()
+
+    // A restarting app creates sessions at a guessed grid before the window
+    // lays out; the view's first resize then applies the real one.
+    var guessed = LabanTerminalSize()
+    guessed.rows = 24
+    guessed.cols = 60
+    guessed.cell_width = 10
+    guessed.cell_height = 20
+    let model = try parserModel(tabId: tabId, size: guessed)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+
+    _ = try coordinator.ensureSession(for: tab, session: session, size: guessed)
+    _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "PROMPT")
+    model.resize(viewportWidth: 1000, viewportHeight: 480, cellWidth: 10, cellHeight: 20)
+
+    let visible = try localSnapshotText(model: model, tab: tab)
+    XCTAssertEqual(
+      visible.split(separator: "\n").map(String.init), ["PROMPT"],
+      """
+      reattach must replay retained output at the grid the PTY had when it \
+      was written, so the window resize reflows the screen the shell drew \
+      rather than an artifact of the guessed launch grid; visible=\(visible)
+      """)
+  }
+
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?

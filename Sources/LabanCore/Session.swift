@@ -596,6 +596,22 @@ public final class Session {
     }
   }
 
+  /// Feeds output written for a `cols` x `rows` terminal — a reattach's
+  /// retained daemon output, at its PTY's size — then reflows back to this
+  /// session's grid in the same locked step (`laban_session_feed_output_at_grid`).
+  @discardableResult
+  public func feedOutput(_ bytes: [UInt8], writtenAtCols cols: Int, rows: Int) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return -1 }
+    if bytes.isEmpty { return 0 }
+    return bytes.withUnsafeBytes { buf in
+      laban_session_feed_output_at_grid(
+        h, buf.baseAddress!.assumingMemoryBound(to: UInt8.self), bytes.count,
+        UInt16(clamping: cols), UInt16(clamping: rows))
+    }
+  }
+
   /// Drain terminal responses (CPR, DA, OSC 10/11 color replies, ...) the VT
   /// parser generated while consuming output. For a PTY-backed session the C
   /// layer already wrote these to the PTY and this buffer is inspection-only;

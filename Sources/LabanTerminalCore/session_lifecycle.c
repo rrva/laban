@@ -906,6 +906,28 @@ int laban_session_feed_output(LabanSession *s, const uint8_t *bytes, size_t len)
     return 0;
 }
 
+int laban_session_feed_output_at_grid(LabanSession *s, const uint8_t *bytes, size_t len,
+                                      uint16_t cols, uint16_t rows) {
+    if (!s) return -1;
+    if (len == 0) return 0;
+    if (!bytes) return -1;
+    SESSION_LOCK(s);
+    bool regrid = cols > 0 && rows > 0 && s->cols > 0 && s->rows > 0 &&
+                  (cols != s->cols || rows != s->rows) &&
+                  ghostty_terminal_resize(s->terminal, cols, rows,
+                                          s->cell_width, s->cell_height) == GHOSTTY_SUCCESS;
+    laban_vt_write_capture(s, bytes, len);
+    if (regrid) {
+        ghostty_terminal_resize(s->terminal, s->cols, s->rows,
+                                s->cell_width, s->cell_height);
+        GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+        ghostty_render_state_set(s->render_state,
+            GHOSTTY_RENDER_STATE_OPTION_DIRTY, &dirty);
+        laban_session_note_terminal_dirty(s);
+    }
+    return 0;
+}
+
 int laban_session_write(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (!s) return -1;
     if (len == 0) return 0;

@@ -739,6 +739,17 @@ int laban_session_set_osc_working_directory_callback(
 );
 
 /*
+ * Feed output that was written for a terminal of cols x rows, e.g. a
+ * reattach replaying a daemon's retained output at its PTY's size: parses
+ * the bytes at that grid, then reflows back to the session's own grid, as one
+ * step under the session lock. Wrapping, erase-line and pixel-sized Kitty
+ * images then come out as they did live. Zero cols or rows, or the session's
+ * own grid, feeds as laban_session_feed_output does. No SIGWINCH is sent.
+ */
+int laban_session_feed_output_at_grid(LabanSession *session, const uint8_t *bytes, size_t len,
+                                      uint16_t cols, uint16_t rows);
+
+/*
  * Feed captured PTY output bytes directly into the VT parser during replay.
  * This is intentionally named for replay so callers do not confuse terminal
  * byte replay with user input written to a live child process.
