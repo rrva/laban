@@ -1,0 +1,28 @@
+Sources/LabanRenderer/VectorPresentDisplayLink.swift
+  s_930d5abf6e92a4::t_0a2aaf3512adf9 110-121,130-131,137,139,142,146-147,149-150,154-155,158,160,162,164,240-251,337-339,349-350,577,579,618,624,627-656
+Sources/LabanRenderer/SlugGlyphRenderer.swift
+  s_930d5abf6e92a4::t_0a2aaf3512adf9 627-631,1018-1023,1028-1059,1218-1219,1222-1228,2149
+Tests/LabanRendererTests/PresentStallDecisionTests.swift
+  s_930d5abf6e92a4::t_f8ac564494321e 12-14,23-26,38-39,48-51,64,79,84-120
+  s_930d5abf6e92a4::t_99bf77ed9739fd 27-28
+docs/adr/0026-display-synced-drawable-acquisition.md
+  s_930d5abf6e92a4::t_c0f8ca7086884f 137-149
+docs/reference/renderer-session-history.md
+  s_930d5abf6e92a4::t_c0f8ca7086884f 54-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "add0094f1acb77e14b057a937fb9bc27b5c37482",
+  "prompts": {},
+  "sessions": {
+    "s_930d5abf6e92a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ae60aac-6c81-4cc3-a1a0-e595a9433eec",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
