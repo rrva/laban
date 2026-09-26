@@ -1,0 +1,19 @@
+docs/process/agent-operating-guide.md
+  s_bad324844e8bd3::t_31fab14fdb8c80 103-108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "67a0099fc9a5c3ea29c851732912bde260ce5ef5",
+  "prompts": {},
+  "sessions": {
+    "s_bad324844e8bd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ed7c9be-d98c-45c4-a34d-8700455889b0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
