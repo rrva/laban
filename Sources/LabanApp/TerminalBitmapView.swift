@@ -7771,8 +7771,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let key: Key = keys.key == .up ? .arrowUp : .arrowDown
       var bytes: [UInt8] = []
       for _ in 0..<keys.count {
-        let sent = session.sendKeyCapturingBytes(KeyEvent(action: .press, key: key))
-        if sent.result == 0 { bytes.append(contentsOf: sent.bytes) }
+        let event = KeyEvent(action: .press, key: key)
+        if sessionCoordinator != nil {
+          // The daemon owns the PTY, so the local viewer's send path has
+          // nowhere to write: encode here and forward below, as sendKeyEvent
+          // does.
+          bytes.append(contentsOf: session.encodeKey(event) ?? [])
+        } else {
+          let sent = session.sendKeyCapturingBytes(event)
+          if sent.result == 0 { bytes.append(contentsOf: sent.bytes) }
+        }
+      }
+      if let sessionCoordinator, !bytes.isEmpty {
+        do {
+          try sessionCoordinator.write(
+            bytes, to: activeTab, session: session, size: model.terminalSize)
+        } catch {
+          AppLog.app.error("laband alt-scroll input failed: \(String(describing: error))")
+        }
       }
       dismissLocalSelectionForForwardedInput()
       recordInput(

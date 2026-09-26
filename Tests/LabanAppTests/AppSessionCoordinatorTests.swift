@@ -657,6 +657,97 @@ final class AppSessionCoordinatorTests: XCTestCase {
     process.waitUntilExit()
   }
 
+  /// Alternate-scroll mode (less/man) turns the wheel into cursor keys. With a
+  /// daemon backend the local session has no PTY, so those keys must be
+  /// forwarded through the coordinator like typed keys, or the wheel does
+  /// nothing in the app.
+  func testAltScrollWheelKeysReachTheDaemonPTY() throws {
+    let labandURL = URL(fileURLWithPath: ".build/debug/laband")
+    guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
+      throw XCTSkip("laband binary is not built")
+    }
+    let oldRenderer = getenv("LABAN_RENDERER").map { String(cString: $0) }
+    setenv("LABAN_RENDERER", "software", 1)
+    defer {
+      if let oldRenderer {
+        setenv("LABAN_RENDERER", oldRenderer, 1)
+      } else {
+        unsetenv("LABAN_RENDERER")
+      }
+    }
+
+    let root = URL(
+      fileURLWithPath: ".tmp/lbn-alt-scroll-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    let socketPath = root.appendingPathComponent("s.sock").path
+    let journalURL = root.appendingPathComponent("journal", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let process = Process()
+    process.executableURL = labandURL
+    process.arguments = ["--socket", socketPath, "--journal", journalURL.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let coordinator = AppSessionCoordinator(
+      client: try waitForClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
+      cwdByTabId: [:])
+    defer { coordinator.detach() }
+
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let cellSize = fontAtlas.cellSize
+    let insets = TerminalBitmapView.contentInsets
+    let view = TerminalBitmapView(
+      model: model,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: FontAtlas(pointSize: 11),
+      cellWidth: Int(cellSize.width),
+      cellHeight: Int(cellSize.height),
+      sessionCoordinator: coordinator)
+    view.frame = NSRect(
+      x: 0, y: 0,
+      width: SidebarLayout.defaultWidth + insets.left + CGFloat(size.cols) * cellSize.width
+        + insets.right,
+      height: insets.top + CGFloat(size.rows) * cellSize.height + insets.bottom)
+
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    _ = try coordinator.ensureSession(for: tab, size: size)
+    try coordinator.write(Array("ready".utf8), to: tab, size: size)
+    _ = try waitForSnapshotText(coordinator: coordinator, tab: tab, size: size, text: "ready")
+
+    // The app's viewer parser is what decides the wheel route: put it in the
+    // alternate screen with DEC alternate scroll, as less would.
+    session.feedOutput(Array("\u{1B}[?1049h\u{1B}[?1007h".utf8))
+    XCTAssertEqual(session.viewportState()?.altScroll, true)
+
+    view.scrollWheel(
+      with: TestScrollWheelEvent(
+        locationInWindow: CGPoint(x: SidebarLayout.defaultWidth + 20, y: 20), deltaY: 1))
+
+    // cat's terminal echoes the forwarded ESC [ A as ^[[A.
+    _ = try waitForSnapshotText(coordinator: coordinator, tab: tab, size: size, text: "^[[A")
+
+    let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    _ = try? cleanupClient.terminate(sessionId: tab.id)
+    _ = try? cleanupClient.shutdownWhenIdle()
+    cleanupClient.close()
+    process.waitUntilExit()
+  }
+
   func testUnchangedBackgroundSnapshotDoesNotAdvanceRenderedFrame() throws {
     let labandURL = URL(fileURLWithPath: ".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
