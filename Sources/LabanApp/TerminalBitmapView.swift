@@ -2627,6 +2627,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return out
   }
 
+  /// Debug fault injection; see
+  /// `DisplayLinkPresentingRenderer.debugSimulateDeadPresentDisplay()`.
+  func debugSimulateDeadPresentDisplay() -> Bool {
+    (backend as? DisplayLinkPresentingRenderer)?.debugSimulateDeadPresentDisplay() ?? false
+  }
+
   func debugFrameStats(reset: Bool) -> [String: Any] {
     let s = frameIntervalSamplesMs.sorted()
     if reset { frameIntervalSamplesMs.removeAll(keepingCapacity: true) }

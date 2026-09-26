@@ -1178,6 +1178,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     return nil
   }
 
+  public func debugSimulateDeadPresentDisplay() -> Bool {
+    guard #available(macOS 14.0, *), let link = presentDisplayLink else { return false }
+    link.debugSimulateDeadDisplay()
+    return true
+  }
+
   public var surfaceWidth: Int { pixelWidth }
   public var surfaceHeight: Int { pixelHeight }
   public var surfaceScale: CGFloat { scale }

@@ -466,6 +466,31 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       lastCallbackAgeSeconds: lastCallbackAge)
   }
 
+  /// Debug fault injection (`debugSimulateDeadDisplay()`): every link this
+  /// instance holds or builds stays off the run loop. Guarded by `lock`.
+  private var debugDeadDisplay = false
+
+  /// Debug fault injection reproducing the 2026-08-27 unplug signature: the
+  /// current link is detached from the present run loop and every rebuilt
+  /// link is too, so the link stays unpaused, fires zero callbacks, and no
+  /// rebuild revives it. Used by `scripts/run-display-unplug-repro
+  /// --simulate-dead-display`.
+  func debugSimulateDeadDisplay() {
+    lock.lock()
+    debugDeadDisplay = true
+    let rl = runLoop
+    lock.unlock()
+    guard let rl else { return }
+    CFRunLoopPerformBlock(rl, CFRunLoopMode.defaultMode.rawValue) { [weak self] in
+      guard let self else { return }
+      self.lock.lock()
+      let link = self.link
+      self.lock.unlock()
+      link.remove(from: RunLoop.current, forMode: .common)
+    }
+    CFRunLoopWakeUp(rl)
+  }
+
   /// Test/debug seam: the live link's paused state, read under the swap lock.
   var debugLinkIsPaused: Bool {
     lock.lock()
@@ -523,6 +548,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     let newLink = CAMetalDisplayLink(metalLayer: layer)
     configurePresentLink(newLink, delegate: self)
     link = newLink
+    let dead = debugDeadDisplay
     lock.unlock()
     // Preserve the host's current run/park intent so the swap neither
     // restarts a parked terminal nor freezes an active one.
@@ -531,7 +557,9 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     statsLock.unlock()
     oldLink.invalidate()
     newLink.isPaused = paused
-    newLink.add(to: RunLoop.current, forMode: .common)
+    if !dead {
+      newLink.add(to: RunLoop.current, forMode: .common)
+    }
     statsLock.lock()
     rebuildCount += 1
     let swaps = rebuildCount

@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/run-display-unplug-repro [--no-build] [--port N] [--cycles N] [--hidpi] [--inactive] [--main]
+                                       [--simulate-dead-display]
+
+Reproduces the display-unplug presentation freeze without a physical monitor.
+Creates a software display (CGVirtualDisplay, scripts/virtual-display.m),
+launches Laban with --scroll-debug, moves the window onto the virtual display,
+streams shell output, then destroys the display so macOS moves the window back
+to a remaining display, exactly like unplugging a monitor.
+
+Pass: frames keep reaching the screen after every unplug (the present
+counter advances while output streams). Fail (exit 1): presentation froze.
+--inactive leaves Laban in the background instead of making it frontmost.
+--main makes the virtual display the main (menu bar) display, like a dock.
+
+--simulate-dead-display skips the virtual display and instead injects the
+2026-08-27 incident signature a virtual display cannot produce: the present
+link stays unpaused with zero callbacks and every rebuilt link is dead too.
+Pass means the renderer recovered presentation on its own.
+EOF
+}
+
+build=1
+port=8797
+cycles=3
+hidpi=0
+activate=1
+main=0
+simulate=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  --no-build) build=0; shift ;;
+  --port) port=$2; shift 2 ;;
+  --cycles) cycles=$2; shift 2 ;;
+  --hidpi) hidpi=1; shift ;;
+  --inactive) activate=0; shift ;;
+  --main) main=1; shift ;;
+  --simulate-dead-display) simulate=1; shift ;;
+  -h | --help) usage; exit 0 ;;
+  *) usage; exit 2 ;;
+  esac
+done
+
+repo_root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$repo_root"
+
+if [ "$build" -eq 1 ]; then
+  ./scripts/build-app >/dev/null
+fi
+
+stamp=$(date -u +"%Y%m%dT%H%M%SZ")
+run_dir=".artifacts/display-unplug-repro/$stamp"
+mkdir -p "$run_dir"
+helper="$run_dir/virtual-display"
+clang -fobjc-arc -framework Foundation -framework CoreGraphics \
+  scripts/virtual-display.m -o "$helper"
+
+base="http://127.0.0.1:$port"
+app_pid=""
+vd_pid=""
+cleanup() {
+  [ -n "$vd_pid" ] && kill "$vd_pid" 2>/dev/null || true
+  [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null || true
+  wait 2>/dev/null || true
+}
+trap cleanup EXIT
+
+log() { echo "run-display-unplug-repro: $*" >&2; }
+get() { curl -fsS --max-time 5 "$base$1"; }
+post() { curl -fsS --max-time 5 -X POST "$base$1" ${2:+--data-binary "$2"}; }
+json() { python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('$1', ''))"; }
+presented() {
+  local n
+  n=$(get /scroll/present-stats | json presented | cut -d. -f1)
+  echo "${n:-0}"
+}
+rendered() { get /window/display | json renderedFrames; }
+
+log "artifacts in $run_dir"
+# LABAN_CONTROL_SERVER=0: a user's running Laban already owns the control
+# plane, and a second mount fails startup with a modal alert.
+# --local-sessions: in-process shells die with this app, so killing it never
+# leaves orphan background sessions for the user's Laban to offer to adopt.
+LABAN_CONTROL_SERVER=0 .build/laban/Laban.app/Contents/MacOS/LabanApp \
+  --scroll-debug="$port" --no-persistence --local-sessions \
+  >"$run_dir/app.stdout.log" 2>"$run_dir/app.stderr.log" &
+app_pid=$!
+
+for _ in $(seq 1 60); do
+  get /window/display >/dev/null 2>&1 && break
+  sleep 0.5
+done
+home_display=$(get /window/display | json displayID)
+[ -n "$home_display" ] || { log "app never exposed a window"; exit 2; }
+log "window starts on display $home_display"
+
+# Continuous output so the terminal keeps publishing fresh frames.
+post /scroll/input 'while :; do date +%s.%N; sleep 0.05; done
+' >/dev/null
+
+# Frames reach the screen if the present counter advances over N seconds
+# while output streams. Echoes "<presented delta> <rendered delta>": a frozen
+# terminal renders (second number > 0) but never presents (first is 0).
+present_delta() {
+  local p0 r0 p1 r1
+  p0=$(presented)
+  r0=$(rendered)
+  sleep "$1"
+  p1=$(presented)
+  r1=$(rendered)
+  echo "$((p1 - p0)) $((r1 - r0))"
+}
+
+post "/window/move?display=$home_display&activate=$activate" >/dev/null
+sleep 2
+read -r baseline baseline_rendered <<<"$(present_delta 2)"
+log "baseline on display $home_display: presented +$baseline rendered +$baseline_rendered in 2s"
+[ "$baseline" -gt 0 ] || { log "no presents before any display change; harness broken"; exit 2; }
+
+if [ "$simulate" -eq 1 ]; then
+  post /present-link/simulate-dead-display >/dev/null
+  log "injected a dead present display; waiting for the stall watchdog"
+  sleep 12
+  read -r dead_presented dead_rendered <<<"$(present_delta 3)"
+  get /scroll/present-stats >"$run_dir/present-stats.simulated.json"
+  log "after dead display: presented +$dead_presented rendered +$dead_rendered in 3s"
+  [ "$dead_rendered" -gt 0 ] || { log "no frames rendered; harness cannot judge presentation"; exit 2; }
+  if [ "$dead_presented" -le 0 ]; then
+    log "RED: presentation stayed frozen on a dead present display (see $run_dir)"
+    exit 1
+  fi
+  log "presentation recovered from a dead present display"
+  # The next display change must re-arm the display-link presenter.
+  "$helper" 1920 1080 "$hidpi" "$main" >"$run_dir/vd.rearm.out" &
+  vd_pid=$!
+  sleep 3
+  kill "$vd_pid"
+  wait "$vd_pid" 2>/dev/null || true
+  vd_pid=""
+  sleep 3
+  read -r rearm_presented rearm_rendered <<<"$(present_delta 3)"
+  get /scroll/present-stats >"$run_dir/present-stats.rearmed.json"
+  callbacks=$(json callbacks <"$run_dir/present-stats.rearmed.json" | cut -d. -f1)
+  log "after a display change: presented +$rearm_presented rendered +$rearm_rendered, link callbacks ${callbacks:-0}"
+  if [ "$rearm_presented" -le 0 ] || [ "${callbacks:-0}" -le 0 ]; then
+    log "RED: the display-link presenter did not come back after a display change"
+    exit 1
+  fi
+  log "GREEN: recovered from a dead present display and re-armed the display link"
+  exit 0
+fi
+
+failed=0
+for cycle in $(seq 1 "$cycles"); do
+  "$helper" 1920 1080 "$hidpi" "$main" >"$run_dir/vd.$cycle.out" &
+  vd_pid=$!
+  for _ in $(seq 1 40); do
+    [ -s "$run_dir/vd.$cycle.out" ] && break
+    sleep 0.1
+  done
+  vd=$(head -1 "$run_dir/vd.$cycle.out")
+  sleep 2
+  post "/window/move?display=$vd&activate=$activate" >/dev/null
+  sleep 2
+  on=$(get /window/display | json displayID)
+  read -r on_presented on_rendered <<<"$(present_delta 2)"
+  log "cycle $cycle: on virtual display $vd (window reports $on): presented +$on_presented rendered +$on_rendered in 2s"
+
+  # Unplug.
+  kill "$vd_pid"
+  wait "$vd_pid" 2>/dev/null || true
+  vd_pid=""
+  sleep 2
+  # Keep the window frontmost, as it is for a user typing in it.
+  back=$(get /window/display | json displayID)
+  post "/window/move?display=$back&activate=$activate" >/dev/null
+  sleep 2
+  read -r after_presented after_rendered <<<"$(present_delta 3)"
+  get /scroll/present-stats >"$run_dir/present-stats.$cycle.json"
+  get /window/display >"$run_dir/window.$cycle.json"
+  log "cycle $cycle: unplugged, window on display $back: presented +$after_presented rendered +$after_rendered in 3s"
+  if [ "$after_rendered" -le 0 ]; then
+    log "cycle $cycle: no frames rendered after unplug; harness cannot judge presentation"
+    exit 2
+  fi
+  if [ "$after_presented" -le 0 ]; then
+    log "cycle $cycle: FROZEN — presentation stopped after the display vanished"
+    failed=1
+    break
+  fi
+done
+
+if [ "$failed" -ne 0 ]; then
+  log "RED: display-unplug freeze reproduced (see $run_dir)"
+  exit 1
+fi
+log "GREEN: presentation survived $cycles unplug cycles"

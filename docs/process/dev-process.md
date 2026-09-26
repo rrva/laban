@@ -1429,6 +1429,19 @@ boundary crossings.
 }
 ```
 
+Display-change routes back `scripts/run-display-unplug-repro`, which
+reproduces display-unplug presentation freezes without a physical monitor:
+
+- `GET /window/display` — the window's `CGDirectDisplayID`, every attached
+  screen, app/key/occlusion state, and the rendered-frame count.
+- `POST /window/move?display=ID[&activate=0]` — move the window onto a display
+  (e.g. a `CGVirtualDisplay` from `scripts/virtual-display.m`) and make it
+  frontmost; an inactive app parks its links by policy.
+- `POST /present-link/simulate-dead-display` — fault injection: the present
+  link behaves as if bound to a vanished display (unpaused, zero callbacks,
+  every rebuild dead too). `run-display-unplug-repro --simulate-dead-display`
+  checks that presentation recovers and re-arms after a display change.
+
 ## Headless Rendering Contract
 
 Headless mode must render into an offscreen surface that can be captured as a

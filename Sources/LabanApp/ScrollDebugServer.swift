@@ -408,6 +408,51 @@ final class ScrollDebugServer {
       }
     case ("GET", "/scroll/screenshot.png"):
       return screenshotResponse()
+    case ("POST", "/present-link/simulate-dead-display"):
+      return onMain { tv, _, _ in
+        let ok = tv.debugSimulateDeadPresentDisplay()
+        return Response.json(["ok": ok], status: ok ? 200 : 409)
+      }
+    case ("GET", "/window/display"):
+      return onMain { tv, _, _ in
+        var payload = Self.windowDisplayPayload(tv.window)
+        payload["renderedFrames"] = tv.renderedFrameCountForTests
+        return Response.json(payload)
+      }
+    case ("POST", "/window/move"):
+      // Move the window onto another display, e.g. a CGVirtualDisplay created
+      // by scripts/run-display-unplug-repro, so a display-unplug freeze can be
+      // reproduced without a physical monitor.
+      guard let target = UInt32(query["display"] ?? "") else {
+        return Response.json(["error": "missing display=<CGDirectDisplayID>"], status: 400)
+      }
+      let activate = query["activate"] != "0"
+      return onMain { tv, _, _ in
+        guard let window = tv.window else {
+          return Response.json(["error": "no window"], status: 409)
+        }
+        guard let screen = NSScreen.screens.first(where: { Self.displayID(of: $0) == target })
+        else {
+          return Response.json(["error": "unknown display", "display": Int(target)], status: 404)
+        }
+        let visible = screen.visibleFrame
+        var frame = window.frame
+        frame.size.width = min(frame.width, visible.width)
+        frame.size.height = min(frame.height, visible.height)
+        frame.origin = CGPoint(
+          x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2)
+        window.setFrame(frame, display: true)
+        // A display-unplug freeze usually hits the window the user is working
+        // in, and an inactive app legitimately parks its links, so make it
+        // frontmost unless `activate=0` asks to test the background case.
+        if activate {
+          window.makeKeyAndOrderFront(nil)
+          NSApp.activate(ignoringOtherApps: true)
+        }
+        var payload = Self.windowDisplayPayload(window)
+        payload["ok"] = true
+        return Response.json(payload)
+      }
     default:
       return Response.json(["error": "not found", "path": path], status: 404)
     }
@@ -435,6 +480,35 @@ final class ScrollDebugServer {
       payload["indicator"] = ind.debugVisibility().dictionary
       return Response.json(payload)
     }
+  }
+
+  private static func displayID(of screen: NSScreen) -> UInt32? {
+    (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+  }
+
+  private static func windowDisplayPayload(_ window: NSWindow?) -> [String: Any] {
+    let screens: [[String: Any]] = NSScreen.screens.map { screen in
+      [
+        "displayID": Int(displayID(of: screen) ?? 0),
+        "name": screen.localizedName,
+        "frame": [
+          screen.frame.origin.x, screen.frame.origin.y, screen.frame.width, screen.frame.height,
+        ],
+      ]
+    }
+    var payload: [String: Any] = ["screens": screens, "appActive": NSApp.isActive]
+    if let window {
+      payload["isKeyWindow"] = window.isKeyWindow
+      payload["occlusionVisible"] = window.occlusionState.contains(.visible)
+      payload["windowFrame"] = [
+        window.frame.origin.x, window.frame.origin.y, window.frame.width, window.frame.height,
+      ]
+      if let screen = window.screen, let id = displayID(of: screen) {
+        payload["displayID"] = Int(id)
+        payload["screenName"] = screen.localizedName
+      }
+    }
+    return payload
   }
 
   private func traceResponse(clear: Bool) -> Response {
@@ -544,5 +618,12 @@ final class ScrollDebugServer {
                                       maxOvershootPt (>0 = glyphs bigger than the
                                       cell), restedPresentationScale, final size
     GET  /scroll/screenshot.png       PNG of the live render surface
+    GET  /scroll/present-stats[?reset=1] present-link cadence + liveness counters
+    POST /present-link/simulate-dead-display  fault injection: the present link
+                                      acts bound to a vanished display (unpaused,
+                                      zero callbacks, every rebuild dead too)
+    GET  /window/display              the window's display and every attached screen
+    POST /window/move?display=ID[&activate=0]  move the window onto display ID
+                                      (CGDirectDisplayID) and make it frontmost
     """
 }

@@ -122,12 +122,19 @@ public protocol DisplayLinkPresentingRenderer: AnyObject {
   /// journal. Nil on the legacy path, where the frame render presents directly
   /// and there is no second link to describe.
   func presentLinkLiveness() -> PresentLinkLiveness?
+
+  /// Debug fault injection: make the present link behave as if bound to a
+  /// vanished display (unpaused, zero callbacks, rebuilds dead too). Returns
+  /// false when there is no present link to inject into.
+  func debugSimulateDeadPresentDisplay() -> Bool
 }
 
 extension DisplayLinkPresentingRenderer {
   /// Conformers with no present link (test doubles, legacy presenters) report
   /// nothing rather than being forced to fake a snapshot.
   public func presentLinkLiveness() -> PresentLinkLiveness? { nil }
+
+  public func debugSimulateDeadPresentDisplay() -> Bool { false }
 }
 
 /// Common surface contract for swappable rendering backends.
