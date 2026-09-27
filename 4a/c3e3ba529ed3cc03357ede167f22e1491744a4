@@ -1,0 +1,23 @@
+Tests/LabptyTests/LabptyAdversarialTests.swift
+  s_bad324844e8bd3::t_ec08fdbe08a77d 36-39
+Sources/LabanTerminalCore/session_lifecycle.c
+  s_bad324844e8bd3::t_ec08fdbe08a77d 326,330,336-337,341,764,768,774-775,779
+Sources/Labpty/labpty_registry.c
+  s_bad324844e8bd3::t_ec08fdbe08a77d 205-209
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4ac3e3ba529ed3cc03357ede167f22e1491744a4",
+  "prompts": {},
+  "sessions": {
+    "s_bad324844e8bd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ed7c9be-d98c-45c4-a34d-8700455889b0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
