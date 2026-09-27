@@ -1233,7 +1233,8 @@ final class LabanSessionTests: XCTestCase {
         let text = visibleText(from: UnsafePointer(s))
         XCTAssertFalse(
           text.contains("survived"),
-          "the child inherited an ignored SIGHUP or a blocked SIGTERM; got \(text.debugDescription)")
+          "the child inherited an ignored SIGHUP or a blocked SIGTERM; got \(text.debugDescription)"
+        )
       }
     }
   }
