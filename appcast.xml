@@ -3,6 +3,34 @@
     <channel>
         <title>Laban</title>
         <item>
+            <title>0.8.1</title>
+            <pubDate>Sun, 27 Sep 2026 22:02:11 +0200</pubDate>
+            <sparkle:version>1790539201</sparkle:version>
+            <sparkle:shortVersionString>0.8.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[## New
+
+- **Inline images.** Laban now draws Kitty graphics protocol images, on by default, so tools and agents that show pictures in the terminal work out of the box. Turn it off with `defaults write com.laban.LabanApp LabanKittyGraphicsEnabled -bool NO`.
+- **Help → Diagnostics…** shows the build, component stack and verified terminal capabilities for bug reports. `laban version --verbose` prints the same for scripts and agents. About is back to a simple native panel.
+- New installs get color emoji and agent completion notifications by default.
+
+## Fixed
+
+- After an ssh connection drops under a full-screen program, the next shell prompt now turns off the mouse reporting, focus reporting and alternate screen it left behind. Scrolling and dragging no longer type escape codes into zsh, and scrollback works again.
+- The scroll wheel scrolls `less`, `man` and other pagers again.
+- Restarting Laban no longer brings back a dead program's mouse mode, and zsh's prompt no longer gets a stray `%` beside it after a restart.
+- Closing a tab hangs up its shell and programs even when Laban was started with hangups ignored.
+- Rendering no longer freezes after a display is unplugged.
+- Programs started from Laban can reach local-network hosts and other protected resources after granting permission.
+- Images from a terminal program only reach the PNG decoder when they really are PNGs within the size budget.
+]]></description>
+            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.1/Laban-0.8.1.zip" length="20599419" type="application/octet-stream" sparkle:edSignature="iSQnBStzHudnjy5+DAaXY0mBtCr5dnAlGVafh7FG+yoc3RfHCHT5IJjHYkxMHANVSlEf1/Hx+nhlB7zSplW7Bg=="/>
+            <sparkle:deltas>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.1/Laban1790539201-1790250962.delta" sparkle:deltaFrom="1790250962" length="4252122" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="1mXkMvipI8O+Q+GMz3tESShDykvbG6ZI7RDwtJyKqpPVO9eXFqSJdT/Bn+3ukKRyA3Sw+BeNFP9CXR3ShGVMAA=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>0.8.0</title>
             <pubDate>Thu, 24 Sep 2026 13:58:45 +0200</pubDate>
             <sparkle:version>1790250962</sparkle:version>
