@@ -65,6 +65,7 @@ static void cover_is_reclaimable(void) {
     s.close_pending = 1; assert(!is_reclaimable_dead_session(&s)); s.close_pending = 0; /* close_pending */
     /* reclaim_dead_session collapses a zeroed dead-leak slot (no live fds,
      * ring map is NULL so byte_ring_close is a no-op) and rejects a live one. */
+    s.master_fd = -1; s.slave_inspect_fd = -1; /* memset left fd 0 (stdin), not "none" */
     assert(reclaim_dead_session(&s) == 1);
     memset(&s, 0, sizeof(s)); s.used = 1; s.alive = 1;
     assert(reclaim_dead_session(&s) == 0);
@@ -253,6 +254,10 @@ static void cover_request_close_unlinks_ring_path(void) {
 }
 
 int main(void) {
+    /* Stubborn children must die from request_close's SIGHUP. Under a
+     * `nohup`-launched check they would inherit SIG_IGN; restoring the default
+     * here, before any fork, avoids a child-side reset racing the signal. */
+    signal(SIGHUP, SIG_DFL);
     cover_valid_output_capacity();
     cover_make_logical_id();
     cover_is_reclaimable();
