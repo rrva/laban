@@ -75,6 +75,18 @@ fi
   --download-url-prefix "https://github.com/rrva/laban/releases/download/v${version}/" \
   "$archives"
 
+# generate_appcast re-prefixes every item whose archive is still in $archives
+# with this release's URL (0.8.1 pointed 0.8.0 at v0.8.1/Laban-0.8.0.zip).
+# Point each older version back at its own tag.
+for old_zip in "$archives"/Laban-*.zip; do
+  old_version=$(basename "$old_zip" .zip)
+  old_version=${old_version#Laban-}
+  [ "$old_version" = "$version" ] && continue
+  sed -i '' \
+    "s#releases/download/v${version}/Laban-${old_version}\\.zip#releases/download/v${old_version}/Laban-${old_version}.zip#g" \
+    "$archives/appcast.xml"
+done
+
 cp "$archives/appcast.xml" appcast.xml
 printf 'make-appcast: appcast.xml updated with %s\n' "$version"
 printf 'make-appcast: enclosure signature:\n'

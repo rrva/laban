@@ -64,6 +64,14 @@ fi
 
 ./scripts/make-appcast "$version"
 
+# generate_appcast builds delta updates from the earlier archives and links
+# them under this release; attach them, or those enclosures 404 and every
+# updater falls back to the full zip.
+deltas=$(grep -o "releases/download/${tag}/[^\"]*\.delta" appcast.xml | sed 's#.*/##' | sort -u)
+for delta in $deltas; do
+  gh release upload "$tag" ".artifacts/appcast-archives/$delta" --clobber
+done
+
 cat <<EOF
 
 publish-release: GitHub release ${tag} is live and appcast.xml is regenerated.
