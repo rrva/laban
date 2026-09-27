@@ -111,14 +111,16 @@ fi
 # Final hygiene gate on the whole bundle (build-app already gates the
 # binary). Catches identifying strings that might land in xattrs, the
 # Info.plist, or the SwiftPM resource bundles that get copied in.
-# Two deliberate, public forms are exempt: the `NSHumanReadableCopyright`
-# notice (`© <year> Ragnar Rova`) and the code-signature-embedded release
-# identity (`Developer ID Application: Ragnar Rova (3563RJWBQP)`), which is
-# present in every properly signed binary. The developer name anywhere else
-# — or a host path / personal team id — is still treated as a leak.
+# Three deliberate, public forms are exempt: the `NSHumanReadableCopyright`
+# notice (`© <year> Ragnar Rova`), the MIT license's own copyright line
+# (`Copyright (c) <year> Ragnar Rova`, bundled under Resources/Licenses and
+# required by the license), and the code-signature-embedded release identity
+# (`Developer ID Application: Ragnar Rova (3563RJWBQP)`), which is present in
+# every properly signed binary. The developer name anywhere else — or a host
+# path / personal team id — is still treated as a leak.
 forbidden=$(LC_ALL=C find "$app_bundle" -type f -print0 |
   xargs -0 grep -aHInE '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' |
-  grep -vE '©[[:space:]]+[0-9]{4}[[:space:]]+Ragnar Rova|Developer ID Application: Ragnar Rova \(3563RJWBQP\)' || true)
+  grep -vE '©[[:space:]]+[0-9]{4}[[:space:]]+Ragnar Rova|Copyright \(c\) [0-9]{4} Ragnar Rova$|Developer ID Application: Ragnar Rova \(3563RJWBQP\)' || true)
 if [ -n "$forbidden" ]; then
   printf 'package-zip failed: identifying strings present in:\n%s\n' "$forbidden" >&2
   exit 1
