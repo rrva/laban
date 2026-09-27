@@ -202,6 +202,11 @@ labpty_status_t labpty_registry_open(
     const char *const *argv = request->argv_count > 0 ? request->argv_ptrs : NULL;
     const char *const *envp = request->envp_count > 0 ? request->envp_ptrs : NULL;
     if (laban_pty_open((int)request->rows, (int)request->cols, argv, envp, request->cwd, &master_fd, &child_pid) != 0) {
+        /* openpty, fork, or the executable check failed; errno says which
+         * limit or path it was. The wire error carries no detail. */
+        int err = errno;
+        fprintf(stderr, "labpty: open session %s failed: %s (errno %d)\n",
+                logical_id, strerror(err), err);
         return LABPTY_E_PTY_OPEN_FAILED;
     }
     set_nonblocking(master_fd);

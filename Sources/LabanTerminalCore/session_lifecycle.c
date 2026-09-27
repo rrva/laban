@@ -323,17 +323,22 @@ int laban_pty_open(
     }
 
     if (set_cloexec(pty_fd) < 0 || set_cloexec(slave_fd) < 0) {
+        int saved_errno = errno;
         close(slave_fd);
         close(pty_fd);
         free(spawn_env);
+        errno = saved_errno;
         return -1;
     }
 
     pid_t child = fork();
     if (child < 0) {
+        /* Keep fork's errno (EAGAIN = process limit) for the caller's log. */
+        int saved_errno = errno;
         close(slave_fd);
         close(pty_fd);
         free(spawn_env);
+        errno = saved_errno;
         return -1;
     }
     if (child == 0) {
@@ -756,17 +761,22 @@ int laban_session_spawn_now_(LabanSession *s, const char *override_cwd,
     }
 
     if (set_cloexec(pty_fd) < 0 || set_cloexec(slave_fd) < 0) {
+        int saved_errno = errno;
         close(slave_fd);
         close(pty_fd);
         free(spawn_env);
+        errno = saved_errno;
         return -1;
     }
 
     pid_t child = fork();
     if (child < 0) {
+        /* Keep fork's errno (EAGAIN = process limit) for the caller's log. */
+        int saved_errno = errno;
         close(slave_fd);
         close(pty_fd);
         free(spawn_env);
+        errno = saved_errno;
         return -1;
     }
     if (child == 0) {

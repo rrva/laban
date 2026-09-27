@@ -33,6 +33,10 @@ final class LabptyAdversarialTests: XCTestCase {
         let data = try? pipe.fileHandleForReading.readToEnd(),
         let text = String(data: data, encoding: .utf8)
       else { continue }
+      // A failed test shows what the daemon said (e.g. why a pty open failed).
+      if testRun?.hasSucceeded == false, !text.isEmpty {
+        print("labpty daemon stderr (pid \(process.processIdentifier)):\n\(text)")
+      }
       XCTAssertFalse(
         text.contains("force-expiring established client"),
         "daemon reported an event-loop stall (force-expiring established client): \(text)")
