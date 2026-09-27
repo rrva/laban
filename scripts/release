@@ -62,8 +62,13 @@ if ! security find-identity -v -p codesigning | grep -q "Developer ID Applicatio
   exit 1
 fi
 
-if ! xcrun notarytool history --keychain-profile "$notary_profile" --limit 1 >/dev/null 2>&1; then
-  printf 'release failed: notarytool profile %s missing. Create it with:\n' "$notary_profile" >&2
+# No --limit: notarytool 1.1.3 (Xcode 27) rejects it, which made a valid
+# profile look missing. Show notarytool's own error so a revoked credential
+# is not reported as a missing profile.
+if ! notary_check=$(xcrun notarytool history --keychain-profile "$notary_profile" 2>&1); then
+  printf 'release failed: notarytool profile %s is missing or invalid:\n%s\n' \
+    "$notary_profile" "$notary_check" >&2
+  printf 'Create or refresh it with:\n' >&2
   printf '  xcrun notarytool store-credentials %s --apple-id <apple-id> --team-id 3563RJWBQP\n' "$notary_profile" >&2
   exit 1
 fi
