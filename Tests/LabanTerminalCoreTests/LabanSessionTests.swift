@@ -1175,6 +1175,69 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  /// Ignored signals and the signal mask survive fork and exec. A Laban or
+  /// labpty started with SIGHUP ignored (nohup, a detached launcher) must still
+  /// give its shells default dispositions and an empty mask, or closing a tab
+  /// cannot hang up the shell and its programs.
+  func testChildStartsWithDefaultSignalsWhenParentIgnoresOrBlocksThem() {
+    let previousHUP = signal(SIGHUP, SIG_IGN)
+    var blockTERM = sigset_t()
+    var previousMask = sigset_t()
+    sigemptyset(&blockTERM)
+    sigaddset(&blockTERM, SIGTERM)
+    pthread_sigmask(SIG_BLOCK, &blockTERM, &previousMask)
+    defer {
+      pthread_sigmask(SIG_SETMASK, &previousMask, nil)
+      signal(SIGHUP, previousHUP)
+    }
+
+    let exe = "/bin/sh"
+    let argStrings = [
+      "/bin/sh", "-c", "kill -HUP $$; echo hup-survived; kill -TERM $$; echo term-survived",
+    ]
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+        var size = LabanTerminalSize()
+        size.rows = 5
+        size.cols = 40
+
+        var session: OpaquePointer?
+        guard laban_session_create(&config, size, &session) == 0, let session else {
+          XCTFail("laban_session_create failed")
+          return
+        }
+        defer { laban_session_destroy(session) }
+
+        var snap: UnsafeMutablePointer<LabanSnapshot>?
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+          XCTAssertEqual(laban_session_poll(session), 0)
+          if let current = snap {
+            laban_snapshot_destroy(current)
+            snap = nil
+          }
+          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          if s.pointee.status != 0 { break }
+          Thread.sleep(forTimeInterval: 0.02)
+        }
+        defer { laban_snapshot_destroy(snap) }
+        guard let s = snap else {
+          XCTFail("no snapshot")
+          return
+        }
+        XCTAssertNotEqual(s.pointee.status, 0, "the shell must have exited")
+        let text = visibleText(from: UnsafePointer(s))
+        XCTAssertFalse(
+          text.contains("survived"),
+          "the child inherited an ignored SIGHUP or a blocked SIGTERM; got \(text.debugDescription)")
+      }
+    }
+  }
+
   func testPTYInitialSizeIsVisibleAtShellStartup() {
     let exe = "/bin/sh"
     let argStrings = ["/bin/sh", "-lc", "stty size"]

@@ -199,6 +199,24 @@ static int set_cloexec(int fd) {
     return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
+/* Runs in a forked child before exec. Ignored dispositions and the signal
+ * mask survive exec, so give the shell defaults for every signal and an empty
+ * mask: a Laban or labpty started with SIGHUP ignored (nohup) would otherwise
+ * make every tab's shell immune to the hangup that closing the tab sends.
+ * sigaction and sigprocmask are async-signal-safe. */
+static void reset_child_signals(void) {
+    struct sigaction sa = {0};
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    for (int signo = 1; signo < NSIG; signo++) {
+        if (signo == SIGKILL || signo == SIGSTOP) continue;
+        sigaction(signo, &sa, NULL);
+    }
+    sigset_t empty_mask;
+    sigemptyset(&empty_mask);
+    sigprocmask(SIG_SETMASK, &empty_mask, NULL);
+}
+
 static void init_sane_termios(struct termios *tio) {
     memset(tio, 0, sizeof(*tio));
     tio->c_iflag = BRKINT | ICRNL | IXON;
@@ -342,13 +360,7 @@ int laban_pty_open(
         return -1;
     }
     if (child == 0) {
-        struct sigaction sa = {0};
-        sa.sa_handler = SIG_DFL;
-        sigemptyset(&sa.sa_mask);
-        sigaction(SIGPIPE, &sa, NULL);
-        sigaction(SIGINT, &sa, NULL);
-        sigaction(SIGQUIT, &sa, NULL);
-        sigaction(SIGTSTP, &sa, NULL);
+        reset_child_signals();
         close(pty_fd);
         if (setsid() < 0) _exit(127);
         if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) _exit(127);
@@ -647,13 +659,7 @@ int laban_session_create(
         return -1;
     }
     if (child == 0) {
-        struct sigaction sa = {0};
-        sa.sa_handler = SIG_DFL;
-        sigemptyset(&sa.sa_mask);
-        sigaction(SIGPIPE, &sa, NULL);
-        sigaction(SIGINT, &sa, NULL);
-        sigaction(SIGQUIT, &sa, NULL);
-        sigaction(SIGTSTP, &sa, NULL);
+        reset_child_signals();
         close(pty_fd);
         if (setsid() < 0) _exit(127);
         if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) _exit(127);
@@ -780,13 +786,7 @@ int laban_session_spawn_now_(LabanSession *s, const char *override_cwd,
         return -1;
     }
     if (child == 0) {
-        struct sigaction sa = {0};
-        sa.sa_handler = SIG_DFL;
-        sigemptyset(&sa.sa_mask);
-        sigaction(SIGPIPE, &sa, NULL);
-        sigaction(SIGINT, &sa, NULL);
-        sigaction(SIGQUIT, &sa, NULL);
-        sigaction(SIGTSTP, &sa, NULL);
+        reset_child_signals();
         close(pty_fd);
         if (setsid() < 0) _exit(127);
         if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) _exit(127);
