@@ -144,23 +144,23 @@ content and the same running processes.
       by session; `AppModel.splitPane/closePane/focusPane`.
 - [x] M3: Persistence schema v2 (`PaneState`), v1 migration, per-tab decode
       fallback, transcripts keyed by session; restore round-trip tests.
-- [x] M4 (implemented; full-suite verification underway): Headless control plane: `pane.split`, `pane.close`, `pane.focus`
+- [x] M4: Headless control plane: `pane.split`, `pane.close`, `pane.focus`
       intents (headless-only), state projection + schema, discovery regen,
       parity tests. Needed before any rendering test can drive a split.
-- [x] M5 (implemented; full-suite verification underway): Per-session terminal size; resize on split/close/tab switch; spawn
+- [x] M5: Per-session terminal size; resize on split/close/tab switch; spawn
       size for a new pane.
-- [x] M6 (implemented; full-suite verification underway): Multi-pane rendering (draw-command path), all visible panes dirty
+- [x] M6: Multi-pane rendering (draw-command path), all visible panes dirty
       and marked rendered, divider, unfocused cursor, per-pane selection,
       preedit in focused pane; GUI falls back from cell payload when split;
       laband backend refuses splits.
-- [x] M7 (implemented; full-suite verification underway): Input routing: focus follows click, per-pane mouse/selection/IME
+- [x] M7: Input routing: focus follows click, per-pane mouse/selection/IME
       geometry, focus reports on pane change, scroll wheel to pane under
       pointer, scroll indicator and find chip follow focus.
-- [x] M8 (implemented; full-suite verification underway): GUI commands: menu items, shortcuts, `AppCommand` cases, error
+- [x] M8: GUI commands: menu items, shortcuts, `AppCommand` cases, error
       surfacing; localisation strings.
-- [x] M9 (2026-09-28 independent review: full `./scripts/test-e2e` passed with `split-pane scenario: ok`; restart script passed both child-survival tests; persistence relaunch suite passed): E2E: headless scenario in `scripts/test-e2e`; labpty restart test
+- [x] M9 (2026-09-28 15:26Z independent full re-review: direct E2E, both child-survival restart tests, and persistence relaunch passed): E2E: headless scenario in `scripts/test-e2e`; labpty restart test
       with a split tab in `Tests/LabanAppTests/LabanAppTests.swift`.
-- [ ] M10 (documentation complete; hover-preview fixture repaired and 55 surface/split tests passed; full fresh-state re-review pending): Docs: `docs/product/mvp.md` Later Milestones, `dev-process.md`
+- [x] M10 (2026-09-28 15:26Z complete independent Review Gate passed on `8994441a`): Docs: `docs/product/mvp.md` Later Milestones, `dev-process.md`
       endpoint list; Review Gate.
 
 ## Decision Log
@@ -416,17 +416,23 @@ this plan branched from; the executing agent records it here before M0:
 - [x] `swift test --filter SurvivorPaneTests` exits 0 and output contains `testTypingAfterFirstPaneClosed`, `testCastEndpointAfterFirstPaneClosed`, `testTranscriptAfterFirstPaneClosed`, `testFindAfterFirstPaneClosed`, `testRestoreAfterFirstPaneClosed`, `testResizeAfterFirstPaneClosed`, `testAgentDetectionAfterFirstPaneClosed`.
 - [x] `swift test --filter LiveControlObserveTests` exits 0 and output contains `testScopedClientSeesOwnPaneMetadataInSplitTab` and `testScopedScreenshotDeniedInSplitTab`.
 - [x] `swift test --filter LabandSplitRestoreTests` exits 0 and output contains `testSplitWorkspaceRestoresFocusedPaneUnderLaband`.
-- [ ] `./scripts/check` exits 0.
+- [x] `./scripts/check` exits 0.
 - [x] `ls docs/adr/0036-pane-layout-is-view-state-above-session-tiers.md` succeeds and `grep -c "0036" docs/adr/README.md` prints at least `1`.
 - [x] Mutation: in `Sources/LabanCore/PaneTree.swift`, make `removing(leaf:)` return the removed child instead of the survivor; run `swift test --filter PaneTreeTests`; expect a failure naming `testRemoveLeafCollapsesToSurvivor`; revert.
 - [x] Mutation: in `Sources/LabanCore/TerminalSurfaceController.swift`, force every pane's origin to the first pane's origin; run `swift test --filter SplitPaneHeadlessTests`; expect `testTwoPanesRenderAtDistinctOrigins` to fail; revert.
 - [x] Mutation: in `TerminalSurfaceController.syncSessions`, replace the `item.isVisible` dirty check with `session.id == activeSessionId`; run `swift test --filter SplitPaneHeadlessTests`; expect `testOutputInUnfocusedPaneMarksFrameDirty` to fail; revert.
 
-Review status: FAILED (first mechanical review, 2026-09-28 15:10Z); reviewed implementation `ac22388aedb64b824c0ecf76a4114d78cc2737ef` against `BASE = f145b0a6`. One gate item failed: `./scripts/check`. A fresh reviewer must rerun the full gate after the fix, per `PLANS.md`.
+Review status: PASSED (complete fresh-state mechanical re-review, 2026-09-28 15:26Z); reviewed implementation `8994441a3ce6ad1bf30ccd7ce7d3becdb3dd0ecf` against `BASE = f145b0a6`. Every gate item was rerun, including all three reversible mutations. Evidence: `.artifacts/split-panes/final-review-2/`.
 
-Fresh source review (2026-09-28) found scoped accessibility/scroll routing, pending dirty output after deferred frames, double-inset sizing, laband full-width sizing, IME discard, notification attribution, pointer geometry, small-wheel accumulation, and selection enumeration issues. Each has been corrected; regression tests cover scoped reads/scroll, repeated dirty sync, focus sizing, notification isolation, native slow-wheel/IME, and pointer hover. Final independent gate remains required.
+Fresh source review (2026-09-28) found scoped accessibility/scroll routing, pending dirty output after deferred frames, double-inset sizing, laband full-width sizing, IME discard, notification attribution, pointer geometry, small-wheel accumulation, and selection enumeration issues. Each has been corrected; regression tests cover scoped reads/scroll, repeated dirty sync, focus sizing, notification isolation, native slow-wheel/IME, and pointer hover. The complete independent mechanical gate now passes, as recorded above.
 
-Review findings (filled in by the review agent):
+Review findings (complete re-review):
+
+- No outstanding gate findings. Ten targeted suites passed all 163 test cases with every required name present and no skipped cases; `PaneTreeTests` ran nine tests. Static checks and `swift run LabanControlGen --check` passed. Direct `./scripts/test-e2e` printed `split-pane scenario: ok`; direct restart validation passed both tests and printed `child survived`.
+- Normal `./scripts/check` exited 0 and printed `check passed`. It reused content-hash memoized passes for `controlgen`, `cbmc`, `cbmc-contracts`, `trace`, `model-coverage`, `fuzz`, `fuzz-msan`, `lint`, `test-split`, `coverage-labpty`, `sanitize`, `smoke-runtime`, and embedded `test-e2e`; its optional TLA+ check was skipped because `tla2tools.jar` is absent. No skip flags or environment overrides were added by this reviewer. The direct targeted suites, control generation, E2E, and restart validation above ran independently of that memoization.
+- Each mutation exited 1 in the required test: removed-child retention at `PaneTreeTests.swift:17–18`, shared origin at `SplitPaneHeadlessTests.swift:84`, and focused-only dirtiness at `SplitPaneHeadlessTests.swift:98`. Exact source bytes were restored after each mutation; final sources match the reviewed commit and all 14 restored tree/split tests pass. Commands, test output, mutation diffs, exit statuses, and SHA256 restoration evidence are under `.artifacts/split-panes/final-review-2/`.
+
+Previous review findings (resolved; retained for the review-fix history):
 
 - `./scripts/check` exits 1 in its `test-split` parallel-safe shard. `Tests/LabanCoreTests/TerminalSurfaceControllerTests.swift:1528` (`testSyncSessionsHoveredInactiveTabKeepsReportingModelChanged`) expects only the hovered session in `pendingResult.dirtySessionIds`, but receives both the hovered and active sessions; line 1541 then expects an empty dirty set and receives the still-dirty active session. The setup at lines 1467–1471 marks only the second/background session rendered. The new intentional pending-visible-output handling in `Sources/LabanCore/TerminalSurfaceController.swift:785–787` now retains the active session's initial dirty state. Settle the active session in this preview-focused fixture while preserving production deferred-frame behavior, then rerun the full gate. Evidence: `.artifacts/split-panes/final-review/check.log:2096`.
 - All other gate commands passed: ten targeted suites ran 163 tests with every required name present and no skipped test cases; control generation and static checks passed; direct `./scripts/test-e2e` printed `split-pane scenario: ok`; both legacy and split restart tests passed and printed `child survived`.
@@ -492,6 +498,12 @@ Review findings (filled in by the review agent):
 - Observation (rev 3): the bell path is `NSSound.beep()`
   (`TerminalBitmapView.swift:4986`); there is no transient status surface.
   In-tab messages go through `AppModel.postTabNotice` (`AppModel.swift:1087`).
+
+## Outcomes & Retrospective
+
+The complete automated Review Gate passed on `8994441a`: two independent terminals share one tab, preserve session identity and processes across restore/restart, render and route input independently, and keep scoped control access isolated. Persistence migration and first-pane removal are covered by direct tests, and all three required deliberate regressions are detected. The first review's pending-output fixture failure was repaired by settling its initial active frame while preserving production dirty tracking.
+
+The planned scope is complete. Divider dragging, deeper or horizontal splits, spatial navigation, laband split rendering, and the multi-payload GPU path remain deferred. Content-hash memoization made the full repository gate inexpensive to repeat; direct feature suites and end-to-end commands provided fresh execution evidence alongside it.
 
 ## Context and Orientation
 
