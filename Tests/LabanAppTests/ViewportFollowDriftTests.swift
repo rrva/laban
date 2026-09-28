@@ -50,6 +50,18 @@ final class ViewportFollowDriftTests: XCTestCase {
       view.advanceFrame()
     }
 
+    func settleScroll(file: StaticString = #filePath, line: UInt = #line) {
+      // Precise scrolling chases its target over wall-clock time. The follow
+      // invariant applies after the return gesture has reached the bottom.
+      for _ in 0..<500 {
+        view.advanceFrame()
+        let state = view.debugScrollSnapshot()
+        if !state.animating && state.displayed == state.target { return }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.002))
+      }
+      XCTFail("scroll animation did not settle", file: file, line: line)
+    }
+
     func linesBack() throws -> Int {
       let vs = try XCTUnwrap(session.viewportState())
       return max(0, max(0, vs.totalRows - vs.viewportRows) - vs.viewportOffset)
@@ -183,11 +195,11 @@ final class ViewportFollowDriftTests: XCTestCase {
       var h = try makeHarness()
       h.stream(120)
       h.view.scrollWheel(with: h.wheel(rowsUp: 5))
-      h.view.advanceFrame()
+      h.settleScroll()
       XCTAssertGreaterThan(try h.linesBack(), 0)
       h.write("\u{1b}[?1049h\u{1b}[2J\u{1b}[Hpicker\u{1b}[?1049l")
       h.view.scrollWheel(with: h.wheel(rowsUp: -8))
-      h.view.advanceFrame()
+      h.settleScroll()
       try assertFollowsLiveBottom(&h, "alt-screen during scrollback + return")
     }
   }
@@ -197,11 +209,11 @@ final class ViewportFollowDriftTests: XCTestCase {
       var h = try makeHarness()
       h.stream(120)
       h.view.scrollWheel(with: h.wheel(rowsUp: 5))
-      h.view.advanceFrame()
+      h.settleScroll()
       XCTAssertGreaterThan(try h.linesBack(), 0)
       h.write("\u{1b}[2J\u{1b}[3J\u{1b}[H")
       h.view.scrollWheel(with: h.wheel(rowsUp: -8))
-      h.view.advanceFrame()
+      h.settleScroll()
       try assertFollowsLiveBottom(&h, "ED3 during scrollback + return")
     }
   }
