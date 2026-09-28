@@ -38,7 +38,8 @@ extension HeadlessDebugRuntime {
       }
       let castSnapshot = ring.castWindowSnapshot(window: seconds)
       let entries = castSnapshot.entries
-      let size = model.terminalAreaSize
+      let size =
+        terminalBackend == .laband ? model.terminalAreaSize : model.terminalSize(for: paneId)
       let cols = max(Int(size.cols), 1)
       let rows = max(Int(size.rows), 1)
       let initialFrameBytes = AsciinemaCast.fullFrameSnapshotBytes(

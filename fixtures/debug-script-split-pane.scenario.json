@@ -5,12 +5,14 @@
   "steps": [
     {
       "op": "action",
+      "label": "left",
       "body": {
         "action": "newTab"
       }
     },
     {
       "op": "action",
+      "label": "right",
       "body": {
         "action": "pane.split"
       }
@@ -20,20 +22,26 @@
       "body": {
         "action": "pane.focus",
         "direction": "previous"
-      }
+      },
+      "expectJson": [
+        {
+          "path": "activeSessionId",
+          "equals": "$steps.left.activeSessionId"
+        }
+      ]
     },
     {
       "op": "action",
       "body": {
         "action": "typeText",
-        "text": "printf 'LEFT\\n'\n"
+        "text": "printf '\\114\\105\\106\\124\\n'\n"
       }
     },
     {
       "op": "wait",
-      "timeoutMs": 5000,
       "condition": {
         "kind": "textVisible",
+        "sessionId": "$steps.left.activeSessionId",
         "text": "LEFT"
       }
     },
@@ -42,20 +50,26 @@
       "body": {
         "action": "pane.focus",
         "direction": "next"
-      }
+      },
+      "expectJson": [
+        {
+          "path": "activeSessionId",
+          "equals": "$steps.right.activeSessionId"
+        }
+      ]
     },
     {
       "op": "action",
       "body": {
         "action": "typeText",
-        "text": "printf 'RIGHT\\n'\n"
+        "text": "printf '\\122\\111\\107\\110\\124\\n'\n"
       }
     },
     {
       "op": "wait",
-      "timeoutMs": 5000,
       "condition": {
         "kind": "textVisible",
+        "sessionId": "$steps.right.activeSessionId",
         "text": "RIGHT"
       }
     },
@@ -66,7 +80,6 @@
     {
       "op": "get",
       "path": "/debug/state",
-      "saveAs": "split-state.json",
       "expectJson": [
         {
           "path": "tabs[1].panes.split.axis",
@@ -77,7 +90,8 @@
     {
       "op": "action",
       "body": {
-        "action": "pane.close"
+        "action": "pane.close",
+        "sessionId": "$steps.left.activeSessionId"
       }
     },
     {
@@ -86,14 +100,33 @@
       "saveAs": "survivor-state.json",
       "expectJson": [
         {
-          "path": "tabs[1].status",
-          "equals": "running"
+          "path": "tabs[1].focusedSessionId",
+          "equals": "$steps.right.activeSessionId"
         },
         {
           "path": "tabs[1].panes.leaf.sessionId",
           "equalsPath": "tabs[1].focusedSessionId"
+        },
+        {
+          "path": "tabs[1].focusedSessionId",
+          "notEqualsPath": "tabs[1].id"
         }
       ]
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "typeText",
+        "text": "printf '\\123\\125\\122\\126\\111\\126\\117\\122\\n'\n"
+      }
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "kind": "textVisible",
+        "sessionId": "$steps.right.activeSessionId",
+        "text": "SURVIVOR"
+      }
     }
   ]
 }

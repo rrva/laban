@@ -847,25 +847,57 @@ public final class HeadlessDebugRuntime {
   // MARK: - Render (always call under lock or from init)
 
   private var lastFocusedPane: Session.ID?
+  var windowFocused = true
+  private var lastReportedFocusBySession: [Session.ID: Bool] = [:]
+
+  func targetTab(sessionId: Session.ID?) -> Tab? {
+    if let sessionId { return model.tabProjection(forSession: sessionId) }
+    return model.activeTab
+  }
+
+  private func reportFocus(_ focused: Bool, to id: Session.ID) {
+    guard let session = model.session(forSessionID: id) else { return }
+    guard session.focusReportingEnabled else {
+      lastReportedFocusBySession.removeValue(forKey: id)
+      return
+    }
+    guard lastReportedFocusBySession[id] != focused,
+      let bytes = session.encodeFocus(focused: focused), !bytes.isEmpty
+    else { return }
+    if let client = terminalSessionClient {
+      do {
+        try client.writeInput(sessionId: terminalClientRemoteSessionId(for: id), bytes: bytes)
+      } catch {
+        appendError(
+          kind: "terminalClient.writeInput.failed", message: String(describing: error),
+          sessionId: id)
+        return
+      }
+    } else {
+      _ = session.sendFocus(focused: focused)
+    }
+    lastReportedFocusBySession[id] = focused
+    appendTerminalLog(sessionId: id, direction: "input", bytes: bytes)
+    appendEvent(
+      EventEntry(kind: "focus.reported", sessionId: id, action: focused ? "focusIn" : "focusOut"))
+  }
 
   func renderFrameUnlocked() {
     let focused = model.activeTab?.focusedSessionId
     if lastFocusedPane != focused {
-      for (id, focus) in [(lastFocusedPane, false), (focused, true)] {
-        if let id, let session = model.session(forSessionID: id), session.focusReportingEnabled {
-          if let bytes = session.encodeFocus(focused: focus) {
-            if let client = terminalSessionClient {
-              try? client.writeInput(
-                sessionId: terminalClientRemoteSessionId(for: id), bytes: bytes)
-            } else {
-              _ = session.sendFocus(focused: focus)
-            }
-            appendTerminalLog(sessionId: id, direction: "input", bytes: bytes)
-          }
+      if let prior = lastFocusedPane { reportFocus(false, to: prior) }
+      if let prior = lastFocusedPane {
+        preeditBySession.removeValue(forKey: prior)
+        // Match native pane navigation's dismissal of the old selection.
+        if model.activeTab?.allSessionIds.contains(prior) == true {
+          selectionBySession.removeValue(forKey: prior)
         }
       }
       lastFocusedPane = focused
     }
+    if let focused { reportFocus(windowFocused, to: focused) }
+    let live = Set(model.tabs.flatMap(\.allSessionIds))
+    lastReportedFocusBySession = lastReportedFocusBySession.filter { live.contains($0.key) }
 
     if terminalBackend != .laband {
       model.resizePanes(
@@ -1083,7 +1115,10 @@ public final class HeadlessDebugRuntime {
     guard let tab = model.activeTab else { return nil }
     let area = CGRect(
       x: sidebarWidth, y: 0, width: max(0, windowWidth - sidebarWidth), height: windowHeight)
-    if terminalBackend == .laband { return PaneRect(sessionId: tab.focusedSessionId, rect: area) }
+    if terminalBackend == .laband {
+      guard sessionId == nil || sessionId == tab.focusedSessionId else { return nil }
+      return PaneRect(sessionId: tab.focusedSessionId, rect: area)
+    }
     return tab.panes.layout(in: area).first { pane in
       if let sessionId { return pane.sessionId == sessionId }
       return pane.rect.contains(CGPoint(x: x, y: y))

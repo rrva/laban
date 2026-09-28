@@ -27,7 +27,7 @@ struct DebugWindowActions {
     )
     if let client = runtime.terminalSessionClient {
       let size = runtime.model.terminalAreaSize
-      for tab in runtime.model.tabs {
+      for tab in runtime.model.tabs.flatMap({ tab in tab.allSessionIds.map { tab.focusing($0) } }) {
         do {
           try runtime.ensureTerminalClientSessionUnlocked(for: tab)
           runtime.terminalClientSessionInfoById[tab.focusedSessionId] =
@@ -85,7 +85,8 @@ struct DebugWindowActions {
       )
       if let client = runtime.terminalSessionClient {
         let size = runtime.model.terminalAreaSize
-        for tab in runtime.model.tabs {
+        for tab in runtime.model.tabs.flatMap({ tab in tab.allSessionIds.map { tab.focusing($0) } })
+        {
           do {
             try runtime.ensureTerminalClientSessionUnlocked(for: tab)
             runtime.terminalClientSessionInfoById[tab.focusedSessionId] =
@@ -283,39 +284,8 @@ struct DebugWindowActions {
   /// must be delivered to the daemon's PTY like `typeText`, or the app never
   /// sees focus changes.
   func windowFocus(_ request: WindowFocusActionRequest) -> DebugResponse {
-    let focused = request.focused ?? true
-    guard let tab = runtime.model.activeTab,
-      let session = runtime.model.session(forTab: tab.id)
-    else {
-      return jsonError("no active session for windowFocus")
-    }
-    guard session.focusReportingEnabled,
-      let bytes = session.encodeFocus(focused: focused), !bytes.isEmpty
-    else {
-      return runtime.actionResult(ok: true)
-    }
-    if let client = runtime.terminalSessionClient {
-      do {
-        try runtime.ensureTerminalClientSessionUnlocked(for: tab)
-        try client.writeInput(
-          sessionId: runtime.terminalClientRemoteSessionId(for: tab.focusedSessionId),
-          bytes: bytes)
-      } catch {
-        runtime.appendError(
-          kind: "terminalClient.writeInput.failed",
-          message: String(describing: error),
-          sessionId: tab.focusedSessionId,
-          tabId: tab.id)
-        return jsonError("windowFocus forward failed: \(error)")
-      }
-    } else {
-      _ = session.sendFocus(focused: focused)
-    }
-    runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
-    runtime.appendEvent(
-      EventEntry(
-        kind: "focus.reported", sessionId: tab.focusedSessionId,
-        action: focused ? "focusIn" : "focusOut"))
+    runtime.windowFocused = request.focused ?? true
+
     runtime.renderFrameUnlocked()
     return runtime.actionResult(ok: true)
   }

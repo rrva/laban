@@ -308,6 +308,17 @@ def assert_json_expectations(response, expectations):
                     )
 
 
+def resolve_step_references(value, responses):
+    """A whole `$steps.label.path` string refers to an earlier labeled response."""
+    if isinstance(value, str) and value.startswith("$steps."):
+        return json_path(responses, value[len("$steps."):])
+    if isinstance(value, list):
+        return [resolve_step_references(item, responses) for item in value]
+    if isinstance(value, dict):
+        return {key: resolve_step_references(item, responses) for key, item in value.items()}
+    return value
+
+
 def execute_step(server_url, token, artifacts_dir, index, step):
     op = step.get("op")
     label = step.get("label") or op or f"step-{index}"
@@ -506,8 +517,12 @@ def main():
         print(f"debug script: {scenario['name']}")
         print(f"debug server: {server_url}")
 
+        responses = {}
         for index, step in enumerate(scenario["steps"], start=1):
-            step_result = execute_step(server_url, server_token, artifacts_dir, index, step)
+            resolved_step = resolve_step_references(step, responses)
+            step_result = execute_step(server_url, server_token, artifacts_dir, index, resolved_step)
+            if "label" in step and "response" in step_result:
+                responses[step["label"]] = step_result["response"]
             report["steps"].append(step_result)
             print(f"step {index}: {step_result['op']} ok")
 

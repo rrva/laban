@@ -163,6 +163,15 @@ content and the same running processes.
 - [x] M10 (2026-09-28 15:26Z complete independent Review Gate passed on `8994441a`): Docs: `docs/product/mvp.md` Later Milestones, `dev-process.md`
       endpoint list; Review Gate.
 
+### PR review follow-up (2026-09-28)
+
+- [x] R1: Aggregate pane attention without changing focused metadata or journal identity; acknowledge all visible panes and retire per-session caches.
+- [x] R2: Preserve background restore sizes and retry attach registration by session identity; handle duplicate workspace session IDs safely.
+- [x] R3: Route right-button gestures to their originating pane, honor synchronized output in every visible pane, and clear stale selection/find presentation on focus.
+- [x] R4: Reject final-pane close consistently; repair explicit-session headless actions, resize/focus reports, and pane-sized casts.
+- [x] R5: Strengthen real-shell E2E and missing restore/router/coordinate tests; correct unsupported downgrade claims and remaining presentation defects.
+- [ ] R6: Run relevant regressions, full checks and E2E, then a fresh independent review of the fixes before updating PR #2.
+
 ## Decision Log
 
 - Decision: Build the recursive `PaneTree` from spec section 3 now, even
@@ -422,7 +431,7 @@ this plan branched from; the executing agent records it here before M0:
 - [x] Mutation: in `Sources/LabanCore/TerminalSurfaceController.swift`, force every pane's origin to the first pane's origin; run `swift test --filter SplitPaneHeadlessTests`; expect `testTwoPanesRenderAtDistinctOrigins` to fail; revert.
 - [x] Mutation: in `TerminalSurfaceController.syncSessions`, replace the `item.isVisible` dirty check with `session.id == activeSessionId`; run `swift test --filter SplitPaneHeadlessTests`; expect `testOutputInUnfocusedPaneMarksFrameDirty` to fail; revert.
 
-Review status: PASSED (complete fresh-state mechanical re-review, 2026-09-28 15:26Z); reviewed implementation `8994441a3ce6ad1bf30ccd7ce7d3becdb3dd0ecf` against `BASE = f145b0a6`. Every gate item was rerun, including all three reversible mutations. Evidence: `.artifacts/split-panes/final-review-2/`.
+Review status: PENDING for the PR #2 review fixes; the previous implementation passed its complete fresh-state mechanical re-review on 2026-09-28 15:26Z; reviewed implementation `8994441a3ce6ad1bf30ccd7ce7d3becdb3dd0ecf` against `BASE = f145b0a6`. Every gate item was rerun, including all three reversible mutations. Evidence: `.artifacts/split-panes/final-review-2/`.
 
 Fresh source review (2026-09-28) found scoped accessibility/scroll routing, pending dirty output after deferred frames, double-inset sizing, laband full-width sizing, IME discard, notification attribution, pointer geometry, small-wheel accumulation, and selection enumeration issues. Each has been corrected; regression tests cover scoped reads/scroll, repeated dirty sync, focus sizing, notification isolation, native slow-wheel/IME, and pointer hover. The complete independent mechanical gate now passes, as recorded above.
 
@@ -440,6 +449,8 @@ Previous review findings (resolved; retained for the review-fix history):
 - The repository check reports the optional TLA+ jar absent and reuses memoized unchanged `cbmc`, `cbmc-contracts`, `trace`, `model-coverage`, `fuzz`, and `fuzz-msan` results. Its later coverage, sanitizer, runtime smoke, and embedded E2E stages are not reached because `test-split` fails; the direct full E2E command above passed independently. No skip flags or environment overrides were supplied by this reviewer.
 
 ## Surprises & Discoveries
+
+- PR #2 review follow-up: 211 targeted model, daemon, persistence, native-input and headless regressions passed. The strengthened real-shell scenario resolves actual session IDs from prior responses, asserts focus IDs, uses encoded output markers to avoid command-echo false positives, closes the original pane and types into the surviving sibling. Its 14 steps passed and the screenshot was inspected (`.artifacts/split-panes/pr-review-scenario/`). Independent source review found one remaining background blocking-title attention edge; a new regression reproduced both incorrect `.done` and missing attention after acknowledgement, and the aggregation now uses the shared attention classifier. The final mechanical gate remains pending.
 
 - The first mechanical gate exposed a hover-preview fixture that never rendered the active terminal before asserting that only the preview remained dirty. Preserving pending visible pane output correctly made that initial dirty state observable. Taking the initial snapshot and marking it rendered repairs the fixture without weakening assertions or production dirty tracking; all 50 surface-controller and five split-pane tests pass (`.artifacts/split-panes/hover-fixture-red.log` and `hover-fixture-green.log`).
 
@@ -503,7 +514,7 @@ Previous review findings (resolved; retained for the review-fix history):
 
 The complete automated Review Gate passed on `8994441a`: two independent terminals share one tab, preserve session identity and processes across restore/restart, render and route input independently, and keep scoped control access isolated. Persistence migration and first-pane removal are covered by direct tests, and all three required deliberate regressions are detected. The first review's pending-output fixture failure was repaired by settling its initial active frame while preserving production dirty tracking.
 
-The planned scope is complete. Divider dragging, deeper or horizontal splits, spatial navigation, laband split rendering, and the multi-payload GPU path remain deferred. Content-hash memoization made the full repository gate inexpensive to repeat; direct feature suites and end-to-end commands provided fresh execution evidence alongside it.
+The original planned scope passed; the PR #2 review fixes await a fresh full gate. Divider dragging, deeper or horizontal splits, spatial navigation, laband split rendering, and the multi-payload GPU path remain deferred. Content-hash memoization made the full repository gate inexpensive to repeat; direct feature suites and end-to-end commands provided fresh execution evidence alongside it.
 
 ## Context and Orientation
 
@@ -787,7 +798,7 @@ ID where a session ID belongs fails one of these.
   been closed (Decision Log). An older binary reading a v2 file reattaches
   daemon ID `tab.id` and therefore gets the pane the flat fields describe;
   unsplit tabs are byte-for-byte today's behaviour; a split tab's other pane
-  is left running in the daemon and appears as adoptable.
+  is left running in labpty and appears as adoptable. Downgrading while using laband is not supported: older laband clients sweep the sibling session as an orphan. Export the workspace and use labpty before downgrading.
 - Decoding: `TabState` implements `init(from:)` so a malformed `panes` value
   falls back to a single leaf `.leaf(sessionId: id)` and logs, instead of
   failing the whole workspace (`PersistenceStore.load` treats any throw as
@@ -1077,9 +1088,10 @@ Manual, in the installed app with the labpty backend (the default):
 - Before testing restore on a real workspace, copy the file
   `PersistenceStore.swift` names (`workspace.json` under the app's
   Application Support directory) aside; a v2 file restores under a v1 binary
-  as its focused panes.
-- Daemon sessions are never terminated by migration. A pane the app cannot
-  reattach shows up in the existing "unclaimed sessions" adopt dialog.
+  using the legacy flat pane fields (the first-created pane when still present).
+- The current migration does not terminate daemon sessions. Unclaimed labpty
+  panes remain adoptable. Downgrading a split workspace with laband is unsupported:
+  older clients can terminate sibling sessions during orphan sweeping.
 - `./scripts/test-e2e` and the restart test clean their own
   `.tmp/<run-id>` directories.
 

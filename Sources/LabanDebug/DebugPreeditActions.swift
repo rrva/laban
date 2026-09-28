@@ -11,11 +11,9 @@ struct DebugPreeditActions {
 
   func setPreedit(_ request: PreeditActionRequest) -> DebugResponse {
     let frameBefore = runtime.currentFrame
-    let targetTab =
-      request.sessionId.flatMap { sessionId in
-        runtime.model.tabs.first(where: { $0.allSessionIds.contains(sessionId) })
-      } ?? runtime.model.activeTab
-    guard let tab = targetTab, runtime.model.session(forTab: tab.id) != nil else {
+    let targetTab = runtime.targetTab(sessionId: request.sessionId)
+    guard let tab = targetTab, runtime.model.session(forSessionID: tab.focusedSessionId) != nil
+    else {
       return jsonError("no session for setPreedit")
     }
 
@@ -24,7 +22,7 @@ struct DebugPreeditActions {
       runtime.preeditBySession.removeValue(forKey: tab.focusedSessionId)
     } else {
       let graphemeClusterMode: Bool
-      if let session = runtime.model.session(forTab: tab.id),
+      if let session = runtime.model.session(forSessionID: tab.focusedSessionId),
         let snapshot = session.snapshot()
       {
         defer { laban_snapshot_destroy(snapshot) }

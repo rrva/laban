@@ -1682,3 +1682,8 @@ State tabs include recursive `panes` and `focusedSessionId`; `sessionId` remains
 a deprecated alias for the focused session. Use `sessionId` on `typeText` and
 mouse actions to address a specific pane. `fixtures/debug-script-split-pane.scenario.json`
 runs two real shells and captures their side-by-side output.
+
+Debug-script steps can label responses and reference a previous response with a
+whole string such as `$steps.left.activeSessionId`. References resolve before
+request bodies and assertions are evaluated, so scenarios can target independent
+sessions without assuming generated IDs or current focus.

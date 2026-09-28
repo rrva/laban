@@ -10,11 +10,10 @@ struct DebugViewportActions {
 
   func scrollViewport(_ request: ScrollViewportActionRequest) -> DebugResponse {
     let frameBefore = runtime.currentFrame
-    let targetTab =
-      request.sessionId.flatMap { sessionId in
-        runtime.model.tabs.first(where: { $0.focusedSessionId == sessionId })
-      } ?? runtime.model.activeTab
-    guard let tab = targetTab, let session = runtime.model.session(forTab: tab.id) else {
+    let targetTab = runtime.targetTab(sessionId: request.sessionId)
+    guard let tab = targetTab,
+      let session = runtime.model.session(forSessionID: tab.focusedSessionId)
+    else {
       return jsonError("no session for scrollViewport")
     }
     let deltaRows = request.deltaRows ?? 0

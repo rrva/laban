@@ -27,6 +27,7 @@ struct DebugPaneActions {
         return jsonError("daemonRefused: \(error)", status: 400)
       }
     case "pane.close":
+      guard tab.allSessionIds.count > 1 else { return jsonError("lastPane", status: 400) }
       let id = request.sessionId ?? tab.focusedSessionId
       guard tab.panes.contains(id) else { return jsonError("unknownSession", status: 404) }
       runtime.model.closePane(inTab: tab.id, sessionId: id) {

@@ -31,7 +31,7 @@ struct DebugMouseActions {
     else {
       return jsonError("no active session for mouseWheel")
     }
-    let terminalPoint = runtime.terminalMousePosition(x: x, y: y)
+    let terminalPoint = runtime.terminalMousePosition(x: x, y: y, sessionId: session.id)
     let isUp = deltaY > 0
 
     let viewportState = session.viewportState()
@@ -112,7 +112,7 @@ struct DebugMouseActions {
       return jsonError("no active session for click")
     }
     runtime.model.focusPane(inTab: tab.id, sessionId: session.id)
-    let terminalPoint = runtime.terminalMousePosition(x: x, y: y)
+    let terminalPoint = runtime.terminalMousePosition(x: x, y: y, sessionId: session.id)
 
     let encodingOptions = mouseEncodingOptions(session: session)
     if encodingOptions != nil || session.viewportState()?.mouseTracking == true {
