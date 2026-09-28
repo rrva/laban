@@ -434,12 +434,11 @@ final class PersistenceRoundTripTests: XCTestCase {
     coord.attach(model)
     coord.scheduleSave()
 
-    // Wait past the debounce window so the timer fires and writes.
-    let written = expectation(description: "save lands")
-    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.2) {
-      written.fulfill()
-    }
-    wait(for: [written], timeout: 2.0)
+    // The utility queue can run later than the debounce deadline under load.
+    // Await the actual write rather than an unrelated timer on another queue.
+    let written = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in store.load() != nil }, object: nil)
+    wait(for: [written], timeout: 10.0)
 
     let loaded = try XCTUnwrap(store.load())
     XCTAssertEqual(loaded.windows.first?.id, "win-debounce")

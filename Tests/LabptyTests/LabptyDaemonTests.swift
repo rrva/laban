@@ -1497,7 +1497,11 @@ final class LabptyDaemonTests: XCTestCase {
         logicalSessionId: "high-volume"))
     let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
 
-    let output = try waitForOutput(reader: reader, contains: "line-100000")
+    // This is a loss/ordering check, not a throughput benchmark. Allow the
+    // shell's 100,000 writes to finish when parallel test workers contend.
+    let output = try waitForOutputWithOffset(
+      reader: reader, contains: "line-100000", timeout: 60
+    ).output
     let regex = try NSRegularExpression(pattern: #"line-(\d{6})"#)
     let nsOutput = output as NSString
     let matches = regex.matches(
@@ -1834,9 +1838,10 @@ final class LabptyDaemonTests: XCTestCase {
 
   private func waitForOutputWithOffset(
     reader: LabptyByteRingReader,
-    contains needle: String
+    contains needle: String,
+    timeout: TimeInterval = 10
   ) throws -> (output: String, offset: UInt64) {
-    let deadline = Date().addingTimeInterval(10)
+    let deadline = Date().addingTimeInterval(timeout)
     var offset: UInt64 = 0
     var data = Data()
     while Date() < deadline {
