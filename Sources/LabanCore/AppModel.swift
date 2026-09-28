@@ -34,15 +34,29 @@ public final class AppModel {
   private var paneMetadata: [Session.ID: TabTitleMetadata] = [:]
   private let metadataSync = TabMetadataSynchronizer()
   private var currentSize: LabanTerminalSize
+  private var sizeBySession: [Session.ID: LabanTerminalSize] = [:]
   private let sessionFactory: (LabanTerminalSize, SessionLaunchContext) throws -> Session
   /// Supplies preallocated session identity and control env before each spawn (C11).
   public var sessionLaunchContextProvider: ((Tab.ID?, Session.ID, Bool) -> SessionLaunchContext)?
 
   /// Current grid size in cells (cols, rows). Read under the model
   /// lock so callers see a stable size even mid-resize.
-  public var terminalSize: LabanTerminalSize {
-    withModelLock { currentSize }
+  public var terminalAreaSize: LabanTerminalSize { withModelLock { currentSize } }
+
+  public func terminalSize(for id: Session.ID) -> LabanTerminalSize {
+    withModelLock { sizeBySession[id] ?? currentSize }
   }
+
+  public func paneSize(for id: Session.ID, in tabId: Tab.ID) -> LabanTerminalSize {
+    withModelLock {
+      guard let tab = _tabs.first(where: { $0.id == tabId }),
+        let pane = tab.panes.layout(in: CGRect(x: 0, y: 0,
+          width: Int(currentSize.pixel_width), height: Int(currentSize.pixel_height))).first(where: { $0.sessionId == id })
+      else { return currentSize }
+      return Self.size(rect: pane.rect, cellWidth: max(1, Int(currentSize.cell_width)), cellHeight: max(1, Int(currentSize.cell_height)))
+    }
+  }
+
   private var themeChangeObserver: NSObjectProtocol?
 
   private struct FindFullSearchCache {
@@ -415,6 +429,22 @@ public final class AppModel {
     }
   }
 
+  public func tabProjection(forSession id: Session.ID) -> Tab? {
+    withModelLock {
+      guard let tab = _tabs.first(where: { $0.panes.contains(id) }) else { return nil }
+      var result = tab.focusing(id)
+      if id != tab.focusedSessionId {
+        result.titleMetadata = paneMetadata[id] ?? .fallback(position: tab.position, active: false)
+      }
+      switch sessionRegistry.session(id: id)?.exitState() {
+      case .exited(let code): result.status = .exited(code: code)
+      case .exitedSignal(let signal): result.status = .exitedSignal(signal: signal)
+      default: result.status = .running
+      }
+      return result
+    }
+  }
+
   public func session(forTab tabId: Tab.ID) -> Session? {
     withModelLock {
       guard let tab = _tabs.first(where: { $0.id == tabId }) else { return nil }
@@ -714,6 +744,7 @@ public final class AppModel {
         _ = syncSurfaceMetadata(forTab: tabId, tabIndex: idx, from: session, now: Date(), recordTitleChanges: true)
       }
       acknowledgeShellCommands(forTabAt: idx)
+      resizeTabLayoutsUnlocked()
     }
     onSessionsReplaced?()
     notifyWorkspaceMutation()
@@ -955,69 +986,66 @@ public final class AppModel {
     persistedTab: TabState,
     isActive: Bool
   ) throws -> Tab {
-    let resolved = resolveRestoredCwd(persistedTab.cwd)
-    let (tab, session) = try withModelLock {
-      () -> (Tab, Session) in
-      let launchContext = self.launchContext(tabId: id, isAgentAttached: false)
-      let session: Session
-      if let deferredFactory = restoredDeferredSessionFactory {
-        let spec = RestoredSessionSpec(
-          size: currentSize,
-          tabId: id,
-          cwd: resolved.cwd,
-          cwdFallbackApplied: resolved.fallbackApplied,
-          transcriptURL: transcriptDelegate?.transcriptURL(forSessionId: id),
-          altBufferAtQuit: persistedTab.altBufferAtQuit ?? false,
-          agent: persistedTab.agent,
-          shellPid: persistedTab.shellPid
-        )
-        session = try deferredFactory(spec)
-      } else if let factory = restoredSessionFactory {
-        session = try factory(currentSize, resolved.cwd, launchContext)
-      } else {
-        session = try sessionFactory(currentSize, launchContext)
+    try withModelLock {
+      var restored: [(PaneState, Session, String, Bool)] = []
+      do {
+        for pane in persistedTab.resolvedPaneStates {
+          let resolved = resolveRestoredCwd(pane.cwd)
+          let context = launchContext(tabId: id, sessionId: pane.sessionId)
+          let session: Session
+          if let factory = restoredDeferredSessionFactory {
+            session = try factory(RestoredSessionSpec(size: currentSize, tabId: id,
+              sessionId: pane.sessionId, cwd: resolved.cwd, cwdFallbackApplied: resolved.fallbackApplied,
+              transcriptURL: transcriptDelegate?.transcriptURL(forSessionId: pane.sessionId),
+              altBufferAtQuit: pane.altBufferAtQuit ?? false, agent: pane.agent, shellPid: pane.shellPid))
+          } else if let factory = restoredSessionFactory {
+            session = try factory(currentSize, resolved.cwd, context)
+          } else { session = try sessionFactory(currentSize, context) }
+          restored.append((pane, session, resolved.cwd, resolved.fallbackApplied))
+          noteLaunchEnvironmentUnlocked(forTab: id, context: context)
+        }
+      } catch {
+        for (_, session, _, _) in restored { session.close() }
+        throw error
       }
-      session.captureSink = captureSink
-      AppModel.maybeAutoCapture(session)
-      ThemePaletteInjector.injectCurrentTheme(into: session)
+      guard let first = restored.first else { throw PaneError.unknownSession }
       let position = _tabs.count + 1
-      let tab = Tab(
-        id: id,
-        position: position,
-        title: "Tab \(position)",
-        isActive: false,
-        sessionId: session.id
-      )
-      sessionRegistry.add(session)
+      var tab = Tab(id: id, position: position, title: "Tab \(position)", isActive: false, sessionId: first.1.id)
+      // Legacy test factories may ignore injected identity. Production factories always preserve it.
+      let actual = Dictionary(uniqueKeysWithValues: restored.map { ($0.0.sessionId, $0.1.id) })
+      func remap(_ tree: PaneTree) -> PaneTree {
+        switch tree {
+        case .leaf(let id): return .leaf(sessionId: actual[id] ?? id)
+        case .split(let axis, let fraction, let a, let b):
+          return .split(axis: axis, fraction: fraction, first: remap(a), second: remap(b))
+        }
+      }
+      tab.panes = remap(persistedTab.resolvedPanes)
+      tab.focusedSessionId = actual[persistedTab.resolvedFocusedSessionId] ?? first.1.id
+      tab.focusHistory = tab.allSessionIds.filter { $0 != tab.focusedSessionId } + [tab.focusedSessionId]
       _tabs.append(tab)
-      noteLaunchEnvironmentUnlocked(forTab: tab.id, context: launchContext)
-      launchCommandBySession[session.id] = persistedTab.launchCommand
-      if let agent = persistedTab.agent {
-        agentBySession[session.id] = agent
+      for (pane, session, cwd, fallback) in restored {
+        sessionRegistry.add(session)
+        AppModel.maybeAutoCapture(session)
+        ThemePaletteInjector.injectCurrentTheme(into: session)
+        launchCommandBySession[session.id] = pane.launchCommand
+        agentBySession[session.id] = pane.agent
+        cwdFallbackAppliedBySession[session.id] = fallback
+        var metadata = TabTitleMetadata.fallback(position: position, active: isActive)
+        metadata.workspace = TabWorkspaceMetadata(cwd: cwd)
+        paneMetadata[session.id] = metadata
+        attachSessionCallbacks(session: session, tabId: id)
+        recordSessionCreated(sessionId: session.id, tabId: id)
+        transcriptDelegate?.attachTranscriptWriter(to: session, sessionId: session.id,
+          suppressInitialOutputFor: .milliseconds(500))
+        onSessionCreated?(id, session)
       }
-      if resolved.fallbackApplied {
-        _tabs[_tabs.count - 1].titleMetadata.workspace = TabWorkspaceMetadata(cwd: resolved.cwd)
-        cwdFallbackAppliedBySession[session.id] = true
-      }
-      attachSessionCallbacks(session: session, tabId: tab.id)
-      recordSessionCreated(sessionId: session.id, tabId: tab.id)
-      recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
-      if isActive {
-        selectTabUnlocked(tab.id)
-      }
-      return (_tabs.last!, session)
+      _tabs[_tabs.count - 1].titleMetadata = paneMetadata[tab.focusedSessionId]!
+      recordTab(.tabCreated, tabId: id, sessionId: tab.focusedSessionId)
+      if isActive { selectTabUnlocked(id) }
+      onTabCreated?(id, first.1)
+      return _tabs.last!
     }
-    // Restored tabs ask the delegate to suppress capture for ~500ms
-    // so the new shell's spawn-time prompt sequences don't get
-    // appended to the prior session's `.bin`. Without this, every
-    // quit-restore cycle accumulates a stacked prompt block that
-    // shows up in the next restore's scrollback.
-    transcriptDelegate?.attachTranscriptWriter(
-      to: session, sessionId: session.id,
-      suppressInitialOutputFor: .milliseconds(500))
-    onSessionCreated?(id, session)
-    onTabCreated?(id, session)
-    return tab
   }
 
   /// Resolve the cwd to use when restoring a tab. The persisted cwd may
@@ -1069,56 +1097,32 @@ public final class AppModel {
     withModelLock {
       let now = Date()
       let states: [TabState] = _tabs.map { tab in
-        let session = sessionRegistry.session(id: tab.focusedSessionId)
-        let liveCwd: String? = {
-          if let cached = tab.titleMetadata.workspace.cwd, !cached.isEmpty {
-            return cached
+        let panes = tab.allSessionIds.map { id -> PaneState in
+          let session = sessionRegistry.session(id: id)
+          let metadata = id == tab.focusedSessionId ? tab.titleMetadata : paneMetadata[id]
+          let cwd = metadata?.workspace.cwd ?? session?.processMetadata()?.cwd ?? FileManager.default.homeDirectoryForCurrentUser.path
+          let status = session?.exitState() ?? .running
+          let processStatus: PersistedProcessStatus
+          let exitCode: Int?
+          switch status {
+          case .running: processStatus = .running; exitCode = nil
+          case .exited(let code): processStatus = code == 0 ? .exitedClean : .exitedError; exitCode = code
+          case .exitedSignal(let code): processStatus = .exitedError; exitCode = code
           }
-          if let session,
-            let metadata = session.processMetadata(),
-            let cwd = metadata.cwd, !cwd.isEmpty
-          {
-            return cwd
-          }
-          return nil
-        }()
-        let cwd = liveCwd ?? FileManager.default.homeDirectoryForCurrentUser.path
-        let launchCommand =
-          launchCommandBySession[tab.focusedSessionId] ?? defaultLaunchCommand
-        let processStatus: PersistedProcessStatus = {
-          switch tab.status {
-          case .running: return .running
-          case .exited(let code): return code == 0 ? .exitedClean : .exitedError
-          case .exitedSignal: return .exitedError
-          }
-        }()
-        let exitCode: Int? = {
-          switch tab.status {
-          case .running: return nil
-          case .exited(let code), .exitedSignal(let code): return code
-          }
-        }()
-        let altBuffer = session?.altBufferActive ?? false
-        let shellPid = session?.processMetadata()?.childPid
-        let transcriptPath: String? = {
-          if transcriptDelegate == nil { return nil }
-          return "transcripts/\(tab.id).bin"
-        }()
-        let repoFingerprint = RepoFingerprint.fingerprint(cwd: cwd)
-        return TabState(
-          id: tab.id,
-          cwd: cwd,
-          launchCommand: launchCommand,
-          lastActiveAt: now,
-          transcriptPath: transcriptPath,
-          altBufferAtQuit: altBuffer,
-          cwdFallbackApplied: cwdFallbackAppliedBySession[tab.focusedSessionId],
-          repoFingerprint: repoFingerprint,
-          processStatus: processStatus,
-          exitCode: exitCode,
-          shellPid: shellPid,
-          agent: agentBySession[tab.focusedSessionId]
-        )
+          return PaneState(sessionId: id, cwd: cwd,
+            launchCommand: launchCommandBySession[id] ?? defaultLaunchCommand,
+            transcriptPath: transcriptDelegate == nil ? nil : "transcripts/\(id).bin",
+            altBufferAtQuit: session?.altBufferActive ?? false,
+            cwdFallbackApplied: cwdFallbackAppliedBySession[id], repoFingerprint: RepoFingerprint.fingerprint(cwd: cwd),
+            processStatus: processStatus, exitCode: exitCode, shellPid: session?.processMetadata()?.childPid,
+            agent: agentBySession[id])
+        }
+        let flat = panes.first(where: { $0.sessionId == tab.id }) ?? panes.first(where: { $0.sessionId == tab.focusedSessionId })!
+        return TabState(id: tab.id, cwd: flat.cwd, launchCommand: flat.launchCommand,
+          lastActiveAt: now, transcriptPath: flat.transcriptPath, altBufferAtQuit: flat.altBufferAtQuit,
+          cwdFallbackApplied: flat.cwdFallbackApplied, repoFingerprint: flat.repoFingerprint,
+          processStatus: flat.processStatus, exitCode: flat.exitCode, shellPid: flat.shellPid, agent: flat.agent,
+          panes: tab.panes, focusedSessionId: tab.focusedSessionId, paneStates: panes)
       }
       let selectedId = _tabs.first(where: { $0.isActive })?.id
       let window = WindowState(
@@ -1253,6 +1257,7 @@ public final class AppModel {
           : (_tabs[i].titleMetadata.unseenOutput ? .unseenOutput : .background)
       }
     }
+    resizeTabLayoutsUnlocked()
     let tab = _tabs[selectedIdx]
     recordTab(.tabSelected, tabId: tab.id, sessionId: tab.focusedSessionId)
   }
@@ -1278,6 +1283,7 @@ public final class AppModel {
     findFullSearchCacheBySession.removeValue(forKey: id)
     pendingFindRescanSessions.remove(id)
     paneMetadata.removeValue(forKey: id)
+    sizeBySession.removeValue(forKey: id)
     launchCommandBySession.removeValue(forKey: id)
     launchArgvBySession.removeValue(forKey: id)
     launchEnvironmentBySession.removeValue(forKey: id)
@@ -1757,48 +1763,67 @@ public final class AppModel {
     _ = session.startCapture(path: fileURL.path)
   }
 
-  public func resize(
-    viewportWidth: Int, viewportHeight: Int, cellWidth: Int, cellHeight: Int,
-    deferFindRescan: Bool = false
-  ) {
+  @discardableResult
+  public func resizePanes(in area: CGRect, insets: TerminalSurfaceInsets = .zero, cellWidth: Int, cellHeight: Int) -> [PaneRect] {
     withModelLock {
-      let safeCellWidth = max(1, cellWidth)
-      let safeCellHeight = max(1, cellHeight)
-      let safeViewportWidth = max(0, viewportWidth)
-      let safeViewportHeight = max(0, viewportHeight)
-      let rows = max(1, safeViewportHeight / safeCellHeight)
-      let cols = max(1, safeViewportWidth / safeCellWidth)
-      var size = LabanTerminalSize()
-      size.rows = Self.clampedTerminalMetric(rows, minimum: 1)
-      size.cols = Self.clampedTerminalMetric(cols, minimum: 1)
-      size.pixel_width = Self.clampedTerminalMetric(safeViewportWidth)
-      size.pixel_height = Self.clampedTerminalMetric(safeViewportHeight)
-      size.cell_width = Self.clampedTerminalMetric(safeCellWidth, minimum: 1)
-      size.cell_height = Self.clampedTerminalMetric(safeCellHeight, minimum: 1)
-      currentSize = size
-      sessionRegistry.forEachSession { session in
-        if session.resize(size) == 0 {
-          var event = CaptureTimelineEvent(kind: .sessionResized, sessionId: session.id)
-          event.rows = Int(size.rows)
-          event.cols = Int(size.cols)
-          event.pixelWidth = safeViewportWidth
-          event.pixelHeight = safeViewportHeight
-          event.cellWidth = safeCellWidth
-          event.cellHeight = safeCellHeight
-          captureSink?.record(event)
-          if findStateBySession[session.id]?.isActive == true {
-            findFullSearchCacheBySession.removeValue(forKey: session.id)
-            if deferFindRescan {
-              // During a live resize drag, defer the O(scrollback) full find
-              // rescan to resize-settle (refreshActiveFindsAfterResize). The
-              // per-frame visible-highlight recompute still keeps what's on
-              // screen correct, so each pixel nudge no longer formats the
-              // whole scrollback on the main thread. (H-5)
-              pendingFindRescanSessions.insert(session.id)
-            } else {
-              _ = refreshFindFullUnlocked(sessionID: session.id)
-            }
-          }
+      guard let tab = _tabs.first(where: \.isActive) else { return [] }
+      let layout = tab.panes.layout(in: area)
+      resize(layout: layout.map { PaneRect(sessionId: $0.sessionId,
+        rect: CGRect(x: 0, y: 0, width: max(0, $0.rect.width - insets.left - insets.right),
+          height: max(0, $0.rect.height - insets.top - insets.bottom))) },
+        cellWidth: cellWidth, cellHeight: cellHeight)
+      return layout
+    }
+  }
+
+  private static func size(rect: CGRect, cellWidth: Int, cellHeight: Int) -> LabanTerminalSize {
+    var size = LabanTerminalSize()
+    size.cols = clampedTerminalMetric(Int(rect.width) / max(1, cellWidth), minimum: 1)
+    size.rows = clampedTerminalMetric(Int(rect.height) / max(1, cellHeight), minimum: 1)
+    size.pixel_width = clampedTerminalMetric(Int(rect.width))
+    size.pixel_height = clampedTerminalMetric(Int(rect.height))
+    size.cell_width = clampedTerminalMetric(cellWidth, minimum: 1)
+    size.cell_height = clampedTerminalMetric(cellHeight, minimum: 1)
+    return size
+  }
+
+  public func resize(viewportWidth: Int, viewportHeight: Int, cellWidth: Int, cellHeight: Int,
+    deferFindRescan: Bool = false) {
+    withModelLock {
+      currentSize = Self.size(rect: CGRect(x: 0, y: 0, width: max(0, viewportWidth), height: max(0, viewportHeight)),
+        cellWidth: cellWidth, cellHeight: cellHeight)
+      resizeTabLayoutsUnlocked(deferFindRescan: deferFindRescan)
+    }
+  }
+
+  private func resizeTabLayoutsUnlocked(deferFindRescan: Bool = false) {
+    guard currentSize.pixel_width > 0, currentSize.pixel_height > 0 else { return }
+    let rect = CGRect(x: 0, y: 0, width: Int(currentSize.pixel_width), height: Int(currentSize.pixel_height))
+    for tab in _tabs where tab.isActive || tab.allSessionIds.count == 1 {
+      resize(layout: tab.panes.layout(in: rect), cellWidth: Int(currentSize.cell_width),
+        cellHeight: Int(currentSize.cell_height), deferFindRescan: deferFindRescan)
+    }
+  }
+
+  public func resize(layout: [PaneRect], cellWidth: Int, cellHeight: Int, deferFindRescan: Bool = false) {
+    withModelLock {
+      for pane in layout {
+        guard let session = sessionRegistry.session(id: pane.sessionId) else { continue }
+        let size = Self.size(rect: pane.rect, cellWidth: cellWidth, cellHeight: cellHeight)
+        if let old = sizeBySession[session.id], old.cols == size.cols, old.rows == size.rows,
+          old.pixel_width == size.pixel_width, old.pixel_height == size.pixel_height,
+          old.cell_width == size.cell_width, old.cell_height == size.cell_height { continue }
+        guard session.resize(size) == 0 else { continue }
+        sizeBySession[session.id] = size
+        var event = CaptureTimelineEvent(kind: .sessionResized, sessionId: session.id)
+        event.rows = Int(size.rows); event.cols = Int(size.cols)
+        event.pixelWidth = Int(size.pixel_width); event.pixelHeight = Int(size.pixel_height)
+        event.cellWidth = cellWidth; event.cellHeight = cellHeight
+        captureSink?.record(event)
+        if findStateBySession[session.id]?.isActive == true {
+          findFullSearchCacheBySession.removeValue(forKey: session.id)
+          if deferFindRescan { pendingFindRescanSessions.insert(session.id) }
+          else { _ = refreshFindFullUnlocked(sessionID: session.id) }
         }
       }
     }

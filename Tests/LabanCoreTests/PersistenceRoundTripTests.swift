@@ -620,3 +620,31 @@ final class PersistenceRoundTripTests: XCTestCase {
     XCTAssertFalse(after, "explicit false must round-trip through the helper's logic")
   }
 }
+
+extension PersistenceRoundTripTests {
+  func testV1WorkspaceMigratesToSingleLeafTree() throws {
+    let data = Data(#"{"schemaVersion":1,"windows":[{"id":"w","tabs":[{"id":"old","cwd":"/tmp","launchCommand":"/bin/sh","lastActiveAt":0}]}]}"#.utf8)
+    let state = try JSONDecoder().decode(WorkspaceState.self, from: data)
+    let tab = state.windows[0].tabs[0]
+    XCTAssertEqual(tab.panes, .leaf(sessionId: "old"))
+    XCTAssertEqual(tab.focusedSessionId, "old")
+    XCTAssertEqual(tab.paneStates?.map(\.sessionId), ["old"])
+  }
+  func testSplitTabRoundTrips() throws {
+    let model = try AppModel(); let tab = try XCTUnwrap(model.activeTab)
+    _ = try model.splitPane(inTab: tab.id) { id, size, _ in try Session.fixture(size: size, sessionID: id) }
+    let state = model.snapshotForPersistence(windowId: "w")
+    let decoded = try JSONDecoder().decode(WorkspaceState.self, from: JSONEncoder().encode(state))
+    XCTAssertEqual(decoded, state)
+    let restored = try AppModel(); restored.replaceTabs(from: decoded)
+    XCTAssertEqual(restored.activeTab?.panes, model.activeTab?.panes)
+    XCTAssertEqual(restored.activeTab?.focusedSessionId, model.activeTab?.focusedSessionId)
+  }
+  func testCorruptPaneTreeFallsBackPerTab() throws {
+    let data = Data(#"{"schemaVersion":2,"windows":[{"id":"w","tabs":[{"id":"bad","cwd":"/tmp","launchCommand":"sh","lastActiveAt":0,"panes":{"broken":true}},{"id":"good","cwd":"/tmp","launchCommand":"sh","lastActiveAt":0}]}]}"#.utf8)
+    let state = try JSONDecoder().decode(WorkspaceState.self, from: data)
+    XCTAssertEqual(state.windows[0].tabs.count, 2)
+    XCTAssertEqual(state.windows[0].tabs[0].panes, .leaf(sessionId: "bad"))
+    XCTAssertEqual(state.windows[0].tabs[1].panes, .leaf(sessionId: "good"))
+  }
+}
