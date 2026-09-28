@@ -158,9 +158,9 @@ content and the same running processes.
       pointer, scroll indicator and find chip follow focus.
 - [x] M8 (implemented; full-suite verification underway): GUI commands: menu items, shortcuts, `AppCommand` cases, error
       surfacing; localisation strings.
-- [ ] M9 (real-shell scenario and targeted restart tests passed; full E2E gate pending): E2E: headless scenario in `scripts/test-e2e`; labpty restart test
+- [x] M9 (2026-09-28 independent review: full `./scripts/test-e2e` passed with `split-pane scenario: ok`; restart script passed both child-survival tests; persistence relaunch suite passed): E2E: headless scenario in `scripts/test-e2e`; labpty restart test
       with a split tab in `Tests/LabanAppTests/LabanAppTests.swift`.
-- [ ] M10 (documentation complete; independent review gate pending): Docs: `docs/product/mvp.md` Later Milestones, `dev-process.md`
+- [ ] M10 (documentation complete; hover-preview fixture repaired and 55 surface/split tests passed; full fresh-state re-review pending): Docs: `docs/product/mvp.md` Later Milestones, `dev-process.md`
       endpoint list; Review Gate.
 
 ## Decision Log
@@ -400,37 +400,42 @@ done until this gate has passed. See "Review gate and review-fix loop" in
 this plan branched from; the executing agent records it here before M0:
 `BASE = f145b0a6`.
 
-- [ ] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
-- [ ] `grep -rn "let sessionId: Session.ID\|var sessionId: Session.ID" Sources/LabanCore/Tab.swift` prints zero hits; `grep -c "focusedSessionId" Sources/LabanCore/Tab.swift` prints at least `2`.
-- [ ] `swift test --filter PaneTreeTests` exits 0 with at least 8 tests passed.
-- [ ] `swift test --filter AppSessionCoordinatorTests` exits 0 and output contains `testSplitTabOpensTwoDistinctLogicalSessions` and `testResizeSendsDifferentSizesPerSession`.
-- [ ] `swift test --filter PersistenceRoundTripTests` exits 0 and output contains `testV1WorkspaceMigratesToSingleLeafTree`, `testSplitTabRoundTrips` and `testCorruptPaneTreeFallsBackPerTab`.
-- [ ] `swift test --filter AppModelTests` exits 0 and output contains `testRegistryEqualsUnionOfLeaves`, `testUnfocusedPaneExitDoesNotChangeTabStatus` and `testClosePaneFocusesMostRecentlyFocusedSurvivor`.
-- [ ] `swift test --filter SplitPaneHeadlessTests` exits 0 and output contains `testTwoPanesRenderAtDistinctOrigins`, `testOutputInUnfocusedPaneMarksFrameDirty` and `testBothPanesWriteTranscripts`.
-- [ ] `swift test --filter CatalogParityTests` exits 0, and the only diff in `Tests/LabanAppTests/CatalogParityTests.swift` is the required `Tab.sessionId` → `focusedSessionId` reference migration (allowlists unchanged).
-- [ ] `swift run LabanControlGen --check` exits 0.
-- [ ] `python3 -c "import json;s=json.load(open('schemas/debug/state.schema.json'));t=s['\$defs']['tab'];assert 'panes' in t['required'] and 'focusedSessionId' in t['required'] and 'sessionId' not in t['required'] and 'sessionId' in t['properties']"` exits 0.
-- [ ] `./scripts/test-e2e` exits 0 and stdout contains `split-pane scenario: ok`.
-- [ ] `./scripts/test-labanapp-survives-restart` exits 0 and `grep -n "func testSplitTabSurvivesLabanAppRestartViaLabpty" Tests/LabanAppTests/LabanAppTests.swift` prints one hit.
-- [ ] `swift test --filter HeadlessRestoreInjectionTests` exits 0 and output contains `testSplitTabSurvivesPersistenceRelaunchWithLiveFrame`.
-- [ ] `swift test --filter SurvivorPaneTests` exits 0 and output contains `testTypingAfterFirstPaneClosed`, `testCastEndpointAfterFirstPaneClosed`, `testTranscriptAfterFirstPaneClosed`, `testFindAfterFirstPaneClosed`, `testRestoreAfterFirstPaneClosed`, `testResizeAfterFirstPaneClosed`, `testAgentDetectionAfterFirstPaneClosed`.
-- [ ] `swift test --filter LiveControlObserveTests` exits 0 and output contains `testScopedClientSeesOwnPaneMetadataInSplitTab` and `testScopedScreenshotDeniedInSplitTab`.
-- [ ] `swift test --filter LabandSplitRestoreTests` exits 0 and output contains `testSplitWorkspaceRestoresFocusedPaneUnderLaband`.
+- [x] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
+- [x] `grep -rn "let sessionId: Session.ID\|var sessionId: Session.ID" Sources/LabanCore/Tab.swift` prints zero hits; `grep -c "focusedSessionId" Sources/LabanCore/Tab.swift` prints at least `2`.
+- [x] `swift test --filter PaneTreeTests` exits 0 with at least 8 tests passed.
+- [x] `swift test --filter AppSessionCoordinatorTests` exits 0 and output contains `testSplitTabOpensTwoDistinctLogicalSessions` and `testResizeSendsDifferentSizesPerSession`.
+- [x] `swift test --filter PersistenceRoundTripTests` exits 0 and output contains `testV1WorkspaceMigratesToSingleLeafTree`, `testSplitTabRoundTrips` and `testCorruptPaneTreeFallsBackPerTab`.
+- [x] `swift test --filter AppModelTests` exits 0 and output contains `testRegistryEqualsUnionOfLeaves`, `testUnfocusedPaneExitDoesNotChangeTabStatus` and `testClosePaneFocusesMostRecentlyFocusedSurvivor`.
+- [x] `swift test --filter SplitPaneHeadlessTests` exits 0 and output contains `testTwoPanesRenderAtDistinctOrigins`, `testOutputInUnfocusedPaneMarksFrameDirty` and `testBothPanesWriteTranscripts`.
+- [x] `swift test --filter CatalogParityTests` exits 0, and the only diff in `Tests/LabanAppTests/CatalogParityTests.swift` is the required `Tab.sessionId` → `focusedSessionId` reference migration (allowlists unchanged).
+- [x] `swift run LabanControlGen --check` exits 0.
+- [x] `python3 -c "import json;s=json.load(open('schemas/debug/state.schema.json'));t=s['\$defs']['tab'];assert 'panes' in t['required'] and 'focusedSessionId' in t['required'] and 'sessionId' not in t['required'] and 'sessionId' in t['properties']"` exits 0.
+- [x] `./scripts/test-e2e` exits 0 and stdout contains `split-pane scenario: ok`.
+- [x] `./scripts/test-labanapp-survives-restart` exits 0 and `grep -n "func testSplitTabSurvivesLabanAppRestartViaLabpty" Tests/LabanAppTests/LabanAppTests.swift` prints one hit.
+- [x] `swift test --filter HeadlessRestoreInjectionTests` exits 0 and output contains `testSplitTabSurvivesPersistenceRelaunchWithLiveFrame`.
+- [x] `swift test --filter SurvivorPaneTests` exits 0 and output contains `testTypingAfterFirstPaneClosed`, `testCastEndpointAfterFirstPaneClosed`, `testTranscriptAfterFirstPaneClosed`, `testFindAfterFirstPaneClosed`, `testRestoreAfterFirstPaneClosed`, `testResizeAfterFirstPaneClosed`, `testAgentDetectionAfterFirstPaneClosed`.
+- [x] `swift test --filter LiveControlObserveTests` exits 0 and output contains `testScopedClientSeesOwnPaneMetadataInSplitTab` and `testScopedScreenshotDeniedInSplitTab`.
+- [x] `swift test --filter LabandSplitRestoreTests` exits 0 and output contains `testSplitWorkspaceRestoresFocusedPaneUnderLaband`.
 - [ ] `./scripts/check` exits 0.
-- [ ] `ls docs/adr/0036-pane-layout-is-view-state-above-session-tiers.md` succeeds and `grep -c "0036" docs/adr/README.md` prints at least `1`.
-- [ ] Mutation: in `Sources/LabanCore/PaneTree.swift`, make `removing(leaf:)` return the removed child instead of the survivor; run `swift test --filter PaneTreeTests`; expect a failure naming `testRemoveLeafCollapsesToSurvivor`; revert.
-- [ ] Mutation: in `Sources/LabanCore/TerminalSurfaceController.swift`, force every pane's origin to the first pane's origin; run `swift test --filter SplitPaneHeadlessTests`; expect `testTwoPanesRenderAtDistinctOrigins` to fail; revert.
-- [ ] Mutation: in `TerminalSurfaceController.syncSessions`, replace the `item.isVisible` dirty check with `session.id == activeSessionId`; run `swift test --filter SplitPaneHeadlessTests`; expect `testOutputInUnfocusedPaneMarksFrameDirty` to fail; revert.
+- [x] `ls docs/adr/0036-pane-layout-is-view-state-above-session-tiers.md` succeeds and `grep -c "0036" docs/adr/README.md` prints at least `1`.
+- [x] Mutation: in `Sources/LabanCore/PaneTree.swift`, make `removing(leaf:)` return the removed child instead of the survivor; run `swift test --filter PaneTreeTests`; expect a failure naming `testRemoveLeafCollapsesToSurvivor`; revert.
+- [x] Mutation: in `Sources/LabanCore/TerminalSurfaceController.swift`, force every pane's origin to the first pane's origin; run `swift test --filter SplitPaneHeadlessTests`; expect `testTwoPanesRenderAtDistinctOrigins` to fail; revert.
+- [x] Mutation: in `TerminalSurfaceController.syncSessions`, replace the `item.isVisible` dirty check with `session.id == activeSessionId`; run `swift test --filter SplitPaneHeadlessTests`; expect `testOutputInUnfocusedPaneMarksFrameDirty` to fail; revert.
 
-Review status: SOURCE REVIEW FIXES COMPLETE; independent mechanical gate pending.
+Review status: FAILED (first mechanical review, 2026-09-28 15:10Z); reviewed implementation `ac22388aedb64b824c0ecf76a4114d78cc2737ef` against `BASE = f145b0a6`. One gate item failed: `./scripts/check`. A fresh reviewer must rerun the full gate after the fix, per `PLANS.md`.
 
 Fresh source review (2026-09-28) found scoped accessibility/scroll routing, pending dirty output after deferred frames, double-inset sizing, laband full-width sizing, IME discard, notification attribution, pointer geometry, small-wheel accumulation, and selection enumeration issues. Each has been corrected; regression tests cover scoped reads/scroll, repeated dirty sync, focus sizing, notification isolation, native slow-wheel/IME, and pointer hover. Final independent gate remains required.
 
 Review findings (filled in by the review agent):
 
-(none yet)
+- `./scripts/check` exits 1 in its `test-split` parallel-safe shard. `Tests/LabanCoreTests/TerminalSurfaceControllerTests.swift:1528` (`testSyncSessionsHoveredInactiveTabKeepsReportingModelChanged`) expects only the hovered session in `pendingResult.dirtySessionIds`, but receives both the hovered and active sessions; line 1541 then expects an empty dirty set and receives the still-dirty active session. The setup at lines 1467–1471 marks only the second/background session rendered. The new intentional pending-visible-output handling in `Sources/LabanCore/TerminalSurfaceController.swift:785–787` now retains the active session's initial dirty state. Settle the active session in this preview-focused fixture while preserving production deferred-frame behavior, then rerun the full gate. Evidence: `.artifacts/split-panes/final-review/check.log:2096`.
+- All other gate commands passed: ten targeted suites ran 163 tests with every required name present and no skipped test cases; control generation and static checks passed; direct `./scripts/test-e2e` printed `split-pane scenario: ok`; both legacy and split restart tests passed and printed `child survived`.
+- All three reversible mutations failed in the exact required tests: survivor collapse at `PaneTreeTests.swift:17–18`, shared pane origin at `SplitPaneHeadlessTests.swift:84`, and focused-only dirtiness at `SplitPaneHeadlessTests.swift:98`. Each original source file was restored byte-for-byte immediately afterward, and the restored suites then passed all 14 tests. Mutation diffs, complete output, exit statuses, and restored-source verification are under `.artifacts/split-panes/final-review/`.
+- The repository check reports the optional TLA+ jar absent and reuses memoized unchanged `cbmc`, `cbmc-contracts`, `trace`, `model-coverage`, `fuzz`, and `fuzz-msan` results. Its later coverage, sanitizer, runtime smoke, and embedded E2E stages are not reached because `test-split` fails; the direct full E2E command above passed independently. No skip flags or environment overrides were supplied by this reviewer.
 
 ## Surprises & Discoveries
+
+- The first mechanical gate exposed a hover-preview fixture that never rendered the active terminal before asserting that only the preview remained dirty. Preserving pending visible pane output correctly made that initial dirty state observable. Taking the initial snapshot and marking it rendered repairs the fixture without weakening assertions or production dirty tracking; all 50 surface-controller and five split-pane tests pass (`.artifacts/split-panes/hover-fixture-red.log` and `hover-fixture-green.log`).
 
 - Starting a labpty parser feed removed the descriptor just stored by `ensureSession`; the new independent-size test observed unchanged widths 100/49 after requesting 43/57. Restoring the descriptor after replacing the feed fixes daemon resize immediately.
 - The headless laband renderer previously built frames from its local placeholder. It now passes the focused remote snapshot into the shared remote renderer, including the split-layout compatibility notice.
