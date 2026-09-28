@@ -19,15 +19,15 @@ struct DebugInputActions {
       do {
         try runtime.ensureTerminalClientSessionUnlocked(for: tab)
         try client.writeInput(
-          sessionId: runtime.terminalClientRemoteSessionId(for: tab.sessionId),
+          sessionId: runtime.terminalClientRemoteSessionId(for: tab.focusedSessionId),
           bytes: bytes
         )
-        runtime.appendTerminalLog(sessionId: tab.sessionId, direction: "input", bytes: bytes)
+        runtime.appendTerminalLog(sessionId: tab.focusedSessionId, direction: "input", bytes: bytes)
       } catch {
         runtime.appendError(
           kind: "laband.writeInput.failed",
           message: String(describing: error),
-          sessionId: tab.sessionId,
+          sessionId: tab.focusedSessionId,
           tabId: tab.id
         )
         return jsonError("typeText failed: \(error)")
@@ -48,7 +48,7 @@ struct DebugInputActions {
         route: "terminal",
         frameBefore: frameBefore,
         tabId: activeTab?.id,
-        sessionId: activeTab?.sessionId,
+        sessionId: activeTab?.focusedSessionId,
         text: text,
         encodedHex: bytes.map { String(format: "%02x", $0) }.joined(),
         encodedLength: bytes.count
@@ -101,7 +101,7 @@ struct DebugInputActions {
           inputId: inputId, seq: 0,
           source: "debug", kind: "key", route: appRoute,
           frameBefore: frameBefore,
-          tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+          tabId: activeTab?.id, sessionId: activeTab?.focusedSessionId,
           key: keyName, modifiers: request.modifiers, command: commandStr
         ))
       runtime.appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
@@ -119,7 +119,7 @@ struct DebugInputActions {
           inputId: inputId, seq: 0,
           source: "debug", kind: "key", route: "ignored",
           frameBefore: frameBefore,
-          tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+          tabId: activeTab?.id, sessionId: activeTab?.focusedSessionId,
           key: keyName, modifiers: request.modifiers
         ))
       runtime.appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
@@ -144,7 +144,7 @@ struct DebugInputActions {
           inputId: inputId, seq: 0,
           source: "debug", kind: "key", route: "terminal",
           frameBefore: frameBefore,
-          tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+          tabId: activeTab?.id, sessionId: activeTab?.focusedSessionId,
           key: keyName, modifiers: request.modifiers,
           encodedHex: encodedHex, encodedLength: encodedLength
         ))
@@ -159,7 +159,7 @@ struct DebugInputActions {
           inputId: inputId, seq: 0,
           source: "debug", kind: "key", route: "ignored",
           frameBefore: frameBefore,
-          tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+          tabId: activeTab?.id, sessionId: activeTab?.focusedSessionId,
           key: keyName, modifiers: request.modifiers
         ))
       runtime.appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
@@ -198,7 +198,7 @@ struct DebugInputActions {
         inputId: inputId, seq: 0,
         source: "debug", kind: "key", route: "terminal",
         frameBefore: frameBefore,
-        tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+        tabId: activeTab?.id, sessionId: activeTab?.focusedSessionId,
         key: keyName, text: request.text,
         modifiers: request.modifiers, consumedModifiers: request.consumedModifiers,
         encodedHex: encodedHex, encodedLength: encodedLength
@@ -217,14 +217,14 @@ struct DebugInputActions {
       runtime.renderFrameUnlocked()
     case "closeTab":
       if let tabId = runtime.model.activeTab?.id {
-        if let sessionId = runtime.model.activeTab?.sessionId {
+        if let sessionId = runtime.model.activeTab?.focusedSessionId {
           runtime.terminateTerminalClientSessionUnlocked(sessionId: sessionId)
         }
         try? runtime.model.closeTab(tabId)
         runtime.renderFrameUnlocked()
       }
     case "find":
-      if let sessionId = runtime.model.activeTab?.sessionId {
+      if let sessionId = runtime.model.activeTab?.focusedSessionId {
         _ = runtime.model.startFind(sessionID: sessionId)
         runtime.renderFrameUnlocked()
       }
@@ -279,7 +279,7 @@ struct DebugInputActions {
         route: "terminal",
         frameBefore: frameBefore,
         tabId: tab.id,
-        sessionId: tab.sessionId,
+        sessionId: tab.focusedSessionId,
         command: "inputFollowBottom",
         deltaRows: deltaRows
       ))

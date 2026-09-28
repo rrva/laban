@@ -126,7 +126,7 @@ public final class CaptureReplayRunner {
     func session(for capturedId: String?) -> Session? {
       guard let capturedId else { return activeSession() }
       if let replayId = sessionMap[capturedId],
-        let tab = model.tabs.first(where: { $0.sessionId == replayId })
+        let tab = model.tabs.first(where: { $0.allSessionIds.contains(replayId) })
       {
         return model.session(forTab: tab.id)
       }
@@ -144,7 +144,7 @@ public final class CaptureReplayRunner {
             }
           } else {
             let tab = try model.createTab()
-            sessionMap[capturedSession] = tab.sessionId
+            sessionMap[capturedSession] = tab.focusedSessionId
             if let capturedTab = event.tabId {
               tabMap[capturedTab] = tab.id
             }

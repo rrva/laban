@@ -64,7 +64,7 @@ final class FrameProducerTransparencyTests: XCTestCase {
       controller.makeFrame(request(frame: 2, opacity: 91)))
     assertSurfaceAlpha(firstChangedLocalFrame, equals: 91)
 
-    let sessionId = try XCTUnwrap(model.activeTab?.sessionId)
+    let sessionId = try XCTUnwrap(model.activeTab?.focusedSessionId)
     let firstChangedRemoteFrame = try XCTUnwrap(
       controller.makeFrame(
         request(frame: 3, opacity: 73),

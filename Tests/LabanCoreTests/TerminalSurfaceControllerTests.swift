@@ -504,7 +504,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let activeSession = try XCTUnwrap(model.session(forTab: activeTab.id))
 
     let activeSnapshot = LabandSnapshotResponse(
-      logicalSessionId: activeTab.sessionId,
+      logicalSessionId: activeTab.focusedSessionId,
       incarnationId: "active",
       rows: 1,
       cols: 1,
@@ -525,7 +525,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let previewForeground: UInt32 = 0x10_E0_20_FF
     let previewExplicitBackground: UInt32 = 0xA0_B0_C0_FF
     let previewSnapshot = LabandSnapshotResponse(
-      logicalSessionId: previewedTab.sessionId,
+      logicalSessionId: previewedTab.focusedSessionId,
       incarnationId: "preview",
       rows: 1,
       cols: 1,
@@ -1570,7 +1570,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertEqual(sink.events.count, 1)
     XCTAssertEqual(sink.events.first?.kind, CaptureEventKind.appState.rawValue)
     XCTAssertEqual(sink.events.first?.tabId, tab.id)
-    XCTAssertEqual(sink.events.first?.sessionId, session.id)
+    XCTAssertEqual(sink.events.first?.focusedSessionId, session.id)
     XCTAssertEqual(sink.events.first?.title, "vim")
   }
 

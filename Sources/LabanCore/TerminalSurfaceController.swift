@@ -679,6 +679,12 @@ public final class TerminalSurfaceController {
     self.previewCellWidth = max(0, previewCellWidth)
     self.previewCellHeight = max(0, previewCellHeight)
     self.captureSink = captureSink
+    let priorReplaced = model.onSessionsReplaced
+    model.onSessionsReplaced = { [weak self] in
+      priorReplaced?()
+      self?.invalidateSessionSyncCache()
+    }
+
   }
 
   /// Adopt new cell geometry after a live font-size change. Per-frame
@@ -1058,7 +1064,7 @@ public final class TerminalSurfaceController {
       return TerminalSurfaceFrame(
         frame: request.frame,
         tabId: activeTab.id,
-        sessionId: activeTab.sessionId,
+        sessionId: activeTab.focusedSessionId,
         commands: commands,
         rows: nil,
         cols: nil,

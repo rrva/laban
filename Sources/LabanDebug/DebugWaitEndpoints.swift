@@ -56,11 +56,11 @@ extension HeadlessDebugRuntime {
     case "sessionStatus":
       let tabId =
         condition.sessionId.flatMap { sessionId in
-          model.tabs.first(where: { $0.sessionId == sessionId })?.id
+          model.tabs.first(where: { $0.allSessionIds.contains(sessionId) })?.id
         } ?? condition.tabId ?? model.activeTab?.id
       if let id = tabId,
         let tab = model.tabs.first(where: { $0.id == id }),
-        let snapshot = terminalClientSnapshotUnlocked(sessionId: tab.sessionId)
+        let snapshot = terminalClientSnapshotUnlocked(sessionId: tab.focusedSessionId)
       {
         return snapshot.lifecycleState.rawValue == condition.status
       }
@@ -77,7 +77,7 @@ extension HeadlessDebugRuntime {
       return tab?.title == condition.title
     case "textVisible":
       guard let tab = waitTargetTabUnlocked(condition) else { return false }
-      if let snapshot = terminalClientSnapshotUnlocked(sessionId: tab.sessionId) {
+      if let snapshot = terminalClientSnapshotUnlocked(sessionId: tab.focusedSessionId) {
         return snapshot.visibleText.contains(condition.text ?? "")
       }
       guard let session = model.session(forTab: tab.id),
@@ -103,7 +103,7 @@ extension HeadlessDebugRuntime {
 
   func waitTargetTabUnlocked(_ condition: WaitCondition) -> Tab? {
     if let sessionId = condition.sessionId {
-      return model.tabs.first { $0.sessionId == sessionId }
+      return model.tabs.first { $0.allSessionIds.contains(sessionId) }
     }
     if let tabId = condition.tabId {
       return model.tabs.first { $0.id == tabId }

@@ -30,7 +30,7 @@ private final class TranscriptRecorder: TranscriptHostDelegate {
 
   func attachTranscriptWriter(
     to session: Session,
-    tabId: String,
+    sessionId: String,
     suppressInitialOutputFor: DispatchTimeInterval
   ) {
     lock.lock()
@@ -38,13 +38,13 @@ private final class TranscriptRecorder: TranscriptHostDelegate {
     lock.unlock()
   }
 
-  func detachTranscriptWriter(forTabId tabId: String, in session: Session?) {
+  func detachTranscriptWriter(forSessionId tabId: String, in session: Session?) {
     lock.lock()
     detached.append(tabId)
     lock.unlock()
   }
 
-  func transcriptURL(forTabId tabId: String) -> URL {
+  func transcriptURL(forSessionId tabId: String) -> URL {
     FileManager.default.temporaryDirectory
       .appendingPathComponent("\(tabId).bin")
   }
@@ -455,7 +455,7 @@ final class PersistenceRoundTripTests: XCTestCase {
     let host = TranscriptHost(store: store, isEnabled: { true })
     model.transcriptDelegate = host
     for (tab, session) in model.allSessions() {
-      host.attachTranscriptWriter(to: session, tabId: tab.id)
+      host.attachTranscriptWriter(to: session, sessionId: session.id)
     }
 
     let coord = PersistenceCoordinator(
@@ -477,7 +477,7 @@ final class PersistenceRoundTripTests: XCTestCase {
 
     coord.flushSync()
 
-    let data = try Data(contentsOf: store.transcriptURL(forTabId: tab.id))
+    let data = try Data(contentsOf: store.transcriptURL(forSessionId: tab.id))
     XCTAssertEqual(
       Array(data), payload,
       "quit flush must drain writers without replacing .bin with visible-grid text")
@@ -505,7 +505,7 @@ final class PersistenceRoundTripTests: XCTestCase {
     // so it never got an attach — simulate the production wiring of
     // attaching writers to pre-existing sessions.
     for (tab, session) in model.allSessions() {
-      recorder.attachTranscriptWriter(to: session, tabId: tab.id)
+      recorder.attachTranscriptWriter(to: session, sessionId: session.id)
     }
     XCTAssertEqual(recorder.attached.count, 1)
     let defaultTabId = model.tabs[0].id

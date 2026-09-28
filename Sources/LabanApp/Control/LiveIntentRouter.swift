@@ -547,7 +547,7 @@ final class LiveIntentRouter: IntentRouter {
     guard let scopedSessionID = query.scopedSessionID else {
       return .error(403, "session scope required")
     }
-    guard model.activeTab?.sessionId == scopedSessionID else {
+    guard model.activeTab?.focusedSessionId == scopedSessionID else {
       return .error(409, "sessionNotVisible")
     }
     guard let provider = windowScreenshotProvider else {
@@ -598,14 +598,14 @@ final class LiveIntentRouter: IntentRouter {
     // whole-app/fixture caller (scopedSessionID == nil), which has no own
     // session; that path keeps legacy active-session behavior deliberately.
     let targetSessionID =
-      request.sessionId ?? scopedSessionID ?? model.activeTab?.sessionId
+      request.sessionId ?? scopedSessionID ?? model.activeTab?.focusedSessionId
     if let scopedSessionID, let requestedSessionID = request.sessionId,
       requestedSessionID != scopedSessionID
     {
       return .error(403, "forbidden")
     }
     guard let sessionID = targetSessionID,
-      let tab = model.tabs.first(where: { $0.sessionId == sessionID }),
+      let tab = model.tabs.first(where: { $0.allSessionIds.contains(sessionID) }),
       let session = model.session(forTab: tab.id)
     else {
       return .error(400, "no session for scrollViewport")
@@ -626,9 +626,9 @@ final class LiveIntentRouter: IntentRouter {
       body: body,
       scopedSessionID: scopedSessionID,
       sessionExists: { sessionID in
-        model.tabs.contains(where: { $0.sessionId == sessionID })
+        model.tabs.contains(where: { $0.allSessionIds.contains(sessionID) })
       },
-      activeSessionID: { model.activeTab?.sessionId })
+      activeSessionID: { model.activeTab?.focusedSessionId })
     guard response.status == 200,
       let proposal = decodeProposal(from: response.body)
     else {
@@ -647,7 +647,7 @@ final class LiveIntentRouter: IntentRouter {
     guard let model = model else { return .error(500, "model released") }
     return CommandProposalRouting.handleList(
       scopedSessionID: scopedSessionID,
-      activeSessionID: { model.activeTab?.sessionId })
+      activeSessionID: { model.activeTab?.focusedSessionId })
   }
 
   private func commandProposalGetAction(body: Data, scopedSessionID: String?) -> ControlResponse {
@@ -655,7 +655,7 @@ final class LiveIntentRouter: IntentRouter {
     return CommandProposalRouting.handleGet(
       body: body,
       scopedSessionID: scopedSessionID,
-      activeSessionID: { model.activeTab?.sessionId })
+      activeSessionID: { model.activeTab?.focusedSessionId })
   }
 
   private func commandProposalCancelAction(
@@ -665,7 +665,7 @@ final class LiveIntentRouter: IntentRouter {
     return CommandProposalRouting.handleCancel(
       body: body,
       scopedSessionID: scopedSessionID,
-      activeSessionID: { model.activeTab?.sessionId })
+      activeSessionID: { model.activeTab?.focusedSessionId })
   }
 
   private func decodeProposal(from body: Data) -> CommandProposeResponse? {

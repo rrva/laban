@@ -285,7 +285,7 @@ final class AgentSessionDetectorTests: XCTestCase {
     mock.children = [820: []]
     mock.openVnodes = [:]
     let first = detector.findRecentClaudeSessionForShellCwd()
-    XCTAssertEqual(first?.sessionId, firstId)
+    XCTAssertEqual(first?.focusedSessionId, firstId)
 
     let newerId = "0fa31a8c-1234-5678-9abc-deadbeef0021"
     let newerURL = project.appendingPathComponent("\(newerId).jsonl")
@@ -295,7 +295,7 @@ final class AgentSessionDetectorTests: XCTestCase {
 
     let second = detector.findRecentClaudeSessionForShellCwd()
     XCTAssertEqual(
-      second?.sessionId,
+      second?.focusedSessionId,
       firstId,
       "same detector should reuse the recent cwd log lookup during the cache interval")
   }

@@ -80,7 +80,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
     // Attach writers to the default tab created by AppModel.init.
     for (tab, session) in model.allSessions() {
-      transcriptHost.attachTranscriptWriter(to: session, tabId: tab.id)
+      transcriptHost.attachTranscriptWriter(to: session, sessionId: session.id)
     }
 
     if let restoredState, !restoredState.windows.isEmpty {
@@ -199,7 +199,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
     // Each tab's transcript file must exist with the captured bytes.
     for tabId in [defaultTabId, tab1Id, tab2Id] {
-      let url = store.transcriptURL(forTabId: tabId)
+      let url = store.transcriptURL(forSessionId: tabId)
       XCTAssertTrue(
         FileManager.default.fileExists(atPath: url.path),
         "transcript for tab \(tabId) must persist")
@@ -314,7 +314,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
         visible.unicodeScalars.contains { $0.value == 0 },
         "cycle \(cycle) rendered a NUL glyph; visible=\(visible.debugDescription)")
 
-      let data = try Data(contentsOf: store.transcriptURL(forTabId: tabId))
+      let data = try Data(contentsOf: store.transcriptURL(forSessionId: tabId))
       XCTAssertEqual(
         Array(data), echoBytes,
         "cycle \(cycle) must not rewrite or append to the original echo transcript")
@@ -444,7 +444,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       quit(first)
       let _ = first
 
-      let transcriptURL = store.transcriptURL(forTabId: tabId)
+      let transcriptURL = store.transcriptURL(forSessionId: tabId)
       let baseline = try Data(contentsOf: transcriptURL)
       XCTAssertFalse(baseline.isEmpty)
       XCTAssertTrue(
@@ -607,7 +607,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       quit(first)
       let _ = first
 
-      let transcriptURL = store.transcriptURL(forTabId: tabId)
+      let transcriptURL = store.transcriptURL(forSessionId: tabId)
       let baseline = try Data(contentsOf: transcriptURL)
 
       for cycle in 1...4 {
@@ -803,7 +803,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     file: StaticString = #file,
     line: UInt = #line
   ) throws {
-    let data = try Data(contentsOf: store.transcriptURL(forTabId: tabId))
+    let data = try Data(contentsOf: store.transcriptURL(forSessionId: tabId))
     let transcript = String(decoding: data, as: UTF8.self)
     XCTAssertEqual(
       echoCommandCount(in: transcript),

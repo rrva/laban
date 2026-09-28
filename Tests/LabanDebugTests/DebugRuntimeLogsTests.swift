@@ -45,7 +45,7 @@ final class DebugRuntimeLogsTests: XCTestCase {
     let filtered = logs.terminalLogResponse(query: ["sessionId": "s1"], defaultSessionId: nil)
     XCTAssertEqual(filtered.next, 2)
     XCTAssertEqual(filtered.events.count, 1)
-    XCTAssertEqual(filtered.events.first?.sessionId, "s1")
+    XCTAssertEqual(filtered.events.first?.focusedSessionId, "s1")
     XCTAssertEqual(filtered.events.first?.escaped, "\\eA")
   }
 

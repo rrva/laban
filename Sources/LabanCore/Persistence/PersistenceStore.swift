@@ -137,7 +137,7 @@ public final class PersistenceStore {
     }
   }
 
-  public func transcriptURL(forTabId tabId: String) -> URL {
+  public func transcriptURL(forSessionId tabId: String) -> URL {
     transcriptsURL.appendingPathComponent("\(tabId).bin", isDirectory: false)
   }
 

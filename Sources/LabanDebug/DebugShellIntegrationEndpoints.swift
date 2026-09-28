@@ -14,7 +14,7 @@ extension HeadlessDebugRuntime {
   /// `GET /debug/events` shows prompt/command/exit changes. Wired to
   /// `AppModel.onShellIntegrationChange`, which fires on the main queue.
   func recordShellIntegrationEvent(tabId: String, state: ShellIntegrationState) {
-    let sessionId = model.tabs.first { $0.id == tabId }?.sessionId
+    let sessionId = model.tabs.first { $0.id == tabId }?.focusedSessionId
     let exitText = state.lastExitCode.map(String.init)
     withRuntimeLock {
       appendEvent(
@@ -33,7 +33,7 @@ extension HeadlessDebugRuntime {
   /// Wired through the unified attention notification path.
   /// This is the headless parity for the AppKit native-notification presenter.
   func recordAgentNotificationEvent(tabId: String, text: String) {
-    let sessionId = model.tabs.first { $0.id == tabId }?.sessionId
+    let sessionId = model.tabs.first { $0.id == tabId }?.focusedSessionId
     withRuntimeLock {
       appendEvent(
         EventEntry(
@@ -52,7 +52,7 @@ extension HeadlessDebugRuntime {
   /// NSPasteboard writer.
   func recordClipboardOSC52Write(tabId: String, data: Data) {
     let text = String(decoding: data, as: UTF8.self)
-    let sessionId = model.tabs.first { $0.id == tabId }?.sessionId
+    let sessionId = model.tabs.first { $0.id == tabId }?.focusedSessionId
     withRuntimeLock {
       debugClipboard = text
       appendEvent(
@@ -70,7 +70,7 @@ extension HeadlessDebugRuntime {
   /// `AppModel.onWorkingDirectoryChange`; the headless parity for the cwd the
   /// metadata sync also adopts from the same OSC 7 report.
   func recordWorkingDirectoryEvent(tabId: String, cwd: String) {
-    let sessionId = model.tabs.first { $0.id == tabId }?.sessionId
+    let sessionId = model.tabs.first { $0.id == tabId }?.focusedSessionId
     withRuntimeLock {
       appendEvent(
         EventEntry(

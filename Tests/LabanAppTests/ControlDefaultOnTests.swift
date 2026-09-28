@@ -112,7 +112,7 @@ final class ControlDefaultOnTests: XCTestCase {
     XCTAssertTrue(
       server.canLazyAttachDescendant(sessionID: context.sessionID, peerPID: getpid()))
 
-    coordinator.noteTabClosed(tabID: "tab-restored")
+    coordinator.noteSessionClosed(sessionID: "tab-restored")
     XCTAssertFalse(
       server.canLazyAttachDescendant(sessionID: context.sessionID, peerPID: getpid()))
   }
@@ -339,18 +339,18 @@ final class ControlDefaultOnTests: XCTestCase {
     let tab = try model.createAgentAttachedTab()
     let bootstrap = try XCTUnwrap(attachBootstrap)
     server.registerAttachShellPID(
-      sessionID: tab.sessionId,
+      sessionID: tab.focusedSessionId,
       shellPID: getppid())
     let (fd, redeemedSessionID) = try ControlUDSClient.redeemAttachBootstrap(
       socketPath: start.socketPath,
       bootstrap: bootstrap)
     defer { Darwin.close(fd) }
-    XCTAssertEqual(redeemedSessionID, tab.sessionId)
+    XCTAssertEqual(redeemedSessionID, tab.focusedSessionId)
 
     let otherTab = try model.createTab()
     let (crossStatus, _) = try ControlUDSClient.request(
       fd: fd,
-      path: "/debug/sessions/\(otherTab.sessionId)",
+      path: "/debug/sessions/\(otherTab.focusedSessionId)",
       keepConnectionOpen: true)
     XCTAssertEqual(crossStatus, 403)
   }

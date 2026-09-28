@@ -29,7 +29,8 @@ extension HeadlessDebugRuntime {
       } else {
         return .failure(status: 404, message: "no active tab")
       }
-      guard let ring = host.recentByteRing(forTabId: resolvedTabId) else {
+      guard let paneId = model.tabs.first(where: { $0.id == resolvedTabId })?.focusedSessionId,
+        let ring = host.recentByteRing(forSessionId: paneId) else {
         return .failure(
           status: 404,
           message: "no recent-byte ring for tab \(resolvedTabId)")

@@ -874,7 +874,7 @@ let result = HeadlessResult(
   mode: "headless",
   frameCount: stepsFrameCount + 1,
   activeTabId: activeTab.id,
-  activeSessionId: activeTab.sessionId,
+  activeSessionId: activeTab.focusedSessionId,
   terminalRows: rows,
   terminalCols: cols,
   screenshotPath: screenshotURL.path,

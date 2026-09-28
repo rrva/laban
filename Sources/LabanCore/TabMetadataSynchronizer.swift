@@ -88,15 +88,15 @@ final class TabMetadataSynchronizer {
     }
   }
 
-  private var lastProcessMetadataSyncAtByTab: [Tab.ID: Date] = [:]
-  private var processIdentityByTab: [Tab.ID: ProcessIdentity] = [:]
-  private var terminalTitleOwnerByTab: [Tab.ID: ProcessIdentity] = [:]
+  private var lastProcessMetadataSyncAtBySession: [Tab.ID: Date] = [:]
+  private var processIdentityBySession: [Tab.ID: ProcessIdentity] = [:]
+  private var terminalTitleOwnerBySession: [Tab.ID: ProcessIdentity] = [:]
   /// Per-tab high-water mark of `ShellIntegrationState.completedCommandCount`
   /// the user has acknowledged by viewing the tab. The failed-command dot
   /// only arms for a completion newer than this, so a dot dismissed by
   /// focusing the tab stays dismissed across prompt re-emissions and metadata
   /// syncs, yet a genuinely new failing command re-arms it.
-  private var acknowledgedCommandCountByTab: [Tab.ID: Int] = [:]
+  private var acknowledgedCommandCountBySession: [Tab.ID: Int] = [:]
   private let processMetadataSyncInterval: TimeInterval = 0.25
 
   /// Probes whether the recorded title-owner pid is still running. kill(pid, 0)
@@ -113,17 +113,17 @@ final class TabMetadataSynchronizer {
     for cwd in closedCwds {
       gitInfo.forget(cwd: cwd)
     }
-    lastProcessMetadataSyncAtByTab.removeAll()
-    processIdentityByTab.removeAll()
-    terminalTitleOwnerByTab.removeAll()
-    acknowledgedCommandCountByTab.removeAll()
+    lastProcessMetadataSyncAtBySession.removeAll()
+    processIdentityBySession.removeAll()
+    terminalTitleOwnerBySession.removeAll()
+    acknowledgedCommandCountBySession.removeAll()
   }
 
   /// Mark every command that has finished so far on `tabId` as acknowledged —
   /// the user is now looking at (or has just left) the tab, so its last
   /// command's outcome has been seen. Wired to tab selection in `AppModel`.
   func acknowledgeShellCommands(forTab tabId: Tab.ID, upTo count: Int) {
-    acknowledgedCommandCountByTab[tabId] = count
+    acknowledgedCommandCountBySession[tabId] = count
   }
 
   /// The exit code the steady failed-command dot should show for `tabId`, or
@@ -137,10 +137,10 @@ final class TabMetadataSynchronizer {
     isActive: Bool
   ) -> Int? {
     if isActive {
-      acknowledgedCommandCountByTab[tabId] = state.completedCommandCount
+      acknowledgedCommandCountBySession[tabId] = state.completedCommandCount
       return nil
     }
-    let acknowledged = acknowledgedCommandCountByTab[tabId] ?? 0
+    let acknowledged = acknowledgedCommandCountBySession[tabId] ?? 0
     guard state.completedCommandCount > acknowledged,
       let code = state.lastExitCode, code != 0
     else { return nil }
@@ -151,10 +151,10 @@ final class TabMetadataSynchronizer {
     if let cwd = tab.titleMetadata.workspace.cwd {
       gitInfo.forget(cwd: cwd)
     }
-    lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
-    processIdentityByTab.removeValue(forKey: tab.id)
-    terminalTitleOwnerByTab.removeValue(forKey: tab.id)
-    acknowledgedCommandCountByTab.removeValue(forKey: tab.id)
+    lastProcessMetadataSyncAtBySession.removeValue(forKey: tab.focusedSessionId)
+    processIdentityBySession.removeValue(forKey: tab.focusedSessionId)
+    terminalTitleOwnerBySession.removeValue(forKey: tab.focusedSessionId)
+    acknowledgedCommandCountBySession.removeValue(forKey: tab.focusedSessionId)
   }
 
   @discardableResult
@@ -199,12 +199,12 @@ final class TabMetadataSynchronizer {
     onBranchResolved: @escaping BranchResolved
   ) -> Bool {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
-    if let last = lastProcessMetadataSyncAtByTab[tabId],
+    if let last = lastProcessMetadataSyncAtBySession[tabs[idx].focusedSessionId],
       now.timeIntervalSince(last) < processMetadataSyncInterval
     {
       return false
     }
-    lastProcessMetadataSyncAtByTab[tabId] = now
+    lastProcessMetadataSyncAtBySession[tabs[idx].focusedSessionId] = now
 
     guard let metadata = session.processMetadata() else { return false }
     return applyProcessMetadata(
@@ -255,22 +255,22 @@ final class TabMetadataSynchronizer {
     // made the displayed title a race between the last wipe and the last
     // re-send. Staleness is an ownership-liveness question: clear the title
     // only once the recorded owner process is actually gone.
-    if let owner = terminalTitleOwnerByTab[tabId], owner != newIdentity,
+    if let owner = terminalTitleOwnerBySession[tabs[idx].focusedSessionId], owner != newIdentity,
       !processIsAlive(owner.pid)
     {
       tabs[idx].titleMetadata.terminalTitle = nil
-      terminalTitleOwnerByTab.removeValue(forKey: tabId)
-    } else if terminalTitleOwnerByTab[tabId] == nil,
+      terminalTitleOwnerBySession.removeValue(forKey: tabs[idx].focusedSessionId)
+    } else if terminalTitleOwnerBySession[tabs[idx].focusedSessionId] == nil,
       tabs[idx].titleMetadata.terminalTitle != nil,
       let newIdentity
     {
-      terminalTitleOwnerByTab[tabId] = newIdentity
+      terminalTitleOwnerBySession[tabs[idx].focusedSessionId] = newIdentity
     }
 
     if let newIdentity {
-      processIdentityByTab[tabId] = newIdentity
+      processIdentityBySession[tabs[idx].focusedSessionId] = newIdentity
     } else {
-      processIdentityByTab.removeValue(forKey: tabId)
+      processIdentityBySession.removeValue(forKey: tabs[idx].focusedSessionId)
     }
 
     var workspace = tabs[idx].titleMetadata.workspace
@@ -371,13 +371,13 @@ final class TabMetadataSynchronizer {
     onBranchResolved: @escaping BranchResolved
   ) -> SurfaceMetadataSyncResult {
     let throttled: Bool
-    if let last = lastProcessMetadataSyncAtByTab[tabId],
+    if let last = lastProcessMetadataSyncAtBySession[tabs[idx].focusedSessionId],
       now.timeIntervalSince(last) < processMetadataSyncInterval
     {
       throttled = true
     } else {
       throttled = false
-      lastProcessMetadataSyncAtByTab[tabId] = now
+      lastProcessMetadataSyncAtBySession[tabs[idx].focusedSessionId] = now
     }
     let (titleDirty, titleRaw) = session.consumeTitle()
     let signals = TabSurfaceSignals(
@@ -494,10 +494,10 @@ final class TabMetadataSynchronizer {
     tabs: inout [Tab]
   ) {
     tabs[idx].titleMetadata.terminalTitle = title
-    if title != nil, ownerIsFresh, let owner = processIdentityByTab[tabId] {
-      terminalTitleOwnerByTab[tabId] = owner
+    if title != nil, ownerIsFresh, let owner = processIdentityBySession[tabs[idx].focusedSessionId] {
+      terminalTitleOwnerBySession[tabs[idx].focusedSessionId] = owner
     } else {
-      terminalTitleOwnerByTab.removeValue(forKey: tabId)
+      terminalTitleOwnerBySession.removeValue(forKey: tabs[idx].focusedSessionId)
     }
   }
 

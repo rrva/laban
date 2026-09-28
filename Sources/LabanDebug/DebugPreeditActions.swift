@@ -13,7 +13,7 @@ struct DebugPreeditActions {
     let frameBefore = runtime.currentFrame
     let targetTab =
       request.sessionId.flatMap { sessionId in
-        runtime.model.tabs.first(where: { $0.sessionId == sessionId })
+        runtime.model.tabs.first(where: { $0.allSessionIds.contains(sessionId) })
       } ?? runtime.model.activeTab
     guard let tab = targetTab, runtime.model.session(forTab: tab.id) != nil else {
       return jsonError("no session for setPreedit")
@@ -21,7 +21,7 @@ struct DebugPreeditActions {
 
     let text = request.text ?? ""
     if text.isEmpty {
-      runtime.preeditBySession.removeValue(forKey: tab.sessionId)
+      runtime.preeditBySession.removeValue(forKey: tab.focusedSessionId)
     } else {
       let graphemeClusterMode: Bool
       if let session = runtime.model.session(forTab: tab.id),
@@ -36,7 +36,7 @@ struct DebugPreeditActions {
         for: text, graphemeClusterMode: graphemeClusterMode)
       let requestedCaret = request.caretCells ?? maxCaretCells
       let caretCells = min(max(0, requestedCaret), maxCaretCells)
-      runtime.preeditBySession[tab.sessionId] = (text: text, caretCells: caretCells)
+      runtime.preeditBySession[tab.focusedSessionId] = (text: text, caretCells: caretCells)
     }
 
     runtime.appendInputEnvelope(
@@ -47,7 +47,7 @@ struct DebugPreeditActions {
         route: "appCommand",
         frameBefore: frameBefore,
         tabId: tab.id,
-        sessionId: tab.sessionId,
+        sessionId: tab.focusedSessionId,
         text: text.isEmpty ? nil : text,
         command: "setPreedit"
       ))
@@ -55,7 +55,7 @@ struct DebugPreeditActions {
     runtime.appendEvent(
       EventEntry(
         kind: text.isEmpty ? "preedit.cleared" : "preedit.set",
-        sessionId: tab.sessionId))
+        sessionId: tab.focusedSessionId))
     return runtime.actionResult(ok: true)
   }
 }

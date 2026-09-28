@@ -21,7 +21,7 @@ struct DebugTabActions {
 
   func closeTab(_ request: TabTargetActionRequest) -> DebugResponse {
     guard let tabId = request.tabId else { return jsonError("closeTab requires tabId") }
-    let closingSessionId = runtime.model.tabs.first(where: { $0.id == tabId })?.sessionId
+    let closingSessionId = runtime.model.tabs.first(where: { $0.id == tabId })?.focusedSessionId
     if let closingSessionId {
       runtime.terminateTerminalClientSessionUnlocked(sessionId: closingSessionId)
     }

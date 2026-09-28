@@ -114,7 +114,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
       while [ ! -f \(Self.shellQuote(readyPath)) ]; do sleep 0.05; done
       \(Self.shellQuote(agentURL.path)) \
         --control-attach-smoke=/debug/state \
-        --control-attach-smoke=/debug/sessions/\(otherTab.sessionId)
+        --control-attach-smoke=/debug/sessions/\(otherTab.focusedSessionId)
       sleep 1
       """
 
@@ -124,10 +124,10 @@ final class AppSessionCoordinatorTests: XCTestCase {
       shellLaunch: .passthrough,
       cwdBySessionId: [:])
     defer { coordinator.detach() }
-    coordinator.launchEnvironmentProvider = { tabID in
+    coordinator.launchEnvironmentProvider = { tabID, _ in
       model.launchEnvironmentOverrides(forTab: tabID)
     }
-    coordinator.argvProvider = { tabID in
+    coordinator.argvProvider = { tabID, _ in
       if tabID == agentTab.id {
         return ["/bin/sh", "-lc", command]
       }
@@ -145,7 +145,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let agentSession = try XCTUnwrap(model.session(forTab: agentTab.id))
     let childPid = try XCTUnwrap(agentInfo.childPid)
     launchCoordinator.tryRegisterShellPID(
-      sessionID: agentTab.sessionId,
+      sessionID: agentTab.focusedSessionId,
       session: agentSession,
       shellPID: pid_t(childPid))
     FileManager.default.createFile(atPath: readyPath, contents: Data())
@@ -154,13 +154,13 @@ final class AppSessionCoordinatorTests: XCTestCase {
       coordinator: coordinator,
       tab: agentTab,
       size: size,
-      text: #""path":"\/debug\/sessions\/\#(otherTab.sessionId)""#)
+      text: #""path":"\/debug\/sessions\/\#(otherTab.focusedSessionId)""#)
     let visible = snapshot.visibleText
     XCTAssertTrue(visible.contains("env-url=\(controlStart.socketPath)"))
     XCTAssertTrue(visible.contains("env-attach-present=yes"))
     XCTAssertTrue(visible.contains(#""path":"\/debug\/state""#))
     XCTAssertTrue(visible.contains(#""status":200"#))
-    XCTAssertTrue(visible.contains(#""path":"\/debug\/sessions\/\#(otherTab.sessionId)""#))
+    XCTAssertTrue(visible.contains(#""path":"\/debug\/sessions\/\#(otherTab.focusedSessionId)""#))
     XCTAssertTrue(visible.contains(#""status":403"#))
 
     let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
@@ -651,7 +651,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     wait(for: [woke], timeout: 2)
 
     let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
-    _ = try? cleanupClient.terminate(sessionId: tab.id)
+    _ = try? cleanupClient.terminate(sessionId: tab.focusedSessionId)
     _ = try? cleanupClient.shutdownWhenIdle()
     cleanupClient.close()
     process.waitUntilExit()
@@ -742,7 +742,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     _ = try waitForSnapshotText(coordinator: coordinator, tab: tab, size: size, text: "^[[A")
 
     let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
-    _ = try? cleanupClient.terminate(sessionId: tab.id)
+    _ = try? cleanupClient.terminate(sessionId: tab.focusedSessionId)
     _ = try? cleanupClient.shutdownWhenIdle()
     cleanupClient.close()
     process.waitUntilExit()

@@ -125,7 +125,7 @@ final class CaptureReplayTests: XCTestCase {
       CaptureTimelineEvent(
         kind: .tabSelected,
         tabId: secondTab.id,
-        sessionId: secondTab.sessionId
+        sessionId: secondTab.focusedSessionId
       ))
     recorder.record(
       CaptureTimelineEvent(
@@ -136,7 +136,7 @@ final class CaptureReplayTests: XCTestCase {
           route: "local",
           frameBefore: 1,
           tabId: secondTab.id,
-          sessionId: secondTab.sessionId,
+          sessionId: secondTab.focusedSessionId,
           command: "setSelection",
           anchorRow: 0,
           anchorCol: 0,

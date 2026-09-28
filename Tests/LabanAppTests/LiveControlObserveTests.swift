@@ -128,7 +128,7 @@ final class LiveControlObserveTests: XCTestCase {
 
   func testSessionObserveTokenCanRequestNotificationTest() throws {
     let model = try AppModel()
-    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let sessionID = try XCTUnwrap(model.activeTab?.focusedSessionId)
     let store = NativeNotificationDiagnosticsStore(capacity: 4, nativeAvailable: true)
     let router = LiveIntentRouter(model: model, notificationDiagnosticsStore: store)
     var postedEvent: AttentionNotificationEvent?
@@ -167,7 +167,7 @@ final class LiveControlObserveTests: XCTestCase {
 
   func testWindowScreenshotReturnsTypedPNGForVisibleScopedSession() throws {
     let model = try AppModel()
-    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let sessionID = try XCTUnwrap(model.activeTab?.focusedSessionId)
     let router = LiveIntentRouter(model: model)
     let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 4, 2])
     router.bindWindowScreenshotProvider {
@@ -190,7 +190,7 @@ final class LiveControlObserveTests: XCTestCase {
 
   func testWindowScreenshotReturns403WhenScreenRecordingPermissionDenied() throws {
     let model = try AppModel()
-    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let sessionID = try XCTUnwrap(model.activeTab?.focusedSessionId)
     let router = LiveIntentRouter(model: model)
     router.bindWindowScreenshotProvider {
       .failure(.permissionDenied)
@@ -280,7 +280,7 @@ final class LiveControlObserveTests: XCTestCase {
   func testSessionObserveSelectionUsesEnvironmentProvider() throws {
     let model = try AppModel()
     _ = try model.createTab()
-    let sessionID = try XCTUnwrap(model.tabs.first?.sessionId)
+    let sessionID = try XCTUnwrap(model.tabs.first?.focusedSessionId)
     let selection = TerminalSelection(
       sessionId: sessionID,
       anchor: TerminalCellCoordinate(row: 0, col: 0),
@@ -305,7 +305,7 @@ final class LiveControlObserveTests: XCTestCase {
     let scopedSessionID = model.tabs[0].sessionId
     let activeSessionID = model.tabs[1].sessionId
     model.selectTab(model.tabs[1].id)
-    XCTAssertEqual(model.activeTab?.sessionId, activeSessionID)
+    XCTAssertEqual(model.activeTab?.focusedSessionId, activeSessionID)
 
     let router = LiveIntentRouter(model: model)
     let body = Data(#"{"deltaRows":1}"#.utf8)

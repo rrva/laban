@@ -86,12 +86,12 @@ struct DebugMouseActions {
         encodedLength: encoded.isEmpty ? nil : encoded.count
       ))
     runtime.appendEvent(
-      EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "altScroll"))
+      EventEntry(kind: "mouse.sent", sessionId: tab.focusedSessionId, action: "altScroll"))
     runtime.renderFrameUnlocked()
     return jsonEncode(
       MouseActionResult(
         ok: sent.result == 0, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: false, sent: sent.result == 0
       ))
   }
@@ -200,14 +200,14 @@ struct DebugMouseActions {
     runtime.appendEvent(
       EventEntry(
         kind: "mouse.sent",
-        sessionId: tab.sessionId,
+        sessionId: tab.focusedSessionId,
         action: "mouseDrag"
       ))
     let sent = pressSent.result == 0 && motionSent.result == 0 && releaseSent.result == 0
     return jsonEncode(
       MouseActionResult(
         ok: sent, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: true, sent: sent
       ))
   }
@@ -256,13 +256,13 @@ struct DebugMouseActions {
         encodedLength: encoded.isEmpty ? nil : encoded.count
       ))
     runtime.appendEvent(
-      EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "mouseWheel")
+      EventEntry(kind: "mouse.sent", sessionId: tab.focusedSessionId, action: "mouseWheel")
     )
     runtime.renderFrameUnlocked()
     return jsonEncode(
       MouseActionResult(
         ok: sent.result == 0, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: true, sent: sent.result == 0
       ))
   }
@@ -306,7 +306,7 @@ struct DebugMouseActions {
     runtime.renderFrameUnlocked()
     runtime.appendEvent(
       EventEntry(
-        kind: "viewport.scrolled", sessionId: tab.sessionId, action: "mouseWheel",
+        kind: "viewport.scrolled", sessionId: tab.focusedSessionId, action: "mouseWheel",
         deltaRows: rows))
     return runtime.actionResult(ok: true)
   }
@@ -406,12 +406,12 @@ struct DebugMouseActions {
         encodedLength: encoded.isEmpty ? nil : encoded.count
       ))
     runtime.renderFrameUnlocked()
-    runtime.appendEvent(EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "click"))
+    runtime.appendEvent(EventEntry(kind: "mouse.sent", sessionId: tab.focusedSessionId, action: "click"))
     let sent = pressSent.result == 0 && releaseSent.result == 0
     return jsonEncode(
       MouseActionResult(
         ok: sent, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: true, sent: sent
       ))
   }
@@ -508,12 +508,12 @@ struct DebugMouseActions {
       ))
     runtime.renderFrameUnlocked()
     runtime.appendEvent(
-      EventEntry(kind: "selection.set", sessionId: tab.sessionId, action: "click")
+      EventEntry(kind: "selection.set", sessionId: tab.focusedSessionId, action: "click")
     )
     return jsonEncode(
       MouseActionResult(
         ok: true, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: false, sent: false
       ))
   }

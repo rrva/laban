@@ -17,7 +17,7 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
   private let isEnabled: () -> Bool
 
   private let lock = NSLock()
-  private var detectorsByTab: [String: AgentSessionDetector] = [:]
+  private var detectorsBySession: [String: AgentSessionDetector] = [:]
 
   public init(
     appModel: AppModel,
@@ -38,10 +38,10 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
     guard isEnabled() else { return }
     guard let pid = session.processMetadata()?.childPid, pid > 0 else { return }
     lock.lock()
-    detectorsByTab[tabId]?.stop()
+    detectorsBySession[tabId]?.stop()
     let detector = AgentSessionDetector(tabId: tabId, shellPid: pid_t(pid))
     detector.observer = self
-    detectorsByTab[tabId] = detector
+    detectorsBySession[tabId] = detector
     lock.unlock()
     detector.start()
   }
@@ -51,7 +51,7 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
     // the workspace. Closed tabs are not restore candidates; quit uses
     // observeNowAll() before persistence flushes state.
     lock.lock()
-    let detector = detectorsByTab.removeValue(forKey: tabId)
+    let detector = detectorsBySession.removeValue(forKey: tabId)
     lock.unlock()
     detector?.stop()
     // Untrack unconditionally — the periodic timer may have been
@@ -78,7 +78,7 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
   public func observeNowAll() {
     guard isEnabled() else { return }
     lock.lock()
-    let detectors = Array(detectorsByTab.values)
+    let detectors = Array(detectorsBySession.values)
     lock.unlock()
     for detector in detectors {
       detector.observeNowPreservingLiveAgentOnMiss()
@@ -92,7 +92,7 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
   ) {
     guard isEnabled() else { return }
     let tabId = detector.tabId
-    appModel.updateAgent(agent, forTab: tabId)
+    appModel.updateAgent(agent, forSession: tabId)
     if let agent, agent.wasRunningAtQuit {
       // Agent is alive — start (or refresh) the periodic mirror
       // timer pointed at its JSONL.

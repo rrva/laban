@@ -317,8 +317,8 @@ final class MainWindowController: NSWindowController {
     liveRouter.bindModel(model)
     let controlLaunchCoordinator = launchCoordinator
     let sessionCoordForAttach = sessionCoordinator
-    let priorTabCreated = model.onTabCreated
-    model.onTabCreated = { tabId, session in
+    let priorTabCreated = model.onSessionCreated
+    model.onSessionCreated = { tabId, session in
       priorTabCreated?(tabId, session)
       Self.registerAttachShell(
         tabId: tabId,
@@ -331,10 +331,10 @@ final class MainWindowController: NSWindowController {
         sessionCoordinator: sessionCoordForAttach,
         model: model)
     }
-    let priorTabClosedForControl = model.onTabClosed
-    model.onTabClosed = { tabId in
-      priorTabClosedForControl?(tabId)
-      controlLaunchCoordinator.noteTabClosed(tabID: tabId)
+    let priorTabClosedForControl = model.onSessionClosed
+    model.onSessionClosed = { tabId, sessionId in
+      priorTabClosedForControl?(tabId, sessionId)
+      controlLaunchCoordinator.noteSessionClosed(sessionID: sessionId)
     }
     let isPersistenceEnabled = {
       persistenceSyncEnabled && RestoreOnLaunchSettings.isEnabled
@@ -486,11 +486,11 @@ final class MainWindowController: NSWindowController {
         return session
       }
     }
-    sessionCoordinator?.argvProvider = { [weak model] tabId in
-      model?.launchArgv(forTab: tabId)
+    sessionCoordinator?.argvProvider = { [weak model] _, sessionId in
+      model?.launchArgv(forSession: sessionId)
     }
-    sessionCoordinator?.launchEnvironmentProvider = { [weak model] tabId in
-      model?.launchEnvironmentOverrides(forTab: tabId) ?? [:]
+    sessionCoordinator?.launchEnvironmentProvider = { [weak model] _, sessionId in
+      model?.launchEnvironmentOverrides(forSession: sessionId) ?? [:]
     }
     sessionCoordinator?.onTabMetadataRefreshed = {
       [weak launchCoordinator, weak sessionCoordinator] model in
@@ -508,7 +508,7 @@ final class MainWindowController: NSWindowController {
     // was assigned. Attach explicitly here.
     if let transcriptHost {
       for (tab, session) in model.allSessions() {
-        transcriptHost.attachTranscriptWriter(to: session, tabId: tab.id)
+        transcriptHost.attachTranscriptWriter(to: session, sessionId: session.id)
       }
     }
 
@@ -881,18 +881,18 @@ final class MainWindowController: NSWindowController {
         appModel: model, mirror: mirror,
         isEnabled: isPersistenceEnabled)
       controller.agentObserverHost = observerHost
-      let priorTabCreatedForObserver = model.onTabCreated
-      model.onTabCreated = { [weak observerHost] tabId, session in
+      let priorTabCreatedForObserver = model.onSessionCreated
+      model.onSessionCreated = { [weak observerHost] tabId, session in
         priorTabCreatedForObserver?(tabId, session)
-        observerHost?.attach(session: session, tabId: tabId)
+        observerHost?.attach(session: session, tabId: session.id)
       }
-      let priorTabClosedForObserver = model.onTabClosed
-      model.onTabClosed = { [weak observerHost] tabId in
-        priorTabClosedForObserver?(tabId)
-        observerHost?.detach(tabId: tabId)
+      let priorTabClosedForObserver = model.onSessionClosed
+      model.onSessionClosed = { [weak observerHost] tabId, sessionId in
+        priorTabClosedForObserver?(tabId, sessionId)
+        observerHost?.detach(tabId: sessionId)
       }
       for (tab, session) in model.allSessions() {
-        observerHost.attach(session: session, tabId: tab.id)
+        observerHost.attach(session: session, tabId: session.id)
       }
       if terminalBackend == .inProcess, let restoredState, !restoredState.windows.isEmpty {
         Self.applyRestoreLaunchPlans(
@@ -1150,7 +1150,7 @@ final class MainWindowController: NSWindowController {
     model: AppModel
   ) {
     guard let coordinator else { return }
-    let unclaimed = coordinator.unclaimedLabptySessions(knownSessionIds: Set(model.tabs.map(\.sessionId)))
+    let unclaimed = coordinator.unclaimedLabptySessions(knownSessionIds: Set(model.tabs.flatMap(\.allSessionIds)))
     guard !unclaimed.isEmpty else { return }
 
     AppLog.app.notice("labpty desync: \(unclaimed.count) unclaimed live session(s) at launch")

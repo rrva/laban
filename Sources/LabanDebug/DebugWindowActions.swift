@@ -30,9 +30,9 @@ struct DebugWindowActions {
       for tab in runtime.model.tabs {
         do {
           try runtime.ensureTerminalClientSessionUnlocked(for: tab)
-          runtime.terminalClientSessionInfoById[tab.sessionId] =
+          runtime.terminalClientSessionInfoById[tab.focusedSessionId] =
             try client.resize(
-              sessionId: runtime.terminalClientRemoteSessionId(for: tab.sessionId),
+              sessionId: runtime.terminalClientRemoteSessionId(for: tab.focusedSessionId),
               rows: Int(size.rows),
               cols: Int(size.cols)
             )
@@ -40,7 +40,7 @@ struct DebugWindowActions {
           runtime.appendError(
             kind: "laband.resize.failed",
             message: String(describing: error),
-            sessionId: tab.sessionId,
+            sessionId: tab.focusedSessionId,
             tabId: tab.id
           )
           return jsonError("resizeWindow failed: \(error)")
@@ -88,9 +88,9 @@ struct DebugWindowActions {
         for tab in runtime.model.tabs {
           do {
             try runtime.ensureTerminalClientSessionUnlocked(for: tab)
-            runtime.terminalClientSessionInfoById[tab.sessionId] =
+            runtime.terminalClientSessionInfoById[tab.focusedSessionId] =
               try client.resize(
-                sessionId: runtime.terminalClientRemoteSessionId(for: tab.sessionId),
+                sessionId: runtime.terminalClientRemoteSessionId(for: tab.focusedSessionId),
                 rows: Int(size.rows),
                 cols: Int(size.cols)
               )
@@ -98,7 +98,7 @@ struct DebugWindowActions {
             runtime.appendError(
               kind: "laband.resize.failed",
               message: String(describing: error),
-              sessionId: tab.sessionId,
+              sessionId: tab.focusedSessionId,
               tabId: tab.id
             )
             return jsonError("setFontSize failed: \(error)")
@@ -298,13 +298,13 @@ struct DebugWindowActions {
       do {
         try runtime.ensureTerminalClientSessionUnlocked(for: tab)
         try client.writeInput(
-          sessionId: runtime.terminalClientRemoteSessionId(for: tab.sessionId),
+          sessionId: runtime.terminalClientRemoteSessionId(for: tab.focusedSessionId),
           bytes: bytes)
       } catch {
         runtime.appendError(
           kind: "terminalClient.writeInput.failed",
           message: String(describing: error),
-          sessionId: tab.sessionId,
+          sessionId: tab.focusedSessionId,
           tabId: tab.id)
         return jsonError("windowFocus forward failed: \(error)")
       }
@@ -314,7 +314,7 @@ struct DebugWindowActions {
     runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
     runtime.appendEvent(
       EventEntry(
-        kind: "focus.reported", sessionId: tab.sessionId,
+        kind: "focus.reported", sessionId: tab.focusedSessionId,
         action: focused ? "focusIn" : "focusOut"))
     runtime.renderFrameUnlocked()
     return runtime.actionResult(ok: true)

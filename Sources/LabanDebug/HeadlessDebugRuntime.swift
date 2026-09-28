@@ -383,17 +383,17 @@ public final class HeadlessDebugRuntime {
         }
         return session
       }
-      self.model.onTabCreated = { [weak observers] tabId, session in
-        observers?.attach(session: session, tabId: tabId)
+      self.model.onSessionCreated = { [weak observers] tabId, session in
+        observers?.attach(session: session, tabId: session.id)
       }
-      self.model.onTabClosed = { [weak observers] tabId in
-        observers?.detach(tabId: tabId)
+      self.model.onSessionClosed = { [weak observers] _, sessionId in
+        observers?.detach(tabId: sessionId)
       }
 
       // Attach writer + detector to the initial default tab.
       for (tab, session) in model.allSessions() {
-        transcripts.attachTranscriptWriter(to: session, tabId: tab.id)
-        observers.attach(session: session, tabId: tab.id)
+        transcripts.attachTranscriptWriter(to: session, sessionId: session.id)
+        observers.attach(session: session, tabId: session.id)
       }
 
       // Production parity: AppDelegate calls
@@ -673,14 +673,14 @@ public final class HeadlessDebugRuntime {
 
   func ensureTerminalClientSessionUnlocked(for tab: Tab) throws {
     guard let client = terminalSessionClient else { return }
-    if terminalClientSessionInfoById[tab.sessionId] != nil { return }
+    if terminalClientSessionInfoById[tab.focusedSessionId] != nil { return }
     let remoteSessionId = terminalClientLogicalSessionId(for: tab)
     if let existing = try? client.attachSession(logicalSessionId: remoteSessionId),
       existing.lifecycleState == .running
     {
-      terminalClientSessionInfoById[tab.sessionId] = existing
+      terminalClientSessionInfoById[tab.focusedSessionId] = existing
       pendingAgentRestoreCandidatesByTab.removeValue(forKey: tab.id)
-      attachSnapshotRingIfAvailable(client: client, localSessionId: tab.sessionId)
+      attachSnapshotRingIfAvailable(client: client, localSessionId: tab.focusedSessionId)
       return
     }
     if pendingAgentRestoreCandidatesByTab[tab.id] != nil {
@@ -694,8 +694,8 @@ public final class HeadlessDebugRuntime {
     )
     let info = try client.createSession(
       launch)
-    terminalClientSessionInfoById[tab.sessionId] = info
-    attachSnapshotRingIfAvailable(client: client, localSessionId: tab.sessionId)
+    terminalClientSessionInfoById[tab.focusedSessionId] = info
+    attachSnapshotRingIfAvailable(client: client, localSessionId: tab.focusedSessionId)
   }
 
   private static func labandLaunchRequest(
@@ -728,7 +728,7 @@ public final class HeadlessDebugRuntime {
   }
 
   private func terminalClientLogicalSessionId(for tab: Tab) -> String {
-    tab.sessionId
+    tab.focusedSessionId
   }
 
   func attachSnapshotRingIfAvailable(
@@ -748,7 +748,7 @@ public final class HeadlessDebugRuntime {
     do {
       let localSessionIdByLogicalId = Dictionary(
         uniqueKeysWithValues: model.tabs.map {
-          (terminalClientLogicalSessionId(for: $0), $0.sessionId)
+          (terminalClientLogicalSessionId(for: $0), $0.focusedSessionId)
         })
       for info in try client.listSessions() {
         let localSessionId =
@@ -860,8 +860,8 @@ public final class HeadlessDebugRuntime {
     captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: frame))
 
     timer = monotonicNow()
-    let activeSelection = model.activeTab.flatMap { selectionBySession[$0.sessionId] }
-    let activePreedit = model.activeTab.flatMap { preeditBySession[$0.sessionId] }
+    let activeSelection = model.activeTab.flatMap { selectionBySession[$0.focusedSessionId] }
+    let activePreedit = model.activeTab.flatMap { preeditBySession[$0.focusedSessionId] }
     let surfaceFrame = surfaceController.makeFrame(
       TerminalSurfaceFrameRequest(
         frame: frame,

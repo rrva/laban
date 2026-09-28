@@ -15,7 +15,7 @@ struct DebugSelectionActions {
     }
     let targetTab =
       request.sessionId.flatMap { sessionId in
-        runtime.model.tabs.first(where: { $0.sessionId == sessionId })
+        runtime.model.tabs.first(where: { $0.allSessionIds.contains(sessionId) })
       } ?? runtime.model.activeTab
     guard let tab = targetTab, let session = runtime.model.session(forTab: tab.id) else {
       return jsonError("no session for setSelection")
@@ -42,7 +42,7 @@ struct DebugSelectionActions {
         focusCol: focusRequest.col
       ))
     runtime.renderFrameUnlocked()
-    runtime.appendEvent(EventEntry(kind: "selection.set", sessionId: tab.sessionId))
+    runtime.appendEvent(EventEntry(kind: "selection.set", sessionId: tab.focusedSessionId))
     return runtime.actionResult(ok: true)
   }
 }

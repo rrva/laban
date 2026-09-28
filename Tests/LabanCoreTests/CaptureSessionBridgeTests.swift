@@ -95,7 +95,7 @@ final class CaptureSessionBridgeTests: XCTestCase {
     let input = sink.byteEvents.filter { $0.direction == .ptyInput }
     XCTAssertEqual(input.count, 1)
     XCTAssertEqual(input.first?.bytes, Array("ls\r".utf8))
-    XCTAssertEqual(input.first?.sessionId, session.id)
+    XCTAssertEqual(input.first?.focusedSessionId, session.id)
     XCTAssertEqual(input.first?.frame, 3)
     // The viewer session has no PTY, so captureInput must not produce output.
     XCTAssertFalse(sink.byteEvents.contains { $0.direction == .ptyOutput })

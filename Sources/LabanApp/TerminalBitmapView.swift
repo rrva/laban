@@ -3931,12 +3931,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         let reportedActive = previewRemoteFrame?.snapshot.synchronizedOutput ?? false
         if previewRemoteFrame != nil, !reportedActive {
           remoteSynchronizedOutputWatchdogBypassedSessionIds.remove(
-            visibleHoverPreviewTab.sessionId)
+            visibleHoverPreviewTab.focusedSessionId)
         }
         previewSynchronizedOutputActive = Self.effectiveRemoteSynchronizedOutput(
           reportedActive: reportedActive,
           watchdogBypassed: remoteSynchronizedOutputWatchdogBypassedSessionIds.contains(
-            visibleHoverPreviewTab.sessionId))
+            visibleHoverPreviewTab.focusedSessionId))
       } else {
         previewSynchronizedOutputActive =
           visibleHoverPreviewSession?.synchronizedOutputActive ?? false
@@ -3944,14 +3944,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let previewSyncGate = TerminalRenderGate.synchronizedOutputDecision(
         terminalDirty: previewTerminalDirty,
         synchronizedOutputActive: previewSynchronizedOutputActive,
-        sessionId: visibleHoverPreviewTab.sessionId,
+        sessionId: visibleHoverPreviewTab.focusedSessionId,
         now: gateNow,
         hold: hoverPreviewSynchronizedOutputHold)
       hoverPreviewSynchronizedOutputHold = previewSyncGate.hold
       if previewSyncGate.shouldResetMode {
         if usingRemoteSessions {
           remoteSynchronizedOutputWatchdogBypassedSessionIds.insert(
-            visibleHoverPreviewTab.sessionId)
+            visibleHoverPreviewTab.focusedSessionId)
         } else {
           _ = model.session(forTab: visibleHoverPreviewTab.id)?.resetSynchronizedOutput()
         }
@@ -4037,7 +4037,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if settleEligibility.hoverPreview, let visibleHoverPreviewTab {
       let previewSettleGate = TerminalRenderGate.outputSettleDecision(
         terminalDirty: previewTerminalDirty,
-        sessionId: visibleHoverPreviewTab.sessionId,
+        sessionId: visibleHoverPreviewTab.focusedSessionId,
         lastDirtyAt: previewRemoteFrame?.snapshotPublishedAt(now: gateNow)
           ?? previewRemoteDirtyObservedAt
           ?? visibleHoverPreviewTab.lastOutputAt,
@@ -5761,7 +5761,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func restoreClosedTab(_ payload: ClosedTabUndoPayload) {
     do {
       let tab = try model.createTab(runningArgv: payload.argv ?? [], cwd: payload.cwd)
-      sessionCoordinator?.setLaunchCwd(payload.cwd, forSession: tab.sessionId)
+      sessionCoordinator?.setLaunchCwd(payload.cwd, forSession: tab.focusedSessionId)
       try sessionCoordinator?.ensureSession(
         for: tab,
         session: model.session(forTab: tab.id),
@@ -6972,7 +6972,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func showFindChip(selectingExistingNeedle: Bool) {
     guard let activeTab = model.activeTab else { return }
-    let sessionId = activeTab.sessionId
+    let sessionId = activeTab.focusedSessionId
     var state = model.findState(forSession: sessionId)
     if !state.isActive {
       state = model.startFind(sessionID: sessionId, needle: lastFindNeedle) ?? .inactive
@@ -7006,7 +7006,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func updateFindNeedle(_ needle: String) {
-    guard let sessionId = model.activeTab?.sessionId else { return }
+    guard let sessionId = model.activeTab?.focusedSessionId else { return }
     lastFindNeedle = needle
     if needle.isEmpty {
       cancelPendingFindSearch()
@@ -7023,7 +7023,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func stepFind(_ direction: TerminalFindDirection) {
-    guard let sessionId = model.activeTab?.sessionId else { return }
+    guard let sessionId = model.activeTab?.focusedSessionId else { return }
     cancelPendingFindSearch()
     _ = model.stepFind(sessionID: sessionId, direction: direction)
     syncFindChip()
@@ -7033,7 +7033,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func closeFindChip() {
     cancelPendingFindSearch()
-    guard let sessionId = model.activeTab?.sessionId else {
+    guard let sessionId = model.activeTab?.focusedSessionId else {
       findChip?.removeFromSuperview()
       findChip = nil
       return
@@ -7048,7 +7048,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func syncFindChip() {
-    guard let chip = findChip, let sessionId = model.activeTab?.sessionId else { return }
+    guard let chip = findChip, let sessionId = model.activeTab?.focusedSessionId else { return }
     let state = model.findState(forSession: sessionId)
     let isSearching =
       pendingFindSearchSessionID == sessionId
@@ -7086,7 +7086,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     pendingFindSearchWorkItem = nil
     pendingFindSearchSessionID = nil
     pendingFindSearchNeedle = ""
-    guard model.activeTab?.sessionId == sessionID, findChip != nil else { return }
+    guard model.activeTab?.focusedSessionId == sessionID, findChip != nil else { return }
 
     _ = model.updateFindNeedle(
       sessionID: sessionID,
@@ -7159,7 +7159,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         route: route,
         frameBefore: renderedFrameCount,
         tabId: active?.id,
-        sessionId: active?.sessionId,
+        sessionId: active?.focusedSessionId,
         key: key,
         text: text,
         modifiers: modifiers,
@@ -9242,7 +9242,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       showCastAlert(title: L10n.tr("No active tab"), message: L10n.tr("Open a tab and try again."))
       return
     }
-    guard let ring = model.transcriptDelegate?.recentByteRing(forTabId: tabId) else {
+    guard let ring = model.transcriptDelegate?.recentByteRing(forSessionId: model.activeTab?.focusedSessionId ?? "") else {
       showCastAlert(
         title: "Recent-byte recording is not available",
         message:
@@ -9711,7 +9711,7 @@ extension TerminalBitmapView: ControlAgentAttachedIndicatorHost {
   func terminalSelection(forSessionID sessionID: Session.ID, model: AppModel) -> TerminalSelection?
   {
     syncSelectionStateToActiveTab()
-    guard let tab = model.tabs.first(where: { $0.sessionId == sessionID }),
+    guard let tab = model.tabs.first(where: { $0.allSessionIds.contains(sessionID) }),
       let session = model.session(forTab: tab.id)
     else { return nil }
 

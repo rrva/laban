@@ -135,7 +135,7 @@ extension HeadlessDebugRuntime {
     return jsonEncode(
       ActionResult(
         ok: false, frame: currentFrame,
-        activeTabId: active?.id, activeSessionId: active?.sessionId,
+        activeTabId: active?.id, activeSessionId: active?.focusedSessionId,
         error: "debug action \(actionName) is not implemented yet"
       ))
   }
@@ -147,7 +147,7 @@ extension HeadlessDebugRuntime {
         ok: ok,
         frame: currentFrame,
         activeTabId: active?.id,
-        activeSessionId: active?.sessionId,
+        activeSessionId: active?.focusedSessionId,
         error: nil
       ))
   }

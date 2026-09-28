@@ -5,6 +5,8 @@ import LabanTerminalCore
 struct AppModelSurfaceSession {
   var tabId: Tab.ID
   var tabIndex: Int
+  var isFocused: Bool
+  var isVisible: Bool
   var session: Session
 }
 
@@ -29,6 +31,7 @@ public final class AppModel {
   // Sessions whose active find needs a full scrollback rescan deferred from a
   // live resize drag; flushed by refreshActiveFindsAfterResize on settle. (H-5)
   private var pendingFindRescanSessions: Set<Session.ID> = []
+  private var paneMetadata: [Session.ID: TabTitleMetadata] = [:]
   private let metadataSync = TabMetadataSynchronizer()
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize, SessionLaunchContext) throws -> Session
@@ -109,6 +112,9 @@ public final class AppModel {
 
   /// Fires after every tab close so per-tab subsystems can tear down.
   public var onTabClosed: ((Tab.ID) -> Void)?
+  public var onSessionCreated: ((Tab.ID, Session) -> Void)?
+  public var onSessionClosed: ((Tab.ID, Session.ID) -> Void)?
+  public var onSessionsReplaced: (() -> Void)?
 
   /// Fires after each OSC 133 shell-integration transition for a tab, with
   /// the post-reduction `ShellIntegrationState`. Always dispatched to the
@@ -230,55 +236,54 @@ public final class AppModel {
   /// Optional launch command override per tab; used when a tab was
   /// created with an explicit launch command (restored tabs). Keyed by
   /// Tab.ID. Cleared on tab close.
-  private var launchCommandByTab: [Tab.ID: String] = [:]
+  private var launchCommandBySession: [Tab.ID: String] = [:]
 
   /// Explicit launch argv for tabs created via `createTab(runningArgv:)`,
   /// keyed by Tab.ID. The daemon-backed coordinators read this through
   /// `launchArgv(forTab:)` to launch the requested command instead of the
   /// login shell. Cleared on tab close.
-  private var launchArgvByTab: [Tab.ID: [String]] = [:]
+  private var launchArgvBySession: [Tab.ID: [String]] = [:]
 
   /// Control-plane env overrides from `SessionLaunchContext`, keyed by tab id.
   /// Daemon backends merge these into labpty `envp` / laband `environmentPatch`.
-  private var launchEnvironmentByTab: [Tab.ID: [String: String]] = [:]
+  private var launchEnvironmentBySession: [Tab.ID: [String: String]] = [:]
 
   /// Most recent agent observation per tab, fed by the LabanApp-side
   /// `AgentSessionDetector`. Persisted into `TabState.agent` by
   /// `snapshotForPersistence(windowId:)`. Cleared on tab close.
-  private var agentByTab: [Tab.ID: AgentInfo] = [:]
+  private var agentBySession: [Tab.ID: AgentInfo] = [:]
 
   /// True when the tab was restored with a cwd that no longer existed
   /// and we fell back to `$HOME`. Surfaced into
   /// `TabState.cwdFallbackApplied` so headless tests can assert the
   /// fallback was taken and the next save round-trips the flag.
   /// Cleared on tab close.
-  private var cwdFallbackAppliedByTab: [Tab.ID: Bool] = [:]
+  private var cwdFallbackAppliedBySession: [Tab.ID: Bool] = [:]
 
   /// Update the captured agent state for a tab. Setting nil clears
   /// any previously captured state. Triggers a workspace mutation
   /// notification so the persistence coordinator records the change.
   public func updateAgent(_ agent: AgentInfo?, forTab tabId: Tab.ID) {
-    let changed: Bool = withModelLock {
-      guard _tabs.contains(where: { $0.id == tabId }) else {
-        return agentByTab.removeValue(forKey: tabId) != nil
-      }
-      let prior = agentByTab[tabId]
-      if prior == agent { return false }
-      if let agent {
-        agentByTab[tabId] = agent
-      } else {
-        agentByTab.removeValue(forKey: tabId)
-      }
-      return true
-    }
-    if changed { notifyWorkspaceMutation() }
+    guard let id = tabs.first(where: { $0.id == tabId })?.focusedSessionId else { return }
+    updateAgent(agent, forSession: id)
   }
 
-  /// Read the captured agent state for a tab. Returns nil when the
-  /// tab does not exist or no agent has been detected.
-  public func agent(forTab tabId: Tab.ID) -> AgentInfo? {
-    withModelLock { agentByTab[tabId] }
+  public func updateAgent(_ agent: AgentInfo?, forSession sessionId: Session.ID) {
+    withModelLock {
+      guard sessionRegistry.session(id: sessionId) != nil else { return }
+      agentBySession[sessionId] = agent
+    }
+    notifyWorkspaceMutation()
   }
+
+  public func agent(forTab tabId: Tab.ID) -> AgentInfo? {
+    withModelLock {
+      guard let id = _tabs.first(where: { $0.id == tabId })?.focusedSessionId else { return nil }
+      return agentBySession[id]
+    }
+  }
+
+  public func agent(forSession id: Session.ID) -> AgentInfo? { withModelLock { agentBySession[id] } }
 
   @discardableResult
   private func withModelLock<T>(_ body: () throws -> T) rethrows -> T {
@@ -367,22 +372,18 @@ public final class AppModel {
     // Otherwise the host retains stale writers/bridges until its own
     // teardown — a real leak the M1 review flagged after restore
     // calls `closeAllSessionsUnlocked` to replace the default tab.
-    if let transcriptDelegate {
-      for tab in _tabs {
-        let session = sessionRegistry.session(id: tab.sessionId)
-        transcriptDelegate.detachTranscriptWriter(forTabId: tab.id, in: session)
-      }
+    for tab in _tabs {
+      for id in tab.allSessionIds { closeSessionUnlocked(id, inTab: tab.id) }
+      onTabClosed?(tab.id)
     }
-    if let onTabClosed {
-      for tab in _tabs { onTabClosed(tab.id) }
-    }
+    onSessionsReplaced?()
     sessionRegistry.closeAll()
     _tabs.removeAll()
     findStateBySession.removeAll()
     findFullSearchCacheBySession.removeAll()
-    launchCommandByTab.removeAll()
-    agentByTab.removeAll()
-    cwdFallbackAppliedByTab.removeAll()
+    launchCommandBySession.removeAll()
+    agentBySession.removeAll()
+    cwdFallbackAppliedBySession.removeAll()
     metadataSync.reset(closedCwds: closedCwds)
   }
 
@@ -397,11 +398,13 @@ public final class AppModel {
       for (idx, tab) in _tabs.enumerated() {
         if tab.isActive {
           activeTabId = tab.id
-          activeSessionId = tab.sessionId
+          activeSessionId = tab.focusedSessionId
         }
-        if let session = sessionRegistry.session(id: tab.sessionId) {
-          tabSessions.append(
-            AppModelSurfaceSession(tabId: tab.id, tabIndex: idx, session: session))
+        for id in tab.allSessionIds {
+          if let session = sessionRegistry.session(id: id) {
+            tabSessions.append(AppModelSurfaceSession(tabId: tab.id, tabIndex: idx,
+              isFocused: id == tab.focusedSessionId, isVisible: tab.isActive, session: session))
+          }
         }
       }
       return AppModelSurfaceSessionSnapshot(
@@ -415,7 +418,7 @@ public final class AppModel {
   public func session(forTab tabId: Tab.ID) -> Session? {
     withModelLock {
       guard let tab = _tabs.first(where: { $0.id == tabId }) else { return nil }
-      return sessionRegistry.session(id: tab.sessionId)
+      return sessionRegistry.session(id: tab.focusedSessionId)
     }
   }
 
@@ -627,6 +630,101 @@ public final class AppModel {
     }
   }
 
+  public enum PaneError: Error {
+    case notALeaf, unknownSession, unsupportedBackend, daemonRefused(String)
+  }
+
+  @discardableResult
+  public func splitPane(
+    inTab tabId: Tab.ID, axis: PaneAxis = .vertical,
+    openSession: (Session.ID, LabanTerminalSize, String?) throws -> Session
+  ) throws -> Session.ID {
+    let id = try withModelLock { () throws -> Session.ID in
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { throw PaneError.unknownSession }
+      guard axis == .vertical, _tabs[idx].allSessionIds.count == 1 else { throw PaneError.notALeaf }
+      let old = _tabs[idx]
+      let id = UUID().uuidString
+      let tree = old.panes.splitting(leaf: old.focusedSessionId, axis: axis, newSessionId: id)!
+      var size = currentSize
+      size.cols = max(1, (size.cols - 1) / 2)
+      size.pixel_width = max(1, (size.pixel_width - 1) / 2)
+      let cwd = old.titleMetadata.workspace.cwd ?? sessionRegistry.session(id: old.focusedSessionId)?.processMetadata()?.cwd
+      let session: Session
+      do { session = try openSession(id, size, cwd) }
+      catch { throw PaneError.daemonRefused(String(describing: error)) }
+      guard session.id == id else { session.close(); throw PaneError.daemonRefused("session identity mismatch") }
+      paneMetadata[old.focusedSessionId] = old.titleMetadata
+      sessionRegistry.add(session)
+      AppModel.maybeAutoCapture(session)
+      ThemePaletteInjector.injectCurrentTheme(into: session)
+      _tabs[idx].panes = tree
+      attachSessionCallbacks(session: session, tabId: tabId)
+      transcriptDelegate?.attachTranscriptWriter(to: session, sessionId: id)
+      onSessionCreated?(tabId, session)
+      recordSessionCreated(sessionId: id, tabId: tabId)
+      focusPane(inTab: tabId, sessionId: id)
+      return id
+    }
+    notifyWorkspaceMutation()
+    return id
+  }
+
+  /// Use the same launch factory and control environment as new tabs.
+  public func makePaneSession(id: Session.ID, inTab tabId: Tab.ID, size: LabanTerminalSize, cwd: String?) throws -> Session {
+    let context = launchContext(tabId: tabId, sessionId: id)
+    let session: Session
+    if let cwd, let factory = newTabSessionFactory {
+      session = try factory(size, resolveRestoredCwd(cwd).cwd, context)
+    } else { session = try sessionFactory(size, context) }
+    noteLaunchEnvironmentUnlocked(forTab: tabId, context: context)
+    return session
+  }
+
+  public func closePane(inTab tabId: Tab.ID, sessionId: Session.ID, terminate: (Session.ID) -> Void) {
+    withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }), _tabs[idx].panes.contains(sessionId) else { return }
+      terminate(sessionId)
+      guard let tree = _tabs[idx].panes.removing(leaf: sessionId) else {
+        try? closeTab(tabId)
+        return
+      }
+      closeSessionUnlocked(sessionId, inTab: tabId)
+      _tabs[idx].panes = tree
+      _tabs[idx].focusHistory.removeAll { $0 == sessionId }
+      let next = _tabs[idx].focusHistory.last ?? tree.leafSessionIds()[0]
+      focusPane(inTab: tabId, sessionId: next)
+    }
+    notifyWorkspaceMutation()
+  }
+
+  public func focusPane(inTab tabId: Tab.ID, sessionId: Session.ID) {
+    withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }), _tabs[idx].panes.contains(sessionId) else { return }
+      let old = _tabs[idx]
+      if old.focusedSessionId != sessionId {
+        if old.panes.contains(old.focusedSessionId) { paneMetadata[old.focusedSessionId] = old.titleMetadata }
+        _tabs[idx].focusedSessionId = sessionId
+        _tabs[idx].titleMetadata = paneMetadata[sessionId] ?? .fallback(position: old.position, active: old.isActive)
+        _tabs[idx].titleMetadata.userTitle = old.titleMetadata.userTitle
+        _tabs[idx].status = .running
+      }
+      _tabs[idx].focusHistory.removeAll { $0 == sessionId }
+      _tabs[idx].focusHistory.append(sessionId)
+      if let session = sessionRegistry.session(id: sessionId) {
+        _ = syncSurfaceMetadata(forTab: tabId, tabIndex: idx, from: session, now: Date(), recordTitleChanges: true)
+      }
+      acknowledgeShellCommands(forTabAt: idx)
+    }
+    onSessionsReplaced?()
+    notifyWorkspaceMutation()
+  }
+
+  public func focusAdjacentPane(inTab tabId: Tab.ID, forward: Bool) {
+    guard let tab = tabs.first(where: { $0.id == tabId }), let index = tab.allSessionIds.firstIndex(of: tab.focusedSessionId) else { return }
+    let ids = tab.allSessionIds
+    focusPane(inTab: tabId, sessionId: ids[(index + (forward ? 1 : ids.count - 1)) % ids.count])
+  }
+
   @discardableResult
   public func createTab() throws -> Tab {
     let (tab, session) = try withModelLock {
@@ -663,7 +761,8 @@ public final class AppModel {
       selectTabUnlocked(tab.id)
       return (_tabs.last!, session)
     }
-    transcriptDelegate?.attachTranscriptWriter(to: session, tabId: tab.id)
+    transcriptDelegate?.attachTranscriptWriter(to: session, sessionId: session.id)
+    onSessionCreated?(tab.id, session)
     onTabCreated?(tab.id, session)
     notifyWorkspaceMutation()
     return tab
@@ -696,7 +795,8 @@ public final class AppModel {
       selectTabUnlocked(tab.id)
       return (_tabs.last!, session)
     }
-    transcriptDelegate?.attachTranscriptWriter(to: session, tabId: tab.id)
+    transcriptDelegate?.attachTranscriptWriter(to: session, sessionId: session.id)
+    onSessionCreated?(tab.id, session)
     onTabCreated?(tab.id, session)
     notifyWorkspaceMutation()
     return tab
@@ -733,7 +833,7 @@ public final class AppModel {
         isActive: false,
         sessionId: session.id
       )
-      if !argv.isEmpty { launchArgvByTab[tab.id] = argv }
+      if !argv.isEmpty { launchArgvBySession[session.id] = argv }
       sessionRegistry.add(session)
       _tabs.append(tab)
       noteLaunchEnvironmentUnlocked(forTab: tab.id, context: launchContext)
@@ -743,7 +843,8 @@ public final class AppModel {
       selectTabUnlocked(tab.id)
       return (_tabs.last!, session)
     }
-    transcriptDelegate?.attachTranscriptWriter(to: session, tabId: tab.id)
+    transcriptDelegate?.attachTranscriptWriter(to: session, sessionId: session.id)
+    onSessionCreated?(tab.id, session)
     onTabCreated?(tab.id, session)
     notifyWorkspaceMutation()
     return tab
@@ -751,13 +852,21 @@ public final class AppModel {
 
   /// Control-plane env overrides recorded when the tab was created (C11/C14).
   public func launchEnvironmentOverrides(forTab tabId: Tab.ID) -> [String: String] {
-    withModelLock { launchEnvironmentByTab[tabId] ?? [:] }
+    withModelLock { launchEnvironmentBySession[_tabs.first(where: { $0.id == tabId })?.focusedSessionId ?? ""] ?? [:] }
+  }
+
+  public func launchEnvironmentOverrides(forSession id: Session.ID) -> [String: String] {
+    withModelLock { launchEnvironmentBySession[id] ?? [:] }
+  }
+
+  public func launchArgv(forSession id: Session.ID) -> [String]? {
+    withModelLock { launchArgvBySession[id] }
   }
 
   /// The explicit launch argv recorded for a tab created via
   /// `createTab(runningArgv:)`, or nil for an ordinary login-shell tab.
   public func launchArgv(forTab tabId: Tab.ID) -> [String]? {
-    withModelLock { launchArgvByTab[tabId] }
+    withModelLock { launchArgvBySession[_tabs.first(where: { $0.id == tabId })?.focusedSessionId ?? ""] }
   }
 
   /// Create a tab pinned to a specific working directory with a
@@ -857,7 +966,7 @@ public final class AppModel {
           tabId: id,
           cwd: resolved.cwd,
           cwdFallbackApplied: resolved.fallbackApplied,
-          transcriptURL: transcriptDelegate?.transcriptURL(forTabId: id),
+          transcriptURL: transcriptDelegate?.transcriptURL(forSessionId: id),
           altBufferAtQuit: persistedTab.altBufferAtQuit ?? false,
           agent: persistedTab.agent,
           shellPid: persistedTab.shellPid
@@ -882,13 +991,13 @@ public final class AppModel {
       sessionRegistry.add(session)
       _tabs.append(tab)
       noteLaunchEnvironmentUnlocked(forTab: tab.id, context: launchContext)
-      launchCommandByTab[id] = persistedTab.launchCommand
+      launchCommandBySession[session.id] = persistedTab.launchCommand
       if let agent = persistedTab.agent {
-        agentByTab[id] = agent
+        agentBySession[session.id] = agent
       }
       if resolved.fallbackApplied {
         _tabs[_tabs.count - 1].titleMetadata.workspace = TabWorkspaceMetadata(cwd: resolved.cwd)
-        cwdFallbackAppliedByTab[id] = true
+        cwdFallbackAppliedBySession[session.id] = true
       }
       attachSessionCallbacks(session: session, tabId: tab.id)
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
@@ -904,8 +1013,9 @@ public final class AppModel {
     // quit-restore cycle accumulates a stacked prompt block that
     // shows up in the next restore's scrollback.
     transcriptDelegate?.attachTranscriptWriter(
-      to: session, tabId: id,
+      to: session, sessionId: session.id,
       suppressInitialOutputFor: .milliseconds(500))
+    onSessionCreated?(id, session)
     onTabCreated?(id, session)
     return tab
   }
@@ -939,7 +1049,7 @@ public final class AppModel {
     if let cached = active.titleMetadata.workspace.cwd, !cached.isEmpty {
       return cached
     }
-    if let session = sessionRegistry.session(id: active.sessionId),
+    if let session = sessionRegistry.session(id: active.focusedSessionId),
       let cwd = session.processMetadata()?.cwd, !cwd.isEmpty
     {
       return cwd
@@ -959,7 +1069,7 @@ public final class AppModel {
     withModelLock {
       let now = Date()
       let states: [TabState] = _tabs.map { tab in
-        let session = sessionRegistry.session(id: tab.sessionId)
+        let session = sessionRegistry.session(id: tab.focusedSessionId)
         let liveCwd: String? = {
           if let cached = tab.titleMetadata.workspace.cwd, !cached.isEmpty {
             return cached
@@ -974,7 +1084,7 @@ public final class AppModel {
         }()
         let cwd = liveCwd ?? FileManager.default.homeDirectoryForCurrentUser.path
         let launchCommand =
-          launchCommandByTab[tab.id] ?? defaultLaunchCommand
+          launchCommandBySession[tab.focusedSessionId] ?? defaultLaunchCommand
         let processStatus: PersistedProcessStatus = {
           switch tab.status {
           case .running: return .running
@@ -1002,12 +1112,12 @@ public final class AppModel {
           lastActiveAt: now,
           transcriptPath: transcriptPath,
           altBufferAtQuit: altBuffer,
-          cwdFallbackApplied: cwdFallbackAppliedByTab[tab.id],
+          cwdFallbackApplied: cwdFallbackAppliedBySession[tab.focusedSessionId],
           repoFingerprint: repoFingerprint,
           processStatus: processStatus,
           exitCode: exitCode,
           shellPid: shellPid,
-          agent: agentByTab[tab.id]
+          agent: agentBySession[tab.focusedSessionId]
         )
       }
       let selectedId = _tabs.first(where: { $0.isActive })?.id
@@ -1053,7 +1163,7 @@ public final class AppModel {
     let entries = tabJournal.recordDiff(tabs: snapshot, activeTabId: activeId)
     guard let captureSink, !entries.isEmpty else { return }
     let sessionByTab = Dictionary(
-      snapshot.map { ($0.id, $0.sessionId) }, uniquingKeysWith: { first, _ in first })
+      snapshot.map { ($0.id, $0.focusedSessionId) }, uniquingKeysWith: { first, _ in first })
     for entry in entries {
       captureSink.record(entry.captureEvent(sessionId: sessionByTab[entry.tabId]))
     }
@@ -1076,7 +1186,7 @@ public final class AppModel {
     text: String?
   ) -> Bool {
     let sessionId = withModelLock {
-      _tabs.first(where: { $0.id == tabId })?.sessionId
+      _tabs.first(where: { $0.id == tabId })?.focusedSessionId
     }
     let entry = tabJournal.note(tabId: tabId, note: note, text: text)
     captureSink?.record(entry.captureEvent(sessionId: sessionId))
@@ -1144,7 +1254,7 @@ public final class AppModel {
       }
     }
     let tab = _tabs[selectedIdx]
-    recordTab(.tabSelected, tabId: tab.id, sessionId: tab.sessionId)
+    recordTab(.tabSelected, tabId: tab.id, sessionId: tab.focusedSessionId)
   }
 
   /// Record that the user has seen every command the tab's shell has finished,
@@ -1154,88 +1264,45 @@ public final class AppModel {
   private func acknowledgeShellCommands(forTabAt idx: Int) {
     guard _tabs.indices.contains(idx) else { return }
     let count =
-      sessionRegistry.session(id: _tabs[idx].sessionId)?
+      sessionRegistry.session(id: _tabs[idx].focusedSessionId)?
       .shellIntegrationState().completedCommandCount ?? 0
-    metadataSync.acknowledgeShellCommands(forTab: _tabs[idx].id, upTo: count)
+    metadataSync.acknowledgeShellCommands(forTab: _tabs[idx].focusedSessionId, upTo: count)
+  }
+
+  private func closeSessionUnlocked(_ id: Session.ID, inTab tabId: Tab.ID) {
+    let session = sessionRegistry.session(id: id)
+    transcriptDelegate?.detachTranscriptWriter(forSessionId: id, in: session)
+    onSessionClosed?(tabId, id)
+    sessionRegistry.close(sessionId: id)
+    findStateBySession.removeValue(forKey: id)
+    findFullSearchCacheBySession.removeValue(forKey: id)
+    pendingFindRescanSessions.remove(id)
+    paneMetadata.removeValue(forKey: id)
+    launchCommandBySession.removeValue(forKey: id)
+    launchArgvBySession.removeValue(forKey: id)
+    launchEnvironmentBySession.removeValue(forKey: id)
+    agentBySession.removeValue(forKey: id)
+    cwdFallbackAppliedBySession.removeValue(forKey: id)
   }
 
   public func closeTab(_ tabId: Tab.ID) throws {
-    var lastTabClosedThrown = false
-    var closedSession: Session?
-    var closedTabId: Tab.ID?
-    do {
-      try withModelLock {
-        guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else {
-          throw AppError.tabNotFound
-        }
-        let tab = _tabs[idx]
-        closedTabId = tab.id
-        closedSession = sessionRegistry.session(id: tab.sessionId)
-
-        if _tabs.count == 1 {
-          sessionRegistry.close(sessionId: tab.sessionId)
-          findStateBySession.removeValue(forKey: tab.sessionId)
-          findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
-          launchCommandByTab.removeValue(forKey: tab.id)
-          launchEnvironmentByTab.removeValue(forKey: tab.id)
-          agentByTab.removeValue(forKey: tab.id)
-          cwdFallbackAppliedByTab.removeValue(forKey: tab.id)
-          metadataSync.forget(tab: tab)
-          _tabs = []
-          recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
-          lastTabClosedThrown = true
-          throw AppError.lastTabClosed
-        }
-
-        // Determine next active tab before removing
-        let wasActive = tab.isActive
-        sessionRegistry.close(sessionId: tab.sessionId)
-        findStateBySession.removeValue(forKey: tab.sessionId)
-        findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
-        launchCommandByTab.removeValue(forKey: tab.id)
-        launchArgvByTab.removeValue(forKey: tab.id)
-        launchEnvironmentByTab.removeValue(forKey: tab.id)
-        agentByTab.removeValue(forKey: tab.id)
-        cwdFallbackAppliedByTab.removeValue(forKey: tab.id)
-        metadataSync.forget(tab: tab)
-        _tabs.remove(at: idx)
-        recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
-
-        // Recompute one-based positions
-        for i in _tabs.indices {
-          _tabs[i].position = i + 1
-          resolveTitle(at: i)
-        }
-
-        if wasActive {
-          let newActiveIdx = min(idx, _tabs.count - 1)
-          _tabs[newActiveIdx].isActive = true
-          _tabs[newActiveIdx].titleMetadata.unseenOutput = false
-          _tabs[newActiveIdx].titleMetadata.bellAttention = false
-          _tabs[newActiveIdx].titleMetadata.notification = nil
-          _tabs[newActiveIdx].titleMetadata.agentStatus.indicatorColor = nil
-          _tabs[newActiveIdx].titleMetadata.lastCommandExitCode = nil
-          acknowledgeShellCommands(forTabAt: newActiveIdx)
-          if _tabs[newActiveIdx].status == .running {
-            _tabs[newActiveIdx].titleMetadata.activityState = .active
-          }
-        }
+    let last = try withModelLock { () -> Bool in
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { throw AppError.tabNotFound }
+      let tab = _tabs[idx]
+      for id in tab.allSessionIds { closeSessionUnlocked(id, inTab: tab.id) }
+      metadataSync.forget(tab: tab)
+      _tabs.remove(at: idx)
+      for i in _tabs.indices {
+        _tabs[i].position = i + 1
+        resolveTitle(at: i)
       }
-    } catch {
-      if let id = closedTabId {
-        transcriptDelegate?.detachTranscriptWriter(forTabId: id, in: closedSession)
-        onTabClosed?(id)
-      }
-      if lastTabClosedThrown {
-        notifyWorkspaceMutation()
-      }
-      throw error
+      if tab.isActive, !_tabs.isEmpty { selectTabUnlocked(_tabs[min(idx, _tabs.count - 1)].id) }
+      recordTab(.tabClosed, tabId: tab.id, sessionId: tab.focusedSessionId)
+      return _tabs.isEmpty
     }
-    if let id = closedTabId {
-      transcriptDelegate?.detachTranscriptWriter(forTabId: id, in: closedSession)
-      onTabClosed?(id)
-    }
+    onTabClosed?(tabId)
     notifyWorkspaceMutation()
+    if last { throw AppError.lastTabClosed }
   }
 
   /// Move `tabId` to `newIndex` (0-based, clamped to `[0, count - 1]`).
@@ -1260,7 +1327,7 @@ public final class AppModel {
         _tabs[i].position = i + 1
         resolveTitle(at: i)
       }
-      recordTab(.tabMoved, tabId: tab.id, sessionId: tab.sessionId)
+      recordTab(.tabMoved, tabId: tab.id, sessionId: tab.focusedSessionId)
       return true
     }
     if moved { notifyWorkspaceMutation() }
@@ -1446,7 +1513,8 @@ public final class AppModel {
   @discardableResult
   public func syncExitState(forTab tabId: Tab.ID, from session: Session) -> Bool {
     withModelLock {
-      metadataSync.syncExitState(forTab: tabId, from: session, tabs: &_tabs)
+      guard _tabs.first(where: { $0.id == tabId })?.focusedSessionId == session.id else { return false }
+      return metadataSync.syncExitState(forTab: tabId, from: session, tabs: &_tabs)
     }
   }
 
@@ -1485,12 +1553,13 @@ public final class AppModel {
   public func applySurfaceSignals(
     _ signals: TabSurfaceSignals,
     forTab tabId: Tab.ID,
+    sessionId: Session.ID? = nil,
     now: Date = Date()
   ) -> Bool {
     let modelChanged = runSurfaceMetadataSync(
       forTab: tabId,
       tabIndex: -1,
-      sessionId: "",
+      sessionId: sessionId ?? "",
       now: now,
       recordTitleChanges: false,
       sync: { idx, onBranchResolved in
@@ -1548,6 +1617,17 @@ public final class AppModel {
         return AppModelSurfaceMetadataSyncResult(modelChanged: false, titleChangeEvent: nil)
       }
 
+      let original = _tabs[idx]
+      let unfocused = !sessionId.isEmpty && original.focusedSessionId != sessionId
+      if unfocused {
+        _tabs[idx].focusedSessionId = sessionId
+        _tabs[idx].titleMetadata = paneMetadata[sessionId] ?? .fallback(position: original.position, active: false)
+        _tabs[idx].status = .running
+      }
+      defer {
+        paneMetadata[_tabs[idx].focusedSessionId] = _tabs[idx].titleMetadata
+        if unfocused { _tabs[idx] = original }
+      }
       let priorCwd = _tabs[idx].titleMetadata.workspace.cwd
       let onBranchResolved: TabMetadataSynchronizer.BranchResolved = {
         [weak self] branch, tabId, cwd in
@@ -1564,7 +1644,7 @@ public final class AppModel {
         var titleEvent = CaptureTimelineEvent(
           kind: .appState,
           tabId: updated.id,
-          sessionId: updated.sessionId
+          sessionId: updated.focusedSessionId
         )
         titleEvent.title = updated.title
         event = titleEvent
@@ -1612,7 +1692,7 @@ public final class AppModel {
   public func noteOutput(forTab tabId: Tab.ID, at date: Date = Date()) -> Bool {
     withModelLock {
       if let tab = _tabs.first(where: { $0.id == tabId }) {
-        findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
+        findFullSearchCacheBySession.removeValue(forKey: tab.focusedSessionId)
       }
       return metadataSync.noteOutput(forTab: tabId, at: date, tabs: &_tabs)
     }
@@ -1642,11 +1722,11 @@ public final class AppModel {
   ) -> Int? {
     if _tabs.indices.contains(preferredIndex),
       _tabs[preferredIndex].id == tabId,
-      _tabs[preferredIndex].sessionId == sessionId
+      _tabs[preferredIndex].allSessionIds.contains(sessionId)
     {
       return preferredIndex
     }
-    return _tabs.firstIndex { $0.id == tabId && $0.sessionId == sessionId }
+    return _tabs.firstIndex { $0.id == tabId && $0.allSessionIds.contains(sessionId) }
   }
 
   /// The display title for the AppKit window: active tab title, or "Laban" as fallback.
@@ -1878,9 +1958,24 @@ public final class AppModel {
 
   private func noteLaunchEnvironmentUnlocked(forTab tabId: Tab.ID, context: SessionLaunchContext) {
     if context.environmentOverrides.isEmpty {
-      launchEnvironmentByTab.removeValue(forKey: tabId)
+      launchEnvironmentBySession.removeValue(forKey: context.sessionID)
     } else {
-      launchEnvironmentByTab[tabId] = context.environmentOverrides
+      launchEnvironmentBySession[context.sessionID] = context.environmentOverrides
+    }
+  }
+
+  private func withPaneMetadata(sessionId: Session.ID, tabId: Tab.ID, _ body: () -> Void) {
+    withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId && $0.panes.contains(sessionId) }) else { return }
+      let original = _tabs[idx]
+      let unfocused = original.focusedSessionId != sessionId
+      if unfocused {
+        _tabs[idx].focusedSessionId = sessionId
+        _tabs[idx].titleMetadata = paneMetadata[sessionId] ?? .fallback(position: original.position, active: false)
+      }
+      body()
+      paneMetadata[sessionId] = _tabs[idx].titleMetadata
+      if unfocused { _tabs[idx] = original }
     }
   }
 
@@ -1934,9 +2029,10 @@ public final class AppModel {
   /// `attachTabStatus` — the model mutation is punted to the main queue to
   /// avoid holding two locks at once.
   private func attachShellIntegration(session: Session, tabId: Tab.ID) {
+    let sessionId = session.id
     session.onShellIntegration = { [weak self] state in
       DispatchQueue.main.async { [weak self] in
-        self?.applyShellIntegration(state, forTab: tabId)
+        self?.withPaneMetadata(sessionId: sessionId, tabId: tabId) { self?.applyShellIntegration(state, forTab: tabId) }
         self?.onShellIntegrationChange?(tabId, state)
       }
     }
@@ -1959,7 +2055,7 @@ public final class AppModel {
       // acknowledged completion count so only a genuinely new failure arms.
       _tabs[idx].titleMetadata.lastCommandExitCode =
         metadataSync.resolveFailedCommandDot(
-          forTab: tabId, state: state, isActive: _tabs[idx].isActive)
+          forTab: _tabs[idx].focusedSessionId, state: state, isActive: _tabs[idx].isActive)
     }
   }
 
@@ -1968,6 +2064,7 @@ public final class AppModel {
   /// field is preserved when the update doesn't mention it (nil), cleared
   /// when an empty value comes through, or set otherwise.
   private func attachTabStatus(session: Session, tabId: Tab.ID) {
+    let sessionId = session.id
     // The C tab-status callback fires from whichever thread drove the VT parser
     // -- historically the main thread, now the per-session reader thread. The C
     // session lock is held while the callback runs. If the handler synchronously
@@ -1977,7 +2074,7 @@ public final class AppModel {
     // reader thread holding exactly one lock at a time.
     session.onTabStatus = { [weak self] update in
       DispatchQueue.main.async { [weak self] in
-        self?.applyTabStatusUpdate(update, forTab: tabId)
+        self?.withPaneMetadata(sessionId: sessionId, tabId: tabId) { self?.applyTabStatusUpdate(update, forTab: tabId) }
       }
     }
   }
@@ -1985,9 +2082,10 @@ public final class AppModel {
   /// Subscribe to OSC 9;4 progress pushes. Same main-queue hop as
   /// `attachTabStatus` and for the same lock-inversion reason.
   private func attachProgress(session: Session, tabId: Tab.ID) {
+    let sessionId = session.id
     session.onProgress = { [weak self] update in
       DispatchQueue.main.async { [weak self] in
-        self?.applyProgressUpdate(update, forTab: tabId)
+        self?.withPaneMetadata(sessionId: sessionId, tabId: tabId) { self?.applyProgressUpdate(update, forTab: tabId) }
       }
     }
   }
@@ -2467,10 +2565,10 @@ public final class AppModel {
     withModelLock {
       captureSink?.record(CaptureTimelineEvent(kind: .appState))
       for tab in _tabs {
-        recordSessionCreated(sessionId: tab.sessionId, tabId: tab.id)
-        recordTab(.tabCreated, tabId: tab.id, sessionId: tab.sessionId)
+        recordSessionCreated(sessionId: tab.focusedSessionId, tabId: tab.id)
+        recordTab(.tabCreated, tabId: tab.id, sessionId: tab.focusedSessionId)
         if tab.isActive {
-          recordTab(.tabSelected, tabId: tab.id, sessionId: tab.sessionId)
+          recordTab(.tabSelected, tabId: tab.id, sessionId: tab.focusedSessionId)
         }
       }
     }

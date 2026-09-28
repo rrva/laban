@@ -75,7 +75,7 @@ final class ControlAvailabilityParityTests: XCTestCase {
     XCTAssertEqual(notificationTest.status, 202)
     XCTAssertTrue(notificationTestCalled)
 
-    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let sessionID = try XCTUnwrap(model.activeTab?.focusedSessionId)
     XCTAssertLessThan(
       router.query(
         LegacyDebugQueryInput(intentID: "window.screenshot", scopedSessionID: sessionID)

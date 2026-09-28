@@ -101,7 +101,7 @@ final class FixtureRunnerTests: XCTestCase {
     XCTAssertFalse(tabId.isEmpty, "tab ID must not be empty")
     XCTAssertFalse(sessionId.isEmpty, "session ID must not be empty")
     XCTAssertEqual(model.activeTab?.id, tabId, "tab ID must not change across fixture run")
-    XCTAssertEqual(model.activeTab?.sessionId, sessionId, "session ID must not change")
+    XCTAssertEqual(model.activeTab?.focusedSessionId, sessionId, "session ID must not change")
   }
 
   func testColoredBoxesContainsHelloMvp() throws {

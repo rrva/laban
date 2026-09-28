@@ -155,8 +155,8 @@ extension HeadlessDebugRuntime {
               rows: Int(size.rows),
               cols: Int(size.cols),
               logicalSessionId: tabId))
-          terminalClientSessionInfoById[tab.sessionId] = info
-          attachSnapshotRingIfAvailable(client: client, localSessionId: tab.sessionId)
+          terminalClientSessionInfoById[tab.focusedSessionId] = info
+          attachSnapshotRingIfAvailable(client: client, localSessionId: tab.focusedSessionId)
           pendingAgentRestoreCandidatesByTab.removeValue(forKey: tabId)
           appendEvent(EventEntry(kind: "agent.restore.selected", tabId: tabId))
           restored.append(
