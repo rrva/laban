@@ -3,165 +3,383 @@
   "$id": "https://laban.local/schemas/debug/action.schema.json",
   "title": "Debug Action",
   "oneOf": [
-    {"$ref": "#/$defs/newTab"},
-    {"$ref": "#/$defs/closeTab"},
-    {"$ref": "#/$defs/selectTab"},
-    {"$ref": "#/$defs/setTabTitle"},
-    {"$ref": "#/$defs/freezeTabTitle"},
-    {"$ref": "#/$defs/clearTabTitle"},
-    {"$ref": "#/$defs/setTabMetadata"},
-    {"$ref": "#/$defs/resizeWindow"},
-    {"$ref": "#/$defs/setFontSize"},
-    {"$ref": "#/$defs/setRenderer"},
-    {"$ref": "#/$defs/setVectorSubpixelLayout"},
-    {"$ref": "#/$defs/typeText"},
-    {"$ref": "#/$defs/feedOutput"},
-    {"$ref": "#/$defs/key"},
-    {"$ref": "#/$defs/mouseWheel"},
-    {"$ref": "#/$defs/click"},
-    {"$ref": "#/$defs/advanceFrames"},
-    {"$ref": "#/$defs/copy"},
-    {"$ref": "#/$defs/paste"},
-    {"$ref": "#/$defs/dropFiles"},
-    {"$ref": "#/$defs/setClipboardText"},
-    {"$ref": "#/$defs/scrollViewport"},
-    {"$ref": "#/$defs/propose"},
-    {"$ref": "#/$defs/setSelection"},
-    {"$ref": "#/$defs/setPreedit"},
-    {"$ref": "#/$defs/findStart"},
-    {"$ref": "#/$defs/findStep"},
-    {"$ref": "#/$defs/findStop"},
-    {"$ref": "#/$defs/setBackgroundTransparency"},
-    {"$ref": "#/$defs/resetTransparencyDiagnostics"},
-    {"$ref": "#/$defs/setReduceTransparencyOverride"},
-    {"$ref": "#/$defs/setNativeFullScreen"},
-    {"$ref": "#/$defs/setBackgroundSource"},
-    {"$ref": "#/$defs/setBackgroundImageScaling"},
-    {"$ref": "#/$defs/importBackgroundImage"},
-    {"$ref": "#/$defs/removeBackgroundImage"}
+    {
+      "$ref": "#/$defs/newTab"
+    },
+    {
+      "$ref": "#/$defs/closeTab"
+    },
+    {
+      "$ref": "#/$defs/selectTab"
+    },
+    {
+      "$ref": "#/$defs/setTabTitle"
+    },
+    {
+      "$ref": "#/$defs/freezeTabTitle"
+    },
+    {
+      "$ref": "#/$defs/clearTabTitle"
+    },
+    {
+      "$ref": "#/$defs/setTabMetadata"
+    },
+    {
+      "$ref": "#/$defs/resizeWindow"
+    },
+    {
+      "$ref": "#/$defs/setFontSize"
+    },
+    {
+      "$ref": "#/$defs/setRenderer"
+    },
+    {
+      "$ref": "#/$defs/setVectorSubpixelLayout"
+    },
+    {
+      "$ref": "#/$defs/typeText"
+    },
+    {
+      "$ref": "#/$defs/feedOutput"
+    },
+    {
+      "$ref": "#/$defs/key"
+    },
+    {
+      "$ref": "#/$defs/mouseWheel"
+    },
+    {
+      "$ref": "#/$defs/click"
+    },
+    {
+      "$ref": "#/$defs/advanceFrames"
+    },
+    {
+      "$ref": "#/$defs/copy"
+    },
+    {
+      "$ref": "#/$defs/paste"
+    },
+    {
+      "$ref": "#/$defs/dropFiles"
+    },
+    {
+      "$ref": "#/$defs/setClipboardText"
+    },
+    {
+      "$ref": "#/$defs/scrollViewport"
+    },
+    {
+      "$ref": "#/$defs/propose"
+    },
+    {
+      "$ref": "#/$defs/setSelection"
+    },
+    {
+      "$ref": "#/$defs/setPreedit"
+    },
+    {
+      "$ref": "#/$defs/findStart"
+    },
+    {
+      "$ref": "#/$defs/findStep"
+    },
+    {
+      "$ref": "#/$defs/findStop"
+    },
+    {
+      "$ref": "#/$defs/setBackgroundTransparency"
+    },
+    {
+      "$ref": "#/$defs/resetTransparencyDiagnostics"
+    },
+    {
+      "$ref": "#/$defs/setReduceTransparencyOverride"
+    },
+    {
+      "$ref": "#/$defs/setNativeFullScreen"
+    },
+    {
+      "$ref": "#/$defs/setBackgroundSource"
+    },
+    {
+      "$ref": "#/$defs/setBackgroundImageScaling"
+    },
+    {
+      "$ref": "#/$defs/importBackgroundImage"
+    },
+    {
+      "$ref": "#/$defs/removeBackgroundImage"
+    },
+    {
+      "$ref": "#/$defs/pane.split"
+    },
+    {
+      "$ref": "#/$defs/pane.close"
+    },
+    {
+      "$ref": "#/$defs/pane.focus"
+    }
   ],
   "$defs": {
     "newTab": {
       "type": "object",
-      "required": ["action"],
-      "properties": {"action": {"const": "newTab"}},
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "const": "newTab"
+        }
+      },
       "additionalProperties": false
     },
     "closeTab": {
       "type": "object",
-      "required": ["action", "tabId"],
+      "required": [
+        "action",
+        "tabId"
+      ],
       "properties": {
-        "action": {"const": "closeTab"},
-        "tabId": {"type": "string"}
+        "action": {
+          "const": "closeTab"
+        },
+        "tabId": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "selectTab": {
       "type": "object",
-      "required": ["action", "tabId"],
+      "required": [
+        "action",
+        "tabId"
+      ],
       "properties": {
-        "action": {"const": "selectTab"},
-        "tabId": {"type": "string"}
+        "action": {
+          "const": "selectTab"
+        },
+        "tabId": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "setTabTitle": {
       "type": "object",
-      "required": ["action", "title"],
+      "required": [
+        "action",
+        "title"
+      ],
       "properties": {
-        "action": {"const": "setTabTitle"},
-        "tabId": {"type": "string"},
-        "title": {"type": "string"}
+        "action": {
+          "const": "setTabTitle"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "freezeTabTitle": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": {"const": "freezeTabTitle"},
-        "tabId": {"type": "string"},
-        "frozen": {"type": "boolean"}
+        "action": {
+          "const": "freezeTabTitle"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "frozen": {
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
     "clearTabTitle": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": {"const": "clearTabTitle"},
-        "tabId": {"type": "string"}
+        "action": {
+          "const": "clearTabTitle"
+        },
+        "tabId": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "setTabMetadata": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": {"const": "setTabMetadata"},
-        "tabId": {"type": "string"},
-        "cwd": {"type": "string"},
-        "repoName": {"type": "string"},
-        "repoRoot": {"type": "string"},
-        "worktreeName": {"type": "string"},
-        "branch": {"type": "string"},
-        "isDirty": {"type": "boolean"},
-        "foregroundProcess": {"type": "string"},
-        "foregroundCommand": {"type": "string"},
-        "pid": {"type": "integer"},
-        "agentName": {"type": "string"},
-        "sessionName": {"type": "string"},
-        "agentSessionId": {"type": "string"},
-        "taskLabel": {"type": "string"},
-        "model": {"type": "string"},
-        "contextPercent": {"type": "integer", "minimum": 0, "maximum": 100},
-        "awaitingInput": {"type": "boolean"},
-        "activityState": {
-          "enum": ["active", "background", "running", "idle", "unseenOutput", "waiting", "exited"]
+        "action": {
+          "const": "setTabMetadata"
         },
-        "unseenOutput": {"type": "boolean"},
-        "bellAttention": {"type": "boolean"},
-        "exitStatus": {"type": "integer"}
+        "tabId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "repoName": {
+          "type": "string"
+        },
+        "repoRoot": {
+          "type": "string"
+        },
+        "worktreeName": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "isDirty": {
+          "type": "boolean"
+        },
+        "foregroundProcess": {
+          "type": "string"
+        },
+        "foregroundCommand": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "agentName": {
+          "type": "string"
+        },
+        "sessionName": {
+          "type": "string"
+        },
+        "agentSessionId": {
+          "type": "string"
+        },
+        "taskLabel": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "contextPercent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "awaitingInput": {
+          "type": "boolean"
+        },
+        "activityState": {
+          "enum": [
+            "active",
+            "background",
+            "running",
+            "idle",
+            "unseenOutput",
+            "waiting",
+            "exited"
+          ]
+        },
+        "unseenOutput": {
+          "type": "boolean"
+        },
+        "bellAttention": {
+          "type": "boolean"
+        },
+        "exitStatus": {
+          "type": "integer"
+        }
       },
       "additionalProperties": false
     },
     "resizeWindow": {
       "type": "object",
-      "required": ["action", "width", "height"],
+      "required": [
+        "action",
+        "width",
+        "height"
+      ],
       "properties": {
-        "action": {"const": "resizeWindow"},
-        "width": {"type": "integer", "minimum": 1},
-        "height": {"type": "integer", "minimum": 1}
+        "action": {
+          "const": "resizeWindow"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
       },
       "additionalProperties": false
     },
     "setFontSize": {
       "type": "object",
-      "required": ["action", "pointSize"],
+      "required": [
+        "action",
+        "pointSize"
+      ],
       "properties": {
-        "action": {"const": "setFontSize"},
-        "pointSize": {"type": "number", "minimum": 1}
+        "action": {
+          "const": "setFontSize"
+        },
+        "pointSize": {
+          "type": "number",
+          "minimum": 1
+        }
       },
       "additionalProperties": false
     },
     "setRenderer": {
       "type": "object",
-      "required": ["action", "renderer"],
+      "required": [
+        "action",
+        "renderer"
+      ],
       "properties": {
-        "action": {"const": "setRenderer"},
-        "renderer": {"enum": ["software", "classic", "gpuDriven", "vectorGlyph"]}
+        "action": {
+          "const": "setRenderer"
+        },
+        "renderer": {
+          "enum": [
+            "software",
+            "classic",
+            "gpuDriven",
+            "vectorGlyph"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "setVectorSubpixelLayout": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": {"const": "setVectorSubpixelLayout"},
-        "layout": {"type": "string"},
+        "action": {
+          "const": "setVectorSubpixelLayout"
+        },
+        "layout": {
+          "type": "string"
+        },
         "offsets": {
           "type": "array",
-          "items": {"type": "number"},
+          "items": {
+            "type": "number"
+          },
           "minItems": 3,
           "maxItems": 3
         },
@@ -169,7 +387,9 @@
           "type": "array",
           "items": {
             "type": "array",
-            "items": {"type": "number"},
+            "items": {
+              "type": "number"
+            },
             "minItems": 4,
             "maxItems": 4
           },
@@ -181,95 +401,211 @@
     },
     "typeText": {
       "type": "object",
-      "required": ["action", "text"],
+      "required": [
+        "action",
+        "text"
+      ],
       "properties": {
-        "action": {"const": "typeText"},
-        "text": {"type": "string"}
+        "action": {
+          "const": "typeText"
+        },
+        "text": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "feedOutput": {
       "type": "object",
-      "required": ["action", "text"],
+      "required": [
+        "action",
+        "text"
+      ],
       "properties": {
-        "action": {"const": "feedOutput"},
-        "text": {"type": "string"}
+        "action": {
+          "const": "feedOutput"
+        },
+        "text": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "key": {
       "type": "object",
-      "required": ["action", "key"],
+      "required": [
+        "action",
+        "key"
+      ],
       "properties": {
-        "action": {"const": "key"},
-        "key": {"type": "string"},
-        "type": {"enum": ["press", "repeat", "release"]},
+        "action": {
+          "const": "key"
+        },
+        "key": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "press",
+            "repeat",
+            "release"
+          ]
+        },
         "modifiers": {
           "type": "array",
-          "items": {"enum": ["shift", "control", "alt", "option", "command", "super"]},
+          "items": {
+            "enum": [
+              "shift",
+              "control",
+              "alt",
+              "option",
+              "command",
+              "super"
+            ]
+          },
           "uniqueItems": true
         },
         "consumedModifiers": {
           "type": "array",
-          "items": {"enum": ["shift", "alt", "option"]},
+          "items": {
+            "enum": [
+              "shift",
+              "alt",
+              "option"
+            ]
+          },
           "uniqueItems": true
         },
-        "text": {"type": "string"},
-        "unshifted": {"type": "string"}
+        "text": {
+          "type": "string"
+        },
+        "unshifted": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "mouseWheel": {
       "type": "object",
-      "required": ["action", "x", "y", "deltaY"],
+      "required": [
+        "action",
+        "x",
+        "y",
+        "deltaY"
+      ],
       "properties": {
-        "action": {"const": "mouseWheel"},
-        "x": {"type": "integer"},
-        "y": {"type": "integer"},
-        "deltaY": {"type": "number"}
+        "action": {
+          "const": "mouseWheel"
+        },
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "deltaY": {
+          "type": "number"
+        },
+        "sessionId": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "click": {
       "type": "object",
-      "required": ["action", "x", "y", "button"],
+      "required": [
+        "action",
+        "x",
+        "y",
+        "button"
+      ],
       "properties": {
-        "action": {"const": "click"},
-        "x": {"type": "integer"},
-        "y": {"type": "integer"},
-        "button": {"enum": ["left", "middle", "right"]}
+        "action": {
+          "const": "click"
+        },
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "button": {
+          "enum": [
+            "left",
+            "middle",
+            "right"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "advanceFrames": {
       "type": "object",
-      "required": ["action", "count"],
+      "required": [
+        "action",
+        "count"
+      ],
       "properties": {
-        "action": {"const": "advanceFrames"},
-        "count": {"type": "integer", "minimum": 1}
+        "action": {
+          "const": "advanceFrames"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
       },
       "additionalProperties": false
     },
     "copy": {
       "type": "object",
-      "required": ["action"],
-      "properties": {"action": {"const": "copy"}},
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "const": "copy"
+        }
+      },
       "additionalProperties": false
     },
     "paste": {
       "type": "object",
-      "required": ["action"],
-      "properties": {"action": {"const": "paste"}},
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "const": "paste"
+        }
+      },
       "additionalProperties": false
     },
     "dropFiles": {
       "type": "object",
-      "required": ["action", "paths"],
+      "required": [
+        "action",
+        "paths"
+      ],
       "properties": {
-        "action": {"const": "dropFiles"},
+        "action": {
+          "const": "dropFiles"
+        },
         "paths": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1},
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "minItems": 1
         }
       },
@@ -277,169 +613,433 @@
     },
     "setClipboardText": {
       "type": "object",
-      "required": ["action", "text"],
+      "required": [
+        "action",
+        "text"
+      ],
       "properties": {
-        "action": {"const": "setClipboardText"},
-        "text": {"type": "string"}
+        "action": {
+          "const": "setClipboardText"
+        },
+        "text": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "scrollViewport": {
       "type": "object",
-      "required": ["action", "deltaRows"],
+      "required": [
+        "action",
+        "deltaRows"
+      ],
       "properties": {
-        "action": {"const": "scrollViewport"},
-        "sessionId": {"type": "string"},
-        "deltaRows": {"type": "integer"}
+        "action": {
+          "const": "scrollViewport"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "deltaRows": {
+          "type": "integer"
+        }
       },
       "additionalProperties": false
     },
     "propose": {
       "type": "object",
-      "required": ["action", "command"],
+      "required": [
+        "action",
+        "command"
+      ],
       "properties": {
-        "action": {"const": "propose"},
-        "command": {"type": "string", "minLength": 1},
-        "purpose": {"type": "string"},
-        "targetSessionID": {"type": "string"},
-        "targetSessionId": {"type": "string"}
+        "action": {
+          "const": "propose"
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "targetSessionID": {
+          "type": "string"
+        },
+        "targetSessionId": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "setSelection": {
       "type": "object",
-      "required": ["action", "anchor", "focus"],
+      "required": [
+        "action",
+        "anchor",
+        "focus"
+      ],
       "properties": {
-        "action": {"const": "setSelection"},
-        "sessionId": {"type": "string"},
-        "anchor": {"$ref": "#/$defs/cell"},
-        "focus": {"$ref": "#/$defs/cell"}
+        "action": {
+          "const": "setSelection"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "anchor": {
+          "$ref": "#/$defs/cell"
+        },
+        "focus": {
+          "$ref": "#/$defs/cell"
+        }
       },
       "additionalProperties": false
     },
     "setPreedit": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": {"const": "setPreedit"},
-        "sessionId": {"type": "string"},
-        "text": {"type": "string"},
-        "caretCells": {"type": "integer", "minimum": 0}
+        "action": {
+          "const": "setPreedit"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "caretCells": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     },
     "findStart": {
       "type": "object",
-      "required": ["action", "needle"],
+      "required": [
+        "action",
+        "needle"
+      ],
       "properties": {
-        "action": {"const": "find.start"},
-        "sessionID": {"type": "string"},
-        "sessionId": {"type": "string"},
-        "needle": {"type": "string", "minLength": 1}
+        "action": {
+          "const": "find.start"
+        },
+        "sessionID": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "needle": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
     "findStep": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": {"const": "find.step"},
-        "sessionID": {"type": "string"},
-        "sessionId": {"type": "string"},
-        "direction": {"enum": ["next", "previous"]}
+        "action": {
+          "const": "find.step"
+        },
+        "sessionID": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "next",
+            "previous"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "findStop": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": {"const": "find.stop"},
-        "sessionID": {"type": "string"},
-        "sessionId": {"type": "string"}
+        "action": {
+          "const": "find.stop"
+        },
+        "sessionID": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "setBackgroundTransparency": {
       "type": "object",
-      "required": ["action", "opacity", "applyToExplicitCellBackgrounds"],
+      "required": [
+        "action",
+        "opacity",
+        "applyToExplicitCellBackgrounds"
+      ],
       "properties": {
-        "action": {"const": "setBackgroundTransparency"},
-        "opacity": {"type": "number", "minimum": 0, "maximum": 1},
-        "applyToExplicitCellBackgrounds": {"type": "boolean"},
-        "backdropStyle": {"enum": ["none", "systemBlur", "image"]}
+        "action": {
+          "const": "setBackgroundTransparency"
+        },
+        "opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "applyToExplicitCellBackgrounds": {
+          "type": "boolean"
+        },
+        "backdropStyle": {
+          "enum": [
+            "none",
+            "systemBlur",
+            "image"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "resetTransparencyDiagnostics": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": {"const": "resetTransparencyDiagnostics"}
+        "action": {
+          "const": "resetTransparencyDiagnostics"
+        }
       },
       "additionalProperties": false
     },
     "setReduceTransparencyOverride": {
       "type": "object",
-      "required": ["action", "enabled"],
+      "required": [
+        "action",
+        "enabled"
+      ],
       "properties": {
-        "action": {"const": "setReduceTransparencyOverride"},
-        "enabled": {"type": ["boolean", "null"]}
+        "action": {
+          "const": "setReduceTransparencyOverride"
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "setNativeFullScreen": {
       "type": "object",
-      "required": ["action", "enabled"],
+      "required": [
+        "action",
+        "enabled"
+      ],
       "properties": {
-        "action": {"const": "setNativeFullScreen"},
-        "enabled": {"type": "boolean"}
+        "action": {
+          "const": "setNativeFullScreen"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
     "setBackgroundSource": {
       "type": "object",
-      "required": ["action", "source"],
+      "required": [
+        "action",
+        "source"
+      ],
       "properties": {
-        "action": {"const": "setBackgroundSource"},
-        "source": {"enum": ["none", "systemBlur", "image"]}
+        "action": {
+          "const": "setBackgroundSource"
+        },
+        "source": {
+          "enum": [
+            "none",
+            "systemBlur",
+            "image"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "setBackgroundImageScaling": {
       "type": "object",
-      "required": ["action", "scaling"],
+      "required": [
+        "action",
+        "scaling"
+      ],
       "properties": {
-        "action": {"const": "setBackgroundImageScaling"},
-        "scaling": {"enum": ["fill", "fit", "stretch"]}
+        "action": {
+          "const": "setBackgroundImageScaling"
+        },
+        "scaling": {
+          "enum": [
+            "fill",
+            "fit",
+            "stretch"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "importBackgroundImage": {
       "type": "object",
-      "required": ["action", "path", "scaling"],
+      "required": [
+        "action",
+        "path",
+        "scaling"
+      ],
       "properties": {
-        "action": {"const": "importBackgroundImage"},
-        "path": {"type": "string"},
-        "scaling": {"enum": ["fill", "fit", "stretch"]}
+        "action": {
+          "const": "importBackgroundImage"
+        },
+        "path": {
+          "type": "string"
+        },
+        "scaling": {
+          "enum": [
+            "fill",
+            "fit",
+            "stretch"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "removeBackgroundImage": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": {"const": "removeBackgroundImage"}
+        "action": {
+          "const": "removeBackgroundImage"
+        }
       },
       "additionalProperties": false
     },
     "cell": {
       "type": "object",
-      "required": ["row", "col"],
+      "required": [
+        "row",
+        "col"
+      ],
       "properties": {
-        "row": {"type": "integer", "minimum": 0},
-        "col": {"type": "integer", "minimum": 0}
+        "row": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
+    },
+    "pane.split": {
+      "type": "object",
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "const": "pane.split"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "axis": {
+          "enum": [
+            "vertical",
+            "horizontal"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "next",
+            "previous"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "pane.close": {
+      "type": "object",
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "const": "pane.close"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "axis": {
+          "enum": [
+            "vertical",
+            "horizontal"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "next",
+            "previous"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "pane.focus": {
+      "type": "object",
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "const": "pane.focus"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "axis": {
+          "enum": [
+            "vertical",
+            "horizontal"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "next",
+            "previous"
+          ]
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

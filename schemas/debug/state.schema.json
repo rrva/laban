@@ -18,7 +18,11 @@
   "properties": {
     "mode": {
       "type": "string",
-      "enum": ["interactive", "headless", "fixture"]
+      "enum": [
+        "interactive",
+        "headless",
+        "fixture"
+      ]
     },
     "frame": {
       "type": "integer",
@@ -26,35 +30,64 @@
     },
     "window": {
       "type": "object",
-      "required": ["width", "height", "focused"],
+      "required": [
+        "width",
+        "height",
+        "focused"
+      ],
       "additionalProperties": true,
       "properties": {
-        "width": {"type": "integer", "minimum": 1},
-        "height": {"type": "integer", "minimum": 1},
-        "focused": {"type": "boolean"}
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "focused": {
+          "type": "boolean"
+        }
       }
     },
     "tabs": {
       "type": "array",
-      "items": {"$ref": "#/$defs/tab"}
+      "items": {
+        "$ref": "#/$defs/tab"
+      }
     },
     "activeTabId": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "activeSessionId": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "findStateBySession": {
       "type": "object",
-      "additionalProperties": {"$ref": "#/$defs/findState"}
+      "additionalProperties": {
+        "$ref": "#/$defs/findState"
+      }
     },
-    "cursorSettings": {"$ref": "#/$defs/cursorSettings"},
+    "cursorSettings": {
+      "$ref": "#/$defs/cursorSettings"
+    },
     "attentionNotifications": {
       "type": "array",
-      "items": {"$ref": "#/$defs/attentionNotificationDecision"}
+      "items": {
+        "$ref": "#/$defs/attentionNotificationDecision"
+      }
     },
     "spinnerMotion": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "$ref": "#/$defs/spinnerMotion"
     }
   },
@@ -76,13 +109,40 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "id": {"type": "string"},
-        "tabId": {"type": "string"},
-        "source": {"type": "string", "enum": ["bell", "osc", "tabAttention"]},
-        "category": {"type": "string", "enum": ["needsAction", "completion", "passive"]},
-        "action": {"type": "string", "enum": ["posted", "suppressed"]},
+        "id": {
+          "type": "string"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "bell",
+            "osc",
+            "tabAttention"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "needsAction",
+            "completion",
+            "passive"
+          ]
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "posted",
+            "suppressed"
+          ]
+        },
         "reason": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "enum": [
             "frontmostTab",
             "categoryDisabled",
@@ -95,11 +155,23 @@
             null
           ]
         },
-        "title": {"type": "string"},
-        "body": {"type": "string"},
-        "dedupeKey": {"type": "string"},
-        "createdAt": {"type": "string", "format": "date-time"},
-        "decidedAt": {"type": "string", "format": "date-time"}
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "dedupeKey": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "decidedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
       }
     },
     "tab": {
@@ -116,96 +188,265 @@
         "bellAttention",
         "active",
         "status",
-        "sessionId"
+        "panes",
+        "focusedSessionId"
       ],
       "additionalProperties": true,
       "properties": {
-        "id": {"type": "string"},
-        "index": {"type": "integer", "minimum": 0},
-        "title": {"type": "string"},
-        "displayTitle": {"type": "string"},
+        "id": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string"
+        },
+        "displayTitle": {
+          "type": "string"
+        },
         "titleSource": {
           "type": "string",
-          "enum": ["user", "agent", "repo", "cwd", "process", "terminal", "fallback"]
+          "enum": [
+            "user",
+            "agent",
+            "repo",
+            "cwd",
+            "process",
+            "terminal",
+            "fallback"
+          ]
         },
-        "terminalTitle": {"type": ["string", "null"]},
-        "userTitle": {"type": ["string", "null"]},
-        "titleFrozen": {"type": "boolean"},
+        "terminalTitle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "userTitle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "titleFrozen": {
+          "type": "boolean"
+        },
         "activityState": {
           "type": "string",
-          "enum": ["active", "background", "running", "idle", "unseenOutput", "waiting", "exited"]
+          "enum": [
+            "active",
+            "background",
+            "running",
+            "idle",
+            "unseenOutput",
+            "waiting",
+            "exited"
+          ]
         },
-        "lastActivityAt": {"type": ["string", "null"], "format": "date-time"},
-        "lastOutputAt": {"type": ["string", "null"], "format": "date-time"},
-        "unseenOutput": {"type": "boolean"},
-        "bellAttention": {"type": "boolean"},
-        "exitStatus": {"type": ["integer", "null"]},
+        "lastActivityAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "lastOutputAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "unseenOutput": {
+          "type": "boolean"
+        },
+        "bellAttention": {
+          "type": "boolean"
+        },
+        "exitStatus": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "shellPhase": {
           "type": "string",
-          "enum": ["idle", "atPrompt", "running", "finished"]
+          "enum": [
+            "idle",
+            "atPrompt",
+            "running",
+            "finished"
+          ]
         },
-        "lastCommandExitCode": {"type": ["integer", "null"]},
-        "workspace": {"type": "object", "additionalProperties": true},
-        "process": {"type": "object", "additionalProperties": true},
-        "agent": {"type": "object", "additionalProperties": true},
+        "lastCommandExitCode": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workspace": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "process": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "agent": {
+          "type": "object",
+          "additionalProperties": true
+        },
         "progress": {
-          "type": ["object", "null"],
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": false,
-          "required": ["state"],
+          "required": [
+            "state"
+          ],
           "properties": {
             "state": {
               "type": "string",
-              "enum": ["determinate", "error", "indeterminate"]
+              "enum": [
+                "determinate",
+                "error",
+                "indeterminate"
+              ]
             },
-            "percent": {"type": ["integer", "null"], "minimum": 0, "maximum": 100}
+            "percent": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 100
+            }
           }
         },
-        "active": {"type": "boolean"},
+        "active": {
+          "type": "boolean"
+        },
         "status": {
           "type": "string",
-          "enum": ["starting", "running", "exited", "failed"]
+          "enum": [
+            "starting",
+            "running",
+            "exited",
+            "failed"
+          ]
         },
-        "sessionId": {"type": "string"}
+        "sessionId": {
+          "type": "string",
+          "description": "Deprecated alias of focusedSessionId."
+        },
+        "focusedSessionId": {
+          "type": "string"
+        },
+        "panes": {
+          "$ref": "#/$defs/paneTree"
+        }
       }
     },
     "findMatch": {
       "type": "object",
-      "required": ["row", "startColumn", "endColumn"],
+      "required": [
+        "row",
+        "startColumn",
+        "endColumn"
+      ],
       "additionalProperties": false,
       "properties": {
-        "row": {"type": "integer", "minimum": 0},
-        "startColumn": {"type": "integer", "minimum": 0},
-        "endColumn": {"type": "integer", "minimum": 0}
+        "row": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "startColumn": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endColumn": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     "findState": {
       "type": "object",
-      "required": ["isActive", "needle", "total", "selectedIndex", "matches"],
+      "required": [
+        "isActive",
+        "needle",
+        "total",
+        "selectedIndex",
+        "matches"
+      ],
       "additionalProperties": true,
       "properties": {
-        "isActive": {"type": "boolean"},
-        "needle": {"type": "string"},
-        "total": {"type": "integer", "minimum": 0},
-        "selectedIndex": {"type": ["integer", "null"], "minimum": 0},
+        "isActive": {
+          "type": "boolean"
+        },
+        "needle": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selectedIndex": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
         "matches": {
           "type": "array",
-          "items": {"$ref": "#/$defs/findMatch"}
+          "items": {
+            "$ref": "#/$defs/findMatch"
+          }
         },
-        "viewportScrollOffsetAtStart": {"type": ["integer", "null"], "minimum": 0}
+        "viewportScrollOffsetAtStart": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
       }
     },
     "cursorSettings": {
       "type": "object",
-      "required": ["style", "blinkEnabled"],
+      "required": [
+        "style",
+        "blinkEnabled"
+      ],
       "additionalProperties": true,
       "properties": {
         "style": {
           "type": "string",
-          "enum": ["block", "bar", "underline"]
+          "enum": [
+            "block",
+            "bar",
+            "underline"
+          ]
         },
-        "blinkEnabled": {"type": "boolean"},
-        "styleOverridden": {"type": ["boolean", "null"]},
-        "blinkOverridden": {"type": ["boolean", "null"]}
+        "blinkEnabled": {
+          "type": "boolean"
+        },
+        "styleOverridden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "blinkOverridden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
       }
     },
     "spinnerMotion": {
@@ -225,18 +466,109 @@
       ],
       "additionalProperties": true,
       "properties": {
-        "configured": {"type": "boolean"},
-        "effectiveRenderer": {"type": "string"},
-        "rendererEligible": {"type": "boolean"},
-        "reduceMotion": {"type": "boolean"},
-        "effectiveEnabled": {"type": "boolean"},
-        "activeTransitions": {"type": "integer", "minimum": 0},
-        "analyticMotionInstances": {"type": "integer", "minimum": 0},
-        "fallbackSnaps": {"type": "integer", "minimum": 0},
-        "effectKind": {"type": "integer", "minimum": 0},
-        "remainingSeconds": {"type": "number", "minimum": 0},
-        "liveEffectFrames": {"type": "integer", "minimum": 0}
+        "configured": {
+          "type": "boolean"
+        },
+        "effectiveRenderer": {
+          "type": "string"
+        },
+        "rendererEligible": {
+          "type": "boolean"
+        },
+        "reduceMotion": {
+          "type": "boolean"
+        },
+        "effectiveEnabled": {
+          "type": "boolean"
+        },
+        "activeTransitions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "analyticMotionInstances": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fallbackSnaps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "effectKind": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remainingSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "liveEffectFrames": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
+    },
+    "paneTree": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "leaf"
+          ],
+          "properties": {
+            "leaf": {
+              "type": "object",
+              "required": [
+                "sessionId"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "split"
+          ],
+          "properties": {
+            "split": {
+              "type": "object",
+              "required": [
+                "axis",
+                "fraction",
+                "first",
+                "second"
+              ],
+              "properties": {
+                "axis": {
+                  "enum": [
+                    "vertical",
+                    "horizontal"
+                  ]
+                },
+                "fraction": {
+                  "type": "number",
+                  "minimum": 0.1,
+                  "maximum": 0.9
+                },
+                "first": {
+                  "$ref": "#/$defs/paneTree"
+                },
+                "second": {
+                  "$ref": "#/$defs/paneTree"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     }
   }
 }

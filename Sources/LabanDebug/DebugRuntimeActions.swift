@@ -23,6 +23,8 @@ extension HeadlessDebugRuntime {
 
   func applyActionUnlocked(_ action: DebugAction, scopedSessionID: String?) -> DebugResponse {
     switch action {
+    case .pane(let action, let request):
+      return DebugPaneActions(runtime: self).apply(action, request)
     case .newTab:
       return DebugTabActions(runtime: self).newTab()
     case .closeTab(let request):

@@ -4,6 +4,7 @@ import LabanCore
 typealias CellCoordinateReq = LabanCore.CellCoordinateReq
 
 enum DebugAction: Decodable {
+  case pane(String, PaneActionRequest)
   case newTab
   case closeTab(TabTargetActionRequest)
   case selectTab(TabTargetActionRequest)
@@ -61,6 +62,8 @@ enum DebugAction: Decodable {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     let action = try container.decode(String.self, forKey: .action)
     switch action {
+    case "pane.split", "pane.close", "pane.focus":
+      self = .pane(action, try PaneActionRequest(from: decoder))
     case "newTab":
       self = .newTab
     case "closeTab":
@@ -170,6 +173,8 @@ enum DebugAction: Decodable {
 extension DebugAction {
   var intent: Intent {
     switch self {
+    case .pane(let action, _):
+      return legacyIntent(action: action)
     case .newTab:
       return legacyIntent(action: "newTab")
     case .closeTab:

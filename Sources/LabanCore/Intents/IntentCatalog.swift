@@ -864,6 +864,18 @@ public struct IntentCatalog: Sendable {
       availability: guiObserve,
       inputSchema: RemoveBackgroundImageActionRequest.jsonSchema),
     descriptor(
+      id: "pane.split", category: "pane", summary: "Split a single terminal into left and right panes.",
+      requiredCapability: .input, dataSensitivity: .nonSensitiveState,
+      availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
+    descriptor(
+      id: "pane.close", category: "pane", summary: "Close a pane and focus its survivor.",
+      requiredCapability: .input, dataSensitivity: .nonSensitiveState,
+      availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
+    descriptor(
+      id: "pane.focus", category: "pane", summary: "Focus a pane by session ID or cycle direction.",
+      requiredCapability: .navigate, dataSensitivity: .nonSensitiveState,
+      availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
+    descriptor(
       id: "tab.new", category: "tab", summary: "Create and select a new tab.",
       requiredCapability: .input, dataSensitivity: .nonSensitiveState,
       sideEffects: .init(lifecycle: true)),
