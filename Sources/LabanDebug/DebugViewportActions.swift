@@ -33,7 +33,8 @@ struct DebugViewportActions {
       ))
     runtime.renderFrameUnlocked()
     runtime.appendEvent(
-      EventEntry(kind: "viewport.scrolled", sessionId: tab.focusedSessionId, deltaRows: request.deltaRows)
+      EventEntry(
+        kind: "viewport.scrolled", sessionId: tab.focusedSessionId, deltaRows: request.deltaRows)
     )
     return runtime.actionResult(ok: true)
   }

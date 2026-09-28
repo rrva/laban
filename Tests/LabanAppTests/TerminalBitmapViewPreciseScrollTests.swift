@@ -38,7 +38,11 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = Int32(rows)
     size.cols = Int32(cols)
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let fontAtlas = FontAtlas(pointSize: 14)
     let sidebarFontAtlas = FontAtlas(pointSize: 11)
     let cellSize = fontAtlas.cellSize
@@ -95,6 +99,49 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
   /// sub-row event rounded the applied rows to 0, which routed through the
   /// active-bottom snap and reset the accumulator — the viewport could never
   /// escape the bottom at low gesture speed.
+  func testSlowPreciseScrollOverUnfocusedPaneAccumulates() throws {
+    try withSoftwareRenderer {
+      let (view, model, cellHeight) = try makeView(rows: 6, cols: 80)
+      let left = try XCTUnwrap(model.activeTab?.focusedSessionId)
+      view.splitPaneRight(nil)
+      let right = try XCTUnwrap(model.activeTab?.focusedSessionId)
+      XCTAssertNotEqual(left, right)
+      let a = try XCTUnwrap(model.session(forSessionID: left))
+      let b = try XCTUnwrap(model.session(forSessionID: right))
+      for session in [a, b] {
+        session.write(Array((0..<120).map { "line \($0)\r\n" }.joined().utf8))
+      }
+      view.advanceFrame()
+      for _ in 0..<10 {
+        view.scrollWheel(with: preciseWheel(rowsUp: 0.25, cellHeight: cellHeight))
+      }
+      XCTAssertGreaterThan(try linesBack(a), 0)
+      XCTAssertEqual(try linesBack(b), 0)
+      XCTAssertEqual(model.activeTab?.focusedSessionId, right)
+    }
+  }
+
+  func testPaneCommandsDiscardPreeditAndCloseOriginalPane() throws {
+    try withSoftwareRenderer {
+      let (view, model, _) = try makeView(rows: 6, cols: 80)
+      let original = try XCTUnwrap(model.activeTab?.focusedSessionId)
+      view.splitPaneRight(nil)
+      let survivor = try XCTUnwrap(model.activeTab?.focusedSessionId)
+      view.setMarkedText(
+        "composition", selectedRange: NSRange(location: 3, length: 0),
+        replacementRange: NSRange(location: NSNotFound, length: 0))
+      XCTAssertTrue(view.hasMarkedText())
+      view.focusPreviousPane(nil)
+      XCTAssertFalse(view.hasMarkedText())
+      XCTAssertEqual(model.activeTab?.focusedSessionId, original)
+      view.closePane(nil)
+      view.advanceFrame()
+      XCTAssertEqual(model.activeTab?.allSessionIds, [survivor])
+      XCTAssertNil(model.session(forSessionID: original))
+      XCTAssertEqual(model.terminalSize(for: survivor).cols, model.terminalAreaSize.cols)
+    }
+  }
+
   func testSlowPreciseScrollLeavesBottom() throws {
     try withSoftwareRenderer {
       let (view, model, cellHeight) = try makeView(rows: 6, cols: 40)

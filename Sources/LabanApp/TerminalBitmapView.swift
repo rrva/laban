@@ -248,14 +248,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// grid (the renderer reads view-level state, not session-level). On
   /// tab switch we save the outgoing tab's pair into this dict and
   /// restore the incoming tab's pair from it.
-  private var selectionsByTab:
+  private var selectionsBySession:
     [Tab.ID: (anchor: TerminalSelectionPoint, focus: TerminalSelectionPoint?)] = [:]
-  private var activeSelectionTabId: Tab.ID?
+  private var activeSelectionSessionId: Tab.ID?
   private var trackedMouseButton: MouseButton = .none
   /// Last terminal cell a no-button hover motion was forwarded for, so a
   /// mouse-tracking app sees one report per cell entered instead of one per
   /// pixel of pointer travel.
-  private var lastHoverMotionCell: (tab: Tab.ID, col: Int, row: Int)?
+  private var lastHoverMotionCell: (session: Session.ID, col: Int, row: Int)?
+  private var wheelResidualBySession: [Session.ID: CGFloat] = [:]
   /// Most recent encoded hover report, observable by tests (fixture sessions
   /// have no PTY whose input side a test could read).
   private var lastForwardedHoverReport: [UInt8]?
@@ -439,13 +440,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// window. Renderer-independent (the display link ticks regardless of backend).
   private var frameIntervalSamplesMs: [Double] = []
   private static let frameIntervalRingCapacity = 2048
-  private var lastRenderedActiveTabId: Tab.ID?
+  private var lastRenderedFocusedSessionId: Tab.ID?
   private var remoteSnapshotRenderTracker = RemoteSnapshotRenderTracker()
-  private var remoteMouseEncodingByTab: [Tab.ID: (trackingMode: Int, format: Int)] = [:]
+  private var remoteMouseEncodingBySession: [Tab.ID: (trackingMode: Int, format: Int)] = [:]
   private var scrollResidualPx: CGFloat = 0
 
   /// Last cols value applied to libghostty. Used to detect when a reflow
   /// invalidates the selection's grid coordinates so we can drop it.
+  private var lastPaneGrid: [Session.ID: (cols: Int32, rows: Int32)] = [:]
   private var lastAppliedCols: Int = 0
   private var lastAppliedRows: Int = 0
 
@@ -855,7 +857,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     self.sessionCoordinator = sessionCoordinator
     self.sidebarCellWidth = Int(sidebarFontAtlas.cellSize.width)
     self.sidebarCellHeight = Int(sidebarFontAtlas.cellSize.height)
-    self.lastRows = max(1, Int(model.terminalSize.rows))
+    self.lastRows = max(1, Int(model.terminalAreaSize.rows))
     let gpuFreezeAutoDumpEnabled = RenderJournal.gpuFreezeAutoDumpEnabled()
     self.gpuFreezeAutoDumpEnabled = gpuFreezeAutoDumpEnabled
     self.renderJournalEnabled = RenderJournal.isEnabled() || gpuFreezeAutoDumpEnabled
@@ -2096,12 +2098,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if usingRemoteSessions {
       guard let sessionCoordinator else { return false }
       do {
-        remoteFrame = try sessionCoordinator.snapshotFrame(for: activeTab, size: model.terminalSize)
+        remoteFrame = try sessionCoordinator.snapshotFrame(
+          for: activeTab, size: model.terminalAreaSize)
         if let snapshot = remoteFrame?.snapshot {
-          cacheRemoteMouseEncoding(snapshot, for: activeTab.id)
+          cacheRemoteMouseEncoding(snapshot, for: activeTab.focusedSessionId)
         }
       } catch {
-        remoteMouseEncodingByTab.removeValue(forKey: activeTab.id)
+        remoteMouseEncodingBySession.removeValue(forKey: activeTab.focusedSessionId)
         AppLog.app.error(
           "laband snapshot failed during renderer warm-up: \(String(describing: error))")
         return false
@@ -2122,8 +2125,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let gpuCellRequested = metalRenderer?.requestedRendererMode == .gpuDriven
     let rendererFallbackReason =
       usingRemoteSessions && gpuCellRequested ? "remoteSnapshotPayloadIncomplete" : nil
+    resizeActivePanes()
     let canRequestCellPayload =
       !usingRemoteSessions
+      && activeTab.allSessionIds.count == 1
       && captureRecorder == nil
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
@@ -2512,7 +2517,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       if let bytes = session.encodeFocus(focused: focused), !bytes.isEmpty {
         delivered =
           (try? sessionCoordinator.write(
-            bytes, to: tab, session: session, size: model.terminalSize)) != nil
+            bytes, to: tab, session: session, size: model.terminalAreaSize)) != nil
       } else {
         delivered = false
       }
@@ -2980,7 +2985,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       do {
         didScroll = try sessionCoordinator.scrollViewport(
           tab: tab,
-          size: model.terminalSize,
+          size: model.terminalAreaSize,
           deltaRows: deltaRows
         )
         if didScroll {
@@ -3516,13 +3521,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     applyWindowTitleIfNeeded()
     updateCaptureIndicator()
 
-    let tabChanged = lastRenderedActiveTabId != activeTab.id
+    let tabChanged = lastRenderedFocusedSessionId != activeTab.focusedSessionId
     if tabChanged,
-      let outgoing = lastRenderedActiveTabId,
-      let outgoingTab = model.tabs.first(where: { $0.id == outgoing }),
-      let outgoingSession = model.session(forTab: outgoing)
+      let outgoing = lastRenderedFocusedSessionId,
+      let outgoingTab = model.tabs.first(where: { $0.panes.contains(outgoing) }),
+      let outgoingSession = model.session(forSessionID: outgoing)
     {
-      reportFocus(to: outgoingSession, tab: outgoingTab, focused: false)
+      reportFocus(to: outgoingSession, tab: outgoingTab.focusing(outgoing), focused: false)
     }
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
 
@@ -3828,7 +3833,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       do {
         let remoteGeneration = try sessionCoordinator.snapshotGeneration(
           for: activeTab,
-          size: model.terminalSize)
+          size: model.terminalAreaSize)
         activeTerminalDirty =
           activeTerminalDirty
           || remoteSnapshotRenderTracker.terminalDirty(
@@ -3839,7 +3844,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         if activeTerminalDirty {
           remoteFrame = try sessionCoordinator.snapshotFrame(
             for: activeTab,
-            size: model.terminalSize)
+            size: model.terminalAreaSize)
           activeTerminalDirty =
             activeTerminalDirty
             || remoteSnapshotRenderTracker.terminalDirty(
@@ -3850,16 +3855,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         }
       } catch {
         remoteFrame = nil
-        remoteMouseEncodingByTab.removeValue(forKey: activeTab.id)
+        remoteMouseEncodingBySession.removeValue(forKey: activeTab.focusedSessionId)
         AppLog.app.error("laband snapshot failed: \(String(describing: error))")
       }
     } else {
       remoteFrame = nil
-      remoteMouseEncodingByTab.removeAll()
+      remoteMouseEncodingBySession.removeAll()
       remoteSynchronizedOutputWatchdogBypassedSessionIds.removeAll()
     }
     if let remoteFrame {
-      cacheRemoteMouseEncoding(remoteFrame.snapshot, for: activeTab.id)
+      cacheRemoteMouseEncoding(remoteFrame.snapshot, for: activeTab.focusedSessionId)
     }
 
     let terminalDirty = activeTerminalDirty || (!usingRemoteSessions && session.renderDirty())
@@ -4222,8 +4227,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let gpuCellRequested = metalRenderer?.requestedRendererMode == .gpuDriven
     let rendererFallbackReason =
       usingRemoteSessions && gpuCellRequested ? "remoteSnapshotPayloadIncomplete" : nil
+    resizeActivePanes()
     let canRequestCellPayload =
       !usingRemoteSessions
+      && activeTab.allSessionIds.count == 1
       && captureRecorder == nil
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
@@ -4274,16 +4281,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       glyphEffectsEnabled: GlyphEffectSettings.enabled,
       effectiveRendererIsSlug: backend is SlugGlyphRenderer,
       hoverPreviewEnabled: HoverPreviewSettings.enabled,
-      deferHoverPreviewUpdate: deferHoverPreviewUpdate
+      deferHoverPreviewUpdate: deferHoverPreviewUpdate,
+      panes: activeTab.panes.layout(
+        in: CGRect(x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: h)
+      ).map {
+        TerminalSurfacePaneRequest(
+          sessionId: $0.sessionId, rect: $0.rect,
+          isFocused: $0.sessionId == activeTab.focusedSessionId,
+          selection: terminalSelection(forSessionID: $0.sessionId, model: model),
+          preedit: $0.sessionId == activeTab.focusedSessionId && hasMarkedText()
+            ? markedText.string : nil,
+          preeditCaretCells: markedTextCaretCells)
+      }
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
-        remoteFrame = try sessionCoordinator.snapshotFrame(for: activeTab, size: model.terminalSize)
+        remoteFrame = try sessionCoordinator.snapshotFrame(
+          for: activeTab, size: model.terminalAreaSize)
         if let snapshot = remoteFrame?.snapshot {
-          cacheRemoteMouseEncoding(snapshot, for: activeTab.id)
+          cacheRemoteMouseEncoding(snapshot, for: activeTab.focusedSessionId)
         }
       } catch {
-        remoteMouseEncodingByTab.removeValue(forKey: activeTab.id)
+        remoteMouseEncodingBySession.removeValue(forKey: activeTab.focusedSessionId)
         AppLog.app.error("laband snapshot failed: \(String(describing: error))")
         return
       }
@@ -4564,9 +4583,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           incarnationId: previewRemoteFrame.snapshot.incarnationId,
           generation: previewRemoteFrame.generation)
       }
-      session.markRendered()
+      for id in activeTab.allSessionIds { model.session(forSessionID: id)?.markRendered() }
     } else {
-      session.markRendered()
+      for id in activeTab.allSessionIds { model.session(forSessionID: id)?.markRendered() }
       if !deferHoverPreviewUpdate,
         let visibleHoverPreviewTab,
         visibleHoverPreviewTab.id != activeTab.id
@@ -4588,7 +4607,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     gpuCellCommandFallbackPending = false
     renderInvalidated = false
-    lastRenderedActiveTabId = activeTab.id
+    lastRenderedFocusedSessionId = activeTab.focusedSessionId
     syncFindChip()
 
     if let vs = session.viewportState() {
@@ -5138,21 +5157,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// app sees one report per cell entered, not one per pixel.
   private func forwardHoverMotion(at pt: NSPoint, modifiers: Int) {
     guard trackedMouseButton == .none, !localSelectionMouseGestureActive,
-      let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
+      let hit = paneHit(at: pt),
+      let activeTab = model.tabProjection(forSession: hit.sessionId),
+      let session = model.session(forSessionID: hit.sessionId),
       mouseTrackingActive(for: activeTab, session: session),
       pt.x >= sidebarWidth
     else { return }
 
-    let geom = terminalMouseGeometry(at: pt)
+    let geom = terminalMouseGeometry(at: pt, paneRect: hit.rect)
     let col = cellWidth > 0 ? Int(geom.x) / cellWidth : 0
     let row = cellHeight > 0 ? Int(geom.y) / cellHeight : 0
     if let last = lastHoverMotionCell,
-      last.tab == activeTab.id, last.col == col, last.row == row
+      last.session == session.id, last.col == col, last.row == row
     {
       return
     }
-    lastHoverMotionCell = (tab: activeTab.id, col: col, row: row)
+    lastHoverMotionCell = (session: session.id, col: col, row: row)
 
     let mouseEncoding = remoteMouseEncoding(for: activeTab)
     let motionEvent = MouseEvent(
@@ -5523,17 +5543,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func persistSelectionStateForCurrentTab() {
-    guard let tabId = activeSelectionTabId else { return }
+    guard let tabId = activeSelectionSessionId else { return }
     if let anchor = selectionAnchor, selectionFocus != nil {
-      selectionsByTab[tabId] = (anchor, selectionFocus)
+      selectionsBySession[tabId] = (anchor, selectionFocus)
     } else {
-      selectionsByTab.removeValue(forKey: tabId)
+      selectionsBySession.removeValue(forKey: tabId)
     }
   }
 
   private func restoreSelectionState(for tabId: Tab.ID?) {
-    activeSelectionTabId = tabId
-    if let tabId, let restored = selectionsByTab[tabId] {
+    activeSelectionSessionId = tabId
+    if let tabId, let restored = selectionsBySession[tabId] {
       selectionAnchor = restored.anchor
       selectionFocus = restored.focus
     } else {
@@ -5547,16 +5567,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func syncSelectionStateToActiveTab() {
-    let activeTabId = model.activeTab?.id
-    if activeSelectionTabId == nil {
+    let activeTabId = model.activeTab?.focusedSessionId
+    if activeSelectionSessionId == nil {
       if selectionAnchor == nil && selectionFocus == nil {
         restoreSelectionState(for: activeTabId)
       } else {
-        activeSelectionTabId = activeTabId
+        activeSelectionSessionId = activeTabId
       }
       return
     }
-    guard activeSelectionTabId != activeTabId else { return }
+    guard activeSelectionSessionId != activeTabId else { return }
     persistSelectionStateForCurrentTab()
     restoreSelectionState(for: activeTabId)
   }
@@ -5580,7 +5600,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     persistSelectionStateForCurrentTab()
     model.selectTab(tabId)
     ensureSidebarTabVisible(tabId, animated: true)
-    restoreSelectionState(for: model.activeTab?.id)
+    restoreSelectionState(for: model.activeTab?.focusedSessionId)
   }
 
   /// Select a tab requested by an external AppKit event, such as a native
@@ -5702,21 +5722,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       try sessionCoordinator?.ensureSession(
         for: tab,
         session: model.session(forTab: tab.id),
-        size: model.terminalSize)
+        size: model.terminalAreaSize)
     } catch {
       // Session creation is all-or-nothing (MVP Session Creation contract):
       // if the remote PTY fails to bind, roll back the tab we just appended
       // and restore the prior selection rather than stranding the user on a
       // dead, input-rejecting tab. (H-4)
       remoteSnapshotRenderTracker.clear(tabId: tab.id)
-      remoteMouseEncodingByTab.removeValue(forKey: tab.id)
+      remoteMouseEncodingBySession.removeValue(forKey: tab.focusedSessionId)
       try? model.closeTab(tab.id)
       if let previousActiveTabId {
         model.selectTab(previousActiveTabId)
       }
       throw error
     }
-    restoreSelectionState(for: tab.id)
+    restoreSelectionState(for: tab.focusedSessionId)
     ensureSidebarTabVisible(tab.id, animated: true)
     return tab
   }
@@ -5726,7 +5746,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       sessionCoordinator?.terminate(tab: tab)
     }
     remoteSnapshotRenderTracker.clear(tabId: tabId)
-    remoteMouseEncodingByTab.removeValue(forKey: tabId)
+    remoteMouseEncodingBySession.removeValue(forKey: tabId)
     try model.closeTab(tabId)
     // Prune the stale generation entry so a recycled Session.ID cannot
     // alias this closed session's last-synced generation.
@@ -5765,8 +5785,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       try sessionCoordinator?.ensureSession(
         for: tab,
         session: model.session(forTab: tab.id),
-        size: model.terminalSize)
-      restoreSelectionState(for: tab.id)
+        size: model.terminalAreaSize)
+      restoreSelectionState(for: tab.focusedSessionId)
       ensureSidebarTabVisible(tab.id, animated: true)
       invalidateRenderAndWake()
     } catch {
@@ -5789,11 +5809,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func clearAllSelectionState() {
-    selectionsByTab.removeAll()
+    selectionsBySession.removeAll()
     selectionAnchor = nil
     selectionFocus = nil
     selectionOriginCell = nil
-    activeSelectionTabId = model.activeTab?.id
+    activeSelectionSessionId = model.activeTab?.focusedSessionId
     stopDragAutoscroll()
     stopTrackedMouseDragFramePump()
     lastDragPoint = nil
@@ -5887,8 +5907,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func pruneClosedTabState(_ tabId: Tab.ID) {
-    selectionsByTab.removeValue(forKey: tabId)
-    remoteMouseEncodingByTab.removeValue(forKey: tabId)
+    let live = Set(model.tabs.flatMap(\.allSessionIds))
+    selectionsBySession = selectionsBySession.filter { live.contains($0.key) }
+    remoteMouseEncodingBySession = remoteMouseEncodingBySession.filter { live.contains($0.key) }
     cachedRemoteHoverPreviewFrames.removeValue(forKey: tabId)
     if hoveredSidebarTabId == tabId {
       hoveredSidebarTabId = nil
@@ -5896,11 +5917,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if sidebarDragState?.tabId == tabId {
       sidebarDragState = nil
     }
-    if activeSelectionTabId == tabId {
+    if activeSelectionSessionId == tabId {
       selectionAnchor = nil
       selectionFocus = nil
       selectionOriginCell = nil
-      activeSelectionTabId = nil
+      activeSelectionSessionId = nil
       stopDragAutoscroll()
       lastDragPoint = nil
     }
@@ -5950,7 +5971,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       viewportWidth: termW, viewportHeight: termH,
       cellWidth: cellWidth, cellHeight: cellHeight,
       deferFindRescan: inLiveResize)
-    sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalSize)
+    sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalAreaSize)
 
     // Render synchronously inside the resize event during live drag so the
     // new drawable commits with the new grid dimensions in the same event
@@ -6117,7 +6138,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           viewportWidth: termW, viewportHeight: termH,
           cellWidth: cellWidth, cellHeight: cellHeight,
           deferFindRescan: false)
-        sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalSize)
+        sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalAreaSize)
       }
     }
 
@@ -6825,10 +6846,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       rows: Int(snap.pointee.rows),
       cursorRow: Int(snap.pointee.cursor_row),
       cursorCol: Int(snap.pointee.cursor_col),
-      sidebarWidth: sidebarWidth,
+      sidebarWidth: focusedPaneRect.minX,
       cellWidth: CGFloat(cellWidth),
       cellHeight: CGFloat(cellHeight),
-      boundsHeight: bounds.height,
+      boundsHeight: focusedPaneRect.height,
       insets: Self.contentInsets
     )
     let windowRect = convert(rect, to: nil)
@@ -6865,7 +6886,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
             bytes,
             to: activeTab,
             session: session,
-            size: model.terminalSize)
+            size: model.terminalAreaSize)
         } catch {
           AppLog.app.error("laband key input failed: \(String(describing: error))")
         }
@@ -6899,7 +6920,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           bytes,
           to: activeTab,
           session: session,
-          size: model.terminalSize)
+          size: model.terminalAreaSize)
       } catch {
         AppLog.app.error("laband text input failed: \(String(describing: error))")
       }
@@ -6926,6 +6947,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       route: "appCommand",
       command: TerminalInputCaptureMetadata.captureName(for: command))
     switch command {
+    case .splitPaneRight: splitPaneRight(nil)
+    case .closePane: closePane(nil)
+    case .focusNextPane: focusNextPane(nil)
+    case .focusPreviousPane: focusPreviousPane(nil)
     case .newTab:
       _ = try? createTabPreservingSelection()
       invalidateRenderAndWake()
@@ -7279,7 +7304,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// working directory.
   override func quickLook(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
-    presentQuickLook(for: wordText(at: pt))
+    presentQuickLook(for: wordText(at: pt), sessionId: paneHit(at: pt)?.sessionId)
   }
 
   /// Edit → Quick Look (⌘Y): preview the file named by the current selection.
@@ -7290,10 +7315,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// The on-screen word at `pt` (path/URL-aware via `wordBounds`'s glue chars),
   /// or nil when the point is outside the grid or lands on blank cells.
   private func wordText(at pt: NSPoint) -> String? {
-    guard let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
+    guard let hit = paneHit(at: pt),
+      let session = model.session(forSessionID: hit.sessionId),
       let snap = session.snapshot(),
-      let cell = termCell(at: pt)
+      let cell = termCell(at: pt, paneRect: hit.rect)
     else { return nil }
     defer { laban_snapshot_destroy(snap) }
     let bounds = TerminalSelectionInput.wordBounds(
@@ -7309,11 +7334,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Resolve `candidate` to a file (relative paths use the session's OSC 7 /
   /// process-metadata cwd) and show it in the shared Quick Look panel. No-op
   /// when the candidate does not name an existing file.
-  private func presentQuickLook(for candidate: String?) {
+  private func presentQuickLook(for candidate: String?, sessionId: Session.ID? = nil) {
     guard let candidate else { return }
     let cwd =
-      model.activeTab
-      .flatMap { model.session(forTab: $0.id) }?
+      (sessionId ?? model.activeTab?.focusedSessionId)
+      .flatMap { model.session(forSessionID: $0) }?
       .processMetadata()?.cwd
     // Resolve off the main actor: `fileExists` can block on a slow or dead
     // network mount, and a main-thread stall here would trip MainThreadWatchdog.
@@ -7513,7 +7538,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           sent.bytes,
           to: activeTab,
           session: session,
-          size: model.terminalSize)
+          size: model.terminalAreaSize)
       } catch {
         // Never silently drop a paste (H-3). On the labpty backend an
         // oversized cooked-mode write is refused atomically with
@@ -7584,7 +7609,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           bytes,
           to: activeTab,
           session: session,
-          size: model.terminalSize)
+          size: model.terminalAreaSize)
       }
     } else {
       let sent = session.sendKeyCapturingBytes(event)
@@ -7635,7 +7660,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         sent.bytes,
         to: activeTab,
         session: session,
-        size: model.terminalSize)
+        size: model.terminalAreaSize)
     }
     EventLog.shared.log(
       "drop.files",
@@ -7674,21 +7699,36 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
 
     guard
-      let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id)
+      let tab = model.activeTab, let hit = paneHit(at: pt),
+      let session = model.session(forSessionID: hit.sessionId)
     else {
       return
     }
 
+    let activeTab = tab.focusing(session.id)
     guard let vs = session.viewportState() else { return }
     let mouseTracking = mouseTrackingActive(for: activeTab, session: session)
+
+    let shiftScrollOverride = event.modifierFlags.contains(.shift)
+    if session.id != tab.focusedSessionId
+      && (shiftScrollOverride || (!mouseTracking && !(vs.altScreen && vs.altScroll)))
+    {
+      let decision = TerminalScrollInput.decide(
+        event: TerminalScrollInput.Event(
+          deltaY: event.deltaY,
+          scrollingDeltaY: event.scrollingDeltaY,
+          hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas),
+        residualPx: wheelResidualBySession[session.id] ?? 0, cellHeightPx: CGFloat(cellHeight))
+      wheelResidualBySession[session.id] = decision.newResidualPx
+      _ = session.scrollViewport(deltaRows: decision.rowsDelta)
+      invalidateRenderAndWake()
+      return
+    }
 
     // Shift+wheel is the universal escape hatch (iTerm2/Terminal.app/kitty) to
     // Laban's own scrollback even while a fullscreen app holds the mouse: skip
     // both the mouse-forward and alt-scroll branches so it falls through to the
     // local scrollback path below.
-    let shiftScrollOverride = event.modifierFlags.contains(.shift)
-
     if mouseTracking && !localSelectionMouseGestureActive && !shiftScrollOverride {
       // Mouse tracking active: forward wheel motion as wheel reports, one per
       // accumulated terminal row of travel. Reuse `decide` so the trackpad's
@@ -7702,10 +7742,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           scrollingDeltaY: event.scrollingDeltaY,
           hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
         ),
-        residualPx: scrollResidualPx,
+        residualPx: wheelResidualBySession[session.id] ?? 0,
         cellHeightPx: CGFloat(cellHeight)
       )
-      scrollResidualPx = decision.newResidualPx
+      wheelResidualBySession[session.id] = decision.newResidualPx
       guard
         let reports = TerminalScrollInput.mouseTrackingWheelReports(
           rowsDelta: decision.rowsDelta
@@ -7714,7 +7754,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         return
       }
       let button: MouseButton = reports.direction == .up ? .wheelUp : .wheelDown
-      let geom = terminalMouseGeometry(at: pt)
+      let geom = terminalMouseGeometry(at: pt, paneRect: hit.rect)
       let mouseEncoding = remoteMouseEncoding(for: activeTab)
       var bytes: [UInt8] = []
       for _ in 0..<reports.count {
@@ -7760,10 +7800,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           scrollingDeltaY: event.scrollingDeltaY,
           hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
         ),
-        residualPx: scrollResidualPx,
+        residualPx: wheelResidualBySession[session.id] ?? 0,
         cellHeightPx: CGFloat(cellHeight)
       )
-      scrollResidualPx = decision.newResidualPx
+      wheelResidualBySession[session.id] = decision.newResidualPx
       guard let keys = TerminalScrollInput.altScrollKeys(rowsDelta: decision.rowsDelta)
       else {
         return
@@ -7785,7 +7825,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       if let sessionCoordinator, !bytes.isEmpty {
         do {
           try sessionCoordinator.write(
-            bytes, to: activeTab, session: session, size: model.terminalSize)
+            bytes, to: activeTab, session: session, size: model.terminalAreaSize)
         } catch {
           AppLog.app.error("laband alt-scroll input failed: \(String(describing: error))")
         }
@@ -8029,9 +8069,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func externalHyperlinkURI(at pt: NSPoint) -> String? {
-    guard let cell = termCell(at: pt),
-      let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
+    guard let hit = paneHit(at: pt),
+      let cell = termCell(at: pt, paneRect: hit.rect),
+      let session = model.session(forSessionID: hit.sessionId),
       let snap = session.snapshot()
     else {
       return nil
@@ -8174,6 +8214,51 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return (dx * dx + dy * dy).squareRoot()
   }
 
+  private func resizeActivePanes() {
+    guard sessionCoordinator?.usesRemoteSnapshots != true else { return }
+    let insets = Self.contentInsets
+    model.resizePanes(
+      in: CGRect(
+        x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height),
+      insets: TerminalSurfaceInsets(
+        top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right),
+      cellWidth: cellWidth, cellHeight: cellHeight)
+    let live = Set(model.tabs.flatMap(\.allSessionIds))
+    lastPaneGrid = lastPaneGrid.filter { live.contains($0.key) }
+    wheelResidualBySession = wheelResidualBySession.filter { live.contains($0.key) }
+    for id in model.activeTab?.allSessionIds ?? [] {
+      let size = model.terminalSize(for: id)
+      if let prior = lastPaneGrid[id], prior.cols != size.cols || prior.rows != size.rows {
+        selectionsBySession.removeValue(forKey: id)
+        if id == model.activeTab?.focusedSessionId { restoreSelectionState(for: id) }
+      }
+      lastPaneGrid[id] = (size.cols, size.rows)
+    }
+    sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalAreaSize)
+  }
+
+  var focusedPaneRect: CGRect {
+    let area = CGRect(
+      x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+    guard sessionCoordinator?.usesRemoteSnapshots != true, let tab = model.activeTab else {
+      return area
+    }
+    return tab.panes.layout(in: area).first(where: { $0.sessionId == tab.focusedSessionId })?.rect
+      ?? area
+  }
+
+  private func paneHit(at point: NSPoint) -> PaneRect? {
+    guard let tab = model.activeTab else { return nil }
+    if sessionCoordinator?.usesRemoteSnapshots == true {
+      return focusedPaneRect.contains(point)
+        ? PaneRect(sessionId: tab.focusedSessionId, rect: focusedPaneRect) : nil
+    }
+    return tab.panes.layout(
+      in: CGRect(
+        x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+    ).first { $0.rect.contains(point) }
+  }
+
   override func mouseDown(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
     // A native window drag can consume its own mouse-up. Reset defensively at
@@ -8237,6 +8322,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       case .none: break
       }
       return
+    }
+
+    if let pane = paneHit(at: pt), let tab = model.activeTab, pane.sessionId != tab.focusedSessionId
+    {
+      persistSelectionStateForCurrentTab()
+      discardMarkedComposition()
+      model.focusPane(inTab: tab.id, sessionId: pane.sessionId)
+      paneFocusChanged()
     }
 
     window?.makeFirstResponder(self)
@@ -8607,16 +8700,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     else { return }
     try? sessionCoordinator.write(
       bytes,
-      to: activeTab,
+      to: activeTab.focusing(session.id),
       session: session,
-      size: model.terminalSize)
+      size: model.terminalSize(for: session.id))
   }
 
-  private func selectionGeometry() -> TerminalSelectionInput.GridGeometry {
-    TerminalSelectionInput.GridGeometry(
-      boundsWidth: bounds.width,
-      boundsHeight: bounds.height,
-      sidebarWidth: sidebarWidth,
+  private func selectionGeometry(paneRect: CGRect? = nil) -> TerminalSelectionInput.GridGeometry {
+    let rect = paneRect ?? focusedPaneRect
+    return TerminalSelectionInput.GridGeometry(
+      boundsWidth: rect.maxX,
+      boundsHeight: rect.height,
+      sidebarWidth: rect.minX,
       cellWidth: CGFloat(cellWidth),
       cellHeight: CGFloat(cellHeight),
       rows: lastRows,
@@ -8624,8 +8718,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
-  private func termCell(at pt: NSPoint) -> TerminalCellCoordinate? {
-    TerminalSelectionInput.terminalCell(at: pt, geometry: selectionGeometry())
+  private func termCell(at pt: NSPoint, paneRect: CGRect? = nil) -> TerminalCellCoordinate? {
+    TerminalSelectionInput.terminalCell(at: pt, geometry: selectionGeometry(paneRect: paneRect))
   }
 
   /// Like `termCell(at:)` but always returns a valid cell, clamped to the
@@ -8746,7 +8840,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func mouseTrackingActive(for tab: Tab, session: Session) -> Bool {
     if sessionCoordinator?.usesRemoteSnapshots == true {
-      return remoteMouseEncodingByTab[tab.id] != nil
+      return remoteMouseEncodingBySession[tab.focusedSessionId] != nil
     }
     return session.viewportState()?.mouseTracking == true
   }
@@ -8755,10 +8849,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     guard snapshot.mouseTracking == true, let trackingMode = snapshot.mouseTrackingMode,
       trackingMode > 0
     else {
-      remoteMouseEncodingByTab.removeValue(forKey: tabId)
+      remoteMouseEncodingBySession.removeValue(forKey: tabId)
       return
     }
-    remoteMouseEncodingByTab[tabId] = (
+    remoteMouseEncodingBySession[tabId] = (
       trackingMode: trackingMode,
       format: snapshot.mouseFormat ?? 0
     )
@@ -8766,7 +8860,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func remoteMouseEncoding(for tab: Tab) -> (trackingMode: Int, format: Int)? {
     guard sessionCoordinator?.usesRemoteSnapshots == true else { return nil }
-    return remoteMouseEncodingByTab[tab.id]
+    return remoteMouseEncodingBySession[tab.focusedSessionId]
   }
 
   private func authoritativeAppliedRows(for session: Session) -> Int? {
@@ -9161,24 +9255,84 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     invalidateRenderAndWake()
   }
 
-  private func terminalMouseGeometry(at pt: NSPoint) -> (
+  private func terminalMouseGeometry(at pt: NSPoint, paneRect explicitRect: CGRect? = nil) -> (
     x: Float, y: Float, screenWidth: Int, screenHeight: Int
   ) {
     let insets = Self.contentInsets
+    let paneRect = explicitRect ?? focusedPaneRect
     let pos = TerminalMouseInput.surfacePosition(
       viewPoint: pt,
-      boundsHeight: bounds.height - insets.top,
-      sidebarWidth: sidebarWidth + insets.left
+      boundsHeight: paneRect.height - insets.top,
+      sidebarWidth: paneRect.minX + insets.left
     )
     let size = TerminalMouseInput.surfaceSize(
-      boundsWidth: bounds.width - insets.right,
-      boundsHeight: bounds.height - insets.top - insets.bottom,
-      sidebarWidth: sidebarWidth + insets.left
+      boundsWidth: paneRect.maxX - insets.right,
+      boundsHeight: paneRect.height - insets.top - insets.bottom,
+      sidebarWidth: paneRect.minX + insets.left
     )
     return (pos.x, pos.y, size.width, size.height)
   }
 
   // MARK: - Menu actions
+
+  @objc func splitPaneRight(_ sender: Any?) {
+    guard let tab = model.activeTab else { return }
+    do {
+      if sessionCoordinator?.usesRemoteSnapshots == true {
+        throw AppModel.PaneError.unsupportedBackend
+      }
+      persistSelectionStateForCurrentTab()
+      discardMarkedComposition()
+      _ = try model.splitPane(inTab: tab.id) { id, size, cwd in
+        let session = try model.makePaneSession(id: id, inTab: tab.id, size: size, cwd: cwd)
+        let target = Tab(
+          id: tab.id, position: tab.position, title: tab.title, isActive: true, sessionId: id)
+        do {
+          if let cwd { sessionCoordinator?.setLaunchCwd(cwd, forSession: id) }
+          try sessionCoordinator?.ensureSession(for: target, session: session, size: size)
+        } catch {
+          sessionCoordinator?.terminate(tab: target)
+          session.close()
+          throw error
+        }
+        return session
+      }
+      paneFocusChanged()
+    } catch {
+      _ = model.postTabNotice(
+        forTab: tab.id, note: "pane.split.failed", text: String(describing: error))
+    }
+    invalidateRenderAndWake()
+  }
+
+  @objc func closePane(_ sender: Any?) {
+    guard let tab = model.activeTab, tab.allSessionIds.count > 1 else { return }
+    discardMarkedComposition()
+    model.closePane(inTab: tab.id, sessionId: tab.focusedSessionId) { id in
+      sessionCoordinator?.terminate(sessionId: id, in: tab)
+    }
+    selectionsBySession.removeValue(forKey: tab.focusedSessionId)
+    remoteMouseEncodingBySession.removeValue(forKey: tab.focusedSessionId)
+    paneFocusChanged()
+  }
+
+  @objc func focusNextPane(_ sender: Any?) { focusAdjacentPane(forward: true) }
+  @objc func focusPreviousPane(_ sender: Any?) { focusAdjacentPane(forward: false) }
+
+  private func focusAdjacentPane(forward: Bool) {
+    guard let tab = model.activeTab else { return }
+    persistSelectionStateForCurrentTab()
+    discardMarkedComposition()
+    model.focusAdjacentPane(inTab: tab.id, forward: forward)
+    paneFocusChanged()
+  }
+
+  private func paneFocusChanged() {
+    unmarkText()
+    restoreSelectionState(for: model.activeTab?.focusedSessionId)
+    surfaceController.invalidateSessionSyncCache()
+    invalidateRenderAndWake()
+  }
 
   @objc func newTab(_ sender: Any?) {
     _ = try? createTabPreservingSelection()
@@ -9242,7 +9396,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       showCastAlert(title: L10n.tr("No active tab"), message: L10n.tr("Open a tab and try again."))
       return
     }
-    guard let ring = model.transcriptDelegate?.recentByteRing(forSessionId: model.activeTab?.focusedSessionId ?? "") else {
+    guard
+      let ring = model.transcriptDelegate?.recentByteRing(
+        forSessionId: model.activeTab?.focusedSessionId ?? "")
+    else {
       showCastAlert(
         title: "Recent-byte recording is not available",
         message:
@@ -9254,7 +9411,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     let castSnapshot = ring.castWindowSnapshot(window: seconds)
     let entries = castSnapshot.entries
-    let size = model.terminalSize
+    let size = model.terminalAreaSize
     let cols = max(Int(size.cols), 1)
     let rows = max(Int(size.rows), 1)
     let initialFrameBytes = AsciinemaCast.fullFrameSnapshotBytes(
@@ -9569,6 +9726,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Mutate the persistent Debug-menu item's title in place (Start/Stop PTY
   /// Capture) rather than rebuilding the menu — the Show/Hide Sidebar pattern.
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    if menuItem.action == #selector(closePane(_:)) {
+      return (model.activeTab?.allSessionIds.count ?? 0) > 1
+    }
+
     // A checked item, the way macOS shows chrome visibility (Finder's
     // View ▸ Show Sidebar). Resolved at menu time so an external
     // `defaults write` or a second window cannot leave a stale checkmark.
@@ -9712,11 +9873,11 @@ extension TerminalBitmapView: ControlAgentAttachedIndicatorHost {
   {
     syncSelectionStateToActiveTab()
     guard let tab = model.tabs.first(where: { $0.allSessionIds.contains(sessionID) }),
-      let session = model.session(forTab: tab.id)
+      let session = model.session(forSessionID: sessionID)
     else { return nil }
 
     let viewportOffset: Int
-    if tab.id == model.activeTab?.id {
+    if sessionID == model.activeTab?.focusedSessionId {
       viewportOffset = currentViewportOffset()
     } else if let vs = session.viewportState() {
       viewportOffset = vs.viewportOffset
@@ -9726,10 +9887,10 @@ extension TerminalBitmapView: ControlAgentAttachedIndicatorHost {
 
     let anchor: TerminalSelectionPoint?
     let focus: TerminalSelectionPoint?
-    if tab.id == model.activeTab?.id {
+    if sessionID == model.activeTab?.focusedSessionId {
       anchor = selectionAnchor
       focus = selectionFocus
-    } else if let stored = selectionsByTab[tab.id] {
+    } else if let stored = selectionsBySession[sessionID] {
       anchor = stored.anchor
       focus = stored.focus
     } else {

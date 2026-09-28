@@ -87,7 +87,8 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let model = try AppModel(
       initialSize: size,
       sessionLaunchContextProvider: { tabId, sessionId, isAgentAttached in
-        launchCoordinator.prepareLaunch(tabID: tabId, sessionID: sessionId, isAgentAttached: isAgentAttached)
+        launchCoordinator.prepareLaunch(
+          tabID: tabId, sessionID: sessionId, isAgentAttached: isAgentAttached)
       },
       sessionFactory: { size, context in
         try Session.fixture(size: size, sessionID: context.sessionID)
@@ -175,7 +176,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let first = try XCTUnwrap(model.activeTab)
     let second = try model.createTab()
     var noted: Set<Tab.ID> = []
@@ -250,7 +255,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -347,7 +356,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -458,7 +471,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -550,7 +567,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 5
     size.cols = 40
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -622,7 +643,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let coordinatorClient = try waitForClient(socketPath: socketPath)
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
@@ -700,7 +725,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 40
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let coordinator = AppSessionCoordinator(
       client: try waitForClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
@@ -788,7 +817,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 40
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -914,7 +947,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -1026,7 +1063,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     defer { coordinator.detach() }
 
     func makeModel() throws -> AppModel {
-      let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+      let model = try AppModel(
+        initialSize: size,
+        sessionFactory: { size, context in
+          try Session.fixture(size: size, sessionID: context.sessionID)
+        })
       model.replaceTabs(
         from: WorkspaceState(
           windows: [

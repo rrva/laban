@@ -334,7 +334,7 @@ final class TabTitleMetadataTests: XCTestCase {
   func testManualTitleSurvivesLaterTerminalTitleChanges() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
-    let sessionId = model.tabs[0].sessionId
+    let sessionId = model.tabs[0].focusedSessionId
 
     try model.updateTerminalTitle("zsh", forTab: tabId)
     try model.renameTab(tabId, title: "auth retry cleanup")
@@ -344,7 +344,7 @@ final class TabTitleMetadataTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .user)
     XCTAssertEqual(model.tabs[0].titleMetadata.terminalTitle, "vim README.md")
     XCTAssertEqual(model.tabs[0].id, tabId)
-    XCTAssertEqual(model.tabs[0].sessionId, sessionId)
+    XCTAssertEqual(model.tabs[0].focusedSessionId, sessionId)
   }
 
   func testClearUserTitleReturnsToAutomaticTitle() throws {

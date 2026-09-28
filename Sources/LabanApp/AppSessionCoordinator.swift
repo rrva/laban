@@ -162,6 +162,7 @@ final class AppSessionCoordinator {
   private let supportsThemeApplication: Bool
   private let supportsViewportScroll: Bool
   private let snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
+  private var lastSentSizeBySession: [Session.ID: LabanTerminalSize] = [:]
   private var infoBySessionId: [Tab.ID: LabandSessionInfo] = [:]
   private var labptyDescriptorBySessionId: [Tab.ID: LabptySessionDescriptor] = [:]
   private var labptyFeedBySessionId: [Tab.ID: LabptyParserFeed] = [:]
@@ -342,7 +343,10 @@ final class AppSessionCoordinator {
 
   func ensureSessions(for tabs: [Tab], in model: AppModel, size: LabanTerminalSize) throws {
     for tab in tabs.flatMap({ tab in tab.allSessionIds.map { tab.focusing($0) } }) {
-      _ = try ensureSession(for: tab, session: model.session(forSessionID: tab.focusedSessionId), size: size)
+      _ = try ensureSession(
+        for: tab, session: model.session(forSessionID: tab.focusedSessionId),
+        size: usesRemoteSnapshots
+          ? model.terminalAreaSize : model.terminalSize(for: tab.focusedSessionId))
     }
   }
 
@@ -452,29 +456,32 @@ final class AppSessionCoordinator {
   }
 
   func resize(tabs: [Tab], in model: AppModel, size: LabanTerminalSize) {
-    for tab in tabs.flatMap({ tab in tab.allSessionIds.map { tab.focusing($0) } }) {
+    resize(
+      sizesBySession: Dictionary(
+        uniqueKeysWithValues: tabs.flatMap(\.allSessionIds).map {
+          ($0, usesRemoteSnapshots ? model.terminalAreaSize : model.terminalSize(for: $0))
+        }))
+  }
+
+  func resize(sizesBySession: [Session.ID: LabanTerminalSize]) {
+    for (id, size) in sizesBySession {
+      if let last = lastSentSizeBySession[id], last.cols == size.cols, last.rows == size.rows {
+        continue
+      }
       do {
-        let session = model.session(forSessionID: tab.focusedSessionId)
-        if let labptyClient {
-          let descriptor = try ensureLabptyDescriptor(for: tab, session: session, size: size)
-          let resized = try labptyClient.resize(
-            handle: descriptor.ptyHandle,
-            rows: Int(size.rows),
-            cols: Int(size.cols))
-          storeLabpty(resized, for: tab)
+        if let client = labptyClient, let descriptor = labptyDescriptorBySessionId[id] {
+          let resized = try client.resize(
+            handle: descriptor.ptyHandle, rows: Int(size.rows), cols: Int(size.cols))
+          labptyDescriptorBySessionId[id] = resized
+          infoBySessionId[id] = labptyInfo(from: resized)
+        } else if let client = labandClient, infoBySessionId[id] != nil {
+          infoBySessionId[id] = try client.resize(
+            sessionId: id, rows: Int(size.rows), cols: Int(size.cols))
+        } else {
           continue
         }
-        guard let labandClient else { continue }
-        let info = try ensureLabandSession(for: tab, size: size)
-        let resized = try labandClient.resize(
-          sessionId: info.logicalSessionId,
-          rows: Int(size.rows),
-          cols: Int(size.cols)
-        )
-        store(resized, for: tab)
-      } catch {
-        AppLog.app.error("session resize failed for tab \(tab.id): \(String(describing: error))")
-      }
+        lastSentSizeBySession[id] = size
+      } catch { AppLog.app.error("session resize failed for \(id): \(String(describing: error))") }
     }
   }
 
@@ -499,7 +506,9 @@ final class AppSessionCoordinator {
     for id in tab.allSessionIds { terminateSession(tab: tab.focusing(id)) }
   }
 
-  func terminate(sessionId: Session.ID, in tab: Tab) { terminateSession(tab: tab.focusing(sessionId)) }
+  func terminate(sessionId: Session.ID, in tab: Tab) {
+    terminateSession(tab: tab.focusing(sessionId))
+  }
 
   private func terminateSession(tab: Tab) {
     var logicalSessionId = sessionInfo(for: tab)?.logicalSessionId
@@ -604,7 +613,10 @@ final class AppSessionCoordinator {
           cwd: cwd,
           launchCommand: shellLaunchProvider().argv?.joined(separator: " ") ?? "",
           isActive: false)
-        _ = try ensureSession(for: tab, session: model.session(forSessionID: tab.focusedSessionId), size: size)
+        _ = try ensureSession(
+          for: tab, session: model.session(forSessionID: tab.focusedSessionId),
+          size: usesRemoteSnapshots
+            ? model.terminalAreaSize : model.terminalSize(for: tab.focusedSessionId))
         adopted.append(tab)
       } catch {
         AppLog.app.error(
@@ -648,7 +660,8 @@ final class AppSessionCoordinator {
       guard let info = infoById[tab.focusedSessionId] else { continue }
       store(info, for: tab)
       let signals = surfaceSignals(from: info)
-      _ = model.applySurfaceSignals(signals, forTab: tab.id, sessionId: tab.focusedSessionId, now: now)
+      _ = model.applySurfaceSignals(
+        signals, forTab: tab.id, sessionId: tab.focusedSessionId, now: now)
     }
   }
 
@@ -665,6 +678,7 @@ final class AppSessionCoordinator {
     optionalSnapshotTransport?.close()
     labandClient?.close()
     infoBySessionId.removeAll()
+    lastSentSizeBySession.removeAll()
     labptyDescriptorBySessionId.removeAll()
     ownedProcess = nil
   }
@@ -770,6 +784,8 @@ final class AppSessionCoordinator {
       return
     }
     stopLabptyFeed(for: tab)
+    // Replacing the reader must preserve the descriptor used for resize and input.
+    storeLabpty(descriptor, for: tab)
     let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
     let outputWakeAvailable = ensureLabptyOutputWake()
     let tabId = tab.focusedSessionId
@@ -1036,7 +1052,8 @@ final class AppSessionCoordinator {
       let signals = surfaceSignals(
         from: labptyInfo(from: descriptor),
         labptyOutputDegraded: degraded)
-      _ = model.applySurfaceSignals(signals, forTab: tab.id, sessionId: tab.focusedSessionId, now: now)
+      _ = model.applySurfaceSignals(
+        signals, forTab: tab.id, sessionId: tab.focusedSessionId, now: now)
       if !degraded {
         // surfaceSignals sends a nil agentStatus when not degraded, and the
         // synchronizer deliberately leaves a nil alone so a metadata poll can
@@ -1056,12 +1073,12 @@ final class AppSessionCoordinator {
     liveLogicalIds: Set<String>,
     notedTabIds: inout Set<Tab.ID>
   ) -> [Tab.ID] {
-    let liveTabIds = Set(tabs.map(\.id))
+    let liveTabIds = Set(tabs.flatMap(\.allSessionIds))
     notedTabIds.formIntersection(liveTabIds)
     notedTabIds.subtract(liveLogicalIds)
-    let affected = tabs.filter {
-      attachedTabIds.contains($0.id) && !liveLogicalIds.contains($0.id)
-        && !notedTabIds.contains($0.id)
+    let affected = tabs.flatMap { tab in tab.allSessionIds.map { tab.focusing($0) } }.filter {
+      attachedTabIds.contains($0.focusedSessionId) && !liveLogicalIds.contains($0.focusedSessionId)
+        && !notedTabIds.contains($0.focusedSessionId)
     }
     guard !affected.isEmpty else { return [] }
     let labels = affected.map(\.title).joined(separator: ", ")
@@ -1074,7 +1091,7 @@ final class AppSessionCoordinator {
         note: TabStateJournal.daemonRecoveryNote,
         text: text,
         urgent: true)
-      notedTabIds.insert(tab.id)
+      notedTabIds.insert(tab.focusedSessionId)
     }
     return affected.map(\.id)
   }
@@ -1224,6 +1241,7 @@ final class AppSessionCoordinator {
 
   private func removeCachedInfo(for tab: Tab) {
     infoBySessionId.removeValue(forKey: tab.focusedSessionId)
+    lastSentSizeBySession.removeValue(forKey: tab.focusedSessionId)
     clearLabptyOutputDegraded(for: tab.focusedSessionId)
   }
 

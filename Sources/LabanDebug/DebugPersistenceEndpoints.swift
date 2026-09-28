@@ -109,7 +109,7 @@ extension HeadlessDebugRuntime {
     withRuntimeLock {
       jsonEncode(
         AgentRestorePickerState(
-          candidates: pendingAgentRestoreCandidatesByTab.values.sorted {
+          candidates: pendingAgentRestoreCandidatesBySession.values.sorted {
             $0.lastActiveAt > $1.lastActiveAt
           }))
     }
@@ -129,20 +129,20 @@ extension HeadlessDebugRuntime {
       var skipped: [AgentRestoreSelectionResult] = []
 
       for tabId in requested {
-        guard let candidate = pendingAgentRestoreCandidatesByTab[tabId] else {
+        guard let candidate = pendingAgentRestoreCandidatesBySession[tabId] else {
           skipped.append(
             AgentRestoreSelectionResult(tabId: tabId, ok: false, message: "no pending restore"))
           continue
         }
-        guard let tab = model.tabs.first(where: { $0.id == tabId }) else {
-          pendingAgentRestoreCandidatesByTab.removeValue(forKey: tabId)
+        guard let tab = model.tabProjection(forSession: tabId) else {
+          pendingAgentRestoreCandidatesBySession.removeValue(forKey: tabId)
           skipped.append(
             AgentRestoreSelectionResult(tabId: tabId, ok: false, message: "tab is not restored"))
           continue
         }
 
         let injection = RestoreShellInjection(command: candidate.command)
-        let size = model.terminalSize
+        let size = model.terminalAreaSize
         do {
           let info = try client.createSession(
             TerminalSessionLaunchRequest(
@@ -157,7 +157,7 @@ extension HeadlessDebugRuntime {
               logicalSessionId: tabId))
           terminalClientSessionInfoById[tab.focusedSessionId] = info
           attachSnapshotRingIfAvailable(client: client, localSessionId: tab.focusedSessionId)
-          pendingAgentRestoreCandidatesByTab.removeValue(forKey: tabId)
+          pendingAgentRestoreCandidatesBySession.removeValue(forKey: tabId)
           appendEvent(EventEntry(kind: "agent.restore.selected", tabId: tabId))
           restored.append(
             AgentRestoreSelectionResult(
@@ -183,7 +183,7 @@ extension HeadlessDebugRuntime {
           restored: restored,
           skipped: skipped,
           picker: AgentRestorePickerState(
-            candidates: pendingAgentRestoreCandidatesByTab.values.sorted {
+            candidates: pendingAgentRestoreCandidatesBySession.values.sorted {
               $0.lastActiveAt > $1.lastActiveAt
             })))
     }
@@ -200,12 +200,12 @@ extension HeadlessDebugRuntime {
     // too would run the resume command a second time.
     guard let window = state.windows.first else { return }
     let activityChecker = ProcessTreeRestoreSessionActivityChecker()
-    for tabState in window.tabs {
+    for tabState in window.tabs.flatMap(\.sessionRestoreStates) {
       let instruction = RestoreLaunchPlanner.instruction(
         for: tabState,
         activityChecker: activityChecker)
       guard case .prefillPrompt(let command) = instruction else { continue }
-      guard let session = model.session(forTab: tabState.id) else { continue }
+      guard let session = model.session(forSessionID: tabState.id) else { continue }
       _ = session.write(Array(command.utf8))
     }
   }

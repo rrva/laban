@@ -89,7 +89,7 @@ public final class HeadlessDebugRuntime {
   var fixtureStepIndex: Int = 0
   var terminalSessionClient: TerminalSessionClient?
   var terminalClientSessionInfoById: [Session.ID: LabandSessionInfo] = [:]
-  var pendingAgentRestoreCandidatesByTab: [String: AgentRestoreCandidate] = [:]
+  var pendingAgentRestoreCandidatesBySession: [String: AgentRestoreCandidate] = [:]
   var labandProcess: Process?
   var ownsLabandProcess: Bool = false
   var labandSocketPath: String?
@@ -315,7 +315,8 @@ public final class HeadlessDebugRuntime {
       initialSize: initSize,
       sessionFactory: { size, context in
         let session = try Self.makeSession(
-          size: size, mode: initialSessionMode, shellIntegration: shellIntegration, sessionID: context.sessionID)
+          size: size, mode: initialSessionMode, shellIntegration: shellIntegration,
+          sessionID: context.sessionID)
         session.captureSink = initialRecorder
         return session
       })
@@ -351,7 +352,9 @@ public final class HeadlessDebugRuntime {
 
       self.model.transcriptDelegate = transcripts
       self.model.restoredSessionFactory = { sz, _, context in
-        try Self.makeSession(size: sz, mode: initialSessionMode, shellIntegration: shellIntegration, sessionID: context.sessionID)
+        try Self.makeSession(
+          size: sz, mode: initialSessionMode, shellIntegration: shellIntegration,
+          sessionID: context.sessionID)
       }
       let restoreViaLabandPicker = terminalBackend == .laband
       self.model.restoredDeferredSessionFactory = { spec in
@@ -364,7 +367,8 @@ public final class HeadlessDebugRuntime {
         case .fixture:
           session = try Session.fixture(size: spec.size, sessionID: spec.sessionId)
         case .realShell:
-          session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd, sessionID: spec.sessionId)
+          session = try Session.makeDeferred(
+            size: spec.size, cwd: spec.cwd, sessionID: spec.sessionId)
         }
         if case .realShell = initialSessionMode {
           // In laband mode, a lost daemon means the live PTY is gone.
@@ -404,12 +408,12 @@ public final class HeadlessDebugRuntime {
       // failures, missing transcripts) reproduce here.
       if restorePersistedState, let restored = coordinator.load() {
         if terminalBackend == .laband {
-          pendingAgentRestoreCandidatesByTab = Dictionary(
+          pendingAgentRestoreCandidatesBySession = Dictionary(
             uniqueKeysWithValues: AgentRestorePicker.candidates(from: restored).map {
               ($0.tabId, $0)
             })
         } else {
-          pendingAgentRestoreCandidatesByTab = [:]
+          pendingAgentRestoreCandidatesBySession = [:]
         }
         model.replaceTabs(from: restored)
         if terminalBackend != .laband {
@@ -591,17 +595,17 @@ public final class HeadlessDebugRuntime {
     labandProcess = setup.process
     ownsLabandProcess = setup.ownsProcess
     labandSocketPath = setup.socketPath
-    for tab in model.tabs {
+    for tab in model.tabs.flatMap({ tab in tab.allSessionIds.map { tab.focusing($0) } }) {
       try ensureTerminalClientSessionUnlocked(for: tab)
     }
   }
 
   func prepareAgentRestorePickerUnlocked(for state: WorkspaceState?) {
     guard terminalBackend == .laband, let state else {
-      pendingAgentRestoreCandidatesByTab = [:]
+      pendingAgentRestoreCandidatesBySession = [:]
       return
     }
-    pendingAgentRestoreCandidatesByTab = Dictionary(
+    pendingAgentRestoreCandidatesBySession = Dictionary(
       uniqueKeysWithValues: AgentRestorePicker.candidates(from: state).map { ($0.tabId, $0) })
   }
 
@@ -679,15 +683,15 @@ public final class HeadlessDebugRuntime {
       existing.lifecycleState == .running
     {
       terminalClientSessionInfoById[tab.focusedSessionId] = existing
-      pendingAgentRestoreCandidatesByTab.removeValue(forKey: tab.id)
+      pendingAgentRestoreCandidatesBySession.removeValue(forKey: tab.focusedSessionId)
       attachSnapshotRingIfAvailable(client: client, localSessionId: tab.focusedSessionId)
       return
     }
-    if pendingAgentRestoreCandidatesByTab[tab.id] != nil {
+    if pendingAgentRestoreCandidatesBySession[tab.focusedSessionId] != nil {
       appendEvent(EventEntry(kind: "agent.restore.picker.presented", tabId: tab.id))
       return
     }
-    let size = model.terminalSize
+    let size = model.terminalAreaSize
     let launch = Self.labandLaunchRequest(
       size: size,
       logicalSessionId: remoteSessionId
@@ -842,7 +846,35 @@ public final class HeadlessDebugRuntime {
 
   // MARK: - Render (always call under lock or from init)
 
+  private var lastFocusedPane: Session.ID?
+
   func renderFrameUnlocked() {
+    let focused = model.activeTab?.focusedSessionId
+    if lastFocusedPane != focused {
+      for (id, focus) in [(lastFocusedPane, false), (focused, true)] {
+        if let id, let session = model.session(forSessionID: id), session.focusReportingEnabled {
+          if let bytes = session.encodeFocus(focused: focus) {
+            if let client = terminalSessionClient {
+              try? client.writeInput(
+                sessionId: terminalClientRemoteSessionId(for: id), bytes: bytes)
+            } else {
+              _ = session.sendFocus(focused: focus)
+            }
+            appendTerminalLog(sessionId: id, direction: "input", bytes: bytes)
+          }
+        }
+      }
+      lastFocusedPane = focused
+    }
+
+    if terminalBackend != .laband {
+      model.resizePanes(
+        in: CGRect(
+          x: CGFloat(sidebarWidth), y: 0, width: CGFloat(max(0, windowWidth - sidebarWidth)),
+          height: CGFloat(windowHeight)),
+        cellWidth: cellWidth, cellHeight: cellHeight)
+    }
+
     let frameStart = monotonicNow()
     var terminalPollMs = 0.0
     var snapshotMs = 0.0
@@ -862,41 +894,58 @@ public final class HeadlessDebugRuntime {
     timer = monotonicNow()
     let activeSelection = model.activeTab.flatMap { selectionBySession[$0.focusedSessionId] }
     let activePreedit = model.activeTab.flatMap { preeditBySession[$0.focusedSessionId] }
-    let surfaceFrame = surfaceController.makeFrame(
-      TerminalSurfaceFrameRequest(
-        frame: frame,
-        viewportWidth: CGFloat(windowWidth),
-        viewportHeight: CGFloat(windowHeight),
-        cursorBlinkVisible: true,
-        reduceMotion: accessibilityDisplayFlags.reduceMotion,
-        accessibilityVisualOptions: TerminalAccessibilityVisualOptions(
-          increaseContrast: accessibilityDisplayFlags.increaseContrast,
-          differentiateWithoutColor: accessibilityDisplayFlags.differentiateWithoutColor,
-          reduceTransparency: accessibilityDisplayFlags.reduceTransparency),
-        backgroundCompositingOptions: TerminalBackgroundCompositingOptions(
-          opacity: UInt8((effectiveTransparency.backgroundOpacity * 255).rounded()),
-          applyToExplicitCellBackgrounds:
-            effectiveTransparency.applyToExplicitCellBackgrounds),
-        snapshotBackgroundCapability: .inProcess,
-        selection: activeSelection,
-        // Headless PNGs are part of the transparency contract. Emit the same
-        // resolved-alpha terminal canvas as the visible app so screenshots do
-        // not leave the terminal region at transparent black.
-        includeTerminalAreaBackground: true,
-        requireActiveSnapshot: false,
-        forceFullDamage: true,
-        surfaceWidth: surface.width,
-        surfaceHeight: surface.height,
-        surfaceScale: Double(surface.scale),
-        preedit: activePreedit?.text,
-        preeditCaretCells: activePreedit?.caretCells ?? 0,
-        userCursorStyle: CursorSettings.style,
-        userCursorBlinkEnabled: CursorSettings.blinkEnabled,
-        spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
-        glyphEffectsEnabled: GlyphEffectSettings.enabled,
-        effectiveRendererIsSlug: rendererBackend is SlugGlyphRenderer,
-        hoverPreviewEnabled: HoverPreviewSettings.enabled)
-    )
+    let request = TerminalSurfaceFrameRequest(
+      frame: frame,
+      viewportWidth: CGFloat(windowWidth),
+      viewportHeight: CGFloat(windowHeight),
+      cursorBlinkVisible: true,
+      reduceMotion: accessibilityDisplayFlags.reduceMotion,
+      accessibilityVisualOptions: TerminalAccessibilityVisualOptions(
+        increaseContrast: accessibilityDisplayFlags.increaseContrast,
+        differentiateWithoutColor: accessibilityDisplayFlags.differentiateWithoutColor,
+        reduceTransparency: accessibilityDisplayFlags.reduceTransparency),
+      backgroundCompositingOptions: TerminalBackgroundCompositingOptions(
+        opacity: UInt8((effectiveTransparency.backgroundOpacity * 255).rounded()),
+        applyToExplicitCellBackgrounds:
+          effectiveTransparency.applyToExplicitCellBackgrounds),
+      snapshotBackgroundCapability: .inProcess,
+      selection: activeSelection,
+      // Headless PNGs are part of the transparency contract. Emit the same
+      // resolved-alpha terminal canvas as the visible app so screenshots do
+      // not leave the terminal region at transparent black.
+      includeTerminalAreaBackground: true,
+      requireActiveSnapshot: false,
+      forceFullDamage: true,
+      surfaceWidth: surface.width,
+      surfaceHeight: surface.height,
+      surfaceScale: Double(surface.scale),
+      preedit: activePreedit?.text,
+      preeditCaretCells: activePreedit?.caretCells ?? 0,
+      userCursorStyle: CursorSettings.style,
+      userCursorBlinkEnabled: CursorSettings.blinkEnabled,
+      spinnerMotionSmoothingEnabled: SpinnerMotionSmoothingSettings.enabled,
+      glyphEffectsEnabled: GlyphEffectSettings.enabled,
+      effectiveRendererIsSlug: rendererBackend is SlugGlyphRenderer,
+      hoverPreviewEnabled: HoverPreviewSettings.enabled,
+      panes: model.activeTab.map { tab in
+        tab.panes.layout(
+          in: CGRect(x: sidebarWidth, y: 0, width: windowWidth - sidebarWidth, height: windowHeight)
+        ).map {
+          TerminalSurfacePaneRequest(
+            sessionId: $0.sessionId, rect: $0.rect, isFocused: $0.sessionId == tab.focusedSessionId,
+            selection: selectionBySession[$0.sessionId],
+            preedit: preeditBySession[$0.sessionId]?.text,
+            preeditCaretCells: preeditBySession[$0.sessionId]?.caretCells ?? 0)
+        }
+      } ?? [])
+    let surfaceFrame: TerminalSurfaceFrame?
+    if let id = model.activeTab?.focusedSessionId,
+      let remote = terminalClientSnapshotUnlocked(sessionId: id)
+    {
+      surfaceFrame = surfaceController.makeFrame(request, remoteSnapshot: remote, sessionId: id)
+    } else {
+      surfaceFrame = surfaceController.makeFrame(request)
+    }
     let surfaceBuildMs = elapsedMs(since: timer)
     snapshotMs = surfaceFrame?.snapshotMs ?? 0
     commandExtractionMs += max(0, surfaceBuildMs - snapshotMs)
@@ -911,8 +960,8 @@ public final class HeadlessDebugRuntime {
     // Parity with TerminalBitmapView.advanceFrame: mark the active session
     // rendered so the next frame's dirty rows (and therefore the glyph-effect
     // stamp bands) describe only what changed since this frame.
-    if let activeTab = model.activeTab, let session = model.session(forTab: activeTab.id) {
-      session.markRendered()
+    for id in model.activeTab?.allSessionIds ?? [] {
+      model.session(forSessionID: id)?.markRendered()
     }
   }
 
@@ -1030,13 +1079,22 @@ public final class HeadlessDebugRuntime {
     }
   }
 
-  func terminalMousePosition(x: Int, y: Int) -> (x: Float, y: Float) {
-    DebugMouseInput.terminalSurfacePosition(
-      windowX: x,
-      windowY: y,
-      windowHeight: windowHeight,
-      sidebarWidth: sidebarWidth
-    )
+  func paneHit(x: Int, y: Int, sessionId: Session.ID? = nil) -> PaneRect? {
+    guard let tab = model.activeTab else { return nil }
+    let area = CGRect(
+      x: sidebarWidth, y: 0, width: max(0, windowWidth - sidebarWidth), height: windowHeight)
+    if terminalBackend == .laband { return PaneRect(sessionId: tab.focusedSessionId, rect: area) }
+    return tab.panes.layout(in: area).first { pane in
+      if let sessionId { return pane.sessionId == sessionId }
+      return pane.rect.contains(CGPoint(x: x, y: y))
+    }
+  }
+
+  func terminalMousePosition(x: Int, y: Int, sessionId: Session.ID? = nil) -> (x: Float, y: Float) {
+    let rect =
+      paneHit(x: x, y: y, sessionId: sessionId)?.rect
+      ?? CGRect(x: sidebarWidth, y: 0, width: windowWidth - sidebarWidth, height: windowHeight)
+    return (Float(CGFloat(x) - rect.minX), Float(CGFloat(windowHeight - y) - rect.minY))
   }
 
   var terminalSurfaceWidth: Int {

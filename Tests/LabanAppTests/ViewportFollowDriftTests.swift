@@ -69,7 +69,11 @@ final class ViewportFollowDriftTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = Int32(rows)
     size.cols = Int32(cols)
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let fontAtlas = FontAtlas(pointSize: 14)
     let sidebarFontAtlas = FontAtlas(pointSize: 11)
     let cellSize = fontAtlas.cellSize

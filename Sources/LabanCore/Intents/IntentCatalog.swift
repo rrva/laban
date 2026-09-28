@@ -297,16 +297,19 @@ public struct TabSelectInput: Codable, Sendable, Equatable, JSONSchemaProviding 
 }
 
 public struct TypeTextInput: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var sessionId: String?
   public var text: String
 
-  public init(text: String) {
+  public init(text: String, sessionId: String? = nil) {
     self.text = text
+    self.sessionId = sessionId
   }
 
   public static var jsonSchema: SchemaNode {
     .object(
       properties: [
-        "text": .string(enumValues: nil, const: nil, format: nil, pattern: nil)
+        "text": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
+        "sessionId": .string(enumValues: nil, const: nil, format: nil, pattern: nil),
       ],
       required: ["text"],
       additionalProperties: false)
@@ -864,7 +867,8 @@ public struct IntentCatalog: Sendable {
       availability: guiObserve,
       inputSchema: RemoveBackgroundImageActionRequest.jsonSchema),
     descriptor(
-      id: "pane.split", category: "pane", summary: "Split a single terminal into left and right panes.",
+      id: "pane.split", category: "pane",
+      summary: "Split a single terminal into left and right panes.",
       requiredCapability: .input, dataSensitivity: .nonSensitiveState,
       availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
     descriptor(

@@ -1831,8 +1831,10 @@ public struct PaneActionRequest: Codable, Sendable, Equatable, JSONSchemaProvidi
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object([
       "tabId": DebugPayloadSchema.string, "sessionId": DebugPayloadSchema.string,
-      "axis": .string(enumValues: ["vertical", "horizontal"], const: nil, format: nil, pattern: nil),
-      "direction": .string(enumValues: ["next", "previous"], const: nil, format: nil, pattern: nil),
+      "axis": .string(
+        enumValues: ["vertical", "horizontal"], const: nil, format: nil, pattern: nil),
+      "direction": .string(
+        enumValues: ["next", "previous"], const: nil, format: nil, pattern: nil),
     ])
   }
 }

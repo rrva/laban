@@ -4,7 +4,7 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
-if swift test --filter LabanAppTests.testLabanAppRestartPreservesChildViaLabpty; then
+if swift test --filter "LabanAppTests.testLabanAppRestartPreservesChildViaLabpty|LabanAppTests.testSplitTabSurvivesLabanAppRestartViaLabpty"; then
   printf 'child survived\n'
 else
   printf 'child died\n' >&2

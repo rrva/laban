@@ -23,6 +23,10 @@ enum TerminalInputCaptureMetadata {
 
   static func captureName(for command: AppCommand) -> String {
     switch command {
+    case .splitPaneRight: return "splitPaneRight"
+    case .closePane: return "closePane"
+    case .focusNextPane: return "focusNextPane"
+    case .focusPreviousPane: return "focusPreviousPane"
     case .newTab: return "newTab"
     case .closeTab: return "closeTab"
     case .selectTab: return "selectTab"

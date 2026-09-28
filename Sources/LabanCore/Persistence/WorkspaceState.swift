@@ -180,16 +180,49 @@ public struct TabState: Codable, Equatable {
   public var resolvedPanes: PaneTree { panes ?? .leaf(sessionId: id) }
   public var resolvedFocusedSessionId: String { focusedSessionId ?? id }
   public var resolvedPaneStates: [PaneState] { paneStates ?? [flatPaneState] }
+  /// Flat per-session views for the pre-existing agent restore planner.
+  public var sessionRestoreStates: [TabState] {
+    resolvedPaneStates.map { pane in
+      TabState(
+        id: pane.sessionId, cwd: pane.cwd, launchCommand: pane.launchCommand,
+        lastActiveAt: lastActiveAt, transcriptPath: pane.transcriptPath,
+        altBufferAtQuit: pane.altBufferAtQuit, cwdFallbackApplied: pane.cwdFallbackApplied,
+        repoFingerprint: pane.repoFingerprint, processStatus: pane.processStatus,
+        exitCode: pane.exitCode, shellPid: pane.shellPid, agent: pane.agent)
+    }
+  }
+
   private var flatPaneState: PaneState {
-    PaneState(sessionId: id, cwd: cwd, launchCommand: launchCommand,
+    PaneState(
+      sessionId: id, cwd: cwd, launchCommand: launchCommand,
       transcriptPath: transcriptPath, altBufferAtQuit: altBufferAtQuit,
       cwdFallbackApplied: cwdFallbackApplied, repoFingerprint: repoFingerprint,
       processStatus: processStatus, exitCode: exitCode, shellPid: shellPid, agent: agent)
   }
 
+  // Version-one values and their decoded single-pane representation are equivalent.
+  public static func == (lhs: TabState, rhs: TabState) -> Bool {
+    lhs.id == rhs.id
+      && lhs.cwd == rhs.cwd
+      && lhs.launchCommand == rhs.launchCommand
+      && lhs.lastActiveAt == rhs.lastActiveAt
+      && lhs.transcriptPath == rhs.transcriptPath
+      && lhs.altBufferAtQuit == rhs.altBufferAtQuit
+      && lhs.cwdFallbackApplied == rhs.cwdFallbackApplied
+      && lhs.repoFingerprint == rhs.repoFingerprint
+      && lhs.processStatus == rhs.processStatus
+      && lhs.exitCode == rhs.exitCode
+      && lhs.shellPid == rhs.shellPid
+      && lhs.agent == rhs.agent
+      && lhs.resolvedPanes == rhs.resolvedPanes
+      && lhs.resolvedFocusedSessionId == rhs.resolvedFocusedSessionId
+      && lhs.resolvedPaneStates == rhs.resolvedPaneStates
+  }
+
   private enum CodingKeys: String, CodingKey {
     case panes, focusedSessionId, paneStates
-    case id, cwd, launchCommand, lastActiveAt, transcriptPath, altBufferAtQuit, cwdFallbackApplied, repoFingerprint, processStatus, exitCode, shellPid, agent
+    case id, cwd, launchCommand, lastActiveAt, transcriptPath, altBufferAtQuit, cwdFallbackApplied,
+      repoFingerprint, processStatus, exitCode, shellPid, agent
   }
 
   public init(from decoder: Decoder) throws {
@@ -216,13 +249,18 @@ public struct TabState: Codable, Equatable {
         let ids = tree.leafSessionIds()
         guard !ids.isEmpty, Set(ids).count == ids.count, !ids.contains(""),
           Set(states.map(\.sessionId)) == Set(ids), states.count == ids.count, tree.contains(focus)
-        else { throw DecodingError.dataCorruptedError(forKey: .panes, in: c, debugDescription: "invalid pane identities") }
+        else {
+          throw DecodingError.dataCorruptedError(
+            forKey: .panes, in: c, debugDescription: "invalid pane identities")
+        }
         panes = tree
         focusedSessionId = focus
         paneStates = states
       }
     } catch {
-      NSLog("Invalid pane layout for tab \(id); restoring its first session: \(String(describing: error))")
+      NSLog(
+        "Invalid pane layout for tab \(id); restoring its first session: \(String(describing: error))"
+      )
     }
     if panes == nil {
       panes = .leaf(sessionId: id)

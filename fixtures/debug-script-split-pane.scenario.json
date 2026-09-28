@@ -1,0 +1,99 @@
+{
+  "name": "debug-script-split-pane",
+  "description": "Two real shells render independently; closing a pane keeps the survivor alive.",
+  "deterministic": false,
+  "steps": [
+    {
+      "op": "action",
+      "body": {
+        "action": "newTab"
+      }
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "pane.split"
+      }
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "pane.focus",
+        "direction": "previous"
+      }
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "typeText",
+        "text": "printf 'LEFT\\n'\n"
+      }
+    },
+    {
+      "op": "wait",
+      "timeoutMs": 5000,
+      "condition": {
+        "kind": "textVisible",
+        "text": "LEFT"
+      }
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "pane.focus",
+        "direction": "next"
+      }
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "typeText",
+        "text": "printf 'RIGHT\\n'\n"
+      }
+    },
+    {
+      "op": "wait",
+      "timeoutMs": 5000,
+      "condition": {
+        "kind": "textVisible",
+        "text": "RIGHT"
+      }
+    },
+    {
+      "op": "screenshot",
+      "label": "two-live-panes"
+    },
+    {
+      "op": "get",
+      "path": "/debug/state",
+      "saveAs": "split-state.json",
+      "expectJson": [
+        {
+          "path": "tabs[1].panes.split.axis",
+          "equals": "vertical"
+        }
+      ]
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "pane.close"
+      }
+    },
+    {
+      "op": "get",
+      "path": "/debug/state",
+      "saveAs": "survivor-state.json",
+      "expectJson": [
+        {
+          "path": "tabs[1].status",
+          "equals": "running"
+        },
+        {
+          "path": "tabs[1].panes.leaf.sessionId",
+          "equalsPath": "tabs[1].focusedSessionId"
+        }
+      ]
+    }
+  ]
+}

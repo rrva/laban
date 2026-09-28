@@ -547,7 +547,9 @@ final class LiveIntentRouter: IntentRouter {
     guard let scopedSessionID = query.scopedSessionID else {
       return .error(403, "session scope required")
     }
-    guard model.activeTab?.focusedSessionId == scopedSessionID else {
+    guard model.activeTab?.focusedSessionId == scopedSessionID,
+      model.activeTab?.allSessionIds.count == 1
+    else {
       return .error(409, "sessionNotVisible")
     }
     guard let provider = windowScreenshotProvider else {
@@ -605,8 +607,8 @@ final class LiveIntentRouter: IntentRouter {
       return .error(403, "forbidden")
     }
     guard let sessionID = targetSessionID,
-      let tab = model.tabs.first(where: { $0.allSessionIds.contains(sessionID) }),
-      let session = model.session(forTab: tab.id)
+      model.tabs.contains(where: { $0.allSessionIds.contains(sessionID) }),
+      let session = model.session(forSessionID: sessionID)
     else {
       return .error(400, "no session for scrollViewport")
     }
@@ -678,11 +680,9 @@ final class LiveIntentRouter: IntentRouter {
     readRedaction: ControlReadRedaction
   ) -> ControlProjectionContext {
     var selectionBySession: [Session.ID: TerminalSelection] = [:]
-    for tab in model.tabs {
-      if let session = model.session(forTab: tab.id),
-        let selection = environment.selectionProvider(session.id)
-      {
-        selectionBySession[session.id] = selection
+    for id in model.tabs.flatMap(\.allSessionIds) {
+      if let selection = environment.selectionProvider(id) {
+        selectionBySession[id] = selection
       }
     }
     return ControlProjectionContext(

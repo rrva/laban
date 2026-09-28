@@ -94,7 +94,7 @@ final class FixtureRunnerTests: XCTestCase {
     let model = try AppModel(initialSize: size)
 
     let tabId = model.tabs[0].id
-    let sessionId = model.tabs[0].sessionId
+    let sessionId = model.tabs[0].focusedSessionId
 
     try runner.apply(to: model)
 

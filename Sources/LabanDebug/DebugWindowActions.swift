@@ -26,7 +26,7 @@ struct DebugWindowActions {
       cellHeight: runtime.cellHeight
     )
     if let client = runtime.terminalSessionClient {
-      let size = runtime.model.terminalSize
+      let size = runtime.model.terminalAreaSize
       for tab in runtime.model.tabs {
         do {
           try runtime.ensureTerminalClientSessionUnlocked(for: tab)
@@ -84,7 +84,7 @@ struct DebugWindowActions {
         cellHeight: runtime.cellHeight
       )
       if let client = runtime.terminalSessionClient {
-        let size = runtime.model.terminalSize
+        let size = runtime.model.terminalAreaSize
         for tab in runtime.model.tabs {
           do {
             try runtime.ensureTerminalClientSessionUnlocked(for: tab)

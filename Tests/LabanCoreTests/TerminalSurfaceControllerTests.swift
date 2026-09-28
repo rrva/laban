@@ -1570,7 +1570,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertEqual(sink.events.count, 1)
     XCTAssertEqual(sink.events.first?.kind, CaptureEventKind.appState.rawValue)
     XCTAssertEqual(sink.events.first?.tabId, tab.id)
-    XCTAssertEqual(sink.events.first?.focusedSessionId, session.id)
+    XCTAssertEqual(sink.events.first?.sessionId, session.id)
     XCTAssertEqual(sink.events.first?.title, "vim")
   }
 

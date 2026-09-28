@@ -30,14 +30,15 @@ extension HeadlessDebugRuntime {
         return .failure(status: 404, message: "no active tab")
       }
       guard let paneId = model.tabs.first(where: { $0.id == resolvedTabId })?.focusedSessionId,
-        let ring = host.recentByteRing(forSessionId: paneId) else {
+        let ring = host.recentByteRing(forSessionId: paneId)
+      else {
         return .failure(
           status: 404,
           message: "no recent-byte ring for tab \(resolvedTabId)")
       }
       let castSnapshot = ring.castWindowSnapshot(window: seconds)
       let entries = castSnapshot.entries
-      let size = model.terminalSize
+      let size = model.terminalAreaSize
       let cols = max(Int(size.cols), 1)
       let rows = max(Int(size.rows), 1)
       let initialFrameBytes = AsciinemaCast.fullFrameSnapshotBytes(

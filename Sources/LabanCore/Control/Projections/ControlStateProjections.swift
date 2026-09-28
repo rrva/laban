@@ -31,8 +31,7 @@ public enum ControlStateProjections {
     let activeTab = ctx.model.activeTab
     let scopedActiveTab: Tab? = {
       guard let scoped = ctx.scopedSessionID else { return activeTab }
-      return tabs.first.flatMap { tab in ctx.model.tabs.first { $0.id == tab.id } }
-        ?? ctx.model.tabProjection(forSession: scoped)
+      return ctx.model.tabProjection(forSession: scoped)
     }()
     let findStates = findStateResponses(ctx)
     return StateResponse(
@@ -41,7 +40,7 @@ public enum ControlStateProjections {
       window: WindowResponse(width: ctx.windowWidth, height: ctx.windowHeight, focused: true),
       tabs: tabs,
       activeTabId: scopedActiveTab?.id ?? (ctx.scopedSessionID == nil ? activeTab?.id : nil),
-      activeSessionId: ctx.scopedSessionID ?? scopedActiveTab?.focusedSessionId
+      activeSessionId: scopedActiveTab?.focusedSessionId
         ?? (ctx.scopedSessionID == nil ? activeTab?.focusedSessionId : nil),
       findStateBySession: findStates,
       cursorSettings: cursorSettingsResponse(
@@ -64,7 +63,8 @@ public enum ControlStateProjections {
       guard let tab = ctx.model.tabs.first(where: { $0.id == decision.event.tabId }) else {
         return false
       }
-      return tab.allSessionIds.count == 1 && tab.focusedSessionId == scoped
+      return decision.event.sessionId.map { $0 == scoped }
+        ?? (tab.allSessionIds.count == 1 && tab.focusedSessionId == scoped)
     }
   }
 
@@ -105,7 +105,9 @@ public enum ControlStateProjections {
   public static func sessionsResponse(_ ctx: ControlProjectionContext) -> SessionsResponse {
     let list = filteredTabs(ctx).enumerated().flatMap { index, tab in
       (ctx.scopedSessionID.map { [$0] } ?? tab.allSessionIds).compactMap { id in
-        ctx.model.tabProjection(forSession: id).map { sessionResponse(for: $0, index: index, includeGrid: false, ctx: ctx) }
+        ctx.model.tabProjection(forSession: id).map {
+          sessionResponse(for: $0, index: index, includeGrid: false, ctx: ctx)
+        }
       }
     }
     return SessionsResponse(sessions: list)
@@ -117,13 +119,16 @@ public enum ControlStateProjections {
     ctx: ControlProjectionContext
   ) -> ControlJSONResponse {
     guard
-      let match = ctx.model.tabs.enumerated().first(where: { $0.element.allSessionIds.contains(id) })
+      let match = ctx.model.tabs.enumerated().first(where: { $0.element.allSessionIds.contains(id) }
+      )
     else {
       return controlJSONError("session not found: \(id)", status: 404)
     }
     let includeGrid = query["includeGrid"] == "true"
     return controlJSONEncode(
-      sessionResponse(for: ctx.model.tabProjection(forSession: id) ?? match.element, index: match.offset, includeGrid: includeGrid, ctx: ctx))
+      sessionResponse(
+        for: ctx.model.tabProjection(forSession: id) ?? match.element, index: match.offset,
+        includeGrid: includeGrid, ctx: ctx))
   }
 
   /// Bounded plain-text line capture for one session's visible screen or full
@@ -148,7 +153,9 @@ public enum ControlStateProjections {
     }
     guard
       let targetId,
-      let match = ctx.model.tabs.enumerated().first(where: { $0.element.allSessionIds.contains(targetId) })
+      let match = ctx.model.tabs.enumerated().first(where: {
+        $0.element.allSessionIds.contains(targetId)
+      })
     else {
       return controlJSONError("session not found", status: 404)
     }
@@ -222,7 +229,9 @@ public enum ControlStateProjections {
       if let snapshot = ctx.clientSnapshotProvider?(tab.focusedSessionId) {
         return snapshot.visibleText.components(separatedBy: "\n")
       }
-      if let session = ctx.model.session(forSessionID: tab.focusedSessionId), let snapshot = session.snapshot() {
+      if let session = ctx.model.session(forSessionID: tab.focusedSessionId),
+        let snapshot = session.snapshot()
+      {
         defer { laban_snapshot_destroy(snapshot) }
         return TerminalSnapshotText.visibleText(from: snapshot, mode: .fullGrid)
           .components(separatedBy: "\n")
@@ -313,7 +322,7 @@ public enum ControlStateProjections {
     let requested = query["sessionID"] ?? query["sessionId"]
     let targetTab: Tab? = {
       if let requested,
-        let tab = ctx.model.tabs.first(where: { $0.focusedSessionId == requested })
+        let tab = ctx.model.tabProjection(forSession: requested)
       {
         return tab
       }
@@ -323,7 +332,8 @@ public enum ControlStateProjections {
       }
       return ctx.model.activeTab
     }()
-    guard let tab = targetTab, let session = ctx.model.session(forSessionID: tab.focusedSessionId) else {
+    guard let tab = targetTab, let session = ctx.model.session(forSessionID: tab.focusedSessionId)
+    else {
       return controlJSONError("session not found", status: 404)
     }
     guard let vs = session.viewportState() else {
@@ -351,7 +361,8 @@ public enum ControlStateProjections {
       }
       return ctx.model.activeTab
     }()
-    guard let tab = targetTab, let session = ctx.model.session(forSessionID: tab.focusedSessionId) else {
+    guard let tab = targetTab, let session = ctx.model.session(forSessionID: tab.focusedSessionId)
+    else {
       return SelectionResponse(
         active: false, sessionId: nil, anchor: nil, focus: nil, rects: [], text: "")
     }
@@ -368,6 +379,11 @@ public enum ControlStateProjections {
 
     var rects: [RectResponse] = []
     var text = ""
+    let area = CGRect(
+      x: ctx.sidebarWidth, y: 0, width: max(0, ctx.windowWidth - ctx.sidebarWidth),
+      height: ctx.windowHeight)
+    let paneOrigin =
+      tab.panes.layout(in: area).first { $0.sessionId == session.id }?.rect.origin ?? area.origin
 
     if let snapshot = session.snapshot() {
       defer { laban_snapshot_destroy(snapshot) }
@@ -378,8 +394,8 @@ public enum ControlStateProjections {
         cols: cols,
         cellWidth: CGFloat(ctx.cellWidth),
         cellHeight: CGFloat(ctx.cellHeight),
-        originX: CGFloat(ctx.sidebarWidth),
-        originY: 0
+        originX: paneOrigin.x,
+        originY: paneOrigin.y
       ) {
         rects.append(ControlGridProjection.rectResponse(rect))
       }
@@ -411,7 +427,7 @@ public enum ControlStateProjections {
   ) -> ActionResult {
     let active: Tab? = {
       if let targetSessionID {
-        return ctx.model.tabs.first { $0.focusedSessionId == targetSessionID }
+        return ctx.model.tabProjection(forSession: targetSessionID)
       }
       return tabForScopedRead(ctx)
     }()
@@ -486,7 +502,7 @@ public enum ControlStateProjections {
       window: WindowResponse(width: ctx.windowWidth, height: ctx.windowHeight, focused: true),
       tabs: tabs,
       activeTabId: scopedActiveTab?.id ?? (ctx.scopedSessionID == nil ? activeTab?.id : nil),
-      activeSessionId: ctx.scopedSessionID ?? scopedActiveTab?.focusedSessionId
+      activeSessionId: scopedActiveTab?.focusedSessionId
         ?? (ctx.scopedSessionID == nil ? activeTab?.focusedSessionId : nil),
       findStateBySession: [:],
       cursorSettings: cursorSettingsResponse(
@@ -513,7 +529,9 @@ public enum ControlStateProjections {
     redaction: ControlReadRedaction = .none
   ) -> TabResponse {
     let metadata = tab.titleMetadata
-    let status = ctx.model.session(forSessionID: tab.focusedSessionId) != nil ? tab.status.debugString : "failed"
+    let status =
+      ctx.model.session(forSessionID: tab.focusedSessionId) != nil
+      ? tab.status.debugString : "failed"
     let redactSensitiveMetadata = redaction != .none
     let redactTitles = redaction == .sessionObserveSummary
     let agent = redactSensitiveMetadata ? TabAgentMetadata() : metadata.agent

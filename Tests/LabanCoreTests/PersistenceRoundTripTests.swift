@@ -12,7 +12,10 @@ private func makeModel() throws -> AppModel {
   var size = LabanTerminalSize()
   size.rows = 24
   size.cols = 80
-  return try AppModel(initialSize: size, sessionFactory: fixtureFactory)
+  return try AppModel(
+    initialSize: size,
+    sessionFactory: { size, context in try Session.fixture(size: size, sessionID: context.sessionID)
+    })
 }
 
 private func makeTempStore() -> PersistenceStore {
@@ -34,7 +37,7 @@ private final class TranscriptRecorder: TranscriptHostDelegate {
     suppressInitialOutputFor: DispatchTimeInterval
   ) {
     lock.lock()
-    attached.append(tabId)
+    attached.append(sessionId)
     lock.unlock()
   }
 
@@ -92,7 +95,7 @@ final class PersistenceRoundTripTests: XCTestCase {
     let decoded = try decoder.decode(WorkspaceState.self, from: data)
 
     XCTAssertEqual(decoded, state)
-    XCTAssertEqual(decoded.schemaVersion, 1)
+    XCTAssertEqual(decoded.schemaVersion, 2)
     XCTAssertEqual(decoded.windows.first?.tabs.count, 2)
     XCTAssertEqual(decoded.windows.first?.tabs.last?.shellPid, 4321)
   }
@@ -344,7 +347,7 @@ final class PersistenceRoundTripTests: XCTestCase {
     let model = try makeModel()
     let snapshot = model.snapshotForPersistence(windowId: "win-test")
 
-    XCTAssertEqual(snapshot.schemaVersion, 1)
+    XCTAssertEqual(snapshot.schemaVersion, 2)
     XCTAssertEqual(snapshot.windows.count, 1)
     XCTAssertEqual(snapshot.windows[0].id, "win-test")
     XCTAssertEqual(snapshot.windows[0].tabs.count, 1)
@@ -623,7 +626,9 @@ final class PersistenceRoundTripTests: XCTestCase {
 
 extension PersistenceRoundTripTests {
   func testV1WorkspaceMigratesToSingleLeafTree() throws {
-    let data = Data(#"{"schemaVersion":1,"windows":[{"id":"w","tabs":[{"id":"old","cwd":"/tmp","launchCommand":"/bin/sh","lastActiveAt":0}]}]}"#.utf8)
+    let data = Data(
+      #"{"schemaVersion":1,"windows":[{"id":"w","tabs":[{"id":"old","cwd":"/tmp","launchCommand":"/bin/sh","lastActiveAt":0}]}]}"#
+        .utf8)
     let state = try JSONDecoder().decode(WorkspaceState.self, from: data)
     let tab = state.windows[0].tabs[0]
     XCTAssertEqual(tab.panes, .leaf(sessionId: "old"))
@@ -631,17 +636,23 @@ extension PersistenceRoundTripTests {
     XCTAssertEqual(tab.paneStates?.map(\.sessionId), ["old"])
   }
   func testSplitTabRoundTrips() throws {
-    let model = try AppModel(); let tab = try XCTUnwrap(model.activeTab)
-    _ = try model.splitPane(inTab: tab.id) { id, size, _ in try Session.fixture(size: size, sessionID: id) }
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    _ = try model.splitPane(inTab: tab.id) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
     let state = model.snapshotForPersistence(windowId: "w")
     let decoded = try JSONDecoder().decode(WorkspaceState.self, from: JSONEncoder().encode(state))
     XCTAssertEqual(decoded, state)
-    let restored = try AppModel(); restored.replaceTabs(from: decoded)
+    let restored = try AppModel()
+    restored.replaceTabs(from: decoded)
     XCTAssertEqual(restored.activeTab?.panes, model.activeTab?.panes)
     XCTAssertEqual(restored.activeTab?.focusedSessionId, model.activeTab?.focusedSessionId)
   }
   func testCorruptPaneTreeFallsBackPerTab() throws {
-    let data = Data(#"{"schemaVersion":2,"windows":[{"id":"w","tabs":[{"id":"bad","cwd":"/tmp","launchCommand":"sh","lastActiveAt":0,"panes":{"broken":true}},{"id":"good","cwd":"/tmp","launchCommand":"sh","lastActiveAt":0}]}]}"#.utf8)
+    let data = Data(
+      #"{"schemaVersion":2,"windows":[{"id":"w","tabs":[{"id":"bad","cwd":"/tmp","launchCommand":"sh","lastActiveAt":0,"panes":{"broken":true}},{"id":"good","cwd":"/tmp","launchCommand":"sh","lastActiveAt":0}]}]}"#
+        .utf8)
     let state = try JSONDecoder().decode(WorkspaceState.self, from: data)
     XCTAssertEqual(state.windows[0].tabs.count, 2)
     XCTAssertEqual(state.windows[0].tabs[0].panes, .leaf(sessionId: "bad"))

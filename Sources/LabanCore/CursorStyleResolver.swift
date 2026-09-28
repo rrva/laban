@@ -26,8 +26,10 @@ public enum CursorStyleResolver {
     snapshotStyle: Int32,
     snapshotBlinking: Bool,
     styleExplicit: Int32,
-    blinkExplicit: Int32
+    blinkExplicit: Int32,
+    isFocusedPane: Bool = true
   ) -> (style: Int32, blinking: Bool) {
+    if !isFocusedPane { return (Int32(LABAN_CURSOR_STYLE_BLOCK_HOLLOW), false) }
     let resolvedStyle: Int32 =
       styleExplicit != 0 ? snapshotStyle : userStyle.labanStyleValue
     let resolvedBlink: Bool =

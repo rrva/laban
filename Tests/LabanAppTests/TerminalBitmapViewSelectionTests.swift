@@ -569,6 +569,25 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testHoverMotionTargetsUnfocusedPane() throws {
+    let harness = try makeHarness(rows: 6, cols: 80)
+    defer { harness.restoreRenderer() }
+    let left = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    harness.view.splitPaneRight(nil)
+    let right = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    let session = try XCTUnwrap(harness.model.session(forSessionID: left))
+    session.write(Array("\u{1B}[?1003h\u{1B}[?1006h".utf8))
+    harness.view.advanceFrame()
+    harness.view.mouseMoved(
+      with: mouseEvent(
+        type: .mouseMoved,
+        at: point(row: 4, col: 3, in: harness)))
+    XCTAssertEqual(
+      harness.view.lastForwardedHoverReportForTests.flatMap { String(bytes: $0, encoding: .utf8) },
+      "\u{1B}[<35;4;5M")
+    XCTAssertEqual(harness.model.activeTab?.focusedSessionId, right)
+  }
+
   func testHoverMotionUnderAnyMotionTrackingForwardsPerCellReports() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
@@ -819,7 +838,11 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = rows
     size.cols = cols
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
 
     let fontAtlas = FontAtlas(pointSize: 14)
     let sidebarFontAtlas = FontAtlas(pointSize: 11)

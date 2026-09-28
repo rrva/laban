@@ -100,8 +100,8 @@ final class CommandProposalsTests: XCTestCase {
     let model = try AppModel()
     _ = try model.createTab()
     _ = try model.createTab()
-    let ownSessionID = model.tabs[0].sessionId
-    let otherSessionID = model.tabs[1].sessionId
+    let ownSessionID = model.tabs[0].focusedSessionId
+    let otherSessionID = model.tabs[1].focusedSessionId
     let router = LiveIntentRouter(model: model)
 
     let server = LabanControlServer(router: router, surface: .gui, catalog: .shared)

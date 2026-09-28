@@ -198,7 +198,8 @@ extension DebugAction {
     case .setRenderer:
       return legacyIntent(action: "setRenderer")
     case .typeText(let request):
-      return .terminalTypeText(TypeTextInput(text: request.text ?? ""))
+      return .terminalTypeText(
+        TypeTextInput(text: request.text ?? "", sessionId: request.sessionId))
     case .feedOutput:
       return legacyIntent(action: "feedOutput")
     case .advanceFrames:

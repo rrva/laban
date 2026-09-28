@@ -101,11 +101,11 @@ final class AppModelTitleTests: XCTestCase {
   func testUpdateTitlePreservesIdentity() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
-    let sessionId = model.tabs[0].sessionId
+    let sessionId = model.tabs[0].focusedSessionId
     try model.updateTitle("zsh", forTab: tabId)
     XCTAssertEqual(model.tabs[0].title, "zsh")
     XCTAssertEqual(model.tabs[0].id, tabId)
-    XCTAssertEqual(model.tabs[0].sessionId, sessionId)
+    XCTAssertEqual(model.tabs[0].focusedSessionId, sessionId)
   }
 
   func testUpdateTitleSanitizes() throws {

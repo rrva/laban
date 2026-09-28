@@ -390,7 +390,7 @@ The MVP is acceptable when it can:
 
 After the MVP is stable, extend toward `docs/product/spec.md` in this order:
 
-1. split panes backed by stable session IDs
+1. Split panes backed by stable session IDs: delivered as one fixed vertical 50/50 split per tab. Divider dragging, nesting, horizontal splits, spatial navigation, laband split rendering, and the multi-payload GPU path remain for the next plan (`execplans/active/split-panes-2-divider-and-navigation.md`, not yet authored).
 2. multi-window scene identity
 3. window-scoped command publication
 4. persistence and restoration

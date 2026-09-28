@@ -934,6 +934,15 @@ EXIT_WAKE_REPORT="$EXIT_WAKE_ARTIFACTS/debug-script-report.json"
 jq -e '.ok == true and (.steps | length) == 4' "$EXIT_WAKE_REPORT" >/dev/null 2>&1 \
   || fail "exit-wake debug script report invalid: $(cat "$EXIT_WAKE_REPORT")"
 
+# Two panes on real shells, with output and screenshot verification.
+if ! SPLIT_OUTPUT=$(LABAN_AGENT_BIN="$AGENT_BIN" ./scripts/run-debug-script \
+  --no-build --artifacts "$RUN_ARTIFACTS/split-pane" --temp-dir "$RUN_TMP/split-pane" \
+  fixtures/debug-script-split-pane.scenario.json 2>&1); then
+  fail "split-pane scenario failed: $SPLIT_OUTPUT"
+fi
+printf '%s' "$SPLIT_OUTPUT" | grep -q "debug script passed" || fail "split-pane scenario did not pass"
+printf 'split-pane scenario: ok\n'
+
 # 34. Spinner motion smoothing — slugGlyph only.
 SPINNER_ARTIFACTS="$RUN_ARTIFACTS/spinner-motion-smoothing"
 SPINNER_TMP="$RUN_TMP/spinner-motion-smoothing"

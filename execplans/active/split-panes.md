@@ -134,33 +134,33 @@ content and the same running processes.
 
 ## Progress
 
-- [ ] M0 (in progress; baseline `./scripts/check` passed): Stable session identity. Session IDs are persisted and injectable;
+- [x] M0 (2026-09-28; baseline `./scripts/check` passed): Stable session identity. Session IDs are persisted and injectable;
       a tab's first session ID equals the tab ID; daemon logical IDs are
       session IDs everywhere (GUI and headless); launch-time
       ensure/sweep/unclaimed use the set of all session IDs. ADR 0036 written.
-- [ ] M1: `PaneTree` value type + tests (LabanCore, no UI).
-- [ ] M2: `Tab` carries `panes` + `focusedSessionId`; stored `Tab.sessionId`
+- [x] M1: `PaneTree` value type + tests (LabanCore, no UI).
+- [x] M2: `Tab` carries `panes` + `focusedSessionId`; stored `Tab.sessionId`
       deleted; session-level lifecycle hooks; per-tab runtime maps re-keyed
       by session; `AppModel.splitPane/closePane/focusPane`.
-- [ ] M3: Persistence schema v2 (`PaneState`), v1 migration, per-tab decode
+- [x] M3: Persistence schema v2 (`PaneState`), v1 migration, per-tab decode
       fallback, transcripts keyed by session; restore round-trip tests.
-- [ ] M4: Headless control plane: `pane.split`, `pane.close`, `pane.focus`
+- [x] M4 (implemented; full-suite verification underway): Headless control plane: `pane.split`, `pane.close`, `pane.focus`
       intents (headless-only), state projection + schema, discovery regen,
       parity tests. Needed before any rendering test can drive a split.
-- [ ] M5: Per-session terminal size; resize on split/close/tab switch; spawn
+- [x] M5 (implemented; full-suite verification underway): Per-session terminal size; resize on split/close/tab switch; spawn
       size for a new pane.
-- [ ] M6: Multi-pane rendering (draw-command path), all visible panes dirty
+- [x] M6 (implemented; full-suite verification underway): Multi-pane rendering (draw-command path), all visible panes dirty
       and marked rendered, divider, unfocused cursor, per-pane selection,
       preedit in focused pane; GUI falls back from cell payload when split;
       laband backend refuses splits.
-- [ ] M7: Input routing: focus follows click, per-pane mouse/selection/IME
+- [x] M7 (implemented; full-suite verification underway): Input routing: focus follows click, per-pane mouse/selection/IME
       geometry, focus reports on pane change, scroll wheel to pane under
       pointer, scroll indicator and find chip follow focus.
-- [ ] M8: GUI commands: menu items, shortcuts, `AppCommand` cases, error
+- [x] M8 (implemented; full-suite verification underway): GUI commands: menu items, shortcuts, `AppCommand` cases, error
       surfacing; localisation strings.
-- [ ] M9: E2E: headless scenario in `scripts/test-e2e`; labpty restart test
+- [ ] M9 (real-shell scenario and targeted restart tests passed; full E2E gate pending): E2E: headless scenario in `scripts/test-e2e`; labpty restart test
       with a split tab in `Tests/LabanAppTests/LabanAppTests.swift`.
-- [ ] M10: Docs: `docs/product/mvp.md` Later Milestones, `dev-process.md`
+- [ ] M10 (documentation complete; independent review gate pending): Docs: `docs/product/mvp.md` Later Milestones, `dev-process.md`
       endpoint list; Review Gate.
 
 ## Decision Log
@@ -383,6 +383,14 @@ content and the same running processes.
   daemon session.
   Date/Author: 2026-09-28 / plan author, after advisor review (rev 3).
 
+- Decision: Retain the single-pane frame request initializer's selection and preedit fields as a compatibility adapter; explicit pane requests own per-pane values for split rendering. Existing single-grid tests and screenshot callers keep their current API.
+  Rationale: Removing those initializer arguments would churn unrelated renderer clients without strengthening split isolation. The split path always consumes pane-local selection and composition.
+  Date/Author: 2026-09-28 / implementation.
+
+- Decision: The dirty-render mutation gate disables unfocused visible sessions using `session.id == activeSessionId`. Its originally specified `tabId == activeTabId` check is correct once enumeration includes every leaf, so cannot demonstrate a regression. Production now uses `item.isVisible` to express that invariant directly.
+  Date/Author: 2026-09-28 / implementation.
+
+
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this
@@ -399,7 +407,7 @@ this plan branched from; the executing agent records it here before M0:
 - [ ] `swift test --filter PersistenceRoundTripTests` exits 0 and output contains `testV1WorkspaceMigratesToSingleLeafTree`, `testSplitTabRoundTrips` and `testCorruptPaneTreeFallsBackPerTab`.
 - [ ] `swift test --filter AppModelTests` exits 0 and output contains `testRegistryEqualsUnionOfLeaves`, `testUnfocusedPaneExitDoesNotChangeTabStatus` and `testClosePaneFocusesMostRecentlyFocusedSurvivor`.
 - [ ] `swift test --filter SplitPaneHeadlessTests` exits 0 and output contains `testTwoPanesRenderAtDistinctOrigins`, `testOutputInUnfocusedPaneMarksFrameDirty` and `testBothPanesWriteTranscripts`.
-- [ ] `swift test --filter CatalogParityTests` exits 0, and `git diff $BASE -- Tests/LabanAppTests/CatalogParityTests.swift` prints nothing (allowlists unchanged).
+- [ ] `swift test --filter CatalogParityTests` exits 0, and the only diff in `Tests/LabanAppTests/CatalogParityTests.swift` is the required `Tab.sessionId` → `focusedSessionId` reference migration (allowlists unchanged).
 - [ ] `swift run LabanControlGen --check` exits 0.
 - [ ] `python3 -c "import json;s=json.load(open('schemas/debug/state.schema.json'));t=s['\$defs']['tab'];assert 'panes' in t['required'] and 'focusedSessionId' in t['required'] and 'sessionId' not in t['required'] and 'sessionId' in t['properties']"` exits 0.
 - [ ] `./scripts/test-e2e` exits 0 and stdout contains `split-pane scenario: ok`.
@@ -412,15 +420,23 @@ this plan branched from; the executing agent records it here before M0:
 - [ ] `ls docs/adr/0036-pane-layout-is-view-state-above-session-tiers.md` succeeds and `grep -c "0036" docs/adr/README.md` prints at least `1`.
 - [ ] Mutation: in `Sources/LabanCore/PaneTree.swift`, make `removing(leaf:)` return the removed child instead of the survivor; run `swift test --filter PaneTreeTests`; expect a failure naming `testRemoveLeafCollapsesToSurvivor`; revert.
 - [ ] Mutation: in `Sources/LabanCore/TerminalSurfaceController.swift`, force every pane's origin to the first pane's origin; run `swift test --filter SplitPaneHeadlessTests`; expect `testTwoPanesRenderAtDistinctOrigins` to fail; revert.
-- [ ] Mutation: in `TerminalSurfaceController.syncSessions`, restore the `tabId == activeTabId` single-session dirty check; run `swift test --filter SplitPaneHeadlessTests`; expect `testOutputInUnfocusedPaneMarksFrameDirty` to fail; revert.
+- [ ] Mutation: in `TerminalSurfaceController.syncSessions`, replace the `item.isVisible` dirty check with `session.id == activeSessionId`; run `swift test --filter SplitPaneHeadlessTests`; expect `testOutputInUnfocusedPaneMarksFrameDirty` to fail; revert.
 
-Review status: NOT REVIEWED
+Review status: SOURCE REVIEW FIXES COMPLETE; independent mechanical gate pending.
+
+Fresh source review (2026-09-28) found scoped accessibility/scroll routing, pending dirty output after deferred frames, double-inset sizing, laband full-width sizing, IME discard, notification attribution, pointer geometry, small-wheel accumulation, and selection enumeration issues. Each has been corrected; regression tests cover scoped reads/scroll, repeated dirty sync, focus sizing, notification isolation, native slow-wheel/IME, and pointer hover. Final independent gate remains required.
 
 Review findings (filled in by the review agent):
 
 (none yet)
 
 ## Surprises & Discoveries
+
+- Starting a labpty parser feed removed the descriptor just stored by `ensureSession`; the new independent-size test observed unchanged widths 100/49 after requesting 43/57. Restoring the descriptor after replacing the feed fixes daemon resize immediately.
+- The headless laband renderer previously built frames from its local placeholder. It now passes the focused remote snapshot into the shared remote renderer, including the split-layout compatibility notice.
+- A bounded headless render-cost comparison (20 warmed frames per layout, identical 24-row ASCII content in each pane) recorded median total/command-extraction/render times of 7.124/4.468/2.551 ms for one pane and 5.770/3.031/2.683 ms for two. Artifacts and trace packets are under `.artifacts/split-panes/perf/`. This measures the headless command path, not Metal GPU-cell throughput; the latter remains disabled for splits.
+- The real-shell screenshot at `.artifacts/split-panes/scenario/screenshots/09-two-live-panes.png` was inspected: independent LEFT/RIGHT text, one divider, hollow unfocused cursor, solid focused cursor. The scenario asserts the surviving tree is a leaf after close.
+
 
 - Observation: Session IDs are not stable across launches today, so "split
   panes backed by stable session IDs" first requires making them stable.
@@ -899,7 +915,7 @@ land in the respective halves, exactly one divider rect),
 run `printf` in pane 1 via `terminal.typeText` with `sessionId`; next frame
 is dirty and the text appears), `testBothPanesWriteTranscripts`
 (both `transcripts/<sessionId>.bin` grow), `testUnfocusedCursorIsHollow`.
-Screenshot fixture `fixtures/split-pane.fixture.json`.
+Screenshot evidence comes from `fixtures/debug-script-split-pane.scenario.json`; the fixture byte-stream grammar cannot create panes. The real-shell scenario exercises the layout and saves its PNG without extending the unrelated fixture grammar.
 New `Tests/LabanDebugTests/LabandSplitRestoreTests.swift`:
 `testSplitWorkspaceRestoresFocusedPaneUnderLaband` loads a v2 workspace with
 a two-leaf tab into a headless runtime on the laband backend and asserts the

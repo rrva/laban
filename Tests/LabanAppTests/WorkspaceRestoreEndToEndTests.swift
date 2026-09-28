@@ -53,8 +53,8 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     size.cols = 80
     let model = try AppModel(
       initialSize: size,
-      sessionFactory: { size in
-        try Self.makeFreshSession(size: size, mode: sessionMode)
+      sessionFactory: { size, context in
+        try Self.makeFreshSession(size: size, mode: sessionMode, sessionID: context.sessionID)
       })
 
     let transcriptHost = TranscriptHost(
@@ -126,13 +126,14 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
   private static func makeFreshSession(
     size: LabanTerminalSize,
-    mode: HarnessSessionMode
+    mode: HarnessSessionMode, sessionID: Session.ID
   ) throws -> Session {
     switch mode {
     case .fixture:
-      return try Session.fixture(size: size)
+      return try Session.fixture(size: size, sessionID: sessionID)
     case .realShell:
-      let session = try Session.makeDeferred(size: size, cwd: NSHomeDirectory())
+      let session = try Session.makeDeferred(
+        size: size, cwd: NSHomeDirectory(), sessionID: sessionID)
       guard session.startSpawn() == 0 else { throw HarnessError.spawnFailed }
       return session
     }
@@ -144,9 +145,9 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
   ) throws -> Session {
     switch mode {
     case .fixture:
-      return try Session.fixture(size: spec.size)
+      return try Session.fixture(size: spec.size, sessionID: spec.sessionId)
     case .realShell:
-      return try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
+      return try Session.makeDeferred(size: spec.size, cwd: spec.cwd, sessionID: spec.sessionId)
     }
   }
 

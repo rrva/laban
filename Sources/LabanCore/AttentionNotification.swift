@@ -18,6 +18,7 @@ public enum AttentionNotificationSource: String, Codable, Equatable, Sendable {
 public struct AttentionNotificationEvent: Codable, Equatable, Sendable {
   public var id: String
   public var tabId: Tab.ID
+  public var sessionId: Session.ID?
   public var source: AttentionNotificationSource
   public var category: AttentionNotificationCategory
   public var title: String
@@ -37,6 +38,7 @@ public struct AttentionNotificationEvent: Codable, Equatable, Sendable {
   ) {
     self.id = id
     self.tabId = tabId
+    self.sessionId = nil
     self.source = source
     self.category = category
     self.title = title

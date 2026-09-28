@@ -752,12 +752,12 @@ final class AppModelTests: XCTestCase {
   func testHiddenSessionIdentitySurvivesSelection() throws {
     let model = try makeModel()
     let firstTabId = model.tabs[0].id
-    let firstSessionId = model.tabs[0].sessionId
+    let firstSessionId = model.tabs[0].focusedSessionId
     try model.createTab()
     // Switch back to first tab
     model.selectTab(firstTabId)
     XCTAssertEqual(
-      model.tabs[0].sessionId, firstSessionId,
+      model.tabs[0].focusedSessionId, firstSessionId,
       "session id must not change across selection")
     let session = model.session(forTab: firstTabId)
     XCTAssertNotNil(session)
@@ -768,7 +768,7 @@ final class AppModelTests: XCTestCase {
     let model = try makeModel()
     try model.createTab()
     let secondTabId = model.tabs[1].id
-    let secondSessionId = model.tabs[1].sessionId
+    let secondSessionId = model.tabs[1].focusedSessionId
     // Grab session reference before close
     let sessionRef = model.session(forTab: secondTabId)!
     try model.closeTab(secondTabId)
@@ -903,13 +903,14 @@ final class AppModelTests: XCTestCase {
   func testTitleUpdatePreservesIdentity() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
-    let sessionId = model.tabs[0].sessionId
+    let sessionId = model.tabs[0].focusedSessionId
     try model.updateTitle("zsh", forTab: tabId)
     XCTAssertEqual(model.tabs[0].title, "zsh")
     XCTAssertEqual(model.tabs[0].titleMetadata.terminalTitle, "zsh")
     XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .terminal)
     XCTAssertEqual(model.tabs[0].id, tabId, "tab id unchanged after title update")
-    XCTAssertEqual(model.tabs[0].sessionId, sessionId, "session id unchanged after title update")
+    XCTAssertEqual(
+      model.tabs[0].focusedSessionId, sessionId, "session id unchanged after title update")
   }
 
   func testSyncTitleAgainstUnknownTabDoesNotConsumeThePendingTitle() throws {
@@ -1535,5 +1536,85 @@ private final class AppModelCaptureSink: CaptureSink {
       length: array.count,
       sha256: ""
     )
+  }
+}
+
+extension AppModelTests {
+  private func splitModel() throws -> (AppModel, Tab, String) {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    let right = try model.splitPane(inTab: tab.id) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    return (model, tab, right)
+  }
+  func testPaneFocusDoesNotResizeInsetAdjustedGrids() throws {
+    let (model, tab, right) = try splitModel()
+    let insets = TerminalSurfaceInsets(top: 12, left: 11, bottom: 12, right: 11)
+    model.resizePanes(
+      in: CGRect(x: 200, y: 0, width: 720, height: 480), insets: insets,
+      cellWidth: 8, cellHeight: 16)
+    let before = model.terminalSize(for: right)
+    for id in [tab.focusedSessionId, right, tab.focusedSessionId] {
+      model.focusPane(inTab: tab.id, sessionId: id)
+      let after = model.terminalSize(for: right)
+      XCTAssertEqual(after.cols, before.cols)
+      XCTAssertEqual(after.pixel_width, before.pixel_width)
+      XCTAssertEqual(model.paneSize(for: right, in: tab.id).pixel_width, before.pixel_width)
+    }
+  }
+
+  func testUnfocusedPaneNotificationDoesNotChangeFocusedMetadata() throws {
+    let (model, tab, right) = try splitModel()
+    let session = try XCTUnwrap(model.session(forSessionID: tab.focusedSessionId))
+    session.feedOutput(Array("\u{1b}]9;LEFT-PRIVATE-NOTIFICATION\u{7}".utf8))
+    let delivered = expectation(description: "notification callback")
+    DispatchQueue.main.async { delivered.fulfill() }
+    wait(for: [delivered], timeout: 2)
+    XCTAssertNil(model.activeTab?.titleMetadata.notification)
+    XCTAssertEqual(
+      model.tabProjection(forSession: tab.focusedSessionId)?.titleMetadata.notification?.text,
+      "LEFT-PRIVATE-NOTIFICATION")
+    XCTAssertEqual(model.activeTab?.focusedSessionId, right)
+  }
+
+  func testRegistryEqualsUnionOfLeaves() throws {
+    let (model, _, _) = try splitModel()
+    XCTAssertEqual(
+      Set(model.allSessions().map { $0.session.id }), Set(model.tabs.flatMap(\.allSessionIds)))
+    model.closeAllSessions()
+    XCTAssertTrue(model.allSessions().isEmpty)
+  }
+  func testUnfocusedPaneExitDoesNotChangeTabStatus() throws {
+    let (model, tab, _) = try splitModel()
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(exitState: .exited(code: 7)), forTab: tab.id,
+      sessionId: tab.focusedSessionId)
+    XCTAssertEqual(model.activeTab?.status, .running)
+    XCTAssertEqual(model.tabProjection(forSession: tab.focusedSessionId)?.status, .exited(code: 7))
+    model.focusPane(inTab: tab.id, sessionId: tab.focusedSessionId)
+    XCTAssertEqual(model.activeTab?.status, .exited(code: 7))
+  }
+  func testClosePaneFocusesMostRecentlyFocusedSurvivor() throws {
+    let (model, tab, right) = try splitModel()
+    model.closePane(inTab: tab.id, sessionId: right, terminate: { _ in })
+    XCTAssertEqual(model.activeTab?.focusedSessionId, tab.focusedSessionId)
+    XCTAssertEqual(model.activeTab?.allSessionIds, [tab.focusedSessionId])
+  }
+  func testSplitRollsBackWhenOpenThrows() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    XCTAssertThrowsError(
+      try model.splitPane(inTab: tab.id) { _, _, _ in throw AppModel.PaneError.daemonRefused("test")
+      })
+    XCTAssertEqual(model.activeTab?.allSessionIds, [tab.focusedSessionId])
+    XCTAssertEqual(model.allSessions().count, 1)
+  }
+  func testCloseLastPaneClosesTab() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    model.closePane(inTab: tab.id, sessionId: tab.focusedSessionId, terminate: { _ in })
+    XCTAssertTrue(model.tabs.isEmpty)
+    XCTAssertTrue(model.allSessions().isEmpty)
   }
 }

@@ -271,8 +271,8 @@ final class ControlSecurityFloorTests: XCTestCase {
     _ = try model.createTab()
     let tabs = model.tabs
     XCTAssertGreaterThanOrEqual(tabs.count, 2)
-    let ownSessionID = tabs[0].sessionId
-    let otherSessionID = tabs[1].sessionId
+    let ownSessionID = tabs[0].focusedSessionId
+    let otherSessionID = tabs[1].focusedSessionId
     let router = LiveIntentRouter(model: model)
     return (model, router, ownSessionID, otherSessionID)
   }

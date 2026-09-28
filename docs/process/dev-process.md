@@ -1669,3 +1669,16 @@ A behavior is done when an agent can:
 
 Manual testing can still be useful, but it is not the completion criterion for
 MVP behavior.
+
+### Split panes
+
+Headless actions `pane.split`, `pane.close`, and `pane.focus` share the app pane
+model. Split accepts an optional `tabId` and `axis` (only `vertical` is shipped).
+Close accepts optional `tabId` and `sessionId`; focus accepts a `sessionId` or
+`direction` (`next` or `previous`). They are headless-only. GUI shortcuts are
+Cmd+D, Cmd+Shift+D, and Cmd+Option+]/[. Cmd+W closes the complete tab.
+
+State tabs include recursive `panes` and `focusedSessionId`; `sessionId` remains
+a deprecated alias for the focused session. Use `sessionId` on `typeText` and
+mouse actions to address a specific pane. `fixtures/debug-script-split-pane.scenario.json`
+runs two real shells and captures their side-by-side output.

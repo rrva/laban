@@ -83,3 +83,49 @@ final class HeadlessRestoreInjectionTests: XCTestCase {
     )
   }
 }
+
+extension HeadlessRestoreInjectionTests {
+  func testSplitTabSurvivesPersistenceRelaunchWithLiveFrame() throws {
+    let root = URL(fileURLWithPath: ".artifacts/split-panes/relaunch-\(UUID().uuidString)")
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil, artifactsURL: root, tempURL: nil,
+      deterministic: true, runId: "split-relaunch", sessionMode: .realShell,
+      persistenceBaseURL: root.appendingPathComponent("persist"), restorePersistedState: false)
+    defer { runtime.shutdown(terminateRemoteSessions: true) }
+    XCTAssertEqual(runtime.applyAction(Data(#"{"action":"pane.split"}"#.utf8)).status, 200)
+    let ids = try XCTUnwrap(runtime.model.activeTab?.allSessionIds)
+    let tree = runtime.model.activeTab?.panes
+    for id in ids {
+      _ = runtime.applyAction(
+        try JSONSerialization.data(withJSONObject: [
+          "action": "typeText", "sessionId": id, "text": "printf 'BEFORE\\n'\n",
+        ]))
+    }
+    XCTAssertEqual(runtime.persistenceRelaunch().status, 200)
+    XCTAssertEqual(runtime.model.activeTab?.allSessionIds, ids)
+    XCTAssertEqual(runtime.model.activeTab?.panes, tree)
+    for id in ids {
+      let response = runtime.applyAction(
+        try JSONSerialization.data(withJSONObject: [
+          "action": "typeText", "sessionId": id, "text": "printf 'AFTER\\n'\n",
+        ]))
+      XCTAssertEqual(response.status, 200)
+      let waited = runtime.wait(
+        try JSONSerialization.data(withJSONObject: [
+          "timeoutMs": 5000,
+          "condition": ["kind": "textVisible", "sessionId": id, "text": "AFTER"],
+        ]))
+      XCTAssertEqual(
+        (try JSONSerialization.jsonObject(with: waited.body) as? [String: Any])?["ok"] as? Bool,
+        true)
+    }
+    runtime.renderFrameUnlocked()
+    XCTAssertTrue(
+      runtime.lastFrameCommands.contains { command in
+        if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = command {
+          return text.contains("AFTER")
+        }
+        return false
+      })
+  }
+}

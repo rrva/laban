@@ -456,7 +456,7 @@ final class TabMetadataSynchronizer {
     if let shellIntegrationState = signals.shellIntegrationState {
       let metadata = tabs[idx].titleMetadata
       let exitCode = resolveFailedCommandDot(
-        forTab: tabId,
+        forTab: tabs[idx].focusedSessionId,
         state: shellIntegrationState,
         isActive: tabs[idx].isActive)
       if metadata.shellPhase != shellIntegrationState.phase
@@ -494,7 +494,8 @@ final class TabMetadataSynchronizer {
     tabs: inout [Tab]
   ) {
     tabs[idx].titleMetadata.terminalTitle = title
-    if title != nil, ownerIsFresh, let owner = processIdentityBySession[tabs[idx].focusedSessionId] {
+    if title != nil, ownerIsFresh, let owner = processIdentityBySession[tabs[idx].focusedSessionId]
+    {
       terminalTitleOwnerBySession[tabs[idx].focusedSessionId] = owner
     } else {
       terminalTitleOwnerBySession.removeValue(forKey: tabs[idx].focusedSessionId)

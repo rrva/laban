@@ -13,9 +13,12 @@ struct DebugInputActions {
   func typeText(_ request: TextActionRequest) -> DebugResponse {
     guard let text = request.text else { return jsonError("typeText requires text") }
     let frameBefore = runtime.currentFrame
-    let activeTab = runtime.model.activeTab
+    let activeTab =
+      request.sessionId.flatMap { runtime.model.tabProjection(forSession: $0) }
+      ?? (request.sessionId == nil ? runtime.model.activeTab : nil)
+    guard activeTab != nil else { return jsonError("unknownSession", status: 404) }
     let bytes = Array(text.utf8)
-    if let tab = runtime.model.activeTab, let client = runtime.terminalSessionClient {
+    if let tab = activeTab, let client = runtime.terminalSessionClient {
       do {
         try runtime.ensureTerminalClientSessionUnlocked(for: tab)
         try client.writeInput(
@@ -32,7 +35,8 @@ struct DebugInputActions {
         )
         return jsonError("typeText failed: \(error)")
       }
-    } else if let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id)
+    } else if let tab = activeTab,
+      let session = runtime.model.session(forSessionID: tab.focusedSessionId)
     {
       let deltaRows = session.scrollViewportToActiveBottom()
       appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
@@ -63,9 +67,12 @@ struct DebugInputActions {
     // Honor explicit `tabId` so callers can target a specific tab
     // without first having to selectTab + risk losing focus context.
     // Falls back to the active tab when `tabId` is omitted.
-    let targetTabId = request.tabId ?? runtime.model.activeTab?.id
+    let targetTabId =
+      request.sessionId.flatMap { runtime.model.tabProjection(forSession: $0)?.id }
+      ?? (request.sessionId == nil ? request.tabId ?? runtime.model.activeTab?.id : nil)
     guard let tabId = targetTabId,
-      let session = runtime.model.session(forTab: tabId)
+      let session = request.sessionId.flatMap({ runtime.model.session(forSessionID: $0) })
+        ?? (request.sessionId == nil ? runtime.model.session(forTab: tabId) : nil)
     else {
       return jsonError("feedOutput could not resolve a target tab")
     }
@@ -210,6 +217,18 @@ struct DebugInputActions {
 
   private func executeCommandKey(_ command: String, key: Key) {
     switch command {
+    case "splitPaneRight", "closePane", "focusNextPane", "focusPreviousPane":
+      let action =
+        command == "splitPaneRight"
+        ? "pane.split" : (command == "closePane" ? "pane.close" : "pane.focus")
+      var payload: [String: String] = [:]
+      if command == "focusNextPane" { payload["direction"] = "next" }
+      if command == "focusPreviousPane" { payload["direction"] = "previous" }
+      if let data = try? JSONEncoder().encode(payload),
+        let request = try? JSONDecoder().decode(PaneActionRequest.self, from: data)
+      {
+        _ = DebugPaneActions(runtime: runtime).apply(action, request)
+      }
     case "newTab":
       if let tab = try? runtime.model.createTab() {
         try? runtime.ensureTerminalClientSessionUnlocked(for: tab)
@@ -217,8 +236,9 @@ struct DebugInputActions {
       runtime.renderFrameUnlocked()
     case "closeTab":
       if let tabId = runtime.model.activeTab?.id {
-        if let sessionId = runtime.model.activeTab?.focusedSessionId {
+        for sessionId in runtime.model.activeTab?.allSessionIds ?? [] {
           runtime.terminateTerminalClientSessionUnlocked(sessionId: sessionId)
+          runtime.selectionBySession.removeValue(forKey: sessionId)
         }
         try? runtime.model.closeTab(tabId)
         runtime.renderFrameUnlocked()
