@@ -327,7 +327,7 @@ final class MainWindowController: NSWindowController {
         launchCoordinator: controlLaunchCoordinator,
         sessionCoordinator: sessionCoordForAttach)
       Self.scheduleAttachShellRetries(
-        tabId: tabId,
+        tabId: tabId, sessionId: session.id,
         launchCoordinator: controlLaunchCoordinator,
         sessionCoordinator: sessionCoordForAttach,
         model: model)
@@ -1496,9 +1496,8 @@ final class MainWindowController: NSWindowController {
   private static func restoredCwdBySessionId(from state: WorkspaceState?) -> [Tab.ID: String] {
     guard let state, let window = state.windows.first else { return [:] }
     return Dictionary(
-      uniqueKeysWithValues: window.tabs.flatMap { $0.resolvedPaneStates }.map {
-        ($0.sessionId, $0.cwd)
-      })
+      window.tabs.flatMap { $0.resolvedPaneStates }.map { ($0.sessionId, $0.cwd) },
+      uniquingKeysWith: { first, _ in first })
   }
 
   private static func resolveAttachShellPID(
@@ -1528,15 +1527,16 @@ final class MainWindowController: NSWindowController {
       shellPID: shellPID)
   }
 
-  private static func scheduleAttachShellRetries(
-    tabId: Tab.ID,
+  static func scheduleAttachShellRetries(
+    tabId: Tab.ID, sessionId: Session.ID,
     launchCoordinator: ControlSessionLaunchCoordinator,
     sessionCoordinator: AppSessionCoordinator?,
-    model: AppModel
+    model: AppModel,
+    delays: [TimeInterval] = [0.05, 0.25, 1.0, 2.0, 5.0]
   ) {
-    for delay in [0.05, 0.25, 1.0, 2.0, 5.0] {
+    for delay in delays {
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak model] in
-        guard let model, let session = model.session(forTab: tabId) else { return }
+        guard let model, let session = model.session(forSessionID: sessionId) else { return }
         registerAttachShell(
           tabId: tabId,
           session: session,

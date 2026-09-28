@@ -24,7 +24,7 @@ struct AppModelSurfaceMetadataSyncResult {
 public final class AppModel {
   private let modelLock = NSRecursiveLock()
   private var _tabs: [Tab] = []
-  public var tabs: [Tab] { withModelLock { _tabs } }
+  public var tabs: [Tab] { withModelLock { _tabs.map(tabWithPaneAttention) } }
   private let sessionRegistry = SessionRegistry()
   private var findStateBySession: [Session.ID: TerminalFindState] = [:]
   private var findFullSearchCacheBySession: [Session.ID: FindFullSearchCache] = [:]
@@ -32,6 +32,13 @@ public final class AppModel {
   // live resize drag; flushed by refreshActiveFindsAfterResize on settle. (H-5)
   private var pendingFindRescanSessions: Set<Session.ID> = []
   private var paneMetadata: [Session.ID: TabTitleMetadata] = [:]
+  // Callbacks can temporarily project another pane. Publish only after restoring
+  // the focused projection, so observers and the journal never see that swap.
+  private var paneProjectionDepth = 0
+  private var pendingPaneWorkspaceNotification = false
+  private var pendingPaneSurfaceNotification = false
+  private var pendingPaneAttentionEvents: [AttentionNotificationEvent] = []
+  private var surfaceStatusBySession: [Session.ID: TabAgentStatus] = [:]
   private var paneStatus: [Session.ID: TabStatus] = [:]
   private let metadataSync = TabMetadataSynchronizer()
   private var currentSize: LabanTerminalSize
@@ -754,13 +761,10 @@ public final class AppModel {
   {
     withModelLock {
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }),
-        _tabs[idx].panes.contains(sessionId)
+        _tabs[idx].panes.contains(sessionId),
+        let tree = _tabs[idx].panes.removing(leaf: sessionId)
       else { return }
       terminate(sessionId)
-      guard let tree = _tabs[idx].panes.removing(leaf: sessionId) else {
-        try? closeTab(tabId)
-        return
-      }
       closeSessionUnlocked(sessionId, inTab: tabId)
       _tabs[idx].panes = tree
       _tabs[idx].focusHistory.removeAll { $0 == sessionId }
@@ -793,6 +797,7 @@ public final class AppModel {
         _ = syncSurfaceMetadata(
           forTab: tabId, tabIndex: idx, from: session, now: Date(), recordTitleChanges: true)
       }
+      if _tabs[idx].isActive { acknowledgePaneAttention(at: idx) }
       acknowledgeShellCommands(forTabAt: idx)
       resizeTabLayoutsUnlocked()
     }
@@ -1043,7 +1048,7 @@ public final class AppModel {
     isActive: Bool
   ) throws -> Tab {
     try withModelLock {
-      var restored: [(PaneState, Session, String, Bool)] = []
+      var restored: [(PaneState, Session, String, Bool, LabanTerminalSize)] = []
       do {
         for pane in persistedTab.resolvedPaneStates {
           let rect = terminalRects(for: persistedTab.resolvedPanes).first {
@@ -1073,11 +1078,11 @@ public final class AppModel {
           } else {
             session = try sessionFactory(paneSize, context)
           }
-          restored.append((pane, session, resolved.cwd, resolved.fallbackApplied))
+          restored.append((pane, session, resolved.cwd, resolved.fallbackApplied, paneSize))
           noteLaunchEnvironmentUnlocked(forTab: id, context: context)
         }
       } catch {
-        for (_, session, _, _) in restored { session.close() }
+        for (_, session, _, _, _) in restored { session.close() }
         throw error
       }
       guard let first = restored.first else { throw PaneError.unknownSession }
@@ -1099,7 +1104,8 @@ public final class AppModel {
       tab.focusHistory =
         tab.allSessionIds.filter { $0 != tab.focusedSessionId } + [tab.focusedSessionId]
       _tabs.append(tab)
-      for (pane, session, cwd, fallback) in restored {
+      for (pane, session, cwd, fallback, paneSize) in restored {
+        sizeBySession[session.id] = paneSize
         sessionRegistry.add(session)
         AppModel.maybeAutoCapture(session)
         ThemePaletteInjector.injectCurrentTheme(into: session)
@@ -1235,6 +1241,10 @@ public final class AppModel {
   /// every tab open/close/reorder/select entry point waking a parked
   /// display link without each call site remembering to.
   private func notifyWorkspaceMutation() {
+    if paneProjectionDepth > 0 {
+      pendingPaneWorkspaceNotification = true
+      return
+    }
     recordTabJournal()
     onWorkspaceMutation?()
     onSurfaceStateChanged?()
@@ -1245,6 +1255,10 @@ public final class AppModel {
   /// debounce wanted): resolved git branches, daemon surface signals, agent
   /// status. Same re-entrancy contract as `notifyWorkspaceMutation`.
   private func notifySurfaceStateChanged() {
+    if paneProjectionDepth > 0 {
+      pendingPaneSurfaceNotification = true
+      return
+    }
     recordTabJournal()
     onSurfaceStateChanged?()
   }
@@ -1254,8 +1268,9 @@ public final class AppModel {
   /// are exactly the UI-invalidation signals, so a journal entry means "what
   /// some tab showed changed". Diff-dedupe makes the double funnel harmless.
   private func recordTabJournal() {
+    guard paneProjectionDepth == 0 else { return }
     let (snapshot, activeId): ([Tab], Tab.ID?) = withModelLock {
-      (_tabs, _tabs.first(where: { $0.isActive })?.id)
+      (_tabs.map(tabWithPaneAttention), _tabs.first(where: { $0.isActive })?.id)
     }
     let entries = tabJournal.recordDiff(tabs: snapshot, activeTabId: activeId)
     guard let captureSink, !entries.isEmpty else { return }
@@ -1305,7 +1320,7 @@ public final class AppModel {
       _tabs[idx].titleMetadata.notification = TabNotification(
         text: text,
         urgent: urgent || (prior?.urgent ?? false),
-        count: (prior?.count ?? 0) + 1)
+        count: (prior?.count ?? 0) + 1, isNotice: true)
       return true
     }
     guard changed else { return false }
@@ -1330,18 +1345,7 @@ public final class AppModel {
       let selected = i == selectedIdx
       _tabs[i].isActive = selected
       if selected {
-        _tabs[i].titleMetadata.unseenOutput = false
-        _tabs[i].titleMetadata.bellAttention = false
-        _tabs[i].titleMetadata.notification = nil
-        _tabs[i].titleMetadata.agentStatus.indicatorColor = nil
-        // Viewing the tab acknowledges its last command's outcome: drop the
-        // steady failed-command dot the same way we drop the other attention
-        // signals, and mark every completion seen so far as acknowledged so a
-        // later prompt re-emission or metadata sync can't restore it. It
-        // re-arms only when a *new* command finishes non-zero while this tab is
-        // backgrounded (see resolveFailedCommandDot).
-        _tabs[i].titleMetadata.lastCommandExitCode = nil
-        acknowledgeShellCommands(forTabAt: i)
+        acknowledgePaneAttention(at: i)
       }
       if _tabs[i].status == .running {
         _tabs[i].titleMetadata.activityState =
@@ -1361,14 +1365,16 @@ public final class AppModel {
   /// `TabMetadataSynchronizer.resolveFailedCommandDot`.
   private func acknowledgeShellCommands(forTabAt idx: Int) {
     guard _tabs.indices.contains(idx) else { return }
-    let count =
-      sessionRegistry.session(id: _tabs[idx].focusedSessionId)?
-      .shellIntegrationState().completedCommandCount ?? 0
-    metadataSync.acknowledgeShellCommands(forTab: _tabs[idx].focusedSessionId, upTo: count)
+    for id in _tabs[idx].allSessionIds {
+      let count =
+        sessionRegistry.session(id: id)?.shellIntegrationState().completedCommandCount ?? 0
+      metadataSync.acknowledgeShellCommands(forTab: id, upTo: count)
+    }
   }
 
   private func closeSessionUnlocked(_ id: Session.ID, inTab tabId: Tab.ID) {
     let session = sessionRegistry.session(id: id)
+    if let tab = tabProjection(forSession: id) { metadataSync.forget(tab: tab) }
     transcriptDelegate?.detachTranscriptWriter(forSessionId: id, in: session)
     onSessionClosed?(tabId, id)
     sessionRegistry.close(sessionId: id)
@@ -1377,6 +1383,7 @@ public final class AppModel {
     pendingFindRescanSessions.remove(id)
     paneMetadata.removeValue(forKey: id)
     paneStatus.removeValue(forKey: id)
+    surfaceStatusBySession.removeValue(forKey: id)
     awaitEpisodeBySession.removeValue(forKey: id)
     sizeBySession.removeValue(forKey: id)
     launchCommandBySession.removeValue(forKey: id)
@@ -1661,6 +1668,13 @@ public final class AppModel {
     sessionId: Session.ID? = nil,
     now: Date = Date()
   ) -> Bool {
+    if let status = signals.agentStatus {
+      withModelLock {
+        if let id = sessionId ?? _tabs.first(where: { $0.id == tabId })?.focusedSessionId {
+          surfaceStatusBySession[id] = status.isEmpty ? nil : status
+        }
+      }
+    }
     let modelChanged = runSurfaceMetadataSync(
       forTab: tabId,
       tabIndex: -1,
@@ -1692,10 +1706,22 @@ public final class AppModel {
   /// in the meantime — both share `titleMetadata.agentStatus`, so an
   /// unconditional clear would wipe a legitimate process-reported status.
   @discardableResult
-  public func clearAgentStatus(forTab tabId: Tab.ID, ifEquals expected: TabAgentStatus) -> Bool {
-    withModelLock {
+  public func clearAgentStatus(
+    forTab tabId: Tab.ID, sessionId: Session.ID? = nil, ifEquals expected: TabAgentStatus
+  ) -> Bool {
+    if let sessionId {
+      var changed = false
+      withPaneMetadata(sessionId: sessionId, tabId: tabId) {
+        changed = clearAgentStatus(forTab: tabId, ifEquals: expected)
+      }
+      return changed
+    }
+    return withModelLock {
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
-      guard _tabs[idx].titleMetadata.agentStatus == expected else { return false }
+      let id = _tabs[idx].focusedSessionId
+      let clearedTransport = surfaceStatusBySession[id] == expected
+      if clearedTransport { surfaceStatusBySession.removeValue(forKey: id) }
+      guard _tabs[idx].titleMetadata.agentStatus == expected else { return clearedTransport }
       _tabs[idx].titleMetadata.agentStatus = TabAgentStatus()
       return true
     }
@@ -2132,11 +2158,73 @@ public final class AppModel {
           paneMetadata[sessionId] ?? .fallback(position: original.position, active: false)
         _tabs[idx].status = paneStatus[sessionId] ?? .running
       }
+      if unfocused { paneProjectionDepth += 1 }
       body()
       paneMetadata[sessionId] = _tabs[idx].titleMetadata
       paneStatus[sessionId] = _tabs[idx].status
       if unfocused { _tabs[idx] = original }
+      if unfocused { paneProjectionDepth -= 1 }
     }
+    if paneProjectionDepth == 0 {
+      let workspace = pendingPaneWorkspaceNotification
+      let surface = pendingPaneSurfaceNotification
+      pendingPaneWorkspaceNotification = false
+      pendingPaneSurfaceNotification = false
+      if workspace { notifyWorkspaceMutation() } else if surface { notifySurfaceStateChanged() }
+      let events = pendingPaneAttentionEvents
+      pendingPaneAttentionEvents.removeAll()
+      for event in events { deliverAttentionNotification(event) }
+    }
+  }
+
+  /// Tab-level attention is a read projection; scoped reads retain each pane's
+  /// own metadata and focused title/status/cwd are never replaced by a sibling.
+  private func tabWithPaneAttention(_ tab: Tab) -> Tab {
+    var result = tab
+    for id in tab.allSessionIds where id != tab.focusedSessionId {
+      guard let pane = paneMetadata[id] else { continue }
+      result.titleMetadata.unseenOutput = result.titleMetadata.unseenOutput || pane.unseenOutput
+      result.titleMetadata.bellAttention = result.titleMetadata.bellAttention || pane.bellAttention
+      result.titleMetadata.agent.awaitingInput =
+        result.titleMetadata.agent.awaitingInput
+        || TabAttentionClassifier.classify(pane, isActive: false) == .needsAction
+      if let notification = pane.notification {
+        if let prior = result.titleMetadata.notification {
+          result.titleMetadata.notification = TabNotification(
+            text: notification.urgent ? notification.text : prior.text,
+            urgent: prior.urgent || notification.urgent, count: prior.count + notification.count)
+        } else {
+          result.titleMetadata.notification = notification
+        }
+      }
+      if result.titleMetadata.lastCommandExitCode == nil {
+        result.titleMetadata.lastCommandExitCode = pane.lastCommandExitCode
+      }
+    }
+    if !tab.isActive,
+      let transport = tab.allSessionIds.compactMap({ surfaceStatusBySession[$0] }).first
+    {
+      result.titleMetadata.agentStatus = transport
+    }
+    return result
+  }
+
+  private func acknowledgePaneAttention(at idx: Int) {
+    func clear(_ metadata: inout TabTitleMetadata) {
+      metadata.unseenOutput = false
+      metadata.bellAttention = false
+      metadata.notification = nil
+      metadata.agentStatus.indicatorColor = nil
+      metadata.lastCommandExitCode = nil
+    }
+    clear(&_tabs[idx].titleMetadata)
+    for id in _tabs[idx].allSessionIds {
+      if var metadata = paneMetadata[id] {
+        clear(&metadata)
+        paneMetadata[id] = metadata
+      }
+    }
+    acknowledgeShellCommands(forTabAt: idx)
   }
 
   private func attachSessionCallbacks(session: Session, tabId: Tab.ID) {
@@ -2470,6 +2558,14 @@ public final class AppModel {
       _tabs.first(where: { $0.id == event.tabId })?.focusedSessionId
     }
     if let id = event.sessionId { event.dedupeKey += ":" + id }
+    if paneProjectionDepth > 0 {
+      pendingPaneAttentionEvents.append(event)
+      return
+    }
+    deliverAttentionNotification(event)
+  }
+
+  private func deliverAttentionNotification(_ event: AttentionNotificationEvent) {
     onAttentionNotification?(event)
     switch event.source {
     case .osc where event.category == .needsAction:
@@ -2653,9 +2749,9 @@ public final class AppModel {
   public func markActiveTabNotificationSeen() {
     let changed: Bool = withModelLock {
       guard let idx = _tabs.firstIndex(where: { $0.isActive }),
-        _tabs[idx].titleMetadata.notification != nil
+        tabWithPaneAttention(_tabs[idx]).titleMetadata.notification != nil
       else { return false }
-      _tabs[idx].titleMetadata.notification = nil
+      acknowledgePaneAttention(at: idx)
       return true
     }
     if changed { notifyWorkspaceMutation() }
@@ -2781,4 +2877,15 @@ func defaultSize() -> LabanTerminalSize {
   s.rows = 24
   s.cols = 80
   return s
+}
+
+extension AppModel.PaneError: CustomStringConvertible {
+  public var description: String {
+    switch self {
+    case .notALeaf: return "This tab already has two panes."
+    case .unknownSession: return "The terminal session is no longer available."
+    case .unsupportedBackend: return "Split panes are not available with the laband backend."
+    case .daemonRefused(let reason): return "Could not open a pane: \(reason)"
+    }
+  }
 }

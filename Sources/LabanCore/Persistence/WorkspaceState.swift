@@ -13,6 +13,24 @@ public struct WorkspaceState: Codable, Equatable {
     self.schemaVersion = schemaVersion
     self.windows = windows
   }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+    windows = try container.decode([WindowState].self, forKey: .windows)
+    var sessions = Set<String>()
+    var tabs = Set<String>()
+    for tab in windows.flatMap(\.tabs) {
+      guard tabs.insert(tab.id).inserted,
+        tab.resolvedPanes.leafSessionIds().allSatisfy({ sessions.insert($0).inserted })
+      else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .windows, in: container,
+          debugDescription: "A session or tab identity occurs in more than one tab")
+      }
+    }
+  }
+
 }
 
 public struct WindowState: Codable, Equatable {

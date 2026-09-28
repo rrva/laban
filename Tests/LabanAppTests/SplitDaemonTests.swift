@@ -94,6 +94,32 @@ extension AppSessionCoordinatorTests {
     XCTAssertEqual(Set(sessions.map(\.logicalSessionId)), Set(tab.allSessionIds))
     XCTAssertEqual(Set(sessions.map(\.childPid)).count, 2)
   }
+  func testBackgroundSplitRestoreDoesNotResizeDaemonPanesToFullWidth() throws {
+    let h = try SplitDaemonHarness()
+    let split = try h.split()
+    _ = try h.model.createTab()
+    try h.coordinator.ensureSessions(for: h.model.tabs, in: h.model, size: h.size)
+    let persisted = h.model.snapshotForPersistence(windowId: "window")
+    h.coordinator.detach()
+    let restored = try AppModel(initialSize: h.size)
+    restored.replaceTabs(from: persisted)
+    let coordinator = AppSessionCoordinator(
+      labptyClient: h.client,
+      shellLaunch: ShellIntegrationLaunch(argv: ["/bin/sh"]))
+    defer {
+      coordinator.detach()
+      restored.closeAllSessions()
+    }
+    try coordinator.ensureSessions(for: restored.tabs, in: restored, size: h.size)
+    coordinator.resize(tabs: restored.tabs, in: restored, size: h.size)
+    let sessions = try h.client.listLabptySessions()
+    for id in split.allSessionIds {
+      let descriptor = try XCTUnwrap(sessions.first { $0.logicalSessionId == id })
+      XCTAssertEqual(Int(descriptor.cols), Int(restored.terminalSize(for: id).cols))
+      XCTAssertLessThan(descriptor.cols, 51)
+    }
+  }
+
   func testResizeSendsDifferentSizesPerSession() throws {
     let h = try SplitDaemonHarness()
     let tab = try h.split()

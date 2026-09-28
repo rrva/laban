@@ -1548,6 +1548,75 @@ extension AppModelTests {
     }
     return (model, tab, right)
   }
+  func testBackgroundUnfocusedPaneAttentionIsVisibleAndAcknowledged() throws {
+    let (model, tab, right) = try splitModel()
+    let other = try model.createTab()
+    let left = try XCTUnwrap(model.session(forSessionID: tab.focusedSessionId))
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(titleDirty: true, titleRaw: "RIGHT"),
+      forTab: tab.id, sessionId: right)
+    left.feedOutput(Array("\u{7}\u{1b}]9;LEFT-NOTICE\u{7}".utf8))
+    _ = model.noteSurfaceOutput(forTab: tab.id, tabIndex: 0, sessionId: left.id, at: Date())
+    let delivered = expectation(description: "pane attention")
+    DispatchQueue.main.async { delivered.fulfill() }
+    wait(for: [delivered], timeout: 2)
+    let background = try XCTUnwrap(model.tabs.first { $0.id == tab.id })
+    XCTAssertTrue(background.titleMetadata.bellAttention)
+    XCTAssertTrue(background.titleMetadata.unseenOutput)
+    XCTAssertEqual(background.titleMetadata.notification?.text, "LEFT-NOTICE")
+    XCTAssertEqual(background.titleMetadata.terminalTitle, "RIGHT")
+    XCTAssertNil(model.tabProjection(forSession: right)?.titleMetadata.notification)
+    model.selectTab(tab.id)
+    model.focusPane(inTab: tab.id, sessionId: left.id)
+    model.selectTab(other.id)
+    let seen = try XCTUnwrap(model.tabs.first { $0.id == tab.id })
+    XCTAssertFalse(seen.titleMetadata.bellAttention)
+    XCTAssertFalse(seen.titleMetadata.unseenOutput)
+    XCTAssertNil(seen.titleMetadata.notification)
+  }
+
+  func testUnfocusedPaneBlockingTitleSurvivesAcknowledgement() throws {
+    let (model, tab, right) = try splitModel()
+    let other = try model.createTab()
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(titleDirty: true, titleRaw: "RIGHT"),
+      forTab: tab.id, sessionId: right)
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(titleDirty: true, titleRaw: "[ ! ] Approve command"),
+      forTab: tab.id, sessionId: tab.focusedSessionId)
+    func assertBlocked() throws {
+      let background = try XCTUnwrap(model.tabs.first { $0.id == tab.id })
+      XCTAssertEqual(background.titleMetadata.terminalTitle, "RIGHT")
+      XCTAssertEqual(
+        TabAttentionClassifier.classify(background.titleMetadata, isActive: false), .needsAction)
+      XCTAssertFalse(
+        try XCTUnwrap(model.tabProjection(forSession: right)).titleMetadata.agent.awaitingInput)
+    }
+    try assertBlocked()
+    model.selectTab(tab.id)
+    model.selectTab(other.id)
+    try assertBlocked()
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(titleDirty: true, titleRaw: "Working"),
+      forTab: tab.id, sessionId: tab.focusedSessionId)
+    XCTAssertEqual(
+      TabAttentionClassifier.classify(
+        try XCTUnwrap(model.tabs.first { $0.id == tab.id }).titleMetadata, isActive: false), .none)
+  }
+
+  func testBackgroundSplitRestoreRetainsEachPaneSize() throws {
+    let (model, tab, right) = try splitModel()
+    model.resize(viewportWidth: 800, viewportHeight: 400, cellWidth: 8, cellHeight: 16)
+    _ = try model.createTab()
+    let state = model.snapshotForPersistence(windowId: "window")
+    let restored = try AppModel(initialSize: model.terminalAreaSize)
+    restored.replaceTabs(from: state)
+    for id in [tab.focusedSessionId, right] {
+      XCTAssertLessThan(restored.terminalSize(for: id).cols, 51)
+      XCTAssertGreaterThan(restored.terminalSize(for: id).cols, 0)
+    }
+  }
+
   func testPaneFocusDoesNotResizeInsetAdjustedGrids() throws {
     let (model, tab, right) = try splitModel()
     let insets = TerminalSurfaceInsets(top: 12, left: 11, bottom: 12, right: 11)
@@ -1597,9 +1666,32 @@ extension AppModelTests {
   }
   func testClosePaneFocusesMostRecentlyFocusedSurvivor() throws {
     let (model, tab, right) = try splitModel()
-    model.closePane(inTab: tab.id, sessionId: right, terminate: { _ in })
-    XCTAssertEqual(model.activeTab?.focusedSessionId, tab.focusedSessionId)
-    XCTAssertEqual(model.activeTab?.allSessionIds, [tab.focusedSessionId])
+    var state = model.snapshotForPersistence(windowId: "window")
+    let third = "third"
+    state.windows[0].tabs[0].panes = .split(
+      axis: .vertical, fraction: 0.5,
+      first: .leaf(sessionId: tab.focusedSessionId),
+      second: .split(
+        axis: .horizontal, fraction: 0.5, first: .leaf(sessionId: right),
+        second: .leaf(sessionId: third)))
+    state.windows[0].tabs[0].paneStates?.append(
+      PaneState(sessionId: third, cwd: "/tmp", launchCommand: "/bin/sh"))
+    model.replaceTabs(from: state)
+    for id in [tab.focusedSessionId, right, third] { model.focusPane(inTab: tab.id, sessionId: id) }
+    model.closePane(inTab: tab.id, sessionId: third, terminate: { _ in })
+    XCTAssertEqual(model.activeTab?.focusedSessionId, right)
+    XCTAssertEqual(model.activeTab?.allSessionIds, [tab.focusedSessionId, right])
+  }
+  func testHealthySiblingDoesNotClearDegradedPaneStatus() throws {
+    let (model, tab, right) = try splitModel()
+    _ = try model.createTab()
+    let degraded = TabAgentStatus(statusText: "output skipped")
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(agentStatus: degraded), forTab: tab.id, sessionId: tab.focusedSessionId)
+    _ = model.clearAgentStatus(forTab: tab.id, sessionId: right, ifEquals: degraded)
+    XCTAssertEqual(model.tabs.first { $0.id == tab.id }?.titleMetadata.agentStatus, degraded)
+    _ = model.clearAgentStatus(forTab: tab.id, sessionId: tab.focusedSessionId, ifEquals: degraded)
+    XCTAssertTrue(model.tabs.first { $0.id == tab.id }?.titleMetadata.agentStatus.isEmpty == true)
   }
   func testSplitRollsBackWhenOpenThrows() throws {
     let model = try AppModel()
@@ -1610,11 +1702,11 @@ extension AppModelTests {
     XCTAssertEqual(model.activeTab?.allSessionIds, [tab.focusedSessionId])
     XCTAssertEqual(model.allSessions().count, 1)
   }
-  func testCloseLastPaneClosesTab() throws {
+  func testCloseLastPanePreservesTabAndSession() throws {
     let model = try AppModel()
     let tab = try XCTUnwrap(model.activeTab)
     model.closePane(inTab: tab.id, sessionId: tab.focusedSessionId, terminate: { _ in })
-    XCTAssertTrue(model.tabs.isEmpty)
-    XCTAssertTrue(model.allSessions().isEmpty)
+    XCTAssertEqual(model.tabs.count, 1)
+    XCTAssertEqual(model.allSessions().count, 1)
   }
 }

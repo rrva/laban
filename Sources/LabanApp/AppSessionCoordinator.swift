@@ -1060,7 +1060,9 @@ final class AppSessionCoordinator {
         // never wipe an OSC 21337 status. Clearing a retired degraded badge is
         // therefore explicit, and scoped to the exact badge so it can never
         // touch an OSC status that happens to share titleMetadata.agentStatus.
-        _ = model.clearAgentStatus(forTab: tab.id, ifEquals: Self.labptyOutputDegradedStatus)
+        _ = model.clearAgentStatus(
+          forTab: tab.id, sessionId: tab.focusedSessionId, ifEquals: Self.labptyOutputDegradedStatus
+        )
       }
     }
   }

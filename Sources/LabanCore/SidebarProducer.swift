@@ -740,7 +740,7 @@ public struct SidebarProducer {
       // line is just a short urgency label plus an unread count — not the
       // agent's full notification text (the native banner already has that).
       // "action" = blocked on approval/input; "ready" = turn finished.
-      let label = notif.urgent ? "action" : "ready"
+      let label = notif.isNotice == true ? notif.text : (notif.urgent ? "action" : "ready")
       let line = notif.count > 1 ? "\(label) ×\(notif.count)" : label
       displayLines.append((line, notif.urgent ? Theme.current.attention : Theme.current.cursor))
     }

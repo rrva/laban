@@ -148,11 +148,14 @@ public struct TabNotification: Codable, Equatable, Sendable {
   public var text: String
   public var urgent: Bool
   public var count: Int
+  /// App-authored notices display their explanation instead of an agent badge label.
+  public var isNotice: Bool?
 
-  public init(text: String, urgent: Bool, count: Int = 1) {
+  public init(text: String, urgent: Bool, count: Int = 1, isNotice: Bool? = nil) {
     self.text = text
     self.urgent = urgent
     self.count = max(1, count)
+    self.isNotice = isNotice
   }
 }
 

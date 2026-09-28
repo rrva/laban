@@ -54,6 +54,24 @@ private final class TranscriptRecorder: TranscriptHostDelegate {
 }
 
 final class PersistenceRoundTripTests: XCTestCase {
+  func testCrossTabDuplicateSessionIDsAreQuarantined() throws {
+    let shared = PaneState(sessionId: "shared", cwd: "/tmp", launchCommand: "/bin/sh")
+    let tabs = ["first", "second"].map { id in
+      TabState(
+        id: id, cwd: "/tmp", launchCommand: "/bin/sh", lastActiveAt: Date(),
+        panes: .leaf(sessionId: "shared"), focusedSessionId: "shared", paneStates: [shared])
+    }
+    let state = WorkspaceState(windows: [WindowState(id: "window", tabs: tabs)])
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = PersistenceStore(baseURL: root)
+    try store.save(state)
+    XCTAssertNil(store.load())
+    XCTAssertFalse(FileManager.default.fileExists(atPath: store.workspaceURL.path))
+    XCTAssertTrue(
+      try FileManager.default.contentsOfDirectory(atPath: root.path)
+        .contains { $0.hasPrefix("workspace.json.corrupt-") })
+  }
 
   override func tearDown() {
     super.tearDown()

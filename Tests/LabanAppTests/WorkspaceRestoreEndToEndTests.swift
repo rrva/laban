@@ -153,6 +153,31 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
   // MARK: - Cycle test
 
+  func testSplitWorkspaceSurvivesThreeQuitRestoreCycles() throws {
+    let base = tempBase()
+    defer { try? FileManager.default.removeItem(at: base) }
+    var harness = try makeHarness(baseDir: base)
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let right = try harness.model.splitPane(inTab: tab.id) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    let tree = try XCTUnwrap(harness.model.activeTab?.panes)
+    _ = try harness.model.createTab()
+    for _ in 0..<3 {
+      quit(harness)
+      let state = try XCTUnwrap(PersistenceStore(baseURL: base).load())
+      harness = try makeHarness(baseDir: base, restoring: state)
+      let restored = try XCTUnwrap(harness.model.tabs.first { $0.id == tab.id })
+      XCTAssertEqual(restored.panes, tree)
+      XCTAssertEqual(restored.focusedSessionId, right)
+      XCTAssertEqual(
+        Set(harness.model.allSessions().map { $0.session.id }),
+        Set(harness.model.tabs.flatMap(\.allSessionIds)))
+      XCTAssertFalse(restored.isActive)
+    }
+    quit(harness)
+  }
+
   func testCleanSlateThenThreeQuitRestoreCycles() throws {
     let base = tempBase()
     defer { try? FileManager.default.removeItem(at: base) }

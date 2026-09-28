@@ -119,6 +119,28 @@ final class ControlDefaultOnTests: XCTestCase {
       server.canLazyAttachDescendant(sessionID: context.sessionID, peerPID: getpid()))
   }
 
+  func testRestoredSplitPaneAttachRetriesRegisterEachShell() throws {
+    let h = try SplitDaemonHarness()
+    let tab = try h.split()
+    let launch = ControlSessionLaunchCoordinator()
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    launch.noteControlServerStarted(server, socketPath: start.socketPath)
+    for id in tab.allSessionIds {
+      MainWindowController.scheduleAttachShellRetries(
+        tabId: tab.id, sessionId: id, launchCoordinator: launch,
+        sessionCoordinator: h.coordinator, model: h.model, delays: [0])
+    }
+    let delivered = expectation(description: "both attach retries")
+    DispatchQueue.main.async { delivered.fulfill() }
+    wait(for: [delivered], timeout: 2)
+    for id in tab.allSessionIds {
+      let pid = try XCTUnwrap(h.coordinator.attachShellPID(forSessionId: id))
+      XCTAssertTrue(server.canLazyAttachDescendant(sessionID: id, peerPID: pid))
+    }
+  }
+
   func testAgentAttachedLaunchContextCarriesSingleUseBootstrap() throws {
     LabanControlServer.skipExecutableVerificationForTests = true
     defer { LabanControlServer.skipExecutableVerificationForTests = false }
