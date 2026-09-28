@@ -569,6 +569,53 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testPaneFocusClearsOldSelectionAndClosingFindClearsBothPanes() throws {
+    let harness = try makeHarness(rows: 6, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.advanceFrame()
+    let left = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    harness.view.splitPaneRight(nil)
+    let right = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    for id in [left, right] {
+      harness.model.session(forSessionID: id)?.feedOutput(Array("HELLO".utf8))
+      _ = try harness.model.startFind(sessionID: id, needle: "HELLO")
+    }
+    harness.view.focusPreviousPane(nil)
+    selectCells(row: 0, startCol: 0, endCol: 3, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "HELL")
+    harness.view.focusNextPane(nil)
+    harness.view.focusPreviousPane(nil)
+    setPasteboard("sentinel", in: harness.view)
+    harness.view.copy(nil)
+    XCTAssertEqual(harness.view.pasteboardStringForTesting, "sentinel")
+    harness.view.closeFindChip()
+    for id in [left, right] { XCTAssertFalse(harness.model.findState(forSession: id).isActive) }
+  }
+
+  func testRightButtonGestureTargetsHitPaneWithLocalCoordinates() throws {
+    let harness = try makeHarness(rows: 6, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.advanceFrame()
+    let left = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    harness.view.splitPaneRight(nil)
+    let right = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    try XCTUnwrap(harness.model.session(forSessionID: left)).write(
+      Array("\u{1b}[?1002h\u{1b}[?1006h".utf8))
+    harness.view.advanceFrame()
+    let location = point(row: 2, col: 3, in: harness)
+    harness.view.rightMouseDown(with: mouseEvent(type: .rightMouseDown, at: location))
+    XCTAssertEqual(harness.model.activeTab?.focusedSessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.text, "\u{1b}[<2;4;3M")
+    // A mid-gesture focus change must not redirect the release to the sibling.
+    harness.model.focusPane(inTab: try XCTUnwrap(harness.model.activeTab?.id), sessionId: right)
+    harness.view.rightMouseDragged(with: mouseEvent(type: .rightMouseDragged, at: location))
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.text, "\u{1b}[<34;4;3M")
+    harness.view.rightMouseUp(with: mouseEvent(type: .rightMouseUp, at: location))
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.text, "\u{1b}[<2;4;3m")
+  }
+
   func testHoverMotionTargetsUnfocusedPane() throws {
     let harness = try makeHarness(rows: 6, cols: 80)
     defer { harness.restoreRenderer() }

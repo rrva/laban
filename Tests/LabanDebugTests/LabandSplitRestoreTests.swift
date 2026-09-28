@@ -1,3 +1,4 @@
+import CoreGraphics
 import Darwin
 import Foundation
 import LabanCore
@@ -55,6 +56,15 @@ final class LabandSplitRestoreTests: XCTestCase {
         }
         return false
       })
+    let noticeOrigin = runtime.lastFrameCommands.compactMap { command -> CGFloat? in
+      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _, _) = command,
+        text.contains("Split view is not available")
+      {
+        return origin.y
+      }
+      return nil
+    }.first
+    XCTAssertGreaterThan(try XCTUnwrap(noticeOrigin), CGFloat(runtime.windowHeight / 2))
     XCTAssertEqual(runtime.model.session(forSessionID: "right")?.id, "right")
     let split = runtime.applyAction(Data(#"{"action":"pane.split"}"#.utf8))
     XCTAssertEqual(split.status, 400)

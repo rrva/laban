@@ -406,6 +406,14 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
   }
 
   func testDirtySynchronizedOutputDoesNotAdvanceRenderedFrame() throws {
+    try exerciseSynchronizedOutput(unfocusedPane: false)
+  }
+
+  func testUnfocusedPaneSynchronizedOutputDefersAndWatchdogRecovers() throws {
+    try exerciseSynchronizedOutput(unfocusedPane: true)
+  }
+
+  private func exerciseSynchronizedOutput(unfocusedPane: Bool) throws {
     let oldRenderer = getenv("LABAN_RENDERER").map { String(cString: $0) }
     setenv("LABAN_RENDERER", "software", 1)
     defer {
@@ -447,11 +455,15 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     view.frame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
 
     view.advanceFrame()
+    if unfocusedPane {
+      view.splitPaneRight(nil)
+      view.advanceFrame()
+    }
     let baselineFrame = view.renderedFrameCountForTests
-    XCTAssertEqual(baselineFrame, 1)
+    XCTAssertGreaterThan(baselineFrame, 0)
 
     guard let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id)
+      let session = model.session(forSessionID: activeTab.allSessionIds[0])
     else {
       XCTFail("model must have an active fixture session")
       return
@@ -460,6 +472,9 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     session.write(Array("\u{1B}[?2026h\u{1B}[H\u{1B}[Kin-progress redraw".utf8))
     XCTAssertTrue(session.synchronizedOutputActive)
 
+    view.outputSettleHoldForTests = TerminalRenderGate.OutputSettleHold(
+      sessionId: try XCTUnwrap(model.activeTab?.focusedSessionId),
+      startedAt: Date(timeIntervalSinceNow: -2))
     view.advanceFrame()
     XCTAssertEqual(
       view.renderedFrameCountForTests,
@@ -471,6 +486,9 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
       startedAt: Date(timeIntervalSinceNow: -2)
     )
 
+    view.outputSettleHoldForTests = TerminalRenderGate.OutputSettleHold(
+      sessionId: try XCTUnwrap(model.activeTab?.focusedSessionId),
+      startedAt: Date(timeIntervalSinceNow: -2))
     view.advanceFrame()
     XCTAssertEqual(
       view.renderedFrameCountForTests,
@@ -481,6 +499,9 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     session.write(Array("\u{1B}[?2026h\u{1B}[H\u{1B}[Ksecond synced redraw".utf8))
     XCTAssertTrue(session.synchronizedOutputActive)
 
+    view.outputSettleHoldForTests = TerminalRenderGate.OutputSettleHold(
+      sessionId: try XCTUnwrap(model.activeTab?.focusedSessionId),
+      startedAt: Date(timeIntervalSinceNow: -2))
     view.advanceFrame()
     XCTAssertEqual(
       view.renderedFrameCountForTests,
@@ -490,6 +511,9 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     session.write(Array("\u{1B}[?2026l".utf8))
     XCTAssertFalse(session.synchronizedOutputActive)
 
+    view.outputSettleHoldForTests = TerminalRenderGate.OutputSettleHold(
+      sessionId: try XCTUnwrap(model.activeTab?.focusedSessionId),
+      startedAt: Date(timeIntervalSinceNow: -2))
     view.advanceFrame()
     XCTAssertEqual(
       view.renderedFrameCountForTests,

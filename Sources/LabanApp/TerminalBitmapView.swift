@@ -708,6 +708,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// so only one is ever pending; cleared when it fires.
   private var pendingTitleApply = false
 
+  private var paneSynchronizedOutputHolds: [Session.ID: TerminalRenderGate.SynchronizedOutputHold] =
+    [:]
   private var synchronizedOutputHold: TerminalRenderGate.SynchronizedOutputHold?
   private var hoverPreviewSynchronizedOutputHold: TerminalRenderGate.SynchronizedOutputHold?
   /// A daemon snapshot can remain stuck in synchronized-output mode after its
@@ -717,7 +719,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var remoteSynchronizedOutputWatchdogBypassedSessionIds: Set<Session.ID> = []
   var synchronizedOutputHoldForTests: TerminalRenderGate.SynchronizedOutputHold? {
     get { synchronizedOutputHold }
-    set { synchronizedOutputHold = newValue }
+    set {
+      if let hold = newValue, hold.sessionId != model.activeTab?.focusedSessionId {
+        paneSynchronizedOutputHolds[hold.sessionId] = hold
+      } else {
+        synchronizedOutputHold = newValue
+      }
+    }
   }
 
   private var outputSettleHold: TerminalRenderGate.OutputSettleHold?
@@ -3904,13 +3912,33 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         _ = session.resetSynchronizedOutput()
       }
     }
-    if syncGate.shouldDefer {
+    var deferVisiblePanes = syncGate.shouldDefer
+    var visiblePaneWake = syncGate.wakeAfter
+    paneSynchronizedOutputHolds = paneSynchronizedOutputHolds.filter {
+      activeTab.allSessionIds.contains($0.key) && $0.key != session.id
+    }
+    if !usingRemoteSessions {
+      for id in activeTab.allSessionIds where id != session.id {
+        guard let pane = model.session(forSessionID: id) else { continue }
+        let decision = TerminalRenderGate.synchronizedOutputDecision(
+          terminalDirty: terminalDirty || pane.renderDirty(),
+          synchronizedOutputActive: pane.synchronizedOutputActive,
+          sessionId: id, now: gateNow, hold: paneSynchronizedOutputHolds[id])
+        paneSynchronizedOutputHolds[id] = decision.hold
+        if decision.shouldResetMode { _ = pane.resetSynchronizedOutput() }
+        if decision.shouldDefer {
+          deferVisiblePanes = true
+          visiblePaneWake = min(visiblePaneWake ?? .infinity, decision.wakeAfter ?? .infinity)
+        }
+      }
+    }
+    if deferVisiblePanes {
       // Hold the previous completed frame during DEC synchronized output. Laban
       // uses libghostty-vt without Ghostty's termio timer, so this mirrors
       // Ghostty's one-second watchdog before rendering anyway. Schedule a re-wake
       // so the watchdog is reached even if the display link parks mid-hold.
       scheduleSynchronizedOutputWake(
-        after: syncGate.wakeAfter ?? TerminalRenderGate.synchronizedOutputMaxHoldSeconds)
+        after: visiblePaneWake ?? TerminalRenderGate.synchronizedOutputMaxHoldSeconds)
       recordRenderJournal(
         event: .skipped,
         frame: captureFrame,
@@ -7056,7 +7084,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     advanceFrame()
   }
 
-  private func closeFindChip() {
+  func closeFindChip() {
     cancelPendingFindSearch()
     guard let sessionId = model.activeTab?.focusedSessionId else {
       findChip?.removeFromSuperview()
@@ -7064,7 +7092,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return
     }
     lastFindNeedle = model.findState(forSession: sessionId).needle
-    _ = model.stopFind(sessionID: sessionId)
+    for id in model.activeTab?.allSessionIds ?? [sessionId] { _ = model.stopFind(sessionID: id) }
     findChip?.removeFromSuperview()
     findChip = nil
     window?.makeFirstResponder(self)
@@ -8583,108 +8611,56 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     invalidateRenderAndWake()
   }
 
+  private(set) var lastForwardedRightReportForTests: (sessionId: Session.ID, text: String)?
+
+  private var rightMouseGesturePane: (tabId: Tab.ID, pane: PaneRect)?
+
   override func rightMouseDown(with event: NSEvent) {
-    let pt = convert(event.locationInWindow, from: nil)
-
-    // Sidebar right-click is consumed locally.
-    if pt.x < sidebarWidth {
-      return
+    let point = convert(event.locationInWindow, from: nil)
+    guard let pane = paneHit(at: point), let tab = model.activeTab else { return }
+    if pane.sessionId != tab.focusedSessionId {
+      discardMarkedComposition()
+      model.focusPane(inTab: tab.id, sessionId: pane.sessionId)
+      paneFocusChanged()
     }
-
-    if let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
-      mouseTrackingActive(for: activeTab, session: session)
-    {
-      trackedMouseButton = .right
-      let geom = terminalMouseGeometry(at: pt)
-      let mouseEncoding = remoteMouseEncoding(for: activeTab)
-      let pressEvent = MouseEvent(
-        action: .press,
-        button: .right,
-        x: geom.x, y: geom.y,
-        screenWidth: geom.screenWidth,
-        screenHeight: geom.screenHeight,
-        cellWidth: cellWidth,
-        cellHeight: cellHeight,
-        modifiers: event.labanModifiers,
-        trackingMode: mouseEncoding?.trackingMode ?? 0,
-        format: mouseEncoding?.format ?? 0
-      )
-      let sent = session.sendMouseCapturingBytes(pressEvent)
-      forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
-      invalidateRenderAndWake()
-    }
+    window?.makeFirstResponder(self)
+    guard let projected = model.tabProjection(forSession: pane.sessionId),
+      let session = model.session(forSessionID: pane.sessionId),
+      mouseTrackingActive(for: projected, session: session)
+    else { return }
+    rightMouseGesturePane = (tab.id, pane)
+    trackedMouseButton = .right
+    forwardRightMouse(event, action: .press)
   }
 
   override func rightMouseDragged(with event: NSEvent) {
-    if let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
-      mouseTrackingActive(for: activeTab, session: session)
-    {
-      let pt = convert(event.locationInWindow, from: nil)
-      guard pt.x >= sidebarWidth else { return }
-      guard
-        let button = TerminalMouseInput.trackedTerminalButton(
-          trackedMouseButton,
-          matching: .right
-        )
-      else {
-        return
-      }
-      let geom = terminalMouseGeometry(at: pt)
-      let mouseEncoding = remoteMouseEncoding(for: activeTab)
-      let motionEvent = MouseEvent(
-        action: .motion,
-        button: button,
-        x: geom.x, y: geom.y,
-        screenWidth: geom.screenWidth,
-        screenHeight: geom.screenHeight,
-        cellWidth: cellWidth,
-        cellHeight: cellHeight,
-        modifiers: event.labanModifiers,
-        trackingMode: mouseEncoding?.trackingMode ?? 0,
-        format: mouseEncoding?.format ?? 0
-      )
-      let sent = session.sendMouseCapturingBytes(motionEvent)
-      forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
-      invalidateRenderAndWake()
-    }
+    forwardRightMouse(event, action: .motion)
   }
 
   override func rightMouseUp(with event: NSEvent) {
-    if let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
-      mouseTrackingActive(for: activeTab, session: session)
-    {
-      guard
-        let button = TerminalMouseInput.trackedTerminalButton(
-          trackedMouseButton,
-          matching: .right
-        )
-      else {
-        return
-      }
-      let pt = convert(event.locationInWindow, from: nil)
-      let geom = terminalMouseGeometry(at: pt)
-      let mouseEncoding = remoteMouseEncoding(for: activeTab)
-      let releaseEvent = MouseEvent(
-        action: .release,
-        button: button,
-        x: geom.x, y: geom.y,
-        screenWidth: geom.screenWidth,
-        screenHeight: geom.screenHeight,
-        cellWidth: cellWidth,
-        cellHeight: cellHeight,
-        modifiers: event.labanModifiers,
-        trackingMode: mouseEncoding?.trackingMode ?? 0,
-        format: mouseEncoding?.format ?? 0
-      )
-      let sent = session.sendMouseCapturingBytes(releaseEvent)
-      forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
-      if trackedMouseButton == .right { trackedMouseButton = .none }
-      invalidateRenderAndWake()
-    }
+    forwardRightMouse(event, action: .release)
+    rightMouseGesturePane = nil
     if trackedMouseButton == .right { trackedMouseButton = .none }
+  }
+
+  private func forwardRightMouse(_ event: NSEvent, action: MouseAction) {
+    guard trackedMouseButton == .right, let gesture = rightMouseGesturePane,
+      let tab = model.tabProjection(forSession: gesture.pane.sessionId),
+      tab.id == gesture.tabId, tab.isActive,
+      let session = model.session(forSessionID: gesture.pane.sessionId)
+    else { return }
+    let point = convert(event.locationInWindow, from: nil)
+    let geometry = terminalMouseGeometry(at: point, paneRect: gesture.pane.rect)
+    let encoding = remoteMouseEncoding(for: tab)
+    let report = MouseEvent(
+      action: action, button: .right, x: geometry.x, y: geometry.y,
+      screenWidth: geometry.screenWidth, screenHeight: geometry.screenHeight,
+      cellWidth: cellWidth, cellHeight: cellHeight, modifiers: event.labanModifiers,
+      trackingMode: encoding?.trackingMode ?? 0, format: encoding?.format ?? 0)
+    let sent = session.sendMouseCapturingBytes(report)
+    lastForwardedRightReportForTests = (session.id, String(decoding: sent.bytes, as: UTF8.self))
+    forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
+    invalidateRenderAndWake()
   }
 
   /// On the daemon-backed (labpty/laband) tier the local Session is fixture-mode,
@@ -9329,6 +9305,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func paneFocusChanged() {
     unmarkText()
+    // A pane focus change dismisses the old selection rather than leaving a
+    // highlight that Copy can no longer address.
+    if let old = activeSelectionSessionId { selectionsBySession.removeValue(forKey: old) }
+    if let current = model.activeTab?.focusedSessionId {
+      selectionsBySession.removeValue(forKey: current)
+    }
     restoreSelectionState(for: model.activeTab?.focusedSessionId)
     surfaceController.invalidateSessionSyncCache()
     invalidateRenderAndWake()
@@ -9411,7 +9393,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     let castSnapshot = ring.castWindowSnapshot(window: seconds)
     let entries = castSnapshot.entries
-    let size = model.terminalAreaSize
+    let size =
+      sessionCoordinator?.usesRemoteSnapshots == true
+      ? model.terminalAreaSize : model.terminalSize(for: model.activeTab?.focusedSessionId ?? "")
     let cols = max(Int(size.cols), 1)
     let rows = max(Int(size.rows), 1)
     let initialFrameBytes = AsciinemaCast.fullFrameSnapshotBytes(
@@ -9726,6 +9710,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Mutate the persistent Debug-menu item's title in place (Start/Stop PTY
   /// Capture) rather than rebuilding the menu — the Show/Hide Sidebar pattern.
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    if menuItem.action == #selector(splitPaneRight(_:)) {
+      return sessionCoordinator?.usesRemoteSnapshots != true
+        && model.activeTab?.allSessionIds.count == 1
+    }
     if menuItem.action == #selector(closePane(_:)) {
       return (model.activeTab?.allSessionIds.count ?? 0) > 1
     }

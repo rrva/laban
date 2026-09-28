@@ -1060,7 +1060,7 @@ public final class TerminalSurfaceController {
     var commands = sidebarCommands(
       activeTabId: tab.id, viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset, scrollOffset: request.sidebarScrollOffset,
-      hoveredTabId: request.hoveredSidebarTabId,
+      hoveredTabId: request.hoveredSidebarTabIdIsKeyboardPeek ? nil : request.hoveredSidebarTabId,
       keyboardPreviewedTabId: keyboardPreviewedTabId(for: request),
       dragIndicator: request.sidebarDragIndicator, now: request.now,
       reduceMotion: request.reduceMotion)
@@ -1500,7 +1500,9 @@ public final class TerminalSurfaceController {
     if activeTab.allSessionIds.count > 1 {
       commands.append(
         .glyphRun(
-          origin: CGPoint(x: sidebarWidth + request.insets.left, y: request.insets.top),
+          origin: CGPoint(
+            x: sidebarWidth + request.insets.left,
+            y: max(0, request.viewportHeight - request.insets.top - CGFloat(cellHeight))),
           text: "Split view is not available on the laband backend", foreground: Theme.current.fg0,
           background: Theme.current.bg0, attributes: [], source: .terminal))
     }
