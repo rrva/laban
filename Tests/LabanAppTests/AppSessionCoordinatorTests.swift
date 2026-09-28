@@ -86,8 +86,8 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let launchCoordinator = ControlSessionLaunchCoordinator()
     let model = try AppModel(
       initialSize: size,
-      sessionLaunchContextProvider: { tabId, isAgentAttached in
-        launchCoordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+      sessionLaunchContextProvider: { tabId, sessionId, isAgentAttached in
+        launchCoordinator.prepareLaunch(tabID: tabId, sessionID: sessionId, isAgentAttached: isAgentAttached)
       },
       sessionFactory: { size, context in
         try Session.fixture(size: size, sessionID: context.sessionID)
@@ -122,7 +122,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: [:])
+      cwdBySessionId: [:])
     defer { coordinator.detach() }
     coordinator.launchEnvironmentProvider = { tabID in
       model.launchEnvironmentOverrides(forTab: tabID)
@@ -270,7 +270,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["top-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["top-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -367,7 +367,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["kept-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["kept-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -478,7 +478,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["theme-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["theme-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -570,7 +570,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["scroll-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["scroll-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -627,7 +627,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: [:]
+      cwdBySessionId: [:]
     )
     defer { coordinator.detach() }
 
@@ -704,7 +704,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: try waitForClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
-      cwdByTabId: [:])
+      cwdBySessionId: [:])
     defer { coordinator.detach() }
 
     let fontAtlas = FontAtlas(pointSize: 14)
@@ -808,7 +808,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
-      cwdByTabId: ["render-tab": root.path]
+      cwdBySessionId: ["render-tab": root.path]
     )
     defer { coordinator.detach() }
 
@@ -934,7 +934,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["meta-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["meta-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -1021,7 +1021,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["reattach-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["reattach-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 

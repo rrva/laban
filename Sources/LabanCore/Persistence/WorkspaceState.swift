@@ -83,6 +83,7 @@ public struct AgentInfo: Codable, Equatable {
 public struct RestoredSessionSpec {
   public let size: LabanTerminalSize
   public let tabId: String
+  public let sessionId: String
   public let cwd: String
   public let cwdFallbackApplied: Bool
   public let transcriptURL: URL?
@@ -100,6 +101,7 @@ public struct RestoredSessionSpec {
   public init(
     size: LabanTerminalSize,
     tabId: String,
+    sessionId: String? = nil,
     cwd: String,
     cwdFallbackApplied: Bool,
     transcriptURL: URL?,
@@ -109,6 +111,7 @@ public struct RestoredSessionSpec {
   ) {
     self.size = size
     self.tabId = tabId
+    self.sessionId = sessionId ?? tabId
     self.cwd = cwd
     self.cwdFallbackApplied = cwdFallbackApplied
     self.transcriptURL = transcriptURL

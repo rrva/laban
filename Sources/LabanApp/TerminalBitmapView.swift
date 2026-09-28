@@ -5761,7 +5761,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func restoreClosedTab(_ payload: ClosedTabUndoPayload) {
     do {
       let tab = try model.createTab(runningArgv: payload.argv ?? [], cwd: payload.cwd)
-      sessionCoordinator?.setLaunchCwd(payload.cwd, forTab: tab.id)
+      sessionCoordinator?.setLaunchCwd(payload.cwd, forSession: tab.sessionId)
       try sessionCoordinator?.ensureSession(
         for: tab,
         session: model.session(forTab: tab.id),

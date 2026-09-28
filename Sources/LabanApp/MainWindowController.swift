@@ -277,7 +277,7 @@ final class MainWindowController: NSWindowController {
     let sessionCoordinator = try Self.makeSessionCoordinator(
       backend: terminalBackend,
       shellLaunchProvider: { shellIntegration.currentLaunch() },
-      cwdByTabId: restoredCwdByTabId)
+      cwdBySessionId: restoredCwdByTabId)
 
     let launchCoordinator = ControlSessionLaunchCoordinator()
     let liveRouter = LiveIntentRouter(
@@ -292,8 +292,8 @@ final class MainWindowController: NSWindowController {
 
     let model = try AppModel(
       initialSize: size,
-      sessionLaunchContextProvider: { tabId, isAgentAttached in
-        launchCoordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+      sessionLaunchContextProvider: { tabId, sessionId, isAgentAttached in
+        launchCoordinator.prepareLaunch(tabID: tabId, sessionID: sessionId, isAgentAttached: isAgentAttached)
       },
       sessionFactory: { size, context in
         switch terminalBackend {
@@ -364,9 +364,9 @@ final class MainWindowController: NSWindowController {
     // or replay generic terminal commands into a live terminal.
     model.restoredDeferredSessionFactory = { spec in
       if terminalBackend == .laband || terminalBackend == .labpty {
-        return try Session.fixture(size: spec.size)
+        return try Session.fixture(size: spec.size, sessionID: spec.sessionId)
       }
-      let context = launchCoordinator.prepareLaunch(tabID: spec.tabId, isAgentAttached: false)
+      let context = launchCoordinator.prepareLaunch(tabID: spec.tabId, sessionID: spec.sessionId, isAgentAttached: false)
       let launch = spawnLaunch()
       let env = Self.mergeLaunchEnvironment(
         launch.environmentOverrides,
@@ -1150,7 +1150,7 @@ final class MainWindowController: NSWindowController {
     model: AppModel
   ) {
     guard let coordinator else { return }
-    let unclaimed = coordinator.unclaimedLabptySessions(knownTabIds: Set(model.tabs.map(\.id)))
+    let unclaimed = coordinator.unclaimedLabptySessions(knownSessionIds: Set(model.tabs.map(\.sessionId)))
     guard !unclaimed.isEmpty else { return }
 
     AppLog.app.notice("labpty desync: \(unclaimed.count) unclaimed live session(s) at launch")
@@ -1256,7 +1256,7 @@ final class MainWindowController: NSWindowController {
   private static func makeSessionCoordinator(
     backend: TerminalSessionBackend,
     shellLaunchProvider: @escaping () -> ShellIntegrationLaunch,
-    cwdByTabId: [Tab.ID: String]
+    cwdBySessionId: [Tab.ID: String]
   ) throws -> AppSessionCoordinator? {
     switch backend {
     case .inProcess:
@@ -1266,7 +1266,7 @@ final class MainWindowController: NSWindowController {
       return AppSessionCoordinator(
         client: setup.client,
         shellLaunchProvider: shellLaunchProvider,
-        cwdByTabId: cwdByTabId,
+        cwdBySessionId: cwdBySessionId,
         labandProcess: setup.process
       )
     case .labpty:
@@ -1274,7 +1274,7 @@ final class MainWindowController: NSWindowController {
       return AppSessionCoordinator(
         labptyClient: setup.client,
         shellLaunchProvider: shellLaunchProvider,
-        cwdByTabId: cwdByTabId,
+        cwdBySessionId: cwdBySessionId,
         labptyProcess: setup.process
       )
     }
@@ -1499,7 +1499,7 @@ final class MainWindowController: NSWindowController {
     if let childPid = session.processMetadata()?.childPid, childPid > 0 {
       return pid_t(childPid)
     }
-    return sessionCoordinator?.attachShellPID(forTabId: tabId)
+    return sessionCoordinator?.attachShellPID(forSessionId: session.id)
   }
 
   private static func registerAttachShell(

@@ -96,7 +96,7 @@ final class AppKeystrokeLatencyBench: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: client,
       shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
-      cwdByTabId: [:])
+      cwdBySessionId: [:])
     defer { coordinator.detach() }
     let view = makeView(model: model, size: size, sessionCoordinator: coordinator)
     guard let tab = model.activeTab else { throw BenchError.missingSession }

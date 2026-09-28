@@ -33,7 +33,7 @@ public final class AppModel {
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize, SessionLaunchContext) throws -> Session
   /// Supplies preallocated session identity and control env before each spawn (C11).
-  public var sessionLaunchContextProvider: ((Tab.ID?, Bool) -> SessionLaunchContext)?
+  public var sessionLaunchContextProvider: ((Tab.ID?, Session.ID, Bool) -> SessionLaunchContext)?
 
   /// Current grid size in cells (cols, rows). Read under the model
   /// lock so callers see a stable size even mid-resize.
@@ -289,7 +289,7 @@ public final class AppModel {
 
   public init(
     initialSize: LabanTerminalSize = defaultSize(),
-    sessionLaunchContextProvider: ((Tab.ID?, Bool) -> SessionLaunchContext)? = nil,
+    sessionLaunchContextProvider: ((Tab.ID?, Session.ID, Bool) -> SessionLaunchContext)? = nil,
     sessionFactory: @escaping (LabanTerminalSize, SessionLaunchContext) throws -> Session = {
       size, context in
       try Session.fixture(size: size, sessionID: context.sessionID)
@@ -298,12 +298,14 @@ public final class AppModel {
     self.currentSize = initialSize
     self.sessionLaunchContextProvider = sessionLaunchContextProvider
     self.sessionFactory = sessionFactory
-    let initialContext = sessionLaunchContextProvider?(nil, false) ?? .fresh()
+    let initialID = UUID().uuidString
+    let initialContext = sessionLaunchContextProvider?(initialID, initialID, false)
+      ?? SessionLaunchContext(sessionID: initialID, tabID: initialID)
     let session = try sessionFactory(initialSize, initialContext)
     AppModel.maybeAutoCapture(session)
     ThemePaletteInjector.injectCurrentTheme(into: session)
     let tab = Tab(
-      id: UUID().uuidString,
+      id: initialID,
       position: 1,
       title: "Tab 1",
       isActive: true,
@@ -1867,11 +1869,11 @@ public final class AppModel {
     Int32(max(minimum, min(value, Int(Int32.max))))
   }
 
-  private func launchContext(tabId: Tab.ID? = nil, isAgentAttached: Bool = false)
+  private func launchContext(tabId: Tab.ID, sessionId: Session.ID? = nil, isAgentAttached: Bool = false)
     -> SessionLaunchContext
   {
-    sessionLaunchContextProvider?(tabId, isAgentAttached)
-      ?? .fresh(tabID: tabId, isAgentAttached: isAgentAttached)
+    sessionLaunchContextProvider?(tabId, sessionId ?? tabId, isAgentAttached)
+      ?? SessionLaunchContext(sessionID: sessionId ?? tabId, tabID: tabId, isAgentAttached: isAgentAttached)
   }
 
   private func noteLaunchEnvironmentUnlocked(forTab tabId: Tab.ID, context: SessionLaunchContext) {

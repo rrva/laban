@@ -313,9 +313,9 @@ public final class HeadlessDebugRuntime {
     let shellIntegration = Self.makeShellIntegrationOverlayProvider()
     self.model = try AppModel(
       initialSize: initSize,
-      sessionFactory: { size in
+      sessionFactory: { size, context in
         let session = try Self.makeSession(
-          size: size, mode: initialSessionMode, shellIntegration: shellIntegration)
+          size: size, mode: initialSessionMode, shellIntegration: shellIntegration, sessionID: context.sessionID)
         session.captureSink = initialRecorder
         return session
       })
@@ -350,8 +350,8 @@ public final class HeadlessDebugRuntime {
       self.agentObserverHost = observers
 
       self.model.transcriptDelegate = transcripts
-      self.model.restoredSessionFactory = { sz, _, _ in
-        try Self.makeSession(size: sz, mode: initialSessionMode, shellIntegration: shellIntegration)
+      self.model.restoredSessionFactory = { sz, _, context in
+        try Self.makeSession(size: sz, mode: initialSessionMode, shellIntegration: shellIntegration, sessionID: context.sessionID)
       }
       let restoreViaLabandPicker = terminalBackend == .laband
       self.model.restoredDeferredSessionFactory = { spec in
@@ -362,9 +362,9 @@ public final class HeadlessDebugRuntime {
         let session: Session
         switch initialSessionMode {
         case .fixture:
-          session = try Session.fixture(size: spec.size)
+          session = try Session.fixture(size: spec.size, sessionID: spec.sessionId)
         case .realShell:
-          session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
+          session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd, sessionID: spec.sessionId)
         }
         if case .realShell = initialSessionMode {
           // In laband mode, a lost daemon means the live PTY is gone.
@@ -547,11 +547,12 @@ public final class HeadlessDebugRuntime {
   private static func makeSession(
     size: LabanTerminalSize,
     mode: HeadlessSessionMode,
-    shellIntegration: ShellIntegrationOverlayProvider? = nil
+    shellIntegration: ShellIntegrationOverlayProvider? = nil,
+    sessionID: Session.ID? = nil
   ) throws -> Session {
     switch mode {
     case .fixture:
-      return try Session.fixture(size: size)
+      return try Session.fixture(size: size, sessionID: sessionID)
     case .realShell:
       // Parity with MainWindowController: thread the shell-integration
       // overlay env into the spawned shell, resolving the launch at spawn
@@ -565,7 +566,7 @@ public final class HeadlessDebugRuntime {
         size: size,
         extraEnvironment:
           launch.withTerminalIdentity(TerminalIdentitySettings.identity())
-          .environmentOverrides)
+          .environmentOverrides, sessionID: sessionID)
     }
   }
 
@@ -727,7 +728,7 @@ public final class HeadlessDebugRuntime {
   }
 
   private func terminalClientLogicalSessionId(for tab: Tab) -> String {
-    terminalBackend == .laband ? tab.id : tab.sessionId
+    tab.sessionId
   }
 
   func attachSnapshotRingIfAvailable(

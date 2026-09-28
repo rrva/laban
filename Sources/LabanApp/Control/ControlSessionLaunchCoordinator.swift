@@ -28,9 +28,8 @@ final class ControlSessionLaunchCoordinator {
   }
 
   func prepareLaunch(
-    tabID: Tab.ID?, isAgentAttached: Bool, defaults: UserDefaults = .standard
+    tabID: Tab.ID?, sessionID: Session.ID, isAgentAttached: Bool, defaults: UserDefaults = .standard
   ) -> SessionLaunchContext {
-    let sessionID = UUID().uuidString
     if let tabID {
       sessionIDsByTabID[tabID] = sessionID
     }

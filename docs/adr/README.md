@@ -43,3 +43,5 @@ boundaries, or any decision that looks previously settled.
 - `0035-kitty-graphics-rendering.md` — Kitty graphics images render in every selectable renderer: the terminal core owns image state behind a process-wide gate (default on, `laband` off, file medium off), snapshots carry placements while pixels flow once per image generation through `FrameImageStore`, `FrameCommand.texturedQuad` carries crop and z layer, and captures save image pixels for replay.
 
 Write a new ADR when a change establishes durable architectural policy, reverses a previously settled decision, or sets an adapter boundary. Number it sequentially, follow the existing file's structure (Status, Context, Decision, Consequences, Applies To New Code), and add a one-line entry to this index with the path and summary.
+
+- [0036: Pane layout is view state above session tiers](0036-pane-layout-is-view-state-above-session-tiers.md)

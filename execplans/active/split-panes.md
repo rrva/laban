@@ -134,7 +134,7 @@ content and the same running processes.
 
 ## Progress
 
-- [ ] M0: Stable session identity. Session IDs are persisted and injectable;
+- [ ] M0 (in progress; baseline `./scripts/check` passed): Stable session identity. Session IDs are persisted and injectable;
       a tab's first session ID equals the tab ID; daemon logical IDs are
       session IDs everywhere (GUI and headless); launch-time
       ensure/sweep/unclaimed use the set of all session IDs. ADR 0036 written.
@@ -390,7 +390,7 @@ ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed. See "Review gate and review-fix loop" in
 `PLANS.md`. All commands run from the repository root. `BASE` is the commit
 this plan branched from; the executing agent records it here before M0:
-`BASE = <sha>`.
+`BASE = f145b0a6`.
 
 - [ ] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
 - [ ] `grep -rn "let sessionId: Session.ID\|var sessionId: Session.ID" Sources/LabanCore/Tab.swift` prints zero hits; `grep -c "focusedSessionId" Sources/LabanCore/Tab.swift` prints at least `2`.
