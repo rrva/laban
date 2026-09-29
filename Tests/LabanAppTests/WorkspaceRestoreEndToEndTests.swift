@@ -53,8 +53,8 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     size.cols = 80
     let model = try AppModel(
       initialSize: size,
-      sessionFactory: { size in
-        try Self.makeFreshSession(size: size, mode: sessionMode)
+      sessionFactory: { size, context in
+        try Self.makeFreshSession(size: size, mode: sessionMode, sessionID: context.sessionID)
       })
 
     let transcriptHost = TranscriptHost(
@@ -80,7 +80,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
     // Attach writers to the default tab created by AppModel.init.
     for (tab, session) in model.allSessions() {
-      transcriptHost.attachTranscriptWriter(to: session, tabId: tab.id)
+      transcriptHost.attachTranscriptWriter(to: session, sessionId: session.id)
     }
 
     if let restoredState, !restoredState.windows.isEmpty {
@@ -126,13 +126,14 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
   private static func makeFreshSession(
     size: LabanTerminalSize,
-    mode: HarnessSessionMode
+    mode: HarnessSessionMode, sessionID: Session.ID
   ) throws -> Session {
     switch mode {
     case .fixture:
-      return try Session.fixture(size: size)
+      return try Session.fixture(size: size, sessionID: sessionID)
     case .realShell:
-      let session = try Session.makeDeferred(size: size, cwd: NSHomeDirectory())
+      let session = try Session.makeDeferred(
+        size: size, cwd: NSHomeDirectory(), sessionID: sessionID)
       guard session.startSpawn() == 0 else { throw HarnessError.spawnFailed }
       return session
     }
@@ -144,13 +145,38 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
   ) throws -> Session {
     switch mode {
     case .fixture:
-      return try Session.fixture(size: spec.size)
+      return try Session.fixture(size: spec.size, sessionID: spec.sessionId)
     case .realShell:
-      return try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
+      return try Session.makeDeferred(size: spec.size, cwd: spec.cwd, sessionID: spec.sessionId)
     }
   }
 
   // MARK: - Cycle test
+
+  func testSplitWorkspaceSurvivesThreeQuitRestoreCycles() throws {
+    let base = tempBase()
+    defer { try? FileManager.default.removeItem(at: base) }
+    var harness = try makeHarness(baseDir: base)
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let right = try harness.model.splitPane(inTab: tab.id) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    let tree = try XCTUnwrap(harness.model.activeTab?.panes)
+    _ = try harness.model.createTab()
+    for _ in 0..<3 {
+      quit(harness)
+      let state = try XCTUnwrap(PersistenceStore(baseURL: base).load())
+      harness = try makeHarness(baseDir: base, restoring: state)
+      let restored = try XCTUnwrap(harness.model.tabs.first { $0.id == tab.id })
+      XCTAssertEqual(restored.panes, tree)
+      XCTAssertEqual(restored.focusedSessionId, right)
+      XCTAssertEqual(
+        Set(harness.model.allSessions().map { $0.session.id }),
+        Set(harness.model.tabs.flatMap(\.allSessionIds)))
+      XCTAssertFalse(restored.isActive)
+    }
+    quit(harness)
+  }
 
   func testCleanSlateThenThreeQuitRestoreCycles() throws {
     let base = tempBase()
@@ -199,7 +225,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
     // Each tab's transcript file must exist with the captured bytes.
     for tabId in [defaultTabId, tab1Id, tab2Id] {
-      let url = store.transcriptURL(forTabId: tabId)
+      let url = store.transcriptURL(forSessionId: tabId)
       XCTAssertTrue(
         FileManager.default.fileExists(atPath: url.path),
         "transcript for tab \(tabId) must persist")
@@ -314,7 +340,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
         visible.unicodeScalars.contains { $0.value == 0 },
         "cycle \(cycle) rendered a NUL glyph; visible=\(visible.debugDescription)")
 
-      let data = try Data(contentsOf: store.transcriptURL(forTabId: tabId))
+      let data = try Data(contentsOf: store.transcriptURL(forSessionId: tabId))
       XCTAssertEqual(
         Array(data), echoBytes,
         "cycle \(cycle) must not rewrite or append to the original echo transcript")
@@ -444,7 +470,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       quit(first)
       let _ = first
 
-      let transcriptURL = store.transcriptURL(forTabId: tabId)
+      let transcriptURL = store.transcriptURL(forSessionId: tabId)
       let baseline = try Data(contentsOf: transcriptURL)
       XCTAssertFalse(baseline.isEmpty)
       XCTAssertTrue(
@@ -607,7 +633,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       quit(first)
       let _ = first
 
-      let transcriptURL = store.transcriptURL(forTabId: tabId)
+      let transcriptURL = store.transcriptURL(forSessionId: tabId)
       let baseline = try Data(contentsOf: transcriptURL)
 
       for cycle in 1...4 {
@@ -803,7 +829,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     file: StaticString = #file,
     line: UInt = #line
   ) throws {
-    let data = try Data(contentsOf: store.transcriptURL(forTabId: tabId))
+    let data = try Data(contentsOf: store.transcriptURL(forSessionId: tabId))
     let transcript = String(decoding: data, as: UTF8.self)
     XCTAssertEqual(
       echoCommandCount(in: transcript),

@@ -9,7 +9,7 @@ final class FontSizeActionTests: XCTestCase {
   func testSetFontSizeSwapsAtlasAndReflowsColumns() throws {
     let (runtime, artifacts) = try makeRuntime()
     defer { try? FileManager.default.removeItem(at: artifacts) }
-    let colsBefore = Int(runtime.model.terminalSize.cols)
+    let colsBefore = Int(runtime.model.terminalAreaSize.cols)
 
     let response = runtime.applyAction(
       Data(#"{"action":"setFontSize","pointSize":20}"#.utf8))
@@ -26,7 +26,7 @@ final class FontSizeActionTests: XCTestCase {
     // Same window pixels, bigger cells: the grid renegotiates to fewer
     // columns, exactly like a window resize does for the running programs.
     let viewportWidth = runtime.windowWidth - runtime.sidebarWidth
-    let colsAfter = Int(runtime.model.terminalSize.cols)
+    let colsAfter = Int(runtime.model.terminalAreaSize.cols)
     XCTAssertEqual(colsAfter, max(viewportWidth / expectedCellWidth, 1))
     XCTAssertLessThan(colsAfter, colsBefore)
   }

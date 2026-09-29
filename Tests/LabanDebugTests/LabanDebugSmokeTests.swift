@@ -1253,7 +1253,7 @@ final class LabanDebugSmokeTests: XCTestCase {
     )
 
     let firstTab = try XCTUnwrap(runtime.model.activeTab)
-    let firstSessionId = firstTab.sessionId
+    let firstSessionId = firstTab.focusedSessionId
     let setSelection =
       #"{"action":"setSelection","anchor":{"row":0,"col":0},"focus":{"row":0,"col":3}}"#
       .data(using: .utf8)!

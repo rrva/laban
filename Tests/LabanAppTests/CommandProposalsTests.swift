@@ -15,7 +15,7 @@ final class CommandProposalsTests: XCTestCase {
   func testProposeReturnsExpectedShapeOnHeadlessSurface() throws {
     let runtime = try makeHeadlessRuntime()
     defer { try? FileManager.default.removeItem(at: runtime.artifacts) }
-    let sessionID = try XCTUnwrap(runtime.runtime.model.tabs.first?.sessionId)
+    let sessionID = try XCTUnwrap(runtime.runtime.model.tabs.first?.focusedSessionId)
 
     let server = LabanControlServer(
       router: HeadlessIntentRouter(runtime: runtime.runtime),
@@ -43,7 +43,7 @@ final class CommandProposalsTests: XCTestCase {
   func testProposeReturnsExpectedShapeOnGuiSurface() throws {
     let model = try AppModel()
     _ = try model.createTab()
-    let sessionID = try XCTUnwrap(model.tabs.first?.sessionId)
+    let sessionID = try XCTUnwrap(model.tabs.first?.focusedSessionId)
     let router = LiveIntentRouter(model: model)
 
     let server = LabanControlServer(router: router, surface: .gui, catalog: .shared)
@@ -67,7 +67,7 @@ final class CommandProposalsTests: XCTestCase {
   func testProposeDoesNotWritePTYBytesHeadless() throws {
     let runtime = try makeHeadlessRuntime()
     defer { try? FileManager.default.removeItem(at: runtime.artifacts) }
-    let sessionID = try XCTUnwrap(runtime.runtime.model.tabs.first?.sessionId)
+    let sessionID = try XCTUnwrap(runtime.runtime.model.tabs.first?.focusedSessionId)
 
     let before = terminalInputBytes(runtime.runtime)
     let body = proposeBody(sessionID: sessionID, command: "echo $(rm -rf /)\n")
@@ -79,7 +79,7 @@ final class CommandProposalsTests: XCTestCase {
   func testProposeDoesNotWritePTYBytesGuiRouter() throws {
     let model = try AppModel()
     _ = try model.createTab()
-    let sessionID = try XCTUnwrap(model.tabs.first?.sessionId)
+    let sessionID = try XCTUnwrap(model.tabs.first?.focusedSessionId)
 
     let router = LiveIntentRouter(model: model)
     let body = proposeBody(sessionID: sessionID, command: "should-not-write")
@@ -100,8 +100,8 @@ final class CommandProposalsTests: XCTestCase {
     let model = try AppModel()
     _ = try model.createTab()
     _ = try model.createTab()
-    let ownSessionID = model.tabs[0].sessionId
-    let otherSessionID = model.tabs[1].sessionId
+    let ownSessionID = model.tabs[0].focusedSessionId
+    let otherSessionID = model.tabs[1].focusedSessionId
     let router = LiveIntentRouter(model: model)
 
     let server = LabanControlServer(router: router, surface: .gui, catalog: .shared)
@@ -127,7 +127,7 @@ final class CommandProposalsTests: XCTestCase {
   func testOversizedProposalRejected() throws {
     let model = try AppModel()
     _ = try model.createTab()
-    let sessionID = try XCTUnwrap(model.tabs.first?.sessionId)
+    let sessionID = try XCTUnwrap(model.tabs.first?.focusedSessionId)
     let router = LiveIntentRouter(model: model)
     let server = LabanControlServer(router: router, surface: .gui, catalog: .shared)
     let socketPath = try makeTempSocketPath()

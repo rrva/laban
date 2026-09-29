@@ -128,7 +128,7 @@ final class LiveControlObserveTests: XCTestCase {
 
   func testSessionObserveTokenCanRequestNotificationTest() throws {
     let model = try AppModel()
-    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let sessionID = try XCTUnwrap(model.activeTab?.focusedSessionId)
     let store = NativeNotificationDiagnosticsStore(capacity: 4, nativeAvailable: true)
     let router = LiveIntentRouter(model: model, notificationDiagnosticsStore: store)
     var postedEvent: AttentionNotificationEvent?
@@ -167,7 +167,7 @@ final class LiveControlObserveTests: XCTestCase {
 
   func testWindowScreenshotReturnsTypedPNGForVisibleScopedSession() throws {
     let model = try AppModel()
-    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let sessionID = try XCTUnwrap(model.activeTab?.focusedSessionId)
     let router = LiveIntentRouter(model: model)
     let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 4, 2])
     router.bindWindowScreenshotProvider {
@@ -190,7 +190,7 @@ final class LiveControlObserveTests: XCTestCase {
 
   func testWindowScreenshotReturns403WhenScreenRecordingPermissionDenied() throws {
     let model = try AppModel()
-    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let sessionID = try XCTUnwrap(model.activeTab?.focusedSessionId)
     let router = LiveIntentRouter(model: model)
     router.bindWindowScreenshotProvider {
       .failure(.permissionDenied)
@@ -210,7 +210,7 @@ final class LiveControlObserveTests: XCTestCase {
   func testWindowScreenshotRejectsWhenScopedSessionIsNotVisible() throws {
     let model = try AppModel()
     _ = try model.createTab()
-    let hiddenSessionID = model.tabs[0].sessionId
+    let hiddenSessionID = model.tabs[0].focusedSessionId
     model.selectTab(model.tabs[1].id)
     var captureCalled = false
     let router = LiveIntentRouter(model: model)
@@ -280,7 +280,7 @@ final class LiveControlObserveTests: XCTestCase {
   func testSessionObserveSelectionUsesEnvironmentProvider() throws {
     let model = try AppModel()
     _ = try model.createTab()
-    let sessionID = try XCTUnwrap(model.tabs.first?.sessionId)
+    let sessionID = try XCTUnwrap(model.tabs.first?.focusedSessionId)
     let selection = TerminalSelection(
       sessionId: sessionID,
       anchor: TerminalCellCoordinate(row: 0, col: 0),
@@ -302,10 +302,10 @@ final class LiveControlObserveTests: XCTestCase {
   func testScrollViewportScopedCallerNeverUsesActiveTab() throws {
     let model = try AppModel()
     _ = try model.createTab()
-    let scopedSessionID = model.tabs[0].sessionId
-    let activeSessionID = model.tabs[1].sessionId
+    let scopedSessionID = model.tabs[0].focusedSessionId
+    let activeSessionID = model.tabs[1].focusedSessionId
     model.selectTab(model.tabs[1].id)
-    XCTAssertEqual(model.activeTab?.sessionId, activeSessionID)
+    XCTAssertEqual(model.activeTab?.focusedSessionId, activeSessionID)
 
     let router = LiveIntentRouter(model: model)
     let body = Data(#"{"deltaRows":1}"#.utf8)
@@ -325,11 +325,38 @@ final class LiveControlObserveTests: XCTestCase {
     XCTAssertNotEqual(json["activeSessionId"] as? String, activeSessionID)
   }
 
+  func testScopedScrollMovesOnlyItsUnfocusedPane() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    let left = tab.focusedSessionId
+    let right = try model.splitPane(inTab: tab.id) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    for id in [left, right] {
+      model.session(forSessionID: id)?.feedOutput(
+        Array((0..<80).map { "line \($0)\r\n" }.joined().utf8))
+    }
+    let a = try XCTUnwrap(model.session(forSessionID: left))
+    let b = try XCTUnwrap(model.session(forSessionID: right))
+    let beforeA = a.viewportState()?.viewportOffset
+    let beforeB = b.viewportState()?.viewportOffset
+    let router = LiveIntentRouter(model: model)
+    let response = router.route(
+      .legacyDebugAction(
+        LegacyDebugActionInput(
+          intentID: "terminal.scrollViewport", action: "scrollViewport",
+          body: Data(#"{"deltaRows":-4}"#.utf8), scopedSessionID: left)))
+    XCTAssertEqual(response.status, 200)
+    XCTAssertNotEqual(a.viewportState()?.viewportOffset, beforeA)
+    XCTAssertEqual(b.viewportState()?.viewportOffset, beforeB)
+    XCTAssertEqual(model.activeTab?.focusedSessionId, right)
+  }
+
   func testScrollViewportRejectsMismatchedExplicitTarget() throws {
     let model = try AppModel()
     _ = try model.createTab()
-    let scopedSessionID = model.tabs[0].sessionId
-    let otherSessionID = model.tabs[1].sessionId
+    let scopedSessionID = model.tabs[0].focusedSessionId
+    let otherSessionID = model.tabs[1].focusedSessionId
 
     let router = LiveIntentRouter(model: model)
     let body = Data(#"{"sessionId":"\#(otherSessionID)","deltaRows":1}"#.utf8)
@@ -348,8 +375,8 @@ final class LiveControlObserveTests: XCTestCase {
     let model = try AppModel()
     _ = try model.createTab()
     _ = try model.createTab()
-    let ownSessionID = model.tabs[0].sessionId
-    let otherSessionID = model.tabs[1].sessionId
+    let ownSessionID = model.tabs[0].focusedSessionId
+    let otherSessionID = model.tabs[1].focusedSessionId
     model.selectTab(model.tabs[1].id)
     let router = LiveIntentRouter(model: model)
 
@@ -368,7 +395,7 @@ final class LiveControlObserveTests: XCTestCase {
 
   func testSessionObserveStateOmitsOtherTabNotifications() throws {
     let (model, router, ownSessionID, otherSessionID) = try makeModelRouterAndSessions()
-    let otherTabId = try XCTUnwrap(model.tabs.first { $0.sessionId == otherSessionID }?.id)
+    let otherTabId = try XCTUnwrap(model.tabs.first { $0.focusedSessionId == otherSessionID }?.id)
     model.recordAttentionNotificationDecision(
       AttentionNotificationDecision(
         event: AttentionNotificationEvent(
@@ -402,7 +429,7 @@ final class LiveControlObserveTests: XCTestCase {
 
   func testSessionObserveStateRedactsTitlesAndMetadata() throws {
     let (model, router, ownSessionID, _) = try makeModelRouterAndSessions()
-    let tab = model.tabs.first { $0.sessionId == ownSessionID }!
+    let tab = model.tabs.first { $0.focusedSessionId == ownSessionID }!
     try model.renameTab(tab.id, title: "secret-own-title")
     try model.updateTitleMetadata(
       forTab: tab.id,
@@ -552,7 +579,7 @@ final class LiveControlObserveTests: XCTestCase {
       token: start.appObserveToken)
     XCTAssertEqual(capabilitiesStatus, 200)
 
-    let sessionToken = server.mintSessionObserveToken(sessionID: model.tabs[0].sessionId)
+    let sessionToken = server.mintSessionObserveToken(sessionID: model.tabs[0].focusedSessionId)
     let (sessionDiscoveryStatus, sessionDiscoveryData) = try request(
       socketPath: start.socketPath,
       path: "/debug",
@@ -583,6 +610,76 @@ final class LiveControlObserveTests: XCTestCase {
     XCTAssertEqual(healthJSON?["ok"] as? Bool, true)
   }
 
+  func testScopedClientSeesOwnPaneMetadataInSplitTab() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    let own = tab.focusedSessionId
+    let other = try model.splitPane(inTab: tab.id) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    model.session(forSessionID: own)?.feedOutput(Array("\u{001B}]2;OWN-PANE\u{0007}OWN-TEXT".utf8))
+    model.session(forSessionID: other)?.feedOutput(
+      Array("\u{001B}]2;PRIVATE-OTHER\u{0007}PRIVATE-TEXT".utf8))
+    let surface = TerminalSurfaceController(
+      model: model, cellWidth: 8, cellHeight: 16, sidebarWidth: 200)
+    _ = surface.syncSessions(
+      captureFrame: 0, polling: .none, markInactiveDirtyRendered: false, noteOutputOnDirty: true)
+    let router = LiveIntentRouter(model: model)
+    let response = router.query(LegacyDebugQueryInput(intentID: "app.state", scopedSessionID: own))
+    XCTAssertEqual(response.status, 200)
+    let json = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    XCTAssertEqual(json["activeSessionId"] as? String, own)
+    let text = String(decoding: response.body, as: UTF8.self)
+    XCTAssertTrue(text.contains("OWN-PANE"))
+    XCTAssertFalse(text.contains("PRIVATE-OTHER"))
+    XCTAssertEqual(model.activeTab?.focusedSessionId, other)
+  }
+
+  func testScopedSelectionReadsUnfocusedPane() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    _ = try model.splitPane(inTab: tab.id) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    let own = tab.focusedSessionId
+    model.session(forSessionID: own)?.feedOutput(Array("OWN-TEXT".utf8))
+    var env = LiveControlEnvironment.default(model: model)
+    env.selectionProvider = { id in
+      id == own
+        ? TerminalSelection(
+          sessionId: id,
+          anchor: TerminalCellCoordinate(row: 0, col: 0),
+          focus: TerminalCellCoordinate(row: 0, col: 7)) : nil
+    }
+    let router = LiveIntentRouter(model: model, environment: env)
+    let response = router.query(
+      LegacyDebugQueryInput(intentID: "selection.read", scopedSessionID: own))
+    let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    XCTAssertEqual(body["active"] as? Bool, true)
+    XCTAssertEqual(body["text"] as? String, "OWN-TEXT")
+  }
+
+  func testScopedScreenshotDeniedInSplitTab() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    _ = try model.splitPane(inTab: tab.id) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    let router = LiveIntentRouter(model: model)
+    var captured = false
+    router.bindWindowScreenshotProvider {
+      captured = true
+      return .failure(.captureFailed)
+    }
+    for id in model.activeTab!.allSessionIds {
+      let response = router.query(
+        LegacyDebugQueryInput(intentID: "window.screenshot", scopedSessionID: id))
+      XCTAssertEqual(response.status, 409)
+      XCTAssertTrue(String(decoding: response.body, as: UTF8.self).contains("sessionNotVisible"))
+    }
+    XCTAssertFalse(captured)
+  }
+
   private func makeModelRouterAndSessions() throws -> (
     AppModel, LiveIntentRouter, String, String
   ) {
@@ -590,8 +687,8 @@ final class LiveControlObserveTests: XCTestCase {
     _ = try model.createTab()
     let tabs = model.tabs
     XCTAssertGreaterThanOrEqual(tabs.count, 2)
-    let ownSessionID = tabs[0].sessionId
-    let otherSessionID = tabs[1].sessionId
+    let ownSessionID = tabs[0].focusedSessionId
+    let otherSessionID = tabs[1].focusedSessionId
     let router = LiveIntentRouter(model: model)
     return (model, router, ownSessionID, otherSessionID)
   }

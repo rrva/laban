@@ -569,6 +569,123 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testPaneFocusClearsOldSelectionAndClosingFindClearsBothPanes() throws {
+    let harness = try makeHarness(rows: 6, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.advanceFrame()
+    let left = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    harness.view.splitPaneRight(nil)
+    let right = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    for id in [left, right] {
+      harness.model.session(forSessionID: id)?.feedOutput(Array("HELLO".utf8))
+      _ = try harness.model.startFind(sessionID: id, needle: "HELLO")
+    }
+    harness.view.focusPreviousPane(nil)
+    selectCells(row: 0, startCol: 0, endCol: 3, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "HELL")
+    harness.view.focusNextPane(nil)
+    harness.view.focusPreviousPane(nil)
+    setPasteboard("sentinel", in: harness.view)
+    harness.view.copy(nil)
+    XCTAssertEqual(harness.view.pasteboardStringForTesting, "sentinel")
+    harness.view.closeFindChip()
+    for id in [left, right] { XCTAssertFalse(harness.model.findState(forSession: id).isActive) }
+  }
+
+  func testLeftButtonGestureStaysWithPaneAcrossKeyboardFocusChange() throws {
+    let harness = try makeHarness(rows: 6, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.advanceFrame()
+    let left = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    harness.view.splitPaneRight(nil)
+    let right = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    for id in [left, right] {
+      try XCTUnwrap(harness.model.session(forSessionID: id)).write(
+        Array("\u{1b}[?1002h\u{1b}[?1006h".utf8))
+    }
+    harness.view.advanceFrame()
+    let captureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    let oldCaptureDir = getenv("LABAN_CAPTURE_DIR").map { String(cString: $0) }
+    setenv("LABAN_CAPTURE_DIR", captureRoot.path, 1)
+    defer {
+      if let oldCaptureDir {
+        setenv("LABAN_CAPTURE_DIR", oldCaptureDir, 1)
+      } else {
+        unsetenv("LABAN_CAPTURE_DIR")
+      }
+      try? FileManager.default.removeItem(at: captureRoot)
+    }
+    harness.view.toggleCapture(nil)
+    let location = point(row: 2, col: 3, in: harness)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: location))
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.text, "\u{1b}[<0;4;3M")
+    harness.view.focusNextPane(nil)
+    XCTAssertEqual(harness.model.activeTab?.focusedSessionId, right)
+    harness.view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: location))
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.text, "\u{1b}[<32;4;3M")
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: location))
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.text, "\u{1b}[<0;4;3m")
+    harness.view.toggleCapture(nil)
+    let capture = try XCTUnwrap(
+      FileManager.default.contentsOfDirectory(
+        at: captureRoot, includingPropertiesForKeys: nil
+      ).first)
+    let timeline = try String(
+      contentsOf: capture.appendingPathComponent("timeline.ndjson"), encoding: .utf8)
+    let reports = try timeline.split(separator: "\n").map {
+      try JSONDecoder().decode(CaptureTimelineEvent.self, from: Data($0.utf8))
+    }.filter { ["mouseDown", "mouseDragged", "mouseUp"].contains($0.command ?? "") }
+    XCTAssertEqual(reports.count, 3)
+    XCTAssertTrue(reports.allSatisfy { $0.sessionId == left })
+  }
+
+  func testRightButtonGestureTargetsHitPaneWithLocalCoordinates() throws {
+    let harness = try makeHarness(rows: 6, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.advanceFrame()
+    let left = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    harness.view.splitPaneRight(nil)
+    let right = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    try XCTUnwrap(harness.model.session(forSessionID: left)).write(
+      Array("\u{1b}[?1002h\u{1b}[?1006h".utf8))
+    harness.view.advanceFrame()
+    let location = point(row: 2, col: 3, in: harness)
+    harness.view.rightMouseDown(with: mouseEvent(type: .rightMouseDown, at: location))
+    XCTAssertEqual(harness.model.activeTab?.focusedSessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.text, "\u{1b}[<2;4;3M")
+    // A mid-gesture focus change must not redirect the release to the sibling.
+    harness.model.focusPane(inTab: try XCTUnwrap(harness.model.activeTab?.id), sessionId: right)
+    harness.view.rightMouseDragged(with: mouseEvent(type: .rightMouseDragged, at: location))
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.text, "\u{1b}[<34;4;3M")
+    harness.view.rightMouseUp(with: mouseEvent(type: .rightMouseUp, at: location))
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedRightReportForTests?.text, "\u{1b}[<2;4;3m")
+  }
+
+  func testHoverMotionTargetsUnfocusedPane() throws {
+    let harness = try makeHarness(rows: 6, cols: 80)
+    defer { harness.restoreRenderer() }
+    let left = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    harness.view.splitPaneRight(nil)
+    let right = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    let session = try XCTUnwrap(harness.model.session(forSessionID: left))
+    session.write(Array("\u{1B}[?1003h\u{1B}[?1006h".utf8))
+    harness.view.advanceFrame()
+    harness.view.mouseMoved(
+      with: mouseEvent(
+        type: .mouseMoved,
+        at: point(row: 4, col: 3, in: harness)))
+    XCTAssertEqual(
+      harness.view.lastForwardedHoverReportForTests.flatMap { String(bytes: $0, encoding: .utf8) },
+      "\u{1B}[<35;4;5M")
+    XCTAssertEqual(harness.model.activeTab?.focusedSessionId, right)
+  }
+
   func testHoverMotionUnderAnyMotionTrackingForwardsPerCellReports() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
@@ -819,7 +936,11 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = rows
     size.cols = cols
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
 
     let fontAtlas = FontAtlas(pointSize: 14)
     let sidebarFontAtlas = FontAtlas(pointSize: 11)

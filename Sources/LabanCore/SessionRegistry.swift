@@ -55,9 +55,11 @@ final class SessionRegistry {
   }
 
   func tabSessions(for tabs: [Tab]) -> [(tab: Tab, session: Session)] {
-    tabs.compactMap { tab in
-      guard let session = sessions[tab.sessionId] else { return nil }
-      return (tab, session)
+    tabs.flatMap { tab in
+      tab.allSessionIds.compactMap { id in
+        guard let session = sessions[id] else { return nil }
+        return (tab, session)
+      }
     }
   }
 

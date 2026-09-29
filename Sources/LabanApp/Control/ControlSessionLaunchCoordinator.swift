@@ -13,7 +13,7 @@ final class ControlSessionLaunchCoordinator {
   weak var controlServer: LabanControlServer?
   private(set) var controlSocketPath: String?
   private var pendingAttachSessionIDs: Set<String> = []
-  private var sessionIDsByTabID: [Tab.ID: String] = [:]
+  private var sessionIDs: Set<Session.ID> = []
 
   func noteControlServerStarted(_ server: LabanControlServer, socketPath: String) {
     controlServer = server
@@ -24,16 +24,13 @@ final class ControlSessionLaunchCoordinator {
     controlServer = nil
     controlSocketPath = nil
     pendingAttachSessionIDs.removeAll()
-    sessionIDsByTabID.removeAll()
+    sessionIDs.removeAll()
   }
 
   func prepareLaunch(
-    tabID: Tab.ID?, isAgentAttached: Bool, defaults: UserDefaults = .standard
+    tabID: Tab.ID?, sessionID: Session.ID, isAgentAttached: Bool, defaults: UserDefaults = .standard
   ) -> SessionLaunchContext {
-    let sessionID = UUID().uuidString
-    if let tabID {
-      sessionIDsByTabID[tabID] = sessionID
-    }
+    sessionIDs.insert(sessionID)
     var env: [String: String] = [:]
     if let controlSocketPath {
       env[ControlEnvironmentKeys.controlURL] = controlSocketPath
@@ -93,8 +90,8 @@ final class ControlSessionLaunchCoordinator {
     pendingAttachSessionIDs.remove(sessionID)
   }
 
-  func noteTabClosed(tabID: Tab.ID) {
-    guard let sessionID = sessionIDsByTabID.removeValue(forKey: tabID) else { return }
+  func noteSessionClosed(sessionID: Session.ID) {
+    sessionIDs.remove(sessionID)
     pendingAttachSessionIDs.remove(sessionID)
     controlServer?.unregisterAttachShellIdentity(sessionID: sessionID)
   }

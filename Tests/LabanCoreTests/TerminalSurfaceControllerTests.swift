@@ -50,7 +50,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       frame: Int,
       tabId: String?,
       sessionId: String?,
-      snapshot: UnsafePointer<LabanSnapshot>
+      snapshot: UnsafePointer<LabanSnapshot>,
+      pane: CapturedPaneFrame?
     ) -> String? {
       nil
     }
@@ -504,7 +505,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let activeSession = try XCTUnwrap(model.session(forTab: activeTab.id))
 
     let activeSnapshot = LabandSnapshotResponse(
-      logicalSessionId: activeTab.sessionId,
+      logicalSessionId: activeTab.focusedSessionId,
       incarnationId: "active",
       rows: 1,
       cols: 1,
@@ -525,7 +526,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let previewForeground: UInt32 = 0x10_E0_20_FF
     let previewExplicitBackground: UInt32 = 0xA0_B0_C0_FF
     let previewSnapshot = LabandSnapshotResponse(
-      logicalSessionId: previewedTab.sessionId,
+      logicalSessionId: previewedTab.focusedSessionId,
       incarnationId: "preview",
       rows: 1,
       cols: 1,
@@ -1467,6 +1468,12 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let secondTab = try XCTUnwrap(model.activeTab)
     model.selectTab(firstTab.id)
 
+    // This fixture isolates preview invalidation after the active terminal's
+    // initial frame has rendered. Pending visible output otherwise stays dirty.
+    let firstSession = try XCTUnwrap(model.session(forTab: firstTab.id))
+    let initialSnapshot = try XCTUnwrap(firstSession.snapshot())
+    laban_snapshot_destroy(initialSnapshot)
+    _ = firstSession.markRendered()
     let secondSession = try XCTUnwrap(model.session(forTab: secondTab.id))
     _ = secondSession.markRendered()
 

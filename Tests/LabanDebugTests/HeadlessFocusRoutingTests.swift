@@ -58,6 +58,40 @@ final class HeadlessFocusRoutingTests: XCTestCase {
     }
   }
 
+  func testSplitPaneFocusReportsReachBothChildren() throws {
+    let runtime = try makeRuntime(runId: "split-focus")
+    defer { runtime.shutdown(terminateRemoteSessions: true) }
+    _ = runtime.applyAction(Data(#"{"action":"pane.split"}"#.utf8))
+    let ids = try XCTUnwrap(runtime.model.activeTab?.allSessionIds)
+    for id in ids {
+      _ = runtime.applyAction(
+        try JSONSerialization.data(withJSONObject: [
+          "action": "typeText", "sessionId": id,
+          "text": "stty raw -echo; printf 'READY\\n'; exec cat -v\n",
+        ]))
+      let wait = runtime.wait(
+        try JSONSerialization.data(withJSONObject: [
+          "timeoutMs": 5000,
+          "condition": ["kind": "textVisible", "sessionId": id, "text": "READY"],
+        ]))
+      XCTAssertEqual(
+        (try JSONSerialization.jsonObject(with: wait.body) as? [String: Any])?["ok"] as? Bool, true)
+      runtime.model.session(forSessionID: id)?.feedOutput(Array("\u{1b}[?1004h".utf8))
+    }
+    usleep(100_000)
+    _ = runtime.applyAction(
+      try JSONSerialization.data(withJSONObject: ["action": "pane.focus", "sessionId": ids[0]]))
+    for (id, expected) in [(ids[0], "[I"), (ids[1], "[O")] {
+      let wait = runtime.wait(
+        try JSONSerialization.data(withJSONObject: [
+          "timeoutMs": 5000,
+          "condition": ["kind": "textVisible", "sessionId": id, "text": expected],
+        ]))
+      XCTAssertEqual(
+        (try JSONSerialization.jsonObject(with: wait.body) as? [String: Any])?["ok"] as? Bool, true)
+    }
+  }
+
   // MARK: - Harness
 
   private func makeRuntime(runId: String) throws -> HeadlessDebugRuntime {

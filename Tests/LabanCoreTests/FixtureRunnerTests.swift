@@ -94,14 +94,14 @@ final class FixtureRunnerTests: XCTestCase {
     let model = try AppModel(initialSize: size)
 
     let tabId = model.tabs[0].id
-    let sessionId = model.tabs[0].sessionId
+    let sessionId = model.tabs[0].focusedSessionId
 
     try runner.apply(to: model)
 
     XCTAssertFalse(tabId.isEmpty, "tab ID must not be empty")
     XCTAssertFalse(sessionId.isEmpty, "session ID must not be empty")
     XCTAssertEqual(model.activeTab?.id, tabId, "tab ID must not change across fixture run")
-    XCTAssertEqual(model.activeTab?.sessionId, sessionId, "session ID must not change")
+    XCTAssertEqual(model.activeTab?.focusedSessionId, sessionId, "session ID must not change")
   }
 
   func testColoredBoxesContainsHelloMvp() throws {

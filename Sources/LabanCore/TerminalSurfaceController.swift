@@ -10,7 +10,8 @@ public protocol TerminalSurfaceCaptureSink: CaptureSink {
     frame: Int,
     tabId: String?,
     sessionId: String?,
-    snapshot: UnsafePointer<LabanSnapshot>
+    snapshot: UnsafePointer<LabanSnapshot>,
+    pane: CapturedPaneFrame?
   ) -> String?
 
   @discardableResult
@@ -76,7 +77,30 @@ public enum TerminalSurfaceFrameContentMode: Equatable, Sendable {
   case cellPayloadPreferred
 }
 
+public struct TerminalSurfacePaneRequest {
+  public var sessionId: Session.ID
+  public var rect: CGRect
+  public var isFocused: Bool
+  public var selection: TerminalSelection?
+  public var preedit: String?
+  public var preeditCaretCells: Int
+
+  public init(
+    sessionId: Session.ID, rect: CGRect, isFocused: Bool,
+    selection: TerminalSelection? = nil, preedit: String? = nil, preeditCaretCells: Int = 0
+  ) {
+    self.sessionId = sessionId
+    self.rect = rect
+    self.isFocused = isFocused
+    self.selection = selection
+    self.preedit = preedit
+    self.preeditCaretCells = preeditCaretCells
+  }
+}
+
 public struct TerminalSurfaceFrameRequest {
+  public var panes: [TerminalSurfacePaneRequest]
+  public var dividers: [CGRect]
   public var frame: Int
   public var viewportWidth: CGFloat
   public var viewportHeight: CGFloat
@@ -185,7 +209,9 @@ public struct TerminalSurfaceFrameRequest {
     glyphEffectsEnabled: Bool = false,
     effectiveRendererIsSlug: Bool = false,
     hoverPreviewEnabled: Bool = false,
-    deferHoverPreviewUpdate: Bool = false
+    deferHoverPreviewUpdate: Bool = false,
+    panes: [TerminalSurfacePaneRequest] = [],
+    dividers: [CGRect] = []
   ) {
     self.frame = frame
     self.viewportWidth = viewportWidth
@@ -221,6 +247,8 @@ public struct TerminalSurfaceFrameRequest {
     self.effectiveRendererIsSlug = effectiveRendererIsSlug
     self.hoverPreviewEnabled = hoverPreviewEnabled
     self.deferHoverPreviewUpdate = deferHoverPreviewUpdate
+    self.panes = panes
+    self.dividers = dividers
   }
 }
 
@@ -266,6 +294,7 @@ public struct TerminalSurfaceFrameDiagnostics: Codable, Equatable, Sendable {
 }
 
 public struct TerminalSurfaceFrame {
+  public var paneSessionIds: [Session.ID] = []
   public var frame: Int
   public var tabId: Tab.ID?
   public var sessionId: Session.ID?
@@ -310,6 +339,7 @@ public struct TerminalSurfaceFrame {
     self.frame = frame
     self.tabId = tabId
     self.sessionId = sessionId
+    self.paneSessionIds = sessionId.map { [$0] } ?? []
     self.commands = commands
     self.overlayCommands = overlayCommands
     self.rows = rows
@@ -679,6 +709,12 @@ public final class TerminalSurfaceController {
     self.previewCellWidth = max(0, previewCellWidth)
     self.previewCellHeight = max(0, previewCellHeight)
     self.captureSink = captureSink
+    let priorReplaced = model.onSessionsReplaced
+    model.onSessionsReplaced = { [weak self] in
+      priorReplaced?()
+      self?.invalidateSessionSyncCache()
+    }
+
   }
 
   /// Adopt new cell geometry after a live font-size change. Per-frame
@@ -747,8 +783,9 @@ public final class TerminalSurfaceController {
         // it rendered immediately, but a coherence gate may defer the preview
         // while the generation stays unchanged. Keep reporting that pending
         // dirty state without re-stamping its output time.
-        if tabId == hoveredTabId, session.renderDirty() {
+        if item.isVisible || tabId == hoveredTabId, session.renderDirty() {
           dirtySessionIds.insert(session.id)
+          if item.isVisible { activeTerminalDirty = true }
         }
         // Nothing has changed for this session; skip all per-tab work.
         continue
@@ -784,7 +821,7 @@ public final class TerminalSurfaceController {
       {
         modelChanged = true
       }
-      if tabId == activeTabId {
+      if item.isVisible {
         activeTerminalDirty = true
       } else {
         // A hovered background tab's own output must invalidate the frame
@@ -1003,6 +1040,116 @@ public final class TerminalSurfaceController {
     return requestedTabId
   }
 
+  private func makeSplitFrame(
+    _ request: TerminalSurfaceFrameRequest, tab: Tab,
+    snapshotCommandsHook: SnapshotCommandsHook?
+  ) -> TerminalSurfaceFrame? {
+    let area = CGRect(
+      x: sidebarWidth, y: 0, width: max(0, request.viewportWidth - sidebarWidth),
+      height: request.viewportHeight)
+    let layout = tab.panes.layout(in: area)
+    let panes =
+      request.panes.isEmpty
+      ? layout.map {
+        TerminalSurfacePaneRequest(
+          sessionId: $0.sessionId, rect: $0.rect,
+          isFocused: $0.sessionId == tab.focusedSessionId,
+          selection: $0.sessionId == tab.focusedSessionId ? request.selection : nil,
+          preedit: $0.sessionId == tab.focusedSessionId ? request.preedit : nil,
+          preeditCaretCells: request.preeditCaretCells)
+      } : request.panes
+    var commands = sidebarCommands(
+      activeTabId: tab.id, viewportHeight: request.viewportHeight,
+      topInset: request.sidebarTopInset, scrollOffset: request.sidebarScrollOffset,
+      hoveredTabId: request.hoveredSidebarTabIdIsKeyboardPeek ? nil : request.hoveredSidebarTabId,
+      keyboardPreviewedTabId: keyboardPreviewedTabId(for: request),
+      dragIndicator: request.sidebarDragIndicator, now: request.now,
+      reduceMotion: request.reduceMotion)
+    var result = TerminalSurfaceFrame(
+      frame: request.frame, tabId: tab.id, sessionId: tab.focusedSessionId,
+      commands: [], rows: nil, cols: nil, cursorBlinking: false, gridOriginY: 0, damage: .full)
+    result.paneSessionIds = []
+    for pane in panes {
+      guard let session = model.session(forSessionID: pane.sessionId), let snap = session.snapshot()
+      else { continue }
+      defer { laban_snapshot_destroy(snap) }
+      let snapshot = snap.pointee
+      let rows = Int(snapshot.rows)
+      let originY =
+        pane.rect.minY
+        + Self.terminalGridOriginY(
+          viewportHeight: pane.rect.height,
+          rows: rows, cellHeight: CGFloat(cellHeight), insets: request.insets)
+      let offset = session.viewportState()?.viewportOffset ?? 0
+      model.refreshFindVisible(
+        sessionID: session.id, snapshot: UnsafePointer(snap), viewportOffset: offset)
+      commands.append(
+        .rect(
+          pane.rect,
+          color: request.accessibilityVisualOptions.terminalBackgroundColor(
+            Self.withAlpha(
+              snapshot.default_background_rgba, request.backgroundCompositingOptions.opacity)),
+          source: .terminal, compositing: .replace))
+      let producer = FrameProducer(
+        cellWidth: cellWidth, cellHeight: cellHeight,
+        originX: pane.rect.minX + request.insets.left, originY: originY,
+        contentYOffset: pane.isFocused ? request.contentYOffset : 0,
+        accessibilityVisualOptions: request.accessibilityVisualOptions,
+        backgroundCompositingOptions: request.backgroundCompositingOptions)
+      let cursor = CursorStyleResolver.resolve(
+        userStyle: request.userCursorStyle,
+        userBlinkEnabled: request.userCursorBlinkEnabled, snapshotStyle: snapshot.cursor_style,
+        snapshotBlinking: snapshot.cursor_blinking != 0,
+        styleExplicit: snapshot.cursor_style_explicit,
+        blinkExplicit: snapshot.cursor_blink_explicit, isFocusedPane: pane.isFocused)
+      captureSink?.recordTerminalSnapshot(
+        frame: request.frame, tabId: tab.id, sessionId: session.id, snapshot: UnsafePointer(snap),
+        pane: CapturedPaneFrame(
+          rect: CapturedRect(pane.rect),
+          originX: Double(pane.rect.minX + request.insets.left), originY: Double(originY),
+          cellWidth: cellWidth, cellHeight: cellHeight,
+          cursorStyle: cursor.style, cursorBlinking: cursor.blinking,
+          cursorBlinkVisible: pane.isFocused ? request.cursorBlinkVisible : true,
+          contentYOffset: Double(pane.isFocused ? request.contentYOffset : 0),
+          preedit: pane.isFocused ? pane.preedit : nil, preeditCaretCells: pane.preeditCaretCells,
+          accessibility: request.accessibilityVisualOptions,
+          background: request.backgroundCompositingOptions, dividerColor: Theme.current.dim0))
+      commands += producer.commands(
+        from: UnsafePointer(snap), selection: pane.selection,
+        findState: model.findState(forSession: session.id), viewportRowOffset: offset,
+        cursorBlinkVisible: pane.isFocused ? request.cursorBlinkVisible : true,
+        preedit: pane.isFocused ? pane.preedit : nil, preeditCaretCells: pane.preeditCaretCells,
+        resolvedCursor: cursor)
+      snapshotCommandsHook?(UnsafePointer(snap), commands)
+      result.paneSessionIds.append(session.id)
+      if pane.isFocused {
+        result.rows = rows
+        result.cols = Int(snapshot.cols)
+        result.gridOriginY = originY
+        result.cursorBlinking = cursor.blinking
+        result.cursorVisible = snapshot.cursor_visible != 0
+        result.diagnostics = Self.diagnostics(snapshot: UnsafePointer(snap))
+      }
+    }
+    for divider in request.dividers.isEmpty ? tab.panes.dividerRects(in: area) : request.dividers {
+      commands.append(.rect(divider, color: Theme.current.dim0, source: .terminal))
+    }
+    commands += hoverPreviewOverlayCommands(
+      activeTabId: tab.id, viewportWidth: request.viewportWidth,
+      viewportHeight: request.viewportHeight, topInset: request.sidebarTopInset,
+      scrollOffset: request.sidebarScrollOffset,
+      hoveredTabId: request.hoveredSidebarTabId,
+      hoveredTabIdIsKeyboardPeek: request.hoveredSidebarTabIdIsKeyboardPeek,
+      effectiveRendererIsSlug: request.effectiveRendererIsSlug,
+      hoverPreviewEnabled: request.hoverPreviewEnabled,
+      deferHoverPreviewUpdate: request.deferHoverPreviewUpdate,
+      accessibilityVisualOptions: request.accessibilityVisualOptions,
+      backgroundCompositingOptions: request.backgroundCompositingOptions)
+    result.commands = commands
+    recordFrameCommands(request, commands: commands)
+    return result
+  }
+
   public func makeFrame(
     _ request: TerminalSurfaceFrameRequest,
     snapshotCommandsHook: SnapshotCommandsHook? = nil
@@ -1020,6 +1167,10 @@ public final class TerminalSurfaceController {
         gridOriginY: 0,
         damage: .full
       )
+    }
+
+    if activeTab.allSessionIds.count > 1 {
+      return makeSplitFrame(request, tab: activeTab, snapshotCommandsHook: snapshotCommandsHook)
     }
 
     let keyboardPreviewedTabId = keyboardPreviewedTabId(for: request)
@@ -1058,7 +1209,7 @@ public final class TerminalSurfaceController {
       return TerminalSurfaceFrame(
         frame: request.frame,
         tabId: activeTab.id,
-        sessionId: activeTab.sessionId,
+        sessionId: activeTab.focusedSessionId,
         commands: commands,
         rows: nil,
         cols: nil,
@@ -1094,7 +1245,8 @@ public final class TerminalSurfaceController {
       frame: request.frame,
       tabId: activeTab.id,
       sessionId: session.id,
-      snapshot: UnsafePointer(snap)
+      snapshot: UnsafePointer(snap),
+      pane: nil
     )
 
     let snapshot = snap.pointee
@@ -1357,6 +1509,15 @@ public final class TerminalSurfaceController {
       foregroundTransitions: spinnerMotion?.transitions,
       foregroundWave: spinnerMotion?.wave
     )
+    if activeTab.allSessionIds.count > 1 {
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(
+            x: sidebarWidth + request.insets.left,
+            y: max(0, request.viewportHeight - request.insets.top - CGFloat(cellHeight))),
+          text: "Split view is not available on the laband backend", foreground: Theme.current.fg0,
+          background: Theme.current.bg0, attributes: [], source: .terminal))
+    }
     commands += previewCommands
     recordFrameCommands(request, commands: commands)
 

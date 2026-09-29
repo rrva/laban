@@ -156,6 +156,25 @@ public struct InputEventEnvelope: Codable, Equatable, Sendable {
   }
 }
 
+/// Geometry and cursor presentation needed to replay one pane of a split frame.
+/// Session content is replayed independently from its recorded PTY byte stream.
+public struct CapturedPaneFrame: Codable, Equatable, Sendable {
+  public var rect: CapturedRect
+  public var originX: Double
+  public var originY: Double
+  public var cellWidth: Int
+  public var cellHeight: Int
+  public var cursorStyle: Int32
+  public var cursorBlinking: Bool
+  public var cursorBlinkVisible: Bool
+  public var contentYOffset: Double
+  public var preedit: String?
+  public var preeditCaretCells: Int
+  public var accessibility: TerminalAccessibilityVisualOptions
+  public var background: TerminalBackgroundCompositingOptions
+  public var dividerColor: UInt32
+}
+
 public struct CaptureTimelineEvent: Codable, Equatable, Sendable {
   public var seq: Int
   public var timeNs: UInt64
@@ -200,6 +219,7 @@ public struct CaptureTimelineEvent: Codable, Equatable, Sendable {
   public var focusReporting: Bool?
   public var dirty: Bool?
   public var visibleHash: String?
+  public var pane: CapturedPaneFrame?
 
   public var width: Int?
   public var height: Int?

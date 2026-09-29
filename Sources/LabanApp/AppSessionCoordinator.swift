@@ -157,15 +157,15 @@ final class AppSessionCoordinator {
   /// (reinstall) if its per-process temp directory was deleted while the
   /// app kept running. Wraps `ShellIntegrationOverlayProvider.currentLaunch`.
   private let shellLaunchProvider: () -> ShellIntegrationLaunch
-  private let cwdByTabId: [Tab.ID: String]
-  private var launchCwdOverrideByTabId: [Tab.ID: String] = [:]
+  private let cwdBySessionId: [Tab.ID: String]
+  private var launchCwdOverrideBySessionId: [Tab.ID: String] = [:]
   private let supportsThemeApplication: Bool
   private let supportsViewportScroll: Bool
   private let snapshotBackgroundCapability: TerminalSnapshotBackgroundCapability
-  private var infoByTabId: [Tab.ID: LabandSessionInfo] = [:]
-  private var infoByLocalSessionId: [Session.ID: LabandSessionInfo] = [:]
-  private var labptyDescriptorByTabId: [Tab.ID: LabptySessionDescriptor] = [:]
-  private var labptyFeedByTabId: [Tab.ID: LabptyParserFeed] = [:]
+  private var lastSentSizeBySession: [Session.ID: LabanTerminalSize] = [:]
+  private var infoBySessionId: [Tab.ID: LabandSessionInfo] = [:]
+  private var labptyDescriptorBySessionId: [Tab.ID: LabptySessionDescriptor] = [:]
+  private var labptyFeedBySessionId: [Tab.ID: LabptyParserFeed] = [:]
   private let labptyWakeQueue = DispatchQueue(
     label: "com.laban.labpty.output-wake",
     qos: .userInteractive)
@@ -178,7 +178,7 @@ final class AppSessionCoordinator {
   private let labptyStateLock = NSLock()
   private var labptyDegradation = LabptyOutputDegradation(
     cooldown: AppSessionCoordinator.labptyOutputDegradedCooldown)
-  private var labptyRecoveryNotedTabIds: Set<Tab.ID> = []
+  private var labptyRecoveryNotedSessionIds: Set<Tab.ID> = []
   private var ownedProcess: Process?
   private var themeChangeObserver: NSObjectProtocol?
   private var snapshotGenerationMonitor: LabandSnapshotGenerationMonitor?
@@ -202,11 +202,11 @@ final class AppSessionCoordinator {
   /// request so a tab created via `AppModel.createTab(runningArgv:)` launches
   /// that command instead of the login shell. Wired to
   /// `AppModel.launchArgv(forTab:)` by `MainWindowController`.
-  var argvProvider: ((Tab.ID) -> [String]?)?
+  var argvProvider: ((Tab.ID, Session.ID) -> [String]?)?
 
   /// Per-tab control env from `SessionLaunchContext`, merged into daemon
   /// spawn requests so labpty/laband inherit `LABAN_CONTROL_URL` (2F/C14).
-  var launchEnvironmentProvider: ((Tab.ID) -> [String: String])?
+  var launchEnvironmentProvider: ((Tab.ID, Session.ID) -> [String: String])?
 
   /// Called after tab metadata refresh so attach PID registration can retry
   /// when daemon `childPid` becomes available.
@@ -227,20 +227,20 @@ final class AppSessionCoordinator {
   convenience init(
     client: LabandTerminalSessionClient,
     shellLaunch: ShellIntegrationLaunch,
-    cwdByTabId: [Tab.ID: String] = [:],
+    cwdBySessionId: [Tab.ID: String] = [:],
     labandProcess: Process? = nil
   ) {
     self.init(
       client: client,
       shellLaunchProvider: { shellLaunch },
-      cwdByTabId: cwdByTabId,
+      cwdBySessionId: cwdBySessionId,
       labandProcess: labandProcess)
   }
 
   init(
     client: LabandTerminalSessionClient,
     shellLaunchProvider: @escaping () -> ShellIntegrationLaunch,
-    cwdByTabId: [Tab.ID: String] = [:],
+    cwdBySessionId: [Tab.ID: String] = [:],
     labandProcess: Process? = nil
   ) {
     self.mode = .laband
@@ -250,7 +250,7 @@ final class AppSessionCoordinator {
     }
     self.labptyClient = nil
     self.shellLaunchProvider = shellLaunchProvider
-    self.cwdByTabId = cwdByTabId
+    self.cwdBySessionId = cwdBySessionId
     self.ownedProcess = labandProcess
     let capabilities = (try? client.hello().capabilities) ?? []
     self.supportsThemeApplication = capabilities.contains("theme-palette/v1")
@@ -265,20 +265,20 @@ final class AppSessionCoordinator {
   convenience init(
     labptyClient: LabptyTerminalSessionClient,
     shellLaunch: ShellIntegrationLaunch,
-    cwdByTabId: [Tab.ID: String] = [:],
+    cwdBySessionId: [Tab.ID: String] = [:],
     labptyProcess: Process? = nil
   ) {
     self.init(
       labptyClient: labptyClient,
       shellLaunchProvider: { shellLaunch },
-      cwdByTabId: cwdByTabId,
+      cwdBySessionId: cwdBySessionId,
       labptyProcess: labptyProcess)
   }
 
   init(
     labptyClient: LabptyTerminalSessionClient,
     shellLaunchProvider: @escaping () -> ShellIntegrationLaunch,
-    cwdByTabId: [Tab.ID: String] = [:],
+    cwdBySessionId: [Tab.ID: String] = [:],
     labptyProcess: Process? = nil
   ) {
     self.mode = .labpty
@@ -286,7 +286,7 @@ final class AppSessionCoordinator {
     self.optionalSnapshotTransport = nil
     self.labptyClient = labptyClient
     self.shellLaunchProvider = shellLaunchProvider
-    self.cwdByTabId = cwdByTabId
+    self.cwdBySessionId = cwdBySessionId
     self.ownedProcess = labptyProcess
     self.supportsThemeApplication = false
     self.supportsViewportScroll = false
@@ -306,8 +306,8 @@ final class AppSessionCoordinator {
     labptyClient ?? labandClient
   }
 
-  func setLaunchCwd(_ cwd: String, forTab tabId: Tab.ID) {
-    launchCwdOverrideByTabId[tabId] = cwd
+  func setLaunchCwd(_ cwd: String, forSession tabId: Session.ID) {
+    launchCwdOverrideBySessionId[tabId] = cwd
   }
 
   var usesRemoteSnapshots: Bool {
@@ -331,7 +331,7 @@ final class AppSessionCoordinator {
       },
       wakeHandler: onGenerationAdvance)
     snapshotGenerationMonitor = monitor
-    for logicalSessionId in Set(infoByTabId.values.map(\.logicalSessionId)) {
+    for logicalSessionId in Set(infoBySessionId.values.map(\.logicalSessionId)) {
       monitor.track(sessionId: logicalSessionId)
     }
   }
@@ -342,8 +342,11 @@ final class AppSessionCoordinator {
   }
 
   func ensureSessions(for tabs: [Tab], in model: AppModel, size: LabanTerminalSize) throws {
-    for tab in tabs {
-      _ = try ensureSession(for: tab, session: model.session(forTab: tab.id), size: size)
+    for tab in tabs.flatMap({ tab in tab.allSessionIds.map { tab.focusing($0) } }) {
+      _ = try ensureSession(
+        for: tab, session: model.session(forSessionID: tab.focusedSessionId),
+        size: usesRemoteSnapshots
+          ? model.terminalAreaSize : model.terminalSize(for: tab.focusedSessionId))
     }
   }
 
@@ -360,15 +363,15 @@ final class AppSessionCoordinator {
   }
 
   func sessionInfo(for tab: Tab) -> LabandSessionInfo? {
-    infoByTabId[tab.id] ?? infoByLocalSessionId[tab.sessionId]
+    infoBySessionId[tab.focusedSessionId]
   }
 
   /// Shell leader PID for C14 attach registration on daemon-backed sessions.
-  func attachShellPID(forTabId tabId: Tab.ID) -> pid_t? {
-    if let info = infoByTabId[tabId], let childPid = info.childPid, childPid > 0 {
+  func attachShellPID(forSessionId tabId: Session.ID) -> pid_t? {
+    if let info = infoBySessionId[tabId], let childPid = info.childPid, childPid > 0 {
       return pid_t(childPid)
     }
-    if let descriptor = labptyDescriptorByTabId[tabId], descriptor.childPid > 0 {
+    if let descriptor = labptyDescriptorBySessionId[tabId], descriptor.childPid > 0 {
       return descriptor.childPid
     }
     return nil
@@ -453,29 +456,32 @@ final class AppSessionCoordinator {
   }
 
   func resize(tabs: [Tab], in model: AppModel, size: LabanTerminalSize) {
-    for tab in tabs {
+    resize(
+      sizesBySession: Dictionary(
+        uniqueKeysWithValues: tabs.flatMap(\.allSessionIds).map {
+          ($0, usesRemoteSnapshots ? model.terminalAreaSize : model.terminalSize(for: $0))
+        }))
+  }
+
+  func resize(sizesBySession: [Session.ID: LabanTerminalSize]) {
+    for (id, size) in sizesBySession {
+      if let last = lastSentSizeBySession[id], last.cols == size.cols, last.rows == size.rows {
+        continue
+      }
       do {
-        let session = model.session(forTab: tab.id)
-        if let labptyClient {
-          let descriptor = try ensureLabptyDescriptor(for: tab, session: session, size: size)
-          let resized = try labptyClient.resize(
-            handle: descriptor.ptyHandle,
-            rows: Int(size.rows),
-            cols: Int(size.cols))
-          storeLabpty(resized, for: tab)
+        if let client = labptyClient, let descriptor = labptyDescriptorBySessionId[id] {
+          let resized = try client.resize(
+            handle: descriptor.ptyHandle, rows: Int(size.rows), cols: Int(size.cols))
+          labptyDescriptorBySessionId[id] = resized
+          infoBySessionId[id] = labptyInfo(from: resized)
+        } else if let client = labandClient, infoBySessionId[id] != nil {
+          infoBySessionId[id] = try client.resize(
+            sessionId: id, rows: Int(size.rows), cols: Int(size.cols))
+        } else {
           continue
         }
-        guard let labandClient else { continue }
-        let info = try ensureLabandSession(for: tab, size: size)
-        let resized = try labandClient.resize(
-          sessionId: info.logicalSessionId,
-          rows: Int(size.rows),
-          cols: Int(size.cols)
-        )
-        store(resized, for: tab)
-      } catch {
-        AppLog.app.error("session resize failed for tab \(tab.id): \(String(describing: error))")
-      }
+        lastSentSizeBySession[id] = size
+      } catch { AppLog.app.error("session resize failed for \(id): \(String(describing: error))") }
     }
   }
 
@@ -497,9 +503,17 @@ final class AppSessionCoordinator {
   }
 
   func terminate(tab: Tab) {
+    for id in tab.allSessionIds { terminateSession(tab: tab.focusing(id)) }
+  }
+
+  func terminate(sessionId: Session.ID, in tab: Tab) {
+    terminateSession(tab: tab.focusing(sessionId))
+  }
+
+  private func terminateSession(tab: Tab) {
     var logicalSessionId = sessionInfo(for: tab)?.logicalSessionId
     if let labptyClient {
-      if let descriptor = labptyDescriptorByTabId[tab.id] {
+      if let descriptor = labptyDescriptorBySessionId[tab.focusedSessionId] {
         _ = try? labptyClient.terminate(handle: descriptor.ptyHandle)
       } else if let info = sessionInfo(for: tab) {
         _ = try? labptyClient.terminate(sessionId: info.logicalSessionId)
@@ -533,7 +547,7 @@ final class AppSessionCoordinator {
 
   func sweepOrphanedSessions() {
     guard mode == .laband else { return }
-    let knownIds = Set(infoByTabId.values.map(\.logicalSessionId))
+    let knownIds = Set(infoBySessionId.values.map(\.logicalSessionId))
     guard let client = terminalClient else { return }
     let allSessions: [LabandSessionInfo]
     do {
@@ -562,7 +576,7 @@ final class AppSessionCoordinator {
   /// `workspace.json` was lost or desynced (a Shift-archive wipe, a crash
   /// before save). The policy is detect-and-offer-to-adopt. Returns []
   /// outside labpty mode.
-  func unclaimedLabptySessions(knownTabIds: Set<Tab.ID>) -> [LabptySessionDescriptor] {
+  func unclaimedLabptySessions(knownSessionIds: Set<Tab.ID>) -> [LabptySessionDescriptor] {
     guard mode == .labpty, let labptyClient else { return [] }
     let descriptors: [LabptySessionDescriptor]
     do {
@@ -572,7 +586,7 @@ final class AppSessionCoordinator {
         "labpty listSessions failed during orphan detection: \(String(describing: error))")
       return []
     }
-    return descriptors.filter { $0.alive && !knownTabIds.contains($0.logicalSessionId) }
+    return descriptors.filter { $0.alive && !knownSessionIds.contains($0.logicalSessionId) }
   }
 
   /// Reattach each unclaimed labpty session by giving it a restored tab
@@ -599,7 +613,10 @@ final class AppSessionCoordinator {
           cwd: cwd,
           launchCommand: shellLaunchProvider().argv?.joined(separator: " ") ?? "",
           isActive: false)
-        _ = try ensureSession(for: tab, session: model.session(forTab: tab.id), size: size)
+        _ = try ensureSession(
+          for: tab, session: model.session(forSessionID: tab.focusedSessionId),
+          size: usesRemoteSnapshots
+            ? model.terminalAreaSize : model.terminalSize(for: tab.focusedSessionId))
         adopted.append(tab)
       } catch {
         AppLog.app.error(
@@ -639,11 +656,12 @@ final class AppSessionCoordinator {
       return
     }
     let infoById = Dictionary(uniqueKeysWithValues: infos.map { ($0.logicalSessionId, $0) })
-    for tab in tabs {
-      guard let info = infoById[tab.id] else { continue }
+    for tab in tabs.flatMap({ tab in tab.allSessionIds.map { tab.focusing($0) } }) {
+      guard let info = infoById[tab.focusedSessionId] else { continue }
       store(info, for: tab)
       let signals = surfaceSignals(from: info)
-      _ = model.applySurfaceSignals(signals, forTab: tab.id, now: now)
+      _ = model.applySurfaceSignals(
+        signals, forTab: tab.id, sessionId: tab.focusedSessionId, now: now)
     }
   }
 
@@ -652,16 +670,16 @@ final class AppSessionCoordinator {
     stopSnapshotGenerationMonitor()
     cancelLabptyOutputWake()
     cancelLabptyActiveDrain()
-    for feed in labptyFeedByTabId.values {
+    for feed in labptyFeedBySessionId.values {
       feed.stop()
     }
-    labptyFeedByTabId.removeAll()
+    labptyFeedBySessionId.removeAll()
     labptyClient?.close()
     optionalSnapshotTransport?.close()
     labandClient?.close()
-    infoByTabId.removeAll()
-    infoByLocalSessionId.removeAll()
-    labptyDescriptorByTabId.removeAll()
+    infoBySessionId.removeAll()
+    lastSentSizeBySession.removeAll()
+    labptyDescriptorBySessionId.removeAll()
     ownedProcess = nil
   }
 
@@ -681,11 +699,11 @@ final class AppSessionCoordinator {
     guard let labandClient else {
       throw TerminalSessionClientError.sessionNotFound(tab.id)
     }
-    if let cached = infoByTabId[tab.id], cached.lifecycleState == .running {
+    if let cached = infoBySessionId[tab.focusedSessionId], cached.lifecycleState == .running {
       return cached
     }
 
-    if let existing = try? labandClient.lookupSession(logicalSessionId: tab.id),
+    if let existing = try? labandClient.lookupSession(logicalSessionId: tab.focusedSessionId),
       existing.lifecycleState == .running
     {
       let controlled = try ensureControlLease(existing)
@@ -717,10 +735,10 @@ final class AppSessionCoordinator {
     session: Session?,
     size: LabanTerminalSize
   ) throws -> LabptySessionDescriptor {
-    if let cached = infoByTabId[tab.id], cached.lifecycleState == .running,
-      let descriptor = labptyDescriptorByTabId[tab.id]
+    if let cached = infoBySessionId[tab.focusedSessionId], cached.lifecycleState == .running,
+      let descriptor = labptyDescriptorBySessionId[tab.focusedSessionId]
     {
-      if labptyFeedByTabId[tab.id] == nil, let session {
+      if labptyFeedBySessionId[tab.focusedSessionId] == nil, let session {
         // The feed is gone but the session outlived it: a new feed re-reads
         // the byte ring from offset 0, i.e. replays historical output.
         try startLabptyFeed(
@@ -733,7 +751,7 @@ final class AppSessionCoordinator {
       throw TerminalSessionClientError.sessionNotFound(tab.id)
     }
     let existing = try labptyClient.listLabptySessions().first {
-      $0.logicalSessionId == tab.id && $0.alive
+      $0.logicalSessionId == tab.focusedSessionId && $0.alive
     }
     let descriptor: LabptySessionDescriptor
     if let existing {
@@ -762,13 +780,15 @@ final class AppSessionCoordinator {
     session: Session,
     isReattach: Bool
   ) throws {
-    if labptyFeedByTabId[tab.id]?.ptyHandle == descriptor.ptyHandle {
+    if labptyFeedBySessionId[tab.focusedSessionId]?.ptyHandle == descriptor.ptyHandle {
       return
     }
     stopLabptyFeed(for: tab)
+    // Replacing the reader must preserve the descriptor used for resize and input.
+    storeLabpty(descriptor, for: tab)
     let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
     let outputWakeAvailable = ensureLabptyOutputWake()
-    let tabId = tab.id
+    let tabId = tab.focusedSessionId
     let feed = LabptyParserFeed(
       ptyHandle: descriptor.ptyHandle,
       reader: reader,
@@ -793,7 +813,7 @@ final class AppSessionCoordinator {
             """)
         }
       })
-    labptyFeedByTabId[tab.id] = feed
+    labptyFeedBySessionId[tab.focusedSessionId] = feed
     feed.start(
       pollingIntervalMilliseconds: outputWakeAvailable
         ? Self.labptyWakeFallbackPollMilliseconds
@@ -804,9 +824,9 @@ final class AppSessionCoordinator {
   }
 
   private func stopLabptyFeed(for tab: Tab) {
-    labptyFeedByTabId.removeValue(forKey: tab.id)?.stop()
-    labptyDescriptorByTabId.removeValue(forKey: tab.id)
-    clearLabptyOutputDegraded(for: tab.id)
+    labptyFeedBySessionId.removeValue(forKey: tab.focusedSessionId)?.stop()
+    labptyDescriptorBySessionId.removeValue(forKey: tab.focusedSessionId)
+    clearLabptyOutputDegraded(for: tab.focusedSessionId)
   }
 
   private func ensureLabptyOutputWake() -> Bool {
@@ -850,7 +870,7 @@ final class AppSessionCoordinator {
   private func fallbackToLabptyPolling() {
     cancelLabptyActiveDrain()
     cancelLabptyOutputWake(allowRetry: false)
-    for feed in labptyFeedByTabId.values {
+    for feed in labptyFeedBySessionId.values {
       feed.setPollingInterval(milliseconds: 4)
     }
   }
@@ -938,7 +958,7 @@ final class AppSessionCoordinator {
     // caller (daemon wake pipe, unpark response, reconnect) must stay
     // unconditional so a stale offset mirror can only cause a spurious poll,
     // never a missed one (see `wakeIfOutputPending()`'s comment).
-    for feed in labptyFeedByTabId.values {
+    for feed in labptyFeedBySessionId.values {
       feed.wakeIfOutputPending()
     }
   }
@@ -946,7 +966,7 @@ final class AppSessionCoordinator {
   private func parkLabptyOutputWakeAfterQuiet() {
     guard labptyWakeAvailable, let labptyClient else { return }
     cancelLabptyActiveDrain()
-    let feeds = Array(labptyFeedByTabId.values)
+    let feeds = Array(labptyFeedBySessionId.values)
     let group = DispatchGroup()
     let entries = OSAllocatedUnfairLock(initialState: [LabptyOutputWakeParkEntry]())
     for feed in feeds {
@@ -1006,17 +1026,17 @@ final class AppSessionCoordinator {
     Self.noteMissingLabptySessionsIfNeeded(
       tabs: tabs,
       model: model,
-      attachedTabIds: Set(labptyDescriptorByTabId.keys),
+      attachedTabIds: Set(labptyDescriptorBySessionId.keys),
       liveLogicalIds: Set(descriptorById.keys),
-      notedTabIds: &labptyRecoveryNotedTabIds)
+      notedTabIds: &labptyRecoveryNotedSessionIds)
     // Kick off the off-main libproc walk for the live children so the next
     // poll reads warm metadata instead of blocking the render tick on syscalls.
     refreshProcMetadataCache(forChildPids: descriptors.map { $0.childPid })
     // Drop degraded stamps whose cooldown has fully elapsed so the map cannot
     // accumulate entries for tabs that overflowed once and were never closed.
     labptyStateLock.withLock { labptyDegradation.pruneExpired(now: now) }
-    for tab in tabs {
-      guard let descriptor = descriptorById[tab.id] else { continue }
+    for tab in tabs.flatMap({ tab in tab.allSessionIds.map { tab.focusing($0) } }) {
+      guard let descriptor = descriptorById[tab.focusedSessionId] else { continue }
       storeLabpty(descriptor, for: tab)
       // The "output skipped" badge is a live signal that bytes are being dropped
       // right now — and for a short cooldown after the last drop — not a permanent
@@ -1026,20 +1046,23 @@ final class AppSessionCoordinator {
       // on selection. Before this the latch only dropped on stop/close, so the
       // badge stuck to a live tab forever.
       if tab.isActive {
-        clearLabptyOutputDegraded(for: tab.id)
+        clearLabptyOutputDegraded(for: tab.focusedSessionId)
       }
-      let degraded = isLabptyOutputDegraded(for: tab.id, now: now)
+      let degraded = isLabptyOutputDegraded(for: tab.focusedSessionId, now: now)
       let signals = surfaceSignals(
         from: labptyInfo(from: descriptor),
         labptyOutputDegraded: degraded)
-      _ = model.applySurfaceSignals(signals, forTab: tab.id, now: now)
+      _ = model.applySurfaceSignals(
+        signals, forTab: tab.id, sessionId: tab.focusedSessionId, now: now)
       if !degraded {
         // surfaceSignals sends a nil agentStatus when not degraded, and the
         // synchronizer deliberately leaves a nil alone so a metadata poll can
         // never wipe an OSC 21337 status. Clearing a retired degraded badge is
         // therefore explicit, and scoped to the exact badge so it can never
         // touch an OSC status that happens to share titleMetadata.agentStatus.
-        _ = model.clearAgentStatus(forTab: tab.id, ifEquals: Self.labptyOutputDegradedStatus)
+        _ = model.clearAgentStatus(
+          forTab: tab.id, sessionId: tab.focusedSessionId, ifEquals: Self.labptyOutputDegradedStatus
+        )
       }
     }
   }
@@ -1052,12 +1075,12 @@ final class AppSessionCoordinator {
     liveLogicalIds: Set<String>,
     notedTabIds: inout Set<Tab.ID>
   ) -> [Tab.ID] {
-    let liveTabIds = Set(tabs.map(\.id))
+    let liveTabIds = Set(tabs.flatMap(\.allSessionIds))
     notedTabIds.formIntersection(liveTabIds)
     notedTabIds.subtract(liveLogicalIds)
-    let affected = tabs.filter {
-      attachedTabIds.contains($0.id) && !liveLogicalIds.contains($0.id)
-        && !notedTabIds.contains($0.id)
+    let affected = tabs.flatMap { tab in tab.allSessionIds.map { tab.focusing($0) } }.filter {
+      attachedTabIds.contains($0.focusedSessionId) && !liveLogicalIds.contains($0.focusedSessionId)
+        && !notedTabIds.contains($0.focusedSessionId)
     }
     guard !affected.isEmpty else { return [] }
     let labels = affected.map(\.title).joined(separator: ", ")
@@ -1070,7 +1093,7 @@ final class AppSessionCoordinator {
         note: TabStateJournal.daemonRecoveryNote,
         text: text,
         urgent: true)
-      notedTabIds.insert(tab.id)
+      notedTabIds.insert(tab.focusedSessionId)
     }
     return affected.map(\.id)
   }
@@ -1210,19 +1233,18 @@ final class AppSessionCoordinator {
   }
 
   private func store(_ info: LabandSessionInfo, for tab: Tab) {
-    infoByTabId[tab.id] = info
-    infoByLocalSessionId[tab.sessionId] = info
+    infoBySessionId[tab.focusedSessionId] = info
   }
 
   private func storeLabpty(_ descriptor: LabptySessionDescriptor, for tab: Tab) {
-    labptyDescriptorByTabId[tab.id] = descriptor
+    labptyDescriptorBySessionId[tab.focusedSessionId] = descriptor
     store(labptyInfo(from: descriptor), for: tab)
   }
 
   private func removeCachedInfo(for tab: Tab) {
-    infoByTabId.removeValue(forKey: tab.id)
-    infoByLocalSessionId.removeValue(forKey: tab.sessionId)
-    clearLabptyOutputDegraded(for: tab.id)
+    infoBySessionId.removeValue(forKey: tab.focusedSessionId)
+    lastSentSizeBySession.removeValue(forKey: tab.focusedSessionId)
+    clearLabptyOutputDegraded(for: tab.focusedSessionId)
   }
 
   private static let labptyOutputDegradedStatus = TabAgentStatus(
@@ -1264,7 +1286,7 @@ final class AppSessionCoordinator {
   }
 
   private func applyCurrentThemeToKnownSessions() {
-    let logicalSessionIds = Set(infoByTabId.values.map(\.logicalSessionId))
+    let logicalSessionIds = Set(infoBySessionId.values.map(\.logicalSessionId))
     for logicalSessionId in logicalSessionIds {
       applyCurrentTheme(to: logicalSessionId)
     }
@@ -1308,31 +1330,31 @@ final class AppSessionCoordinator {
     LabptyOpenSessionRequest(
       rows: UInt32(max(1, Int(size.rows))),
       cols: UInt32(max(1, Int(size.cols))),
-      argv: (argvProvider?(tab.id) ?? shellLaunchProvider().argv) ?? [],
+      argv: (argvProvider?(tab.id, tab.focusedSessionId) ?? shellLaunchProvider().argv) ?? [],
       envp: mergedSpawnEnvironment(for: tab).map { "\($0.key)=\($0.value)" }.sorted(),
-      cwd: cwdByLogicalSessionId(tab.id),
-      logicalSessionId: tab.id)
+      cwd: cwdByLogicalSessionId(tab.focusedSessionId),
+      logicalSessionId: tab.focusedSessionId)
   }
 
   private func launchRequest(
     for tab: Tab,
     size: LabanTerminalSize
   ) -> TerminalSessionLaunchRequest {
-    let argv = argvProvider?(tab.id) ?? shellLaunchProvider().argv
+    let argv = argvProvider?(tab.id, tab.focusedSessionId) ?? shellLaunchProvider().argv
     return TerminalSessionLaunchRequest(
       executable: argv?.first,
       argv: argv,
-      cwd: cwdByLogicalSessionId(tab.id),
+      cwd: cwdByLogicalSessionId(tab.focusedSessionId),
       environmentPatch: mergedSpawnEnvironment(for: tab),
       rows: Int(size.rows),
       cols: Int(size.cols),
-      logicalSessionId: tab.id
+      logicalSessionId: tab.focusedSessionId
     )
   }
 
   private func mergedSpawnEnvironment(for tab: Tab) -> [String: String] {
     var env = spawnShellLaunch.environmentOverrides
-    if let overrides = launchEnvironmentProvider?(tab.id) {
+    if let overrides = launchEnvironmentProvider?(tab.id, tab.focusedSessionId) {
       for (key, value) in overrides {
         env[key] = value
       }
@@ -1341,7 +1363,7 @@ final class AppSessionCoordinator {
   }
 
   private func cwdByLogicalSessionId(_ logicalSessionId: String) -> String {
-    launchCwdOverrideByTabId[logicalSessionId] ?? cwdByTabId[logicalSessionId]
+    launchCwdOverrideBySessionId[logicalSessionId] ?? cwdBySessionId[logicalSessionId]
       ?? FileManager.default.homeDirectoryForCurrentUser.path
   }
 

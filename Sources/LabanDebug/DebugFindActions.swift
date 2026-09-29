@@ -71,11 +71,11 @@ struct DebugFindActions {
     if requested != nil {
       return nil
     }
-    return runtime.model.activeTab?.sessionId
+    return runtime.model.activeTab?.focusedSessionId
   }
 
   private func recordFindInput(command: String, sessionId: Session.ID, text: String?) {
-    let tab = runtime.model.tabs.first { $0.sessionId == sessionId }
+    let tab = runtime.model.tabs.first { $0.allSessionIds.contains(sessionId) }
     runtime.appendInputEnvelope(
       InputEventEnvelope(
         inputId: UUID().uuidString,

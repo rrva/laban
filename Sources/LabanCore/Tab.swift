@@ -35,7 +35,18 @@ public struct Tab {
     }
   }
   public var isActive: Bool
-  public let sessionId: Session.ID
+  public var panes: PaneTree
+  public var focusedSessionId: Session.ID
+  public var focusHistory: [Session.ID]
+  public var allSessionIds: [Session.ID] { panes.leafSessionIds() }
+
+  /// A session-addressed view for daemon adapters. Does not mutate model focus.
+  public func focusing(_ sessionId: Session.ID) -> Tab {
+    precondition(panes.contains(sessionId))
+    var copy = self
+    copy.focusedSessionId = sessionId
+    return copy
+  }
   public var status: TabStatus = .running
   public var titleMetadata: TabTitleMetadata
   /// Last output / activity time for this tab's session. Runtime-only (never
@@ -61,7 +72,9 @@ public struct Tab {
     self.id = id
     self.position = position
     self.isActive = isActive
-    self.sessionId = sessionId
+    self.panes = .leaf(sessionId: sessionId)
+    self.focusedSessionId = sessionId
+    self.focusHistory = [sessionId]
     self.status = status
     self.lastActivityAt = lastActivityAt
     self.lastOutputAt = lastOutputAt

@@ -21,14 +21,14 @@ struct DebugTabActions {
 
   func closeTab(_ request: TabTargetActionRequest) -> DebugResponse {
     guard let tabId = request.tabId else { return jsonError("closeTab requires tabId") }
-    let closingSessionId = runtime.model.tabs.first(where: { $0.id == tabId })?.sessionId
-    if let closingSessionId {
+    let closingSessionIds = runtime.model.tabs.first(where: { $0.id == tabId })?.allSessionIds ?? []
+    for closingSessionId in closingSessionIds {
       runtime.terminateTerminalClientSessionUnlocked(sessionId: closingSessionId)
     }
     do { try runtime.model.closeTab(tabId) } catch {
       return jsonError("closeTab failed: \(error)")
     }
-    if let closingSessionId {
+    for closingSessionId in closingSessionIds {
       runtime.selectionBySession.removeValue(forKey: closingSessionId)
     }
     runtime.renderFrameUnlocked()

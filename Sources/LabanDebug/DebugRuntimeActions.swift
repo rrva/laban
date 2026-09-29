@@ -23,6 +23,8 @@ extension HeadlessDebugRuntime {
 
   func applyActionUnlocked(_ action: DebugAction, scopedSessionID: String?) -> DebugResponse {
     switch action {
+    case .pane(let action, let request):
+      return DebugPaneActions(runtime: self).apply(action, request)
     case .newTab:
       return DebugTabActions(runtime: self).newTab()
     case .closeTab(let request):
@@ -135,7 +137,7 @@ extension HeadlessDebugRuntime {
     return jsonEncode(
       ActionResult(
         ok: false, frame: currentFrame,
-        activeTabId: active?.id, activeSessionId: active?.sessionId,
+        activeTabId: active?.id, activeSessionId: active?.focusedSessionId,
         error: "debug action \(actionName) is not implemented yet"
       ))
   }
@@ -147,7 +149,7 @@ extension HeadlessDebugRuntime {
         ok: ok,
         frame: currentFrame,
         activeTabId: active?.id,
-        activeSessionId: active?.sessionId,
+        activeSessionId: active?.focusedSessionId,
         error: nil
       ))
   }

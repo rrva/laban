@@ -38,7 +38,11 @@ final class LabanAppTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.parserOnly(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.parserOnly(size: size, sessionID: context.sessionID)
+      })
     let tab = try XCTUnwrap(model.activeTab)
     let session = try XCTUnwrap(model.session(forTab: tab.id))
     let client = try waitForLabptyClient(socketPath: socketPath)
@@ -49,7 +53,7 @@ final class LabanAppTests: XCTestCase {
           "/bin/sh", "-c",
           "printf STARTED; while IFS= read -r x; do echo \"got $x\"; done",
         ]),
-      cwdByTabId: [tab.id: FileManager.default.currentDirectoryPath]
+      cwdBySessionId: [tab.id: FileManager.default.currentDirectoryPath]
     )
     defer { coordinator.detach() }
 
@@ -87,7 +91,7 @@ final class LabanAppTests: XCTestCase {
     let firstCoordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: command),
-      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
     let firstInfo = try firstCoordinator.ensureSession(
       for: firstTab,
       session: firstSession,
@@ -105,7 +109,7 @@ final class LabanAppTests: XCTestCase {
     let secondCoordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: command),
-      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
     defer {
       secondCoordinator.terminate(tab: secondTab)
       secondCoordinator.detach()
@@ -168,7 +172,7 @@ final class LabanAppTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: .passthrough,
-      cwdByTabId: ["kept-tab": FileManager.default.currentDirectoryPath])
+      cwdBySessionId: ["kept-tab": FileManager.default.currentDirectoryPath])
     defer {
       coordinator.detach()
       model.closeAllSessions()
@@ -229,7 +233,7 @@ final class LabanAppTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: .passthrough,
-      cwdByTabId: ["kept-tab": FileManager.default.currentDirectoryPath])
+      cwdBySessionId: ["kept-tab": FileManager.default.currentDirectoryPath])
     defer {
       coordinator.detach()
       model.closeAllSessions()
@@ -239,7 +243,8 @@ final class LabanAppTests: XCTestCase {
 
     // Detection: the bound tab is claimed; only the unknown session shows
     // up as unclaimed.
-    let unclaimed = coordinator.unclaimedLabptySessions(knownTabIds: Set(model.tabs.map(\.id)))
+    let unclaimed = coordinator.unclaimedLabptySessions(
+      knownSessionIds: Set(model.tabs.map(\.focusedSessionId)))
     XCTAssertEqual(unclaimed.map(\.logicalSessionId), ["unknown-live-tab"])
 
     // Adoption binds a new tab to the *existing* child (same pid) instead
@@ -293,7 +298,7 @@ final class LabanAppTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: command),
-      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
     defer {
       coordinator.terminate(tab: tab)
       coordinator.detach()
@@ -374,7 +379,7 @@ final class LabanAppTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: command),
-      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
     defer {
       coordinator.terminate(tab: tab)
       coordinator.detach()
@@ -470,7 +475,7 @@ final class LabanAppTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: command),
-      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
     defer {
       coordinator.terminate(tab: tab)
       coordinator.detach()
@@ -572,7 +577,7 @@ final class LabanAppTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: command),
-      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
     defer {
       coordinator.terminate(tab: tab)
       coordinator.detach()
@@ -633,7 +638,7 @@ final class LabanAppTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: command),
-      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
     defer {
       coordinator.terminate(tab: tab)
       coordinator.detach()
@@ -714,7 +719,7 @@ final class LabanAppTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: command),
-      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
     defer {
       coordinator.terminate(tab: tab)
       coordinator.detach()
@@ -795,7 +800,7 @@ final class LabanAppTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       labptyClient: try waitForLabptyClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: command),
-      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
     defer {
       coordinator.terminate(tab: tab)
       coordinator.detach()
@@ -856,7 +861,11 @@ final class LabanAppTests: XCTestCase {
   }
 
   private func parserModel(tabId: String, size: LabanTerminalSize) throws -> AppModel {
-    let model = try AppModel(initialSize: size) { try Session.parserOnly(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.parserOnly(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -1094,4 +1103,45 @@ final class LabanAppTests: XCTestCase {
     )
   }
 
+}
+
+extension LabanAppTests {
+  func testSplitTabSurvivesLabanAppRestartViaLabpty() throws {
+    let h = try SplitDaemonHarness()
+    let tab = try h.split()
+    let before = try h.client.listLabptySessions().filter(\.alive)
+    let state = try JSONDecoder().decode(
+      WorkspaceState.self,
+      from: JSONEncoder().encode(h.model.snapshotForPersistence(windowId: "w")))
+    h.coordinator.detach()
+    h.model.closeAllSessions()
+    let restored = try AppModel(
+      initialSize: h.size,
+      sessionFactory: { size, context in
+        try Session.parserOnly(size: size, sessionID: context.sessionID)
+      })
+    restored.replaceTabs(from: state)
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try LabptyTerminalSessionClient(
+        socketPath: h.root.appendingPathComponent("s.sock").path),
+      shellLaunch: ShellIntegrationLaunch(argv: ["/bin/sleep", "60"]))
+    defer {
+      for tab in restored.tabs { coordinator.terminate(tab: tab) }
+      coordinator.detach()
+      restored.closeAllSessions()
+    }
+    try coordinator.ensureSessions(for: restored.tabs, in: restored, size: h.size)
+    XCTAssertEqual(restored.activeTab?.panes, tab.panes)
+    XCTAssertEqual(restored.activeTab?.focusedSessionId, tab.focusedSessionId)
+    for descriptor in before {
+      let projected = try XCTUnwrap(restored.tabProjection(forSession: descriptor.logicalSessionId))
+      XCTAssertEqual(coordinator.sessionInfo(for: projected)?.childPid, Int(descriptor.childPid))
+      XCTAssertEqual(
+        kill(descriptor.childPid, 0), 0, "the original pane process must still be alive")
+    }
+    XCTAssertTrue(
+      coordinator.unclaimedLabptySessions(
+        knownSessionIds: Set(restored.tabs.flatMap(\.allSessionIds))
+      ).isEmpty)
+  }
 }

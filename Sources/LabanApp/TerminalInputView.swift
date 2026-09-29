@@ -5,6 +5,7 @@ import LabanCore
 // MARK: - App commands
 
 enum AppCommand: Equatable {
+  case splitPaneRight, closePane, focusNextPane, focusPreviousPane
   case newTab
   case closeTab
   case selectTab(index: Int)
@@ -187,6 +188,9 @@ extension TerminalKeyDescriptor {
     case .j where modifiers.contains(.control) && modifiers.contains(.alt):
       return .appCommand(.dumpRenderJournal)
     case .m: return .appCommand(.minimize)
+    case .d: return .appCommand(modifiers.contains(.shift) ? .closePane : .splitPaneRight)
+    case .bracketRight where modifiers.contains(.alt): return .appCommand(.focusNextPane)
+    case .bracketLeft where modifiers.contains(.alt): return .appCommand(.focusPreviousPane)
     case .t: return .appCommand(.newTab)
     case .w: return .appCommand(.closeTab)
     case .c: return .appCommand(.copy)

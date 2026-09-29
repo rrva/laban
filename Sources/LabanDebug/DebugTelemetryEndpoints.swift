@@ -65,7 +65,7 @@ extension HeadlessDebugRuntime {
   public func terminalLogResponse(query: [String: String]) -> DebugResponse {
     withRuntimeLock {
       jsonEncode(
-        logs.terminalLogResponse(query: query, defaultSessionId: model.activeTab?.sessionId))
+        logs.terminalLogResponse(query: query, defaultSessionId: model.activeTab?.focusedSessionId))
     }
   }
 

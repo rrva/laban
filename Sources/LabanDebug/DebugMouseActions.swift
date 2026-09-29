@@ -25,12 +25,13 @@ struct DebugMouseActions {
       runtime.appendEvent(EventEntry(kind: "mouse.sidebar", action: "mouseWheel"))
       return runtime.actionResult(ok: true)
     }
-    guard let tab = runtime.model.activeTab,
-      let session = runtime.model.session(forTab: tab.id)
+    guard let hit = runtime.paneHit(x: x, y: y, sessionId: request.sessionId),
+      let tab = runtime.model.tabProjection(forSession: hit.sessionId),
+      let session = runtime.model.session(forSessionID: hit.sessionId)
     else {
       return jsonError("no active session for mouseWheel")
     }
-    let terminalPoint = runtime.terminalMousePosition(x: x, y: y)
+    let terminalPoint = runtime.terminalMousePosition(x: x, y: y, sessionId: session.id)
     let isUp = deltaY > 0
 
     let viewportState = session.viewportState()
@@ -86,12 +87,12 @@ struct DebugMouseActions {
         encodedLength: encoded.isEmpty ? nil : encoded.count
       ))
     runtime.appendEvent(
-      EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "altScroll"))
+      EventEntry(kind: "mouse.sent", sessionId: tab.focusedSessionId, action: "altScroll"))
     runtime.renderFrameUnlocked()
     return jsonEncode(
       MouseActionResult(
         ok: sent.result == 0, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: false, sent: sent.result == 0
       ))
   }
@@ -104,12 +105,14 @@ struct DebugMouseActions {
     if x < runtime.sidebarWidth {
       return clickSidebar(x: x, y: y)
     }
-    guard let tab = runtime.model.activeTab,
-      let session = runtime.model.session(forTab: tab.id)
+    guard let hit = runtime.paneHit(x: x, y: y, sessionId: request.sessionId),
+      let tab = runtime.model.tabProjection(forSession: hit.sessionId),
+      let session = runtime.model.session(forSessionID: hit.sessionId)
     else {
       return jsonError("no active session for click")
     }
-    let terminalPoint = runtime.terminalMousePosition(x: x, y: y)
+    runtime.model.focusPane(inTab: tab.id, sessionId: session.id)
+    let terminalPoint = runtime.terminalMousePosition(x: x, y: y, sessionId: session.id)
 
     let encodingOptions = mouseEncodingOptions(session: session)
     if encodingOptions != nil || session.viewportState()?.mouseTracking == true {
@@ -145,19 +148,21 @@ struct DebugMouseActions {
       runtime.appendEvent(EventEntry(kind: "mouse.sidebar", action: "mouseDrag"))
       return runtime.actionResult(ok: true)
     }
-    guard let tab = runtime.model.activeTab,
-      let session = runtime.model.session(forTab: tab.id)
+    guard let hit = runtime.paneHit(x: startX, y: startY, sessionId: request.sessionId),
+      let tab = runtime.model.tabProjection(forSession: hit.sessionId),
+      let session = runtime.model.session(forSessionID: hit.sessionId)
     else {
       return jsonError("no active session for mouseDrag")
     }
+    runtime.model.focusPane(inTab: tab.id, sessionId: session.id)
     let encodingOptions = mouseEncodingOptions(session: session)
     guard encodingOptions != nil || session.viewportState()?.mouseTracking == true else {
       return jsonError("mouseDrag requires mouse tracking")
     }
 
     let mouseButton = Self.mouseButton(named: request.button)
-    let startPoint = runtime.terminalMousePosition(x: startX, y: startY)
-    let endPoint = runtime.terminalMousePosition(x: endX, y: endY)
+    let startPoint = runtime.terminalMousePosition(x: startX, y: startY, sessionId: session.id)
+    let endPoint = runtime.terminalMousePosition(x: endX, y: endY, sessionId: session.id)
     let pressEvent = mouseEvent(
       action: .press, button: mouseButton, at: startPoint, encodingOptions: encodingOptions)
     let motionEvent = mouseEvent(
@@ -200,14 +205,14 @@ struct DebugMouseActions {
     runtime.appendEvent(
       EventEntry(
         kind: "mouse.sent",
-        sessionId: tab.sessionId,
+        sessionId: tab.focusedSessionId,
         action: "mouseDrag"
       ))
     let sent = pressSent.result == 0 && motionSent.result == 0 && releaseSent.result == 0
     return jsonEncode(
       MouseActionResult(
         ok: sent, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: true, sent: sent
       ))
   }
@@ -226,7 +231,7 @@ struct DebugMouseActions {
       button: button,
       x: terminalPoint.x,
       y: terminalPoint.y,
-      screenWidth: runtime.terminalSurfaceWidth,
+      screenWidth: Int(runtime.model.terminalSize(for: session.id).pixel_width),
       screenHeight: runtime.windowHeight,
       cellWidth: runtime.cellWidth,
       cellHeight: runtime.cellHeight,
@@ -256,13 +261,13 @@ struct DebugMouseActions {
         encodedLength: encoded.isEmpty ? nil : encoded.count
       ))
     runtime.appendEvent(
-      EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "mouseWheel")
+      EventEntry(kind: "mouse.sent", sessionId: tab.focusedSessionId, action: "mouseWheel")
     )
     runtime.renderFrameUnlocked()
     return jsonEncode(
       MouseActionResult(
         ok: sent.result == 0, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: true, sent: sent.result == 0
       ))
   }
@@ -306,7 +311,7 @@ struct DebugMouseActions {
     runtime.renderFrameUnlocked()
     runtime.appendEvent(
       EventEntry(
-        kind: "viewport.scrolled", sessionId: tab.sessionId, action: "mouseWheel",
+        kind: "viewport.scrolled", sessionId: tab.focusedSessionId, action: "mouseWheel",
         deltaRows: rows))
     return runtime.actionResult(ok: true)
   }
@@ -360,7 +365,7 @@ struct DebugMouseActions {
       button: mouseButton,
       x: terminalPoint.x,
       y: terminalPoint.y,
-      screenWidth: runtime.terminalSurfaceWidth,
+      screenWidth: Int(runtime.model.terminalSize(for: session.id).pixel_width),
       screenHeight: runtime.windowHeight,
       cellWidth: runtime.cellWidth,
       cellHeight: runtime.cellHeight,
@@ -372,7 +377,7 @@ struct DebugMouseActions {
       button: mouseButton,
       x: terminalPoint.x,
       y: terminalPoint.y,
-      screenWidth: runtime.terminalSurfaceWidth,
+      screenWidth: Int(runtime.model.terminalSize(for: session.id).pixel_width),
       screenHeight: runtime.windowHeight,
       cellWidth: runtime.cellWidth,
       cellHeight: runtime.cellHeight,
@@ -406,12 +411,13 @@ struct DebugMouseActions {
         encodedLength: encoded.isEmpty ? nil : encoded.count
       ))
     runtime.renderFrameUnlocked()
-    runtime.appendEvent(EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "click"))
+    runtime.appendEvent(
+      EventEntry(kind: "mouse.sent", sessionId: tab.focusedSessionId, action: "click"))
     let sent = pressSent.result == 0 && releaseSent.result == 0
     return jsonEncode(
       MouseActionResult(
         ok: sent, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: true, sent: sent
       ))
   }
@@ -435,7 +441,9 @@ struct DebugMouseActions {
       button: button,
       x: terminalPoint.x,
       y: terminalPoint.y,
-      screenWidth: runtime.terminalSurfaceWidth,
+      screenWidth: Int(
+        runtime.model.terminalSize(for: runtime.model.activeTab?.focusedSessionId ?? "").pixel_width
+      ),
       screenHeight: runtime.windowHeight,
       cellWidth: runtime.cellWidth,
       cellHeight: runtime.cellHeight,
@@ -508,12 +516,12 @@ struct DebugMouseActions {
       ))
     runtime.renderFrameUnlocked()
     runtime.appendEvent(
-      EventEntry(kind: "selection.set", sessionId: tab.sessionId, action: "click")
+      EventEntry(kind: "selection.set", sessionId: tab.focusedSessionId, action: "click")
     )
     return jsonEncode(
       MouseActionResult(
         ok: true, frame: runtime.currentFrame,
-        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: false, sent: false
       ))
   }

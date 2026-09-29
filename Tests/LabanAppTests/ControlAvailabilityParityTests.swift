@@ -75,7 +75,7 @@ final class ControlAvailabilityParityTests: XCTestCase {
     XCTAssertEqual(notificationTest.status, 202)
     XCTAssertTrue(notificationTestCalled)
 
-    let sessionID = try XCTUnwrap(model.activeTab?.sessionId)
+    let sessionID = try XCTUnwrap(model.activeTab?.focusedSessionId)
     XCTAssertLessThan(
       router.query(
         LegacyDebugQueryInput(intentID: "window.screenshot", scopedSessionID: sessionID)
@@ -93,7 +93,7 @@ final class ControlAvailabilityParityTests: XCTestCase {
     XCTAssertLessThan(scroll.status, 400)
 
     let proposeBody = Data(
-      #"{"action":"propose","command":"echo hi","targetSessionID":"\#(model.tabs[0].sessionId)"}"#
+      #"{"action":"propose","command":"echo hi","targetSessionID":"\#(model.tabs[0].focusedSessionId)"}"#
         .utf8)
     let propose = router.route(
       .legacyDebugAction(
@@ -101,7 +101,7 @@ final class ControlAvailabilityParityTests: XCTestCase {
           intentID: "command.propose",
           action: "propose",
           body: proposeBody,
-          scopedSessionID: model.tabs[0].sessionId)))
+          scopedSessionID: model.tabs[0].focusedSessionId)))
     XCTAssertLessThan(propose.status, 400)
 
     XCTAssertGreaterThanOrEqual(

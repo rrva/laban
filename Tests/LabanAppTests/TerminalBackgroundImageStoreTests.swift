@@ -347,7 +347,7 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     let result = try XCTUnwrap(try context.store.importImage(from: sourceURL))
     let (view, model) = try makeView()
     let tabIdentity = model.tabs.map(\.id)
-    let sessionIdentity = model.tabs.map(\.sessionId)
+    let sessionIdentity = model.tabs.map(\.focusedSessionId)
     let window = NSWindow()
     let backdropContainer = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
     let backgroundHost = TerminalBackgroundEffectHost(frame: .zero)
@@ -418,7 +418,7 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     _ = try context.store.importImage(from: sourceURL)
     assertActiveImage(coordinator: coordinator, host: backgroundHost)
     XCTAssertEqual(model.tabs.map(\.id), tabIdentity)
-    XCTAssertEqual(model.tabs.map(\.sessionId), sessionIdentity)
+    XCTAssertEqual(model.tabs.map(\.focusedSessionId), sessionIdentity)
   }
 
   func testGUIFixtureImportUsesContainedControlRootAndRunScopedManagedStore() throws {
@@ -618,7 +618,11 @@ final class TerminalBackgroundImageStoreTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 20
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let fontAtlas = FontAtlas(pointSize: 14)
     let sidebarFontAtlas = FontAtlas(pointSize: 11)
     let view = TerminalBitmapView(

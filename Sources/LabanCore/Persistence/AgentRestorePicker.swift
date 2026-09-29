@@ -74,7 +74,7 @@ public enum AgentRestorePicker {
     repoFingerprint: (String) -> String? = RepoFingerprint.fingerprint(cwd:)
   ) -> [AgentRestoreCandidate] {
     guard let window = state.windows.first else { return [] }
-    return window.tabs.compactMap { tab in
+    return window.tabs.flatMap(\.sessionRestoreStates).compactMap { tab in
       candidate(
         for: tab,
         now: now,

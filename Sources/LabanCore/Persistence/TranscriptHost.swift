@@ -17,10 +17,10 @@ public final class TranscriptHost {
   public let isEnabled: () -> Bool
 
   private let lock = NSLock()
-  private var writersByTab: [String: TranscriptWriter] = [:]
-  private var ringsByTab: [String: RecentByteRing] = [:]
+  private var writersBySession: [String: TranscriptWriter] = [:]
+  private var ringsBySession: [String: RecentByteRing] = [:]
   private var bridges: [String: Unmanaged<TranscriptWriterBridge>] = [:]
-  private var sessionsByTab: [String: WeakSessionRef] = [:]
+  private var sessionsBySession: [String: WeakSessionRef] = [:]
 
   /// - Parameter isEnabled: gate consulted by every `TranscriptWriter`
   ///   this host hands out. When false, PTY bytes still flow into the
@@ -35,11 +35,11 @@ public final class TranscriptHost {
     self.isEnabled = isEnabled
   }
 
-  /// Path the writer for `tabId` appends to. Automatic workspace
+  /// Path the writer for `sessionId` appends to. Automatic workspace
   /// restore no longer replays this file; callers may still use it
   /// for explicit diagnostic inspection.
-  public func transcriptURL(forTabId tabId: String) -> URL {
-    store.transcriptURL(forTabId: tabId)
+  public func transcriptURL(forSessionId sessionId: String) -> URL {
+    store.transcriptURL(forSessionId: sessionId)
   }
 
   /// Attach a fresh `TranscriptWriter` to the session, wiring the C
@@ -59,12 +59,12 @@ public final class TranscriptHost {
   ///   initial prompt is captured.
   public func attachTranscriptWriter(
     to session: Session,
-    tabId: String,
+    sessionId: String,
     suppressInitialOutputFor: DispatchTimeInterval = .never
   ) {
     let writer = TranscriptWriter(
-      tabId: tabId,
-      fileURL: transcriptURL(forTabId: tabId),
+      tabId: sessionId,
+      fileURL: transcriptURL(forSessionId: sessionId),
       isEnabled: isEnabled)
     if case .never = suppressInitialOutputFor {
       // No suppression.
@@ -76,21 +76,21 @@ public final class TranscriptHost {
     let ring: RecentByteRing = {
       lock.lock()
       defer { lock.unlock() }
-      if let existing = ringsByTab[tabId] { return existing }
+      if let existing = ringsBySession[sessionId] { return existing }
       let r = RecentByteRing()
-      ringsByTab[tabId] = r
+      ringsBySession[sessionId] = r
       return r
     }()
     let bridge = TranscriptWriterBridge(writer: writer, ring: ring)
     let retainedBridge = Unmanaged.passRetained(bridge)
     let userdata = UnsafeMutableRawPointer(Unmanaged.passUnretained(bridge).toOpaque())
     lock.lock()
-    let priorBridge = bridges[tabId]
-    let priorWriter = writersByTab[tabId]
-    let priorSession = sessionsByTab[tabId]?.session
-    writersByTab[tabId] = writer
-    bridges[tabId] = retainedBridge
-    sessionsByTab[tabId] = WeakSessionRef(session)
+    let priorBridge = bridges[sessionId]
+    let priorWriter = writersBySession[sessionId]
+    let priorSession = sessionsBySession[sessionId]?.session
+    writersBySession[sessionId] = writer
+    bridges[sessionId] = retainedBridge
+    sessionsBySession[sessionId] = WeakSessionRef(session)
     lock.unlock()
     if let priorSession, priorSession !== session {
       _ = priorSession.setPersistenceCallback(nil, userdata: nil)
@@ -100,17 +100,17 @@ public final class TranscriptHost {
     priorBridge?.release()
   }
 
-  /// Detach and flush the writer for `tabId`. Called from
+  /// Detach and flush the writer for `sessionId`. Called from
   /// `AppModel.closeTab`. The on-disk `.bin` file is left in place so
   /// a later restore (or manual inspection) can read it. The
   /// recent-byte ring is dropped at the same time — its contents
   /// are scoped to the live tab and would be misleading to retain.
-  public func detachTranscriptWriter(forTabId tabId: String, in session: Session?) {
+  public func detachTranscriptWriter(forSessionId sessionId: String, in session: Session?) {
     lock.lock()
-    let writer = writersByTab.removeValue(forKey: tabId)
-    let bridge = bridges.removeValue(forKey: tabId)
-    let registeredSession = sessionsByTab.removeValue(forKey: tabId)?.session
-    ringsByTab.removeValue(forKey: tabId)
+    let writer = writersBySession.removeValue(forKey: sessionId)
+    let bridge = bridges.removeValue(forKey: sessionId)
+    let registeredSession = sessionsBySession.removeValue(forKey: sessionId)?.session
+    ringsBySession.removeValue(forKey: sessionId)
     lock.unlock()
     if let callbackSession = session ?? registeredSession {
       _ = callbackSession.setPersistenceCallback(nil, userdata: nil)
@@ -123,10 +123,10 @@ public final class TranscriptHost {
   /// safe to call `snapshot(window:)` on from the main thread; the
   /// ring's internal lock handles concurrent `record` calls from the
   /// PTY callback thread.
-  public func recentByteRing(forTabId tabId: String) -> RecentByteRing? {
+  public func recentByteRing(forSessionId sessionId: String) -> RecentByteRing? {
     lock.lock()
     defer { lock.unlock() }
-    return ringsByTab[tabId]
+    return ringsBySession[sessionId]
   }
 
   /// Flush every writer the host currently owns. Called from
@@ -136,7 +136,7 @@ public final class TranscriptHost {
     let snapshot: [TranscriptWriter] = {
       lock.lock()
       defer { lock.unlock() }
-      return Array(writersByTab.values)
+      return Array(writersBySession.values)
     }()
     for writer in snapshot {
       writer.flushSync()
@@ -144,10 +144,10 @@ public final class TranscriptHost {
   }
 
   /// Test/diagnostic accessor — returns the writer for a tab, if any.
-  public func writer(forTabId tabId: String) -> TranscriptWriter? {
+  public func writer(forSessionId sessionId: String) -> TranscriptWriter? {
     lock.lock()
     defer { lock.unlock() }
-    return writersByTab[tabId]
+    return writersBySession[sessionId]
   }
 }
 
@@ -193,24 +193,24 @@ private let transcriptBridgeCallback:
 public protocol TranscriptHostDelegate: AnyObject {
   func attachTranscriptWriter(
     to session: Session,
-    tabId: String,
+    sessionId: String,
     suppressInitialOutputFor: DispatchTimeInterval)
-  func detachTranscriptWriter(forTabId tabId: String, in session: Session?)
-  func transcriptURL(forTabId tabId: String) -> URL
-  func recentByteRing(forTabId tabId: String) -> RecentByteRing?
+  func detachTranscriptWriter(forSessionId sessionId: String, in session: Session?)
+  func transcriptURL(forSessionId sessionId: String) -> URL
+  func recentByteRing(forSessionId sessionId: String) -> RecentByteRing?
 }
 
 extension TranscriptHostDelegate {
   /// Default: no recent-byte ring. Test/headless adapters that
   /// don't wire the ring can skip this method.
-  public func recentByteRing(forTabId tabId: String) -> RecentByteRing? { nil }
+  public func recentByteRing(forSessionId sessionId: String) -> RecentByteRing? { nil }
 }
 
 extension TranscriptHostDelegate {
   /// Convenience: fresh-tab attach (no suppression).
-  public func attachTranscriptWriter(to session: Session, tabId: String) {
+  public func attachTranscriptWriter(to session: Session, sessionId: String) {
     attachTranscriptWriter(
-      to: session, tabId: tabId, suppressInitialOutputFor: .never)
+      to: session, sessionId: sessionId, suppressInitialOutputFor: .never)
   }
 }
 

@@ -134,36 +134,56 @@ content and the same running processes.
 
 ## Progress
 
-- [ ] M0: Stable session identity. Session IDs are persisted and injectable;
+- [x] M0 (2026-09-28; baseline `./scripts/check` passed): Stable session identity. Session IDs are persisted and injectable;
       a tab's first session ID equals the tab ID; daemon logical IDs are
       session IDs everywhere (GUI and headless); launch-time
       ensure/sweep/unclaimed use the set of all session IDs. ADR 0036 written.
-- [ ] M1: `PaneTree` value type + tests (LabanCore, no UI).
-- [ ] M2: `Tab` carries `panes` + `focusedSessionId`; stored `Tab.sessionId`
+- [x] M1: `PaneTree` value type + tests (LabanCore, no UI).
+- [x] M2: `Tab` carries `panes` + `focusedSessionId`; stored `Tab.sessionId`
       deleted; session-level lifecycle hooks; per-tab runtime maps re-keyed
       by session; `AppModel.splitPane/closePane/focusPane`.
-- [ ] M3: Persistence schema v2 (`PaneState`), v1 migration, per-tab decode
+- [x] M3: Persistence schema v2 (`PaneState`), v1 migration, per-tab decode
       fallback, transcripts keyed by session; restore round-trip tests.
-- [ ] M4: Headless control plane: `pane.split`, `pane.close`, `pane.focus`
+- [x] M4: Headless control plane: `pane.split`, `pane.close`, `pane.focus`
       intents (headless-only), state projection + schema, discovery regen,
       parity tests. Needed before any rendering test can drive a split.
-- [ ] M5: Per-session terminal size; resize on split/close/tab switch; spawn
+- [x] M5: Per-session terminal size; resize on split/close/tab switch; spawn
       size for a new pane.
-- [ ] M6: Multi-pane rendering (draw-command path), all visible panes dirty
+- [x] M6: Multi-pane rendering (draw-command path), all visible panes dirty
       and marked rendered, divider, unfocused cursor, per-pane selection,
       preedit in focused pane; GUI falls back from cell payload when split;
       laband backend refuses splits.
-- [ ] M7: Input routing: focus follows click, per-pane mouse/selection/IME
+- [x] M7: Input routing: focus follows click, per-pane mouse/selection/IME
       geometry, focus reports on pane change, scroll wheel to pane under
       pointer, scroll indicator and find chip follow focus.
-- [ ] M8: GUI commands: menu items, shortcuts, `AppCommand` cases, error
+- [x] M8: GUI commands: menu items, shortcuts, `AppCommand` cases, error
       surfacing; localisation strings.
-- [ ] M9: E2E: headless scenario in `scripts/test-e2e`; labpty restart test
+- [x] M9 (2026-09-28 15:26Z independent full re-review: direct E2E, both child-survival restart tests, and persistence relaunch passed): E2E: headless scenario in `scripts/test-e2e`; labpty restart test
       with a split tab in `Tests/LabanAppTests/LabanAppTests.swift`.
-- [ ] M10: Docs: `docs/product/mvp.md` Later Milestones, `dev-process.md`
+- [x] M10 (2026-09-28 15:26Z complete independent Review Gate passed on `8994441a`): Docs: `docs/product/mvp.md` Later Milestones, `dev-process.md`
       endpoint list; Review Gate.
 
+### PR review follow-up (2026-09-28)
+
+- [x] R1: Aggregate pane attention without changing focused metadata or journal identity; acknowledge all visible panes and retire per-session caches.
+- [x] R2: Preserve background restore sizes and retry attach registration by session identity; handle duplicate workspace session IDs safely.
+- [x] R3: Route right-button gestures to their originating pane, honor synchronized output in every visible pane, and clear stale selection/find presentation on focus.
+- [x] R4: Reject final-pane close consistently; repair explicit-session headless actions, resize/focus reports, and pane-sized casts.
+- [x] R5: Strengthen real-shell E2E and missing restore/router/coordinate tests; correct unsupported downgrade claims and remaining presentation defects.
+- [x] R6: Independent regressions, E2E, restart and mutation checks passed in the earlier review. Its bounded full-gate loop stopped after an adoption timeout; the fresh repository check under R10 now passes. The historical timeout remains documented below.
+
+### Second PR re-review follow-up (2026-09-29)
+
+- [x] R7: Preserve per-pane capture snapshots and replay split captures, including capture started after splitting.
+- [x] R8: Cache a new pane's dimensions even when its tab is in the background; verify cast dimensions before tab selection.
+- [x] R9: Keep left-button drag and release bound to the pane receiving the press, including a keyboard focus change.
+- [x] R10: All 173 targeted regression tests and the uncached repository check passed at `861144d9`; independent source review found no unresolved issues. Evidence: `.artifacts/split-panes/second-review-fixes/`.
+
 ## Decision Log
+
+- Decision: Split capture snapshots use frame-plus-hashed-session filenames and optional per-pane presentation on their timeline events. Terminal replay rebuilds each pane from its own PTY stream and combines their recorded geometry and visual settings; session creation records the initial grid. Legacy creation events fall back to the latest resize dimensions.
+  Rationale: Frame-only snapshot names overwrite sibling snapshots. Pane dimensions, cursor styles and opacity cannot be reconstructed from the focused terminal alone. Optional fields preserve old capture decoding, including tabs opened after a resize.
+  Date/Author: 2026-09-29 / PR re-review follow-up.
 
 - Decision: Build the recursive `PaneTree` from spec section 3 now, even
   though this plan only ever produces a tree of depth one.
@@ -383,6 +403,14 @@ content and the same running processes.
   daemon session.
   Date/Author: 2026-09-28 / plan author, after advisor review (rev 3).
 
+- Decision: Retain the single-pane frame request initializer's selection and preedit fields as a compatibility adapter; explicit pane requests own per-pane values for split rendering. Existing single-grid tests and screenshot callers keep their current API.
+  Rationale: Removing those initializer arguments would churn unrelated renderer clients without strengthening split isolation. The split path always consumes pane-local selection and composition.
+  Date/Author: 2026-09-28 / implementation.
+
+- Decision: The dirty-render mutation gate disables unfocused visible sessions using `session.id == activeSessionId`. Its originally specified `tabId == activeTabId` check is correct once enumeration includes every leaf, so cannot demonstrate a regression. Production now uses `item.isVisible` to express that invariant directly.
+  Date/Author: 2026-09-28 / implementation.
+
+
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this
@@ -390,37 +418,93 @@ ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed. See "Review gate and review-fix loop" in
 `PLANS.md`. All commands run from the repository root. `BASE` is the commit
 this plan branched from; the executing agent records it here before M0:
-`BASE = <sha>`.
+`BASE = f145b0a6`.
 
-- [ ] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
-- [ ] `grep -rn "let sessionId: Session.ID\|var sessionId: Session.ID" Sources/LabanCore/Tab.swift` prints zero hits; `grep -c "focusedSessionId" Sources/LabanCore/Tab.swift` prints at least `2`.
-- [ ] `swift test --filter PaneTreeTests` exits 0 with at least 8 tests passed.
-- [ ] `swift test --filter AppSessionCoordinatorTests` exits 0 and output contains `testSplitTabOpensTwoDistinctLogicalSessions` and `testResizeSendsDifferentSizesPerSession`.
-- [ ] `swift test --filter PersistenceRoundTripTests` exits 0 and output contains `testV1WorkspaceMigratesToSingleLeafTree`, `testSplitTabRoundTrips` and `testCorruptPaneTreeFallsBackPerTab`.
-- [ ] `swift test --filter AppModelTests` exits 0 and output contains `testRegistryEqualsUnionOfLeaves`, `testUnfocusedPaneExitDoesNotChangeTabStatus` and `testClosePaneFocusesMostRecentlyFocusedSurvivor`.
-- [ ] `swift test --filter SplitPaneHeadlessTests` exits 0 and output contains `testTwoPanesRenderAtDistinctOrigins`, `testOutputInUnfocusedPaneMarksFrameDirty` and `testBothPanesWriteTranscripts`.
-- [ ] `swift test --filter CatalogParityTests` exits 0, and `git diff $BASE -- Tests/LabanAppTests/CatalogParityTests.swift` prints nothing (allowlists unchanged).
-- [ ] `swift run LabanControlGen --check` exits 0.
-- [ ] `python3 -c "import json;s=json.load(open('schemas/debug/state.schema.json'));t=s['\$defs']['tab'];assert 'panes' in t['required'] and 'focusedSessionId' in t['required'] and 'sessionId' not in t['required'] and 'sessionId' in t['properties']"` exits 0.
-- [ ] `./scripts/test-e2e` exits 0 and stdout contains `split-pane scenario: ok`.
-- [ ] `./scripts/test-labanapp-survives-restart` exits 0 and `grep -n "func testSplitTabSurvivesLabanAppRestartViaLabpty" Tests/LabanAppTests/LabanAppTests.swift` prints one hit.
-- [ ] `swift test --filter HeadlessRestoreInjectionTests` exits 0 and output contains `testSplitTabSurvivesPersistenceRelaunchWithLiveFrame`.
-- [ ] `swift test --filter SurvivorPaneTests` exits 0 and output contains `testTypingAfterFirstPaneClosed`, `testCastEndpointAfterFirstPaneClosed`, `testTranscriptAfterFirstPaneClosed`, `testFindAfterFirstPaneClosed`, `testRestoreAfterFirstPaneClosed`, `testResizeAfterFirstPaneClosed`, `testAgentDetectionAfterFirstPaneClosed`.
-- [ ] `swift test --filter LiveControlObserveTests` exits 0 and output contains `testScopedClientSeesOwnPaneMetadataInSplitTab` and `testScopedScreenshotDeniedInSplitTab`.
-- [ ] `swift test --filter LabandSplitRestoreTests` exits 0 and output contains `testSplitWorkspaceRestoresFocusedPaneUnderLaband`.
-- [ ] `./scripts/check` exits 0.
-- [ ] `ls docs/adr/0036-pane-layout-is-view-state-above-session-tiers.md` succeeds and `grep -c "0036" docs/adr/README.md` prints at least `1`.
-- [ ] Mutation: in `Sources/LabanCore/PaneTree.swift`, make `removing(leaf:)` return the removed child instead of the survivor; run `swift test --filter PaneTreeTests`; expect a failure naming `testRemoveLeafCollapsesToSurvivor`; revert.
-- [ ] Mutation: in `Sources/LabanCore/TerminalSurfaceController.swift`, force every pane's origin to the first pane's origin; run `swift test --filter SplitPaneHeadlessTests`; expect `testTwoPanesRenderAtDistinctOrigins` to fail; revert.
-- [ ] Mutation: in `TerminalSurfaceController.syncSessions`, restore the `tabId == activeTabId` single-session dirty check; run `swift test --filter SplitPaneHeadlessTests`; expect `testOutputInUnfocusedPaneMarksFrameDirty` to fail; revert.
+- [x] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
+- [x] `grep -rn "let sessionId: Session.ID\|var sessionId: Session.ID" Sources/LabanCore/Tab.swift` prints zero hits; `grep -c "focusedSessionId" Sources/LabanCore/Tab.swift` prints at least `2`.
+- [x] `swift test --filter PaneTreeTests` exits 0 with at least 8 tests passed.
+- [x] `swift test --filter AppSessionCoordinatorTests` exits 0 and output contains `testSplitTabOpensTwoDistinctLogicalSessions` and `testResizeSendsDifferentSizesPerSession`.
+- [x] `swift test --filter PersistenceRoundTripTests` exits 0 and output contains `testV1WorkspaceMigratesToSingleLeafTree`, `testSplitTabRoundTrips` and `testCorruptPaneTreeFallsBackPerTab`.
+- [x] `swift test --filter AppModelTests` exits 0 and output contains `testRegistryEqualsUnionOfLeaves`, `testUnfocusedPaneExitDoesNotChangeTabStatus` and `testClosePaneFocusesMostRecentlyFocusedSurvivor`.
+- [x] `swift test --filter SplitPaneHeadlessTests` exits 0 and output contains `testTwoPanesRenderAtDistinctOrigins`, `testOutputInUnfocusedPaneMarksFrameDirty` and `testBothPanesWriteTranscripts`.
+- [x] `swift test --filter CatalogParityTests` exits 0, and the only diff in `Tests/LabanAppTests/CatalogParityTests.swift` is the required `Tab.sessionId` → `focusedSessionId` reference migration (allowlists unchanged).
+- [x] `swift run LabanControlGen --check` exits 0.
+- [x] `python3 -c "import json;s=json.load(open('schemas/debug/state.schema.json'));t=s['\$defs']['tab'];assert 'panes' in t['required'] and 'focusedSessionId' in t['required'] and 'sessionId' not in t['required'] and 'sessionId' in t['properties']"` exits 0.
+- [x] `./scripts/test-e2e` exits 0 and stdout contains `split-pane scenario: ok`.
+- [x] `./scripts/test-labanapp-survives-restart` exits 0 and `grep -n "func testSplitTabSurvivesLabanAppRestartViaLabpty" Tests/LabanAppTests/LabanAppTests.swift` prints one hit.
+- [x] `swift test --filter HeadlessRestoreInjectionTests` exits 0 and output contains `testSplitTabSurvivesPersistenceRelaunchWithLiveFrame`.
+- [x] `swift test --filter SurvivorPaneTests` exits 0 and output contains `testTypingAfterFirstPaneClosed`, `testCastEndpointAfterFirstPaneClosed`, `testTranscriptAfterFirstPaneClosed`, `testFindAfterFirstPaneClosed`, `testRestoreAfterFirstPaneClosed`, `testResizeAfterFirstPaneClosed`, `testAgentDetectionAfterFirstPaneClosed`.
+- [x] `swift test --filter LiveControlObserveTests` exits 0 and output contains `testScopedClientSeesOwnPaneMetadataInSplitTab` and `testScopedScreenshotDeniedInSplitTab`.
+- [x] `swift test --filter LabandSplitRestoreTests` exits 0 and output contains `testSplitWorkspaceRestoresFocusedPaneUnderLaband`.
+- [x] `./scripts/check` exits 0 (uncached follow-up at `861144d9`, 2026-09-29).
+- [x] `ls docs/adr/0036-pane-layout-is-view-state-above-session-tiers.md` succeeds and `grep -c "0036" docs/adr/README.md` prints at least `1`.
+- [x] Mutation: in `Sources/LabanCore/PaneTree.swift`, make `removing(leaf:)` return the removed child instead of the survivor; run `swift test --filter PaneTreeTests`; expect a failure naming `testRemoveLeafCollapsesToSurvivor`; revert.
+- [x] Mutation: in `Sources/LabanCore/TerminalSurfaceController.swift`, force every pane's origin to the first pane's origin; run `swift test --filter SplitPaneHeadlessTests`; expect `testTwoPanesRenderAtDistinctOrigins` to fail; revert.
+- [x] Mutation: in `TerminalSurfaceController.syncSessions`, replace the `item.isVisible` dirty check with `session.id == activeSessionId`; run `swift test --filter SplitPaneHeadlessTests`; expect `testOutputInUnfocusedPaneMarksFrameDirty` to fail; revert.
 
-Review status: NOT REVIEWED
+Follow-up validation (2026-09-29): R7–R10 pass at source commit `861144d9`. All 173 targeted tests passed, and an independent source review found no unresolved findings. `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exited 0, including the previously failing adoption case, coverage (45.90% MC/DC against the 45% floor), sanitizer tests, runtime smoke and the split-pane E2E scenario. Optional TLA+/CBMC tools were unavailable and MSan is unsupported on macOS; the repository check applied its normal skip policy. Evidence: `.artifacts/split-panes/second-review-fixes/targeted-final.log`, `check-final.log` and `summary.json`. The complete independent mechanical Review Gate, including mutation checks, was not repeated in its entirety; those checklist items retain the earlier evidence below. This passing run does not establish the root cause of the historical adoption timeout.
 
-Review findings (filled in by the review agent):
+Historical review status: FAILED on 2026-09-28 20:26Z for the third complete uncached follow-up review of `26b444b6c85895a605e17e210dfecbbee569462b` against `BASE = f145b0a6`. Every gate command ran, including `LABAN_CHECK_NO_MEMO=1 ./scripts/check` and all three reversible mutations. The repository check failed in one serial AppKit case; every other gate item passed. This is the third failed review of the `./scripts/check` item in the PR review follow-up loop: stop the automatic review-fix cycle and surface the unresolved failure to a human reviewer under `PLANS.md`. Evidence: `.artifacts/split-panes/pr-review-final-gate-3/` (command logs, `results.json`, `static.json`, `suite-summary.json`, mutation diffs and hashes).
 
-(none yet)
+Historical review findings (2026-09-28):
+
+- `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exits 1. `Tests/LabanAppTests/LabanAppTests.swift:263` calls `waitForLocalSnapshotText` after replaying `READY` and writing `hi\n` through the adopted session. The helper fails at line 907 in `testAdoptUnclaimedLabptySessionReattachesExistingChild`: `timed out waiting for got hi; last=READY` (11.181 seconds for the case). Evidence: `check-no-memo.log:3381–3382`. The cause is not established; the observed host load does not prove this is harmless or unrelated to the implementation.
+- All 19 targeted suites passed 289 cases, zero failures and zero skips: the ten required suites contributed 169 cases, seven additional feature suites 104, and the two audit/viewport timing suites 16. They ran in one equivalent union filter, with individual suite counts and every required passing test name verified in `suite-summary.json`. `SplitDaemonTests.swift` extends `AppSessionCoordinatorTests`; its background split-restore case passed among that suite's 17 cases. `PaneTreeTests` passed nine cases.
+- Source inspection of the latest test repairs confirms that the persistence fixture now awaits a saved workspace and retains window-ID/tab-count assertions. Only the 100,000-line bulk-output case requests 60 seconds; every other output-wait helper caller retains the ten-second default. All 100,000 count/order assertions remain. The earlier audit and precise-scroll repairs retain their behavioral assertions. Static gate checks and direct `swift run LabanControlGen --check` passed; catalog allowlists are unchanged.
+- Direct `./scripts/test-e2e` exited 0 and printed `split-pane scenario: ok`. Direct `./scripts/test-labanapp-survives-restart` exited 0, passed both restart cases, and printed `child survived`.
+- The uncached check passed all 2,058 parallel-safe cases and all 268 headless cases. The serial AppKit target executed 729 cases: 719 passed, nine skipped, one failed. Eight skips require a vector/Slug renderer and one is an opt-in benchmark. The previously failing persistence, high-volume output, audit and viewport cases passed. Missing TLA+ caused skipped specification proofs and compile-only trace smoke; missing CBMC caused compile-only decoder smoke and skipped contract proofs. MemorySanitizer replay is unsupported on macOS and skipped. Model-action coverage and ASan/UBSan fuzz replay ran. GPU-serial, coverage, sanitizer-suite, runtime-smoke and embedded E2E stages were not reached after the serial failure.
+- All three reversible mutations produced their required named failures: `testRemoveLeafCollapsesToSurvivor`, `testTwoPanesRenderAtDistinctOrigins`, and `testOutputInUnfocusedPaneMarksFrameDirty`. The original source bytes were restored after each mutation; `mutations.json` records matching SHA256 pairs. The restored tree/split suites passed all 14 cases. `final-source-restoration.json` confirms both source files match the reviewed commit exactly.
+- One subsequent targeted triage run of `LabanAppTests.LabanAppTests/testAdoptUnclaimedLabptySessionReattachesExistingChild` passed (one case, zero skips). This is evidence of intermittency, not a passing fourth full gate or proof of the cause; the gate remains FAILED. Evidence: `adoption-targeted-triage.log` and `.json`. No source fixes or unrelated process changes were made. Build/test ownership was released after restoration and this single triage run.
+
+Previous failed review: FAILED on 2026-09-28 20:15Z for the fresh complete re-review of `cee5bc4a3cbd0e1b5fbb5d618fe694ac3a8772d5` against `BASE = f145b0a6`. Every gate command ran, including `LABAN_CHECK_NO_MEMO=1 ./scripts/check` and all three reversible mutations. The uncached repository check failed in two parallel-shard cases; every other gate item passed. Evidence: `.artifacts/split-panes/pr-review-final-gate-2/` (`results.json`, `static.json`, complete command logs, mutation diffs and hashes).
+
+Previous review findings (second uncached follow-up at `cee5bc4a`):
+
+- `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exits 1 in the 2,058-case parallel-safe shard. `Tests/LabptyTests/LabptyDaemonTests.swift:1852–1853`, `testHighVolumeOutputIsNotSplitOrLost`, reports output only through approximately `line-073992` before its expected `line-100000`, then throws POSIX timeout (16.700 seconds; two failure assertions, one unexpected). `Tests/LabanCoreTests/PersistenceRoundTripTests.swift:444`, `testPersistenceCoordinatorDebouncedSave`, fails to unwrap the saved `WorkspaceState` (6.165 seconds). Evidence: `check-no-memo.log:2124`, `:2142` and `:2155`. The earlier serial AppKit timing fixes are not implicated by these failures; those 16 tests passed their direct suites, and this full check did not reach the serial shard.
+- All ten required targeted suites passed 169 cases. Nine additional nonempty suites brought the total to 289 passed cases, zero failures and zero skips. These include all five `PaneReviewHeadlessTests`, native right-button/selection/synchronized-output/precise-scroll regressions, `ControlDefaultOnTests`, `WorkspaceRestoreEndToEndTests`, `HeadlessIntentRouterTests`, and the 16 repaired audit/viewport tests. `SplitDaemonTests.swift` extends `AppSessionCoordinatorTests`; its background split-restore case passed among that suite's 17 cases, without counting an empty standalone filter. Every required test name is present in the logs.
+- Source inspection of `cee5bc4a` found that the audit tests now await an event for their own newly created session, retaining intent/capability/surface assertions; the viewport tests wait for the precise-scroll target to settle, retaining the live-bottom assertions. Both changes preserve production behavior. All static checks and direct `swift run LabanControlGen --check` passed. The catalog diff is only the required session reference migration, with unchanged allowlists.
+- Direct `./scripts/test-e2e` exited 0 and printed `split-pane scenario: ok`. Direct `./scripts/test-labanapp-survives-restart` exited 0, passed both restart cases, and printed `child survived`.
+- The no-memo repository check reran its supported early stages, including model-action coverage and ASan/UBSan fuzz replay. Missing TLA+ caused skipped specification checks and compile-only trace smoke; missing CBMC caused compile-only decoder smoke and skipped contract proofs (`cbmc/goto-cc/goto-instrument` absent). MemorySanitizer replay is unsupported on macOS and was skipped. The parallel shard reported two failing cases and three failure assertions among its 2,058 scheduled cases, with no test skips logged. Serial AppKit/headless, GPU-serial, coverage, sanitizer-suite, runtime-smoke and embedded E2E stages were not reached after that failure.
+- All three mutations produced the required named failures: `testRemoveLeafCollapsesToSurvivor`, `testTwoPanesRenderAtDistinctOrigins`, and `testOutputInUnfocusedPaneMarksFrameDirty`. The two mutated source files were restored byte-for-byte after each mutation and match `cee5bc4a`; SHA256 pairs are in `mutations.json`. The restored tree/split suites passed all 14 cases. The executing agent began separate repairs in the two failing test files after the baseline gate had completed; those uncommitted repairs are outside this reviewed SHA and are not validated by this failed gate.
+- Host-load evidence at 20:13:49Z recorded load averages `171.46 / 158.40 / 106.12` on eight logical CPUs (`host-load.txt`). This is relevant scheduling context, not proof that either failure is harmless. No unrelated process was stopped. Build/test ownership was released after mutation restoration and the 14-case restoration run.
+
+Previous failed review: FAILED on 2026-09-28 19:58Z for PR #2 review fixes at `2910166facab03cee87ca57d0b645ea4b8f6c651` against `BASE = f145b0a6`. A fresh independent reviewer ran every gate command, with `LABAN_CHECK_NO_MEMO=1` for the repository check. The repository check failed in two serial AppKit tests; all other gate items passed. Evidence: `.artifacts/split-panes/pr-review-final-gate/`.
+
+Previous review findings (PR review fixes at `2910166f`):
+
+- `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exits 1. `Tests/LabanAppTests/ControlSecurityFloorTests.swift:126`, `testSessionObserveAppStateLightsIndicatorAndAudit`, observes the latest privileged audit intent as `selection.read` rather than `app.state`. `Tests/LabanAppTests/ViewportFollowDriftTests.swift:191`, `testAltScreenRoundTripWhileScrolledBackThenReturn`, observes viewport offset `4` rather than `0` after the first streamed burst. Evidence: `check-no-memo.log:3178` and `check-no-memo.log:4612` under the evidence directory. Both require diagnosis before the full fresh gate can pass.
+- The required ten targeted suites passed 169 cases; seven additional nonempty regression suites brought targeted verification to 273 passed cases, zero failures and zero skips. Every required gate test name is present. The extra `SplitDaemonTests` filter selected zero tests because that file extends `AppSessionCoordinatorTests`; its `testBackgroundSplitRestoreDoesNotResizeDaemonPanesToFullWidth` passed under the coordinator filter. `suite-summary.json` records individual counts.
+- `AppModel.tabWithPaneAttention` now delegates unfocused blocking-state classification to `TabAttentionClassifier`, preserving the focused title and scoped metadata. `testUnfocusedPaneBlockingTitleSurvivesAcknowledgement` passed, covering persistent blocking attention after acknowledgement and its removal when the title clears. `PaneReviewHeadlessTests` passed all five cases; native selection/right-button routing, synchronized-output recovery, precise scrolling and IME regressions also passed.
+- Static gate checks and direct `swift run LabanControlGen --check` passed. Direct `./scripts/test-e2e` printed `split-pane scenario: ok`; direct restart validation passed both tests and printed `child survived`.
+- The no-memo repository check reran its stages without cached passes. Its 2,058-test parallel-safe shard passed; the serial app target ran 729 tests with 9 skips and 2 failures. Eight skips require a vector/Slug renderer and one is an opt-in benchmark. Missing CBMC caused compile-only decoder smoke and skipped contract proofs; missing TLA+ caused skipped specs and compile-only trace smoke; MSan replay is unsupported on macOS. Model-action coverage and ASan/UBSan fuzz replay ran. Later coverage, sanitizer, runtime smoke and embedded E2E stages were not reached because the serial shard failed.
+- All three mutations failed in their required tests: removed-child retention in `testRemoveLeafCollapsesToSurvivor`, shared pane origin in `testTwoPanesRenderAtDistinctOrigins`, and focused-only dirty checks in `testOutputInUnfocusedPaneMarksFrameDirty`. Exact source bytes were restored after every mutation, recorded by SHA256 in `mutations.json`; mutation diffs and full output are alongside it. All 14 restored tree/split tests passed in `restored-suites.log`; final source bytes match the reviewed commit.
+
+Previous passing review (before PR review fixes): implementation `8994441a3ce6ad1bf30ccd7ce7d3becdb3dd0ecf` passed its complete fresh-state mechanical re-review on 2026-09-28 15:26Z against `BASE = f145b0a6`, including all three mutations. Evidence: `.artifacts/split-panes/final-review-2/`. That run's normal `./scripts/check` reused memoized heavy-stage results; it is not evidence that the current uncached gate passed.
+
+Previous review findings (resolved; retained for the review-fix history):
+
+- `./scripts/check` exits 1 in its `test-split` parallel-safe shard. `Tests/LabanCoreTests/TerminalSurfaceControllerTests.swift:1528` (`testSyncSessionsHoveredInactiveTabKeepsReportingModelChanged`) expects only the hovered session in `pendingResult.dirtySessionIds`, but receives both the hovered and active sessions; line 1541 then expects an empty dirty set and receives the still-dirty active session. The setup at lines 1467–1471 marks only the second/background session rendered. The new intentional pending-visible-output handling in `Sources/LabanCore/TerminalSurfaceController.swift:785–787` now retains the active session's initial dirty state. Settle the active session in this preview-focused fixture while preserving production deferred-frame behavior, then rerun the full gate. Evidence: `.artifacts/split-panes/final-review/check.log:2096`.
+- All other gate commands passed: ten targeted suites ran 163 tests with every required name present and no skipped test cases; control generation and static checks passed; direct `./scripts/test-e2e` printed `split-pane scenario: ok`; both legacy and split restart tests passed and printed `child survived`.
+- All three reversible mutations failed in the exact required tests: survivor collapse at `PaneTreeTests.swift:17–18`, shared pane origin at `SplitPaneHeadlessTests.swift:84`, and focused-only dirtiness at `SplitPaneHeadlessTests.swift:98`. Each original source file was restored byte-for-byte immediately afterward, and the restored suites then passed all 14 tests. Mutation diffs, complete output, exit statuses, and restored-source verification are under `.artifacts/split-panes/final-review/`.
+- The repository check reports the optional TLA+ jar absent and reuses memoized unchanged `cbmc`, `cbmc-contracts`, `trace`, `model-coverage`, `fuzz`, and `fuzz-msan` results. Its later coverage, sanitizer, runtime smoke, and embedded E2E stages are not reached because `test-split` fails; the direct full E2E command above passed independently. No skip flags or environment overrides were supplied by this reviewer.
 
 ## Surprises & Discoveries
+
+- The PR review follow-up reached the `PLANS.md` bound of three failed reviews of the uncached `./scripts/check` item. The first failure involved audit/scroll timing assumptions (repaired in `cee5bc4a`), the second persistence/bulk-output timing assumptions (repaired in `26b444b6`), and the third adopted-session input round-trip (`LabanAppTests.swift:263`, helper failure at line 907). All prior repaired cases passed on the third run; the adoption case then passed once in isolated triage. The cause remains unresolved, and host load alone does not establish it. The automatic full-gate retry loop stopped at that point. After the user requested the second review fixes, the fresh uncached repository check under R10 passed, including adoption; the historical timeout cause remains unresolved. Full historical evidence is under `.artifacts/split-panes/pr-review-final-gate-3/`.
+
+- The second uncached follow-up gate encountered host load averages near 190 on eight logical CPUs and timed out in two parallel-shard fixtures. `testPersistenceCoordinatorDebouncedSave` waited for a separate timer rather than a persisted workspace; it now polls the actual saved result. The 100,000-line daemon test retains every count/order assertion but allows 60 seconds for that bulk transfer; the helper's other callers retain their ten-second budget. Both targeted tests passed under the continuing host load (`.artifacts/split-panes/pr-review-load-green.log`). These are validation fixture repairs, not daemon or persistence implementation changes.
+
+- The first uncached follow-up gate found two timing-sensitive existing tests: the audit assertion read an earlier session's `selection.read` before its own async `app.state` write, and the viewport follow assertion ran while precise scrolling still animated. Repeating only `ControlSecurityFloorTests|ViewportFollowDriftTests` reproduced both on the third run (`.artifacts/split-panes/pr-review-timing-repro/3.log`). The tests now await their session's audit entry and scroll convergence before asserting; production paths are unchanged. Their full assertions remain intact, and all 16 tests passed ten consecutive repeats (160 test executions; `.artifacts/split-panes/pr-review-timing-green/`). A fresh complete gate is required after this test repair.
+
+- PR #2 review follow-up: 211 targeted model, daemon, persistence, native-input and headless regressions passed. The strengthened real-shell scenario resolves actual session IDs from prior responses, asserts focus IDs, uses encoded output markers to avoid command-echo false positives, closes the original pane and types into the surviving sibling. Its 14 steps passed and the screenshot was inspected (`.artifacts/split-panes/pr-review-scenario/`). Independent source review found one remaining background blocking-title attention edge; a new regression reproduced both incorrect `.done` and missing attention after acknowledgement, and the aggregation now uses the shared attention classifier. The final mechanical gate remains pending.
+
+- The first mechanical gate exposed a hover-preview fixture that never rendered the active terminal before asserting that only the preview remained dirty. Preserving pending visible pane output correctly made that initial dirty state observable. Taking the initial snapshot and marking it rendered repairs the fixture without weakening assertions or production dirty tracking; all 50 surface-controller and five split-pane tests pass (`.artifacts/split-panes/hover-fixture-red.log` and `hover-fixture-green.log`).
+
+- Starting a labpty parser feed removed the descriptor just stored by `ensureSession`; the new independent-size test observed unchanged widths 100/49 after requesting 43/57. Restoring the descriptor after replacing the feed fixes daemon resize immediately.
+- The headless laband renderer previously built frames from its local placeholder. It now passes the focused remote snapshot into the shared remote renderer, including the split-layout compatibility notice.
+- A bounded headless render-cost comparison (20 warmed frames per layout, identical 24-row ASCII content in each pane) recorded median total/command-extraction/render times of 7.124/4.468/2.551 ms for one pane and 5.770/3.031/2.683 ms for two. Artifacts and trace packets are under `.artifacts/split-panes/perf/`. This measures the headless command path, not Metal GPU-cell throughput; the latter remains disabled for splits.
+- The real-shell screenshot at `.artifacts/split-panes/scenario/screenshots/09-two-live-panes.png` was inspected: independent LEFT/RIGHT text, one divider, hollow unfocused cursor, solid focused cursor. The scenario asserts the surviving tree is a leaf after close.
+
 
 - Observation: Session IDs are not stable across launches today, so "split
   panes backed by stable session IDs" first requires making them stable.
@@ -471,6 +555,12 @@ Review findings (filled in by the review agent):
 - Observation (rev 3): the bell path is `NSSound.beep()`
   (`TerminalBitmapView.swift:4986`); there is no transient status surface.
   In-tab messages go through `AppModel.postTabNotice` (`AppModel.swift:1087`).
+
+## Outcomes & Retrospective
+
+The complete automated Review Gate passed on `8994441a`: two independent terminals share one tab, preserve session identity and processes across restore/restart, render and route input independently, and keep scoped control access isolated. Persistence migration and first-pane removal are covered by direct tests, and all three required deliberate regressions are detected. The first review's pending-output fixture failure was repaired by settling its initial active frame while preserving production dirty tracking.
+
+The original planned scope passed. The PR #2 review fixes passed independent targeted, E2E, restart and mutation verification, but their full gate remains FAILED on the intermittent adopted-session input/output test after three attempts; see the current Review Gate findings. Divider dragging, deeper or horizontal splits, spatial navigation, laband split rendering, and the multi-payload GPU path remain deferred. Content-hash memoization made the full repository gate inexpensive to repeat; direct feature suites and end-to-end commands provided fresh execution evidence alongside it.
 
 ## Context and Orientation
 
@@ -754,7 +844,7 @@ ID where a session ID belongs fails one of these.
   been closed (Decision Log). An older binary reading a v2 file reattaches
   daemon ID `tab.id` and therefore gets the pane the flat fields describe;
   unsplit tabs are byte-for-byte today's behaviour; a split tab's other pane
-  is left running in the daemon and appears as adoptable.
+  is left running in labpty and appears as adoptable. Downgrading while using laband is not supported: older laband clients sweep the sibling session as an orphan. Export the workspace and use labpty before downgrading.
 - Decoding: `TabState` implements `init(from:)` so a malformed `panes` value
   falls back to a single leaf `.leaf(sessionId: id)` and logs, instead of
   failing the whole workspace (`PersistenceStore.load` treats any throw as
@@ -899,7 +989,7 @@ land in the respective halves, exactly one divider rect),
 run `printf` in pane 1 via `terminal.typeText` with `sessionId`; next frame
 is dirty and the text appears), `testBothPanesWriteTranscripts`
 (both `transcripts/<sessionId>.bin` grow), `testUnfocusedCursorIsHollow`.
-Screenshot fixture `fixtures/split-pane.fixture.json`.
+Screenshot evidence comes from `fixtures/debug-script-split-pane.scenario.json`; the fixture byte-stream grammar cannot create panes. The real-shell scenario exercises the layout and saves its PNG without extending the unrelated fixture grammar.
 New `Tests/LabanDebugTests/LabandSplitRestoreTests.swift`:
 `testSplitWorkspaceRestoresFocusedPaneUnderLaband` loads a v2 workspace with
 a two-leaf tab into a headless runtime on the laband backend and asserts the
@@ -1044,9 +1134,10 @@ Manual, in the installed app with the labpty backend (the default):
 - Before testing restore on a real workspace, copy the file
   `PersistenceStore.swift` names (`workspace.json` under the app's
   Application Support directory) aside; a v2 file restores under a v1 binary
-  as its focused panes.
-- Daemon sessions are never terminated by migration. A pane the app cannot
-  reattach shows up in the existing "unclaimed sessions" adopt dialog.
+  using the legacy flat pane fields (the first-created pane when still present).
+- The current migration does not terminate daemon sessions. Unclaimed labpty
+  panes remain adoptable. Downgrading a split workspace with laband is unsupported:
+  older clients can terminate sibling sessions during orphan sweeping.
 - `./scripts/test-e2e` and the restart test clean their own
   `.tmp/<run-id>` directories.
 

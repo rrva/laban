@@ -1,4 +1,4 @@
-public struct TerminalBackgroundCompositingOptions: Equatable, Sendable {
+public struct TerminalBackgroundCompositingOptions: Codable, Equatable, Sendable {
   public var opacity: UInt8
   public var applyToExplicitCellBackgrounds: Bool
 

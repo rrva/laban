@@ -12,7 +12,10 @@ private func makeModel() throws -> AppModel {
   var size = LabanTerminalSize()
   size.rows = 24
   size.cols = 80
-  return try AppModel(initialSize: size, sessionFactory: fixtureFactory)
+  return try AppModel(
+    initialSize: size,
+    sessionFactory: { size, context in try Session.fixture(size: size, sessionID: context.sessionID)
+    })
 }
 
 private func makeTempStore() -> PersistenceStore {
@@ -30,27 +33,45 @@ private final class TranscriptRecorder: TranscriptHostDelegate {
 
   func attachTranscriptWriter(
     to session: Session,
-    tabId: String,
+    sessionId: String,
     suppressInitialOutputFor: DispatchTimeInterval
   ) {
     lock.lock()
-    attached.append(tabId)
+    attached.append(sessionId)
     lock.unlock()
   }
 
-  func detachTranscriptWriter(forTabId tabId: String, in session: Session?) {
+  func detachTranscriptWriter(forSessionId tabId: String, in session: Session?) {
     lock.lock()
     detached.append(tabId)
     lock.unlock()
   }
 
-  func transcriptURL(forTabId tabId: String) -> URL {
+  func transcriptURL(forSessionId tabId: String) -> URL {
     FileManager.default.temporaryDirectory
       .appendingPathComponent("\(tabId).bin")
   }
 }
 
 final class PersistenceRoundTripTests: XCTestCase {
+  func testCrossTabDuplicateSessionIDsAreQuarantined() throws {
+    let shared = PaneState(sessionId: "shared", cwd: "/tmp", launchCommand: "/bin/sh")
+    let tabs = ["first", "second"].map { id in
+      TabState(
+        id: id, cwd: "/tmp", launchCommand: "/bin/sh", lastActiveAt: Date(),
+        panes: .leaf(sessionId: "shared"), focusedSessionId: "shared", paneStates: [shared])
+    }
+    let state = WorkspaceState(windows: [WindowState(id: "window", tabs: tabs)])
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = PersistenceStore(baseURL: root)
+    try store.save(state)
+    XCTAssertNil(store.load())
+    XCTAssertFalse(FileManager.default.fileExists(atPath: store.workspaceURL.path))
+    XCTAssertTrue(
+      try FileManager.default.contentsOfDirectory(atPath: root.path)
+        .contains { $0.hasPrefix("workspace.json.corrupt-") })
+  }
 
   override func tearDown() {
     super.tearDown()
@@ -92,7 +113,7 @@ final class PersistenceRoundTripTests: XCTestCase {
     let decoded = try decoder.decode(WorkspaceState.self, from: data)
 
     XCTAssertEqual(decoded, state)
-    XCTAssertEqual(decoded.schemaVersion, 1)
+    XCTAssertEqual(decoded.schemaVersion, 2)
     XCTAssertEqual(decoded.windows.first?.tabs.count, 2)
     XCTAssertEqual(decoded.windows.first?.tabs.last?.shellPid, 4321)
   }
@@ -344,7 +365,7 @@ final class PersistenceRoundTripTests: XCTestCase {
     let model = try makeModel()
     let snapshot = model.snapshotForPersistence(windowId: "win-test")
 
-    XCTAssertEqual(snapshot.schemaVersion, 1)
+    XCTAssertEqual(snapshot.schemaVersion, 2)
     XCTAssertEqual(snapshot.windows.count, 1)
     XCTAssertEqual(snapshot.windows[0].id, "win-test")
     XCTAssertEqual(snapshot.windows[0].tabs.count, 1)
@@ -413,12 +434,11 @@ final class PersistenceRoundTripTests: XCTestCase {
     coord.attach(model)
     coord.scheduleSave()
 
-    // Wait past the debounce window so the timer fires and writes.
-    let written = expectation(description: "save lands")
-    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.2) {
-      written.fulfill()
-    }
-    wait(for: [written], timeout: 2.0)
+    // The utility queue can run later than the debounce deadline under load.
+    // Await the actual write rather than an unrelated timer on another queue.
+    let written = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in store.load() != nil }, object: nil)
+    wait(for: [written], timeout: 10.0)
 
     let loaded = try XCTUnwrap(store.load())
     XCTAssertEqual(loaded.windows.first?.id, "win-debounce")
@@ -455,7 +475,7 @@ final class PersistenceRoundTripTests: XCTestCase {
     let host = TranscriptHost(store: store, isEnabled: { true })
     model.transcriptDelegate = host
     for (tab, session) in model.allSessions() {
-      host.attachTranscriptWriter(to: session, tabId: tab.id)
+      host.attachTranscriptWriter(to: session, sessionId: session.id)
     }
 
     let coord = PersistenceCoordinator(
@@ -477,7 +497,7 @@ final class PersistenceRoundTripTests: XCTestCase {
 
     coord.flushSync()
 
-    let data = try Data(contentsOf: store.transcriptURL(forTabId: tab.id))
+    let data = try Data(contentsOf: store.transcriptURL(forSessionId: tab.id))
     XCTAssertEqual(
       Array(data), payload,
       "quit flush must drain writers without replacing .bin with visible-grid text")
@@ -505,7 +525,7 @@ final class PersistenceRoundTripTests: XCTestCase {
     // so it never got an attach — simulate the production wiring of
     // attaching writers to pre-existing sessions.
     for (tab, session) in model.allSessions() {
-      recorder.attachTranscriptWriter(to: session, tabId: tab.id)
+      recorder.attachTranscriptWriter(to: session, sessionId: session.id)
     }
     XCTAssertEqual(recorder.attached.count, 1)
     let defaultTabId = model.tabs[0].id
@@ -618,5 +638,41 @@ final class PersistenceRoundTripTests: XCTestCase {
     defaults.set(false, forKey: RestoreOnLaunchSettings.key)
     let after = (defaults.object(forKey: RestoreOnLaunchSettings.key) as? Bool) ?? true
     XCTAssertFalse(after, "explicit false must round-trip through the helper's logic")
+  }
+}
+
+extension PersistenceRoundTripTests {
+  func testV1WorkspaceMigratesToSingleLeafTree() throws {
+    let data = Data(
+      #"{"schemaVersion":1,"windows":[{"id":"w","tabs":[{"id":"old","cwd":"/tmp","launchCommand":"/bin/sh","lastActiveAt":0}]}]}"#
+        .utf8)
+    let state = try JSONDecoder().decode(WorkspaceState.self, from: data)
+    let tab = state.windows[0].tabs[0]
+    XCTAssertEqual(tab.panes, .leaf(sessionId: "old"))
+    XCTAssertEqual(tab.focusedSessionId, "old")
+    XCTAssertEqual(tab.paneStates?.map(\.sessionId), ["old"])
+  }
+  func testSplitTabRoundTrips() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    _ = try model.splitPane(inTab: tab.id) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    let state = model.snapshotForPersistence(windowId: "w")
+    let decoded = try JSONDecoder().decode(WorkspaceState.self, from: JSONEncoder().encode(state))
+    XCTAssertEqual(decoded, state)
+    let restored = try AppModel()
+    restored.replaceTabs(from: decoded)
+    XCTAssertEqual(restored.activeTab?.panes, model.activeTab?.panes)
+    XCTAssertEqual(restored.activeTab?.focusedSessionId, model.activeTab?.focusedSessionId)
+  }
+  func testCorruptPaneTreeFallsBackPerTab() throws {
+    let data = Data(
+      #"{"schemaVersion":2,"windows":[{"id":"w","tabs":[{"id":"bad","cwd":"/tmp","launchCommand":"sh","lastActiveAt":0,"panes":{"broken":true}},{"id":"good","cwd":"/tmp","launchCommand":"sh","lastActiveAt":0}]}]}"#
+        .utf8)
+    let state = try JSONDecoder().decode(WorkspaceState.self, from: data)
+    XCTAssertEqual(state.windows[0].tabs.count, 2)
+    XCTAssertEqual(state.windows[0].tabs[0].panes, .leaf(sessionId: "bad"))
+    XCTAssertEqual(state.windows[0].tabs[1].panes, .leaf(sessionId: "good"))
   }
 }

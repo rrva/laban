@@ -270,15 +270,15 @@ final class TranscriptRoundTripTests: XCTestCase {
     let producer = try Session.fixture(size: size)
     defer { producer.close() }
     let tabId = "tab-echo-boundary-test"
-    host.attachTranscriptWriter(to: producer, tabId: tabId)
+    host.attachTranscriptWriter(to: producer, sessionId: tabId)
 
     _ = producer.feedOutput(Array("echo hej\r\nhej\r\n".utf8))
-    host.detachTranscriptWriter(forTabId: tabId, in: producer)
+    host.detachTranscriptWriter(forSessionId: tabId, in: producer)
 
     let replay = try Session.fixture(size: size)
     defer { replay.close() }
     TranscriptRenderer.render(
-      fileURL: store.transcriptURL(forTabId: tabId),
+      fileURL: store.transcriptURL(forSessionId: tabId),
       into: replay,
       altBufferAtQuit: false)
 
@@ -308,7 +308,7 @@ final class TranscriptRoundTripTests: XCTestCase {
     let session = try Session.fixture(size: size)
     defer { session.close() }
     let tabId = "tab-host-test"
-    host.attachTranscriptWriter(to: session, tabId: tabId)
+    host.attachTranscriptWriter(to: session, sessionId: tabId)
 
     // Feed bytes through the fixture session — fixture mode routes
     // laban_session_write straight into laban_vt_write_capture, which
@@ -322,9 +322,9 @@ final class TranscriptRoundTripTests: XCTestCase {
     }
     wait(for: [written], timeout: 2.0)
 
-    host.detachTranscriptWriter(forTabId: tabId, in: session)
+    host.detachTranscriptWriter(forSessionId: tabId, in: session)
 
-    let url = store.transcriptURL(forTabId: tabId)
+    let url = store.transcriptURL(forSessionId: tabId)
     let data = try Data(contentsOf: url)
     XCTAssertTrue(
       data.contains("hello transcript\n".utf8.first!)

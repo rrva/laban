@@ -124,7 +124,7 @@ extension HeadlessDebugRuntime {
       {
         defer { laban_snapshot_destroy(snapshot) }
         terminalSnapshot = DebugRenderTraceTerminalSnapshot(
-          sessionId: tab.sessionId,
+          sessionId: tab.focusedSessionId,
           rows: Int(snapshot.pointee.rows),
           cols: Int(snapshot.pointee.cols)
         )

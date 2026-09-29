@@ -5,6 +5,29 @@ import XCTest
 @testable import LabanDebug
 
 final class HeadlessIntentRouterTests: XCTestCase {
+  func testPaneIntentsSplitFocusAndCloseThroughRouter() throws {
+    let (runtime, artifacts) = try makeRuntime("router-panes")
+    defer {
+      runtime.shutdown(terminateRemoteSessions: true)
+      try? FileManager.default.removeItem(at: artifacts)
+    }
+    let router = HeadlessIntentRouter(runtime: runtime)
+    let left = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+    for action in ["pane.split", "pane.focus", "pane.close"] {
+      let payload: [String: Any] =
+        action == "pane.split" ? ["action": action] : ["action": action, "sessionId": left]
+      let response = router.route(
+        .legacyDebugAction(
+          LegacyDebugActionInput(
+            intentID: action, action: action,
+            body: try JSONSerialization.data(withJSONObject: payload))))
+      XCTAssertEqual(response.status, 200)
+      if action == "pane.focus" { XCTAssertEqual(runtime.model.activeTab?.focusedSessionId, left) }
+    }
+    XCTAssertEqual(runtime.model.activeTab?.allSessionIds.count, 1)
+    XCTAssertNotEqual(runtime.model.activeTab?.focusedSessionId, left)
+  }
+
   func testHealthLegacyQueryReturnsJSONControlResponse() throws {
     let (runtime, artifacts) = try makeRuntime("router-health")
     defer { try? FileManager.default.removeItem(at: artifacts) }

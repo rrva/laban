@@ -3,7 +3,7 @@ import Foundation
 import LabanRenderer
 import LabanTerminalCore
 
-public struct TerminalAccessibilityVisualOptions: Equatable, Sendable {
+public struct TerminalAccessibilityVisualOptions: Codable, Equatable, Sendable {
   public var increaseContrast: Bool
   public var differentiateWithoutColor: Bool
   public var reduceTransparency: Bool

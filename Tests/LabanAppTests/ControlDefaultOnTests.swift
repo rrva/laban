@@ -81,7 +81,8 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { server.stop() }
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
-    let context = coordinator.prepareLaunch(tabID: "tab-1", isAgentAttached: false)
+    let context = coordinator.prepareLaunch(
+      tabID: "tab-1", sessionID: "tab-1", isAgentAttached: false)
     XCTAssertEqual(
       context.environmentOverrides[ControlEnvironmentKeys.controlURL], start.socketPath)
     XCTAssertNil(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach])
@@ -96,7 +97,8 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { server.stop() }
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
-    let context = coordinator.prepareLaunch(tabID: "tab-restored", isAgentAttached: false)
+    let context = coordinator.prepareLaunch(
+      tabID: "tab-restored", sessionID: "tab-restored", isAgentAttached: false)
     XCTAssertNil(context.sessionObserveBootstrap)
     XCTAssertFalse(coordinator.hasPendingAttachRegistration(sessionID: context.sessionID))
 
@@ -112,9 +114,31 @@ final class ControlDefaultOnTests: XCTestCase {
     XCTAssertTrue(
       server.canLazyAttachDescendant(sessionID: context.sessionID, peerPID: getpid()))
 
-    coordinator.noteTabClosed(tabID: "tab-restored")
+    coordinator.noteSessionClosed(sessionID: "tab-restored")
     XCTAssertFalse(
       server.canLazyAttachDescendant(sessionID: context.sessionID, peerPID: getpid()))
+  }
+
+  func testRestoredSplitPaneAttachRetriesRegisterEachShell() throws {
+    let h = try SplitDaemonHarness()
+    let tab = try h.split()
+    let launch = ControlSessionLaunchCoordinator()
+    let server = LabanControlServer(router: SpyDefaultOnRouter(), surface: .gui)
+    let start = try server.start()
+    defer { server.stop() }
+    launch.noteControlServerStarted(server, socketPath: start.socketPath)
+    for id in tab.allSessionIds {
+      MainWindowController.scheduleAttachShellRetries(
+        tabId: tab.id, sessionId: id, launchCoordinator: launch,
+        sessionCoordinator: h.coordinator, model: h.model, delays: [0])
+    }
+    let delivered = expectation(description: "both attach retries")
+    DispatchQueue.main.async { delivered.fulfill() }
+    wait(for: [delivered], timeout: 2)
+    for id in tab.allSessionIds {
+      let pid = try XCTUnwrap(h.coordinator.attachShellPID(forSessionId: id))
+      XCTAssertTrue(server.canLazyAttachDescendant(sessionID: id, peerPID: pid))
+    }
   }
 
   func testAgentAttachedLaunchContextCarriesSingleUseBootstrap() throws {
@@ -129,7 +153,8 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { server.stop() }
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
-    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    let context = coordinator.prepareLaunch(
+      tabID: "tab-agent", sessionID: "tab-agent", isAgentAttached: true)
     let bootstrap = try XCTUnwrap(context.sessionObserveBootstrap)
     XCTAssertEqual(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach], bootstrap)
     XCTAssertTrue(context.isAgentAttached)
@@ -173,7 +198,8 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { server.stop() }
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
-    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    let context = coordinator.prepareLaunch(
+      tabID: "tab-agent", sessionID: "tab-agent", isAgentAttached: true)
     let bootstrap = try XCTUnwrap(context.sessionObserveBootstrap)
     server.registerAttachShellPID(sessionID: context.sessionID, shellPID: getppid())
 
@@ -206,7 +232,8 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { server.stop() }
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
-    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    let context = coordinator.prepareLaunch(
+      tabID: "tab-agent", sessionID: "tab-agent", isAgentAttached: true)
     XCTAssertNil(context.sessionObserveBootstrap)
     XCTAssertNil(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach])
     XCTAssertTrue(context.isAgentAttached)
@@ -222,7 +249,8 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { server.stop() }
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
-    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    let context = coordinator.prepareLaunch(
+      tabID: "tab-agent", sessionID: "tab-agent", isAgentAttached: true)
     XCTAssertNotNil(context.sessionObserveBootstrap)
     XCTAssertNotNil(context.environmentOverrides[ControlEnvironmentKeys.sessionAttach])
     XCTAssertTrue(context.isAgentAttached)
@@ -284,7 +312,8 @@ final class ControlDefaultOnTests: XCTestCase {
     defer { server.stop() }
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
-    let context = coordinator.prepareLaunch(tabID: "tab-agent", isAgentAttached: true)
+    let context = coordinator.prepareLaunch(
+      tabID: "tab-agent", sessionID: "tab-agent", isAgentAttached: true)
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
@@ -320,8 +349,9 @@ final class ControlDefaultOnTests: XCTestCase {
     let coordinator = ControlSessionLaunchCoordinator()
     var attachBootstrap: String?
     let model = try AppModel(
-      sessionLaunchContextProvider: { tabId, isAgentAttached in
-        let context = coordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+      sessionLaunchContextProvider: { tabId, sessionId, isAgentAttached in
+        let context = coordinator.prepareLaunch(
+          tabID: tabId, sessionID: sessionId, isAgentAttached: isAgentAttached)
         attachBootstrap = context.sessionObserveBootstrap
         return context
       },
@@ -339,18 +369,18 @@ final class ControlDefaultOnTests: XCTestCase {
     let tab = try model.createAgentAttachedTab()
     let bootstrap = try XCTUnwrap(attachBootstrap)
     server.registerAttachShellPID(
-      sessionID: tab.sessionId,
+      sessionID: tab.focusedSessionId,
       shellPID: getppid())
     let (fd, redeemedSessionID) = try ControlUDSClient.redeemAttachBootstrap(
       socketPath: start.socketPath,
       bootstrap: bootstrap)
     defer { Darwin.close(fd) }
-    XCTAssertEqual(redeemedSessionID, tab.sessionId)
+    XCTAssertEqual(redeemedSessionID, tab.focusedSessionId)
 
     let otherTab = try model.createTab()
     let (crossStatus, _) = try ControlUDSClient.request(
       fd: fd,
-      path: "/debug/sessions/\(otherTab.sessionId)",
+      path: "/debug/sessions/\(otherTab.focusedSessionId)",
       keepConnectionOpen: true)
     XCTAssertEqual(crossStatus, 403)
   }
@@ -451,8 +481,9 @@ final class ControlDefaultOnTests: XCTestCase {
     coordinator.noteControlServerStarted(server, socketPath: start.socketPath)
 
     let model = try AppModel(
-      sessionLaunchContextProvider: { tabId, isAgentAttached in
-        coordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+      sessionLaunchContextProvider: { tabId, sessionId, isAgentAttached in
+        coordinator.prepareLaunch(
+          tabID: tabId, sessionID: sessionId, isAgentAttached: isAgentAttached)
       },
       sessionFactory: { size, context in
         try Session.fixture(size: size, sessionID: context.sessionID)

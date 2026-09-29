@@ -18,11 +18,10 @@ struct DebugClipboardActions {
 
   func copy(_ request: SessionTargetActionRequest) -> DebugResponse {
     let frameBefore = runtime.currentFrame
-    let targetTab =
-      request.sessionId.flatMap { sessionId in
-        runtime.model.tabs.first(where: { $0.sessionId == sessionId })
-      } ?? runtime.model.activeTab
-    guard let tab = targetTab, let session = runtime.model.session(forTab: tab.id) else {
+    let targetTab = runtime.targetTab(sessionId: request.sessionId)
+    guard let tab = targetTab,
+      let session = runtime.model.session(forSessionID: tab.focusedSessionId)
+    else {
       return jsonError("no session for copy")
     }
     guard let selection = runtime.selectionBySession[session.id] else {
@@ -71,7 +70,9 @@ struct DebugClipboardActions {
     }
     let sanitized = TerminalPaste.sanitize(runtime.debugClipboard)
     var encodedBytes: [UInt8] = []
-    if let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id) {
+    if let tab = runtime.model.activeTab,
+      let session = runtime.model.session(forSessionID: tab.focusedSessionId)
+    {
       let result: Session.PasteWriteResult?
       if sanitized.isEmpty {
         result = nil
@@ -98,14 +99,14 @@ struct DebugClipboardActions {
             do {
               try runtime.ensureTerminalClientSessionUnlocked(for: tab)
               try client.writeInput(
-                sessionId: runtime.terminalClientRemoteSessionId(for: tab.sessionId),
+                sessionId: runtime.terminalClientRemoteSessionId(for: tab.focusedSessionId),
                 bytes: captured.bytes
               )
             } catch {
               runtime.appendError(
                 kind: "laband.writeInput.failed",
                 message: String(describing: error),
-                sessionId: tab.sessionId,
+                sessionId: tab.focusedSessionId,
                 tabId: tab.id
               )
               return jsonError("paste failed: \(error)")
@@ -136,7 +137,7 @@ struct DebugClipboardActions {
         route: "terminal",
         frameBefore: frameBefore,
         tabId: activeTab?.id,
-        sessionId: activeTab?.sessionId,
+        sessionId: activeTab?.focusedSessionId,
         text: sanitized,
         command: "paste",
         encodedHex: encodedBytes.isEmpty
@@ -159,7 +160,7 @@ struct DebugClipboardActions {
         route: "terminal",
         frameBefore: frameBefore,
         tabId: tab.id,
-        sessionId: tab.sessionId,
+        sessionId: tab.focusedSessionId,
         command: "inputFollowBottom",
         deltaRows: deltaRows
       ))

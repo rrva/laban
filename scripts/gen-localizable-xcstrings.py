@@ -28,6 +28,11 @@ FOCUS_STATUS_USAGE_DESCRIPTION = (
 
 # English source -> per-locale translations. Keep keys identical to Swift L10n.tr("…") calls.
 TRANSLATIONS: dict[str, dict[str, str]] = {
+    "Split Pane Right": {"zh-Hans": "向右拆分窗格", "zh-Hant": "向右分割窗格", "ja": "右にペインを分割", "ko": "오른쪽으로 창 분할", "fr": "Diviser le volet à droite", "es": "Dividir panel a la derecha", "hi": "पेन को दाईं ओर विभाजित करें", "ru": "Разделить панель справа", "de": "Bereich rechts teilen", "pt-BR": "Dividir painel à direita", "it": "Dividi riquadro a destra"},
+    "Close Pane": {"zh-Hans": "关闭窗格", "zh-Hant": "關閉窗格", "ja": "ペインを閉じる", "ko": "창 닫기", "fr": "Fermer le volet", "es": "Cerrar panel", "hi": "पेन बंद करें", "ru": "Закрыть панель", "de": "Bereich schließen", "pt-BR": "Fechar painel", "it": "Chiudi riquadro"},
+    "Focus Next Pane": {"zh-Hans": "聚焦下一个窗格", "zh-Hant": "聚焦下一個窗格", "ja": "次のペインにフォーカス", "ko": "다음 창으로 포커스 이동", "fr": "Activer le volet suivant", "es": "Enfocar panel siguiente", "hi": "अगले पेन पर फ़ोकस करें", "ru": "Следующая панель", "de": "Nächsten Bereich fokussieren", "pt-BR": "Focar próximo painel", "it": "Attiva riquadro successivo"},
+    "Focus Previous Pane": {"zh-Hans": "聚焦上一个窗格", "zh-Hant": "聚焦上一個窗格", "ja": "前のペインにフォーカス", "ko": "이전 창으로 포커스 이동", "fr": "Activer le volet précédent", "es": "Enfocar panel anterior", "hi": "पिछले पेन पर फ़ोकस करें", "ru": "Предыдущая панель", "de": "Vorherigen Bereich fokussieren", "pt-BR": "Focar painel anterior", "it": "Attiva riquadro precedente"},
+
     # App menu
     "About Laban": {
         "zh-Hans": "关于 Laban",
@@ -2456,6 +2461,11 @@ INFO_PLIST_USAGE_DESCRIPTIONS: dict[str, str] = {
 # Kept out of TRANSLATIONS: these strings live only in InfoPlist.strings, not
 # in the Swift string catalog.
 INFO_PLIST_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "Split Pane Right": {"zh-Hans": "向右拆分窗格", "zh-Hant": "向右分割窗格", "ja": "右にペインを分割", "ko": "오른쪽으로 창 분할", "fr": "Diviser le volet à droite", "es": "Dividir panel a la derecha", "hi": "पेन को दाईं ओर विभाजित करें", "ru": "Разделить панель справа", "de": "Bereich rechts teilen", "pt-BR": "Dividir painel à direita", "it": "Dividi riquadro a destra"},
+    "Close Pane": {"zh-Hans": "关闭窗格", "zh-Hant": "關閉窗格", "ja": "ペインを閉じる", "ko": "창 닫기", "fr": "Fermer le volet", "es": "Cerrar panel", "hi": "पेन बंद करें", "ru": "Закрыть панель", "de": "Bereich schließen", "pt-BR": "Fechar painel", "it": "Chiudi riquadro"},
+    "Focus Next Pane": {"zh-Hans": "聚焦下一个窗格", "zh-Hant": "聚焦下一個窗格", "ja": "次のペインにフォーカス", "ko": "다음 창으로 포커스 이동", "fr": "Activer le volet suivant", "es": "Enfocar panel siguiente", "hi": "अगले पेन पर फ़ोकस करें", "ru": "Следующая панель", "de": "Nächsten Bereich fokussieren", "pt-BR": "Focar próximo painel", "it": "Attiva riquadro successivo"},
+    "Focus Previous Pane": {"zh-Hans": "聚焦上一个窗格", "zh-Hant": "聚焦上一個窗格", "ja": "前のペインにフォーカス", "ko": "이전 창으로 포커스 이동", "fr": "Activer le volet précédent", "es": "Enfocar panel anterior", "hi": "पिछले पेन पर फ़ोकस करें", "ru": "Предыдущая панель", "de": "Vorherigen Bereich fokussieren", "pt-BR": "Focar painel anterior", "it": "Attiva riquadro precedente"},
+
     LOCAL_NETWORK_USAGE_DESCRIPTION: {
         "zh-Hans": "您在 Laban 中运行的程序（例如 ssh）会使用此权限连接本地网络上的设备。",
         "zh-Hant": "您在 Laban 中執行的程式（例如 ssh）會使用此權限連接區域網路上的裝置。",

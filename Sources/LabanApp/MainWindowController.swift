@@ -273,11 +273,11 @@ final class MainWindowController: NSWindowController {
     }
     let backendSelection = try terminalBackendSelection ?? Self.configuredAppTerminalBackend()
     let terminalBackend = backendSelection.backend
-    let restoredCwdByTabId = Self.restoredCwdByTabId(from: restoredState)
+    let restoredCwdBySessionId = Self.restoredCwdBySessionId(from: restoredState)
     let sessionCoordinator = try Self.makeSessionCoordinator(
       backend: terminalBackend,
       shellLaunchProvider: { shellIntegration.currentLaunch() },
-      cwdByTabId: restoredCwdByTabId)
+      cwdBySessionId: restoredCwdBySessionId)
 
     let launchCoordinator = ControlSessionLaunchCoordinator()
     let liveRouter = LiveIntentRouter(
@@ -292,8 +292,9 @@ final class MainWindowController: NSWindowController {
 
     let model = try AppModel(
       initialSize: size,
-      sessionLaunchContextProvider: { tabId, isAgentAttached in
-        launchCoordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+      sessionLaunchContextProvider: { tabId, sessionId, isAgentAttached in
+        launchCoordinator.prepareLaunch(
+          tabID: tabId, sessionID: sessionId, isAgentAttached: isAgentAttached)
       },
       sessionFactory: { size, context in
         switch terminalBackend {
@@ -317,8 +318,8 @@ final class MainWindowController: NSWindowController {
     liveRouter.bindModel(model)
     let controlLaunchCoordinator = launchCoordinator
     let sessionCoordForAttach = sessionCoordinator
-    let priorTabCreated = model.onTabCreated
-    model.onTabCreated = { tabId, session in
+    let priorTabCreated = model.onSessionCreated
+    model.onSessionCreated = { tabId, session in
       priorTabCreated?(tabId, session)
       Self.registerAttachShell(
         tabId: tabId,
@@ -326,15 +327,15 @@ final class MainWindowController: NSWindowController {
         launchCoordinator: controlLaunchCoordinator,
         sessionCoordinator: sessionCoordForAttach)
       Self.scheduleAttachShellRetries(
-        tabId: tabId,
+        tabId: tabId, sessionId: session.id,
         launchCoordinator: controlLaunchCoordinator,
         sessionCoordinator: sessionCoordForAttach,
         model: model)
     }
-    let priorTabClosedForControl = model.onTabClosed
-    model.onTabClosed = { tabId in
-      priorTabClosedForControl?(tabId)
-      controlLaunchCoordinator.noteTabClosed(tabID: tabId)
+    let priorTabClosedForControl = model.onSessionClosed
+    model.onSessionClosed = { tabId, sessionId in
+      priorTabClosedForControl?(tabId, sessionId)
+      controlLaunchCoordinator.noteSessionClosed(sessionID: sessionId)
     }
     let isPersistenceEnabled = {
       persistenceSyncEnabled && RestoreOnLaunchSettings.isEnabled
@@ -364,9 +365,10 @@ final class MainWindowController: NSWindowController {
     // or replay generic terminal commands into a live terminal.
     model.restoredDeferredSessionFactory = { spec in
       if terminalBackend == .laband || terminalBackend == .labpty {
-        return try Session.fixture(size: spec.size)
+        return try Session.fixture(size: spec.size, sessionID: spec.sessionId)
       }
-      let context = launchCoordinator.prepareLaunch(tabID: spec.tabId, isAgentAttached: false)
+      let context = launchCoordinator.prepareLaunch(
+        tabID: spec.tabId, sessionID: spec.sessionId, isAgentAttached: false)
       let launch = spawnLaunch()
       let env = Self.mergeLaunchEnvironment(
         launch.environmentOverrides,
@@ -486,11 +488,11 @@ final class MainWindowController: NSWindowController {
         return session
       }
     }
-    sessionCoordinator?.argvProvider = { [weak model] tabId in
-      model?.launchArgv(forTab: tabId)
+    sessionCoordinator?.argvProvider = { [weak model] _, sessionId in
+      model?.launchArgv(forSession: sessionId)
     }
-    sessionCoordinator?.launchEnvironmentProvider = { [weak model] tabId in
-      model?.launchEnvironmentOverrides(forTab: tabId) ?? [:]
+    sessionCoordinator?.launchEnvironmentProvider = { [weak model] _, sessionId in
+      model?.launchEnvironmentOverrides(forSession: sessionId) ?? [:]
     }
     sessionCoordinator?.onTabMetadataRefreshed = {
       [weak launchCoordinator, weak sessionCoordinator] model in
@@ -508,7 +510,7 @@ final class MainWindowController: NSWindowController {
     // was assigned. Attach explicitly here.
     if let transcriptHost {
       for (tab, session) in model.allSessions() {
-        transcriptHost.attachTranscriptWriter(to: session, tabId: tab.id)
+        transcriptHost.attachTranscriptWriter(to: session, sessionId: session.id)
       }
     }
 
@@ -538,7 +540,7 @@ final class MainWindowController: NSWindowController {
     sessionCoordinator?.onSessionDirty = { [weak model] sessionId in
       model?.onSessionDirty?(sessionId)
     }
-    try sessionCoordinator?.ensureSessions(for: model.tabs, in: model, size: model.terminalSize)
+    try sessionCoordinator?.ensureSessions(for: model.tabs, in: model, size: model.terminalAreaSize)
     // After the legitimate tabs have attached or created their daemon
     // sessions, sweep anything else still in laband. With
     // Restore-on-Launch off the workspace forgets earlier tab ids, so
@@ -631,7 +633,8 @@ final class MainWindowController: NSWindowController {
     scrollIndicator.autoresizingMask = [.width, .height]
     containerView.addSubview(scrollIndicator)
     termView.onViewportChanged = {
-      [weak scrollIndicator] offset, total, vp, altScreen, mouseTracking in
+      [weak scrollIndicator, weak termView] offset, total, vp, altScreen, mouseTracking in
+      if let rect = termView?.focusedPaneRect { scrollIndicator?.frame = rect }
       scrollIndicator?.applyViewport(
         viewportOffset: offset, totalRows: total, viewportRows: vp,
         isAltScreen: altScreen, isMouseTracking: mouseTracking)
@@ -881,18 +884,18 @@ final class MainWindowController: NSWindowController {
         appModel: model, mirror: mirror,
         isEnabled: isPersistenceEnabled)
       controller.agentObserverHost = observerHost
-      let priorTabCreatedForObserver = model.onTabCreated
-      model.onTabCreated = { [weak observerHost] tabId, session in
+      let priorTabCreatedForObserver = model.onSessionCreated
+      model.onSessionCreated = { [weak observerHost] tabId, session in
         priorTabCreatedForObserver?(tabId, session)
-        observerHost?.attach(session: session, tabId: tabId)
+        observerHost?.attach(session: session, tabId: session.id)
       }
-      let priorTabClosedForObserver = model.onTabClosed
-      model.onTabClosed = { [weak observerHost] tabId in
-        priorTabClosedForObserver?(tabId)
-        observerHost?.detach(tabId: tabId)
+      let priorTabClosedForObserver = model.onSessionClosed
+      model.onSessionClosed = { [weak observerHost] tabId, sessionId in
+        priorTabClosedForObserver?(tabId, sessionId)
+        observerHost?.detach(tabId: sessionId)
       }
       for (tab, session) in model.allSessions() {
-        observerHost.attach(session: session, tabId: tab.id)
+        observerHost.attach(session: session, tabId: session.id)
       }
       if terminalBackend == .inProcess, let restoredState, !restoredState.windows.isEmpty {
         Self.applyRestoreLaunchPlans(
@@ -1089,7 +1092,9 @@ final class MainWindowController: NSWindowController {
           termView.terminalSelection(forSessionID: sessionID, model: model)
         },
         accessibilityValueProvider: { tab in
-          guard let session = model.session(forTab: tab.id), let snap = session.snapshot() else {
+          guard let session = model.session(forSessionID: tab.focusedSessionId),
+            let snap = session.snapshot()
+          else {
             return ""
           }
           defer { laban_snapshot_destroy(snap) }
@@ -1150,7 +1155,8 @@ final class MainWindowController: NSWindowController {
     model: AppModel
   ) {
     guard let coordinator else { return }
-    let unclaimed = coordinator.unclaimedLabptySessions(knownTabIds: Set(model.tabs.map(\.id)))
+    let unclaimed = coordinator.unclaimedLabptySessions(
+      knownSessionIds: Set(model.tabs.flatMap(\.allSessionIds)))
     guard !unclaimed.isEmpty else { return }
 
     AppLog.app.notice("labpty desync: \(unclaimed.count) unclaimed live session(s) at launch")
@@ -1168,7 +1174,8 @@ final class MainWindowController: NSWindowController {
       AppLog.app.notice("labpty desync: ignored \(unclaimed.count) unclaimed session(s)")
       return
     }
-    let adopted = coordinator.adoptLabptySessions(unclaimed, in: model, size: model.terminalSize)
+    let adopted = coordinator.adoptLabptySessions(
+      unclaimed, in: model, size: model.terminalAreaSize)
     AppLog.app.notice("labpty desync: adopted \(adopted.count) session(s) as tabs")
   }
 
@@ -1191,12 +1198,12 @@ final class MainWindowController: NSWindowController {
   ) {
     guard let window = state.windows.first else { return }
     let activityChecker = ProcessTreeRestoreSessionActivityChecker()
-    for tabState in window.tabs {
+    for tabState in window.tabs.flatMap(\.sessionRestoreStates) {
       let instruction = RestoreLaunchPlanner.instruction(
         for: tabState,
         activityChecker: activityChecker)
       guard case .prefillPrompt(let command) = instruction else { continue }
-      guard let session = model.session(forTab: tabState.id) else { continue }
+      guard let session = model.session(forSessionID: tabState.id) else { continue }
       _ = session.write(Array(command.utf8))
     }
   }
@@ -1256,7 +1263,7 @@ final class MainWindowController: NSWindowController {
   private static func makeSessionCoordinator(
     backend: TerminalSessionBackend,
     shellLaunchProvider: @escaping () -> ShellIntegrationLaunch,
-    cwdByTabId: [Tab.ID: String]
+    cwdBySessionId: [Tab.ID: String]
   ) throws -> AppSessionCoordinator? {
     switch backend {
     case .inProcess:
@@ -1266,7 +1273,7 @@ final class MainWindowController: NSWindowController {
       return AppSessionCoordinator(
         client: setup.client,
         shellLaunchProvider: shellLaunchProvider,
-        cwdByTabId: cwdByTabId,
+        cwdBySessionId: cwdBySessionId,
         labandProcess: setup.process
       )
     case .labpty:
@@ -1274,7 +1281,7 @@ final class MainWindowController: NSWindowController {
       return AppSessionCoordinator(
         labptyClient: setup.client,
         shellLaunchProvider: shellLaunchProvider,
-        cwdByTabId: cwdByTabId,
+        cwdBySessionId: cwdBySessionId,
         labptyProcess: setup.process
       )
     }
@@ -1486,9 +1493,11 @@ final class MainWindowController: NSWindowController {
     return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
   }
 
-  private static func restoredCwdByTabId(from state: WorkspaceState?) -> [Tab.ID: String] {
+  private static func restoredCwdBySessionId(from state: WorkspaceState?) -> [Tab.ID: String] {
     guard let state, let window = state.windows.first else { return [:] }
-    return Dictionary(uniqueKeysWithValues: window.tabs.map { ($0.id, $0.cwd) })
+    return Dictionary(
+      window.tabs.flatMap { $0.resolvedPaneStates }.map { ($0.sessionId, $0.cwd) },
+      uniquingKeysWith: { first, _ in first })
   }
 
   private static func resolveAttachShellPID(
@@ -1499,7 +1508,7 @@ final class MainWindowController: NSWindowController {
     if let childPid = session.processMetadata()?.childPid, childPid > 0 {
       return pid_t(childPid)
     }
-    return sessionCoordinator?.attachShellPID(forTabId: tabId)
+    return sessionCoordinator?.attachShellPID(forSessionId: session.id)
   }
 
   private static func registerAttachShell(
@@ -1518,15 +1527,16 @@ final class MainWindowController: NSWindowController {
       shellPID: shellPID)
   }
 
-  private static func scheduleAttachShellRetries(
-    tabId: Tab.ID,
+  static func scheduleAttachShellRetries(
+    tabId: Tab.ID, sessionId: Session.ID,
     launchCoordinator: ControlSessionLaunchCoordinator,
     sessionCoordinator: AppSessionCoordinator?,
-    model: AppModel
+    model: AppModel,
+    delays: [TimeInterval] = [0.05, 0.25, 1.0, 2.0, 5.0]
   ) {
-    for delay in [0.05, 0.25, 1.0, 2.0, 5.0] {
+    for delay in delays {
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak model] in
-        guard let model, let session = model.session(forTab: tabId) else { return }
+        guard let model, let session = model.session(forSessionID: sessionId) else { return }
         registerAttachShell(
           tabId: tabId,
           session: session,

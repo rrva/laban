@@ -98,6 +98,29 @@ enum MenuCommands {
 
     fileMenu.addItem(NSMenuItem.separator())
 
+    for (title, selector, key, modifiers): (String, Selector, String, NSEvent.ModifierFlags) in [
+      (
+        L10n.tr("Split Pane Right"), #selector(TerminalBitmapView.splitPaneRight(_:)), "d",
+        [.command]
+      ),
+      (
+        L10n.tr("Close Pane"), #selector(TerminalBitmapView.closePane(_:)), "d", [.command, .shift]
+      ),
+      (
+        L10n.tr("Focus Next Pane"), #selector(TerminalBitmapView.focusNextPane(_:)), "]",
+        [.command, .option]
+      ),
+      (
+        L10n.tr("Focus Previous Pane"), #selector(TerminalBitmapView.focusPreviousPane(_:)), "[",
+        [.command, .option]
+      ),
+    ] {
+      let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
+      item.keyEquivalentModifierMask = modifiers
+      fileMenu.addItem(item)
+    }
+    fileMenu.addItem(.separator())
+
     // Export Recent: snapshot the active tab's recent-byte ring as an
     // asciinema v2 cast. Default Cmd-E exports the last 10 s; the
     // submenu offers other windows.

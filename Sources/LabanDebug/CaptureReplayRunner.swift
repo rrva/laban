@@ -110,6 +110,7 @@ public final class CaptureReplayRunner {
     let fallbackCellHeight = Int(cellSize.height)
     var tabMap: [String: Tab.ID] = [:]
     var sessionMap: [String: Session.ID] = [:]
+    var legacySpawnSize = size
     var selectionBySession: [Session.ID: TerminalSelection] = [:]
     var pendingOutputByCapturedSession: [String: [[UInt8]]] = [:]
     var seenOutputByCapturedSession: Set<String> = []
@@ -117,6 +118,7 @@ public final class CaptureReplayRunner {
     var seededCapturedSessions: Set<String> = []
     var framesCompared = 0
     var mismatches: [CaptureReplayMismatch] = []
+    var frameSnapshots: [CaptureTimelineEvent] = []
 
     func activeSession() -> Session? {
       guard let tab = model.activeTab else { return nil }
@@ -125,10 +127,8 @@ public final class CaptureReplayRunner {
 
     func session(for capturedId: String?) -> Session? {
       guard let capturedId else { return activeSession() }
-      if let replayId = sessionMap[capturedId],
-        let tab = model.tabs.first(where: { $0.sessionId == replayId })
-      {
-        return model.session(forTab: tab.id)
+      if let replayId = sessionMap[capturedId] {
+        return model.session(forSessionID: replayId)
       }
       return nil
     }
@@ -144,15 +144,19 @@ public final class CaptureReplayRunner {
             }
           } else {
             let tab = try model.createTab()
-            sessionMap[capturedSession] = tab.sessionId
+            sessionMap[capturedSession] = tab.focusedSessionId
             if let capturedTab = event.tabId {
               tabMap[capturedTab] = tab.id
             }
           }
-          if let replaySession = session(for: capturedSession),
-            let pending = pendingOutputByCapturedSession.removeValue(forKey: capturedSession)
-          {
-            for bytes in pending {
+          if let replaySession = session(for: capturedSession) {
+            // Old captures omit creation dimensions; before panes, the last
+            // resize was the whole terminal area's spawn size for new tabs.
+            var initialSize = legacySpawnSize
+            initialSize.rows = Int32(event.rows ?? Int(initialSize.rows))
+            initialSize.cols = Int32(event.cols ?? Int(initialSize.cols))
+            _ = replaySession.resize(initialSize)
+            for bytes in pendingOutputByCapturedSession.removeValue(forKey: capturedSession) ?? [] {
               _ = replaySession.replayPtyOutput(bytes)
             }
           }
@@ -194,28 +198,19 @@ public final class CaptureReplayRunner {
         }
 
       case CaptureEventKind.sessionResized.rawValue:
-        if let pixelWidth = event.pixelWidth,
-          let pixelHeight = event.pixelHeight,
-          let eventCellWidth = event.cellWidth,
-          let eventCellHeight = event.cellHeight
-        {
-          model.resize(
-            viewportWidth: pixelWidth,
-            viewportHeight: pixelHeight,
-            cellWidth: eventCellWidth,
-            cellHeight: eventCellHeight
-          )
+        var newSize = LabanTerminalSize()
+        newSize.rows = Int32(event.rows ?? 24)
+        newSize.cols = Int32(event.cols ?? 80)
+        newSize.pixel_width = Int32(event.pixelWidth ?? 0)
+        newSize.pixel_height = Int32(event.pixelHeight ?? 0)
+        newSize.cell_width = Int32(event.cellWidth ?? fallbackCellWidth)
+        newSize.cell_height = Int32(event.cellHeight ?? fallbackCellHeight)
+        legacySpawnSize = newSize
+        if let capturedId = event.sessionId {
+          _ = session(for: capturedId)?.resize(newSize)
         } else {
-          var newSize = LabanTerminalSize()
-          newSize.rows = Int32(event.rows ?? 24)
-          newSize.cols = Int32(event.cols ?? 80)
-          newSize.pixel_width = Int32(event.pixelWidth ?? 0)
-          newSize.pixel_height = Int32(event.pixelHeight ?? 0)
-          newSize.cell_width = Int32(event.cellWidth ?? fallbackCellWidth)
-          newSize.cell_height = Int32(event.cellHeight ?? fallbackCellHeight)
-          for pair in model.allSessions() {
-            _ = pair.session.resize(newSize)
-          }
+          // Older captures did not identify a resize target.
+          for pair in model.allSessions() { _ = pair.session.resize(newSize) }
         }
 
       case CaptureEventKind.ptyOutput.rawValue:
@@ -274,6 +269,8 @@ public final class CaptureReplayRunner {
         }
 
       case CaptureEventKind.terminalSnapshot.rawValue:
+        if frameSnapshots.first?.frame != event.frame { frameSnapshots.removeAll() }
+        frameSnapshots.append(event)
         if let capturedSession = event.sessionId,
           !seededCapturedSessions.contains(capturedSession),
           !seenOutputByCapturedSession.contains(capturedSession),
@@ -325,8 +322,8 @@ public final class CaptureReplayRunner {
       case CaptureEventKind.frameCommands.rawValue:
         guard let path = event.path else { break }
         let recorded = try loadFrameCommands(relativePath: path)
-        guard let activeTab = model.activeTab,
-          let session = model.session(forTab: activeTab.id),
+        guard let session = session(for: frameSnapshots.last?.sessionId),
+          let activeTab = model.tabProjection(forSession: session.id),
           let snap = session.snapshot()
         else { break }
         defer { laban_snapshot_destroy(snap) }
@@ -348,32 +345,39 @@ public final class CaptureReplayRunner {
           cellHeight: cellHeight
         )
         var commands = sidebarCommands
-        if let terminalArea = layout.terminalArea {
-          commands.append(
-            .rect(
-              terminalArea,
-              color: snap.pointee.default_background_rgba,
-              source: .terminal,
-              compositing: .replace
-            ))
+        if frameSnapshots.count > 1, frameSnapshots.allSatisfy({ $0.pane != nil }) {
+          commands += replayPaneCommands(
+            frameSnapshots,
+            sessions: sessionMap.compactMapValues { model.session(forSessionID: $0) }, model: model,
+            selections: selectionBySession)
+        } else {
+          if let terminalArea = layout.terminalArea {
+            commands.append(
+              .rect(
+                terminalArea,
+                color: snap.pointee.default_background_rgba,
+                source: .terminal,
+                compositing: .replace
+              ))
+          }
+          let selection = selectionBySession[session.id]
+          let findState = model.findState(forSession: session.id)
+          let activeFindState = findState.isActive ? findState : nil
+          let viewportRowOffset = session.viewportState()?.viewportOffset ?? 0
+          let producer = FrameProducer(
+            cellWidth: cellWidth,
+            cellHeight: cellHeight,
+            originX: layout.terminalOriginX,
+            originY: layout.terminalOriginY
+          )
+          commands += producer.commands(
+            from: UnsafePointer(snap),
+            selection: selection,
+            findState: activeFindState,
+            viewportRowOffset: viewportRowOffset,
+            cursorBlinkVisible: true
+          )
         }
-        let selection = selectionBySession[session.id]
-        let findState = model.findState(forSession: session.id)
-        let activeFindState = findState.isActive ? findState : nil
-        let viewportRowOffset = session.viewportState()?.viewportOffset ?? 0
-        let producer = FrameProducer(
-          cellWidth: cellWidth,
-          cellHeight: cellHeight,
-          originX: layout.terminalOriginX,
-          originY: layout.terminalOriginY
-        )
-        commands += producer.commands(
-          from: UnsafePointer(snap),
-          selection: selection,
-          findState: activeFindState,
-          viewportRowOffset: viewportRowOffset,
-          cursorBlinkVisible: true
-        )
         let payload = CapturedFrameCommands(
           frame: recorded.frame,
           backend: recorded.backend,
@@ -401,6 +405,49 @@ public final class CaptureReplayRunner {
     }
 
     return (framesCompared, mismatches)
+  }
+
+  private func replayPaneCommands(
+    _ snapshots: [CaptureTimelineEvent], sessions: [String: Session], model: AppModel,
+    selections: [Session.ID: TerminalSelection]
+  ) -> [FrameCommand] {
+    var commands: [FrameCommand] = []
+    for event in snapshots {
+      guard let id = event.sessionId, let pane = event.pane,
+        let session = sessions[id], let snapshot = session.snapshot()
+      else { continue }
+      defer { laban_snapshot_destroy(snapshot) }
+      commands.append(
+        .rect(
+          pane.rect.cgRect,
+          color: pane.accessibility.terminalBackgroundColor(
+            (snapshot.pointee.default_background_rgba & 0xFFFF_FF00)
+              | UInt32(pane.background.opacity)),
+          source: .terminal, compositing: .replace))
+      let producer = FrameProducer(
+        cellWidth: pane.cellWidth, cellHeight: pane.cellHeight,
+        originX: CGFloat(pane.originX), originY: CGFloat(pane.originY),
+        contentYOffset: CGFloat(pane.contentYOffset),
+        accessibilityVisualOptions: pane.accessibility,
+        backgroundCompositingOptions: pane.background)
+      commands += producer.commands(
+        from: UnsafePointer(snapshot), selection: selections[session.id],
+        findState: model.findState(forSession: session.id),
+        viewportRowOffset: session.viewportState()?.viewportOffset ?? 0,
+        cursorBlinkVisible: pane.cursorBlinkVisible,
+        preedit: pane.preedit, preeditCaretCells: pane.preeditCaretCells,
+        resolvedCursor: (pane.cursorStyle, pane.cursorBlinking))
+    }
+    // This milestone has one fixed vertical divider; its gap is part of the
+    // recorded pane geometry, independent of replay-machine cell metrics.
+    let rects = snapshots.compactMap { $0.pane?.rect.cgRect }.sorted { $0.minX < $1.minX }
+    for (left, right) in zip(rects, rects.dropFirst()) {
+      commands.append(
+        .rect(
+          CGRect(x: left.maxX, y: left.minY, width: right.minX - left.maxX, height: left.height),
+          color: snapshots.first?.pane?.dividerColor ?? Theme.current.dim0, source: .terminal))
+    }
+    return commands
   }
 
   private func runRendererReplay(events: [CaptureTimelineEvent]) throws -> (

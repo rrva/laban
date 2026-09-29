@@ -57,7 +57,11 @@ final class HoverPreviewKeyboardPeekTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 5
     size.cols = 20
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     for _ in 1..<tabCount {
       _ = try model.createTab()
     }

@@ -74,6 +74,7 @@ public enum DebugActionIntentID {
   public static let unsupported = "debug.action.unsupported"
 
   public static let knownActionNames: [String] = [
+    "pane.split", "pane.close", "pane.focus",
     "newTab",
     "closeTab",
     "selectTab",
@@ -122,6 +123,7 @@ public enum DebugActionIntentID {
 
   public static func intentID(forAction action: String) -> String? {
     switch action {
+    case "pane.split", "pane.close", "pane.focus": return action
     case "newTab": return "tab.new"
     case "closeTab": return "tab.close"
     case "selectTab": return "tab.select"
@@ -1098,6 +1100,7 @@ public struct SetFontSizeActionRequest: Codable, Sendable, Equatable, JSONSchema
 }
 
 public struct TextActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var sessionId: String? = nil
   public var text: String?
   public var tabId: String?
 
@@ -1108,6 +1111,7 @@ public struct TextActionRequest: Codable, Sendable, Equatable, JSONSchemaProvidi
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object([
+      "sessionId": DebugPayloadSchema.string,
       "tabId": DebugPayloadSchema.string,
       "text": DebugPayloadSchema.string,
     ])
@@ -1284,6 +1288,7 @@ public struct DebugKeyActionRequest: Codable, Sendable, Equatable, JSONSchemaPro
 }
 
 public struct MouseWheelActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var sessionId: String? = nil
   public var x: Int?
   public var y: Int?
   public var deltaY: Double?
@@ -1296,6 +1301,7 @@ public struct MouseWheelActionRequest: Codable, Sendable, Equatable, JSONSchemaP
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object([
+      "sessionId": DebugPayloadSchema.string,
       "deltaY": DebugPayloadSchema.number,
       "x": DebugPayloadSchema.integer,
       "y": DebugPayloadSchema.integer,
@@ -1304,6 +1310,7 @@ public struct MouseWheelActionRequest: Codable, Sendable, Equatable, JSONSchemaP
 }
 
 public struct MouseDragActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var sessionId: String? = nil
   public var startX: Int?
   public var startY: Int?
   public var endX: Int?
@@ -1329,6 +1336,7 @@ public struct MouseDragActionRequest: Codable, Sendable, Equatable, JSONSchemaPr
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object([
+      "sessionId": DebugPayloadSchema.string,
       "button": DebugPayloadSchema.string,
       "endX": DebugPayloadSchema.integer,
       "endY": DebugPayloadSchema.integer,
@@ -1340,6 +1348,7 @@ public struct MouseDragActionRequest: Codable, Sendable, Equatable, JSONSchemaPr
 }
 
 public struct ClickActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var sessionId: String? = nil
   public var x: Int?
   public var y: Int?
   public var button: String?
@@ -1352,6 +1361,7 @@ public struct ClickActionRequest: Codable, Sendable, Equatable, JSONSchemaProvid
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object([
+      "sessionId": DebugPayloadSchema.string,
       "button": DebugPayloadSchema.string,
       "x": DebugPayloadSchema.integer,
       "y": DebugPayloadSchema.integer,
@@ -1809,5 +1819,22 @@ public struct NativeNotificationTestAcceptedResponse: Codable, Sendable, Equatab
         "accepted": DebugPayloadSchema.boolean,
         "eventId": DebugPayloadSchema.string,
       ], required: ["accepted", "eventId"])
+  }
+}
+
+public struct PaneActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var tabId: String?
+  public var sessionId: String?
+  public var axis: String?
+  public var direction: String?
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object([
+      "tabId": DebugPayloadSchema.string, "sessionId": DebugPayloadSchema.string,
+      "axis": .string(
+        enumValues: ["vertical", "horizontal"], const: nil, format: nil, pattern: nil),
+      "direction": .string(
+        enumValues: ["next", "previous"], const: nil, format: nil, pattern: nil),
+    ])
   }
 }

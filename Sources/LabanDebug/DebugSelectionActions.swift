@@ -13,11 +13,10 @@ struct DebugSelectionActions {
     guard let anchorRequest = request.anchor, let focusRequest = request.focus else {
       return jsonError("setSelection requires anchor and focus")
     }
-    let targetTab =
-      request.sessionId.flatMap { sessionId in
-        runtime.model.tabs.first(where: { $0.sessionId == sessionId })
-      } ?? runtime.model.activeTab
-    guard let tab = targetTab, let session = runtime.model.session(forTab: tab.id) else {
+    let targetTab = runtime.targetTab(sessionId: request.sessionId)
+    guard let tab = targetTab,
+      let session = runtime.model.session(forSessionID: tab.focusedSessionId)
+    else {
       return jsonError("no session for setSelection")
     }
     let selection = TerminalSelection(
@@ -42,7 +41,7 @@ struct DebugSelectionActions {
         focusCol: focusRequest.col
       ))
     runtime.renderFrameUnlocked()
-    runtime.appendEvent(EventEntry(kind: "selection.set", sessionId: tab.sessionId))
+    runtime.appendEvent(EventEntry(kind: "selection.set", sessionId: tab.focusedSessionId))
     return runtime.actionResult(ok: true)
   }
 }

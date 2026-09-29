@@ -69,7 +69,7 @@ struct DebugDropActions {
         route: "terminal",
         frameBefore: frameBefore,
         tabId: tab.id,
-        sessionId: tab.sessionId,
+        sessionId: tab.focusedSessionId,
         command: "inputFollowBottom",
         deltaRows: deltaRows
       ))

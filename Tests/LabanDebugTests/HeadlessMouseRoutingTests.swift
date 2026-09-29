@@ -25,6 +25,41 @@ import XCTest
 /// passes.
 final class HeadlessMouseRoutingTests: XCTestCase {
 
+  func testSplitPaneWheelTargetsUnfocusedPaneUnderPointer() throws {
+    let runtime = try makeRuntime(runId: "split-mouse")
+    defer { runtime.shutdown(terminateRemoteSessions: true) }
+    _ = runtime.applyAction(Data(#"{"action":"pane.split"}"#.utf8))
+    let ids = try XCTUnwrap(runtime.model.activeTab?.allSessionIds)
+    for id in ids {
+      _ = runtime.applyAction(
+        try JSONSerialization.data(withJSONObject: [
+          "action": "typeText", "sessionId": id,
+          "text": "stty raw -echo; printf 'READY\\n'; exec cat -v\n",
+        ]))
+      _ = runtime.wait(
+        try JSONSerialization.data(withJSONObject: [
+          "timeoutMs": 5000,
+          "condition": ["kind": "textVisible", "sessionId": id, "text": "READY"],
+        ]))
+      runtime.model.session(forSessionID: id)?.feedOutput(Array("\u{1b}[?1000h\u{1b}[?1006h".utf8))
+    }
+    usleep(100_000)
+    let response = runtime.applyAction(
+      try JSONSerialization.data(withJSONObject: [
+        "action": "mouseWheel",
+        "x": runtime.sidebarWidth + 10, "y": 20, "deltaY": 3,
+      ]))
+    XCTAssertEqual(response.status, 200)
+    let wait = runtime.wait(
+      try JSONSerialization.data(withJSONObject: [
+        "timeoutMs": 5000,
+        "condition": ["kind": "textVisible", "sessionId": ids[0], "text": "[<64;"],
+      ]))
+    XCTAssertEqual(
+      (try JSONSerialization.jsonObject(with: wait.body) as? [String: Any])?["ok"] as? Bool, true)
+    XCTAssertEqual(runtime.model.activeTab?.focusedSessionId, ids[1])
+  }
+
   func testHeadlessMouseWheelReachesChildOverLabandBackend() throws {
     let socketDir = ".tmp/mouse-routing-laband-\(UUID().uuidString)"
     let socketPath = "\(socketDir)/laband.sock"

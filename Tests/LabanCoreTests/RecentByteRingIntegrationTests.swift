@@ -25,7 +25,7 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     size.cols = 80
     let session = try Session.fixture(size: size)
     let tabId = "tab-cast-e2e"
-    host.attachTranscriptWriter(to: session, tabId: tabId)
+    host.attachTranscriptWriter(to: session, sessionId: tabId)
 
     XCTAssertEqual(session.feedOutput(Array("hello ".utf8)), 0)
     // Small sleep so the second chunk has a measurably later
@@ -33,7 +33,7 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     Thread.sleep(forTimeInterval: 0.02)
     XCTAssertEqual(session.feedOutput(Array("world\r\n".utf8)), 0)
 
-    let ring = try XCTUnwrap(host.recentByteRing(forTabId: tabId))
+    let ring = try XCTUnwrap(host.recentByteRing(forSessionId: tabId))
     let snapshot = ring.snapshot(window: 5)
     XCTAssertEqual(snapshot.count, 2, "two writes should produce two ring entries")
     XCTAssertEqual(snapshot[0].bytes, Array("hello ".utf8))
@@ -85,7 +85,7 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     size.cols = 80
     let session = try Session.fixture(size: size)
     let tabId = "tab-validate"
-    host.attachTranscriptWriter(to: session, tabId: tabId)
+    host.attachTranscriptWriter(to: session, sessionId: tabId)
 
     let prompt = "\u{1B}[1;32mlaban\u{1B}[0m % "
     XCTAssertEqual(session.feedOutput(Array(prompt.utf8)), 0)
@@ -96,7 +96,7 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     XCTAssertEqual(
       session.feedOutput(Array("é & 🎉\r\n".utf8)), 0)
 
-    let ring = try XCTUnwrap(host.recentByteRing(forTabId: tabId))
+    let ring = try XCTUnwrap(host.recentByteRing(forSessionId: tabId))
     let entries = ring.snapshot(window: 5)
     XCTAssertEqual(entries.count, 3)
 
@@ -157,18 +157,18 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     size.cols = 80
     let session1 = try Session.fixture(size: size)
     let tabId = "tab-cast-swap"
-    host.attachTranscriptWriter(to: session1, tabId: tabId)
+    host.attachTranscriptWriter(to: session1, sessionId: tabId)
     XCTAssertEqual(session1.feedOutput(Array("first ".utf8)), 0)
 
-    let ringBefore = try XCTUnwrap(host.recentByteRing(forTabId: tabId))
+    let ringBefore = try XCTUnwrap(host.recentByteRing(forSessionId: tabId))
 
     // Re-attach a fresh writer for the same tab id without
     // detaching first (the restore path does this).
     let session2 = try Session.fixture(size: size)
-    host.attachTranscriptWriter(to: session2, tabId: tabId)
+    host.attachTranscriptWriter(to: session2, sessionId: tabId)
     XCTAssertEqual(session2.feedOutput(Array("second".utf8)), 0)
 
-    let ringAfter = try XCTUnwrap(host.recentByteRing(forTabId: tabId))
+    let ringAfter = try XCTUnwrap(host.recentByteRing(forSessionId: tabId))
     XCTAssertTrue(
       ringBefore === ringAfter,
       "the ring instance must persist across writer re-attach")
@@ -196,14 +196,14 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     let newSession = try Session.fixture(size: size)
     let tabId = "tab-cast-stale-callback"
 
-    host.attachTranscriptWriter(to: oldSession, tabId: tabId)
+    host.attachTranscriptWriter(to: oldSession, sessionId: tabId)
     XCTAssertEqual(oldSession.feedOutput(Array("before ".utf8)), 0)
 
-    host.attachTranscriptWriter(to: newSession, tabId: tabId)
+    host.attachTranscriptWriter(to: newSession, sessionId: tabId)
     XCTAssertEqual(oldSession.feedOutput(Array("stale ".utf8)), 0)
     XCTAssertEqual(newSession.feedOutput(Array("after".utf8)), 0)
 
-    let ring = try XCTUnwrap(host.recentByteRing(forTabId: tabId))
+    let ring = try XCTUnwrap(host.recentByteRing(forSessionId: tabId))
     let snapshot = ring.snapshot(window: 5)
     XCTAssertEqual(snapshot.map(\.bytes), [Array("before ".utf8), Array("after".utf8)])
   }
@@ -224,15 +224,15 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     let session = try Session.fixture(size: size)
     let tabId = "tab-cast-nil-detach"
 
-    host.attachTranscriptWriter(to: session, tabId: tabId)
+    host.attachTranscriptWriter(to: session, sessionId: tabId)
     XCTAssertEqual(session.feedOutput(Array("before".utf8)), 0)
-    let writer = try XCTUnwrap(host.writer(forTabId: tabId))
+    let writer = try XCTUnwrap(host.writer(forSessionId: tabId))
     let ingestedBeforeDetach = writer.ingestedBytes
 
-    host.detachTranscriptWriter(forTabId: tabId, in: nil)
+    host.detachTranscriptWriter(forSessionId: tabId, in: nil)
     XCTAssertEqual(session.feedOutput(Array("stale".utf8)), 0)
 
-    XCTAssertNil(host.recentByteRing(forTabId: tabId))
+    XCTAssertNil(host.recentByteRing(forSessionId: tabId))
     XCTAssertEqual(writer.ingestedBytes, ingestedBeforeDetach)
   }
 }

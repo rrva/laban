@@ -51,6 +51,8 @@ public struct TabResponse: Encodable {
   public var progress: TabProgress?
   public var active: Bool
   public var status: String
+  public var panes: PaneTree
+  public var focusedSessionId: String
   public var sessionId: String
 
   public init(
@@ -77,7 +79,9 @@ public struct TabResponse: Encodable {
     progress: TabProgress?,
     active: Bool,
     status: String,
-    sessionId: String
+    sessionId: String,
+    panes: PaneTree? = nil,
+    focusedSessionId: String? = nil
   ) {
     self.id = id
     self.index = index
@@ -102,6 +106,8 @@ public struct TabResponse: Encodable {
     self.progress = progress
     self.active = active
     self.status = status
+    self.panes = panes ?? .leaf(sessionId: sessionId)
+    self.focusedSessionId = focusedSessionId ?? sessionId
     self.sessionId = sessionId
   }
 }

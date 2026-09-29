@@ -466,7 +466,8 @@ public final class Session {
 
   public static func debugShell(
     size: LabanTerminalSize,
-    extraEnvironment: [String: String] = [:]
+    extraEnvironment: [String: String] = [:],
+    sessionID: ID? = nil
   ) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 0
@@ -488,7 +489,7 @@ public final class Session {
           config.executable = exePtr
           config.argv = argvPtr
           config.envp = envPtr
-          return try Session(config: &config, size: size)
+          return try Session(config: &config, size: size, sessionID: sessionID)
         }
       }
     }

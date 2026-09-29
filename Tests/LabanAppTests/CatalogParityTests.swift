@@ -301,7 +301,7 @@ final class CatalogParityTests: XCTestCase {
   private func makeGUIRuntime() throws -> (AppModel, LiveIntentRouter, String) {
     let model = try AppModel()
     _ = try model.createTab()
-    let sessionID = try XCTUnwrap(model.tabs.first?.sessionId)
+    let sessionID = try XCTUnwrap(model.tabs.first?.focusedSessionId)
     return (model, LiveIntentRouter(model: model), sessionID)
   }
 

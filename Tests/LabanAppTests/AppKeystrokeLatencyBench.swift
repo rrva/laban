@@ -91,12 +91,16 @@ final class AppKeystrokeLatencyBench: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 200
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let client = try Self.waitForClient(socketPath: socketPath)
     let coordinator = AppSessionCoordinator(
       client: client,
       shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
-      cwdByTabId: [:])
+      cwdBySessionId: [:])
     defer { coordinator.detach() }
     let view = makeView(model: model, size: size, sessionCoordinator: coordinator)
     guard let tab = model.activeTab else { throw BenchError.missingSession }

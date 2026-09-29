@@ -86,8 +86,9 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let launchCoordinator = ControlSessionLaunchCoordinator()
     let model = try AppModel(
       initialSize: size,
-      sessionLaunchContextProvider: { tabId, isAgentAttached in
-        launchCoordinator.prepareLaunch(tabID: tabId, isAgentAttached: isAgentAttached)
+      sessionLaunchContextProvider: { tabId, sessionId, isAgentAttached in
+        launchCoordinator.prepareLaunch(
+          tabID: tabId, sessionID: sessionId, isAgentAttached: isAgentAttached)
       },
       sessionFactory: { size, context in
         try Session.fixture(size: size, sessionID: context.sessionID)
@@ -114,7 +115,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
       while [ ! -f \(Self.shellQuote(readyPath)) ]; do sleep 0.05; done
       \(Self.shellQuote(agentURL.path)) \
         --control-attach-smoke=/debug/state \
-        --control-attach-smoke=/debug/sessions/\(otherTab.sessionId)
+        --control-attach-smoke=/debug/sessions/\(otherTab.focusedSessionId)
       sleep 1
       """
 
@@ -122,12 +123,12 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: [:])
+      cwdBySessionId: [:])
     defer { coordinator.detach() }
-    coordinator.launchEnvironmentProvider = { tabID in
+    coordinator.launchEnvironmentProvider = { tabID, _ in
       model.launchEnvironmentOverrides(forTab: tabID)
     }
-    coordinator.argvProvider = { tabID in
+    coordinator.argvProvider = { tabID, _ in
       if tabID == agentTab.id {
         return ["/bin/sh", "-lc", command]
       }
@@ -145,7 +146,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let agentSession = try XCTUnwrap(model.session(forTab: agentTab.id))
     let childPid = try XCTUnwrap(agentInfo.childPid)
     launchCoordinator.tryRegisterShellPID(
-      sessionID: agentTab.sessionId,
+      sessionID: agentTab.focusedSessionId,
       session: agentSession,
       shellPID: pid_t(childPid))
     FileManager.default.createFile(atPath: readyPath, contents: Data())
@@ -154,13 +155,13 @@ final class AppSessionCoordinatorTests: XCTestCase {
       coordinator: coordinator,
       tab: agentTab,
       size: size,
-      text: #""path":"\/debug\/sessions\/\#(otherTab.sessionId)""#)
+      text: #""path":"\/debug\/sessions\/\#(otherTab.focusedSessionId)""#)
     let visible = snapshot.visibleText
     XCTAssertTrue(visible.contains("env-url=\(controlStart.socketPath)"))
     XCTAssertTrue(visible.contains("env-attach-present=yes"))
     XCTAssertTrue(visible.contains(#""path":"\/debug\/state""#))
     XCTAssertTrue(visible.contains(#""status":200"#))
-    XCTAssertTrue(visible.contains(#""path":"\/debug\/sessions\/\#(otherTab.sessionId)""#))
+    XCTAssertTrue(visible.contains(#""path":"\/debug\/sessions\/\#(otherTab.focusedSessionId)""#))
     XCTAssertTrue(visible.contains(#""status":403"#))
 
     let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
@@ -175,7 +176,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let first = try XCTUnwrap(model.activeTab)
     let second = try model.createTab()
     var noted: Set<Tab.ID> = []
@@ -250,7 +255,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -270,7 +279,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["top-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["top-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -347,7 +356,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -367,7 +380,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["kept-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["kept-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -458,7 +471,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -478,7 +495,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["theme-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["theme-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -550,7 +567,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 5
     size.cols = 40
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -570,7 +591,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["scroll-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["scroll-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -622,12 +643,16 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let coordinatorClient = try waitForClient(socketPath: socketPath)
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: [:]
+      cwdBySessionId: [:]
     )
     defer { coordinator.detach() }
 
@@ -651,7 +676,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     wait(for: [woke], timeout: 2)
 
     let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
-    _ = try? cleanupClient.terminate(sessionId: tab.id)
+    _ = try? cleanupClient.terminate(sessionId: tab.focusedSessionId)
     _ = try? cleanupClient.shutdownWhenIdle()
     cleanupClient.close()
     process.waitUntilExit()
@@ -700,11 +725,15 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 40
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     let coordinator = AppSessionCoordinator(
       client: try waitForClient(socketPath: socketPath),
       shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
-      cwdByTabId: [:])
+      cwdBySessionId: [:])
     defer { coordinator.detach() }
 
     let fontAtlas = FontAtlas(pointSize: 14)
@@ -742,7 +771,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     _ = try waitForSnapshotText(coordinator: coordinator, tab: tab, size: size, text: "^[[A")
 
     let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
-    _ = try? cleanupClient.terminate(sessionId: tab.id)
+    _ = try? cleanupClient.terminate(sessionId: tab.focusedSessionId)
     _ = try? cleanupClient.shutdownWhenIdle()
     cleanupClient.close()
     process.waitUntilExit()
@@ -788,7 +817,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 40
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -808,7 +841,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
-      cwdByTabId: ["render-tab": root.path]
+      cwdBySessionId: ["render-tab": root.path]
     )
     defer { coordinator.detach() }
 
@@ -914,7 +947,11 @@ final class AppSessionCoordinatorTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
     model.replaceTabs(
       from: WorkspaceState(
         windows: [
@@ -934,7 +971,7 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["meta-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["meta-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
@@ -1021,12 +1058,16 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
-      cwdByTabId: ["reattach-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+      cwdBySessionId: ["reattach-tab": FileManager.default.homeDirectoryForCurrentUser.path]
     )
     defer { coordinator.detach() }
 
     func makeModel() throws -> AppModel {
-      let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+      let model = try AppModel(
+        initialSize: size,
+        sessionFactory: { size, context in
+          try Session.fixture(size: size, sessionID: context.sessionID)
+        })
       model.replaceTabs(
         from: WorkspaceState(
           windows: [

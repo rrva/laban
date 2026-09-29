@@ -14,11 +14,11 @@ struct DebugCommandProposalActions {
     }
     guard
       let targetSessionID = request.resolvedTargetSessionID(fallback: scopedSessionID)
-        ?? runtime.model.activeTab?.sessionId
+        ?? runtime.model.activeTab?.focusedSessionId
     else {
       return jsonError("no session for propose")
     }
-    guard runtime.model.tabs.contains(where: { $0.sessionId == targetSessionID }) else {
+    guard runtime.model.tabs.contains(where: { $0.allSessionIds.contains(targetSessionID) }) else {
       return jsonError("no session for propose")
     }
 
@@ -48,7 +48,7 @@ struct DebugCommandProposalActions {
     Self.asDebugResponse(
       CommandProposalRouting.handleList(
         scopedSessionID: scopedSessionID,
-        activeSessionID: { runtime.model.activeTab?.sessionId }))
+        activeSessionID: { runtime.model.activeTab?.focusedSessionId }))
   }
 
   func get(_ request: CommandProposalRefRequest, scopedSessionID: String?) -> DebugResponse {
@@ -56,14 +56,14 @@ struct DebugCommandProposalActions {
       CommandProposalRouting.handleGet(
         body: Self.encodeBody(request),
         scopedSessionID: scopedSessionID,
-        activeSessionID: { runtime.model.activeTab?.sessionId }))
+        activeSessionID: { runtime.model.activeTab?.focusedSessionId }))
   }
 
   func cancel(_ request: CommandProposalRefRequest, scopedSessionID: String?) -> DebugResponse {
     let response = CommandProposalRouting.handleCancel(
       body: Self.encodeBody(request),
       scopedSessionID: scopedSessionID,
-      activeSessionID: { runtime.model.activeTab?.sessionId })
+      activeSessionID: { runtime.model.activeTab?.focusedSessionId })
     if response.status == 200,
       let proposalID = request.resolvedProposalID()
     {

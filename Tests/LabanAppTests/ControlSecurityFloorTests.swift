@@ -37,15 +37,7 @@ final class ControlSecurityFloorTests: XCTestCase {
     }
     wait(for: [indicatorLit], timeout: 2)
 
-    let audit = expectation(description: "audit")
-    DispatchQueue.global().asyncAfter(deadline: .now() + 0.25) {
-      if Self.latestEventLogEntry(matching: "control.privileged") != nil {
-        audit.fulfill()
-      }
-    }
-    wait(for: [audit], timeout: 2)
-
-    let entry = try XCTUnwrap(Self.latestEventLogEntry(matching: "control.privileged"))
+    let entry = try waitForEventLogEntry(matching: "control.privileged", sessionID: sessionID)
     XCTAssertEqual(entry["intent"] as? String, "selection.read")
     XCTAssertEqual(entry["capability"] as? String, Capability.observeSensitive.rawValue)
     XCTAssertEqual(entry["surface"] as? String, "gui")
@@ -83,15 +75,7 @@ final class ControlSecurityFloorTests: XCTestCase {
     }
     wait(for: [indicatorLit], timeout: 2)
 
-    let audit = expectation(description: "audit")
-    DispatchQueue.global().asyncAfter(deadline: .now() + 0.25) {
-      if Self.latestEventLogEntry(matching: "control.attach") != nil {
-        audit.fulfill()
-      }
-    }
-    wait(for: [audit], timeout: 2)
-
-    let entry = try XCTUnwrap(Self.latestEventLogEntry(matching: "control.attach"))
+    let entry = try waitForEventLogEntry(matching: "control.attach", sessionID: sessionID)
     XCTAssertEqual(entry["intent"] as? String, "control.session.attach")
     XCTAssertEqual(entry["capability"] as? String, Capability.observeSensitive.rawValue)
     XCTAssertEqual(entry["surface"] as? String, "gui")
@@ -122,7 +106,7 @@ final class ControlSecurityFloorTests: XCTestCase {
     }
     wait(for: [indicatorLit], timeout: 2)
 
-    let entry = try XCTUnwrap(Self.latestEventLogEntry(matching: "control.privileged"))
+    let entry = try waitForEventLogEntry(matching: "control.privileged", sessionID: sessionID)
     XCTAssertEqual(entry["intent"] as? String, "app.state")
     XCTAssertEqual(entry["capability"] as? String, Capability.observeSensitive.rawValue)
   }
@@ -271,8 +255,8 @@ final class ControlSecurityFloorTests: XCTestCase {
     _ = try model.createTab()
     let tabs = model.tabs
     XCTAssertGreaterThanOrEqual(tabs.count, 2)
-    let ownSessionID = tabs[0].sessionId
-    let otherSessionID = tabs[1].sessionId
+    let ownSessionID = tabs[0].focusedSessionId
+    let otherSessionID = tabs[1].focusedSessionId
     let router = LiveIntentRouter(model: model)
     return (model, router, ownSessionID, otherSessionID)
   }
@@ -312,7 +296,22 @@ final class ControlSecurityFloorTests: XCTestCase {
     }
   }
 
-  private static func latestEventLogEntry(matching kind: String) -> [String: Any]? {
+  private func waitForEventLogEntry(matching kind: String, sessionID: String) throws -> [String:
+    Any]
+  {
+    // EventLog writes on its own queue. Wait for this request's session, not
+    // whichever event a preceding test or another app process wrote last.
+    let written = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in
+        Self.latestEventLogEntry(matching: kind, sessionID: sessionID) != nil
+      }, object: nil)
+    wait(for: [written], timeout: 3)
+    return try XCTUnwrap(Self.latestEventLogEntry(matching: kind, sessionID: sessionID))
+  }
+
+  private static func latestEventLogEntry(matching kind: String, sessionID: String) -> [String:
+    Any]?
+  {
     let dir = EventLog.shared.directoryURL
     guard
       let files = try? FileManager.default.contentsOfDirectory(
@@ -333,7 +332,8 @@ final class ControlSecurityFloorTests: XCTestCase {
       for line in text.split(separator: "\n").reversed() {
         guard
           let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-          object["kind"] as? String == kind
+          object["kind"] as? String == kind,
+          object["session"] as? String == sessionID
         else { continue }
         return object
       }

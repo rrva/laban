@@ -208,7 +208,7 @@ extension HeadlessDebugRuntime {
         stepIndex: fixtureStepIndex,
         stepCount: fixtureRunner?.fixture.steps.count ?? 0,
         activeTabId: active?.id,
-        activeSessionId: active?.sessionId,
+        activeSessionId: active?.focusedSessionId,
         error: error
       ),
       status: ok ? 200 : 400

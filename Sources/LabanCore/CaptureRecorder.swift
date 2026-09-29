@@ -306,7 +306,8 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
     frame: Int,
     tabId: String?,
     sessionId: String?,
-    snapshot: UnsafePointer<LabanSnapshot>
+    snapshot: UnsafePointer<LabanSnapshot>,
+    pane: CapturedPaneFrame? = nil
   ) -> String? {
     let visible = TerminalSnapshotText.visibleText(from: snapshot, mode: .fullGrid)
     let visibleHash = CaptureHash.sha256(Data(visible.utf8))
@@ -330,7 +331,9 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
     let enc = JSONEncoder()
     enc.outputFormatting = [.sortedKeys]
     guard let data = try? enc.encode(payload) else { return nil }
-    let rel = String(format: "frames/frame-%06d.snapshot.json", frame)
+    // Hash identities so arbitrary session IDs cannot create paths outside the capture.
+    let identity = CaptureHash.sha256(Data((sessionId ?? "").utf8))
+    let rel = String(format: "frames/frame-%06d-%@.snapshot.json", frame, identity)
     guard let hash = try? writeSidecar(data: data, relativePath: rel) else { return nil }
     lock.lock()
     defer { lock.unlock() }
@@ -340,6 +343,7 @@ public final class CaptureRecorder: TerminalSurfaceCaptureSink {
       tabId: tabId,
       sessionId: sessionId
     )
+    event.pane = pane
     event.path = rel
     event.sha256 = hash
     event.rows = payload.rows
