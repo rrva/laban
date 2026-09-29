@@ -592,6 +592,57 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     for id in [left, right] { XCTAssertFalse(harness.model.findState(forSession: id).isActive) }
   }
 
+  func testLeftButtonGestureStaysWithPaneAcrossKeyboardFocusChange() throws {
+    let harness = try makeHarness(rows: 6, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.advanceFrame()
+    let left = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    harness.view.splitPaneRight(nil)
+    let right = try XCTUnwrap(harness.model.activeTab?.focusedSessionId)
+    for id in [left, right] {
+      try XCTUnwrap(harness.model.session(forSessionID: id)).write(
+        Array("\u{1b}[?1002h\u{1b}[?1006h".utf8))
+    }
+    harness.view.advanceFrame()
+    let captureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    let oldCaptureDir = getenv("LABAN_CAPTURE_DIR").map { String(cString: $0) }
+    setenv("LABAN_CAPTURE_DIR", captureRoot.path, 1)
+    defer {
+      if let oldCaptureDir {
+        setenv("LABAN_CAPTURE_DIR", oldCaptureDir, 1)
+      } else {
+        unsetenv("LABAN_CAPTURE_DIR")
+      }
+      try? FileManager.default.removeItem(at: captureRoot)
+    }
+    harness.view.toggleCapture(nil)
+    let location = point(row: 2, col: 3, in: harness)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: location))
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.text, "\u{1b}[<0;4;3M")
+    harness.view.focusNextPane(nil)
+    XCTAssertEqual(harness.model.activeTab?.focusedSessionId, right)
+    harness.view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: location))
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.text, "\u{1b}[<32;4;3M")
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: location))
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.sessionId, left)
+    XCTAssertEqual(harness.view.lastForwardedLeftReportForTests?.text, "\u{1b}[<0;4;3m")
+    harness.view.toggleCapture(nil)
+    let capture = try XCTUnwrap(
+      FileManager.default.contentsOfDirectory(
+        at: captureRoot, includingPropertiesForKeys: nil
+      ).first)
+    let timeline = try String(
+      contentsOf: capture.appendingPathComponent("timeline.ndjson"), encoding: .utf8)
+    let reports = try timeline.split(separator: "\n").map {
+      try JSONDecoder().decode(CaptureTimelineEvent.self, from: Data($0.utf8))
+    }.filter { ["mouseDown", "mouseDragged", "mouseUp"].contains($0.command ?? "") }
+    XCTAssertEqual(reports.count, 3)
+    XCTAssertTrue(reports.allSatisfy { $0.sessionId == left })
+  }
+
   func testRightButtonGestureTargetsHitPaneWithLocalCoordinates() throws {
     let harness = try makeHarness(rows: 6, cols: 80)
     defer { harness.restoreRenderer() }

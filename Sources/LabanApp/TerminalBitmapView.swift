@@ -7200,10 +7200,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     encodedLength: Int? = nil,
     deltaRows: Int? = nil,
     anchor: (row: Int, col: Int)? = nil,
-    focus: (row: Int, col: Int)? = nil
+    focus: (row: Int, col: Int)? = nil,
+    targetSessionId: Session.ID? = nil
   ) {
     guard captureRecorder != nil else { return }
-    let active = model.activeTab
+    let active = targetSessionId.flatMap { model.tabProjection(forSession: $0) } ?? model.activeTab
     captureRecorder?.recordInput(
       InputEventEnvelope(
         inputId: UUID().uuidString,
@@ -8293,6 +8294,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // the next gesture before classifying this press, then re-arm below for
     // titlebar and sidebar chrome.
     mouseDownConsumedByChrome = false
+    leftMouseGesturePane = nil
     pendingHyperlinkClick = nil
 
     // Reserved titlebar strip sits above both the terminal grid and the
@@ -8400,6 +8402,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // the committed selection).
       dismissLocalSelectionForForwardedInput()
       trackedMouseButton = .left
+      if let tab = model.activeTab, let pane = paneHit(at: pt) {
+        leftMouseGesturePane = (tab.id, pane)
+      }
       resetTrackedMouseDragEdgeLatch()
       startTrackedMouseDragFramePump()
       forwardMousePress(at: pt, modifiers: event.labanModifiers)
@@ -8449,9 +8454,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return
     }
 
-    // If mouse tracking is active, send motion events.
-    if let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
+    // Continue the gesture in the pane that received its press.
+    if let activeTab = leftMouseGestureTab,
+      let session = model.session(forSessionID: activeTab.focusedSessionId),
       mouseTrackingActive(for: activeTab, session: session)
     {
       cancelSelectionDragForMouseTracking()
@@ -8480,13 +8485,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       )
       let sent = session.sendMouseCapturingBytes(motionEvent)
       let bytes = sent.result == 0 ? sent.bytes : []
+      lastForwardedLeftReportForTests = (session.id, String(decoding: bytes, as: UTF8.self))
       forwardEncodedMouseToDaemon(bytes, session: session)
       recordInput(
         kind: "mouse",
         route: "terminal",
         command: "mouseDragged",
         encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
-        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
+        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes),
+        targetSessionId: session.id
       )
       invalidateRenderAndWake()
       return
@@ -8500,13 +8507,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// mouseDragged and mouseUp once `trackedMouseButton` is `.left`. A bare
   /// click thus reports press-on-down and release-on-up, the order apps expect.
   private func forwardMousePress(at pt: NSPoint, modifiers: Int) {
-    guard let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
+    guard let activeTab = leftMouseGestureTab,
+      let session = model.session(forSessionID: activeTab.focusedSessionId),
       mouseTrackingActive(for: activeTab, session: session)
     else {
       return
     }
-    let geom = terminalMouseGeometry(at: pt)
+    let geom = terminalMouseGeometry(at: pt, paneRect: leftMouseGesturePane?.pane.rect)
     let mouseEncoding = remoteMouseEncoding(for: activeTab)
     let pressEvent = MouseEvent(
       action: .press, button: .left,
@@ -8517,17 +8524,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       format: mouseEncoding?.format ?? 0)
     let sent = session.sendMouseCapturingBytes(pressEvent)
     let bytes = sent.result == 0 ? sent.bytes : []
+    lastForwardedLeftReportForTests = (session.id, String(decoding: bytes, as: UTF8.self))
     forwardEncodedMouseToDaemon(bytes, session: session)
     recordInput(
       kind: "mouse",
       route: "terminal",
       command: "mouseDown",
       encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
-      encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes),
+      targetSessionId: session.id
     )
   }
 
   override func mouseUp(with event: NSEvent) {
+    defer { leftMouseGesturePane = nil }
     let pt = convert(event.locationInWindow, from: nil)
     if commitSidebarDragIfActive(at: pt) {
       mouseDownConsumedByChrome = false
@@ -8560,9 +8570,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return
     }
 
-    // If mouse tracking is active, send release event.
-    if let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
+    // Release the same pane even if keyboard focus moved during the drag.
+    if let activeTab = leftMouseGestureTab,
+      let session = model.session(forSessionID: activeTab.focusedSessionId),
       mouseTrackingActive(for: activeTab, session: session)
     {
       cancelSelectionDragForMouseTracking()
@@ -8574,7 +8584,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       else {
         return
       }
-      let geom = terminalMouseGeometry(at: pt)
+      let geom = terminalMouseGeometry(at: pt, paneRect: leftMouseGesturePane?.pane.rect)
       let mouseEncoding = remoteMouseEncoding(for: activeTab)
       let releaseEvent = MouseEvent(
         action: .release,
@@ -8590,13 +8600,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       )
       let sent = session.sendMouseCapturingBytes(releaseEvent)
       let bytes = sent.result == 0 ? sent.bytes : []
+      lastForwardedLeftReportForTests = (session.id, String(decoding: bytes, as: UTF8.self))
       forwardEncodedMouseToDaemon(bytes, session: session)
       recordInput(
         kind: "mouse",
         route: "terminal",
         command: "mouseUp",
         encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
-        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
+        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes),
+        targetSessionId: session.id
       )
       if trackedMouseButton == .left { trackedMouseButton = .none }
       stopTrackedMouseDragFramePump()
@@ -8610,6 +8622,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     finishLocalSelectionMouseGesture(at: pt)
     invalidateRenderAndWake()
   }
+
+  private var leftMouseGesturePane: (tabId: Tab.ID, pane: PaneRect)?
+
+  private var leftMouseGestureTab: Tab? {
+    guard let gesture = leftMouseGesturePane,
+      let tab = model.tabProjection(forSession: gesture.pane.sessionId),
+      tab.id == gesture.tabId, tab.isActive
+    else { return nil }
+    return tab
+  }
+
+  private(set) var lastForwardedLeftReportForTests: (sessionId: Session.ID, text: String)?
 
   private(set) var lastForwardedRightReportForTests: (sessionId: Session.ID, text: String)?
 
@@ -9141,7 +9165,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func terminalMouseGeometryForForwardedLeftDrag(at pt: NSPoint) -> (
     x: Float, y: Float, screenWidth: Int, screenHeight: Int
   ) {
-    var geom = terminalMouseGeometry(at: pt)
+    var geom = terminalMouseGeometry(at: pt, paneRect: leftMouseGesturePane?.pane.rect)
     guard let edge = trackedMouseDragVerticalEdge(for: geom) else {
       resetTrackedMouseDragEdgeLatch()
       return geom
