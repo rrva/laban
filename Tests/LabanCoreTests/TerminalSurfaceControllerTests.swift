@@ -50,7 +50,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       frame: Int,
       tabId: String?,
       sessionId: String?,
-      snapshot: UnsafePointer<LabanSnapshot>
+      snapshot: UnsafePointer<LabanSnapshot>,
+      pane: CapturedPaneFrame?
     ) -> String? {
       nil
     }

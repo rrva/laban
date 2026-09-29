@@ -215,6 +215,14 @@ parser state, resize timing, scrollback position, or rendered frame commands.
 The capture artifact is the durable repro contract for in-the-wild terminal
 failures.
 
+Split frames record a distinct snapshot sidecar for each session, named with the
+frame number and a hash of the session ID. Each snapshot event carries optional
+pane geometry, cursor presentation, and visual settings so terminal replay rebuilds
+both panes from their own PTY streams. Session creation records the initial grid
+size, and resize events target their named session. Starting capture after a split
+registers both existing sessions. Older captures without pane presentation keep
+the single-terminal replay path.
+
 Full captures are explicit and local-only. They can contain typed input,
 clipboard text, terminal output, screenshots, paths, and secrets. Do not upload
 them or paste their contents into responses. Store them under `.artifacts/` or

@@ -20,6 +20,120 @@ final class CaptureReplayTests: XCTestCase {
         atPath: capture.appendingPathComponent("replay/report.json").path))
   }
 
+  func testSplitCapturePreservesBothSnapshotsAndReplays() throws {
+    try assertSplitCaptureReplays(startAfterSplit: false)
+  }
+
+  func testCaptureStartedAfterSplitReplaysBothPanesAndSurvivor() throws {
+    try assertSplitCaptureReplays(startAfterSplit: true)
+  }
+
+  func testSplitCaptureReplaysOpacityAndAccessibilityPresentation() throws {
+    try assertSplitCaptureReplays(startAfterSplit: true, visualSettings: true)
+  }
+
+  private func assertSplitCaptureReplays(startAfterSplit: Bool, visualSettings: Bool = false) throws
+  {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil, artifactsURL: root, tempURL: nil, deterministic: true,
+      runId: "split-replay", captureName: startAfterSplit ? nil : "split",
+      captureScreenshots: .final)
+    defer { runtime.shutdown(terminateRemoteSessions: true) }
+    func action(_ name: String, _ values: [String: Any] = [:]) throws {
+      var body = values
+      body["action"] = name
+      let response = runtime.applyAction(try JSONSerialization.data(withJSONObject: body))
+      XCTAssertEqual(response.status, 200, String(decoding: response.body, as: UTF8.self))
+    }
+    let left = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+    try action("feedOutput", ["text": "LEFT\r\n"])
+    try action("pane.split")
+    let right = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+    try action("feedOutput", ["text": "RIGHT\r\n"])
+    if visualSettings {
+      runtime.accessibilityDisplayFlags.increaseContrast = true
+      try action(
+        "setBackgroundTransparency", ["opacity": 0.55, "applyToExplicitCellBackgrounds": true])
+    }
+    if startAfterSplit {
+      XCTAssertEqual(
+        runtime.startCapture(Data(#"{"name":"split","screenshots":"final"}"#.utf8)).status, 200)
+      runtime.renderFrameUnlocked()
+    }
+    try action("pane.focus", ["sessionId": left])
+    try action("feedOutput", ["sessionId": left, "text": "LEFT AGAIN\r\n"])
+    try action("feedOutput", ["sessionId": right, "text": "RIGHT AGAIN\r\n"])
+    if visualSettings {
+      runtime.accessibilityDisplayFlags.increaseContrast = false
+      try action(
+        "setBackgroundTransparency", ["opacity": 1.0, "applyToExplicitCellBackgrounds": false])
+    }
+    try action("pane.close", ["sessionId": left])
+    try action("feedOutput", ["sessionId": right, "text": "SURVIVOR\r\n"])
+    let stop = runtime.stopCapture()
+    XCTAssertEqual(stop.status, 200)
+    let object = try XCTUnwrap(JSONSerialization.jsonObject(with: stop.body) as? [String: Any])
+    let capture = URL(fileURLWithPath: try XCTUnwrap(object["directory"] as? String))
+    let timeline = try String(
+      contentsOf: capture.appendingPathComponent("timeline.ndjson"), encoding: .utf8)
+    let events = try timeline.split(separator: "\n").map {
+      try JSONDecoder().decode(CaptureTimelineEvent.self, from: Data($0.utf8))
+    }
+    let snapshots = events.filter { $0.kind == CaptureEventKind.terminalSnapshot.rawValue }
+    XCTAssertEqual(Set(snapshots.compactMap(\.sessionId)), [left, right])
+    XCTAssertEqual(Set(snapshots.compactMap(\.path)).count, snapshots.count)
+    for event in snapshots {
+      let path = try XCTUnwrap(event.path)
+      XCTAssertEqual(
+        CaptureHash.sha256(try Data(contentsOf: capture.appendingPathComponent(path))), event.sha256
+      )
+    }
+    let report = try CaptureReplayRunner(captureURL: capture, mode: .both).run()
+    XCTAssertEqual(report.terminalReplay, "passed", "\(report.mismatches)")
+    XCTAssertEqual(report.rendererReplay, "passed", "\(report.mismatches)")
+  }
+
+  func testLegacyCaptureSpawnsNewTabAtLastResizedGrid() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var size = LabanTerminalSize()
+    size.rows = 6
+    size.cols = 30
+    let model = try AppModel(initialSize: size)
+    let recorder = try CaptureRecorder(artifactRoot: root, name: "legacy-resize")
+    model.captureSink = recorder
+    model.recordExistingStateForCapture()
+    try recordAppKitFrame(frame: 1, model: model, recorder: recorder)
+    model.resize(viewportWidth: 480, viewportHeight: 96, cellWidth: 8, cellHeight: 16)
+    let tab = try model.createTab()
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let bytes = Array(String(repeating: "W", count: 45).utf8)
+    bytes.withUnsafeBytes {
+      _ = recorder.recordBytes(
+        direction: .ptyOutput, sessionId: session.id, frame: 2, bytes: $0, preview: nil)
+    }
+    _ = session.replayPtyOutput(bytes)
+    try recordAppKitFrame(frame: 2, model: model, recorder: recorder)
+    _ = try recorder.finish()
+    let capture = root.appendingPathComponent("legacy-resize")
+    let timelineURL = capture.appendingPathComponent("timeline.ndjson")
+    let lines = try String(contentsOf: timelineURL, encoding: .utf8).split(separator: "\n")
+    let legacy = try lines.map { line -> String in
+      var event = try JSONDecoder().decode(CaptureTimelineEvent.self, from: Data(line.utf8))
+      if event.kind == CaptureEventKind.sessionCreated.rawValue {
+        event.rows = nil
+        event.cols = nil
+      }
+      return String(decoding: try JSONEncoder().encode(event), as: UTF8.self)
+    }
+    try (legacy.joined(separator: "\n") + "\n").write(
+      to: timelineURL, atomically: true, encoding: .utf8)
+    let report = try CaptureReplayRunner(captureURL: capture, mode: .terminal).run()
+    XCTAssertEqual(report.terminalReplay, "passed", "\(report.mismatches)")
+  }
+
   func testInputFollowBottomCaptureReplays() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-replay-input-follow-\(UUID().uuidString)")

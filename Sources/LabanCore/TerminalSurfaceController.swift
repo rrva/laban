@@ -10,7 +10,8 @@ public protocol TerminalSurfaceCaptureSink: CaptureSink {
     frame: Int,
     tabId: String?,
     sessionId: String?,
-    snapshot: UnsafePointer<LabanSnapshot>
+    snapshot: UnsafePointer<LabanSnapshot>,
+    pane: CapturedPaneFrame?
   ) -> String?
 
   @discardableResult
@@ -1082,8 +1083,6 @@ public final class TerminalSurfaceController {
       let offset = session.viewportState()?.viewportOffset ?? 0
       model.refreshFindVisible(
         sessionID: session.id, snapshot: UnsafePointer(snap), viewportOffset: offset)
-      captureSink?.recordTerminalSnapshot(
-        frame: request.frame, tabId: tab.id, sessionId: session.id, snapshot: UnsafePointer(snap))
       commands.append(
         .rect(
           pane.rect,
@@ -1103,6 +1102,18 @@ public final class TerminalSurfaceController {
         snapshotBlinking: snapshot.cursor_blinking != 0,
         styleExplicit: snapshot.cursor_style_explicit,
         blinkExplicit: snapshot.cursor_blink_explicit, isFocusedPane: pane.isFocused)
+      captureSink?.recordTerminalSnapshot(
+        frame: request.frame, tabId: tab.id, sessionId: session.id, snapshot: UnsafePointer(snap),
+        pane: CapturedPaneFrame(
+          rect: CapturedRect(pane.rect),
+          originX: Double(pane.rect.minX + request.insets.left), originY: Double(originY),
+          cellWidth: cellWidth, cellHeight: cellHeight,
+          cursorStyle: cursor.style, cursorBlinking: cursor.blinking,
+          cursorBlinkVisible: pane.isFocused ? request.cursorBlinkVisible : true,
+          contentYOffset: Double(pane.isFocused ? request.contentYOffset : 0),
+          preedit: pane.isFocused ? pane.preedit : nil, preeditCaretCells: pane.preeditCaretCells,
+          accessibility: request.accessibilityVisualOptions,
+          background: request.backgroundCompositingOptions, dividerColor: Theme.current.dim0))
       commands += producer.commands(
         from: UnsafePointer(snap), selection: pane.selection,
         findState: model.findState(forSession: session.id), viewportRowOffset: offset,
@@ -1234,7 +1245,8 @@ public final class TerminalSurfaceController {
       frame: request.frame,
       tabId: activeTab.id,
       sessionId: session.id,
-      snapshot: UnsafePointer(snap)
+      snapshot: UnsafePointer(snap),
+      pane: nil
     )
 
     let snapshot = snap.pointee

@@ -36,6 +36,43 @@
     "frame": {"type": ["integer", "null"], "minimum": 0},
     "tabId": {"type": ["string", "null"]},
     "sessionId": {"type": ["string", "null"]},
+    "pane": {
+      "description": "Optional split-pane presentation for terminal.snapshot; content remains sourced from per-session PTY streams.",
+      "type": ["object", "null"],
+      "required": ["rect", "originX", "originY", "cellWidth", "cellHeight", "cursorStyle", "cursorBlinking", "cursorBlinkVisible", "contentYOffset", "preeditCaretCells", "accessibility", "background", "dividerColor"],
+      "properties": {
+        "rect": {
+          "type": "object",
+          "required": ["x", "y", "width", "height"],
+          "properties": {
+            "x": {"type": "number"}, "y": {"type": "number"},
+            "width": {"type": "number"}, "height": {"type": "number"}
+          }
+        },
+        "originX": {"type": "number"}, "originY": {"type": "number"},
+        "cellWidth": {"type": "integer", "minimum": 1},
+        "cellHeight": {"type": "integer", "minimum": 1},
+        "cursorStyle": {"type": "integer"},
+        "cursorBlinking": {"type": "boolean"}, "cursorBlinkVisible": {"type": "boolean"},
+        "contentYOffset": {"type": "number"},
+        "preedit": {"type": ["string", "null"]}, "preeditCaretCells": {"type": "integer"},
+        "accessibility": {
+          "type": "object", "required": ["increaseContrast", "differentiateWithoutColor", "reduceTransparency"],
+          "properties": {
+            "increaseContrast": {"type": "boolean"}, "differentiateWithoutColor": {"type": "boolean"},
+            "reduceTransparency": {"type": "boolean"}
+          }
+        },
+        "background": {
+          "type": "object", "required": ["opacity", "applyToExplicitCellBackgrounds"],
+          "properties": {
+            "opacity": {"type": "integer", "minimum": 0, "maximum": 255},
+            "applyToExplicitCellBackgrounds": {"type": "boolean"}
+          }
+        },
+        "dividerColor": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      }
+    },
     "stream": {"type": ["string", "null"]},
     "offset": {"type": ["integer", "null"], "minimum": 0},
     "length": {"type": ["integer", "null"], "minimum": 0},

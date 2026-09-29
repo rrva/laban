@@ -2849,7 +2849,7 @@ public final class AppModel {
     withModelLock {
       captureSink?.record(CaptureTimelineEvent(kind: .appState))
       for tab in _tabs {
-        recordSessionCreated(sessionId: tab.focusedSessionId, tabId: tab.id)
+        for id in tab.allSessionIds { recordSessionCreated(sessionId: id, tabId: tab.id) }
         recordTab(.tabCreated, tabId: tab.id, sessionId: tab.focusedSessionId)
         if tab.isActive {
           recordTab(.tabSelected, tabId: tab.id, sessionId: tab.focusedSessionId)
@@ -2859,8 +2859,14 @@ public final class AppModel {
   }
 
   private func recordSessionCreated(sessionId: Session.ID, tabId: Tab.ID) {
-    captureSink?.record(
-      CaptureTimelineEvent(kind: .sessionCreated, tabId: tabId, sessionId: sessionId))
+    guard let captureSink else { return }
+    var event = CaptureTimelineEvent(kind: .sessionCreated, tabId: tabId, sessionId: sessionId)
+    if let snapshot = sessionRegistry.session(id: sessionId)?.snapshot() {
+      event.rows = Int(snapshot.pointee.rows)
+      event.cols = Int(snapshot.pointee.cols)
+      laban_snapshot_destroy(snapshot)
+    }
+    captureSink.record(event)
   }
 
   private func recordTab(_ kind: CaptureEventKind, tabId: Tab.ID, sessionId: Session.ID) {
