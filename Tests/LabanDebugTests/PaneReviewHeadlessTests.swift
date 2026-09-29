@@ -105,6 +105,25 @@ final class PaneReviewHeadlessTests: XCTestCase {
     try action("windowFocus", ["focused": true])
     XCTAssertEqual(runtime.logs.terminalBytes.input, count + 3)
   }
+  func testBackgroundSplitCastUsesSpawnedPaneDimensionsBeforeSelection() throws {
+    let tab = try XCTUnwrap(runtime.model.activeTab)
+    try action("newTab")
+    try action("pane.split", ["tabId": tab.id])
+    let paneId = try XCTUnwrap(runtime.model.tabs.first { $0.id == tab.id }?.focusedSessionId)
+    let session = try XCTUnwrap(runtime.model.session(forSessionID: paneId))
+    session.feedOutput(Array("BACKGROUND".utf8))
+    let snapshot = try XCTUnwrap(session.snapshot())
+    defer { laban_snapshot_destroy(snapshot) }
+    guard case .success(let data, _, _, _) = runtime.recentCastBytes(seconds: 10, tabId: tab.id)
+    else { return XCTFail("cast unavailable") }
+    let headerData = Data(try XCTUnwrap(data.split(separator: 10).first))
+    let header = try XCTUnwrap(JSONSerialization.jsonObject(with: headerData) as? [String: Any])
+    XCTAssertEqual(header["width"] as? Int, Int(snapshot.pointee.cols))
+    XCTAssertEqual(header["height"] as? Int, Int(snapshot.pointee.rows))
+    XCTAssertLessThan(Int(snapshot.pointee.cols), Int(runtime.model.terminalAreaSize.cols))
+    XCTAssertNotEqual(runtime.model.activeTab?.id, tab.id)
+  }
+
   func testSplitCastUsesPaneGridDimensions() throws {
     let (_, right) = try split()
     runtime.model.session(forSessionID: right)?.feedOutput(Array("CAST".utf8))

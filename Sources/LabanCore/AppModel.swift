@@ -728,6 +728,7 @@ public final class AppModel {
       paneMetadata[old.focusedSessionId] = old.titleMetadata
       paneStatus[old.focusedSessionId] = old.status
       sessionRegistry.add(session)
+      sizeBySession[id] = size
       AppModel.maybeAutoCapture(session)
       ThemePaletteInjector.injectCurrentTheme(into: session)
       _tabs[idx].panes = tree
