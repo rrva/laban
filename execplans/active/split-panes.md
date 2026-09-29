@@ -170,9 +170,20 @@ content and the same running processes.
 - [x] R3: Route right-button gestures to their originating pane, honor synchronized output in every visible pane, and clear stale selection/find presentation on focus.
 - [x] R4: Reject final-pane close consistently; repair explicit-session headless actions, resize/focus reports, and pane-sized casts.
 - [x] R5: Strengthen real-shell E2E and missing restore/router/coordinate tests; correct unsupported downgrade claims and remaining presentation defects.
-- [ ] R6: Independent regressions, E2E, restart and mutation checks passed. Three uncached full-gate attempts ran; the final run retains one intermittent adoption input/output timeout. The bounded review loop stopped with the gate FAILED; PR #2 records that remaining limitation.
+- [x] R6: Independent regressions, E2E, restart and mutation checks passed in the earlier review. Its bounded full-gate loop stopped after an adoption timeout; the fresh repository check under R10 now passes. The historical timeout remains documented below.
+
+### Second PR re-review follow-up (2026-09-29)
+
+- [x] R7: Preserve per-pane capture snapshots and replay split captures, including capture started after splitting.
+- [x] R8: Cache a new pane's dimensions even when its tab is in the background; verify cast dimensions before tab selection.
+- [x] R9: Keep left-button drag and release bound to the pane receiving the press, including a keyboard focus change.
+- [x] R10: All 173 targeted regression tests and the uncached repository check passed at `861144d9`; independent source review found no unresolved issues. Evidence: `.artifacts/split-panes/second-review-fixes/`.
 
 ## Decision Log
+
+- Decision: Split capture snapshots use frame-plus-hashed-session filenames and optional per-pane presentation on their timeline events. Terminal replay rebuilds each pane from its own PTY stream and combines their recorded geometry and visual settings; session creation records the initial grid. Legacy creation events fall back to the latest resize dimensions.
+  Rationale: Frame-only snapshot names overwrite sibling snapshots. Pane dimensions, cursor styles and opacity cannot be reconstructed from the focused terminal alone. Optional fields preserve old capture decoding, including tabs opened after a resize.
+  Date/Author: 2026-09-29 / PR re-review follow-up.
 
 - Decision: Build the recursive `PaneTree` from spec section 3 now, even
   though this plan only ever produces a tree of depth one.
@@ -425,15 +436,17 @@ this plan branched from; the executing agent records it here before M0:
 - [x] `swift test --filter SurvivorPaneTests` exits 0 and output contains `testTypingAfterFirstPaneClosed`, `testCastEndpointAfterFirstPaneClosed`, `testTranscriptAfterFirstPaneClosed`, `testFindAfterFirstPaneClosed`, `testRestoreAfterFirstPaneClosed`, `testResizeAfterFirstPaneClosed`, `testAgentDetectionAfterFirstPaneClosed`.
 - [x] `swift test --filter LiveControlObserveTests` exits 0 and output contains `testScopedClientSeesOwnPaneMetadataInSplitTab` and `testScopedScreenshotDeniedInSplitTab`.
 - [x] `swift test --filter LabandSplitRestoreTests` exits 0 and output contains `testSplitWorkspaceRestoresFocusedPaneUnderLaband`.
-- [ ] `./scripts/check` exits 0.
+- [x] `./scripts/check` exits 0 (uncached follow-up at `861144d9`, 2026-09-29).
 - [x] `ls docs/adr/0036-pane-layout-is-view-state-above-session-tiers.md` succeeds and `grep -c "0036" docs/adr/README.md` prints at least `1`.
 - [x] Mutation: in `Sources/LabanCore/PaneTree.swift`, make `removing(leaf:)` return the removed child instead of the survivor; run `swift test --filter PaneTreeTests`; expect a failure naming `testRemoveLeafCollapsesToSurvivor`; revert.
 - [x] Mutation: in `Sources/LabanCore/TerminalSurfaceController.swift`, force every pane's origin to the first pane's origin; run `swift test --filter SplitPaneHeadlessTests`; expect `testTwoPanesRenderAtDistinctOrigins` to fail; revert.
 - [x] Mutation: in `TerminalSurfaceController.syncSessions`, replace the `item.isVisible` dirty check with `session.id == activeSessionId`; run `swift test --filter SplitPaneHeadlessTests`; expect `testOutputInUnfocusedPaneMarksFrameDirty` to fail; revert.
 
-Review status: FAILED on 2026-09-28 20:26Z for the third complete uncached follow-up review of `26b444b6c85895a605e17e210dfecbbee569462b` against `BASE = f145b0a6`. Every gate command ran, including `LABAN_CHECK_NO_MEMO=1 ./scripts/check` and all three reversible mutations. The repository check failed in one serial AppKit case; every other gate item passed. This is the third failed review of the `./scripts/check` item in the PR review follow-up loop: stop the automatic review-fix cycle and surface the unresolved failure to a human reviewer under `PLANS.md`. Evidence: `.artifacts/split-panes/pr-review-final-gate-3/` (command logs, `results.json`, `static.json`, `suite-summary.json`, mutation diffs and hashes).
+Follow-up validation (2026-09-29): R7–R10 pass at source commit `861144d9`. All 173 targeted tests passed, and an independent source review found no unresolved findings. `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exited 0, including the previously failing adoption case, coverage (45.90% MC/DC against the 45% floor), sanitizer tests, runtime smoke and the split-pane E2E scenario. Optional TLA+/CBMC tools were unavailable and MSan is unsupported on macOS; the repository check applied its normal skip policy. Evidence: `.artifacts/split-panes/second-review-fixes/targeted-final.log`, `check-final.log` and `summary.json`. The complete independent mechanical Review Gate, including mutation checks, was not repeated in its entirety; those checklist items retain the earlier evidence below. This passing run does not establish the root cause of the historical adoption timeout.
 
-Review findings (current fresh re-review):
+Historical review status: FAILED on 2026-09-28 20:26Z for the third complete uncached follow-up review of `26b444b6c85895a605e17e210dfecbbee569462b` against `BASE = f145b0a6`. Every gate command ran, including `LABAN_CHECK_NO_MEMO=1 ./scripts/check` and all three reversible mutations. The repository check failed in one serial AppKit case; every other gate item passed. This is the third failed review of the `./scripts/check` item in the PR review follow-up loop: stop the automatic review-fix cycle and surface the unresolved failure to a human reviewer under `PLANS.md`. Evidence: `.artifacts/split-panes/pr-review-final-gate-3/` (command logs, `results.json`, `static.json`, `suite-summary.json`, mutation diffs and hashes).
+
+Historical review findings (2026-09-28):
 
 - `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exits 1. `Tests/LabanAppTests/LabanAppTests.swift:263` calls `waitForLocalSnapshotText` after replaying `READY` and writing `hi\n` through the adopted session. The helper fails at line 907 in `testAdoptUnclaimedLabptySessionReattachesExistingChild`: `timed out waiting for got hi; last=READY` (11.181 seconds for the case). Evidence: `check-no-memo.log:3381–3382`. The cause is not established; the observed host load does not prove this is harmless or unrelated to the implementation.
 - All 19 targeted suites passed 289 cases, zero failures and zero skips: the ten required suites contributed 169 cases, seven additional feature suites 104, and the two audit/viewport timing suites 16. They ran in one equivalent union filter, with individual suite counts and every required passing test name verified in `suite-summary.json`. `SplitDaemonTests.swift` extends `AppSessionCoordinatorTests`; its background split-restore case passed among that suite's 17 cases. `PaneTreeTests` passed nine cases.
@@ -477,7 +490,7 @@ Previous review findings (resolved; retained for the review-fix history):
 
 ## Surprises & Discoveries
 
-- The PR review follow-up reached the `PLANS.md` bound of three failed reviews of the uncached `./scripts/check` item. The first failure involved audit/scroll timing assumptions (repaired in `cee5bc4a`), the second persistence/bulk-output timing assumptions (repaired in `26b444b6`), and the third adopted-session input round-trip (`LabanAppTests.swift:263`, helper failure at line 907). All prior repaired cases passed on the third run; the adoption case then passed once in isolated triage. The cause remains unresolved, and host load alone does not establish it. Stop automatic full-gate retries and obtain human review of the recorded failure; the gate remains FAILED. Full evidence is under `.artifacts/split-panes/pr-review-final-gate-3/`.
+- The PR review follow-up reached the `PLANS.md` bound of three failed reviews of the uncached `./scripts/check` item. The first failure involved audit/scroll timing assumptions (repaired in `cee5bc4a`), the second persistence/bulk-output timing assumptions (repaired in `26b444b6`), and the third adopted-session input round-trip (`LabanAppTests.swift:263`, helper failure at line 907). All prior repaired cases passed on the third run; the adoption case then passed once in isolated triage. The cause remains unresolved, and host load alone does not establish it. The automatic full-gate retry loop stopped at that point. After the user requested the second review fixes, the fresh uncached repository check under R10 passed, including adoption; the historical timeout cause remains unresolved. Full historical evidence is under `.artifacts/split-panes/pr-review-final-gate-3/`.
 
 - The second uncached follow-up gate encountered host load averages near 190 on eight logical CPUs and timed out in two parallel-shard fixtures. `testPersistenceCoordinatorDebouncedSave` waited for a separate timer rather than a persisted workspace; it now polls the actual saved result. The 100,000-line daemon test retains every count/order assertion but allows 60 seconds for that bulk transfer; the helper's other callers retain their ten-second budget. Both targeted tests passed under the continuing host load (`.artifacts/split-panes/pr-review-load-green.log`). These are validation fixture repairs, not daemon or persistence implementation changes.
 
