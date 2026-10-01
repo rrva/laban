@@ -1,0 +1,23 @@
+Sources/LabanCore/AppModel.swift
+  s_8bfdcc4b4ee25a::t_e41d213c35f7df 724-727,730-733,739,746-765,784-788,796,818,822,827-834,837,839,844,847-853,877,879,883-899,908-1030,3111-3112
+Tests/LabanCoreTests/AppModelTests.swift
+  s_8bfdcc4b4ee25a::t_d797f501c660c8 1758-1967
+execplans/active/split-panes-2-divider-and-navigation.md
+  s_8bfdcc4b4ee25a::t_4bc8a6f0831d9d 131,314-336
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0d2468e59525617f8936d4754426fbaa074a1826",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
