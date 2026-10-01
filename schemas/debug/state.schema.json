@@ -345,6 +345,13 @@
         "focusedSessionId": {
           "type": "string"
         },
+        "zoomedSessionId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The pane filling the tab while zoomed; absent or null otherwise."
+        },
         "panes": {
           "$ref": "#/$defs/paneTree"
         }

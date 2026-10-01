@@ -119,6 +119,15 @@
     },
     {
       "$ref": "#/$defs/pane.focus"
+    },
+    {
+      "$ref": "#/$defs/pane.resize"
+    },
+    {
+      "$ref": "#/$defs/pane.equalize"
+    },
+    {
+      "$ref": "#/$defs/pane.zoom"
     }
   ],
   "$defs": {
@@ -975,8 +984,29 @@
         "direction": {
           "enum": [
             "next",
-            "previous"
+            "previous",
+            "left",
+            "right",
+            "up",
+            "down"
           ]
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "first",
+              "second"
+            ]
+          }
+        },
+        "fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "zoomed": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -1005,8 +1035,29 @@
         "direction": {
           "enum": [
             "next",
-            "previous"
+            "previous",
+            "left",
+            "right",
+            "up",
+            "down"
           ]
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "first",
+              "second"
+            ]
+          }
+        },
+        "fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "zoomed": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -1035,8 +1086,182 @@
         "direction": {
           "enum": [
             "next",
-            "previous"
+            "previous",
+            "left",
+            "right",
+            "up",
+            "down"
           ]
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "first",
+              "second"
+            ]
+          }
+        },
+        "fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "zoomed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pane.resize": {
+      "type": "object",
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "const": "pane.resize"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "axis": {
+          "enum": [
+            "vertical",
+            "horizontal"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "next",
+            "previous",
+            "left",
+            "right",
+            "up",
+            "down"
+          ]
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "first",
+              "second"
+            ]
+          }
+        },
+        "fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "zoomed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pane.equalize": {
+      "type": "object",
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "const": "pane.equalize"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "axis": {
+          "enum": [
+            "vertical",
+            "horizontal"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "next",
+            "previous",
+            "left",
+            "right",
+            "up",
+            "down"
+          ]
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "first",
+              "second"
+            ]
+          }
+        },
+        "fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "zoomed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pane.zoom": {
+      "type": "object",
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "const": "pane.zoom"
+        },
+        "tabId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "axis": {
+          "enum": [
+            "vertical",
+            "horizontal"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "next",
+            "previous",
+            "left",
+            "right",
+            "up",
+            "down"
+          ]
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "first",
+              "second"
+            ]
+          }
+        },
+        "fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "zoomed": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

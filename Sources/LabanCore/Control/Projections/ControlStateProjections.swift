@@ -561,7 +561,8 @@ public enum ControlStateProjections {
       active: tab.isActive,
       status: status,
       sessionId: tab.focusedSessionId,
-      panes: tab.panes, focusedSessionId: tab.focusedSessionId
+      panes: tab.panes, focusedSessionId: tab.focusedSessionId,
+      zoomedSessionId: tab.isZoomed ? tab.zoomedSessionId : nil
     )
   }
 

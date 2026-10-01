@@ -133,7 +133,7 @@ does the same thing without a window and saves screenshots.
       tests.
 - [x] M4: Persistence: nested and mixed-axis trees and `zoomedSessionId`
       round-trip; tests.
-- [ ] M5: Headless control plane: `pane.split` both axes, `pane.focus`
+- [x] M5: Headless control plane: `pane.split` both axes, `pane.focus`
       directions, `pane.resize`, `pane.equalize`, `pane.zoom`; state
       projection and schema; discovery regenerated; divider drag through
       headless mouse actions.
@@ -332,6 +332,24 @@ does the same thing without a window and saves screenshots.
   only one pane, and restore sizes a persisted zoomed pane to the full area.
   Rationale: keep every command atomic and let the existing hooks carry the
   redraw.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M5 behaviour details the plan left open.
+  (1) `pane.focus` with a direction word that finds no neighbour is a successful
+  no-op (200), mirroring the keyboard chord; an unknown word is 400. (2)
+  `pane.resize` with a `direction` and no `path` that finds no divider, or whose
+  divider is at its limit, is also a 200 no-op because `nudgeDivider` cannot tell
+  the two apart; a `path` without `fraction`, or neither, is 400, and any path
+  component other than `first`/`second` is `notSplit`. (3) The headless drag keeps
+  its proposal in `HeadlessDebugRuntime.dividerDrag` (`beginDividerDrag`,
+  `updateDividerDrag`, `commitDividerDrag`, `cancelDividerDrag`); the one-shot
+  `mouseDrag` action runs all three, and M6's preview rendering and multi-point
+  test drive the same methods directly. A click or drag that names a `sessionId`
+  skips divider hit-testing, so scripts can still address a pane by ID. (4)
+  `TabResponse.zoomedSessionId` is optional and omitted (not `null`) when the tab
+  is not zoomed; the schema allows both. `schemas/debug/action.schema.json` is
+  hand-maintained, so it was edited directly.
+  Rationale: keep every command atomic, idempotent and symmetrical with the GUI.
   Date/Author: 2026-10-01 / executing agent.
 
 ## Review Gate

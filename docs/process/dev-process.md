@@ -1680,13 +1680,31 @@ MVP behavior.
 
 ### Split panes
 
-Headless actions `pane.split`, `pane.close`, and `pane.focus` share the app pane
-model. Split accepts an optional `tabId` and `axis` (only `vertical` is shipped).
-Close accepts optional `tabId` and `sessionId`; focus accepts a `sessionId` or
-`direction` (`next` or `previous`). They are headless-only. GUI shortcuts are
-Cmd+D, Cmd+Shift+D, and Cmd+Option+]/[. Cmd+W closes the complete tab.
+Headless actions `pane.split`, `pane.close`, `pane.focus`, `pane.resize`,
+`pane.equalize`, and `pane.zoom` share the app pane model. They are
+headless-only and all accept an optional `tabId`.
 
-State tabs include recursive `panes` and `focusedSessionId`; `sessionId` remains
+- `pane.split` takes `axis` (`vertical` splits left/right, `horizontal` splits
+  top/bottom) and splits the focused pane; it answers `tooSmall` (400) when a
+  half would drop below 10 columns by 3 rows.
+- `pane.close` takes an optional `sessionId`.
+- `pane.focus` takes a `sessionId`, `direction` `next`/`previous` (cycle), or
+  `direction` `left`/`right`/`up`/`down` (neighbouring pane; a no-op at the
+  layout edge).
+- `pane.resize` takes `path` (array of `first`/`second`, `[]` is the root
+  split) plus `fraction`, clamped to the minimum pane size; a path that names no
+  split answers `notSplit` (400). With only a `direction` it nudges the nearest
+  divider on that side of the focused pane by two cells.
+- `pane.equalize` gives every pane an equal share; `pane.zoom` takes `zoomed`
+  (`true`, `false`, or absent to toggle) for the focused pane.
+
+A mouse drag that starts within 3 pixels of a divider moves that divider
+instead of reaching the shell: nothing changes while the pointer moves and the
+fraction is committed once, at the end point. GUI shortcuts are Cmd+D,
+Cmd+Shift+D, and Cmd+Option+]/[. Cmd+W closes the complete tab.
+
+State tabs include recursive `panes`, `focusedSessionId`, and `zoomedSessionId`
+(present only while zoomed); `sessionId` remains
 a deprecated alias for the focused session. Use `sessionId` on `typeText` and
 mouse actions to address a specific pane. `fixtures/debug-script-split-pane.scenario.json`
 runs two real shells and captures their side-by-side output.
