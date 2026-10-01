@@ -1,0 +1,46 @@
+Tests/LabanAppTests/TerminalBitmapViewDividerTests.swift
+  s_8bfdcc4b4ee25a::t_0e7bce90e84bab 1-332
+  s_8bfdcc4b4ee25a::t_28a94927984c67 333-339
+Sources/LabanApp/PaneSplitterAccessibility.swift
+  s_8bfdcc4b4ee25a::t_40b75ca17a0a47 1-29
+Sources/LabanApp/TerminalBitmapView.swift
+  s_8bfdcc4b4ee25a::t_9851139447ea86 4340-4341,5206,5305-5312,5329-5332,6724-6779,6836-6840,6975-6976,7072,7074,7077-7088,7099,7101,7121-7129,8407,8466-8481,8548-8550,8670-8672,8844,9395-9396,9398,9412-9415,9423,9438-9441,9471-9623,10031-10034,10039-10063
+Sources/LabanApp/TerminalHyperlinkOpening.swift
+  s_8bfdcc4b4ee25a::t_f07aac24a0fa3b 14-17
+Sources/LabanApp/TerminalInputCaptureMetadata.swift
+  s_8bfdcc4b4ee25a::t_548413972fb129 27,29-35,54-58
+Sources/LabanApp/TerminalInputView.swift
+  s_8bfdcc4b4ee25a::t_3505fa5e0e5477 8-15
+Sources/LabanApp/TerminalSelectionInput.swift
+  s_8bfdcc4b4ee25a::t_259c2251894f03 30-32,66,85
+Sources/LabanCore/AppModel.swift
+  s_8bfdcc4b4ee25a::t_61cd63fee83a79 992,994-995,1001-1033
+Sources/LabanCore/PaneTree.swift
+  s_8bfdcc4b4ee25a::t_ae05f3380cae36 61-62,68-112,309,312,414-416,418-420
+Sources/LabanDebug/DebugInputActions.swift
+  s_8bfdcc4b4ee25a::t_3b374ff4ae05f6 220-230,232-239,279-319
+Sources/LabanDebug/HeadlessDebugRuntime.swift
+  s_8bfdcc4b4ee25a::t_0cee6c3163479c 83,1130-1131,1134,1147,1161,1168
+Tests/LabanAppTests/TerminalInputCaptureMetadataTests.swift
+  s_8bfdcc4b4ee25a::t_fe5b61280efb42 31-44
+Tests/LabanCoreTests/PaneTreeTests.swift
+  s_8bfdcc4b4ee25a::t_2930ff1fee4495 81-82,90,244-262
+execplans/active/split-panes-2-divider-and-navigation.md
+  s_8bfdcc4b4ee25a::t_9dc22f240942cf 67-72,148-150,388-436,539-561
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2a7a27ae04dbc7d3a9e0e5608cda4f5bfe45366d",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
