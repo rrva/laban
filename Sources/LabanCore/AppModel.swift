@@ -989,21 +989,46 @@ public final class AppModel {
     let changed = withModelLock { () -> Bool in
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }), !_tabs[idx].isZoomed,
         let path = _tabs[idx].panes.nudgeTarget(
-          for: _tabs[idx].focusedSessionId, direction: direction),
-        let bounds = splitFractionBounds(in: _tabs[idx], path: path), bounds.extent > 0
+          for: _tabs[idx].focusedSessionId, direction: direction)
       else { return false }
-      let cellExtent = Double(
-        bounds.divider.axis == .vertical ? currentSize.cell_width : currentSize.cell_height)
-      let extent = Double(bounds.extent)
-      // Work in whole pixels: the layout cuts at floor(extent * fraction).
-      let cut = (extent * bounds.divider.fraction).rounded(.down)
-      let target = cut + (direction.towardsSecond ? 1 : -1) * Double(cells) * cellExtent
-      return
-        (try? setSplitFractionUnlocked(
-          tabIndex: idx, path: path, fraction: (target + 0.5) / extent)) ?? false
+      return nudgeDividerUnlocked(
+        tabIndex: idx, path: path, towardsSecond: direction.towardsSecond, cells: cells)
     }
     if changed { notifyWorkspaceMutation() }
     return changed
+  }
+
+  /// Moves the divider at `path` by `cells` cells, growing `first` when `towardsSecond`.
+  /// The same step as the keyboard nudge, addressed by divider instead of by focused pane
+  /// (the accessibility increment and decrement actions use it).
+  @discardableResult
+  public func nudgeDivider(
+    inTab tabId: Tab.ID, path: PanePath, towardsSecond: Bool, cells: Int = 2
+  ) -> Bool {
+    let changed = withModelLock { () -> Bool in
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }), !_tabs[idx].isZoomed
+      else { return false }
+      return nudgeDividerUnlocked(
+        tabIndex: idx, path: path, towardsSecond: towardsSecond, cells: cells)
+    }
+    if changed { notifyWorkspaceMutation() }
+    return changed
+  }
+
+  private func nudgeDividerUnlocked(
+    tabIndex idx: Int, path: PanePath, towardsSecond: Bool, cells: Int
+  ) -> Bool {
+    guard let bounds = splitFractionBounds(in: _tabs[idx], path: path), bounds.extent > 0
+    else { return false }
+    let cellExtent = Double(
+      bounds.divider.axis == .vertical ? currentSize.cell_width : currentSize.cell_height)
+    let extent = Double(bounds.extent)
+    // Work in whole pixels: the layout cuts at floor(extent * fraction).
+    let cut = (extent * bounds.divider.fraction).rounded(.down)
+    let target = cut + (towardsSecond ? 1 : -1) * Double(cells) * cellExtent
+    return
+      (try? setSplitFractionUnlocked(
+        tabIndex: idx, path: path, fraction: (target + 0.5) / extent)) ?? false
   }
 
   /// Gives every pane in the tab an equal share along each run of same-axis splits.

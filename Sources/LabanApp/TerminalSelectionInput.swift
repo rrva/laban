@@ -27,6 +27,9 @@ enum TerminalSelectionInput {
   struct GridGeometry {
     var boundsWidth: CGFloat
     var boundsHeight: CGFloat
+    /// Bottom of the pane in view coordinates (y grows upward); zero for a pane that
+    /// starts at the bottom of the view.
+    var originY: CGFloat = 0
     var sidebarWidth: CGFloat
     var cellWidth: CGFloat
     var cellHeight: CGFloat
@@ -60,7 +63,7 @@ enum TerminalSelectionInput {
   ) -> TerminalCellCoordinate? {
     let x = point.x - geometry.sidebarWidth - geometry.insets.left
     guard geometry.cellWidth > 0, geometry.cellHeight > 0 else { return nil }
-    let yLocal = point.y - geometry.gridOriginY
+    let yLocal = point.y - geometry.originY - geometry.gridOriginY
     guard x >= 0, yLocal >= 0 else { return nil }
 
     let col = Int(x / geometry.cellWidth)
@@ -79,7 +82,7 @@ enum TerminalSelectionInput {
       return TerminalSelectionPoint(row: 0, col: 0, viewportOffsetAtCapture: viewportOffset)
     }
     let x = max(0, point.x - geometry.sidebarWidth - geometry.insets.left)
-    let yLocal = point.y - geometry.gridOriginY
+    let yLocal = point.y - geometry.originY - geometry.gridOriginY
     let col = min(geometry.cols - 1, max(0, Int(x / geometry.cellWidth)))
     let unclampedRow = geometry.clampedRows - 1 - Int(yLocal / geometry.cellHeight)
     let row = min(max(0, unclampedRow), geometry.clampedRows - 1)

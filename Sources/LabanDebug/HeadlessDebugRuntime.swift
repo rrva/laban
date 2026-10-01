@@ -80,7 +80,7 @@ public final class HeadlessDebugRuntime {
   var selectionBySession: [Session.ID: TerminalSelection] = [:]
   /// The divider drag in flight, if any. While it is set the pane tree is untouched;
   /// only `commitDividerDrag()` changes it, once, like the GUI's mouse-up.
-  var dividerDrag: HeadlessDividerDrag?
+  var dividerDrag: PaneDividerDrag?
   var preeditBySession: [Session.ID: (text: String, caretCells: Int)] = [:]
   var lastCopyText: String?
   var lastPasteText: String?
@@ -1127,9 +1127,11 @@ public final class HeadlessDebugRuntime {
       guard sessionId == nil || sessionId == tab.focusedSessionId else { return nil }
       return PaneRect(sessionId: tab.focusedSessionId, rect: area)
     }
+    // Debug coordinates are top-down; layout rects are in render space (y up).
+    let point = CGPoint(x: x, y: windowHeight - y)
     return tab.visibleLayout(in: area).first { pane in
       if let sessionId { return pane.sessionId == sessionId }
-      return pane.rect.contains(CGPoint(x: x, y: y))
+      return pane.rect.contains(point)
     }
   }
 
@@ -1142,7 +1144,7 @@ public final class HeadlessDebugRuntime {
     guard terminalBackend != .laband, let tab = model.activeTab else { return nil }
     let area = CGRect(
       x: sidebarWidth, y: 0, width: max(0, windowWidth - sidebarWidth), height: windowHeight)
-    let point = CGPoint(x: x, y: y)
+    let point = CGPoint(x: x, y: windowHeight - y)
     return tab.visibleDividers(in: area).first { divider in
       let zone =
         divider.axis == .vertical
@@ -1156,16 +1158,14 @@ public final class HeadlessDebugRuntime {
   @discardableResult
   func beginDividerDrag(x: Int, y: Int) -> Bool {
     guard let divider = dividerHit(x: x, y: y), let tab = model.activeTab else { return false }
-    dividerDrag = HeadlessDividerDrag(
-      tabId: tab.id, path: divider.path, axis: divider.axis, container: divider.container,
-      fraction: divider.fraction)
+    dividerDrag = PaneDividerDrag(tabId: tab.id, divider: divider)
     return true
   }
 
   /// Moves the drag preview. The pane tree and PTY sizes do not change.
   func updateDividerDrag(x: Int, y: Int) {
     guard var drag = dividerDrag else { return }
-    drag.moveTo(x: CGFloat(x), y: CGFloat(y))
+    drag.moveTo(x: CGFloat(x), y: CGFloat(windowHeight - y))
     // Show the position the commit will land on, not the raw pointer.
     if let clamped = model.clampedSplitFraction(
       inTab: drag.tabId, path: drag.path, fraction: drag.fraction)
@@ -1207,21 +1207,4 @@ public final class HeadlessDebugRuntime {
     DebugMouseInput.terminalSurfaceWidth(windowWidth: windowWidth, sidebarWidth: sidebarWidth)
   }
 
-}
-
-/// A divider drag in progress in the headless runtime. `fraction` is the proposed position
-/// as a share of `container`; it is only a proposal until the drag commits.
-struct HeadlessDividerDrag: Equatable {
-  let tabId: Tab.ID
-  let path: PanePath
-  let axis: PaneAxis
-  let container: CGRect
-  var fraction: Double
-
-  mutating func moveTo(x: CGFloat, y: CGFloat) {
-    let pointer = axis == .vertical ? x - container.minX : y - container.minY
-    let extent = axis == .vertical ? container.width : container.height
-    guard extent > 0 else { return }
-    fraction = Double(pointer / extent)
-  }
 }

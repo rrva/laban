@@ -5,7 +5,14 @@ import LabanCore
 // MARK: - App commands
 
 enum AppCommand: Equatable {
-  case splitPaneRight, closePane, focusNextPane, focusPreviousPane
+  case splitPaneRight, splitPaneDown, closePane, closePaneOrTab
+  case focusNextPane, focusPreviousPane
+  case togglePaneZoom, equalizePanes
+  case focusPane(PaneDirection)
+  /// Cmd+Option+arrow: moves pane focus when the active tab is split, and (left/right
+  /// only) switches tabs when it is not.
+  case paneOrTabNavigation(PaneDirection)
+  case nudgeDivider(PaneDirection)
   case newTab
   case closeTab
   case selectTab(index: Int)

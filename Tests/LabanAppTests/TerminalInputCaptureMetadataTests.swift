@@ -28,6 +28,20 @@ final class TerminalInputCaptureMetadataTests: XCTestCase {
   func testAppCommandCaptureNamesAreStable() {
     XCTAssertEqual(TerminalInputCaptureMetadata.captureName(for: .newTab), "newTab")
     XCTAssertEqual(TerminalInputCaptureMetadata.captureName(for: .closeTab), "closeTab")
+    XCTAssertEqual(TerminalInputCaptureMetadata.captureName(for: .splitPaneDown), "splitPaneDown")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .closePaneOrTab), "closePaneOrTab")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .togglePaneZoom), "togglePaneZoom")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .equalizePanes), "equalizePanes")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .focusPane(.up)), "focusPaneUp")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .paneOrTabNavigation(.left)),
+      "paneOrTabNavigationLeft")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .nudgeDivider(.down)), "nudgeDividerDown")
     XCTAssertEqual(TerminalInputCaptureMetadata.captureName(for: .selectTab(index: 3)), "selectTab")
     XCTAssertEqual(TerminalInputCaptureMetadata.captureName(for: .copy), "copy")
     XCTAssertEqual(TerminalInputCaptureMetadata.captureName(for: .paste), "paste")

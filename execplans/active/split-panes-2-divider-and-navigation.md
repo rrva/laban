@@ -64,8 +64,12 @@ does the same thing without a window and saves screenshots.
 - **Axis**: `PaneAxis.vertical` means the divider is a vertical line and the
   children sit left (`first`) and right (`second`). `PaneAxis.horizontal`
   means the divider is a horizontal line and the children sit top (`first`)
-  and bottom (`second`). The view's coordinate system is flipped (y grows
-  downward; `TerminalBitmapView.isFlipped` is true), so "top" is the smaller y.
+  and bottom (`second`). The view and the renderer are **not** flipped: y grows
+  upward (`TerminalBitmapView` is a plain bottom-left-origin view), so "top" is
+  the larger y and the `first` child of a horizontal split owns the high-y end
+  of its container. Debug-API coordinates (`click`, `mouseDrag`) are top-down
+  and are converted at the headless edge. (Revision 1 of this plan claimed the
+  opposite; see `Surprises & Discoveries`.)
 - **Fraction**: the share of the split's extent given to `first`, a number
   between 0 and 1.
 - **Pane path**: new in this plan. The route from the root of the tree to one
@@ -141,8 +145,9 @@ does the same thing without a window and saves screenshots.
       drag preview line, sidebar zoom badge; headless tests. (The GUI half of
       "pass `dividerPreview` during a drag" lands with the M7 drag handler; the
       request field and headless path are done.)
-- [ ] M7: GUI input: divider hover cursor, drag-preview-commit, keyboard
-      chords, menu items, accessibility splitter elements.
+- [x] M7: GUI input: divider hover cursor, drag-preview-commit, keyboard
+      chords, menu items, accessibility splitter elements. (Also fixed the
+      layout's vertical orientation and per-pane mouse geometry, see Surprises.)
 - [ ] M8: End-to-end: headless scenario, nested-split restart test through
       labpty, four-pane frame-cost measurement.
 - [ ] M9: Docs (`mvp.md`, `spec.md`, `dev-process.md`), Review Gate.
@@ -380,6 +385,55 @@ does the same thing without a window and saves screenshots.
   headless paths identical.
   Date/Author: 2026-10-01 / executing agent.
 
+- Decision: M7 fixes the layout orientation instead of papering over it at each
+  consumer. `PaneTree.partition` for a horizontal split places `first` at the high-y
+  end (render and view space, y up); sizes are unchanged (`first` is still
+  `floor(extent * fraction)` tall). `directionalNeighbour` treats `.up` as larger y.
+  `PaneDivider.previewRect` and the new `PaneDividerDrag` (shared by the view and the
+  headless runtime) measure a horizontal fraction down from the container's top. The
+  headless runtime converts debug coordinates (top-down) with `windowHeight - y` in
+  `paneHit`, `dividerHit` and drag updates. The view's `terminalMouseGeometry`,
+  `selectionGeometry` (new `GridGeometry.originY`) and IME `firstRect` subtract or add
+  the pane's `minY`. `PaneTreeTests` rects that hard-coded the old y-down arrangement
+  (`testDividersCarryPathsInNestedTree`, `testSettingFractionByPath`,
+  `testPreviewRectCentresOnProposedPositionAndSpansContainer`) were corrected, not
+  weakened.
+  Rationale: one coordinate space (the renderer's) for every layout rect keeps every
+  later consumer correct by construction. Flipping inside `Tab.visibleLayout` would
+  have left `PaneTree` and the controller in different spaces.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M7 behaviour details the plan left open.
+  (1) The AppCommand names the headless key path logs are
+  `TerminalInputCaptureMetadata.captureName`'s: `splitPaneDown`, `closePaneOrTab`,
+  `togglePaneZoom`, `equalizePanes`, and `focusPane`/`paneOrTabNavigation`/
+  `nudgeDivider` plus `Left|Right|Up|Down`. Cmd+Control+Left/Right no longer fall into
+  the Cmd+Arrow readline line-edit bytes (`commandLineEditingBytes` excludes Control,
+  in the app and the headless mirror). (2) The drag preview shows from the press (on
+  the divider's own position) and follows the pointer; a release commits only when the
+  clamped fraction differs from where the drag began, so a click changes nothing and
+  moves no focus. A double-click equalizes and consumes the rest of the gesture.
+  Escape cancels. The preview position is `AppModel.clampedSplitFraction`. (3) Pane
+  navigation treats the laband backend like an unsplit tab (it only ever shows the
+  focused pane), so Cmd+Option+Left/Right keep switching tabs there; the split items
+  stay disabled on laband. (4) Menus: File has "Close Tab" (retitled "Close Pane" in a
+  split tab) on Cmd+W with Cmd+Option+W as its alternate item (shown while Option is
+  held), then Split Pane Right/Down. View gets a "Pane" submenu. "Select Pane Left"
+  and "Select Pane Right" carry no key equivalent (see Surprises); "Select Pane
+  Above/Below" carry Cmd+Option+Up/Down. "Focus Next/Previous Pane" were renamed
+  "Select Next/Previous Pane" and moved into the Pane submenu, so the old strings are
+  gone from the catalog. Menu items that need a direction carry it in
+  `representedObject`. (5) Accessibility increment and decrement address their own
+  divider through the new `AppModel.nudgeDivider(inTab:path:towardsSecond:cells:)`
+  rather than the focused pane's nearest divider, because VoiceOver can focus a
+  divider the focused pane does not border; both overloads share one two-cell step.
+  The splitter elements are cached by tab, path, rect and fraction and rebuilt as soon
+  as any of them changes. (6) "Not enough room to split this pane" and "Pane divider"
+  are localised through `L10n`; the notice is built in the view because `LabanCore`
+  has no `L10n`.
+  Rationale: keep every command atomic and the GUI and headless paths symmetrical.
+  Date/Author: 2026-10-01 / executing agent.
+
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this
@@ -481,6 +535,29 @@ Review findings (filled in by the review agent):
   pane) and 9756/9759 (`validateMenuItem`, M7), `LiveIntentRouter` 551,
   `ControlStateProjections` 67 and `DebugPaneActions` 30 (all marked unchanged
   in the table).
+
+- Observation: the plan's premise "the view's coordinate system is flipped
+  (`isFlipped` is true), so top is the smaller y" is wrong. `TerminalBitmapView`
+  does not override `isFlipped`, the sidebar rows are placed at
+  `height - (i + 1) * rowHeight - topInset`, `terminalGridOriginY` measures from the
+  pane's bottom, and the Metal and software renderers are y-up. M1 laid a
+  horizontal split out with `first` at the smaller y, which is the *bottom* on
+  screen: Split Down would have put the new pane above the old one and
+  Cmd+Option+Up/Down would have moved the wrong way. It was invisible until M7 because
+  the tests only compared layout rects with each other and the first plan only
+  split left/right. The mouse, selection and IME geometry in the view also ignored a
+  pane's `minY`, so a pane stacked above another mapped clicks to the wrong row.
+  Evidence: `PaneTree.partition` (now places `first` at the high-y end),
+  `PaneTree.directionalNeighbour` (`.up` now means larger y),
+  `TerminalBitmapViewDividerTests.testSplitDownPlacesNewPaneBelowTheOriginal` and
+  `testSelectionInUpperPaneUsesItsOwnOrigin` (the latter fails if the pane origin is
+  dropped from `selectionGeometry`).
+
+- Observation: Cmd+Option+Left/Right cannot be menu key equivalents. They are the
+  hold-to-peek tab gesture (`peekCommitModifiers`), and the Tab menu deliberately
+  carries no key equivalent for them because AppKit would match the chord ahead of
+  `keyDown`. The same reasoning applies to "Select Pane Left/Right".
+  Evidence: the comment above `previousItem` in `MenuCommands.swift`.
 
 ## Outcomes & Retrospective
 

@@ -58,9 +58,55 @@ public struct PaneDivider: Equatable {
       return CGRect(
         x: center - thickness / 2, y: container.minY, width: thickness, height: container.height)
     }
-    let center = container.minY + floor(container.height * value)
+    // y grows upward: the first (top) child owns the high-y end of the container.
+    let center = container.maxY - floor(container.height * value)
     return CGRect(
       x: container.minX, y: center - thickness / 2, width: container.width, height: thickness)
+  }
+}
+
+/// A divider drag in progress, shared by the AppKit view and the headless runtime so the
+/// pointer-to-fraction math is identical. `fraction` is the proposed position as a share of
+/// `container`; it is only a proposal until the drag commits.
+public struct PaneDividerDrag: Equatable {
+  public let tabId: Tab.ID
+  public let path: PanePath
+  public let axis: PaneAxis
+  public let container: CGRect
+  /// Where the divider sat when the drag began, to tell a real drag from a bare click.
+  public let startFraction: Double
+  public var fraction: Double
+
+  public init(
+    tabId: Tab.ID, path: PanePath, axis: PaneAxis, container: CGRect, fraction: Double
+  ) {
+    self.tabId = tabId
+    self.path = path
+    self.axis = axis
+    self.container = container
+    self.startFraction = fraction
+    self.fraction = fraction
+  }
+
+  public init(tabId: Tab.ID, divider: PaneDivider) {
+    self.init(
+      tabId: tabId, path: divider.path, axis: divider.axis, container: divider.container,
+      fraction: divider.fraction)
+  }
+
+  public var hasMoved: Bool { fraction != startFraction }
+
+  public mutating func moveTo(x: CGFloat, y: CGFloat) {
+    // y grows upward, so a horizontal divider's fraction is measured down from the top.
+    let pointer = axis == .vertical ? x - container.minX : container.maxY - y
+    let extent = axis == .vertical ? container.width : container.height
+    guard extent > 0 else { return }
+    fraction = Double(pointer / extent)
+  }
+
+  /// The translucent line to draw for the proposed position.
+  public var previewRect: CGRect {
+    PaneDivider.previewRect(axis: axis, container: container, fraction: fraction)
   }
 }
 
@@ -260,10 +306,10 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
       case .left:
         guard r.maxX <= focused.minX + 0.001 else { return nil }
         distance = focused.minX - r.maxX
-      case .down:
+      case .up:
         guard r.minY >= focused.maxY - 0.001 else { return nil }
         distance = r.minY - focused.maxY
-      case .up:
+      case .down:
         guard r.maxY <= focused.minY + 0.001 else { return nil }
         distance = focused.minY - r.maxY
       }
@@ -365,12 +411,13 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
           height: rect.height)
       )
     }
+    // Layout rects are in render and view space, where y grows upward, so the `first`
+    // (top) child sits at the high-y end of the rect.
+    let secondHeight = extent - cut - divider
     return (
-      CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: cut),
-      CGRect(x: rect.minX, y: rect.minY + cut, width: rect.width, height: divider),
-      CGRect(
-        x: rect.minX, y: rect.minY + cut + divider, width: rect.width,
-        height: extent - cut - divider)
+      CGRect(x: rect.minX, y: rect.minY + secondHeight + divider, width: rect.width, height: cut),
+      CGRect(x: rect.minX, y: rect.minY + secondHeight, width: rect.width, height: divider),
+      CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: secondHeight)
     )
   }
 }

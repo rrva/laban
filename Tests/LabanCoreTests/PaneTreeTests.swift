@@ -78,7 +78,8 @@ final class PaneTreeTests: XCTestCase {
     XCTAssertEqual(dividers.map(\.axis), [.vertical, .horizontal])
     XCTAssertEqual(dividers[0].container, area)
     XCTAssertEqual(dividers[1].container, CGRect(x: 501, y: 0, width: 499, height: 600))
-    XCTAssertEqual(dividers[1].rect, CGRect(x: 501, y: 300, width: 499, height: 1))
+    // y grows upward: the first (top) child owns the high-y end of its container.
+    XCTAssertEqual(dividers[1].rect, CGRect(x: 501, y: 299, width: 499, height: 1))
     XCTAssertEqual(dividers.map(\.fraction), [0.5, 0.5])
     XCTAssertEqual(leftAndStackedRight.dividerRects(in: area), dividers.map(\.rect))
   }
@@ -86,7 +87,7 @@ final class PaneTreeTests: XCTestCase {
   func testSettingFractionByPath() throws {
     let area = CGRect(x: 0, y: 0, width: 1000, height: 600)
     let changed = try XCTUnwrap(leftAndStackedRight.settingFraction(at: [.second], to: 0.25))
-    XCTAssertEqual(rect(changed, "C", in: area), CGRect(x: 501, y: 151, width: 499, height: 449))
+    XCTAssertEqual(rect(changed, "C", in: area), CGRect(x: 501, y: 0, width: 499, height: 449))
     XCTAssertEqual(rect(changed, "right", in: area).height, 150)
     XCTAssertEqual(rect(changed, "left", in: area).width, 500)
     let root = try XCTUnwrap(leftAndStackedRight.settingFraction(at: [], to: 0.3))
@@ -240,6 +241,24 @@ final class PaneTreeTests: XCTestCase {
     XCTAssertEqual(horizontal.height, PaneDivider.previewThickness)
     XCTAssertEqual(horizontal.minX, 200)
     XCTAssertEqual(horizontal.width, 900)
-    XCTAssertEqual(horizontal.midY, 10 + 150, accuracy: 0.5)
+    // y grows upward: 25% from the top of the container is 150 below its maxY.
+    XCTAssertEqual(horizontal.midY, 10 + 600 - 150, accuracy: 0.5)
+  }
+
+  func testFirstChildOfHorizontalSplitSitsAboveSecondInUpwardCoordinates() {
+    let area = CGRect(x: 0, y: 0, width: 1000, height: 600)
+    let top = rect(leftAndStackedRight, "right", in: area)
+    let bottom = rect(leftAndStackedRight, "C", in: area)
+    XCTAssertGreaterThan(top.minY, bottom.maxY - 0.001, "first is the upper pane (y grows up)")
+  }
+
+  func testDragMathMeasuresHorizontalFractionDownFromTheTop() {
+    let container = CGRect(x: 0, y: 0, width: 1000, height: 600)
+    var drag = PaneDividerDrag(
+      tabId: "t", path: [], axis: .horizontal, container: container, fraction: 0.5)
+    drag.moveTo(x: 0, y: 450)
+    XCTAssertEqual(drag.fraction, 0.25, accuracy: 1e-9, "450 up from the bottom is 25% down")
+    XCTAssertTrue(drag.hasMoved)
+    XCTAssertEqual(drag.previewRect.midY, 450, accuracy: 0.5)
   }
 }
