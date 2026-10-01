@@ -1,0 +1,33 @@
+Sources/LabanApp/TerminalBitmapView.swift
+  s_8bfdcc4b4ee25a::t_02e7705763f9c3 2153,4278,4330,8292,8302
+Sources/LabanCore/AppModel.swift
+  s_8bfdcc4b4ee25a::t_52675478a19f23 61-72,76-79,91-103,475-477,1942,1973,1975
+Sources/LabanCore/Control/Projections/ControlStateProjections.swift
+  s_8bfdcc4b4ee25a::t_a911f863783302 386
+Sources/LabanCore/Tab.swift
+  s_8bfdcc4b4ee25a::t_27156f2f4b0aed 42-66
+Sources/LabanCore/TerminalSurfaceController.swift
+  s_8bfdcc4b4ee25a::t_5baf1435e30c83 1050,1134-1136,1174,1514
+Sources/LabanDebug/HeadlessDebugRuntime.swift
+  s_8bfdcc4b4ee25a::t_60d214d42fa7aa 963,1122
+Tests/LabanCoreTests/TabVisibleLayoutTests.swift
+  s_8bfdcc4b4ee25a::t_5b34c948b4bbbc 1-53
+execplans/active/split-panes-2-divider-and-navigation.md
+  s_8bfdcc4b4ee25a::t_29233af2f1dc41 129,302-313,410-415
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "029c0f59036c35058f7c3990b7eee9f04df1e6bd",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
