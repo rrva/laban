@@ -9585,13 +9585,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// the button is released.
   private func updateDividerDrag(at point: NSPoint) -> Bool {
     guard var drag = dividerDrag else { return false }
-    drag.moveTo(x: point.x, y: point.y)
-    // Show the position the commit will land on, not the raw pointer.
-    if let clamped = model.clampedSplitFraction(
-      inTab: drag.tabId, path: drag.path, fraction: drag.fraction)
-    {
-      drag.fraction = clamped
-    }
+    drag.move(toX: point.x, y: point.y, in: model)
     dividerDrag = drag
     setHoverCursor(Self.cursorStyle(for: drag.axis))
     invalidateRenderAndWake()
@@ -9604,9 +9598,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     _ = updateDividerDrag(at: point)
     guard let drag = dividerDrag else { return true }
     dividerDrag = nil
-    if drag.hasMoved, let tab = model.activeTab, tab.id == drag.tabId, !tab.isZoomed {
-      try? model.setSplitFraction(inTab: drag.tabId, path: drag.path, fraction: drag.fraction)
-    }
+    drag.commit(in: model)
     paneGeometryChanged()
     updateHoverCursor(at: point)
     return true

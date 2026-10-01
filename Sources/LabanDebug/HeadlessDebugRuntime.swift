@@ -1165,13 +1165,7 @@ public final class HeadlessDebugRuntime {
   /// Moves the drag preview. The pane tree and PTY sizes do not change.
   func updateDividerDrag(x: Int, y: Int) {
     guard var drag = dividerDrag else { return }
-    drag.moveTo(x: CGFloat(x), y: CGFloat(windowHeight - y))
-    // Show the position the commit will land on, not the raw pointer.
-    if let clamped = model.clampedSplitFraction(
-      inTab: drag.tabId, path: drag.path, fraction: drag.fraction)
-    {
-      drag.fraction = clamped
-    }
+    drag.move(toX: CGFloat(x), y: CGFloat(windowHeight - y), in: model)
     dividerDrag = drag
   }
 
@@ -1188,7 +1182,7 @@ public final class HeadlessDebugRuntime {
   func commitDividerDrag() {
     guard let drag = dividerDrag else { return }
     dividerDrag = nil
-    try? model.setSplitFraction(inTab: drag.tabId, path: drag.path, fraction: drag.fraction)
+    drag.commit(in: model)
   }
 
   /// Abandons the drag without touching the tree.

@@ -205,9 +205,23 @@ final class SplitPaneHeadlessTests: SplitPaneTestCase {
     let tab = try XCTUnwrap(runtime.model.activeTab)
     let dividerRects = tab.visibleDividers(in: area).map(\.rect)
     XCTAssertEqual(dividerRects.count, 2)
+    // Debug coordinates are top-down; layout rects are y up.
+    let hiddenRect = try XCTUnwrap(
+      tab.visibleLayout(in: area).first { $0.sessionId == bottomRight }?.rect)
+    let hiddenX = Int(hiddenRect.midX)
+    let hiddenY = runtime.windowHeight - Int(hiddenRect.midY)
+    XCTAssertEqual(runtime.paneHit(x: hiddenX, y: hiddenY)?.sessionId, bottomRight)
 
     try action("pane.zoom", ["zoomed": true])
     runtime.renderFrameUnlocked()
+    // Hit-testing goes through `Tab.visibleLayout`: the point that used to land in the
+    // bottom-right pane now lands in the zoomed pane, whose rect is the whole area.
+    let zoomedHit = try XCTUnwrap(runtime.paneHit(x: hiddenX, y: hiddenY))
+    XCTAssertEqual(zoomedHit.sessionId, left)
+    XCTAssertEqual(zoomedHit.rect, area)
+    XCTAssertNil(runtime.paneHit(x: hiddenX, y: hiddenY, sessionId: bottomRight))
+    let position = runtime.terminalMousePosition(x: hiddenX, y: hiddenY)
+    XCTAssertEqual(CGFloat(position.x), CGFloat(hiddenX) - area.minX, accuracy: 0.5)
     XCTAssertEqual(runtime.model.activeTab?.zoomedSessionId, left)
     XCTAssertEqual(runtime.lastFramePaneSessionIds, [left])
     for divider in dividerRects {

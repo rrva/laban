@@ -110,6 +110,26 @@ public struct PaneDividerDrag: Equatable {
   }
 }
 
+extension PaneDividerDrag {
+  /// Moves the proposal to the pointer and clamps it to where a commit would land, so the
+  /// preview line shows the real outcome. The one drag-move path for the AppKit view and
+  /// the headless runtime; it must never touch the pane tree or the PTY sizes.
+  public mutating func move(toX x: CGFloat, y: CGFloat, in model: AppModel) {
+    moveTo(x: x, y: y)
+    if let clamped = model.clampedSplitFraction(inTab: tabId, path: path, fraction: fraction) {
+      fraction = clamped
+    }
+  }
+
+  /// Release: applies the proposal to the tree once, which resizes the shells once. A bare
+  /// click, a tab that is no longer active and a zoomed tab change nothing. The one commit
+  /// path for the AppKit view and the headless runtime.
+  public func commit(in model: AppModel) {
+    guard hasMoved, let tab = model.activeTab, tab.id == tabId, !tab.isZoomed else { return }
+    try? model.setSplitFraction(inTab: tabId, path: path, fraction: fraction)
+  }
+}
+
 /// Layout owns only identity and geometry; sessions own processes and terminal state.
 public indirect enum PaneTree: Equatable, Codable, Sendable {
   case leaf(sessionId: Session.ID)

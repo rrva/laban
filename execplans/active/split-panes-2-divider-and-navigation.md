@@ -511,10 +511,15 @@ records `BASE` here in M0: `BASE = 958c85b502529fd194ef73ba966b2bb782e1511b`.
 - [ ] Mutation: in `Tab.visibleLayout(in:)`, ignore `zoomedSessionId`; expect
       `testZoomResizesOnlyZoomedPane` and `testZoomedTabUsesSinglePaneFrame` to
       fail; revert.
-- [ ] Mutation: in the GUI drag handler, call `model.setSplitFraction` from
-      `mouseDragged` instead of `mouseUp`; expect
+- [ ] Mutation: in `PaneDividerDrag.move(toX:y:in:)`
+      (`Sources/LabanCore/PaneTree.swift`), the single drag-move path shared by
+      the AppKit view and the headless runtime, call
+      `model.setSplitFraction(inTab:path:fraction:)` after clamping; expect
       `testDividerDragCommitsOnRelease` (headless) and
       `testDividerDragDoesNotResizeBeforeRelease` (AppKit) to fail; revert.
+      (Revised after review round 1: the GUI and headless runtime had separate
+      drag code, so one GUI-only mutation could not fail the headless test.
+      Both now go through `PaneDividerDrag.move` and `commit`.)
 
 Review status: FAILED, round 1 (fresh reviewer, 2026-10-01, ran against commit
 4ca80f3e). 15 of 17 items pass. Two mutation items did not behave as written.
@@ -570,6 +575,13 @@ third); `06-zoomed.png` shows one pane filling the area, no divider, sidebar bad
 All three source files were restored with `git checkout` and verified: `git diff`
 empty, sha256 of every mutated file equal to its pre-mutation value, and
 `git status` clean before this record was written.
+
+Round 1 fixes (2026-10-01): `testZoomedTabUsesSinglePaneFrame` now also
+asserts that hit-testing and mouse coordinates for a point in a hidden pane
+resolve to the zoomed pane's full-area rect, which only `Tab.visibleLayout`
+provides. The AppKit and headless divider drags now share
+`PaneDividerDrag.move(toX:y:in:)` and `commit(in:)`, and the mutation 3 wording
+above targets that shared path.
 
 ## Surprises & Discoveries
 
