@@ -131,7 +131,7 @@ does the same thing without a window and saves screenshots.
 - [x] M3: `AppModel` API: unrestricted split (both axes, nested, minimum
       size), directional focus, set fraction, nudge divider, equalize, zoom;
       tests.
-- [ ] M4: Persistence: nested and mixed-axis trees and `zoomedSessionId`
+- [x] M4: Persistence: nested and mixed-axis trees and `zoomedSessionId`
       round-trip; tests.
 - [ ] M5: Headless control plane: `pane.split` both axes, `pane.focus`
       directions, `pane.resize`, `pane.equalize`, `pane.zoom`; state

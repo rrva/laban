@@ -1267,9 +1267,13 @@ public final class AppModel {
       var restored: [(PaneState, Session, String, Bool, LabanTerminalSize)] = []
       do {
         for pane in persistedTab.resolvedPaneStates {
-          let rect = terminalRects(for: persistedTab.resolvedPanes).first {
-            $0.sessionId == pane.sessionId
-          }?.rect
+          // A zoomed pane fills the area; hidden panes keep their layout size.
+          let rect =
+            persistedTab.zoomedSessionId == pane.sessionId
+            ? terminalRects(for: .leaf(sessionId: pane.sessionId)).first?.rect
+            : terminalRects(for: persistedTab.resolvedPanes).first {
+              $0.sessionId == pane.sessionId
+            }?.rect
           let paneSize =
             currentSize.pixel_width > 0
             ? rect.map {
@@ -1317,6 +1321,9 @@ public final class AppModel {
       }
       tab.panes = remap(persistedTab.resolvedPanes)
       tab.focusedSessionId = actual[persistedTab.resolvedFocusedSessionId] ?? first.1.id
+      tab.zoomedSessionId = persistedTab.zoomedSessionId.flatMap { actual[$0] }.flatMap {
+        tab.panes.contains($0) ? $0 : nil
+      }
       tab.focusHistory =
         tab.allSessionIds.filter { $0 != tab.focusedSessionId } + [tab.focusedSessionId]
       _tabs.append(tab)
@@ -1437,7 +1444,8 @@ public final class AppModel {
           cwdFallbackApplied: flat.cwdFallbackApplied, repoFingerprint: flat.repoFingerprint,
           processStatus: flat.processStatus, exitCode: flat.exitCode, shellPid: flat.shellPid,
           agent: flat.agent,
-          panes: tab.panes, focusedSessionId: tab.focusedSessionId, paneStates: panes)
+          panes: tab.panes, focusedSessionId: tab.focusedSessionId, paneStates: panes,
+          zoomedSessionId: tab.isZoomed ? tab.zoomedSessionId : nil)
       }
       let selectedId = _tabs.first(where: { $0.isActive })?.id
       let window = WindowState(
