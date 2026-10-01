@@ -1,0 +1,33 @@
+Tests/LabanAppTests/LabanAppTests.swift
+  s_8bfdcc4b4ee25a::t_82b31c2d484e9a 1147-1207
+Tests/LabanAppTests/SplitDaemonTests.swift
+  s_8bfdcc4b4ee25a::t_362652cec0debe 61,63
+execplans/active/split-panes-2-divider-and-navigation.md
+  s_8bfdcc4b4ee25a::t_5c680c53d8936c 151,153-154,438-458,584-603
+fixtures/debug-script-split-pane-2.scenario.json
+  s_8bfdcc4b4ee25a::t_bc4cffccb97151 1-209
+schemas/debug-script.schema.json
+  s_8bfdcc4b4ee25a::t_f07d0be3053c51 117,145-146
+scripts/run-debug-script
+  s_8bfdcc4b4ee25a::t_04b89f0a9e3259 3,262-272,323-357,359-360,363-364
+scripts/test-e2e
+  s_8bfdcc4b4ee25a::t_aa7c9ae7d82105 946-958
+scripts/test-labanapp-survives-restart
+  s_8bfdcc4b4ee25a::t_aea7d6ae9d07ed 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5e5669a1bc9c8664f0c3552bc06dab52cddf17a7",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
