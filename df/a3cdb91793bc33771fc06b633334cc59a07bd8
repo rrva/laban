@@ -1,0 +1,43 @@
+Sources/LabanCore/Control/Projections/ControlResponseModels.swift
+  s_8bfdcc4b4ee25a::t_a68ee8cbfb6a7f 56-57,86-87,114
+Sources/LabanCore/Control/Projections/ControlStateProjections.swift
+  s_8bfdcc4b4ee25a::t_431e8a278c2bba 564-565
+Sources/LabanCore/Intents/DebugRequestPayloads.swift
+  s_8bfdcc4b4ee25a::t_cbc5d822b8e5db 77,126-127,1830-1831,1833-1838,1846-1852
+Sources/LabanCore/Intents/IntentCatalog.swift
+  s_8bfdcc4b4ee25a::t_857a8e038aa1a8 871,879-880,883-897
+Sources/LabanDebug/DebugMouseActions.swift
+  s_8bfdcc4b4ee25a::t_84249864d91dad 108-112,156-163
+Sources/LabanDebug/DebugPaneActions.swift
+  s_8bfdcc4b4ee25a::t_5b6f2045304092 26-30,41-46,53-55,68-98
+Sources/LabanDebug/DebugRuntimeRequests.swift
+  s_8bfdcc4b4ee25a::t_a918812d55bdfa 65
+Sources/LabanDebug/HeadlessDebugRuntime.swift
+  s_8bfdcc4b4ee25a::t_af2018cccd8a68 78-80,1131-1176,1189-1205
+Tests/LabanDebugTests/HeadlessIntentRouterTests.swift
+  s_8bfdcc4b4ee25a::t_f8ea93d8a0ec0b 228-442
+docs/process/dev-process.md
+  s_8bfdcc4b4ee25a::t_8e49e9f3782842 1683-1707
+execplans/active/split-panes-2-divider-and-navigation.md
+  s_8bfdcc4b4ee25a::t_89b330de4af2e4 136,337-354
+schemas/debug/action.schema.json
+  s_8bfdcc4b4ee25a::t_b9082af0d6bc45 122-130,987-991,993-1009,1038-1042,1044-1060,1089-1236,1238-1264
+schemas/debug/state.schema.json
+  s_8bfdcc4b4ee25a::t_4a294026b52421 348-354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dfa3cdb91793bc33771fc06b633334cc59a07bd8",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
