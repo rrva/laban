@@ -128,7 +128,7 @@ does the same thing without a window and saves screenshots.
       path, minimum extents, equalize, directional neighbour; tests.
 - [x] M2: `Tab.zoomedSessionId` and `Tab.visibleLayout(in:)`; every layout
       caller switched to it; `allSessionIds.count` sites audited.
-- [ ] M3: `AppModel` API: unrestricted split (both axes, nested, minimum
+- [x] M3: `AppModel` API: unrestricted split (both axes, nested, minimum
       size), directional focus, set fraction, nudge divider, equalize, zoom;
       tests.
 - [ ] M4: Persistence: nested and mixed-axis trees and `zoomedSessionId`
@@ -309,6 +309,29 @@ does the same thing without a window and saves screenshots.
   `paneSize(for:in:)` returns a hidden pane's remembered `sizeBySession` entry.
   Rationale: hidden panes must keep their last size (Decision above), and
   inactive single-visible-pane tabs already resized with the window.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M3 behaviour details the plan left open.
+  (1) `splitPane` only unzooms once the split is accepted: a refused or failed
+  split leaves the tree, registry and zoom untouched. (2) The 10x3 minimum is
+  not checked while the pixel area is still zero (before the view's first
+  layout), because nothing can be measured; the view resizes afterwards.
+  (3) `focusPane(inTab:direction:)` unzooms only when it finds a neighbour; at
+  an edge it changes nothing, zoom included, matching "the chord does nothing
+  at the edge". `focusPane(inTab:sessionId:)` itself unzooms when the target
+  is not the zoomed pane, so control-plane `pane.focus` by ID cannot leave
+  focus on a hidden pane. (4) `nudgeDivider` returns false while zoomed (the
+  dividers are hidden) and works in whole pixels (`floor(extent*fraction)` plus
+  or minus `cells` cell extents) so two cells is exactly two columns; clamped
+  fractions get half a pixel added to the lower bound so the layout's floor
+  cannot leave a pane one column under the minimum. (5) Equalize keeps zoom.
+  (6) The sync-cache invalidation the plan asks for in `setPaneZoom` is done by
+  firing `onSessionsReplaced`, which `TerminalSurfaceController` already wires
+  to `invalidateSessionSyncCache()`; the model cannot call the controller.
+  (7) `TabState.zoomedSessionId` is also dropped on decode when the tab has
+  only one pane, and restore sizes a persisted zoomed pane to the full area.
+  Rationale: keep every command atomic and let the existing hooks carry the
+  redraw.
   Date/Author: 2026-10-01 / executing agent.
 
 ## Review Gate
