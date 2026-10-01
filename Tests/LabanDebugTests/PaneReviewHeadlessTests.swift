@@ -37,8 +37,12 @@ final class PaneReviewHeadlessTests: XCTestCase {
   func testFinalPaneCloseAndShortcutLeaveSessionAlive() throws {
     let id = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
     try action("pane.close", status: 400)
-    try action("key", ["key": "d", "modifiers": ["command", "shift"]])
+    // Cmd+D splits, Cmd+W then closes only the focused pane; the original survives.
+    try action("key", ["key": "d", "modifiers": ["command"]])
+    XCTAssertEqual(runtime.model.activeTab?.allSessionIds.count, 2)
+    try action("key", ["key": "w", "modifiers": ["command"]])
     XCTAssertEqual(runtime.model.tabs.count, 1)
+    XCTAssertEqual(runtime.model.activeTab?.allSessionIds, [id])
     XCTAssertNotNil(runtime.model.session(forSessionID: id))
   }
   func testExplicitUnfocusedScrollSelectionCopyAndPreedit() throws {

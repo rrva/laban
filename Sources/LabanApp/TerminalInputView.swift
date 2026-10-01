@@ -167,7 +167,8 @@ extension TerminalKeyDescriptor {
   }
 
   /// Standard macOS line-editing chords translated to readline C0 bytes.
-  /// Cmd+Option+arrows are tab switching and are excluded.
+  /// Cmd+Option+arrows (pane or tab navigation) and Cmd+Control+arrows (divider nudge)
+  /// are app commands and are excluded.
   private func commandLineEditingRoute() -> TerminalInputRoute? {
     guard action != .release,
       let bytes = Self.commandLineEditingBytes(key: key, modifiers: modifiers)
@@ -178,9 +179,9 @@ extension TerminalKeyDescriptor {
   static func commandLineEditingBytes(key: Key?, modifiers: KeyModifiers) -> [UInt8]? {
     guard modifiers.contains(.command), let key else { return nil }
     switch key {
-    case .arrowLeft where !modifiers.contains(.alt):
+    case .arrowLeft where !modifiers.contains(.alt) && !modifiers.contains(.control):
       return [TerminalLineEditingBytes.beginningOfLine]
-    case .arrowRight where !modifiers.contains(.alt):
+    case .arrowRight where !modifiers.contains(.alt) && !modifiers.contains(.control):
       return [TerminalLineEditingBytes.endOfLine]
     case .backspace:
       return [TerminalLineEditingBytes.killToLineStart]
@@ -195,11 +196,11 @@ extension TerminalKeyDescriptor {
     case .j where modifiers.contains(.control) && modifiers.contains(.alt):
       return .appCommand(.dumpRenderJournal)
     case .m: return .appCommand(.minimize)
-    case .d: return .appCommand(modifiers.contains(.shift) ? .closePane : .splitPaneRight)
+    case .d: return .appCommand(modifiers.contains(.shift) ? .splitPaneDown : .splitPaneRight)
     case .bracketRight where modifiers.contains(.alt): return .appCommand(.focusNextPane)
     case .bracketLeft where modifiers.contains(.alt): return .appCommand(.focusPreviousPane)
     case .t: return .appCommand(.newTab)
-    case .w: return .appCommand(.closeTab)
+    case .w: return .appCommand(modifiers.contains(.alt) ? .closeTab : .closePaneOrTab)
     case .c: return .appCommand(.copy)
     case .v: return .appCommand(.paste)
     case .f: return .appCommand(.find)
@@ -212,12 +213,21 @@ extension TerminalKeyDescriptor {
     case .digit7: return .appCommand(.selectTab(index: 6))
     case .digit8: return .appCommand(.selectTab(index: 7))
     case .digit9: return .appCommand(.selectLastTab)
+    case .equal where modifiers.contains(.control): return .appCommand(.equalizePanes)
     // .equal covers both Cmd+= and Cmd+Shift+= (Cmd+plus).
     case .equal: return .appCommand(.increaseFontSize)
     case .minus: return .appCommand(.decreaseFontSize)
     case .digit0: return .appCommand(.resetFontSize)
-    case .arrowRight where modifiers.contains(.alt): return .appCommand(.selectNextTab)
-    case .arrowLeft where modifiers.contains(.alt): return .appCommand(.selectPreviousTab)
+    case .enter where modifiers.contains(.shift): return .appCommand(.togglePaneZoom)
+    case .arrowLeft where modifiers.contains(.control): return .appCommand(.nudgeDivider(.left))
+    case .arrowRight where modifiers.contains(.control): return .appCommand(.nudgeDivider(.right))
+    case .arrowUp where modifiers.contains(.control): return .appCommand(.nudgeDivider(.up))
+    case .arrowDown where modifiers.contains(.control): return .appCommand(.nudgeDivider(.down))
+    case .arrowLeft where modifiers.contains(.alt): return .appCommand(.paneOrTabNavigation(.left))
+    case .arrowRight where modifiers.contains(.alt):
+      return .appCommand(.paneOrTabNavigation(.right))
+    case .arrowUp where modifiers.contains(.alt): return .appCommand(.paneOrTabNavigation(.up))
+    case .arrowDown where modifiers.contains(.alt): return .appCommand(.paneOrTabNavigation(.down))
     case .bracketRight where modifiers.contains(.shift): return .appCommand(.selectNextTab)
     case .bracketLeft where modifiers.contains(.shift): return .appCommand(.selectPreviousTab)
     default: return .swallowCommand

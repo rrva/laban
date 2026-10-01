@@ -1,4 +1,5 @@
 import AppKit
+import LabanCore
 
 enum MenuCommands {
   static func setupMenuBar() {
@@ -89,12 +90,23 @@ enum MenuCommands {
     // approved read, see docs/process/controlling-agent-control-plane.md); a
     // deterministic no-dialog agent is launched with `laban agent run`. The
     // per-tab menu action added nothing over those two paths.
+    // Cmd+W closes the focused pane in a split tab and the tab otherwise;
+    // `TerminalBitmapView.validateMenuItem` retitles it in place. Option reveals the
+    // always-close-the-tab alternate, the way Finder's Close / Close All pair works.
     fileMenu.addItem(
       NSMenuItem(
         title: L10n.tr("Close Tab"),
-        action: #selector(TerminalBitmapView.closeTab(_:)),
+        action: #selector(TerminalBitmapView.closePaneOrTab(_:)),
         keyEquivalent: "w"
       ))
+    let closeTabItem = NSMenuItem(
+      title: L10n.tr("Close Tab"),
+      action: #selector(TerminalBitmapView.closeTab(_:)),
+      keyEquivalent: "w"
+    )
+    closeTabItem.keyEquivalentModifierMask = [.command, .option]
+    closeTabItem.isAlternate = true
+    fileMenu.addItem(closeTabItem)
 
     fileMenu.addItem(NSMenuItem.separator())
 
@@ -104,15 +116,8 @@ enum MenuCommands {
         [.command]
       ),
       (
-        L10n.tr("Close Pane"), #selector(TerminalBitmapView.closePane(_:)), "d", [.command, .shift]
-      ),
-      (
-        L10n.tr("Focus Next Pane"), #selector(TerminalBitmapView.focusNextPane(_:)), "]",
-        [.command, .option]
-      ),
-      (
-        L10n.tr("Focus Previous Pane"), #selector(TerminalBitmapView.focusPreviousPane(_:)), "[",
-        [.command, .option]
+        L10n.tr("Split Pane Down"), #selector(TerminalBitmapView.splitPaneDown(_:)), "d",
+        [.command, .shift]
       ),
     ] {
       let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
@@ -212,6 +217,8 @@ enum MenuCommands {
         action: #selector(TerminalBitmapView.resetFontSize(_:)),
         keyEquivalent: "0"
       ))
+    viewMenu.addItem(NSMenuItem.separator())
+    viewMenu.addItem(makePaneMenuItem())
     viewMenu.addItem(NSMenuItem.separator())
 
     // Chrome visibility belongs in View, not Settings, and macOS spells this
@@ -373,5 +380,86 @@ enum MenuCommands {
     NSApp.helpMenu = helpMenu
 
     NSApp.mainMenu = mainMenu
+  }
+
+  /// View ▸ Pane: directional focus, zoom, equalize and divider keyboard resize.
+  ///
+  /// Select Pane Left and Right carry no key equivalent: Cmd+Option+←/→ is also the
+  /// hold-to-peek tab gesture, and an `NSMenuItem` key equivalent would intercept the chord
+  /// ahead of `keyDown` (see the Tab menu). The chord still works through
+  /// `TerminalKeyDescriptor`, which moves pane focus in a split tab and switches tabs in
+  /// an unsplit one.
+  private static func makePaneMenuItem() -> NSMenuItem {
+    let paneItem = NSMenuItem(title: L10n.tr("Pane"), action: nil, keyEquivalent: "")
+    let paneMenu = NSMenu(title: L10n.tr("Pane"))
+    paneItem.submenu = paneMenu
+
+    let arrow: (PaneDirection) -> String = { direction in
+      let key: Int
+      switch direction {
+      case .left: key = NSLeftArrowFunctionKey
+      case .right: key = NSRightArrowFunctionKey
+      case .up: key = NSUpArrowFunctionKey
+      case .down: key = NSDownArrowFunctionKey
+      }
+      return String(UnicodeScalar(UInt32(key))!)
+    }
+
+    for (title, direction, hasShortcut): (String, PaneDirection, Bool) in [
+      (L10n.tr("Select Pane Left"), .left, false),
+      (L10n.tr("Select Pane Right"), .right, false),
+      (L10n.tr("Select Pane Above"), .up, true),
+      (L10n.tr("Select Pane Below"), .down, true),
+    ] {
+      let item = NSMenuItem(
+        title: title, action: #selector(TerminalBitmapView.focusPaneByDirection(_:)),
+        keyEquivalent: hasShortcut ? arrow(direction) : "")
+      if hasShortcut { item.keyEquivalentModifierMask = [.command, .option] }
+      item.representedObject = direction.rawValue
+      paneMenu.addItem(item)
+    }
+    paneMenu.addItem(.separator())
+
+    for (title, selector, key): (String, Selector, String) in [
+      (L10n.tr("Select Next Pane"), #selector(TerminalBitmapView.focusNextPane(_:)), "]"),
+      (L10n.tr("Select Previous Pane"), #selector(TerminalBitmapView.focusPreviousPane(_:)), "["),
+    ] {
+      let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
+      item.keyEquivalentModifierMask = [.command, .option]
+      paneMenu.addItem(item)
+    }
+    paneMenu.addItem(.separator())
+
+    // Checked while the focused pane is zoomed (validateMenuItem drives the state).
+    let zoom = NSMenuItem(
+      title: L10n.tr("Zoom Pane"), action: #selector(TerminalBitmapView.togglePaneZoom(_:)),
+      keyEquivalent: "\r")
+    zoom.keyEquivalentModifierMask = [.command, .shift]
+    paneMenu.addItem(zoom)
+
+    let equalize = NSMenuItem(
+      title: L10n.tr("Equalize Panes"), action: #selector(TerminalBitmapView.equalizePanes(_:)),
+      keyEquivalent: "=")
+    equalize.keyEquivalentModifierMask = [.command, .control]
+    paneMenu.addItem(equalize)
+
+    let resizeItem = NSMenuItem(title: L10n.tr("Resize Pane"), action: nil, keyEquivalent: "")
+    let resizeMenu = NSMenu(title: L10n.tr("Resize Pane"))
+    resizeItem.submenu = resizeMenu
+    for (title, direction): (String, PaneDirection) in [
+      (L10n.tr("Move Divider Left"), .left),
+      (L10n.tr("Move Divider Right"), .right),
+      (L10n.tr("Move Divider Up"), .up),
+      (L10n.tr("Move Divider Down"), .down),
+    ] {
+      let item = NSMenuItem(
+        title: title, action: #selector(TerminalBitmapView.moveDivider(_:)),
+        keyEquivalent: arrow(direction))
+      item.keyEquivalentModifierMask = [.command, .control]
+      item.representedObject = direction.rawValue
+      resizeMenu.addItem(item)
+    }
+    paneMenu.addItem(resizeItem)
+    return paneItem
   }
 }
