@@ -148,9 +148,10 @@ does the same thing without a window and saves screenshots.
 - [x] M7: GUI input: divider hover cursor, drag-preview-commit, keyboard
       chords, menu items, accessibility splitter elements. (Also fixed the
       layout's vertical orientation and per-pane mouse geometry, see Surprises.)
-- [ ] M8: End-to-end: headless scenario, nested-split restart test through
+- [x] M8: End-to-end: headless scenario, nested-split restart test through
       labpty, four-pane frame-cost measurement.
-- [ ] M9: Docs (`mvp.md`, `spec.md`, `dev-process.md`), Review Gate.
+- [ ] M9: Docs (`mvp.md`, `spec.md`, `dev-process.md`) are done; the Review Gate
+      is still to be run by a separate fresh reviewer.
 
 ## Decision Log
 
@@ -434,6 +435,27 @@ does the same thing without a window and saves screenshots.
   Rationale: keep every command atomic and the GUI and headless paths symmetrical.
   Date/Author: 2026-10-01 / executing agent.
 
+- Decision: M8 behaviour details the plan left open.
+  (1) A scenario cannot know the divider's pixel position (the headless window is
+  `200 + 80 * cellWidth` wide and the cell width follows the persisted font size), so
+  `scripts/run-debug-script` gained `{"$calc": "..."}` (numbers, `$steps.label.path`
+  references, `+ - * /`, truncated to an integer, evaluated with `ast`, never `eval`) and
+  an `"absent": true` expectation (a path must be missing, used for `zoomedSessionId`
+  after unzoom). `schemas/debug-script.schema.json` allows `absent` and `expectJson` on
+  action steps. (2) Screenshot files are saved with an explicit `path`
+  (`screenshots/03-three-panes.png`, `05-dragged`, `06-zoomed`) because the runner's
+  default name is prefixed with the step index, which would not match the Review Gate
+  names. `scripts/test-e2e` also checks that those three files exist. (3) The restart test
+  reuses `SplitDaemonHarness`, whose panes each run `exec /bin/sleep 60` as the labpty
+  child (the plan said `sleep 600`; 60 seconds is ample and matches the existing
+  split restart test). The harness `split()` gained an `axis` parameter. (4) The
+  scenario drags with `mouseDrag` from the divider's midpoint to one third of the
+  terminal area and asserts a root fraction between 0.31 and 0.355 (one cell is 0.0125
+  of an 80-column area, so the commit may snap by a cell). Bottom-right is closed by ID.
+  Rationale: keep the scenario independent of font metrics and keep every plan-named
+  file name and test name exact.
+  Date/Author: 2026-10-01 / executing agent.
+
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this
@@ -558,6 +580,26 @@ Review findings (filled in by the review agent):
   carries no key equivalent for them because AppKit would match the chord ahead of
   `keyDown`. The same reasoning applies to "Select Pane Left/Right".
   Evidence: the comment above `previousItem` in `MenuCommands.swift`.
+
+- Observation: four panes cost less than one pane in the headless frame path, so the
+  multi-grid GPU payload plan is not triggered. 20 warmed frames per layout (5 discarded),
+  identical 24-row ASCII content in each pane, a fresh tab per layout, a frame forced by
+  `pane.focus` on the focused pane and read from `GET /debug/timing`. Medians (ms)
+  total / command extraction / render: one pane 6.146 / 3.803 / 2.213, two panes
+  5.157 / 2.675 / 2.397, four panes 4.346 / 1.975 / 2.249 (four over one: 0.71; a second
+  run gave 6.281, 5.140 and 4.374, ratio 0.70). Smaller grids mean fewer cells per
+  pane and the render pass is flat. This measures the headless draw-command path, not
+  Metal GPU-cell throughput.
+  Evidence: `.artifacts/split-panes-2/perf/frame-cost.json` (second run),
+  `frame-cost-run1.json` and the script `measure-frame-cost.py` in the same directory
+  (`.artifacts` is untracked; rerun with `swift build --product laban-agent && python3
+  .artifacts/split-panes-2/perf/measure-frame-cost.py`).
+
+- Observation: the new scenario passed on the first run and its screenshots show what the
+  Review Gate asks for: `03-three-panes.png` has three panes and two dividers,
+  `05-dragged.png` has a left pane about one third wide, `06-zoomed.png` has one pane
+  filling the terminal area with no divider and the sidebar badge "⤢ 3".
+  Evidence: `.artifacts/split-panes-2/e2e/screenshots/`.
 
 ## Outcomes & Retrospective
 

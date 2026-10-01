@@ -943,6 +943,19 @@ fi
 printf '%s' "$SPLIT_OUTPUT" | grep -q "debug script passed" || fail "split-pane scenario did not pass"
 printf 'split-pane scenario: ok\n'
 
+# Three panes in a nested layout, divider drag, zoom, equalize and close.
+if ! SPLIT2_OUTPUT=$(LABAN_AGENT_BIN="$AGENT_BIN" ./scripts/run-debug-script \
+  --no-build --artifacts "$RUN_ARTIFACTS/split-pane-2" --temp-dir "$RUN_TMP/split-pane-2" \
+  fixtures/debug-script-split-pane-2.scenario.json 2>&1); then
+  fail "split-pane-2 scenario failed: $SPLIT2_OUTPUT"
+fi
+printf '%s' "$SPLIT2_OUTPUT" | grep -q "debug script passed" || fail "split-pane-2 scenario did not pass"
+for shot in 03-three-panes 05-dragged 06-zoomed; do
+  [ -f "$RUN_ARTIFACTS/split-pane-2/screenshots/$shot.png" ] \
+    || fail "split-pane-2 screenshot missing: $shot.png"
+done
+printf 'split-pane-2 scenario: ok\n'
+
 # 34. Spinner motion smoothing — slugGlyph only.
 SPINNER_ARTIFACTS="$RUN_ARTIFACTS/spinner-motion-smoothing"
 SPINNER_TMP="$RUN_TMP/spinner-motion-smoothing"

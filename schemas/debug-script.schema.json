@@ -114,6 +114,7 @@
           "equals": {},
           "equalsEnv": {"type": "string"},
           "nonEmpty": {"type": "boolean"},
+          "absent": {"type": "boolean"},
           "greaterThan": {"type": "number"},
           "lessThan": {"type": "number"},
           "greaterThanPath": {"type": "string"},
@@ -141,7 +142,8 @@
         "op": {"const": "action"},
         "label": {"type": "string"},
         "body": {"type": "object"},
-        "expectOk": {"type": "boolean"}
+        "expectOk": {"type": "boolean"},
+        "expectJson": {"$ref": "#/$defs/expectJson"}
       }
     },
     "wait": {
