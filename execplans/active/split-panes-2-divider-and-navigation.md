@@ -123,8 +123,8 @@ does the same thing without a window and saves screenshots.
 
 ## Progress
 
-- [ ] M0: Record `BASE`; baseline `./scripts/check` green.
-- [ ] M1: `PaneTree` geometry: paths, dividers with containers, fraction by
+- [x] M0: Record `BASE` (done by the orchestrator, commit ff5ccfa2); baseline `./scripts/check` green.
+- [x] M1: `PaneTree` geometry: paths, dividers with containers, fraction by
       path, minimum extents, equalize, directional neighbour; tests.
 - [ ] M2: `Tab.zoomedSessionId` and `Tab.visibleLayout(in:)`; every layout
       caller switched to it; `allSessionIds.count` sites audited.
@@ -292,6 +292,13 @@ does the same thing without a window and saves screenshots.
   changed here.
   Date/Author: 2026-10-01 / plan author.
 
+- Decision: `settingFraction(at:to:)` returns nil only when the path does not
+  name a split; a non-finite value on a valid path returns the tree unchanged
+  (the same behaviour the old `settingFraction(ofSplitContaining:to:)` had).
+  `fractionRange` returns `0.5...0.5` for a zero-extent container.
+  Rationale: nil is reserved for the "bad path" error callers map to `notSplit`.
+  Date/Author: 2026-10-01 / executing agent.
+
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this
@@ -379,6 +386,14 @@ Review findings (filled in by the review agent):
   `TerminalBitmapView.validateMenuItem` (`allSessionIds.count == 1` around line
   9756), and the menu offering only "Split Pane Right". `PaneTree.splitting`
   already handles any leaf at any depth.
+
+- Observation: the ranking tuple needs tolerances when comparing floating-point
+  rects. Overlap and centre offset are compared with a 1 pixel tolerance and
+  directional distance with 0.5, otherwise a one-pixel difference caused by the
+  divider (for example a 300 and a 299 pixel tall stacked pane) would beat the
+  focus-history tie-break. The history test uses a 601 pixel tall area so the
+  halves are exactly equal.
+  Evidence: `PaneTree.directionalNeighbour`, `testDirectionalNeighbourUsesHistoryOnTie`.
 
 ## Outcomes & Retrospective
 

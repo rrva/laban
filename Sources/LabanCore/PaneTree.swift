@@ -4,6 +4,47 @@ public enum PaneAxis: String, Codable, Sendable {
   case horizontal, vertical
 }
 
+/// Which child of a split: `first` is left (vertical axis) or top (horizontal axis).
+public enum PaneSide: String, Codable, Sendable { case first, second }
+
+/// The route from the root of a tree to one split node. `[]` is the root split;
+/// `[.second]` is the root's second child, and so on. A path addresses a divider
+/// unambiguously, which a session ID cannot once trees are nested.
+public typealias PanePath = [PaneSide]
+
+public enum PaneDirection: String, Codable, Sendable {
+  case left, right, up, down
+
+  /// The axis of a divider that separates panes lying in this direction.
+  public var axis: PaneAxis {
+    switch self {
+    case .left, .right: return .vertical
+    case .up, .down: return .horizontal
+    }
+  }
+
+  /// True when moving in this direction goes from a split's `first` towards its `second`.
+  public var towardsSecond: Bool { self == .right || self == .down }
+}
+
+/// One divider of a laid-out tree plus the rect of the split that owns it.
+/// Drag math converts a pointer position into `(pointer - container.min) / container.extent`.
+public struct PaneDivider: Equatable {
+  public let path: PanePath
+  public let axis: PaneAxis
+  public let rect: CGRect
+  public let container: CGRect
+  public let fraction: Double
+
+  public init(path: PanePath, axis: PaneAxis, rect: CGRect, container: CGRect, fraction: Double) {
+    self.path = path
+    self.axis = axis
+    self.rect = rect
+    self.container = container
+    self.fraction = fraction
+  }
+}
+
 /// Layout owns only identity and geometry; sessions own processes and terminal state.
 public indirect enum PaneTree: Equatable, Codable, Sendable {
   case leaf(sessionId: Session.ID)
@@ -55,18 +96,201 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
   }
 
   public func settingFraction(ofSplitContaining id: Session.ID, to value: Double) -> PaneTree {
-    guard value.isFinite else { return self }
-    switch self {
-    case .leaf: return self
-    case .split(let axis, let fraction, let first, let second):
-      if first == .leaf(sessionId: id) || second == .leaf(sessionId: id) {
-        return .split(axis: axis, fraction: min(0.9, max(0.1, value)), first: first, second: second)
-      }
-      return .split(
-        axis: axis, fraction: fraction,
-        first: first.settingFraction(ofSplitContaining: id, to: value),
-        second: second.settingFraction(ofSplitContaining: id, to: value))
+    guard var parent = path(toLeaf: id), !parent.isEmpty else { return self }
+    parent.removeLast()
+    return settingFraction(at: parent, to: value) ?? self
+  }
+
+  /// Sets the fraction of the split at `path`, clamped to the sanity range
+  /// 0.05...0.95. Returns nil if `path` does not name a split. A non-finite value
+  /// leaves the tree unchanged. Minimum pane sizes are the caller's concern
+  /// (see `fractionRange`).
+  public func settingFraction(at path: PanePath, to value: Double) -> PaneTree? {
+    guard let side = path.first else {
+      guard case .split(let axis, let fraction, let first, let second) = self else { return nil }
+      let next = value.isFinite ? Self.clampFraction(value) : fraction
+      return .split(axis: axis, fraction: next, first: first, second: second)
     }
+    guard case .split(let axis, let fraction, let first, let second) = self else { return nil }
+    let rest = Array(path.dropFirst())
+    switch side {
+    case .first:
+      guard let changed = first.settingFraction(at: rest, to: value) else { return nil }
+      return .split(axis: axis, fraction: fraction, first: changed, second: second)
+    case .second:
+      guard let changed = second.settingFraction(at: rest, to: value) else { return nil }
+      return .split(axis: axis, fraction: fraction, first: first, second: changed)
+    }
+  }
+
+  /// The route from the root to the leaf showing `id`, as the sides taken at each
+  /// enclosing split. The path to the root leaf of an unsplit tree is `[]`.
+  public func path(toLeaf id: Session.ID) -> PanePath? {
+    switch self {
+    case .leaf(let existing): return existing == id ? [] : nil
+    case .split(_, _, let first, let second):
+      if let rest = first.path(toLeaf: id) { return [.first] + rest }
+      if let rest = second.path(toLeaf: id) { return [.second] + rest }
+      return nil
+    }
+  }
+
+  /// The subtree at `path`, or nil if the path leaves the tree.
+  func subtree(at path: PanePath) -> PaneTree? {
+    guard let side = path.first else { return self }
+    guard case .split(_, _, let first, let second) = self else { return nil }
+    return (side == .first ? first : second).subtree(at: Array(path.dropFirst()))
+  }
+
+  /// The smallest extent this subtree needs along `axis`. A leaf needs `leafMinimum`;
+  /// a split along `axis` needs both children plus its divider; a split across
+  /// `axis` needs only its larger child.
+  public func minimumExtent(
+    along axis: PaneAxis, leafMinimum: CGFloat, dividerWidth: CGFloat
+  ) -> CGFloat {
+    switch self {
+    case .leaf: return leafMinimum
+    case .split(let splitAxis, _, let first, let second):
+      let a = first.minimumExtent(along: axis, leafMinimum: leafMinimum, dividerWidth: dividerWidth)
+      let b = second.minimumExtent(
+        along: axis, leafMinimum: leafMinimum, dividerWidth: dividerWidth)
+      return splitAxis == axis ? a + b + dividerWidth : max(a, b)
+    }
+  }
+
+  /// The fractions at which the split at `path` keeps both sides at or above their
+  /// minimum extents inside `rect`. When the container is too small for both, the
+  /// range collapses to the single value that shares the shortfall evenly, so a drag
+  /// can never invert the split. Nil if `path` does not name a split.
+  public func fractionRange(
+    at path: PanePath, in rect: CGRect, minimumWidth: CGFloat, minimumHeight: CGFloat,
+    dividerWidth: CGFloat
+  ) -> ClosedRange<Double>? {
+    guard
+      let divider = dividers(in: rect, dividerWidth: dividerWidth).first(where: { $0.path == path }
+      ),
+      case .split(let axis, _, let first, let second)? = subtree(at: path)
+    else { return nil }
+    let vertical = axis == .vertical
+    let extent = Double(vertical ? divider.container.width : divider.container.height)
+    guard extent > 0 else { return 0.5...0.5 }
+    let leafMinimum = vertical ? minimumWidth : minimumHeight
+    let firstMinimum = Double(
+      first.minimumExtent(along: axis, leafMinimum: leafMinimum, dividerWidth: dividerWidth))
+    let secondMinimum = Double(
+      second.minimumExtent(along: axis, leafMinimum: leafMinimum, dividerWidth: dividerWidth))
+    let low = firstMinimum / extent
+    let high = (extent - Double(dividerWidth) - secondMinimum) / extent
+    let clampedLow = Self.clampFraction(low)
+    let clampedHigh = Self.clampFraction(high)
+    if low <= high && clampedLow <= clampedHigh { return clampedLow...clampedHigh }
+    let middle = Self.clampFraction((low + high) / 2)
+    return middle...middle
+  }
+
+  /// Gives every leaf along a run of same-axis splits an equal share. A node's weight
+  /// along an axis is 1 for a leaf or a split across that axis, and the sum of its
+  /// children's weights for a split along it.
+  public func equalized() -> PaneTree {
+    guard case .split(let axis, _, let first, let second) = self else { return self }
+    let a = Double(first.weight(along: axis))
+    let b = Double(second.weight(along: axis))
+    return .split(
+      axis: axis, fraction: a / (a + b), first: first.equalized(), second: second.equalized())
+  }
+
+  private func weight(along axis: PaneAxis) -> Int {
+    guard case .split(let splitAxis, _, let first, let second) = self, splitAxis == axis else {
+      return 1
+    }
+    return first.weight(along: axis) + second.weight(along: axis)
+  }
+
+  /// The pane to focus when moving `direction` from `id`. Candidates lie entirely on
+  /// that side of the focused pane. Panes sharing no perpendicular extent are used
+  /// only when nothing overlaps. Ranking: perpendicular overlap present, smaller
+  /// directional distance, larger overlap, smaller centre offset, more recent in
+  /// `history` (later entries are more recent).
+  public func directionalNeighbour(
+    of id: Session.ID, direction: PaneDirection, in rect: CGRect, dividerWidth: CGFloat,
+    history: [Session.ID]
+  ) -> Session.ID? {
+    let panes = layout(in: rect, dividerWidth: dividerWidth)
+    guard let focused = panes.first(where: { $0.sessionId == id })?.rect else { return nil }
+    let tolerance: CGFloat = 1
+
+    struct Candidate {
+      let id: Session.ID
+      let hasOverlap: Bool
+      let distance: CGFloat
+      let overlap: CGFloat
+      let centreOffset: CGFloat
+      let recency: Int
+    }
+
+    func candidate(_ pane: PaneRect) -> Candidate? {
+      guard pane.sessionId != id else { return nil }
+      let r = pane.rect
+      let distance: CGFloat
+      let overlap: CGFloat
+      let centreOffset: CGFloat
+      switch direction {
+      case .right:
+        guard r.minX >= focused.maxX - 0.001 else { return nil }
+        distance = r.minX - focused.maxX
+      case .left:
+        guard r.maxX <= focused.minX + 0.001 else { return nil }
+        distance = focused.minX - r.maxX
+      case .down:
+        guard r.minY >= focused.maxY - 0.001 else { return nil }
+        distance = r.minY - focused.maxY
+      case .up:
+        guard r.maxY <= focused.minY + 0.001 else { return nil }
+        distance = focused.minY - r.maxY
+      }
+      if direction.axis == .vertical {
+        overlap = min(r.maxY, focused.maxY) - max(r.minY, focused.minY)
+        centreOffset = abs(r.midY - focused.midY)
+      } else {
+        overlap = min(r.maxX, focused.maxX) - max(r.minX, focused.minX)
+        centreOffset = abs(r.midX - focused.midX)
+      }
+      return Candidate(
+        id: pane.sessionId, hasOverlap: overlap > 0, distance: distance,
+        overlap: max(0, overlap), centreOffset: centreOffset,
+        recency: history.lastIndex(of: pane.sessionId) ?? -1)
+    }
+
+    func better(_ a: Candidate, than b: Candidate) -> Bool {
+      if a.hasOverlap != b.hasOverlap { return a.hasOverlap }
+      if abs(a.distance - b.distance) > tolerance / 2 { return a.distance < b.distance }
+      if abs(a.overlap - b.overlap) > tolerance { return a.overlap > b.overlap }
+      if abs(a.centreOffset - b.centreOffset) > tolerance { return a.centreOffset < b.centreOffset }
+      return a.recency > b.recency
+    }
+
+    var best: Candidate?
+    for pane in panes {
+      guard let next = candidate(pane) else { continue }
+      if let current = best, !better(next, than: current) { continue }
+      best = next
+    }
+    return best?.id
+  }
+
+  /// The split whose divider a keyboard nudge in `direction` should move for the pane
+  /// `id`: the nearest enclosing split along the direction's axis in which the pane
+  /// is on the side the arrow points away from.
+  public func nudgeTarget(for id: Session.ID, direction: PaneDirection) -> PanePath? {
+    guard let route = path(toLeaf: id) else { return nil }
+    for depth in stride(from: route.count - 1, through: 0, by: -1) {
+      let ancestor = Array(route.prefix(depth))
+      guard case .split(let axis, _, _, _)? = subtree(at: ancestor), axis == direction.axis
+      else { continue }
+      let side = route[depth]
+      if direction.towardsSecond ? side == .first : side == .second { return ancestor }
+    }
+    return nil
   }
 
   public func layout(in rect: CGRect, dividerWidth: CGFloat = 1) -> [PaneRect] {
@@ -81,22 +305,37 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
   }
 
   public func dividerRects(in rect: CGRect, dividerWidth: CGFloat = 1) -> [CGRect] {
+    dividers(in: rect, dividerWidth: dividerWidth).map(\.rect)
+  }
+
+  /// Every divider of the tree laid out in `rect`, parents before children, each with
+  /// its path, the rect of its owning split and its current fraction.
+  public func dividers(in rect: CGRect, dividerWidth: CGFloat = 1) -> [PaneDivider] {
+    dividers(in: rect, dividerWidth: dividerWidth, path: [])
+  }
+
+  private func dividers(in rect: CGRect, dividerWidth: CGFloat, path: PanePath) -> [PaneDivider] {
     switch self {
     case .leaf: return []
     case .split(let axis, let fraction, let first, let second):
       let (a, divider, b) = Self.partition(
         rect, axis: axis, fraction: fraction, dividerWidth: dividerWidth)
-      return [divider] + first.dividerRects(in: a, dividerWidth: dividerWidth)
-        + second.dividerRects(in: b, dividerWidth: dividerWidth)
+      return [
+        PaneDivider(path: path, axis: axis, rect: divider, container: rect, fraction: fraction)
+      ]
+        + first.dividers(in: a, dividerWidth: dividerWidth, path: path + [.first])
+        + second.dividers(in: b, dividerWidth: dividerWidth, path: path + [.second])
     }
   }
+
+  private static func clampFraction(_ value: Double) -> Double { min(0.95, max(0.05, value)) }
 
   private static func partition(
     _ rect: CGRect, axis: PaneAxis, fraction: Double, dividerWidth: CGFloat
   ) -> (CGRect, CGRect, CGRect) {
     let vertical = axis == .vertical
     let extent = max(0, vertical ? rect.width : rect.height)
-    let cut = floor(extent * CGFloat(fraction.isFinite ? min(0.9, max(0.1, fraction)) : 0.5))
+    let cut = floor(extent * CGFloat(fraction.isFinite ? clampFraction(fraction) : 0.5))
     let divider = min(max(0, dividerWidth), extent - cut)
     if vertical {
       return (
