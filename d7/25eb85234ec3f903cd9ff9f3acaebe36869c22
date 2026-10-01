@@ -1,0 +1,19 @@
+execplans/active/split-panes-2-divider-and-navigation.md
+  s_8bfdcc4b4ee25a::t_6b7c8e62726dd7 467-468,474,478,481,484,487,491,493,496-497,499,502-503,507,519-521,525-572
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d725eb85234ec3f903cd9ff9f3acaebe36869c22",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
