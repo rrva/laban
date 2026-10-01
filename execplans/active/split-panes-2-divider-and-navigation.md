@@ -126,7 +126,7 @@ does the same thing without a window and saves screenshots.
 - [x] M0: Record `BASE` (done by the orchestrator, commit ff5ccfa2); baseline `./scripts/check` green.
 - [x] M1: `PaneTree` geometry: paths, dividers with containers, fraction by
       path, minimum extents, equalize, directional neighbour; tests.
-- [ ] M2: `Tab.zoomedSessionId` and `Tab.visibleLayout(in:)`; every layout
+- [x] M2: `Tab.zoomedSessionId` and `Tab.visibleLayout(in:)`; every layout
       caller switched to it; `allSessionIds.count` sites audited.
 - [ ] M3: `AppModel` API: unrestricted split (both axes, nested, minimum
       size), directional focus, set fraction, nudge divider, equalize, zoom;
@@ -299,6 +299,18 @@ does the same thing without a window and saves screenshots.
   Rationale: nil is reserved for the "bad path" error callers map to `notSplit`.
   Date/Author: 2026-10-01 / executing agent.
 
+- Decision: `Tab` also exposes `visiblePaneCount` (1 while zoomed, otherwise the
+  leaf count), and `isZoomed` is true only when `zoomedSessionId` is still in the
+  tree. Renderer and view gates that used `allSessionIds.count == 1` or `> 1`
+  use `visiblePaneCount`, so they need no geometry. `AppModel.surfaceSessionSnapshot`
+  marks a session visible only if its tab is active and (not zoomed or it is the
+  zoomed pane). `resizeTabLayoutsUnlocked` also resizes inactive zoomed tabs
+  (`visiblePaneCount == 1`) so their zoomed pane tracks window resizes.
+  `paneSize(for:in:)` returns a hidden pane's remembered `sizeBySession` entry.
+  Rationale: hidden panes must keep their last size (Decision above), and
+  inactive single-visible-pane tabs already resized with the window.
+  Date/Author: 2026-10-01 / executing agent.
+
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this
@@ -394,6 +406,12 @@ Review findings (filled in by the review agent):
   focus-history tie-break. The history test uses a 601 pixel tall area so the
   halves are exactly equal.
   Evidence: `PaneTree.directionalNeighbour`, `testDirectionalNeighbourUsesHistoryOnTie`.
+
+- Observation: the remaining `allSessionIds.count` sites after M2 are deliberate:
+  `AppModel.splitPane` (M3 rewrites it), `TerminalBitmapView` 9326 (focus next
+  pane) and 9756/9759 (`validateMenuItem`, M7), `LiveIntentRouter` 551,
+  `ControlStateProjections` 67 and `DebugPaneActions` 30 (all marked unchanged
+  in the table).
 
 ## Outcomes & Retrospective
 

@@ -2150,7 +2150,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     resizeActivePanes()
     let canRequestCellPayload =
       !usingRemoteSessions
-      && activeTab.allSessionIds.count == 1
+      && activeTab.visiblePaneCount == 1
       && captureRecorder == nil
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
@@ -4275,7 +4275,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     resizeActivePanes()
     let canRequestCellPayload =
       !usingRemoteSessions
-      && activeTab.allSessionIds.count == 1
+      && activeTab.visiblePaneCount == 1
       && captureRecorder == nil
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
@@ -4327,7 +4327,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       effectiveRendererIsSlug: backend is SlugGlyphRenderer,
       hoverPreviewEnabled: HoverPreviewSettings.enabled,
       deferHoverPreviewUpdate: deferHoverPreviewUpdate,
-      panes: activeTab.panes.layout(
+      panes: activeTab.visibleLayout(
         in: CGRect(x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: h)
       ).map {
         TerminalSurfacePaneRequest(
@@ -8289,7 +8289,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     guard sessionCoordinator?.usesRemoteSnapshots != true, let tab = model.activeTab else {
       return area
     }
-    return tab.panes.layout(in: area).first(where: { $0.sessionId == tab.focusedSessionId })?.rect
+    return tab.visibleLayout(in: area).first(where: { $0.sessionId == tab.focusedSessionId })?.rect
       ?? area
   }
 
@@ -8299,7 +8299,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return focusedPaneRect.contains(point)
         ? PaneRect(sessionId: tab.focusedSessionId, rect: focusedPaneRect) : nil
     }
-    return tab.panes.layout(
+    return tab.visibleLayout(
       in: CGRect(
         x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
     ).first { $0.rect.contains(point) }

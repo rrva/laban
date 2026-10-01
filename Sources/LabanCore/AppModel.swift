@@ -58,11 +58,25 @@ public final class AppModel {
   private var paneInsets = TerminalSurfaceInsets.zero
 
   private func terminalRects(for tree: PaneTree) -> [PaneRect] {
-    let area = CGRect(
+    insetTerminalRects(
+      tree.layout(in: terminalAreaRect))
+  }
+
+  /// The panes of `tab` that are shown (the zoomed pane alone while zoomed), each in
+  /// a zero-origin rect of its own size.
+  private func terminalRects(for tab: Tab) -> [PaneRect] {
+    insetTerminalRects(tab.visibleLayout(in: terminalAreaRect))
+  }
+
+  private var terminalAreaRect: CGRect {
+    CGRect(
       x: 0, y: 0,
       width: CGFloat(currentSize.pixel_width) + paneInsets.left + paneInsets.right,
       height: CGFloat(currentSize.pixel_height) + paneInsets.top + paneInsets.bottom)
-    return tree.layout(in: area).map { pane in
+  }
+
+  private func insetTerminalRects(_ layout: [PaneRect]) -> [PaneRect] {
+    layout.map { pane in
       PaneRect(
         sessionId: pane.sessionId,
         rect: CGRect(
@@ -74,9 +88,19 @@ public final class AppModel {
 
   public func paneSize(for id: Session.ID, in tabId: Tab.ID) -> LabanTerminalSize {
     withModelLock {
-      guard let tab = _tabs.first(where: { $0.id == tabId }),
-        let pane = terminalRects(for: tab.panes).first(where: { $0.sessionId == id })
-      else { return currentSize }
+      guard let tab = _tabs.first(where: { $0.id == tabId }) else { return currentSize }
+      guard let pane = terminalRects(for: tab).first(where: { $0.sessionId == id }) else {
+        // A pane hidden by zoom keeps the size it had before it was hidden.
+        if tab.isZoomed, tab.panes.contains(id) {
+          return sizeBySession[id]
+            ?? terminalRects(for: tab.panes).first(where: { $0.sessionId == id }).map {
+              Self.size(
+                rect: $0.rect, cellWidth: Int(currentSize.cell_width),
+                cellHeight: Int(currentSize.cell_height))
+            } ?? currentSize
+        }
+        return currentSize
+      }
       return Self.size(
         rect: pane.rect, cellWidth: Int(currentSize.cell_width),
         cellHeight: Int(currentSize.cell_height))
@@ -448,7 +472,9 @@ public final class AppModel {
             tabSessions.append(
               AppModelSurfaceSession(
                 tabId: tab.id, tabIndex: idx,
-                isFocused: id == tab.focusedSessionId, isVisible: tab.isActive, session: session))
+                isFocused: id == tab.focusedSessionId,
+                isVisible: tab.isActive && (!tab.isZoomed || id == tab.zoomedSessionId),
+                session: session))
           }
         }
       }
@@ -1913,7 +1939,7 @@ public final class AppModel {
           width: max(0, area.width - insets.left - insets.right),
           height: max(0, area.height - insets.top - insets.bottom)), cellWidth: cellWidth,
         cellHeight: cellHeight)
-      let layout = tab.panes.layout(in: area)
+      let layout = tab.visibleLayout(in: area)
       resizeTabLayoutsUnlocked()
       return layout
     }
@@ -1944,9 +1970,9 @@ public final class AppModel {
 
   private func resizeTabLayoutsUnlocked(deferFindRescan: Bool = false) {
     guard currentSize.pixel_width > 0, currentSize.pixel_height > 0 else { return }
-    for tab in _tabs where tab.isActive || tab.allSessionIds.count == 1 {
+    for tab in _tabs where tab.isActive || tab.visiblePaneCount == 1 {
       resize(
-        layout: terminalRects(for: tab.panes), cellWidth: Int(currentSize.cell_width),
+        layout: terminalRects(for: tab), cellWidth: Int(currentSize.cell_width),
         cellHeight: Int(currentSize.cell_height), deferFindRescan: deferFindRescan)
     }
   }

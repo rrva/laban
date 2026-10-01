@@ -960,7 +960,7 @@ public final class HeadlessDebugRuntime {
       effectiveRendererIsSlug: rendererBackend is SlugGlyphRenderer,
       hoverPreviewEnabled: HoverPreviewSettings.enabled,
       panes: model.activeTab.map { tab in
-        tab.panes.layout(
+        tab.visibleLayout(
           in: CGRect(x: sidebarWidth, y: 0, width: windowWidth - sidebarWidth, height: windowHeight)
         ).map {
           TerminalSurfacePaneRequest(
@@ -1119,7 +1119,7 @@ public final class HeadlessDebugRuntime {
       guard sessionId == nil || sessionId == tab.focusedSessionId else { return nil }
       return PaneRect(sessionId: tab.focusedSessionId, rect: area)
     }
-    return tab.panes.layout(in: area).first { pane in
+    return tab.visibleLayout(in: area).first { pane in
       if let sessionId { return pane.sessionId == sessionId }
       return pane.rect.contains(CGPoint(x: x, y: y))
     }

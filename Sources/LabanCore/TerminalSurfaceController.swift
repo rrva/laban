@@ -1047,7 +1047,7 @@ public final class TerminalSurfaceController {
     let area = CGRect(
       x: sidebarWidth, y: 0, width: max(0, request.viewportWidth - sidebarWidth),
       height: request.viewportHeight)
-    let layout = tab.panes.layout(in: area)
+    let layout = tab.visibleLayout(in: area)
     let panes =
       request.panes.isEmpty
       ? layout.map {
@@ -1131,7 +1131,9 @@ public final class TerminalSurfaceController {
         result.diagnostics = Self.diagnostics(snapshot: UnsafePointer(snap))
       }
     }
-    for divider in request.dividers.isEmpty ? tab.panes.dividerRects(in: area) : request.dividers {
+    for divider in request.dividers.isEmpty
+      ? tab.visibleDividers(in: area).map(\.rect) : request.dividers
+    {
       commands.append(.rect(divider, color: Theme.current.dim0, source: .terminal))
     }
     commands += hoverPreviewOverlayCommands(
@@ -1169,7 +1171,7 @@ public final class TerminalSurfaceController {
       )
     }
 
-    if activeTab.allSessionIds.count > 1 {
+    if activeTab.visiblePaneCount > 1 {
       return makeSplitFrame(request, tab: activeTab, snapshotCommandsHook: snapshotCommandsHook)
     }
 
@@ -1509,7 +1511,7 @@ public final class TerminalSurfaceController {
       foregroundTransitions: spinnerMotion?.transitions,
       foregroundWave: spinnerMotion?.wave
     )
-    if activeTab.allSessionIds.count > 1 {
+    if activeTab.visiblePaneCount > 1 {
       commands.append(
         .glyphRun(
           origin: CGPoint(
