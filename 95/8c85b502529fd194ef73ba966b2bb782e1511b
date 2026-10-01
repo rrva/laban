@@ -1,0 +1,60 @@
+fixtures/README.md
+  s_6395e7c79c93bc::t_2e44c6b2a2a455 31-33
+Sources/LabanRenderer/RendererBackend.swift
+  s_6395e7c79c93bc::t_286c968202409f 50-52,62,71
+Sources/LabanRenderer/SlugGlyphRenderer.swift
+  s_6395e7c79c93bc::t_286c968202409f 769,1652,1672
+  s_6395e7c79c93bc::t_1445ca50799bc1 177-186,463-475,1339-1340
+  s_6395e7c79c93bc::t_de0cb2e7f72554 2694,2711-2712
+  s_6395e7c79c93bc::t_cc9b25bd7fa87b 2695-2699,2713-2726,2781
+  s_6395e7c79c93bc::t_e1592a97805715 2645-2692,2807-2834
+  s_6395e7c79c93bc::t_6314501fcea619 1341,2835,2999-3032,3034-3035,3039-3041
+  s_6395e7c79c93bc::t_5b3adf2a8cc6b1 1342,2693,2700,2836
+Sources/LabanRenderer/FontLigatureSettings.swift
+  s_6395e7c79c93bc::t_955c84a573e334 1-76
+Tests/LabanRendererTests/TerminalLigatureShaperTests.swift
+  s_6395e7c79c93bc::t_c907a553e7d237 1-105
+docs/product/mvp.md
+  s_6395e7c79c93bc::t_84fd43bcfe3339 294-295
+docs/adr/README.md
+  s_6395e7c79c93bc::t_84fd43bcfe3339 48
+Sources/LabanDebug/DebugModels.swift
+  s_6395e7c79c93bc::t_c220461bbab487 142
+fixtures/font-ligatures.fixture.json
+  s_6395e7c79c93bc::t_f97622e15424f8 1-32
+docs/product/spec.md
+  s_6395e7c79c93bc::t_84fd43bcfe3339 150-162
+Sources/LabanApp/TerminalBitmapView.swift
+  s_6395e7c79c93bc::t_eb9a04143f05d0 370,992-1004,3260-3262
+Tests/LabanRendererTests/SlugLigatureTests.swift
+  s_6395e7c79c93bc::t_0d4f6280dc770c 1-187
+Sources/LabanRenderer/TerminalLigatureShaper.swift
+  s_6395e7c79c93bc::t_3efec92a42c0a7 1-134
+docs/adr/0037-font-ligatures-are-a-slug-capability.md
+  s_6395e7c79c93bc::t_17ede5988e762b 1-92
+execplans/active/font-ligatures.md
+  s_6395e7c79c93bc::t_cce6c9570e6b30 1-188
+schemas/debug/render.schema.json
+  s_6395e7c79c93bc::t_c220461bbab487 15
+Sources/LabanApp/SettingsWindowController.swift
+  s_6395e7c79c93bc::t_62fff7a69da89b 115-116,590-596,704,881-882,1011,1480-1483
+  s_6395e7c79c93bc::t_167dc745c594be 1484-1488
+Sources/LabanDebug/DebugRenderEndpoints.swift
+  s_6395e7c79c93bc::t_c220461bbab487 56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "958c85b502529fd194ef73ba966b2bb782e1511b",
+  "prompts": {},
+  "sessions": {
+    "s_6395e7c79c93bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ba651a30-fcf1-44c1-9417-e116528d1321",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
