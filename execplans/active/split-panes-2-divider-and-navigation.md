@@ -464,47 +464,47 @@ done until this gate has passed. See "Review gate and review-fix loop" in
 `PLANS.md`. All commands run from the repository root. The executing agent
 records `BASE` here in M0: `BASE = 958c85b502529fd194ef73ba966b2bb782e1511b`.
 
-- [ ] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
-- [ ] `swift test --filter PaneTreeTests` exits 0 and output contains
+- [x] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
+- [x] `swift test --filter PaneTreeTests` exits 0 and output contains
       `testDividersCarryPathsInNestedTree`, `testSettingFractionByPath`,
       `testEqualizeGivesThreeColumnsOneThirdEach`,
       `testDirectionalNeighbourPrefersAdjacentOverWiderOverlap`,
       `testDirectionalNeighbourUsesHistoryOnTie` and
       `testMinimumExtentSumsAlongAxisAndMaxesAcross`.
-- [ ] `swift test --filter AppModelTests` exits 0 and output contains
+- [x] `swift test --filter AppModelTests` exits 0 and output contains
       `testSplitDownNestsInsideVerticalSplit`, `testSplitRefusedBelowMinimumSize`,
       `testZoomResizesOnlyZoomedPane`, `testSplitWhileZoomedUnzoomsFirst`,
       `testCloseZoomedPaneUnzooms` and `testDividerNudgeClampsToMinimumExtent`.
-- [ ] `swift test --filter PersistenceRoundTripTests` exits 0 and output
+- [x] `swift test --filter PersistenceRoundTripTests` exits 0 and output
       contains `testNestedMixedAxisTreeRoundTrips` and
       `testZoomedSessionRoundTripsAndInvalidZoomIsDropped`.
-- [ ] `swift test --filter SplitPaneHeadlessTests` exits 0 and output contains
+- [x] `swift test --filter SplitPaneHeadlessTests` exits 0 and output contains
       `testThreePaneLayoutRendersThreeOriginsAndTwoDividers`,
       `testZoomedTabUsesSinglePaneFrame` and `testDividerDragCommitsOnRelease`.
-- [ ] `swift test --filter HeadlessIntentRouterTests` exits 0 and output
+- [x] `swift test --filter HeadlessIntentRouterTests` exits 0 and output
       contains `testPaneResizeByPath`, `testPaneFocusByDirection`,
       `testPaneZoomToggle` and `testPaneEqualize`.
-- [ ] `swift test --filter TerminalKeyInputTests` exits 0 and output contains
+- [x] `swift test --filter TerminalKeyInputTests` exits 0 and output contains
       `testCommandShiftDSplitsDown`, `testCommandWClosesPaneOrTab`,
       `testCommandOptionWClosesTab` and
       `testCommandOptionArrowNavigatesPanesOnlyWhenSplit`.
-- [ ] `swift test --filter DebugRuntimeKeyInputTests` exits 0 and its new
+- [x] `swift test --filter DebugRuntimeKeyInputTests` exits 0 and its new
       cases mirror the four key cases above.
-- [ ] `swift test --filter CatalogParityTests` exits 0 and
+- [x] `swift test --filter CatalogParityTests` exits 0 and
       `git diff $BASE -- Tests/LabanAppTests/CatalogParityTests.swift` prints
       nothing.
-- [ ] `swift run LabanControlGen --check` exits 0.
-- [ ] `./scripts/test-e2e` exits 0 and stdout contains
+- [x] `swift run LabanControlGen --check` exits 0.
+- [x] `./scripts/test-e2e` exits 0 and stdout contains
       `split-pane-2 scenario: ok`.
-- [ ] `./scripts/test-labanapp-survives-restart` exits 0 and
+- [x] `./scripts/test-labanapp-survives-restart` exits 0 and
       `grep -n "func testNestedSplitSurvivesLabanAppRestartViaLabpty" Tests/LabanAppTests/LabanAppTests.swift`
       prints one hit.
-- [ ] `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exits 0.
-- [ ] The screenshots `03-three-panes.png`, `05-dragged.png` and
+- [x] `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exits 0.
+- [x] The screenshots `03-three-panes.png`, `05-dragged.png` and
       `06-zoomed.png` under the scenario's artifact directory were opened and
       show, respectively: three panes and two dividers; a left pane about one
       third wide; one pane filling the terminal area with no divider.
-- [ ] Mutation: in `PaneTree.directionalNeighbour`, swap the order of the
+- [x] Mutation: in `PaneTree.directionalNeighbour`, swap the order of the
       directional-distance and overlap-length comparisons; expect
       `testDirectionalNeighbourPrefersAdjacentOverWiderOverlap` to fail;
       revert.
@@ -516,11 +516,60 @@ records `BASE` here in M0: `BASE = 958c85b502529fd194ef73ba966b2bb782e1511b`.
       `testDividerDragCommitsOnRelease` (headless) and
       `testDividerDragDoesNotResizeBeforeRelease` (AppKit) to fail; revert.
 
-Review status: NOT REVIEWED
+Review status: FAILED, round 1 (fresh reviewer, 2026-10-01, ran against commit
+4ca80f3e). 15 of 17 items pass. Two mutation items did not behave as written.
+Logs and screenshots: `.artifacts/split-panes-2/review-1/`.
 
 Review findings (filled in by the review agent):
 
-(none yet)
+Passed: source-bytes check for `Sources/Labpty` and `Sources/Laband` (empty
+diff against BASE); every named test present and green in `PaneTreeTests`,
+`AppModelTests`, `PersistenceRoundTripTests`, `SplitPaneHeadlessTests`,
+`HeadlessIntentRouterTests`, `TerminalKeyInputTests` (all exit 0);
+`DebugRuntimeKeyInputTests` (13 tests, mirrors the four key cases);
+`CatalogParityTests` (7 tests, file diff against BASE empty);
+`LabanControlGen --check`; `./scripts/test-e2e` (stdout has
+`split-pane-2 scenario: ok`); `./scripts/test-labanapp-survives-restart`
+(exit 0, `testNestedSplitSurvivesLabanAppRestartViaLabpty` at
+`Tests/LabanAppTests/LabanAppTests.swift:1151`); `LABAN_CHECK_NO_MEMO=1
+./scripts/check` (exit 0, "check passed"). Screenshots re-generated by running
+`fixtures/debug-script-split-pane-2.scenario.json` and opened: `03-three-panes.png`
+shows three panes and two dividers (one vertical, one horizontal on the right);
+`05-dragged.png` shows the left pane 240 px of the 720 px terminal area (one
+third); `06-zoomed.png` shows one pane filling the area, no divider, sidebar badge
+"3". Mutation 1 (swap distance and overlap comparisons in
+`PaneTree.directionalNeighbour`) made
+`testDirectionalNeighbourPrefersAdjacentOverWiderOverlap` fail as expected.
+
+1. FAIL, Mutation 2 (ignore `zoomedSessionId` in `Tab.visibleLayout(in:)`,
+   `Sources/LabanCore/Tab.swift:56`): `testZoomResizesOnlyZoomedPane` fails as
+   expected (99 vs 200 columns, `AppModelTests.swift:1845`), and so does
+   `TabVisibleLayoutTests.testZoomedVisibleLayoutIsOneFullAreaPaneWithoutDividers`,
+   but `SplitPaneHeadlessTests.testZoomedTabUsesSinglePaneFrame`
+   (`Tests/LabanDebugTests/SplitPaneHeadlessTests.swift:200`) still PASSES
+   (1 test executed, 0 failures). The gate requires it to fail. Cause as far as
+   observed: the zoomed headless frame is drawn through the single-pane path
+   (`visiblePaneCount`), so the test's assertions on `lastFramePaneSessionIds`
+   and text origins never depend on `visibleLayout`. The test does not pin the
+   behaviour the gate says it pins. Log: `mut2-SplitPaneHeadlessTests.log`.
+2. FAIL (partial), Mutation 3 (call `model.setSplitFraction` during the drag
+   instead of on release). Applied in the GUI drag path
+   (`updateDividerDrag`, called from `mouseDragged`,
+   `Sources/LabanApp/TerminalBitmapView.swift:9586`):
+   `TerminalBitmapViewDividerTests.testDividerDragDoesNotResizeBeforeRelease`
+   fails as expected (`testEscapeDuringDragCancelsWithoutResizing` fails too), but
+   `SplitPaneHeadlessTests.testDividerDragCommitsOnRelease` PASSES, because the
+   headless runtime has its own drag code
+   (`Sources/LabanDebug/HeadlessDebugRuntime.swift:1167`) that a GUI mutation does
+   not touch. The same mutation applied to the headless `updateDividerDrag` does
+   make `testDividerDragCommitsOnRelease` fail, so each test guards its own
+   handler; the gate wording (one mutation failing both) cannot be met as
+   written. Either state two mutations in the gate or accept as written once
+   clarified. Logs: `mut3-*.log`, `mut3b-headless-equivalent-*.log`.
+
+All three source files were restored with `git checkout` and verified: `git diff`
+empty, sha256 of every mutated file equal to its pre-mutation value, and
+`git status` clean before this record was written.
 
 ## Surprises & Discoveries
 
