@@ -1,0 +1,34 @@
+docs/adr/0037-font-ligatures-are-a-slug-capability.md
+  s_6395e7c79c93bc::t_6a91dfae0ae7ed 7-8,43,46-47,75-77
+execplans/active/font-ligatures.md
+  s_6395e7c79c93bc::t_6a91dfae0ae7ed 19,56,106-109
+  s_6395e7c79c93bc::t_a2a7bce780885a 15-16,180,183-185
+Sources/LabanRenderer/FontLigatureSettings.swift
+  s_6395e7c79c93bc::t_6a91dfae0ae7ed 8-10,42,60
+docs/product/spec.md
+  s_6395e7c79c93bc::t_6a91dfae0ae7ed 159
+docs/product/mvp.md
+  s_6395e7c79c93bc::t_6a91dfae0ae7ed 294-295
+Tests/LabanRendererTests/TerminalLigatureShaperTests.swift
+  s_6395e7c79c93bc::t_6a91dfae0ae7ed 84-85
+fixtures/README.md
+  s_6395e7c79c93bc::t_15699bb0dc3dd1 33
+fixtures/font-ligatures.fixture.json
+  s_6395e7c79c93bc::t_1c9b4255bfc15b 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c4c89d4cac50c48bda77375f9d0d28c4f81ed3d3",
+  "prompts": {},
+  "sessions": {
+    "s_6395e7c79c93bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ba651a30-fcf1-44c1-9417-e116528d1321",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
