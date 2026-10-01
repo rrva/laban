@@ -1,0 +1,23 @@
+docs/process/dev-process.md
+  s_8bfdcc4b4ee25a::t_e576b16bcb7359 1703-1708,1715-1720,1725-1731
+docs/product/mvp.md
+  s_8bfdcc4b4ee25a::t_59af461ebede82 395
+docs/product/spec.md
+  s_8bfdcc4b4ee25a::t_0607eaa0e066a4 26-27,60,125-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4ca80f3e419842df856a2b88a4b65dbf91bfd3f3",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
