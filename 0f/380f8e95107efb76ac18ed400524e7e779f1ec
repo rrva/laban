@@ -1,0 +1,28 @@
+execplans/active/split-panes-2-divider-and-navigation.md
+  s_8bfdcc4b4ee25a::t_72a30629b54bb0 514-517,520-522
+  s_8bfdcc4b4ee25a::t_a024ba20d32e3c 579-585
+Sources/LabanApp/TerminalBitmapView.swift
+  s_8bfdcc4b4ee25a::t_7ef590d5b83871 9588,9601
+Sources/LabanCore/PaneTree.swift
+  s_8bfdcc4b4ee25a::t_eeb9754ff5a786 113-132
+Sources/LabanDebug/HeadlessDebugRuntime.swift
+  s_8bfdcc4b4ee25a::t_ed7aee90d6b9b9 1168,1185
+Tests/LabanDebugTests/SplitPaneHeadlessTests.swift
+  s_8bfdcc4b4ee25a::t_31a303c1ebb96b 208-213,217-224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0f380f8e95107efb76ac18ed400524e7e779f1ec",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
