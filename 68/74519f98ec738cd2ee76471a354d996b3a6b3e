@@ -1,0 +1,35 @@
+Sources/LabanCore/AppModel.swift
+  s_8bfdcc4b4ee25a::t_d89537bf7376a7 969-983
+Sources/LabanCore/PaneTree.swift
+  s_8bfdcc4b4ee25a::t_1769e0d179cbb1 46-64
+Sources/LabanCore/SidebarProducer.swift
+  s_8bfdcc4b4ee25a::t_fb48a4778e42cc 205-208,300-306,359-362
+Sources/LabanCore/TerminalSurfaceController.swift
+  s_8bfdcc4b4ee25a::t_e5aedbd0d0515c 104-106,217-218,256,426-427,1146-1151,1609-1610,1872-1874
+Sources/LabanDebug/HeadlessDebugRuntime.swift
+  s_8bfdcc4b4ee25a::t_23455bbdce835c 75-77,978-979,988,1167-1184
+Tests/LabanCoreTests/PaneTreeTests.swift
+  s_8bfdcc4b4ee25a::t_acf8d38b181833 230-244
+Tests/LabanCoreTests/SidebarProducerTests.swift
+  s_8bfdcc4b4ee25a::t_675d9bc5135397 22-53
+Tests/LabanDebugTests/SplitPaneHeadlessTests.swift
+  s_8bfdcc4b4ee25a::t_707c378af4ced7 134-309
+execplans/active/split-panes-2-divider-and-navigation.md
+  s_8bfdcc4b4ee25a::t_f4acccc352bfef 140-143,357-382
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6874519f98ec738cd2ee76471a354d996b3a6b3e",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
