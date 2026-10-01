@@ -30,4 +30,4 @@ actions. UI actions belong in debug-server E2E tests via `/debug/actions`.
   overline, faint, inverse, and invisible-text renderer parity.
 - `font-ligatures.fixture.json` - programming-font ligature operators for
   Slug ligature checks (ADR 0037); run in debug-server mode with
-  `--renderer=slugGlyph` and `LABAN_FONT_LIGATURES=1`.
+  `--renderer=slugGlyph` (`LABAN_FONT_LIGATURES=0|1` pins the setting).

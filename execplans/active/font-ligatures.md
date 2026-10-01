@@ -12,11 +12,11 @@ one connected shape. The MVP drew one plain glyph per character, so `->` always
 looked like a hyphen beside a greater-than sign.
 
 After this change, a user on the Slug Glyph renderer (the default renderer,
-ADR 0032) can turn on **Settings ▸ Rendering ▸ Font ligatures** and see those
-operators drawn as ligatures. Nothing else on screen moves: every character
+ADR 0032) sees those operators drawn as ligatures, controlled by **Settings ▸
+Rendering ▸ Font ligatures**. Nothing else on screen moves: every character
 still occupies exactly one terminal cell, so the cursor, selection, copy, find,
 and the text that follows an operator stay where they were. The setting ships
-off, applies live without a relaunch, and other renderers ignore it.
+on, applies live without a relaunch, and other renderers ignore it.
 
 To see it working without a display, run the headless agent described under
 *Validation and Acceptance*. `/debug/render` reports `"ligatureGlyphs": 9`
@@ -53,7 +53,7 @@ draw each cell's *shaped* glyph id at that cell's origin.
 ## Design
 
 - `Sources/LabanRenderer/FontLigatureSettings.swift` holds the setting:
-  - user default `LabanFontLigaturesEnabled` (default off);
+  - user default `LabanFontLigaturesEnabled` (default on);
   - environment override `LABAN_FONT_LIGATURES` for headless runs; while it
     is set, `setEnabled` refuses writes;
   - `didChangeNotification`.
@@ -103,6 +103,10 @@ draw each cell's *shaped* glyph id at that cell's origin.
   keeps the MVP rendering contract (`mvp.md`: "no ligatures") as the shipped
   default. Recorded in `docs/adr/0037-font-ligatures-are-a-slug-capability.md`.
   Date/Author: 2026-10-01 / Claude.
+- Decision: Flip the default to on (supersedes the default-off half above).
+  Rationale: After shipping, the user asked for ligatures as the default look.
+  The setting still turns them off, and non-Slug renderers are unaffected.
+  Date/Author: 2026-10-01 / Claude, at the user's request.
 - Decision: Place substituted glyphs at their own cell origin and ignore
   CoreText positions.
   Rationale: Cells are `ceil(advance)` wide (9pt for an 8.4pt advance at
@@ -173,12 +177,12 @@ env override. Start the agent from the repository root after
     curl -s --unix-socket <sock> -H "Authorization: Bearer <tok>" http://localhost/debug/screenshot -o shot.png
     # shot.png shows joined arrows, != as a slashed equals, === as one bar group
 
-Running the same command without `LABAN_FONT_LIGATURES` reports
+Running the same command with `LABAN_FONT_LIGATURES=0` reports
 `"ligatureGlyphs":0`.
 
-In the app, go to Settings ▸ Rendering with Slug Glyph selected and check
-**Font ligatures**. Typing `a -> b != c` should show the operators join
-immediately, and unchecking reverts them live.
+In the app, go to Settings ▸ Rendering with Slug Glyph selected; **Font
+ligatures** is checked by default and `a -> b != c` shows joined operators.
+Unchecking reverts them live, and rechecking restores them.
 
 ## Outcomes & Retrospective
 

@@ -81,8 +81,8 @@ final class FontLigatureSettingsTests: XCTestCase {
     super.tearDown()
   }
 
-  func testDefaultsOff() {
-    XCTAssertFalse(FontLigatureSettings.enabled(defaults: defaults, environment: [:]))
+  func testDefaultsOn() {
+    XCTAssertTrue(FontLigatureSettings.enabled(defaults: defaults, environment: [:]))
   }
 
   func testSetEnabledPersistsAndNotifies() {
