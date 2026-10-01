@@ -47,6 +47,9 @@ public struct RendererStatus: Equatable, Sendable, Encodable {
   public var effectiveRenderer: String
   public var fallbackReason: String?
   public var rasterFallbackGlyphs: Int?
+  /// Ligature-substituted glyphs drawn in the last frame's damaged area. Only
+  /// Slug shapes ligatures (ADR 0037); other backends leave this `nil`.
+  public var ligatureGlyphs: Int?
   public var vectorSubpixelLayout: String?
   public var vectorSubpixelFallbackReason: String?
   public var textCompositeModel: TextCompositeModel?
@@ -56,6 +59,7 @@ public struct RendererStatus: Equatable, Sendable, Encodable {
     effectiveRenderer: String,
     fallbackReason: String? = nil,
     rasterFallbackGlyphs: Int? = nil,
+    ligatureGlyphs: Int? = nil,
     vectorSubpixelLayout: String? = nil,
     vectorSubpixelFallbackReason: String? = nil,
     textCompositeModel: TextCompositeModel? = nil
@@ -64,6 +68,7 @@ public struct RendererStatus: Equatable, Sendable, Encodable {
     self.effectiveRenderer = effectiveRenderer
     self.fallbackReason = fallbackReason
     self.rasterFallbackGlyphs = rasterFallbackGlyphs
+    self.ligatureGlyphs = ligatureGlyphs
     self.vectorSubpixelLayout = vectorSubpixelLayout
     self.vectorSubpixelFallbackReason = vectorSubpixelFallbackReason
     self.textCompositeModel = textCompositeModel

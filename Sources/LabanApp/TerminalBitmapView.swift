@@ -367,6 +367,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var accessibilityDisplayOptionsObserver: NSObjectProtocol?
   private var cursorSettingsObserver: NSObjectProtocol?
   private var emojiRenderingObserver: NSObjectProtocol?
+  private var fontLigatureObserver: NSObjectProtocol?
   private var cjkFontSettingsObserver: NSObjectProtocol?
   private var vectorSubpixelLayoutObserver: NSObjectProtocol?
   private var vectorTextWeightObserver: NSObjectProtocol?
@@ -982,6 +983,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       (self.backend as? MetalRenderer)?.invalidateContentForThemeChange()
       (self.backend as? VectorGlyphRenderer)?.refreshEmojiRenderingMode()
       (self.backend as? SlugGlyphRenderer)?.refreshEmojiRenderingMode()
+      self.renderInvalidated = true
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    // Ligatures are a Slug capability (ADR 0037); other backends ignore it.
+    fontLigatureObserver = NotificationCenter.default.addObserver(
+      forName: FontLigatureSettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      guard let slug = self.backend as? SlugGlyphRenderer else { return }
+      slug.refreshFontLigatures()
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
@@ -3242,6 +3256,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if let emojiRenderingObserver {
       NotificationCenter.default.removeObserver(emojiRenderingObserver)
+    }
+    if let fontLigatureObserver {
+      NotificationCenter.default.removeObserver(fontLigatureObserver)
     }
     if let cjkFontSettingsObserver {
       NotificationCenter.default.removeObserver(cjkFontSettingsObserver)

@@ -174,6 +174,16 @@ private struct SlugGlyphResolveKey: Hashable {
   var cluster: Character
 }
 
+private struct SlugLigatureGlyphKey: Hashable {
+  var fontID: Int
+  var glyph: CGGlyph
+}
+
+private struct SlugLigatureShapeKey: Hashable {
+  var fontID: Int
+  var text: String
+}
+
 private struct SlugGlyphEntry {
   var key: SlugGlyphGeometryKey
   var outline: GlyphCurveOutline
@@ -450,6 +460,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// appears. Never cleared: like `entriesByResolveKey`, the key embeds the
   /// interned font identity, so a font change produces new keys naturally.
   private var failedResolveKeys: Set<SlugGlyphResolveKey> = []
+  /// Shaped ligature glyph ids, keyed like `entriesByResolveKey` by interned
+  /// font identity so they are never cleared either.
+  private var ligatureEntriesByKey: [SlugLigatureGlyphKey: SlugGlyphEntry] = [:]
+  private var failedLigatureGlyphKeys: Set<SlugLigatureGlyphKey> = []
+  /// CoreText shaping of ligature-candidate run texts. An empty array records
+  /// "shaping substituted nothing" so the CTLine runs once per distinct text.
+  /// Bounded: dropped wholesale past `ligatureShapeCacheLimit` entries, since
+  /// a re-shape is a cold-path cost and terminal text repeats heavily.
+  private var ligatureShapeCache: [SlugLigatureShapeKey: [TerminalLigatureCell]] = [:]
+  private static let ligatureShapeCacheLimit = 4096
+  private var ligaturesEnabled = FontLigatureSettings.enabled
+  public private(set) var lastFrameLigatureGlyphsCount = 0
+  private var frameLigatureGlyphsCount = 0
   private var fontIdentityIntern: [SlugFontIdentityKey: Int] = [:]
   private var nextFontIdentityID = 0
   /// Font color-glyph trait, keyed like `VectorGlyphRenderer.fontCache`
@@ -743,6 +766,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       configuredRenderer: RendererSelection.slugGlyph.rawValue,
       effectiveRenderer: RendererSelection.slugGlyph.rawValue,
       rasterFallbackGlyphs: lastRasterFallbackGlyphs,
+      ligatureGlyphs: lastFrameLigatureGlyphsCount,
       vectorSubpixelLayout: effectiveSubpixelLayout.name,
       vectorSubpixelFallbackReason: effectiveSubpixelFallbackReason,
       textCompositeModel: .linearLight)
@@ -1312,6 +1336,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     emojiRenderingMode = EmojiRenderingSettings.current()
   }
 
+  public func refreshFontLigatures() {
+    ligaturesEnabled = FontLigatureSettings.enabled
+  }
+
   public func refreshCJKFontCascade() {
     // Only rebuilds `rasterAtlas`, not `referenceFontAtlas`/
     // `sidebarReferenceFontAtlas`/`previewReferenceFontAtlas` (those change in
@@ -1621,6 +1649,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     frameGlyphFontSizes.removeAll(keepingCapacity: true)
     frameQuadHeights.removeAll(keepingCapacity: true)
     frameSpinnerFallbackSnapCount = 0
+    frameLigatureGlyphsCount = 0
     buildInstances(
       commands: commands,
       solids: &solids,
@@ -1640,6 +1669,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     lastFrameSlugGlyphsCount = slugGlyphs.count
     lastFrameMotionGlyphsCount = motionGlyphs.count
     lastFrameSpinnerFallbackSnapCount = frameSpinnerFallbackSnapCount
+    lastFrameLigatureGlyphsCount = frameLigatureGlyphsCount
     lastFrameRasterGlyphsCount = rasterGlyphs.count
     lastFrameColorGlyphsCount = colorGlyphs.count
     spanSolids =
@@ -2612,6 +2642,62 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     let runMayContainCJK = TerminalCJKFontPolicy.containsCJK(text)
 
+    func appendSlugGlyph(_ entry: SlugGlyphEntry, cellOriginX: CGFloat) {
+      let bounds = entry.outline.bounds
+      let localPixelPad =
+        CGFloat(1 + perSideDilatePx) / max(pointScale * scale, .ulpOfOne)
+      let localMin = SIMD2<Float>(
+        Float(bounds.minX - localPixelPad),
+        Float(bounds.minY - localPixelPad))
+      let localMax = SIMD2<Float>(
+        Float(bounds.maxX + localPixelPad),
+        Float(bounds.maxY + localPixelPad))
+      let instanceOrigin = SIMD2<Float>(
+        Float((cellOriginX + (bounds.minX - localPixelPad) * pointScale) * scale),
+        Float((baseline + (bounds.minY - localPixelPad) * pointScale) * scale))
+      let instanceSize = SIMD2<Float>(
+        max(0, Float((bounds.width + localPixelPad * 2) * pointScale * scale)),
+        max(0, Float((bounds.height + localPixelPad * 2) * pointScale * scale)))
+      guard instanceSize.x > 0, instanceSize.y > 0 else { return }
+      frameQuadHeights.insert(Int((CGFloat(instanceSize.y) * gestureZoom).rounded()))
+      if foregroundTransition != nil || foregroundWave != nil {
+        motionGlyphs.append(
+          SlugGlyphMotionGPUInstance(
+            originPx: instanceOrigin,
+            sizePx: instanceSize,
+            localMin: localMin,
+            localMax: localMax,
+            color: foregroundColor,
+            glyphIndex: UInt32(entry.glyphIndex),
+            dilation: perSideDilatePx,
+            effectKind: effectKind,
+            effectStart: effectStart,
+            duration: effectDuration ?? 0,
+            startColor: foregroundTransition?.startLinearRGBA ?? .zero,
+            waveRegionIndex: foregroundWave?.regionIndex ?? 0,
+            waveCellIndex: foregroundWave?.cellIndexInRegion ?? 0))
+      } else {
+        glyphs.append(
+          SlugGlyphGPUInstance(
+            originPx: instanceOrigin,
+            sizePx: instanceSize,
+            localMin: localMin,
+            localMax: localMax,
+            color: foregroundColor,
+            glyphIndex: UInt32(entry.glyphIndex),
+            dilation: perSideDilatePx,
+            effectKind: effectKind,
+            effectStart: effectStart))
+      }
+    }
+
+    let runLigatureCells = ligatureCells(
+      for: text,
+      source: source,
+      font: referenceVariant.font,
+      fontID: fontID,
+      hasMotion: foregroundTransition != nil || foregroundWave != nil)
+
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
       let cellRect = CGRect(
@@ -2621,6 +2707,22 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         overlayMaskRects.contains(where: { $0.intersects(cellRect) })
       {
         continue
+      }
+      if let runLigatureCells {
+        switch runLigatureCells[cellIndex] {
+        case .nominal:
+          break
+        case .empty:
+          continue
+        case .glyph(let glyph):
+          if let entry = ensureLigatureGlyph(
+            glyph, font: referenceVariant.font, fontID: fontID)
+          {
+            frameLigatureGlyphsCount += 1
+            appendSlugGlyph(entry, cellOriginX: cellOriginX)
+          }
+          continue
+        }
       }
       if runWantsColor,
         ColorGlyphSupport.clusterMayBeColor(cluster),
@@ -2676,52 +2778,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         }
         continue
       }
-      let bounds = entry.outline.bounds
-      let localPixelPad =
-        CGFloat(1 + perSideDilatePx) / max(pointScale * scale, .ulpOfOne)
-      let localMin = SIMD2<Float>(
-        Float(bounds.minX - localPixelPad),
-        Float(bounds.minY - localPixelPad))
-      let localMax = SIMD2<Float>(
-        Float(bounds.maxX + localPixelPad),
-        Float(bounds.maxY + localPixelPad))
-      let instanceOrigin = SIMD2<Float>(
-        Float((cellOriginX + (bounds.minX - localPixelPad) * pointScale) * scale),
-        Float((baseline + (bounds.minY - localPixelPad) * pointScale) * scale))
-      let instanceSize = SIMD2<Float>(
-        max(0, Float((bounds.width + localPixelPad * 2) * pointScale * scale)),
-        max(0, Float((bounds.height + localPixelPad * 2) * pointScale * scale)))
-      guard instanceSize.x > 0, instanceSize.y > 0 else { continue }
-      frameQuadHeights.insert(Int((CGFloat(instanceSize.y) * gestureZoom).rounded()))
-      if foregroundTransition != nil || foregroundWave != nil {
-        motionGlyphs.append(
-          SlugGlyphMotionGPUInstance(
-            originPx: instanceOrigin,
-            sizePx: instanceSize,
-            localMin: localMin,
-            localMax: localMax,
-            color: foregroundColor,
-            glyphIndex: UInt32(entry.glyphIndex),
-            dilation: perSideDilatePx,
-            effectKind: effectKind,
-            effectStart: effectStart,
-            duration: effectDuration ?? 0,
-            startColor: foregroundTransition?.startLinearRGBA ?? .zero,
-            waveRegionIndex: foregroundWave?.regionIndex ?? 0,
-            waveCellIndex: foregroundWave?.cellIndexInRegion ?? 0))
-      } else {
-        glyphs.append(
-          SlugGlyphGPUInstance(
-            originPx: instanceOrigin,
-            sizePx: instanceSize,
-            localMin: localMin,
-            localMax: localMax,
-            color: foregroundColor,
-            glyphIndex: UInt32(entry.glyphIndex),
-            dilation: perSideDilatePx,
-            effectKind: effectKind,
-            effectStart: effectStart))
-      }
+      appendSlugGlyph(entry, cellOriginX: cellOriginX)
     }
 
     if source == .sidebarPreview {
@@ -2745,6 +2802,36 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         foreground: foreground,
         solids: &solids)
     }
+  }
+
+  /// Per-cell ligature substitutions for a run, or `nil` to draw every cell
+  /// the usual way. Shaping is a CoreText cold path: the per-frame cost is
+  /// the ASCII symbol-pair scan plus one dictionary lookup for candidate runs.
+  /// Spinner-motion runs animate per cell, so they never ligate.
+  private func ligatureCells(
+    for text: String,
+    source: FrameSource,
+    font: CTFont,
+    fontID: Int,
+    hasMotion: Bool
+  ) -> [TerminalLigatureCell]? {
+    guard ligaturesEnabled, !hasMotion,
+      source == .terminal || source == .sidebarPreview,
+      TerminalLigatureShaper.mayContainLigature(text)
+    else { return nil }
+    let key = SlugLigatureShapeKey(fontID: fontID, text: text)
+    if let cached = ligatureShapeCache[key] {
+      return cached.isEmpty ? nil : cached
+    }
+    let signposter = RenderEncodeSignpost.signposter
+    let shapeSpan = signposter.beginInterval("slug.ligatureShape")
+    defer { signposter.endInterval("slug.ligatureShape", shapeSpan) }
+    let shaped = TerminalLigatureShaper.shape(text: text, font: font)
+    if ligatureShapeCache.count >= Self.ligatureShapeCacheLimit {
+      ligatureShapeCache.removeAll(keepingCapacity: true)
+    }
+    ligatureShapeCache[key] = shaped ?? []
+    return shaped
   }
 
   private func appendDecorations(
@@ -2909,19 +2996,49 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       failedResolveKeys.insert(resolveKey)
       return nil
     }
-    let key = SlugGlyphGeometryKey(
-      postScriptName: FontAtlas.postScriptName(of: resolved.font),
-      glyph: resolved.glyph)
-    if let cached = entriesByKey[key] {
-      entriesByResolveKey[resolveKey] = cached
-      return cached
-    }
-    guard let outline = curveStore.outline(for: resolved.glyph, font: resolved.font) else {
+    guard let entry = geometryEntry(font: resolved.font, glyph: resolved.glyph) else {
       failedResolveKeys.insert(resolveKey)
       return nil
     }
-    guard !outline.curves.isEmpty else {
-      failedResolveKeys.insert(resolveKey)
+    entriesByResolveKey[resolveKey] = entry
+    return entry
+  }
+
+  /// Geometry entry for a shaped ligature glyph id in the run's reference
+  /// font, cached per (interned font, glyph) so the per-frame path never
+  /// copies a PostScript name. `nil` for glyphs with no outline (the empty
+  /// `SPC` spacers programming fonts emit for consumed ligature cells), which
+  /// callers draw as nothing rather than routing to a raster fallback.
+  private func ensureLigatureGlyph(
+    _ glyph: CGGlyph, font: CTFont, fontID: Int
+  ) -> SlugGlyphEntry? {
+    let key = SlugLigatureGlyphKey(fontID: fontID, glyph: glyph)
+    if let cached = ligatureEntriesByKey[key] { return cached }
+    if failedLigatureGlyphKeys.contains(key) { return nil }
+    let signposter = RenderEncodeSignpost.signposter
+    let buildSpan = signposter.beginInterval("slug.glyphBuild")
+    defer { signposter.endInterval("slug.glyphBuild", buildSpan) }
+    guard let entry = geometryEntry(font: font, glyph: glyph) else {
+      failedLigatureGlyphKeys.insert(key)
+      return nil
+    }
+    ligatureEntriesByKey[key] = entry
+    return entry
+  }
+
+  /// Size-independent curve/band geometry for one (font, glyph id), shared by
+  /// every resolve path that lands on the same visual glyph. `nil` when the
+  /// glyph has no usable outline.
+  private func geometryEntry(font: CTFont, glyph: CGGlyph) -> SlugGlyphEntry? {
+    let key = SlugGlyphGeometryKey(
+      postScriptName: FontAtlas.postScriptName(of: font),
+      glyph: glyph)
+    if let cached = entriesByKey[key] {
+      return cached
+    }
+    guard let outline = curveStore.outline(for: glyph, font: font),
+      !outline.curves.isEmpty
+    else {
       return nil
     }
 
@@ -2952,7 +3069,6 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     let entry = SlugGlyphEntry(key: key, outline: outline, glyphIndex: glyphIndex)
     entriesByKey[key] = entry
-    entriesByResolveKey[resolveKey] = entry
     geometryEntryBuildCount += 1
     geometryBuffersDirty = true
     return entry

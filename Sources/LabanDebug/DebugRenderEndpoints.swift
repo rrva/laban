@@ -53,6 +53,7 @@ extension HeadlessDebugRuntime {
           effectiveRenderer: status.effectiveRenderer,
           fallbackReason: status.fallbackReason,
           rasterFallbackGlyphs: status.rasterFallbackGlyphs,
+          ligatureGlyphs: status.ligatureGlyphs,
           vectorSubpixelLayout: status.vectorSubpixelLayout,
           vectorSubpixelFallbackReason: status.vectorSubpixelFallbackReason,
           surface: SurfaceResponse(

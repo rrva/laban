@@ -112,6 +112,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorSmoothScrollLabel = NSTextField(labelWithString: L10n.tr("Smooth scroll:"))
   private let hoverPreviewCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Sidebar hover preview"), target: nil, action: nil)
+  private let fontLigaturesCheckbox = NSButton(
+    checkboxWithTitle: L10n.tr("Font ligatures"), target: nil, action: nil)
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Option as Meta"), target: nil, action: nil)
@@ -585,6 +587,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     )
     hoverPreviewCheckbox.setAccessibilityLabel(L10n.tr("Sidebar hover preview"))
 
+    fontLigaturesCheckbox.target = self
+    fontLigaturesCheckbox.action = #selector(fontLigaturesChanged(_:))
+    fontLigaturesCheckbox.toolTip = L10n.tr(
+      "Needs Slug Glyph; joins operators such as -> != === into the font's ligature glyphs while keeping one cell per character."
+    )
+    fontLigaturesCheckbox.setAccessibilityLabel(L10n.tr("Font ligatures"))
+
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
     optionAsMetaCheckbox.toolTip =
@@ -692,6 +701,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [vectorTextWeightLabel, makeVectorTextWeightRow()],
       [vectorSmoothScrollLabel, vectorSmoothScrollPopUp],
       [NSGridCell.emptyContentView, hoverPreviewCheckbox],
+      [NSGridCell.emptyContentView, fontLigaturesCheckbox],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
     let notificationsGrid = makeSettingsGrid([
@@ -868,6 +878,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     // Nothing to hover when the sidebar is hidden (View ▸ Show Sidebar).
     let sidebarVisible = SidebarVisibilitySettings.visible
     hoverPreviewCheckbox.isEnabled = slugSelected && sidebarVisible && !hoverPreviewEnvLocked
+    fontLigaturesCheckbox.isEnabled =
+      slugSelected && FontLigatureSettings.environmentOverride() == nil
   }
 
   private func makeVectorSubpixelCustomRow() -> NSStackView {
@@ -996,6 +1008,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
     refreshVectorControlsForRenderer(rendererSelection)
     hoverPreviewCheckbox.state = HoverPreviewSettings.enabled ? .on : .off
+    fontLigaturesCheckbox.state = FontLigatureSettings.enabled ? .on : .off
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off
@@ -1459,6 +1472,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let enabled = sender.state == .on
     guard HoverPreviewSettings.setEnabled(enabled) else {
       sender.state = HoverPreviewSettings.enabled ? .on : .off
+      return
+    }
+    refresh()
+  }
+
+  @objc private func fontLigaturesChanged(_ sender: NSButton) {
+    let enabled = sender.state == .on
+    guard FontLigatureSettings.setEnabled(enabled) else {
+      sender.state = FontLigatureSettings.enabled ? .on : .off
       return
     }
     refresh()

@@ -45,3 +45,4 @@ boundaries, or any decision that looks previously settled.
 Write a new ADR when a change establishes durable architectural policy, reverses a previously settled decision, or sets an adapter boundary. Number it sequentially, follow the existing file's structure (Status, Context, Decision, Consequences, Applies To New Code), and add a one-line entry to this index with the path and summary.
 
 - [0036: Pane layout is view state above session tiers](0036-pane-layout-is-view-state-above-session-tiers.md)
+- [0037: Font ligatures are a Slug capability](0037-font-ligatures-are-a-slug-capability.md)

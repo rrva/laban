@@ -291,6 +291,8 @@ The bundled font is JetBrains Mono. It must cover common terminal UI symbols:
 box drawing, block elements, arrows, Braille patterns, geometric symbols,
 dingbats, currency symbols, and common private-use terminal glyphs. The MVP
 uses fixed-cell glyph atlas rendering with no ligatures or complex shaping.
+(Post-MVP, Slug can opt into font ligatures — `spec.md` §19, ADR 0037 — but
+the setting ships off, so this remains the default rendering.)
 Fallback must not change cell metrics.
 
 The built-in theme is fixed Selenized Light. The MVP does not adapt to system

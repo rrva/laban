@@ -139,6 +139,7 @@ struct RenderResponse: Encodable {
   var effectiveRenderer: String?
   var fallbackReason: String?
   var rasterFallbackGlyphs: Int?
+  var ligatureGlyphs: Int?
   var vectorSubpixelLayout: String?
   var vectorSubpixelFallbackReason: String?
   var surface: SurfaceResponse

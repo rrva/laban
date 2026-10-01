@@ -147,6 +147,19 @@ but that mask-baking cost model produced multi-second GPU frames when first
 painting an unfamiliar screen, and Slug's analytic, size-independent outlines
 reach the same sharpness goal without it.
 
+A persisted **Font ligatures** setting (Settings ▸ Rendering, user default
+`LabanFontLigaturesEnabled`, headless override `LABAN_FONT_LIGATURES=1`) draws
+the terminal font's programming ligatures when the effective renderer is Slug
+Glyph: with the bundled JetBrains Mono, operators such as `->`, `!=`, `===`,
+`<=>`, `|>`, and `//` render as joined glyphs. Ligatures never change the grid:
+each source character still occupies exactly one cell, so cursor movement,
+selection, copy, find, and the text after an operator are unaffected. Only
+adjacent ASCII punctuation within one same-style run can ligate; letter
+ligatures (`fi`), spinner-motion runs, sidebar text, and IME preedit never do.
+The setting is off by default, applies live, and other renderers ignore it.
+`/debug/render` reports `ligatureGlyphs` for the last frame. See
+`docs/adr/0037-font-ligatures-are-a-slug-capability.md`.
+
 ## 20. Terminal effects and title requirements
 
 The terminal core exposes callbacks/effects for pty writes, size reports, device attributes, terminal-version queries, title changes, and color-scheme queries. Returning "unknown" for host color scheme is acceptable when the platform cannot answer it, but the behavior must be explicit.

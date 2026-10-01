@@ -1,0 +1,32 @@
+{
+  "name": "font-ligatures",
+  "version": 1,
+  "description": "Writes programming-font ligature operators for Slug ligature verification (ADR 0037). Run with --renderer=slugGlyph and LABAN_FONT_LIGATURES=1; /debug/render ligatureGlyphs must be > 0, and 0 without the env override.",
+  "initialSize": {
+    "cols": 60,
+    "rows": 6
+  },
+  "steps": [
+    {
+      "op": "setTitle",
+      "title": "Fixture: Font Ligatures"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "x -> y != z === w <=> v\r\na |> b :: c // d --> e >= f\r\nplain text, no operators\r\n"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "title": "Fixture: Font Ligatures",
+    "nonEmptyScreenshot": true,
+    "containsText": [
+      "x -> y != z === w <=> v",
+      "plain text, no operators"
+    ]
+  }
+}
