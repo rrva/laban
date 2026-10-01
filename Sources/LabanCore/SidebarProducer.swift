@@ -202,6 +202,10 @@ public struct SidebarProducer {
     return cmds
   }
 
+  /// The sidebar badge for a zoomed tab: a symbol and the pane count, so it needs no
+  /// translation (and is not routed through `L10n`, which lives in the app target).
+  public static func zoomBadgeText(paneCount: Int) -> String { "\u{2922} \(paneCount)" }
+
   public func output(
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
@@ -293,10 +297,15 @@ public struct SidebarProducer {
       let indexText = "\(tab.position)"
       let indexX = labelX
       let titleX = labelX + 3 * cellWidth
-      let titleMaxScalars = max(1, Int(floor((slotX - titleX - 4) / cellWidth)))
+      let infoMaxScalars = max(1, Int(floor((slotX - titleX - 4) / cellWidth)))
+      // A zoomed tab shows "⤢ N" (N panes) on the title line, right-aligned just left of
+      // the status slot, and the title truncates to leave room for it.
+      let zoomBadge = tab.isZoomed ? Self.zoomBadgeText(paneCount: tab.allSessionIds.count) : nil
+      let badgeScalars = zoomBadge?.unicodeScalars.count ?? 0
+      let titleMaxScalars =
+        zoomBadge == nil ? infoMaxScalars : max(1, infoMaxScalars - badgeScalars - 1)
       // Info lines use the same right edge — title and info both end at the
       // single shared slot so widths don't drift line-to-line.
-      let infoMaxScalars = titleMaxScalars
       let resolved = TabTitleResolver.resolve(
         tab.titleMetadata,
         fallbackPosition: tab.position,
@@ -347,6 +356,10 @@ public struct SidebarProducer {
 
       appendGlyph(CGPoint(x: indexX, y: titleY), indexText, Theme.current.dim0, bg)
       appendGlyph(CGPoint(x: titleX, y: titleY), resolved.displayTitle, labelFg, bg)
+      if let zoomBadge {
+        let badgeX = slotX - 4 - CGFloat(badgeScalars) * cellWidth
+        appendGlyph(CGPoint(x: badgeX, y: titleY), zoomBadge, Theme.current.dim0, bg)
+      }
 
       // Right-edge attention marker — one per tab, chosen by attention level.
       // Rendered only when the tab is not hovered (the close X takes the slot

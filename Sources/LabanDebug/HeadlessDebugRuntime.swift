@@ -72,6 +72,9 @@ public final class HeadlessDebugRuntime {
 
   var currentFrame: Int = 0
   var lastFrameCommands: [FrameCommand] = []
+  /// Sessions drawn by the last frame's pane path (empty or one id for a single-pane or
+  /// zoomed tab; every visible pane for a split one). Lets tests see which path ran.
+  var lastFramePaneSessionIds: [Session.ID] = []
   var lastDrawStats = DrawStats()
   var debugClipboard: String = ""
   var selectionBySession: [Session.ID: TerminalSelection] = [:]
@@ -972,7 +975,8 @@ public final class HeadlessDebugRuntime {
             preedit: preeditBySession[$0.sessionId]?.text,
             preeditCaretCells: preeditBySession[$0.sessionId]?.caretCells ?? 0)
         }
-      } ?? [])
+      } ?? [],
+      dividerPreview: dividerPreviewRect)
     let surfaceFrame: TerminalSurfaceFrame?
     if let id = model.activeTab?.focusedSessionId,
       let remote = terminalClientSnapshotUnlocked(sessionId: id)
@@ -981,6 +985,7 @@ public final class HeadlessDebugRuntime {
     } else {
       surfaceFrame = surfaceController.makeFrame(request)
     }
+    lastFramePaneSessionIds = surfaceFrame?.paneSessionIds ?? []
     let surfaceBuildMs = elapsedMs(since: timer)
     snapshotMs = surfaceFrame?.snapshotMs ?? 0
     commandExtractionMs += max(0, surfaceBuildMs - snapshotMs)
@@ -1159,7 +1164,24 @@ public final class HeadlessDebugRuntime {
 
   /// Moves the drag preview. The pane tree and PTY sizes do not change.
   func updateDividerDrag(x: Int, y: Int) {
-    dividerDrag?.moveTo(x: CGFloat(x), y: CGFloat(y))
+    guard var drag = dividerDrag else { return }
+    drag.moveTo(x: CGFloat(x), y: CGFloat(y))
+    // Show the position the commit will land on, not the raw pointer.
+    if let clamped = model.clampedSplitFraction(
+      inTab: drag.tabId, path: drag.path, fraction: drag.fraction)
+    {
+      drag.fraction = clamped
+    }
+    dividerDrag = drag
+  }
+
+  /// The translucent line to draw for the drag in progress, when it belongs to the
+  /// active, unzoomed tab.
+  var dividerPreviewRect: CGRect? {
+    guard let drag = dividerDrag, let tab = model.activeTab, tab.id == drag.tabId, !tab.isZoomed
+    else { return nil }
+    return PaneDivider.previewRect(
+      axis: drag.axis, container: drag.container, fraction: drag.fraction)
   }
 
   /// Applies the proposed fraction to the tree (one resize) and ends the drag.

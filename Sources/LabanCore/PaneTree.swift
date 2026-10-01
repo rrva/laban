@@ -43,6 +43,25 @@ public struct PaneDivider: Equatable {
     self.container = container
     self.fraction = fraction
   }
+
+  /// Thickness of the line that follows the pointer while a divider is dragged.
+  public static let previewThickness: CGFloat = 3
+
+  /// The drag-preview line: `thickness` pixels across, centred on where the divider would
+  /// sit at `fraction` of `container`, and spanning the container the other way.
+  public static func previewRect(
+    axis: PaneAxis, container: CGRect, fraction: Double, thickness: CGFloat = previewThickness
+  ) -> CGRect {
+    let value = CGFloat(fraction.isFinite ? fraction : 0.5)
+    if axis == .vertical {
+      let center = container.minX + floor(container.width * value)
+      return CGRect(
+        x: center - thickness / 2, y: container.minY, width: thickness, height: container.height)
+    }
+    let center = container.minY + floor(container.height * value)
+    return CGRect(
+      x: container.minX, y: center - thickness / 2, width: container.width, height: thickness)
+  }
 }
 
 /// Layout owns only identity and geometry; sessions own processes and terminal state.

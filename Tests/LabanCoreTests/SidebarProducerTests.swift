@@ -19,6 +19,38 @@ final class SidebarProducerTests: XCTestCase {
     }
   }
 
+  func testZoomedTabDrawsPaneCountBadgeAndTruncatesTitle() {
+    var tabs = makeTabs(count: 2)
+    tabs[0].title = String(repeating: "W", count: 60)
+    tabs[0].panes = .split(
+      axis: .vertical, fraction: 0.5, first: .leaf(sessionId: "session-0"),
+      second: .leaf(sessionId: "pane-b"))
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
+    func runs(_ tabs: [Tab]) -> [(origin: CGPoint, text: String)] {
+      p.commands(tabs: tabs, activeTabId: tabs[1].id, height: 600).compactMap {
+        if case .glyphRun(let origin, let text, _, _, _, _, _, _, _, _, _, _, _) = $0 {
+          return (origin, text)
+        }
+        return nil
+      }
+    }
+    let badge = SidebarProducer.zoomBadgeText(paneCount: 2)
+    XCTAssertFalse(runs(tabs).contains { $0.text == badge }, "unzoomed tabs have no badge")
+    let plainTitle = runs(tabs).first { $0.text.hasPrefix("WW") }
+    tabs[0].zoomedSessionId = "session-0"
+    let zoomed = runs(tabs)
+    let badgeRun = zoomed.first { $0.text == badge }
+    XCTAssertNotNil(badgeRun)
+    let title = zoomed.first { $0.text.hasPrefix("WW") }
+    XCTAssertNotNil(title)
+    XCTAssertEqual(badgeRun?.origin.y, title?.origin.y, "badge shares the title line")
+    let titleEnd = (title?.origin.x ?? 0) + CGFloat(title?.text.count ?? 0) * 8
+    XCTAssertLessThanOrEqual(
+      titleEnd, badgeRun?.origin.x ?? 0, "title must not run under the badge")
+    XCTAssertLessThan(title?.text.count ?? 0, plainTitle?.text.count ?? 0)
+    XCTAssertLessThanOrEqual((badgeRun?.origin.x ?? 0) + CGFloat(badge.count) * 8, 320 - 18)
+  }
+
   func testCommandsAreNonEmpty() {
     let tabs = makeTabs(count: 2)
     let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)

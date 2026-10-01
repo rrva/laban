@@ -966,6 +966,21 @@ public final class AppModel {
     if changed { notifyWorkspaceMutation() }
   }
 
+  /// The fraction `setSplitFraction` would actually apply for `fraction`: clamped so both
+  /// sides keep their minimum extent. Drag previews use it so the line shows where the
+  /// divider will land. Nil when the tab or path does not exist.
+  public func clampedSplitFraction(inTab tabId: Tab.ID, path: PanePath, fraction: Double)
+    -> Double?
+  {
+    withModelLock {
+      guard let tab = _tabs.first(where: { $0.id == tabId }),
+        let bounds = splitFractionBounds(in: tab, path: path)
+      else { return nil }
+      return Self.clampedFraction(
+        fraction.isFinite ? fraction : bounds.divider.fraction, to: bounds)
+    }
+  }
+
   /// Moves the nearest divider on the `direction` side of the focused pane by `cells`
   /// cells. Returns false when no divider is there, the tab is zoomed, or the divider
   /// is already at its limit.

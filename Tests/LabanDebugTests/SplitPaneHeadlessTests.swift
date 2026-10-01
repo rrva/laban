@@ -131,6 +131,182 @@ final class SplitPaneHeadlessTests: SplitPaneTestCase {
     try action("click", ["x": runtime.sidebarWidth + 20, "y": 20, "button": "left"])
     XCTAssertEqual(runtime.model.activeTab?.focusedSessionId, left)
   }
+
+  var area: CGRect {
+    CGRect(
+      x: runtime.sidebarWidth, y: 0, width: runtime.windowWidth - runtime.sidebarWidth,
+      height: runtime.windowHeight)
+  }
+
+  /// Origins of every terminal glyph run whose text contains `needle`.
+  func origins(of needle: String) -> [CGPoint] {
+    runtime.lastFrameCommands.compactMap { command in
+      if case .glyphRun(let origin, let text, _, _, _, let source, _, _, _, _, _, _, _) = command,
+        source == .terminal, text.contains(needle)
+      {
+        return origin
+      }
+      return nil
+    }
+  }
+
+  func rects(width: CGFloat? = nil, height: CGFloat? = nil) -> [CGRect] {
+    runtime.lastFrameCommands.compactMap { command in
+      if case .rect(let rect, _, let source, _) = command, source == .terminal,
+        width.map({ rect.width == $0 }) ?? true, height.map({ rect.height == $0 }) ?? true
+      {
+        return rect
+      }
+      return nil
+    }
+  }
+
+  /// `left | (topRight / bottomRight)`, focus on the bottom-right pane.
+  func threePanes() throws -> (left: String, topRight: String, bottomRight: String) {
+    let (left, topRight) = try split()
+    try action("pane.split", ["axis": "horizontal"])
+    let bottomRight = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+    XCTAssertEqual(runtime.model.activeTab?.allSessionIds, [left, topRight, bottomRight])
+    return (left, topRight, bottomRight)
+  }
+
+  func testThreePaneLayoutRendersThreeOriginsAndTwoDividers() throws {
+    let (left, topRight, bottomRight) = try threePanes()
+    try printText("PANE-ALPHA", in: left)
+    try printText("PANE-BRAVO", in: topRight)
+    try printText("PANE-CHARLIE", in: bottomRight)
+    let tab = try XCTUnwrap(runtime.model.activeTab)
+    let layout = Dictionary(
+      uniqueKeysWithValues: tab.visibleLayout(in: area).map { ($0.sessionId, $0.rect) })
+    for (id, needle) in [
+      (left, "PANE-ALPHA"), (topRight, "PANE-BRAVO"), (bottomRight, "PANE-CHARLIE"),
+    ] {
+      let rect = try XCTUnwrap(layout[id])
+      let found = origins(of: needle)
+      XCTAssertFalse(found.isEmpty, needle)
+      XCTAssertTrue(found.allSatisfy { rect.contains($0) }, "\(needle) must draw inside its pane")
+    }
+    let dividers = tab.visibleDividers(in: area)
+    XCTAssertEqual(dividers.map(\.path), [[], [.second]])
+    XCTAssertEqual(dividers.map(\.axis), [.vertical, .horizontal])
+    for divider in dividers {
+      XCTAssertEqual(
+        rects().filter { $0 == divider.rect }.count, 1, "one rect for divider \(divider.path)")
+    }
+    XCTAssertTrue(rects(width: PaneDivider.previewThickness).isEmpty, "no preview without a drag")
+    XCTAssertEqual(runtime.lastFramePaneSessionIds.count, 3)
+  }
+
+  func testZoomedTabUsesSinglePaneFrame() throws {
+    let (left, _, bottomRight) = try threePanes()
+    try action("pane.focus", ["sessionId": left])
+    try printText("ZOOMED-LEFT", in: left)
+    XCTAssertEqual(runtime.lastFramePaneSessionIds.count, 3)
+    let tab = try XCTUnwrap(runtime.model.activeTab)
+    let dividerRects = tab.visibleDividers(in: area).map(\.rect)
+    XCTAssertEqual(dividerRects.count, 2)
+
+    try action("pane.zoom", ["zoomed": true])
+    runtime.renderFrameUnlocked()
+    XCTAssertEqual(runtime.model.activeTab?.zoomedSessionId, left)
+    XCTAssertEqual(runtime.lastFramePaneSessionIds, [left])
+    for divider in dividerRects {
+      XCTAssertFalse(rects().contains(divider), "no divider while zoomed")
+    }
+    let found = origins(of: "ZOOMED-LEFT")
+    XCTAssertFalse(found.isEmpty)
+    XCTAssertTrue(
+      found.allSatisfy { $0.x == area.minX }, "zoomed text starts at the terminal-area origin")
+    XCTAssertFalse(origins(of: "ZOOMED-LEFT").isEmpty)
+    // The hidden panes are not drawn at all.
+    XCTAssertFalse(runtime.lastFramePaneSessionIds.contains(bottomRight))
+
+    try action("pane.zoom", ["zoomed": false])
+    runtime.renderFrameUnlocked()
+    XCTAssertEqual(runtime.lastFramePaneSessionIds.count, 3)
+  }
+
+  func testZoomedTabShowsPaneCountBadgeInSidebar() throws {
+    _ = try threePanes()
+    func badges() -> [String] {
+      runtime.lastFrameCommands.compactMap { command in
+        if case .glyphRun(_, let text, _, _, _, let source, _, _, _, _, _, _, _) = command,
+          source == .sidebar, text.contains("\u{2922}")
+        {
+          return text
+        }
+        return nil
+      }
+    }
+    runtime.renderFrameUnlocked()
+    XCTAssertTrue(badges().isEmpty)
+    try action("pane.zoom", ["zoomed": true])
+    runtime.renderFrameUnlocked()
+    XCTAssertEqual(badges(), [SidebarProducer.zoomBadgeText(paneCount: 3)])
+    try action("pane.zoom", ["zoomed": false])
+    runtime.renderFrameUnlocked()
+    XCTAssertTrue(badges().isEmpty, "the sidebar memo must not keep a stale badge")
+  }
+
+  func testDividerDragCommitsOnRelease() throws {
+    _ = try split()
+    runtime.renderFrameUnlocked()
+    let divider = try XCTUnwrap(runtime.model.activeTab?.visibleDividers(in: area).first)
+    XCTAssertEqual(divider.fraction, 0.5, accuracy: 0.001)
+    let startX = Int(divider.rect.midX)
+    let y = Int(divider.rect.midY)
+    XCTAssertTrue(runtime.beginDividerDrag(x: startX, y: y))
+    XCTAssertTrue(rects(width: PaneDivider.previewThickness).isEmpty, "nothing before a move")
+
+    let target = divider.container.minX + divider.container.width / 3
+    runtime.updateDividerDrag(x: startX - 40, y: y)
+    runtime.updateDividerDrag(x: Int(target), y: y)
+    runtime.renderFrameUnlocked()
+    let during = try XCTUnwrap(runtime.model.activeTab)
+    guard case .split(_, let duringFraction, _, _) = during.panes else { return XCTFail() }
+    XCTAssertEqual(duringFraction, 0.5, accuracy: 0.0001, "the tree is untouched mid-drag")
+    let previews = rects(width: PaneDivider.previewThickness, height: area.height)
+    XCTAssertEqual(previews.count, 1)
+    XCTAssertEqual(try XCTUnwrap(previews.first).midX, target, accuracy: 2)
+    XCTAssertEqual(rects(width: 1, height: area.height).count, 1, "the real divider stays put")
+
+    runtime.commitDividerDrag()
+    runtime.renderFrameUnlocked()
+    let after = try XCTUnwrap(runtime.model.activeTab)
+    guard case .split(_, let finalFraction, _, _) = after.panes else { return XCTFail() }
+    let cell = Double(runtime.cellWidth)
+    XCTAssertEqual(
+      finalFraction * Double(area.width), Double(target - area.minX), accuracy: cell)
+    XCTAssertTrue(rects(width: PaneDivider.previewThickness).isEmpty, "preview ends on release")
+    XCTAssertNil(runtime.dividerDrag)
+  }
+
+  func testDividerDragPreviewIsClampedToMinimumPaneWidth() throws {
+    _ = try split()
+    let divider = try XCTUnwrap(runtime.model.activeTab?.visibleDividers(in: area).first)
+    XCTAssertTrue(runtime.beginDividerDrag(x: Int(divider.rect.midX), y: Int(divider.rect.midY)))
+    runtime.updateDividerDrag(x: Int(area.minX) + 2, y: Int(divider.rect.midY))
+    let preview = try XCTUnwrap(runtime.dividerPreviewRect)
+    let minWidth = 10 * CGFloat(runtime.cellWidth)
+    XCTAssertGreaterThanOrEqual(preview.midX - area.minX, minWidth)
+    runtime.cancelDividerDrag()
+    XCTAssertNil(runtime.dividerPreviewRect)
+  }
+
+  func testUnzoomShowsOutputWrittenWhileHidden() throws {
+    let (left, right) = try split()
+    try action("pane.zoom", ["zoomed": true])
+    runtime.renderFrameUnlocked()
+    XCTAssertEqual(runtime.lastFramePaneSessionIds, [right])
+    try printText("WRITTEN-WHILE-HIDDEN", in: left)
+    try action("pane.zoom", ["zoomed": false])
+    runtime.renderFrameUnlocked()
+    let leftRect = try XCTUnwrap(
+      runtime.model.activeTab?.visibleLayout(in: area).first { $0.sessionId == left }?.rect)
+    let found = origins(of: "WRITTEN-WHILE-HIDDEN")
+    XCTAssertFalse(found.isEmpty, "output written while hidden must draw after unzoom")
+    XCTAssertTrue(found.allSatisfy { leftRect.contains($0) })
+  }
 }
 
 final class SurvivorPaneTests: SplitPaneTestCase {

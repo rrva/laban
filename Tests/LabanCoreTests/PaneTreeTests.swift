@@ -227,4 +227,19 @@ final class PaneTreeTests: XCTestCase {
     XCTAssertEqual(tree.nudgeTarget(for: "C", direction: .up), [.second, .first])
     XCTAssertNil(tree.nudgeTarget(for: "missing", direction: .right))
   }
+
+  func testPreviewRectCentresOnProposedPositionAndSpansContainer() {
+    let container = CGRect(x: 200, y: 10, width: 900, height: 600)
+    let vertical = PaneDivider.previewRect(axis: .vertical, container: container, fraction: 1.0 / 3)
+    XCTAssertEqual(vertical.width, PaneDivider.previewThickness)
+    XCTAssertEqual(vertical.minY, 10)
+    XCTAssertEqual(vertical.height, 600)
+    XCTAssertEqual(vertical.midX, 200 + 300, accuracy: 0.5)
+    let horizontal = PaneDivider.previewRect(
+      axis: .horizontal, container: container, fraction: 0.25)
+    XCTAssertEqual(horizontal.height, PaneDivider.previewThickness)
+    XCTAssertEqual(horizontal.minX, 200)
+    XCTAssertEqual(horizontal.width, 900)
+    XCTAssertEqual(horizontal.midY, 10 + 150, accuracy: 0.5)
+  }
 }

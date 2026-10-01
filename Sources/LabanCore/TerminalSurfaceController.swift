@@ -101,6 +101,9 @@ public struct TerminalSurfacePaneRequest {
 public struct TerminalSurfaceFrameRequest {
   public var panes: [TerminalSurfacePaneRequest]
   public var dividers: [CGRect]
+  /// While a divider is dragged, the translucent line at the proposed position. Drawn
+  /// after the dividers; the pane tree and PTY sizes are untouched until the drag commits.
+  public var dividerPreview: CGRect?
   public var frame: Int
   public var viewportWidth: CGFloat
   public var viewportHeight: CGFloat
@@ -211,7 +214,8 @@ public struct TerminalSurfaceFrameRequest {
     hoverPreviewEnabled: Bool = false,
     deferHoverPreviewUpdate: Bool = false,
     panes: [TerminalSurfacePaneRequest] = [],
-    dividers: [CGRect] = []
+    dividers: [CGRect] = [],
+    dividerPreview: CGRect? = nil
   ) {
     self.frame = frame
     self.viewportWidth = viewportWidth
@@ -249,6 +253,7 @@ public struct TerminalSurfaceFrameRequest {
     self.deferHoverPreviewUpdate = deferHoverPreviewUpdate
     self.panes = panes
     self.dividers = dividers
+    self.dividerPreview = dividerPreview
   }
 }
 
@@ -418,6 +423,8 @@ private struct SidebarCacheSignature: Equatable {
     var status: TabStatus
     var isActive: Bool
     var metadata: TabTitleMetadata
+    /// Pane count while the tab is zoomed (drives the sidebar badge); 0 otherwise.
+    var zoomedPaneCount: Int
   }
   var tabs: [Entry]
   var activeTabId: Tab.ID?
@@ -1136,6 +1143,12 @@ public final class TerminalSurfaceController {
     {
       commands.append(.rect(divider, color: Theme.current.dim0, source: .terminal))
     }
+    if let preview = request.dividerPreview, !tab.isZoomed {
+      commands.append(
+        .rect(
+          preview, color: Self.withAlpha(Theme.current.blue, Self.dividerPreviewAlpha),
+          source: .terminal))
+    }
     commands += hoverPreviewOverlayCommands(
       activeTabId: tab.id, viewportWidth: request.viewportWidth,
       viewportHeight: request.viewportHeight, topInset: request.sidebarTopInset,
@@ -1593,7 +1606,8 @@ public final class TerminalSurfaceController {
           position: $0.position,
           status: $0.status,
           isActive: $0.id == activeTabId,
-          metadata: $0.titleMetadata)
+          metadata: $0.titleMetadata,
+          zoomedPaneCount: $0.isZoomed ? $0.allSessionIds.count : 0)
       },
       activeTabId: activeTabId,
       viewportHeight: viewportHeight,
@@ -1854,6 +1868,9 @@ public final class TerminalSurfaceController {
       commands: commands)
     return commands
   }
+
+  /// Opacity of the drag-preview line (the theme's blue accent at about 70%).
+  static let dividerPreviewAlpha: UInt8 = 0xB3
 
   private static func withAlpha(_ color: UInt32, _ alpha: UInt8) -> UInt32 {
     (color & 0xFFFF_FF00) | UInt32(alpha)

@@ -137,8 +137,10 @@ does the same thing without a window and saves screenshots.
       directions, `pane.resize`, `pane.equalize`, `pane.zoom`; state
       projection and schema; discovery regenerated; divider drag through
       headless mouse actions.
-- [ ] M6: Rendering: nested layouts, zoom uses the single-pane path, divider
-      drag preview line; headless tests.
+- [x] M6: Rendering: nested layouts, zoom uses the single-pane path, divider
+      drag preview line, sidebar zoom badge; headless tests. (The GUI half of
+      "pass `dividerPreview` during a drag" lands with the M7 drag handler; the
+      request field and headless path are done.)
 - [ ] M7: GUI input: divider hover cursor, drag-preview-commit, keyboard
       chords, menu items, accessibility splitter elements.
 - [ ] M8: End-to-end: headless scenario, nested-split restart test through
@@ -350,6 +352,32 @@ does the same thing without a window and saves screenshots.
   is not zoomed; the schema allows both. `schemas/debug/action.schema.json` is
   hand-maintained, so it was edited directly.
   Rationale: keep every command atomic, idempotent and symmetrical with the GUI.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M6 behaviour details the plan left open.
+  (1) `TerminalSurfaceFrameRequest.dividerPreview` carries the finished rect, built by
+  `PaneDivider.previewRect(axis:container:fraction:)` (3 pixels thick, centred on the
+  proposed cut, spanning the container). The GUI drag in M7 must use the same helper.
+  (2) `Theme` has no focus-ring accent; the sidebar's selected-row stripe and drop
+  accent use `Theme.current.blue`, so the preview is that colour at alpha 0xB3
+  (`TerminalSurfaceController.dividerPreviewAlpha`). It is appended after the
+  dividers and skipped while the tab is zoomed. (3) The preview position is the
+  clamped fraction: `AppModel.clampedSplitFraction(inTab:path:fraction:)` (new,
+  public) exposes what `setSplitFraction` will apply, and the headless
+  `updateDividerDrag` stores it, so the line never shows a position the commit
+  would refuse. M7's GUI drag should call the same method. (4) The zoom badge
+  `SidebarProducer.zoomBadgeText(paneCount:)` ("\u{2922} N") is drawn on the title line
+  right-aligned just left of the status slot (the slot itself keeps the attention
+  marker / close glyph), and the title truncates by badge width plus one cell. (5)
+  `SidebarCacheSignature.Entry` gained `zoomedPaneCount` so the memoised sidebar
+  rebuilds when a tab zooms or unzooms. (6) The badge is not added to
+  `Localizable.xcstrings`: it is a symbol and a number built in `LabanCore`, which has
+  no access to `L10n` (app target), and no string audit reads the catalog for unused
+  keys, so a catalog entry would be dead. (7) Tests live in `SplitPaneHeadlessTests`
+  (so the Review Gate filter finds them) with `lastFramePaneSessionIds` on the
+  headless runtime to show which frame path ran.
+  Rationale: keep the preview honest, the sidebar cache correct and the GUI and
+  headless paths identical.
   Date/Author: 2026-10-01 / executing agent.
 
 ## Review Gate
