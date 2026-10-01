@@ -1,0 +1,25 @@
+Tests/LabanCoreTests/PersistenceRoundTripTests.swift
+  s_8bfdcc4b4ee25a::t_46a31415638878 679-767
+Sources/LabanCore/Persistence/WorkspaceState.swift
+  s_8bfdcc4b4ee25a::t_44ac16c68c98f0 145-147,182-183,187,242,247,269,284-290
+Sources/LabanCore/AppModel.swift
+  s_8bfdcc4b4ee25a::t_6e036e1f791a6a 1270-1276,1324-1326,1447-1448
+execplans/active/split-panes-2-divider-and-navigation.md
+  s_8bfdcc4b4ee25a::t_7cc112925c0aba 134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d393a678988d3304b8300d05669543e35278a4b3",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
