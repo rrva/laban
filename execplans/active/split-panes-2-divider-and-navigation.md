@@ -298,7 +298,7 @@ A separate agent with fresh state must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed. See "Review gate and review-fix loop" in
 `PLANS.md`. All commands run from the repository root. The executing agent
-records `BASE` here in M0: `BASE = <fill in>`.
+records `BASE` here in M0: `BASE = 958c85b502529fd194ef73ba966b2bb782e1511b`.
 
 - [ ] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
 - [ ] `swift test --filter PaneTreeTests` exits 0 and output contains
