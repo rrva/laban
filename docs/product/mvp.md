@@ -392,7 +392,7 @@ The MVP is acceptable when it can:
 
 After the MVP is stable, extend toward `docs/product/spec.md` in this order:
 
-1. Split panes backed by stable session IDs: delivered as one fixed vertical 50/50 split per tab. Divider dragging, nesting, horizontal splits, spatial navigation, laband split rendering, and the multi-payload GPU path remain for the next plan (`execplans/active/split-panes-2-divider-and-navigation.md`, not yet authored).
+1. Split panes backed by stable session IDs: first delivered as one fixed vertical 50/50 split per tab, then extended by `execplans/active/split-panes-2-divider-and-navigation.md` with nested layouts, both split directions (Cmd+D right, Cmd+Shift+D down), mouse-draggable dividers that commit the PTY size on release, directional focus (Cmd+Option+Arrows), keyboard divider resize, per-tab zoom and equalize. Cmd+W now closes the focused pane and, in a tab with a single pane, still closes the tab (Cmd+Option+W always closes the whole tab), so the "close active tab" contract above holds. Laband split rendering and a multi-grid GPU payload remain deferred.
 2. multi-window scene identity
 3. window-scoped command publication
 4. persistence and restoration
