@@ -1,0 +1,35 @@
+Sources/LabanApp/MenuCommands.swift
+  s_8bfdcc4b4ee25a::t_f4c865562feb72 2,93-95,99,102-109,119-120,221-222,384-464
+Sources/LabanApp/Resources/Localizable.xcstrings
+  s_8bfdcc4b4ee25a::t_7fdda07f347846 144,149,155,161,167,173,179,185,191,197,203,209,214,219,225,231,237,243,249,255,261,267,273,279-1329
+Sources/LabanApp/TerminalInputView.swift
+  s_8bfdcc4b4ee25a::t_3fdfd51a3d9bd9 170-171,182,184,199,203,216,221-230
+Sources/LabanDebug/DebugRuntimeKeyInput.swift
+  s_8bfdcc4b4ee25a::t_b4d89b8a4bed04 39,43,51-52,59-68,70-76,101,103
+Tests/LabanAppTests/TerminalKeyInputTests.swift
+  s_8bfdcc4b4ee25a::t_bf785fef599354 4-5,22,24-28,32-136,160-161,164,168,261-314
+Tests/LabanDebugTests/DebugRuntimeKeyInputTests.swift
+  s_8bfdcc4b4ee25a::t_a4d578b33a3feb 26,39,53-99
+Tests/LabanDebugTests/LabanDebugKeyboardSmokeTests.swift
+  s_8bfdcc4b4ee25a::t_5eb6e938286733 122-198
+Tests/LabanDebugTests/PaneReviewHeadlessTests.swift
+  s_8bfdcc4b4ee25a::t_13007ce84f5609 40-43,45
+scripts/gen-localizable-xcstrings.py
+  s_8bfdcc4b4ee25a::t_0ebcf15aff8321 33-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2519e881abf71d3de41653e7cc833dc352e3cae3",
+  "prompts": {},
+  "sessions": {
+    "s_8bfdcc4b4ee25a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a97f6939-aa85-4b1a-87d1-8ee10176d5fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
