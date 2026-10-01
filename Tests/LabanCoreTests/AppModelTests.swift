@@ -1604,6 +1604,51 @@ extension AppModelTests {
         try XCTUnwrap(model.tabs.first { $0.id == tab.id }).titleMetadata, isActive: false), .none)
   }
 
+  func testRenamedTitleSurvivesPaneFocusChanges() throws {
+    let (model, tab, right) = try splitModel()
+    let left = tab.focusedSessionId
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(titleDirty: true, titleRaw: "LEFT"), forTab: tab.id, sessionId: left)
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(titleDirty: true, titleRaw: "RIGHT"), forTab: tab.id, sessionId: right)
+    try model.renameTab(tab.id, title: "manual")
+    for id in [left, right, left] {
+      model.focusPane(inTab: tab.id, sessionId: id)
+      let current = try XCTUnwrap(model.tabs.first { $0.id == tab.id })
+      XCTAssertEqual(current.title, "manual")
+      XCTAssertEqual(current.titleMetadata.titleSource, .user)
+    }
+  }
+
+  func testFrozenTitleSurvivesPaneFocusChanges() throws {
+    let (model, tab, right) = try splitModel()
+    let left = tab.focusedSessionId
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(titleDirty: true, titleRaw: "RIGHT"), forTab: tab.id, sessionId: right)
+    try model.freezeTitle(forTab: tab.id)
+    for id in [left, right] {
+      model.focusPane(inTab: tab.id, sessionId: id)
+      let current = try XCTUnwrap(model.tabs.first { $0.id == tab.id })
+      XCTAssertEqual(current.title, "RIGHT")
+      XCTAssertTrue(current.titleMetadata.titleFrozen)
+    }
+  }
+
+  func testUnfocusedPaneTitleAppearsOnFocusAndSurvivesSiblingClose() throws {
+    let (model, tab, right) = try splitModel()
+    let left = tab.focusedSessionId
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(titleDirty: true, titleRaw: "RIGHT"), forTab: tab.id, sessionId: right)
+    _ = model.applySurfaceSignals(
+      TabSurfaceSignals(titleDirty: true, titleRaw: "LEFT"), forTab: tab.id, sessionId: left)
+    XCTAssertEqual(model.tabs.first { $0.id == tab.id }?.title, "RIGHT")
+    model.focusPane(inTab: tab.id, sessionId: left)
+    XCTAssertEqual(model.tabs.first { $0.id == tab.id }?.title, "LEFT")
+    model.focusPane(inTab: tab.id, sessionId: right)
+    model.closePane(inTab: tab.id, sessionId: right, terminate: { _ in })
+    XCTAssertEqual(model.tabs.first { $0.id == tab.id }?.title, "LEFT")
+  }
+
   func testBackgroundSplitRestoreRetainsEachPaneSize() throws {
     let (model, tab, right) = try splitModel()
     model.resize(viewportWidth: 800, viewportHeight: 400, cellWidth: 8, cellHeight: 16)

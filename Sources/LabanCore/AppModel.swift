@@ -790,6 +790,8 @@ public final class AppModel {
         _tabs[idx].titleMetadata =
           paneMetadata[sessionId] ?? .fallback(position: old.position, active: old.isActive)
         _tabs[idx].titleMetadata.userTitle = old.titleMetadata.userTitle
+        _tabs[idx].titleMetadata.titleFrozen = old.titleMetadata.titleFrozen
+        resolveTitle(at: idx)
         _tabs[idx].status = paneStatus[sessionId] ?? .running
       }
       _tabs[idx].focusHistory.removeAll { $0 == sessionId }
