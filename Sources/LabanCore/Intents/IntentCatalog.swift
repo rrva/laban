@@ -868,7 +868,7 @@ public struct IntentCatalog: Sendable {
       inputSchema: RemoveBackgroundImageActionRequest.jsonSchema),
     descriptor(
       id: "pane.split", category: "pane",
-      summary: "Split a single terminal into left and right panes.",
+      summary: "Split the focused pane left/right or top/bottom.",
       requiredCapability: .input, dataSensitivity: .nonSensitiveState,
       availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
     descriptor(
@@ -876,8 +876,24 @@ public struct IntentCatalog: Sendable {
       requiredCapability: .input, dataSensitivity: .nonSensitiveState,
       availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
     descriptor(
-      id: "pane.focus", category: "pane", summary: "Focus a pane by session ID or cycle direction.",
+      id: "pane.focus", category: "pane",
+      summary: "Focus a pane by session ID, cycle next/previous, or move left/right/up/down.",
       requiredCapability: .navigate, dataSensitivity: .nonSensitiveState,
+      availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
+    descriptor(
+      id: "pane.resize", category: "pane",
+      summary: "Move a divider to a fraction by path, or nudge the focused pane's divider.",
+      requiredCapability: .input, dataSensitivity: .nonSensitiveState,
+      availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
+    descriptor(
+      id: "pane.equalize", category: "pane",
+      summary: "Give every pane in the tab an equal share of the space.",
+      requiredCapability: .input, dataSensitivity: .nonSensitiveState,
+      availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
+    descriptor(
+      id: "pane.zoom", category: "pane",
+      summary: "Zoom the focused pane to fill the tab, restore the layout, or toggle.",
+      requiredCapability: .input, dataSensitivity: .nonSensitiveState,
       availability: headlessOnly, inputSchema: PaneActionRequest.jsonSchema),
     descriptor(
       id: "tab.new", category: "tab", summary: "Create and select a new tab.",

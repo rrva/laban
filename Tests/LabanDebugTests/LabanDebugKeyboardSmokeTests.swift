@@ -119,7 +119,83 @@ final class LabanDebugKeyboardSmokeTests: XCTestCase {
     _ = runtime.applyAction(
       action(["action": "key", "key": "arrowRight", "modifiers": ["command", "option"]]))
     XCTAssertEqual(runtime.model.activeTab?.id, tabs[1].id)
-    XCTAssertEqual(inputLog(runtime).last?["command"] as? String, "selectNextTab")
+    XCTAssertEqual(inputLog(runtime).last?["command"] as? String, "paneOrTabNavigationRight")
+  }
+
+  private func press(_ runtime: HeadlessDebugRuntime, _ key: String, _ modifiers: [String]) {
+    let response = runtime.applyAction(
+      action(["action": "key", "key": key, "modifiers": modifiers]))
+    XCTAssertEqual(response.status, 200, String(decoding: response.body, as: UTF8.self))
+  }
+
+  func testPaneChordsDriveTheSameActionsAsTheApp() throws {
+    let runtime = try makeRuntime()
+    let first = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+
+    press(runtime, "d", ["command"])
+    XCTAssertEqual(runtime.model.activeTab?.allSessionIds.count, 2)
+    let second = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+    press(runtime, "d", ["command", "shift"])
+    XCTAssertEqual(runtime.model.activeTab?.allSessionIds.count, 3)
+    let third = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+    XCTAssertEqual(
+      runtime.model.activeTab?.panes,
+      .split(
+        axis: .vertical, fraction: 0.5, first: .leaf(sessionId: first),
+        second: .split(
+          axis: .horizontal, fraction: 0.5, first: .leaf(sessionId: second),
+          second: .leaf(sessionId: third))))
+
+    // Directional focus: the stacked pane above, then the left pane; the edge is a no-op.
+    press(runtime, "arrowUp", ["command", "option"])
+    XCTAssertEqual(runtime.model.activeTab?.focusedSessionId, second)
+    press(runtime, "arrowUp", ["command", "option"])
+    XCTAssertEqual(runtime.model.activeTab?.focusedSessionId, second, "the edge does nothing")
+    press(runtime, "arrowLeft", ["command", "option"])
+    XCTAssertEqual(runtime.model.activeTab?.focusedSessionId, first)
+    XCTAssertEqual(runtime.model.tabs.count, 1)
+
+    // Cmd+Control+Arrow nudges the divider on that side; Cmd+Control+= equalizes.
+    func rootFraction() -> Double? {
+      guard case .split(_, let fraction, _, _)? = runtime.model.activeTab?.panes else {
+        return nil
+      }
+      return fraction
+    }
+    press(runtime, "arrowRight", ["command", "control"])
+    XCTAssertGreaterThan(try XCTUnwrap(rootFraction()), 0.5)
+    press(runtime, "equal", ["command", "control"])
+    XCTAssertEqual(try XCTUnwrap(rootFraction()), 0.5, accuracy: 0.001)
+
+    // Cmd+Shift+Return zooms the focused pane and back.
+    press(runtime, "enter", ["command", "shift"])
+    XCTAssertEqual(runtime.model.activeTab?.zoomedSessionId, first)
+    press(runtime, "enter", ["command", "shift"])
+    XCTAssertNil(runtime.model.activeTab?.zoomedSessionId)
+
+    // Cmd+W closes only the focused pane while split; Cmd+Option+W closes the tab.
+    press(runtime, "w", ["command"])
+    XCTAssertEqual(runtime.model.activeTab?.allSessionIds.count, 2)
+    XCTAssertEqual(runtime.model.tabs.count, 1)
+    _ = try runtime.model.createTab()
+    XCTAssertEqual(runtime.model.tabs.count, 2)
+    press(runtime, "w", ["command", "option"])
+    XCTAssertEqual(runtime.model.tabs.count, 1)
+  }
+
+  func testCommandOptionArrowSwitchesTabsOnlyWhenUnsplit() throws {
+    let runtime = try makeRuntime()
+    _ = try runtime.model.createTab()
+    let tabs = runtime.model.tabs
+    runtime.model.selectTab(tabs[0].id)
+    press(runtime, "arrowDown", ["command", "option"])
+    XCTAssertEqual(runtime.model.activeTab?.id, tabs[0].id, "up and down never switch tabs")
+    press(runtime, "arrowRight", ["command", "option"])
+    XCTAssertEqual(runtime.model.activeTab?.id, tabs[1].id)
+    press(runtime, "d", ["command"])
+    let split = try XCTUnwrap(runtime.model.activeTab)
+    press(runtime, "arrowRight", ["command", "option"])
+    XCTAssertEqual(runtime.model.activeTab?.id, split.id, "a split tab keeps the chord for panes")
   }
 
   func testUnhandledCommandKeyLogsIgnored() throws {

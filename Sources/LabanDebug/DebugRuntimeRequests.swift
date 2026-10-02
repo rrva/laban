@@ -62,7 +62,7 @@ enum DebugAction: Decodable {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     let action = try container.decode(String.self, forKey: .action)
     switch action {
-    case "pane.split", "pane.close", "pane.focus":
+    case "pane.split", "pane.close", "pane.focus", "pane.resize", "pane.equalize", "pane.zoom":
       self = .pane(action, try PaneActionRequest(from: decoder))
     case "newTab":
       self = .newTab

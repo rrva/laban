@@ -72,9 +72,15 @@ public final class HeadlessDebugRuntime {
 
   var currentFrame: Int = 0
   var lastFrameCommands: [FrameCommand] = []
+  /// Sessions drawn by the last frame's pane path (empty or one id for a single-pane or
+  /// zoomed tab; every visible pane for a split one). Lets tests see which path ran.
+  var lastFramePaneSessionIds: [Session.ID] = []
   var lastDrawStats = DrawStats()
   var debugClipboard: String = ""
   var selectionBySession: [Session.ID: TerminalSelection] = [:]
+  /// The divider drag in flight, if any. While it is set the pane tree is untouched;
+  /// only `commitDividerDrag()` changes it, once, like the GUI's mouse-up.
+  var dividerDrag: PaneDividerDrag?
   var preeditBySession: [Session.ID: (text: String, caretCells: Int)] = [:]
   var lastCopyText: String?
   var lastPasteText: String?
@@ -960,7 +966,7 @@ public final class HeadlessDebugRuntime {
       effectiveRendererIsSlug: rendererBackend is SlugGlyphRenderer,
       hoverPreviewEnabled: HoverPreviewSettings.enabled,
       panes: model.activeTab.map { tab in
-        tab.panes.layout(
+        tab.visibleLayout(
           in: CGRect(x: sidebarWidth, y: 0, width: windowWidth - sidebarWidth, height: windowHeight)
         ).map {
           TerminalSurfacePaneRequest(
@@ -969,7 +975,8 @@ public final class HeadlessDebugRuntime {
             preedit: preeditBySession[$0.sessionId]?.text,
             preeditCaretCells: preeditBySession[$0.sessionId]?.caretCells ?? 0)
         }
-      } ?? [])
+      } ?? [],
+      dividerPreview: dividerPreviewRect)
     let surfaceFrame: TerminalSurfaceFrame?
     if let id = model.activeTab?.focusedSessionId,
       let remote = terminalClientSnapshotUnlocked(sessionId: id)
@@ -978,6 +985,7 @@ public final class HeadlessDebugRuntime {
     } else {
       surfaceFrame = surfaceController.makeFrame(request)
     }
+    lastFramePaneSessionIds = surfaceFrame?.paneSessionIds ?? []
     let surfaceBuildMs = elapsedMs(since: timer)
     snapshotMs = surfaceFrame?.snapshotMs ?? 0
     commandExtractionMs += max(0, surfaceBuildMs - snapshotMs)
@@ -1119,10 +1127,68 @@ public final class HeadlessDebugRuntime {
       guard sessionId == nil || sessionId == tab.focusedSessionId else { return nil }
       return PaneRect(sessionId: tab.focusedSessionId, rect: area)
     }
-    return tab.panes.layout(in: area).first { pane in
+    // Debug coordinates are top-down; layout rects are in render space (y up).
+    let point = CGPoint(x: x, y: windowHeight - y)
+    return tab.visibleLayout(in: area).first { pane in
       if let sessionId { return pane.sessionId == sessionId }
-      return pane.rect.contains(CGPoint(x: x, y: y))
+      return pane.rect.contains(point)
     }
+  }
+
+  /// Pixels either side of a divider that grab it, matching `TerminalBitmapView`.
+  static let dividerGrabZone: CGFloat = 3
+
+  /// The visible divider whose grab zone contains the point. Nil while zoomed (no
+  /// dividers are shown) and on the laband backend (it never shows splits).
+  func dividerHit(x: Int, y: Int) -> PaneDivider? {
+    guard terminalBackend != .laband, let tab = model.activeTab else { return nil }
+    let area = CGRect(
+      x: sidebarWidth, y: 0, width: max(0, windowWidth - sidebarWidth), height: windowHeight)
+    let point = CGPoint(x: x, y: windowHeight - y)
+    return tab.visibleDividers(in: area).first { divider in
+      let zone =
+        divider.axis == .vertical
+        ? divider.rect.insetBy(dx: -Self.dividerGrabZone, dy: 0)
+        : divider.rect.insetBy(dx: 0, dy: -Self.dividerGrabZone)
+      return zone.contains(point)
+    }
+  }
+
+  /// Starts dragging the divider under the point. Returns false when none is there.
+  @discardableResult
+  func beginDividerDrag(x: Int, y: Int) -> Bool {
+    guard let divider = dividerHit(x: x, y: y), let tab = model.activeTab else { return false }
+    dividerDrag = PaneDividerDrag(
+      tab: tab, divider: divider, grabbedAt: CGPoint(x: x, y: windowHeight - y))
+    return true
+  }
+
+  /// Moves the drag preview. The pane tree and PTY sizes do not change.
+  func updateDividerDrag(x: Int, y: Int) {
+    guard var drag = dividerDrag else { return }
+    drag.move(toX: CGFloat(x), y: CGFloat(windowHeight - y), in: model)
+    dividerDrag = drag
+  }
+
+  /// The translucent line to draw for the drag in progress, when it belongs to the
+  /// active, unzoomed tab.
+  var dividerPreviewRect: CGRect? {
+    guard let drag = dividerDrag, let tab = model.activeTab, tab.id == drag.tabId, !tab.isZoomed
+    else { return nil }
+    return PaneDivider.previewRect(
+      axis: drag.axis, container: drag.container, fraction: drag.fraction)
+  }
+
+  /// Applies the proposed fraction to the tree (one resize) and ends the drag.
+  func commitDividerDrag() {
+    guard let drag = dividerDrag else { return }
+    dividerDrag = nil
+    drag.commit(in: model)
+  }
+
+  /// Abandons the drag without touching the tree.
+  func cancelDividerDrag() {
+    dividerDrag = nil
   }
 
   func terminalMousePosition(x: Int, y: Int, sessionId: Session.ID? = nil) -> (x: Float, y: Float) {

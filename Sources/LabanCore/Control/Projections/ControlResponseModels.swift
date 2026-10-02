@@ -53,6 +53,8 @@ public struct TabResponse: Encodable {
   public var status: String
   public var panes: PaneTree
   public var focusedSessionId: String
+  /// The pane that fills the tab while zoomed; absent when the whole layout is shown.
+  public var zoomedSessionId: String?
   public var sessionId: String
 
   public init(
@@ -81,7 +83,8 @@ public struct TabResponse: Encodable {
     status: String,
     sessionId: String,
     panes: PaneTree? = nil,
-    focusedSessionId: String? = nil
+    focusedSessionId: String? = nil,
+    zoomedSessionId: String? = nil
   ) {
     self.id = id
     self.index = index
@@ -108,6 +111,7 @@ public struct TabResponse: Encodable {
     self.status = status
     self.panes = panes ?? .leaf(sessionId: sessionId)
     self.focusedSessionId = focusedSessionId ?? sessionId
+    self.zoomedSessionId = zoomedSessionId
     self.sessionId = sessionId
   }
 }

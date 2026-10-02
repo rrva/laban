@@ -2150,7 +2150,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     resizeActivePanes()
     let canRequestCellPayload =
       !usingRemoteSessions
-      && activeTab.allSessionIds.count == 1
+      && activeTab.visiblePaneCount == 1
       && captureRecorder == nil
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
@@ -4275,7 +4275,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     resizeActivePanes()
     let canRequestCellPayload =
       !usingRemoteSessions
-      && activeTab.allSessionIds.count == 1
+      && activeTab.visiblePaneCount == 1
       && captureRecorder == nil
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
@@ -4327,7 +4327,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       effectiveRendererIsSlug: backend is SlugGlyphRenderer,
       hoverPreviewEnabled: HoverPreviewSettings.enabled,
       deferHoverPreviewUpdate: deferHoverPreviewUpdate,
-      panes: activeTab.panes.layout(
+      panes: activeTab.visibleLayout(
         in: CGRect(x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: h)
       ).map {
         TerminalSurfacePaneRequest(
@@ -4337,7 +4337,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           preedit: $0.sessionId == activeTab.focusedSessionId && hasMarkedText()
             ? markedText.string : nil,
           preeditCaretCells: markedTextCaretCells)
-      }
+      },
+      dividerPreview: dividerPreviewRect
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
@@ -5202,6 +5203,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// app sees one report per cell entered, not one per pixel.
   private func forwardHoverMotion(at pt: NSPoint, modifiers: Int) {
     guard trackedMouseButton == .none, !localSelectionMouseGestureActive,
+      dividerDrag == nil, dividerHit(at: pt) == nil,
       let hit = paneHit(at: pt),
       let activeTab = model.tabProjection(forSession: hit.sessionId),
       let session = model.session(forSessionID: hit.sessionId),
@@ -5300,6 +5302,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func updateHoverCursor(at pt: NSPoint, modifierFlags: NSEvent.ModifierFlags = []) {
+    if let drag = dividerDrag {
+      setHoverCursor(Self.cursorStyle(for: drag.axis))
+      return
+    }
+    if let divider = dividerHit(at: pt) {
+      setHoverCursor(Self.cursorStyle(for: divider.axis))
+      return
+    }
     let uri = pt.x >= sidebarWidth ? externalHyperlinkURI(at: pt) : nil
     setHoverCursor(
       TerminalHyperlinkOpening.hoverCursorStyle(
@@ -5316,6 +5326,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       NSCursor.arrow.set()
     case .pointingHand:
       NSCursor.pointingHand.set()
+    case .resizeLeftRight:
+      NSCursor.resizeLeftRight.set()
+    case .resizeUpDown:
+      NSCursor.resizeUpDown.set()
     }
   }
 
@@ -6707,6 +6721,62 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     "Terminal"
   }
 
+  /// One `splitter` element per visible divider, so VoiceOver can reach each divider and
+  /// move it with the increment and decrement actions.
+  override func accessibilityChildren() -> [Any]? {
+    let splitters = paneSplitterElements()
+    guard !splitters.isEmpty else { return super.accessibilityChildren() }
+    return (super.accessibilityChildren() ?? []) + splitters
+  }
+
+  /// Rebuilt whenever the divider geometry changes so no stale element survives a layout
+  /// change; reused while it is unchanged so VoiceOver keeps its focus.
+  func paneSplitterElements() -> [PaneSplitterAccessibilityElement] {
+    guard sessionCoordinator?.usesRemoteSnapshots != true, let tab = model.activeTab else {
+      paneSplitterCache = ([], [])
+      return []
+    }
+    let dividers = tab.visibleDividers(in: paneAreaRect)
+    let signature = dividers.map { PaneSplitterSignature(divider: $0, tabId: tab.id) }
+    if paneSplitterCache.signature == signature { return paneSplitterCache.elements }
+    let elements = dividers.map { divider -> PaneSplitterAccessibilityElement in
+      let element = PaneSplitterAccessibilityElement()
+      element.setAccessibilityRole(.splitter)
+      element.setAccessibilityLabel(L10n.tr("Pane divider"))
+      element.setAccessibilityParent(self)
+      element.setAccessibilityOrientation(divider.axis == .vertical ? .vertical : .horizontal)
+      element.setAccessibilityValue(NSNumber(value: (divider.fraction * 100).rounded()))
+      // The 1 pixel line is too thin to target: use the mouse grab zone.
+      let grab =
+        divider.axis == .vertical
+        ? divider.rect.insetBy(dx: -Self.dividerGrabZone, dy: 0)
+        : divider.rect.insetBy(dx: 0, dy: -Self.dividerGrabZone)
+      let windowRect = convert(grab, to: nil)
+      element.setAccessibilityFrame(window?.convertToScreen(windowRect) ?? windowRect)
+      let tabId = tab.id
+      let path = divider.path
+      // Increment grows the first pane (divider towards second); decrement shrinks it.
+      element.onIncrement = { [weak self] in
+        self?.nudgeDivider(tabId: tabId, path: path, towardsSecond: true) ?? false
+      }
+      element.onDecrement = { [weak self] in
+        self?.nudgeDivider(tabId: tabId, path: path, towardsSecond: false) ?? false
+      }
+      return element
+    }
+    paneSplitterCache = (signature, elements)
+    return elements
+  }
+
+  private func nudgeDivider(tabId: Tab.ID, path: PanePath, towardsSecond: Bool) -> Bool {
+    let moved = model.nudgeDivider(inTab: tabId, path: path, towardsSecond: towardsSecond)
+    if moved {
+      paneGeometryChanged()
+      NSAccessibility.post(element: self, notification: .layoutChanged)
+    }
+    return moved
+  }
+
   override func accessibilityValue() -> Any? {
     accessibilityVisibleText()
   }
@@ -6763,6 +6833,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     pendingInputAt = ContinuousClock.now
     blinkDriver.noteInput()
     let descriptor = TerminalKeyDescriptor(keyDown: event)
+    // Escape during a divider drag abandons it; the tree and PTY sizes never changed.
+    if dividerDrag != nil, descriptor.key == .escape {
+      cancelDividerDrag()
+      return
+    }
     switch descriptor.route(hasMarkedText: hasMarkedText()) {
     case .appCommand(let cmd):
       executeAppCommand(cmd, triggerModifiers: event.modifierFlags)
@@ -6897,7 +6972,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       boundsHeight: focusedPaneRect.height,
       insets: Self.contentInsets
     )
-    let windowRect = convert(rect, to: nil)
+    let paneRect = focusedPaneRect
+    let windowRect = convert(rect.offsetBy(dx: 0, dy: paneRect.minY), to: nil)
     return window?.convertToScreen(windowRect) ?? windowRect
   }
   func characterIndex(for point: NSPoint) -> Int { NSNotFound }
@@ -6993,9 +7069,30 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       command: TerminalInputCaptureMetadata.captureName(for: command))
     switch command {
     case .splitPaneRight: splitPaneRight(nil)
+    case .splitPaneDown: splitPaneDown(nil)
     case .closePane: closePane(nil)
+    case .closePaneOrTab: closePaneOrTab(nil)
     case .focusNextPane: focusNextPane(nil)
     case .focusPreviousPane: focusPreviousPane(nil)
+    case .togglePaneZoom: togglePaneZoom(nil)
+    case .equalizePanes: equalizePanes(nil)
+    case .focusPane(let direction): focusPane(towards: direction)
+    case .nudgeDivider(let direction):
+      // An unsplit tab has no divider: Cmd+Control+Left/Right keep their line-editing
+      // meaning there, as before splits existed.
+      if !activeTabIsSplit, let bytes = direction.unsplitNudgeLineEditingBytes {
+        sendBytes(bytes)
+      } else {
+        nudgeFocusedPaneDivider(direction)
+      }
+    case .paneOrTabNavigation(let direction):
+      if activeTabIsSplit {
+        focusPane(towards: direction)
+      } else if direction == .left {
+        navigateTabs(delta: -1, triggerModifiers: triggerModifiers)
+      } else if direction == .right {
+        navigateTabs(delta: 1, triggerModifiers: triggerModifiers)
+      }
     case .newTab:
       _ = try? createTabPreservingSelection()
       invalidateRenderAndWake()
@@ -7006,17 +7103,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case .selectLastTab:
       selectLastTab()
     case .selectNextTab:
-      if hoverPreviewEffectivelyEnabled {
-        beginOrAdvancePeek(delta: 1, triggerModifiers: triggerModifiers)
-      } else {
-        selectRelativeTab(delta: 1)
-      }
+      navigateTabs(delta: 1, triggerModifiers: triggerModifiers)
     case .selectPreviousTab:
-      if hoverPreviewEffectivelyEnabled {
-        beginOrAdvancePeek(delta: -1, triggerModifiers: triggerModifiers)
-      } else {
-        selectRelativeTab(delta: -1)
-      }
+      navigateTabs(delta: -1, triggerModifiers: triggerModifiers)
     case .copy:
       copy(nil)
     case .paste:
@@ -7033,6 +7122,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       applyFontSize(fontAtlas.pointSize - 1)
     case .resetFontSize:
       applyFontSize(FontAtlas.defaultTerminalPointSize)
+    }
+  }
+
+  /// Next/previous tab, honouring the hold-to-peek gesture when it is enabled.
+  private func navigateTabs(delta: Int, triggerModifiers: NSEvent.ModifierFlags) {
+    if hoverPreviewEffectivelyEnabled {
+      beginOrAdvancePeek(delta: delta, triggerModifiers: triggerModifiers)
+    } else {
+      selectRelativeTab(delta: delta)
     }
   }
 
@@ -8289,7 +8387,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     guard sessionCoordinator?.usesRemoteSnapshots != true, let tab = model.activeTab else {
       return area
     }
-    return tab.panes.layout(in: area).first(where: { $0.sessionId == tab.focusedSessionId })?.rect
+    return tab.visibleLayout(in: area).first(where: { $0.sessionId == tab.focusedSessionId })?.rect
       ?? area
   }
 
@@ -8299,7 +8397,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return focusedPaneRect.contains(point)
         ? PaneRect(sessionId: tab.focusedSessionId, rect: focusedPaneRect) : nil
     }
-    return tab.panes.layout(
+    return tab.visibleLayout(
       in: CGRect(
         x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
     ).first { $0.rect.contains(point) }
@@ -8313,6 +8411,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     mouseDownConsumedByChrome = false
     leftMouseGesturePane = nil
     pendingHyperlinkClick = nil
+    dividerDrag = nil
 
     // Reserved titlebar strip sits above both the terminal grid and the
     // sidebar tab list, behind the transparent system titlebar. Checked
@@ -8367,6 +8466,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         } catch {}
         invalidateRenderAndWake()
       case .none: break
+      }
+      return
+    }
+
+    // A press in a divider's grab zone belongs to the divider: it never reaches the shell,
+    // starts no selection and does not move focus.
+    if let divider = dividerHit(at: pt), let tab = model.activeTab {
+      window?.makeFirstResponder(self)
+      // Consumed even for a drag: Escape can end the drag mid-gesture, and the rest of
+      // the gesture must not fall through to selection.
+      mouseDownConsumedByChrome = true
+      if event.clickCount >= 2 {
+        model.equalizePanes(inTab: tab.id)
+        paneGeometryChanged()
+      } else {
+        dividerDrag = PaneDividerDrag(tab: tab, divider: divider, grabbedAt: pt)
+        setHoverCursor(Self.cursorStyle(for: divider.axis))
+        invalidateRenderAndWake()
       }
       return
     }
@@ -8437,6 +8554,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   override func mouseDragged(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
+    if updateDividerDrag(at: pt) {
+      return
+    }
     if updateSidebarDrag(at: pt) {
       return
     }
@@ -8556,6 +8676,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   override func mouseUp(with event: NSEvent) {
     defer { leftMouseGesturePane = nil }
     let pt = convert(event.locationInWindow, from: nil)
+    if commitDividerDragIfActive(at: pt) {
+      return
+    }
     if commitSidebarDragIfActive(at: pt) {
       mouseDownConsumedByChrome = false
       return
@@ -8727,11 +8850,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return TerminalSelectionInput.GridGeometry(
       boundsWidth: rect.maxX,
       boundsHeight: rect.height,
+      originY: rect.minY,
       sidebarWidth: rect.minX,
       cellWidth: CGFloat(cellWidth),
       cellHeight: CGFloat(cellHeight),
-      rows: lastRows,
+      rows: paneRows(for: rect),
       insets: Self.contentInsets)
+  }
+
+  /// The grid rows of the pane drawn in `rect`. `lastRows` is the focused pane's count as
+  /// of the last render, which is wrong for any other pane of a down split and stale for
+  /// a pane focused by this very click.
+  private func paneRows(for rect: CGRect) -> Int {
+    guard activeTabIsSplit, let tab = model.activeTab else { return lastRows }
+    let area = CGRect(
+      x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+    guard let pane = tab.visibleLayout(in: area).first(where: { $0.rect == rect }) else {
+      return lastRows
+    }
+    return max(1, Int(model.terminalSize(for: pane.sessionId).rows))
   }
 
   // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
@@ -9277,8 +9414,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   ) {
     let insets = Self.contentInsets
     let paneRect = explicitRect ?? focusedPaneRect
+    // A pane stacked above another starts higher in the (y-up) view: measure from its bottom.
+    let local = NSPoint(x: pt.x, y: pt.y - paneRect.minY)
     let pos = TerminalMouseInput.surfacePosition(
-      viewPoint: pt,
+      viewPoint: local,
       boundsHeight: paneRect.height - insets.top,
       sidebarWidth: paneRect.minX + insets.left
     )
@@ -9292,7 +9431,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   // MARK: - Menu actions
 
-  @objc func splitPaneRight(_ sender: Any?) {
+  @objc func splitPaneRight(_ sender: Any?) { splitFocusedPane(axis: .vertical) }
+  @objc func splitPaneDown(_ sender: Any?) { splitFocusedPane(axis: .horizontal) }
+
+  private func splitFocusedPane(axis: PaneAxis) {
     guard let tab = model.activeTab else { return }
     do {
       if sessionCoordinator?.usesRemoteSnapshots == true {
@@ -9300,7 +9442,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       }
       persistSelectionStateForCurrentTab()
       discardMarkedComposition()
-      _ = try model.splitPane(inTab: tab.id) { id, size, cwd in
+      _ = try model.splitPane(inTab: tab.id, axis: axis) { id, size, cwd in
         let session = try model.makePaneSession(id: id, inTab: tab.id, size: size, cwd: cwd)
         let target = Tab(
           id: tab.id, position: tab.position, title: tab.title, isActive: true, sessionId: id)
@@ -9315,6 +9457,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         return session
       }
       paneFocusChanged()
+    } catch AppModel.PaneError.tooSmall {
+      _ = model.postTabNotice(
+        forTab: tab.id, note: "pane.split.tooSmall",
+        text: L10n.tr("Not enough room to split this pane"))
     } catch {
       _ = model.postTabNotice(
         forTab: tab.id, note: "pane.split.failed", text: String(describing: error))
@@ -9343,6 +9489,151 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     model.focusAdjacentPane(inTab: tab.id, forward: forward)
     paneFocusChanged()
   }
+
+  /// Cmd+W: closes the focused pane when the tab is split, otherwise the tab.
+  @objc func closePaneOrTab(_ sender: Any?) {
+    if (model.activeTab?.allSessionIds.count ?? 0) > 1 {
+      closePane(sender)
+    } else {
+      closeTab(sender)
+    }
+  }
+
+  @objc func togglePaneZoom(_ sender: Any?) {
+    guard let tab = model.activeTab, tab.allSessionIds.count > 1 else { return }
+    model.setPaneZoom(inTab: tab.id, zoomed: nil)
+    paneGeometryChanged()
+  }
+
+  @objc func equalizePanes(_ sender: Any?) {
+    guard let tab = model.activeTab, tab.allSessionIds.count > 1 else { return }
+    model.equalizePanes(inTab: tab.id)
+    paneGeometryChanged()
+  }
+
+  /// Menu entry for Select Pane Left/Right/Above/Below; the item's `representedObject`
+  /// is the `PaneDirection` raw value.
+  @objc func focusPaneByDirection(_ sender: Any?) {
+    guard let direction = Self.paneDirection(of: sender) else { return }
+    focusPane(towards: direction)
+  }
+
+  /// Menu entry for Move Divider Left/Right/Up/Down.
+  @objc func moveDivider(_ sender: Any?) {
+    guard let direction = Self.paneDirection(of: sender) else { return }
+    nudgeFocusedPaneDivider(direction)
+  }
+
+  private static func paneDirection(of sender: Any?) -> PaneDirection? {
+    ((sender as? NSMenuItem)?.representedObject as? String).flatMap(PaneDirection.init(rawValue:))
+  }
+
+  /// True when the active tab has more than one pane the user can navigate between
+  /// (zoom does not count: a zoomed split is still a split). Laband shows only the
+  /// focused pane, so it navigates tabs like an unsplit tab.
+  private var activeTabIsSplit: Bool {
+    sessionCoordinator?.usesRemoteSnapshots != true
+      && (model.activeTab?.allSessionIds.count ?? 0) > 1
+  }
+
+  /// Moves pane focus to the neighbour in `direction`. At the edge of the layout this does
+  /// nothing; it never falls through to tab switching.
+  private func focusPane(towards direction: PaneDirection) {
+    guard activeTabIsSplit, let tab = model.activeTab else { return }
+    persistSelectionStateForCurrentTab()
+    if model.focusPane(inTab: tab.id, direction: direction) {
+      discardMarkedComposition()
+      paneFocusChanged()
+    }
+  }
+
+  private func nudgeFocusedPaneDivider(_ direction: PaneDirection) {
+    guard let tab = model.activeTab else { return }
+    if model.nudgeDivider(inTab: tab.id, direction: direction) {
+      paneGeometryChanged()
+    }
+  }
+
+  /// Pane sizes changed without a focus change (divider drag commit, nudge, equalize,
+  /// zoom): push the new sizes to the shells and redraw.
+  private func paneGeometryChanged() {
+    resizeActivePanes()
+    surfaceController.invalidateSessionSyncCache()
+    invalidateRenderAndWake()
+  }
+
+  // MARK: - Pane dividers
+
+  /// Pixels either side of a divider's 1-pixel line that grab it.
+  static let dividerGrabZone: CGFloat = 3
+
+  private var dividerDrag: PaneDividerDrag?
+  private var paneSplitterCache:
+    (signature: [PaneSplitterSignature], elements: [PaneSplitterAccessibilityElement]) = ([], [])
+
+  private var paneAreaRect: CGRect {
+    CGRect(
+      x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+  }
+
+  private static func cursorStyle(for axis: PaneAxis) -> TerminalHoverCursorStyle {
+    axis == .vertical ? .resizeLeftRight : .resizeUpDown
+  }
+
+  /// The visible divider whose grab zone contains `point` (view coordinates). Nil while
+  /// zoomed, on the laband backend, over the sidebar and over the titlebar strip.
+  func dividerHit(at point: NSPoint) -> PaneDivider? {
+    guard sessionCoordinator?.usesRemoteSnapshots != true, let tab = model.activeTab,
+      point.x >= sidebarWidth, point.y <= bounds.height - Self.titlebarReservedHeight
+    else { return nil }
+    return tab.visibleDividers(in: paneAreaRect).first { divider in
+      let zone =
+        divider.axis == .vertical
+        ? divider.rect.insetBy(dx: -Self.dividerGrabZone, dy: 0)
+        : divider.rect.insetBy(dx: 0, dy: -Self.dividerGrabZone)
+      return zone.contains(point)
+    }
+  }
+
+  /// The translucent line for the drag in progress, when it belongs to the active,
+  /// unzoomed tab.
+  private var dividerPreviewRect: CGRect? {
+    guard let drag = dividerDrag, let tab = model.activeTab, tab.id == drag.tabId, !tab.isZoomed
+    else { return nil }
+    return drag.previewRect
+  }
+
+  /// Moves the preview line only. The pane tree and the PTY sizes stay as they were until
+  /// the button is released.
+  private func updateDividerDrag(at point: NSPoint) -> Bool {
+    guard var drag = dividerDrag else { return false }
+    drag.move(toX: point.x, y: point.y, in: model)
+    dividerDrag = drag
+    setHoverCursor(Self.cursorStyle(for: drag.axis))
+    invalidateRenderAndWake()
+    return true
+  }
+
+  /// Mouse-up: applies the proposed fraction once, which resizes the shells once.
+  private func commitDividerDragIfActive(at point: NSPoint) -> Bool {
+    guard dividerDrag != nil else { return false }
+    _ = updateDividerDrag(at: point)
+    guard let drag = dividerDrag else { return true }
+    dividerDrag = nil
+    drag.commit(in: model)
+    paneGeometryChanged()
+    updateHoverCursor(at: point)
+    return true
+  }
+
+  private func cancelDividerDrag() {
+    dividerDrag = nil
+    invalidateRenderAndWake()
+  }
+
+  /// Test seam: the proposal of the drag in flight.
+  var dividerDragFractionForTests: Double? { dividerDrag?.fraction }
+  var dividerPreviewRectForTests: CGRect? { dividerPreviewRect }
 
   private func paneFocusChanged() {
     unmarkText()
@@ -9751,12 +10042,38 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Mutate the persistent Debug-menu item's title in place (Start/Stop PTY
   /// Capture) rather than rebuilding the menu — the Show/Hide Sidebar pattern.
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-    if menuItem.action == #selector(splitPaneRight(_:)) {
-      return sessionCoordinator?.usesRemoteSnapshots != true
-        && model.activeTab?.allSessionIds.count == 1
+    if menuItem.action == #selector(splitPaneRight(_:))
+      || menuItem.action == #selector(splitPaneDown(_:))
+    {
+      return sessionCoordinator?.usesRemoteSnapshots != true && model.activeTab != nil
     }
     if menuItem.action == #selector(closePane(_:)) {
       return (model.activeTab?.allSessionIds.count ?? 0) > 1
+    }
+    // Cmd+W reads "Close Pane" in a split tab and "Close Tab" otherwise; the same in-place
+    // retitle the capture item uses.
+    if menuItem.action == #selector(closePaneOrTab(_:)) {
+      menuItem.title =
+        (model.activeTab?.allSessionIds.count ?? 0) > 1
+        ? L10n.tr("Close Pane") : L10n.tr("Close Tab")
+      return model.activeTab != nil
+    }
+    if menuItem.action == #selector(togglePaneZoom(_:)) {
+      menuItem.state = model.activeTab?.isZoomed == true ? .on : .off
+      return activeTabIsSplit
+    }
+    if menuItem.action == #selector(equalizePanes(_:))
+      || menuItem.action == #selector(focusNextPane(_:))
+      || menuItem.action == #selector(focusPreviousPane(_:))
+      || menuItem.action == #selector(focusPaneByDirection(_:))
+    {
+      return activeTabIsSplit
+    }
+    if menuItem.action == #selector(moveDivider(_:)) {
+      guard let tab = model.activeTab, !tab.isZoomed,
+        let direction = Self.paneDirection(of: menuItem)
+      else { return false }
+      return tab.panes.nudgeTarget(for: tab.focusedSessionId, direction: direction) != nil
     }
 
     // A checked item, the way macOS shows chrome visibility (Finder's

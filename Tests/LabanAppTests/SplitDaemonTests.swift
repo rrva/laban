@@ -58,9 +58,9 @@ final class SplitDaemonHarness {
       ]))
     try coordinator.ensureSessions(for: model.tabs, in: model, size: grid)
   }
-  func split() throws -> Tab {
+  func split(axis: PaneAxis = .vertical) throws -> Tab {
     let tab = try XCTUnwrap(model.activeTab)
-    _ = try model.splitPane(inTab: tab.id) { id, size, _ in
+    _ = try model.splitPane(inTab: tab.id, axis: axis) { id, size, _ in
       let session = try Session.parserOnly(size: size, sessionID: id)
       let target = Tab(id: tab.id, position: 1, title: "Tab 1", isActive: true, sessionId: id)
       _ = try coordinator.ensureSession(for: target, session: session, size: size)

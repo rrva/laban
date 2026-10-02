@@ -142,6 +142,9 @@ public struct RestoredSessionSpec {
 public struct TabState: Codable, Equatable {
   public var panes: PaneTree?
   public var focusedSessionId: String?
+  /// The pane that fills the tab while zoomed. Optional and ignored by older binaries;
+  /// dropped on decode when it is not a pane of a split tab.
+  public var zoomedSessionId: String?
   public var paneStates: [PaneState]?
   public var id: String
   public var cwd: String
@@ -176,10 +179,12 @@ public struct TabState: Codable, Equatable {
     agent: AgentInfo? = nil,
     panes: PaneTree? = nil,
     focusedSessionId: String? = nil,
-    paneStates: [PaneState]? = nil
+    paneStates: [PaneState]? = nil,
+    zoomedSessionId: String? = nil
   ) {
     self.panes = panes
     self.focusedSessionId = focusedSessionId
+    self.zoomedSessionId = zoomedSessionId
     self.paneStates = paneStates
     self.id = id
     self.cwd = cwd
@@ -234,11 +239,12 @@ public struct TabState: Codable, Equatable {
       && lhs.agent == rhs.agent
       && lhs.resolvedPanes == rhs.resolvedPanes
       && lhs.resolvedFocusedSessionId == rhs.resolvedFocusedSessionId
+      && lhs.zoomedSessionId == rhs.zoomedSessionId
       && lhs.resolvedPaneStates == rhs.resolvedPaneStates
   }
 
   private enum CodingKeys: String, CodingKey {
-    case panes, focusedSessionId, paneStates
+    case panes, focusedSessionId, paneStates, zoomedSessionId
     case id, cwd, launchCommand, lastActiveAt, transcriptPath, altBufferAtQuit, cwdFallbackApplied,
       repoFingerprint, processStatus, exitCode, shellPid, agent
   }
@@ -260,6 +266,7 @@ public struct TabState: Codable, Equatable {
     panes = nil
     focusedSessionId = nil
     paneStates = nil
+    zoomedSessionId = nil
     do {
       if let tree = try c.decodeIfPresent(PaneTree.self, forKey: .panes) {
         let states = try c.decode([PaneState].self, forKey: .paneStates)
@@ -274,6 +281,13 @@ public struct TabState: Codable, Equatable {
         panes = tree
         focusedSessionId = focus
         paneStates = states
+        // A zoom naming a pane that is gone (or a tab with nothing to hide) is dropped;
+        // the rest of the tab is kept.
+        if let zoomed = try? c.decodeIfPresent(String.self, forKey: .zoomedSessionId),
+          ids.count > 1, tree.contains(zoomed)
+        {
+          zoomedSessionId = zoomed
+        }
       }
     } catch {
       NSLog(

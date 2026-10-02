@@ -383,7 +383,7 @@ public enum ControlStateProjections {
       x: ctx.sidebarWidth, y: 0, width: max(0, ctx.windowWidth - ctx.sidebarWidth),
       height: ctx.windowHeight)
     let paneOrigin =
-      tab.panes.layout(in: area).first { $0.sessionId == session.id }?.rect.origin ?? area.origin
+      tab.visibleLayout(in: area).first { $0.sessionId == session.id }?.rect.origin ?? area.origin
 
     if let snapshot = session.snapshot() {
       defer { laban_snapshot_destroy(snapshot) }
@@ -561,7 +561,8 @@ public enum ControlStateProjections {
       active: tab.isActive,
       status: status,
       sessionId: tab.focusedSessionId,
-      panes: tab.panes, focusedSessionId: tab.focusedSessionId
+      panes: tab.panes, focusedSessionId: tab.focusedSessionId,
+      zoomedSessionId: tab.isZoomed ? tab.zoomedSessionId : nil
     )
   }
 

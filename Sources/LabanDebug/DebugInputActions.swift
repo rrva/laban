@@ -217,18 +217,26 @@ struct DebugInputActions {
 
   private func executeCommandKey(_ command: String, key: Key) {
     switch command {
-    case "splitPaneRight", "closePane", "focusNextPane", "focusPreviousPane":
-      let action =
-        command == "splitPaneRight"
-        ? "pane.split" : (command == "closePane" ? "pane.close" : "pane.focus")
-      var payload: [String: String] = [:]
-      if command == "focusNextPane" { payload["direction"] = "next" }
-      if command == "focusPreviousPane" { payload["direction"] = "previous" }
-      if let data = try? JSONEncoder().encode(payload),
-        let request = try? JSONDecoder().decode(PaneActionRequest.self, from: data)
-      {
-        _ = DebugPaneActions(runtime: runtime).apply(action, request)
+    case "splitPaneRight":
+      applyPane("pane.split", ["axis": "vertical"])
+    case "splitPaneDown":
+      applyPane("pane.split", ["axis": "horizontal"])
+    case "closePane":
+      applyPane("pane.close", [:])
+    case "closePaneOrTab":
+      if (runtime.model.activeTab?.allSessionIds.count ?? 0) > 1 {
+        applyPane("pane.close", [:])
+      } else {
+        executeCommandKey("closeTab", key: key)
       }
+    case "focusNextPane":
+      applyPane("pane.focus", ["direction": "next"])
+    case "focusPreviousPane":
+      applyPane("pane.focus", ["direction": "previous"])
+    case "togglePaneZoom":
+      applyPane("pane.zoom", [:])
+    case "equalizePanes":
+      applyPane("pane.equalize", [:])
     case "newTab":
       if let tab = try? runtime.model.createTab() {
         try? runtime.ensureTerminalClientSessionUnlocked(for: tab)
@@ -268,7 +276,61 @@ struct DebugInputActions {
       _ = DebugWindowActions(runtime: runtime).setFontSize(
         SetFontSizeActionRequest(pointSize: Double(FontAtlas.defaultTerminalPointSize)))
     default:
-      return
+      if let (name, direction) = Self.directionalCommand(command) {
+        executeDirectionalCommand(name, direction)
+      }
+    }
+  }
+
+  /// `paneOrTabNavigationLeft`, `nudgeDividerUp`, ... split into the command and the
+  /// direction; the names are `TerminalInputCaptureMetadata.captureName`'s.
+  private static func directionalCommand(_ command: String) -> (String, PaneDirection)? {
+    for name in ["paneOrTabNavigation", "nudgeDivider", "focusPane"] where command.hasPrefix(name) {
+      let suffix = command.dropFirst(name.count).lowercased()
+      if let direction = PaneDirection(rawValue: suffix) { return (name, direction) }
+    }
+    return nil
+  }
+
+  private func executeDirectionalCommand(_ name: String, _ direction: PaneDirection) {
+    let activeTabIsSplit =
+      (runtime.model.activeTab?.allSessionIds.count ?? 0) > 1 && runtime.terminalBackend != .laband
+    switch name {
+    case "nudgeDivider":
+      // No divider to nudge: Cmd+Control+Left/Right keep their line-editing bytes.
+      if !activeTabIsSplit, let bytes = direction.unsplitNudgeLineEditingBytes {
+        writeToFocusedSession(bytes)
+      } else {
+        applyPane("pane.resize", ["direction": direction.rawValue])
+      }
+    case "focusPane":
+      applyPane("pane.focus", ["direction": direction.rawValue])
+    default:
+      // Cmd+Option+arrow: pane focus in a split tab; tab switching (left/right only) otherwise.
+      if activeTabIsSplit {
+        applyPane("pane.focus", ["direction": direction.rawValue])
+      } else if direction == .left {
+        selectRelativeTab(delta: -1)
+      } else if direction == .right {
+        selectRelativeTab(delta: 1)
+      }
+    }
+  }
+
+  private func writeToFocusedSession(_ bytes: [UInt8]) {
+    guard let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id)
+    else { return }
+    _ = session.scrollViewportToActiveBottom()
+    session.write(bytes)
+    runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
+    runtime.renderFrameUnlocked()
+  }
+
+  private func applyPane(_ action: String, _ payload: [String: String]) {
+    if let data = try? JSONEncoder().encode(payload),
+      let request = try? JSONDecoder().decode(PaneActionRequest.self, from: data)
+    {
+      _ = DebugPaneActions(runtime: runtime).apply(action, request)
     }
   }
 

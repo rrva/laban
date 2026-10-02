@@ -58,11 +58,25 @@ public final class AppModel {
   private var paneInsets = TerminalSurfaceInsets.zero
 
   private func terminalRects(for tree: PaneTree) -> [PaneRect] {
-    let area = CGRect(
+    insetTerminalRects(
+      tree.layout(in: terminalAreaRect))
+  }
+
+  /// The panes of `tab` that are shown (the zoomed pane alone while zoomed), each in
+  /// a zero-origin rect of its own size.
+  private func terminalRects(for tab: Tab) -> [PaneRect] {
+    insetTerminalRects(tab.visibleLayout(in: terminalAreaRect))
+  }
+
+  private var terminalAreaRect: CGRect {
+    CGRect(
       x: 0, y: 0,
       width: CGFloat(currentSize.pixel_width) + paneInsets.left + paneInsets.right,
       height: CGFloat(currentSize.pixel_height) + paneInsets.top + paneInsets.bottom)
-    return tree.layout(in: area).map { pane in
+  }
+
+  private func insetTerminalRects(_ layout: [PaneRect]) -> [PaneRect] {
+    layout.map { pane in
       PaneRect(
         sessionId: pane.sessionId,
         rect: CGRect(
@@ -74,9 +88,19 @@ public final class AppModel {
 
   public func paneSize(for id: Session.ID, in tabId: Tab.ID) -> LabanTerminalSize {
     withModelLock {
-      guard let tab = _tabs.first(where: { $0.id == tabId }),
-        let pane = terminalRects(for: tab.panes).first(where: { $0.sessionId == id })
-      else { return currentSize }
+      guard let tab = _tabs.first(where: { $0.id == tabId }) else { return currentSize }
+      guard let pane = terminalRects(for: tab).first(where: { $0.sessionId == id }) else {
+        // A pane hidden by zoom keeps the size it had before it was hidden.
+        if tab.isZoomed, tab.panes.contains(id) {
+          return sizeBySession[id]
+            ?? terminalRects(for: tab.panes).first(where: { $0.sessionId == id }).map {
+              Self.size(
+                rect: $0.rect, cellWidth: Int(currentSize.cell_width),
+                cellHeight: Int(currentSize.cell_height))
+            } ?? currentSize
+        }
+        return currentSize
+      }
       return Self.size(
         rect: pane.rect, cellWidth: Int(currentSize.cell_width),
         cellHeight: Int(currentSize.cell_height))
@@ -448,7 +472,9 @@ public final class AppModel {
             tabSessions.append(
               AppModelSurfaceSession(
                 tabId: tab.id, tabIndex: idx,
-                isFocused: id == tab.focusedSessionId, isVisible: tab.isActive, session: session))
+                isFocused: id == tab.focusedSessionId,
+                isVisible: tab.isActive && (!tab.isZoomed || id == tab.zoomedSessionId),
+                session: session))
           }
         }
       }
@@ -695,25 +721,48 @@ public final class AppModel {
   public enum PaneError: Error {
     case notALeaf, unknownSession, unsupportedBackend
     case daemonRefused(String)
+    /// A split would leave a pane below the 10 column by 3 row minimum.
+    case tooSmall
+    /// The addressed divider path does not name a split in the tab's tree.
+    case notSplit
   }
+
+  /// Smallest pane a split or divider move may leave behind.
+  public static let minimumPaneColumns = 10
+  public static let minimumPaneRows = 3
 
   @discardableResult
   public func splitPane(
     inTab tabId: Tab.ID, axis: PaneAxis = .vertical,
     openSession: (Session.ID, LabanTerminalSize, String?) throws -> Session
   ) throws -> Session.ID {
+    var unzoomedByCommand = false
     let id = try withModelLock { () throws -> Session.ID in
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else {
         throw PaneError.unknownSession
       }
-      guard axis == .vertical, _tabs[idx].allSessionIds.count == 1 else { throw PaneError.notALeaf }
       let old = _tabs[idx]
       let id = UUID().uuidString
-      let tree = old.panes.splitting(leaf: old.focusedSessionId, axis: axis, newSessionId: id)!
-      let rect = terminalRects(for: tree).first { $0.sessionId == id }!.rect
-      let size = Self.size(
-        rect: rect, cellWidth: Int(currentSize.cell_width), cellHeight: Int(currentSize.cell_height)
-      )
+      guard let tree = old.panes.splitting(leaf: old.focusedSessionId, axis: axis, newSessionId: id)
+      else { throw PaneError.notALeaf }
+      // Measure both halves before spawning anything so a refused split leaves the
+      // tree, the registry and the zoom state untouched.
+      let newRects = terminalRects(for: tree)
+      let cellWidth = Int(currentSize.cell_width)
+      let cellHeight = Int(currentSize.cell_height)
+      // Before the first layout the pixel area is unknown (zero), so there is nothing
+      // to measure; the view resizes the panes when it lays the tab out.
+      let measurable = currentSize.pixel_width > 0 && currentSize.pixel_height > 0
+      for pane in newRects
+      where measurable && (pane.sessionId == id || pane.sessionId == old.focusedSessionId) {
+        let measured = Self.size(rect: pane.rect, cellWidth: cellWidth, cellHeight: cellHeight)
+        guard pane.rect.width >= CGFloat(Self.minimumPaneColumns * cellWidth),
+          pane.rect.height >= CGFloat(Self.minimumPaneRows * cellHeight),
+          Int(measured.cols) >= Self.minimumPaneColumns, Int(measured.rows) >= Self.minimumPaneRows
+        else { throw PaneError.tooSmall }
+      }
+      let rect = newRects.first { $0.sessionId == id }!.rect
+      let size = Self.size(rect: rect, cellWidth: cellWidth, cellHeight: cellHeight)
       let cwd =
         old.titleMetadata.workspace.cwd
         ?? sessionRegistry.session(id: old.focusedSessionId)?.processMetadata()?.cwd
@@ -732,6 +781,11 @@ public final class AppModel {
       AppModel.maybeAutoCapture(session)
       ThemePaletteInjector.injectCurrentTheme(into: session)
       _tabs[idx].panes = tree
+      // Splitting a zoomed tab shows the whole layout again so the new pane is visible.
+      if _tabs[idx].zoomedSessionId != nil {
+        _tabs[idx].zoomedSessionId = nil
+        unzoomedByCommand = true
+      }
       attachSessionCallbacks(session: session, tabId: tabId)
       transcriptDelegate?.attachTranscriptWriter(to: session, sessionId: id)
       onSessionCreated?(tabId, session)
@@ -739,6 +793,7 @@ public final class AppModel {
       focusPane(inTab: tabId, sessionId: id)
       return id
     }
+    if unzoomedByCommand { onSessionsReplaced?() }
     notifyWorkspaceMutation()
     return id
   }
@@ -760,26 +815,42 @@ public final class AppModel {
 
   public func closePane(inTab tabId: Tab.ID, sessionId: Session.ID, terminate: (Session.ID) -> Void)
   {
-    withModelLock {
+    let unzoomed = withModelLock { () -> Bool in
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }),
         _tabs[idx].panes.contains(sessionId),
         let tree = _tabs[idx].panes.removing(leaf: sessionId)
-      else { return }
+      else { return false }
       terminate(sessionId)
       closeSessionUnlocked(sessionId, inTab: tabId)
       _tabs[idx].panes = tree
       _tabs[idx].focusHistory.removeAll { $0 == sessionId }
+      // Closing the zoomed pane, or leaving a single pane, ends zoom.
+      var unzoomed = false
+      if let zoomed = _tabs[idx].zoomedSessionId,
+        zoomed == sessionId || tree.leafSessionIds().count < 2
+      {
+        _tabs[idx].zoomedSessionId = nil
+        unzoomed = true
+      }
       let next = _tabs[idx].focusHistory.last ?? tree.leafSessionIds()[0]
       focusPane(inTab: tabId, sessionId: next)
+      return unzoomed
     }
+    if unzoomed { onSessionsReplaced?() }
     notifyWorkspaceMutation()
   }
 
   public func focusPane(inTab tabId: Tab.ID, sessionId: Session.ID) {
-    withModelLock {
+    let unzoomed = withModelLock { () -> Bool in
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }),
         _tabs[idx].panes.contains(sessionId)
-      else { return }
+      else { return false }
+      // Focusing a pane other than the zoomed one shows the whole layout again.
+      var unzoomed = false
+      if let zoomed = _tabs[idx].zoomedSessionId, zoomed != sessionId {
+        _tabs[idx].zoomedSessionId = nil
+        unzoomed = true
+      }
       let old = _tabs[idx]
       if old.focusedSessionId != sessionId {
         if old.panes.contains(old.focusedSessionId) {
@@ -803,8 +874,27 @@ public final class AppModel {
       if _tabs[idx].isActive { acknowledgePaneAttention(at: idx) }
       acknowledgeShellCommands(forTabAt: idx)
       resizeTabLayoutsUnlocked()
+      return unzoomed
     }
+    if unzoomed { onSessionsReplaced?() }
     notifyWorkspaceMutation()
+  }
+
+  /// Moves focus to the neighbouring pane in `direction`, showing the whole layout
+  /// first when the tab is zoomed. Returns false (and changes nothing, zoom
+  /// included) when there is no pane that way.
+  @discardableResult
+  public func focusPane(inTab tabId: Tab.ID, direction: PaneDirection) -> Bool {
+    let target: Session.ID? = withModelLock {
+      guard let tab = _tabs.first(where: { $0.id == tabId }) else { return nil }
+      return tab.panes.directionalNeighbour(
+        of: tab.focusedSessionId, direction: direction, in: terminalAreaRect, dividerWidth: 1,
+        history: tab.focusHistory)
+    }
+    guard let target else { return false }
+    // `focusPane(inTab:sessionId:)` ends zoom when the target is not the zoomed pane.
+    focusPane(inTab: tabId, sessionId: target)
+    return true
   }
 
   public func focusAdjacentPane(inTab tabId: Tab.ID, forward: Bool) {
@@ -813,6 +903,169 @@ public final class AppModel {
     else { return }
     let ids = tab.allSessionIds
     focusPane(inTab: tabId, sessionId: ids[(index + (forward ? 1 : ids.count - 1)) % ids.count])
+  }
+
+  /// The fraction range and container extent (in layout pixels) for the split at
+  /// `path`, honouring the 10 by 3 cell minimum plus the pane insets.
+  private func splitFractionBounds(
+    in tab: Tab, path: PanePath
+  ) -> (range: ClosedRange<Double>, extent: CGFloat, divider: PaneDivider)? {
+    let area = terminalAreaRect
+    guard let divider = tab.panes.dividers(in: area).first(where: { $0.path == path }),
+      let range = tab.panes.fractionRange(
+        at: path, in: area,
+        minimumWidth: CGFloat(Self.minimumPaneColumns) * CGFloat(currentSize.cell_width)
+          + paneInsets.left + paneInsets.right,
+        minimumHeight: CGFloat(Self.minimumPaneRows) * CGFloat(currentSize.cell_height)
+          + paneInsets.top + paneInsets.bottom,
+        dividerWidth: 1)
+    else { return nil }
+    let extent = divider.axis == .vertical ? divider.container.width : divider.container.height
+    return (range, extent, divider)
+  }
+
+  /// Clamps `fraction` into `bounds`. The lower bound is nudged half a pixel up so the
+  /// floor in the layout cut cannot drop the first pane a pixel (and a column) short.
+  private static func clampedFraction(
+    _ fraction: Double,
+    to bounds: (range: ClosedRange<Double>, extent: CGFloat, divider: PaneDivider)
+  ) -> Double {
+    let extent = Double(bounds.extent)
+    let half = extent > 0 ? 0.5 / extent : 0
+    let low = min(bounds.range.upperBound, bounds.range.lowerBound + half)
+    return min(bounds.range.upperBound, max(low, fraction))
+  }
+
+  /// Applies a fraction to the split at `path`. Returns whether the layout changed.
+  private func setSplitFractionUnlocked(tabIndex idx: Int, path: PanePath, fraction: Double) throws
+    -> Bool
+  {
+    guard let bounds = splitFractionBounds(in: _tabs[idx], path: path) else {
+      throw PaneError.notSplit
+    }
+    guard fraction.isFinite else { return false }
+    let clamped = Self.clampedFraction(fraction, to: bounds)
+    guard let tree = _tabs[idx].panes.settingFraction(at: path, to: clamped) else {
+      throw PaneError.notSplit
+    }
+    guard tree != _tabs[idx].panes else { return false }
+    _tabs[idx].panes = tree
+    resizeTabLayoutsUnlocked()
+    return true
+  }
+
+  /// Sets the divider at `path` to `fraction` of its container, clamped so both sides
+  /// keep their minimum extent. Resizes the affected panes once.
+  public func setSplitFraction(inTab tabId: Tab.ID, path: PanePath, fraction: Double) throws {
+    let changed = try withModelLock { () throws -> Bool in
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else {
+        throw PaneError.unknownSession
+      }
+      return try setSplitFractionUnlocked(tabIndex: idx, path: path, fraction: fraction)
+    }
+    if changed { notifyWorkspaceMutation() }
+  }
+
+  /// The fraction `setSplitFraction` would actually apply for `fraction`: clamped so both
+  /// sides keep their minimum extent. Drag previews use it so the line shows where the
+  /// divider will land. Nil when the tab or path does not exist.
+  public func clampedSplitFraction(inTab tabId: Tab.ID, path: PanePath, fraction: Double)
+    -> Double?
+  {
+    withModelLock {
+      guard let tab = _tabs.first(where: { $0.id == tabId }),
+        let bounds = splitFractionBounds(in: tab, path: path)
+      else { return nil }
+      return Self.clampedFraction(
+        fraction.isFinite ? fraction : bounds.divider.fraction, to: bounds)
+    }
+  }
+
+  /// Moves the nearest divider on the `direction` side of the focused pane by `cells`
+  /// cells. Returns false when no divider is there, the tab is zoomed, or the divider
+  /// is already at its limit.
+  @discardableResult
+  public func nudgeDivider(inTab tabId: Tab.ID, direction: PaneDirection, cells: Int = 2) -> Bool {
+    let changed = withModelLock { () -> Bool in
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }), !_tabs[idx].isZoomed,
+        let path = _tabs[idx].panes.nudgeTarget(
+          for: _tabs[idx].focusedSessionId, direction: direction)
+      else { return false }
+      return nudgeDividerUnlocked(
+        tabIndex: idx, path: path, towardsSecond: direction.towardsSecond, cells: cells)
+    }
+    if changed { notifyWorkspaceMutation() }
+    return changed
+  }
+
+  /// Moves the divider at `path` by `cells` cells, growing `first` when `towardsSecond`.
+  /// The same step as the keyboard nudge, addressed by divider instead of by focused pane
+  /// (the accessibility increment and decrement actions use it).
+  @discardableResult
+  public func nudgeDivider(
+    inTab tabId: Tab.ID, path: PanePath, towardsSecond: Bool, cells: Int = 2
+  ) -> Bool {
+    let changed = withModelLock { () -> Bool in
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }), !_tabs[idx].isZoomed
+      else { return false }
+      return nudgeDividerUnlocked(
+        tabIndex: idx, path: path, towardsSecond: towardsSecond, cells: cells)
+    }
+    if changed { notifyWorkspaceMutation() }
+    return changed
+  }
+
+  private func nudgeDividerUnlocked(
+    tabIndex idx: Int, path: PanePath, towardsSecond: Bool, cells: Int
+  ) -> Bool {
+    guard let bounds = splitFractionBounds(in: _tabs[idx], path: path), bounds.extent > 0
+    else { return false }
+    let cellExtent = Double(
+      bounds.divider.axis == .vertical ? currentSize.cell_width : currentSize.cell_height)
+    let extent = Double(bounds.extent)
+    // Work in whole pixels: the layout cuts at floor(extent * fraction).
+    let cut = (extent * bounds.divider.fraction).rounded(.down)
+    let target = cut + (towardsSecond ? 1 : -1) * Double(cells) * cellExtent
+    return
+      (try? setSplitFractionUnlocked(
+        tabIndex: idx, path: path, fraction: (target + 0.5) / extent)) ?? false
+  }
+
+  /// Gives every pane in the tab an equal share along each run of same-axis splits.
+  public func equalizePanes(inTab tabId: Tab.ID) {
+    let changed = withModelLock { () -> Bool in
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      let tree = _tabs[idx].panes.equalized()
+      guard tree != _tabs[idx].panes else { return false }
+      _tabs[idx].panes = tree
+      resizeTabLayoutsUnlocked()
+      return true
+    }
+    if changed { notifyWorkspaceMutation() }
+  }
+
+  /// Zooms the focused pane to fill the tab (`true`), restores the layout (`false`) or
+  /// toggles (`nil`). A one-pane tab never zooms. Hidden panes keep their last size.
+  public func setPaneZoom(inTab tabId: Tab.ID, zoomed: Bool?) {
+    let changed = withModelLock { () -> Bool in
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      let wantZoom = zoomed ?? !_tabs[idx].isZoomed
+      if wantZoom {
+        guard _tabs[idx].allSessionIds.count > 1,
+          _tabs[idx].zoomedSessionId != _tabs[idx].focusedSessionId
+        else { return false }
+        _tabs[idx].zoomedSessionId = _tabs[idx].focusedSessionId
+      } else {
+        guard _tabs[idx].zoomedSessionId != nil else { return false }
+        _tabs[idx].zoomedSessionId = nil
+      }
+      resizeTabLayoutsUnlocked()
+      return true
+    }
+    guard changed else { return }
+    // Panes that become visible must redraw their latest content.
+    onSessionsReplaced?()
+    notifyWorkspaceMutation()
   }
 
   @discardableResult
@@ -1054,9 +1307,13 @@ public final class AppModel {
       var restored: [(PaneState, Session, String, Bool, LabanTerminalSize)] = []
       do {
         for pane in persistedTab.resolvedPaneStates {
-          let rect = terminalRects(for: persistedTab.resolvedPanes).first {
-            $0.sessionId == pane.sessionId
-          }?.rect
+          // A zoomed pane fills the area; hidden panes keep their layout size.
+          let rect =
+            persistedTab.zoomedSessionId == pane.sessionId
+            ? terminalRects(for: .leaf(sessionId: pane.sessionId)).first?.rect
+            : terminalRects(for: persistedTab.resolvedPanes).first {
+              $0.sessionId == pane.sessionId
+            }?.rect
           let paneSize =
             currentSize.pixel_width > 0
             ? rect.map {
@@ -1104,6 +1361,9 @@ public final class AppModel {
       }
       tab.panes = remap(persistedTab.resolvedPanes)
       tab.focusedSessionId = actual[persistedTab.resolvedFocusedSessionId] ?? first.1.id
+      tab.zoomedSessionId = persistedTab.zoomedSessionId.flatMap { actual[$0] }.flatMap {
+        tab.panes.contains($0) ? $0 : nil
+      }
       tab.focusHistory =
         tab.allSessionIds.filter { $0 != tab.focusedSessionId } + [tab.focusedSessionId]
       _tabs.append(tab)
@@ -1224,7 +1484,8 @@ public final class AppModel {
           cwdFallbackApplied: flat.cwdFallbackApplied, repoFingerprint: flat.repoFingerprint,
           processStatus: flat.processStatus, exitCode: flat.exitCode, shellPid: flat.shellPid,
           agent: flat.agent,
-          panes: tab.panes, focusedSessionId: tab.focusedSessionId, paneStates: panes)
+          panes: tab.panes, focusedSessionId: tab.focusedSessionId, paneStates: panes,
+          zoomedSessionId: tab.isZoomed ? tab.zoomedSessionId : nil)
       }
       let selectedId = _tabs.first(where: { $0.isActive })?.id
       let window = WindowState(
@@ -1913,7 +2174,7 @@ public final class AppModel {
           width: max(0, area.width - insets.left - insets.right),
           height: max(0, area.height - insets.top - insets.bottom)), cellWidth: cellWidth,
         cellHeight: cellHeight)
-      let layout = tab.panes.layout(in: area)
+      let layout = tab.visibleLayout(in: area)
       resizeTabLayoutsUnlocked()
       return layout
     }
@@ -1944,9 +2205,9 @@ public final class AppModel {
 
   private func resizeTabLayoutsUnlocked(deferFindRescan: Bool = false) {
     guard currentSize.pixel_width > 0, currentSize.pixel_height > 0 else { return }
-    for tab in _tabs where tab.isActive || tab.allSessionIds.count == 1 {
+    for tab in _tabs where tab.isActive || tab.visiblePaneCount == 1 {
       resize(
-        layout: terminalRects(for: tab.panes), cellWidth: Int(currentSize.cell_width),
+        layout: terminalRects(for: tab), cellWidth: Int(currentSize.cell_width),
         cellHeight: Int(currentSize.cell_height), deferFindRescan: deferFindRescan)
     }
   }
@@ -2895,6 +3156,8 @@ extension AppModel.PaneError: CustomStringConvertible {
     case .unknownSession: return "The terminal session is no longer available."
     case .unsupportedBackend: return "Split panes are not available with the laband backend."
     case .daemonRefused(let reason): return "Could not open a pane: \(reason)"
+    case .tooSmall: return "Not enough room to split this pane"
+    case .notSplit: return "No divider at that position."
     }
   }
 }

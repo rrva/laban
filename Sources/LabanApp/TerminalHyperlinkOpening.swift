@@ -11,6 +11,10 @@ extension NSWorkspace: ExternalURLOpening {}
 enum TerminalHoverCursorStyle: Equatable {
   case arrow
   case pointingHand
+  /// Over a vertical pane divider.
+  case resizeLeftRight
+  /// Over a horizontal pane divider.
+  case resizeUpDown
 }
 
 enum TerminalHyperlinkOpening {

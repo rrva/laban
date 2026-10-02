@@ -23,7 +23,7 @@ final class DebugRuntimeKeyInputTests: XCTestCase {
   func testCommandRoutesMatchAppShortcuts() {
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .m).command, "minimize")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .t).command, "newTab")
-    XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .w).command, "closeTab")
+    XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .w).command, "closePaneOrTab")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .c).command, "copy")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .v).command, "paste")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .f).command, "find")
@@ -36,7 +36,7 @@ final class DebugRuntimeKeyInputTests: XCTestCase {
     XCTAssertEqual(
       DebugRuntimeKeyInput.appCommandRoute(for: .arrowRight, modifiers: [.command, .alt])
         .command,
-      "selectNextTab")
+      "paneOrTabNavigationRight")
     XCTAssertEqual(
       DebugRuntimeKeyInput.appCommandRoute(for: .bracketLeft, modifiers: [.command, .shift])
         .command,
@@ -48,6 +48,53 @@ final class DebugRuntimeKeyInputTests: XCTestCase {
       DebugRuntimeKeyInput.appCommandRoute(for: .tab, modifiers: [.control, .shift])
         .command,
       "selectPreviousTab")
+  }
+
+  func testCommandShiftDSplitsDown() {
+    XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .d).command, "splitPaneRight")
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.appCommandRoute(for: .d, modifiers: [.command, .shift]).command,
+      "splitPaneDown")
+  }
+
+  func testCommandWClosesPaneOrTab() {
+    let route = DebugRuntimeKeyInput.appCommandRoute(for: .w, modifiers: .command)
+    XCTAssertEqual(route.route, "appCommand")
+    XCTAssertEqual(route.command, "closePaneOrTab")
+  }
+
+  func testCommandOptionWClosesTab() {
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.appCommandRoute(for: .w, modifiers: [.command, .alt]).command,
+      "closeTab")
+  }
+
+  func testCommandOptionArrowNavigatesPanesOnlyWhenSplit() {
+    for (key, name) in [
+      (Key.arrowLeft, "Left"), (.arrowRight, "Right"), (.arrowUp, "Up"), (.arrowDown, "Down"),
+    ] {
+      XCTAssertEqual(
+        DebugRuntimeKeyInput.appCommandRoute(for: key, modifiers: [.command, .alt]).command,
+        "paneOrTabNavigation" + name)
+      XCTAssertEqual(
+        DebugRuntimeKeyInput.appCommandRoute(for: key, modifiers: [.command, .control]).command,
+        "nudgeDivider" + name)
+    }
+  }
+
+  func testCommandControlEqualEqualizesNotZoom() {
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.appCommandRoute(for: .equal, modifiers: [.command, .control]).command,
+      "equalizePanes")
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.appCommandRoute(for: .equal, modifiers: .command).command,
+      "increaseFontSize")
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.appCommandRoute(for: .enter, modifiers: [.command, .shift]).command,
+      "togglePaneZoom")
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.appCommandRoute(for: .arrowLeft, modifiers: [.command, .control]).route,
+      "appCommand", "Cmd+Control+Arrow is a divider nudge, not a readline line-edit chord")
   }
 
   func testCommandLineEditingKeysRouteToTerminal() {

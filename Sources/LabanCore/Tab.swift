@@ -39,6 +39,31 @@ public struct Tab {
   public var focusedSessionId: Session.ID
   public var focusHistory: [Session.ID]
   public var allSessionIds: [Session.ID] { panes.leafSessionIds() }
+  /// The pane that temporarily fills the whole terminal area while the others keep
+  /// running hidden. Persisted with the workspace. Ignored when it is not in the tree.
+  public var zoomedSessionId: Session.ID?
+
+  /// True when `zoomedSessionId` names a pane that is still in the tree.
+  public var isZoomed: Bool { zoomedSessionId.map { panes.contains($0) } ?? false }
+
+  /// How many panes are drawn: one while zoomed, otherwise every leaf. Renderer and
+  /// input code use this (not `allSessionIds.count`) to choose the split or
+  /// single-pane path.
+  public var visiblePaneCount: Int { isZoomed ? 1 : allSessionIds.count }
+
+  /// The pane rectangles actually shown: the zoomed pane alone filling `rect`, or the
+  /// whole tree's layout. Everything that draws, hit-tests or resizes uses this.
+  public func visibleLayout(in rect: CGRect, dividerWidth: CGFloat = 1) -> [PaneRect] {
+    if isZoomed, let zoomedSessionId {
+      return [PaneRect(sessionId: zoomedSessionId, rect: rect)]
+    }
+    return panes.layout(in: rect, dividerWidth: dividerWidth)
+  }
+
+  /// The dividers actually shown: none while zoomed.
+  public func visibleDividers(in rect: CGRect, dividerWidth: CGFloat = 1) -> [PaneDivider] {
+    isZoomed ? [] : panes.dividers(in: rect, dividerWidth: dividerWidth)
+  }
 
   /// A session-addressed view for daemon adapters. Does not mutate model focus.
   public func focusing(_ sessionId: Session.ID) -> Tab {

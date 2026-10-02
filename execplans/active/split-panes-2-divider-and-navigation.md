@@ -64,8 +64,12 @@ does the same thing without a window and saves screenshots.
 - **Axis**: `PaneAxis.vertical` means the divider is a vertical line and the
   children sit left (`first`) and right (`second`). `PaneAxis.horizontal`
   means the divider is a horizontal line and the children sit top (`first`)
-  and bottom (`second`). The view's coordinate system is flipped (y grows
-  downward; `TerminalBitmapView.isFlipped` is true), so "top" is the smaller y.
+  and bottom (`second`). The view and the renderer are **not** flipped: y grows
+  upward (`TerminalBitmapView` is a plain bottom-left-origin view), so "top" is
+  the larger y and the `first` child of a horizontal split owns the high-y end
+  of its container. Debug-API coordinates (`click`, `mouseDrag`) are top-down
+  and are converted at the headless edge. (Revision 1 of this plan claimed the
+  opposite; see `Surprises & Discoveries`.)
 - **Fraction**: the share of the split's extent given to `first`, a number
   between 0 and 1.
 - **Pane path**: new in this plan. The route from the root of the tree to one
@@ -123,27 +127,42 @@ does the same thing without a window and saves screenshots.
 
 ## Progress
 
-- [ ] M0: Record `BASE`; baseline `./scripts/check` green.
-- [ ] M1: `PaneTree` geometry: paths, dividers with containers, fraction by
+- [x] M0: Record `BASE` (done by the orchestrator, commit ff5ccfa2); baseline `./scripts/check` green.
+- [x] M1: `PaneTree` geometry: paths, dividers with containers, fraction by
       path, minimum extents, equalize, directional neighbour; tests.
-- [ ] M2: `Tab.zoomedSessionId` and `Tab.visibleLayout(in:)`; every layout
+- [x] M2: `Tab.zoomedSessionId` and `Tab.visibleLayout(in:)`; every layout
       caller switched to it; `allSessionIds.count` sites audited.
-- [ ] M3: `AppModel` API: unrestricted split (both axes, nested, minimum
+- [x] M3: `AppModel` API: unrestricted split (both axes, nested, minimum
       size), directional focus, set fraction, nudge divider, equalize, zoom;
       tests.
-- [ ] M4: Persistence: nested and mixed-axis trees and `zoomedSessionId`
+- [x] M4: Persistence: nested and mixed-axis trees and `zoomedSessionId`
       round-trip; tests.
-- [ ] M5: Headless control plane: `pane.split` both axes, `pane.focus`
+- [x] M5: Headless control plane: `pane.split` both axes, `pane.focus`
       directions, `pane.resize`, `pane.equalize`, `pane.zoom`; state
       projection and schema; discovery regenerated; divider drag through
       headless mouse actions.
-- [ ] M6: Rendering: nested layouts, zoom uses the single-pane path, divider
-      drag preview line; headless tests.
-- [ ] M7: GUI input: divider hover cursor, drag-preview-commit, keyboard
-      chords, menu items, accessibility splitter elements.
-- [ ] M8: End-to-end: headless scenario, nested-split restart test through
+- [x] M6: Rendering: nested layouts, zoom uses the single-pane path, divider
+      drag preview line, sidebar zoom badge; headless tests. (The GUI half of
+      "pass `dividerPreview` during a drag" lands with the M7 drag handler; the
+      request field and headless path are done.)
+- [x] M7: GUI input: divider hover cursor, drag-preview-commit, keyboard
+      chords, menu items, accessibility splitter elements. (Also fixed the
+      layout's vertical orientation and per-pane mouse geometry, see Surprises.)
+- [x] M8: End-to-end: headless scenario, nested-split restart test through
       labpty, four-pane frame-cost measurement.
-- [ ] M9: Docs (`mvp.md`, `spec.md`, `dev-process.md`), Review Gate.
+- [x] M9 (2026-10-02): Docs (`mvp.md`, `spec.md`, `dev-process.md`); Review Gate
+      passed in round 2 at `0f380f8e`.
+- [x] PR review fixes (2026-10-02, after the PR review of #3): a divider drag
+      follows the pointer's movement from the press (an off-centre click in the
+      grab zone no longer moves the divider); a drag commits only if the split at
+      its path still holds the same panes on the same axis; every divider press
+      consumes the gesture, so Escape mid-drag cannot fall through to selection;
+      selection and link hit-testing use the row count of the pane under the
+      pointer; Cmd+Control+Left/Right send Ctrl+A/Ctrl+E again in an unsplit
+      tab (GUI and headless). Each fix has a test that fails with the fix
+      reverted. Deferred to rrva/laban#4: the titlebar inset applied to every
+      stacked pane, VoiceOver splitter reuse, headless Escape/double-click
+      parity, and duplicated grab-zone hit tests.
 
 ## Decision Log
 
@@ -292,71 +311,297 @@ does the same thing without a window and saves screenshots.
   changed here.
   Date/Author: 2026-10-01 / plan author.
 
+- Decision: `settingFraction(at:to:)` returns nil only when the path does not
+  name a split; a non-finite value on a valid path returns the tree unchanged
+  (the same behaviour the old `settingFraction(ofSplitContaining:to:)` had).
+  `fractionRange` returns `0.5...0.5` for a zero-extent container.
+  Rationale: nil is reserved for the "bad path" error callers map to `notSplit`.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: `Tab` also exposes `visiblePaneCount` (1 while zoomed, otherwise the
+  leaf count), and `isZoomed` is true only when `zoomedSessionId` is still in the
+  tree. Renderer and view gates that used `allSessionIds.count == 1` or `> 1`
+  use `visiblePaneCount`, so they need no geometry. `AppModel.surfaceSessionSnapshot`
+  marks a session visible only if its tab is active and (not zoomed or it is the
+  zoomed pane). `resizeTabLayoutsUnlocked` also resizes inactive zoomed tabs
+  (`visiblePaneCount == 1`) so their zoomed pane tracks window resizes.
+  `paneSize(for:in:)` returns a hidden pane's remembered `sizeBySession` entry.
+  Rationale: hidden panes must keep their last size (Decision above), and
+  inactive single-visible-pane tabs already resized with the window.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M3 behaviour details the plan left open.
+  (1) `splitPane` only unzooms once the split is accepted: a refused or failed
+  split leaves the tree, registry and zoom untouched. (2) The 10x3 minimum is
+  not checked while the pixel area is still zero (before the view's first
+  layout), because nothing can be measured; the view resizes afterwards.
+  (3) `focusPane(inTab:direction:)` unzooms only when it finds a neighbour; at
+  an edge it changes nothing, zoom included, matching "the chord does nothing
+  at the edge". `focusPane(inTab:sessionId:)` itself unzooms when the target
+  is not the zoomed pane, so control-plane `pane.focus` by ID cannot leave
+  focus on a hidden pane. (4) `nudgeDivider` returns false while zoomed (the
+  dividers are hidden) and works in whole pixels (`floor(extent*fraction)` plus
+  or minus `cells` cell extents) so two cells is exactly two columns; clamped
+  fractions get half a pixel added to the lower bound so the layout's floor
+  cannot leave a pane one column under the minimum. (5) Equalize keeps zoom.
+  (6) The sync-cache invalidation the plan asks for in `setPaneZoom` is done by
+  firing `onSessionsReplaced`, which `TerminalSurfaceController` already wires
+  to `invalidateSessionSyncCache()`; the model cannot call the controller.
+  (7) `TabState.zoomedSessionId` is also dropped on decode when the tab has
+  only one pane, and restore sizes a persisted zoomed pane to the full area.
+  Rationale: keep every command atomic and let the existing hooks carry the
+  redraw.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M5 behaviour details the plan left open.
+  (1) `pane.focus` with a direction word that finds no neighbour is a successful
+  no-op (200), mirroring the keyboard chord; an unknown word is 400. (2)
+  `pane.resize` with a `direction` and no `path` that finds no divider, or whose
+  divider is at its limit, is also a 200 no-op because `nudgeDivider` cannot tell
+  the two apart; a `path` without `fraction`, or neither, is 400, and any path
+  component other than `first`/`second` is `notSplit`. (3) The headless drag keeps
+  its proposal in `HeadlessDebugRuntime.dividerDrag` (`beginDividerDrag`,
+  `updateDividerDrag`, `commitDividerDrag`, `cancelDividerDrag`); the one-shot
+  `mouseDrag` action runs all three, and M6's preview rendering and multi-point
+  test drive the same methods directly. A click or drag that names a `sessionId`
+  skips divider hit-testing, so scripts can still address a pane by ID. (4)
+  `TabResponse.zoomedSessionId` is optional and omitted (not `null`) when the tab
+  is not zoomed; the schema allows both. `schemas/debug/action.schema.json` is
+  hand-maintained, so it was edited directly.
+  Rationale: keep every command atomic, idempotent and symmetrical with the GUI.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M6 behaviour details the plan left open.
+  (1) `TerminalSurfaceFrameRequest.dividerPreview` carries the finished rect, built by
+  `PaneDivider.previewRect(axis:container:fraction:)` (3 pixels thick, centred on the
+  proposed cut, spanning the container). The GUI drag in M7 must use the same helper.
+  (2) `Theme` has no focus-ring accent; the sidebar's selected-row stripe and drop
+  accent use `Theme.current.blue`, so the preview is that colour at alpha 0xB3
+  (`TerminalSurfaceController.dividerPreviewAlpha`). It is appended after the
+  dividers and skipped while the tab is zoomed. (3) The preview position is the
+  clamped fraction: `AppModel.clampedSplitFraction(inTab:path:fraction:)` (new,
+  public) exposes what `setSplitFraction` will apply, and the headless
+  `updateDividerDrag` stores it, so the line never shows a position the commit
+  would refuse. M7's GUI drag should call the same method. (4) The zoom badge
+  `SidebarProducer.zoomBadgeText(paneCount:)` ("\u{2922} N") is drawn on the title line
+  right-aligned just left of the status slot (the slot itself keeps the attention
+  marker / close glyph), and the title truncates by badge width plus one cell. (5)
+  `SidebarCacheSignature.Entry` gained `zoomedPaneCount` so the memoised sidebar
+  rebuilds when a tab zooms or unzooms. (6) The badge is not added to
+  `Localizable.xcstrings`: it is a symbol and a number built in `LabanCore`, which has
+  no access to `L10n` (app target), and no string audit reads the catalog for unused
+  keys, so a catalog entry would be dead. (7) Tests live in `SplitPaneHeadlessTests`
+  (so the Review Gate filter finds them) with `lastFramePaneSessionIds` on the
+  headless runtime to show which frame path ran.
+  Rationale: keep the preview honest, the sidebar cache correct and the GUI and
+  headless paths identical.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M7 fixes the layout orientation instead of papering over it at each
+  consumer. `PaneTree.partition` for a horizontal split places `first` at the high-y
+  end (render and view space, y up); sizes are unchanged (`first` is still
+  `floor(extent * fraction)` tall). `directionalNeighbour` treats `.up` as larger y.
+  `PaneDivider.previewRect` and the new `PaneDividerDrag` (shared by the view and the
+  headless runtime) measure a horizontal fraction down from the container's top. The
+  headless runtime converts debug coordinates (top-down) with `windowHeight - y` in
+  `paneHit`, `dividerHit` and drag updates. The view's `terminalMouseGeometry`,
+  `selectionGeometry` (new `GridGeometry.originY`) and IME `firstRect` subtract or add
+  the pane's `minY`. `PaneTreeTests` rects that hard-coded the old y-down arrangement
+  (`testDividersCarryPathsInNestedTree`, `testSettingFractionByPath`,
+  `testPreviewRectCentresOnProposedPositionAndSpansContainer`) were corrected, not
+  weakened.
+  Rationale: one coordinate space (the renderer's) for every layout rect keeps every
+  later consumer correct by construction. Flipping inside `Tab.visibleLayout` would
+  have left `PaneTree` and the controller in different spaces.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M7 behaviour details the plan left open.
+  (1) The AppCommand names the headless key path logs are
+  `TerminalInputCaptureMetadata.captureName`'s: `splitPaneDown`, `closePaneOrTab`,
+  `togglePaneZoom`, `equalizePanes`, and `focusPane`/`paneOrTabNavigation`/
+  `nudgeDivider` plus `Left|Right|Up|Down`. Cmd+Control+Left/Right no longer fall into
+  the Cmd+Arrow readline line-edit bytes (`commandLineEditingBytes` excludes Control,
+  in the app and the headless mirror). (2) The drag preview shows from the press (on
+  the divider's own position) and follows the pointer; a release commits only when the
+  clamped fraction differs from where the drag began, so a click changes nothing and
+  moves no focus. A double-click equalizes and consumes the rest of the gesture.
+  Escape cancels. The preview position is `AppModel.clampedSplitFraction`. (3) Pane
+  navigation treats the laband backend like an unsplit tab (it only ever shows the
+  focused pane), so Cmd+Option+Left/Right keep switching tabs there; the split items
+  stay disabled on laband. (4) Menus: File has "Close Tab" (retitled "Close Pane" in a
+  split tab) on Cmd+W with Cmd+Option+W as its alternate item (shown while Option is
+  held), then Split Pane Right/Down. View gets a "Pane" submenu. "Select Pane Left"
+  and "Select Pane Right" carry no key equivalent (see Surprises); "Select Pane
+  Above/Below" carry Cmd+Option+Up/Down. "Focus Next/Previous Pane" were renamed
+  "Select Next/Previous Pane" and moved into the Pane submenu, so the old strings are
+  gone from the catalog. Menu items that need a direction carry it in
+  `representedObject`. (5) Accessibility increment and decrement address their own
+  divider through the new `AppModel.nudgeDivider(inTab:path:towardsSecond:cells:)`
+  rather than the focused pane's nearest divider, because VoiceOver can focus a
+  divider the focused pane does not border; both overloads share one two-cell step.
+  The splitter elements are cached by tab, path, rect and fraction and rebuilt as soon
+  as any of them changes. (6) "Not enough room to split this pane" and "Pane divider"
+  are localised through `L10n`; the notice is built in the view because `LabanCore`
+  has no `L10n`.
+  Rationale: keep every command atomic and the GUI and headless paths symmetrical.
+  Date/Author: 2026-10-01 / executing agent.
+
+- Decision: M8 behaviour details the plan left open.
+  (1) A scenario cannot know the divider's pixel position (the headless window is
+  `200 + 80 * cellWidth` wide and the cell width follows the persisted font size), so
+  `scripts/run-debug-script` gained `{"$calc": "..."}` (numbers, `$steps.label.path`
+  references, `+ - * /`, truncated to an integer, evaluated with `ast`, never `eval`) and
+  an `"absent": true` expectation (a path must be missing, used for `zoomedSessionId`
+  after unzoom). `schemas/debug-script.schema.json` allows `absent` and `expectJson` on
+  action steps. (2) Screenshot files are saved with an explicit `path`
+  (`screenshots/03-three-panes.png`, `05-dragged`, `06-zoomed`) because the runner's
+  default name is prefixed with the step index, which would not match the Review Gate
+  names. `scripts/test-e2e` also checks that those three files exist. (3) The restart test
+  reuses `SplitDaemonHarness`, whose panes each run `exec /bin/sleep 60` as the labpty
+  child (the plan said `sleep 600`; 60 seconds is ample and matches the existing
+  split restart test). The harness `split()` gained an `axis` parameter. (4) The
+  scenario drags with `mouseDrag` from the divider's midpoint to one third of the
+  terminal area and asserts a root fraction between 0.31 and 0.355 (one cell is 0.0125
+  of an 80-column area, so the commit may snap by a cell). Bottom-right is closed by ID.
+  Rationale: keep the scenario independent of font metrics and keep every plan-named
+  file name and test name exact.
+  Date/Author: 2026-10-01 / executing agent.
+
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed. See "Review gate and review-fix loop" in
 `PLANS.md`. All commands run from the repository root. The executing agent
-records `BASE` here in M0: `BASE = <fill in>`.
+records `BASE` here in M0: `BASE = 958c85b502529fd194ef73ba966b2bb782e1511b`.
 
-- [ ] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
-- [ ] `swift test --filter PaneTreeTests` exits 0 and output contains
+- [x] `git diff --stat $BASE -- Sources/Labpty Sources/Laband` prints nothing.
+- [x] `swift test --filter PaneTreeTests` exits 0 and output contains
       `testDividersCarryPathsInNestedTree`, `testSettingFractionByPath`,
       `testEqualizeGivesThreeColumnsOneThirdEach`,
       `testDirectionalNeighbourPrefersAdjacentOverWiderOverlap`,
       `testDirectionalNeighbourUsesHistoryOnTie` and
       `testMinimumExtentSumsAlongAxisAndMaxesAcross`.
-- [ ] `swift test --filter AppModelTests` exits 0 and output contains
+- [x] `swift test --filter AppModelTests` exits 0 and output contains
       `testSplitDownNestsInsideVerticalSplit`, `testSplitRefusedBelowMinimumSize`,
       `testZoomResizesOnlyZoomedPane`, `testSplitWhileZoomedUnzoomsFirst`,
       `testCloseZoomedPaneUnzooms` and `testDividerNudgeClampsToMinimumExtent`.
-- [ ] `swift test --filter PersistenceRoundTripTests` exits 0 and output
+- [x] `swift test --filter PersistenceRoundTripTests` exits 0 and output
       contains `testNestedMixedAxisTreeRoundTrips` and
       `testZoomedSessionRoundTripsAndInvalidZoomIsDropped`.
-- [ ] `swift test --filter SplitPaneHeadlessTests` exits 0 and output contains
+- [x] `swift test --filter SplitPaneHeadlessTests` exits 0 and output contains
       `testThreePaneLayoutRendersThreeOriginsAndTwoDividers`,
       `testZoomedTabUsesSinglePaneFrame` and `testDividerDragCommitsOnRelease`.
-- [ ] `swift test --filter HeadlessIntentRouterTests` exits 0 and output
+- [x] `swift test --filter HeadlessIntentRouterTests` exits 0 and output
       contains `testPaneResizeByPath`, `testPaneFocusByDirection`,
       `testPaneZoomToggle` and `testPaneEqualize`.
-- [ ] `swift test --filter TerminalKeyInputTests` exits 0 and output contains
+- [x] `swift test --filter TerminalKeyInputTests` exits 0 and output contains
       `testCommandShiftDSplitsDown`, `testCommandWClosesPaneOrTab`,
       `testCommandOptionWClosesTab` and
       `testCommandOptionArrowNavigatesPanesOnlyWhenSplit`.
-- [ ] `swift test --filter DebugRuntimeKeyInputTests` exits 0 and its new
+- [x] `swift test --filter DebugRuntimeKeyInputTests` exits 0 and its new
       cases mirror the four key cases above.
-- [ ] `swift test --filter CatalogParityTests` exits 0 and
+- [x] `swift test --filter CatalogParityTests` exits 0 and
       `git diff $BASE -- Tests/LabanAppTests/CatalogParityTests.swift` prints
       nothing.
-- [ ] `swift run LabanControlGen --check` exits 0.
-- [ ] `./scripts/test-e2e` exits 0 and stdout contains
+- [x] `swift run LabanControlGen --check` exits 0.
+- [x] `./scripts/test-e2e` exits 0 and stdout contains
       `split-pane-2 scenario: ok`.
-- [ ] `./scripts/test-labanapp-survives-restart` exits 0 and
+- [x] `./scripts/test-labanapp-survives-restart` exits 0 and
       `grep -n "func testNestedSplitSurvivesLabanAppRestartViaLabpty" Tests/LabanAppTests/LabanAppTests.swift`
       prints one hit.
-- [ ] `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exits 0.
-- [ ] The screenshots `03-three-panes.png`, `05-dragged.png` and
+- [x] `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exits 0.
+- [x] The screenshots `03-three-panes.png`, `05-dragged.png` and
       `06-zoomed.png` under the scenario's artifact directory were opened and
       show, respectively: three panes and two dividers; a left pane about one
       third wide; one pane filling the terminal area with no divider.
-- [ ] Mutation: in `PaneTree.directionalNeighbour`, swap the order of the
+- [x] Mutation: in `PaneTree.directionalNeighbour`, swap the order of the
       directional-distance and overlap-length comparisons; expect
       `testDirectionalNeighbourPrefersAdjacentOverWiderOverlap` to fail;
       revert.
-- [ ] Mutation: in `Tab.visibleLayout(in:)`, ignore `zoomedSessionId`; expect
+- [x] Mutation: in `Tab.visibleLayout(in:)`, ignore `zoomedSessionId`; expect
       `testZoomResizesOnlyZoomedPane` and `testZoomedTabUsesSinglePaneFrame` to
       fail; revert.
-- [ ] Mutation: in the GUI drag handler, call `model.setSplitFraction` from
-      `mouseDragged` instead of `mouseUp`; expect
+- [x] Mutation: in `PaneDividerDrag.move(toX:y:in:)`
+      (`Sources/LabanCore/PaneTree.swift`), the single drag-move path shared by
+      the AppKit view and the headless runtime, call
+      `model.setSplitFraction(inTab:path:fraction:)` after clamping; expect
       `testDividerDragCommitsOnRelease` (headless) and
       `testDividerDragDoesNotResizeBeforeRelease` (AppKit) to fail; revert.
+      (Revised after review round 1: the GUI and headless runtime had separate
+      drag code, so one GUI-only mutation could not fail the headless test.
+      Both now go through `PaneDividerDrag.move` and `commit`.)
 
-Review status: NOT REVIEWED
+Review status: PASSED, round 2 (2026-10-02, at `0f380f8e`). All 17 items pass:
+the 15 items that passed in round 1, plus mutations 2 and 3 after the round 1
+fixes. `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exited 0 at `0f380f8e` (load
+average about 3-6; log `.artifacts/split-panes-2/review-1-fix/check-2.log`). An earlier
+attempt was killed at the 2-hour limit under host load near 200, during which
+`testHeadlessMouseWheelReachesChildOverLabandBackend` timed out waiting for the
+laband socket; it passes alone in 0.3 s and passed in the green run.
+Round 1 history follows: FAILED, 15 of 17 items, run against commit 4ca80f3e.
+Logs and screenshots: `.artifacts/split-panes-2/review-1/`.
 
 Review findings (filled in by the review agent):
 
-(none yet)
+Passed: source-bytes check for `Sources/Labpty` and `Sources/Laband` (empty
+diff against BASE); every named test present and green in `PaneTreeTests`,
+`AppModelTests`, `PersistenceRoundTripTests`, `SplitPaneHeadlessTests`,
+`HeadlessIntentRouterTests`, `TerminalKeyInputTests` (all exit 0);
+`DebugRuntimeKeyInputTests` (13 tests, mirrors the four key cases);
+`CatalogParityTests` (7 tests, file diff against BASE empty);
+`LabanControlGen --check`; `./scripts/test-e2e` (stdout has
+`split-pane-2 scenario: ok`); `./scripts/test-labanapp-survives-restart`
+(exit 0, `testNestedSplitSurvivesLabanAppRestartViaLabpty` at
+`Tests/LabanAppTests/LabanAppTests.swift:1151`); `LABAN_CHECK_NO_MEMO=1
+./scripts/check` (exit 0, "check passed"). Screenshots re-generated by running
+`fixtures/debug-script-split-pane-2.scenario.json` and opened: `03-three-panes.png`
+shows three panes and two dividers (one vertical, one horizontal on the right);
+`05-dragged.png` shows the left pane 240 px of the 720 px terminal area (one
+third); `06-zoomed.png` shows one pane filling the area, no divider, sidebar badge
+"3". Mutation 1 (swap distance and overlap comparisons in
+`PaneTree.directionalNeighbour`) made
+`testDirectionalNeighbourPrefersAdjacentOverWiderOverlap` fail as expected.
+
+1. FAIL, Mutation 2 (ignore `zoomedSessionId` in `Tab.visibleLayout(in:)`,
+   `Sources/LabanCore/Tab.swift:56`): `testZoomResizesOnlyZoomedPane` fails as
+   expected (99 vs 200 columns, `AppModelTests.swift:1845`), and so does
+   `TabVisibleLayoutTests.testZoomedVisibleLayoutIsOneFullAreaPaneWithoutDividers`,
+   but `SplitPaneHeadlessTests.testZoomedTabUsesSinglePaneFrame`
+   (`Tests/LabanDebugTests/SplitPaneHeadlessTests.swift:200`) still PASSES
+   (1 test executed, 0 failures). The gate requires it to fail. Cause as far as
+   observed: the zoomed headless frame is drawn through the single-pane path
+   (`visiblePaneCount`), so the test's assertions on `lastFramePaneSessionIds`
+   and text origins never depend on `visibleLayout`. The test does not pin the
+   behaviour the gate says it pins. Log: `mut2-SplitPaneHeadlessTests.log`.
+2. FAIL (partial), Mutation 3 (call `model.setSplitFraction` during the drag
+   instead of on release). Applied in the GUI drag path
+   (`updateDividerDrag`, called from `mouseDragged`,
+   `Sources/LabanApp/TerminalBitmapView.swift:9586`):
+   `TerminalBitmapViewDividerTests.testDividerDragDoesNotResizeBeforeRelease`
+   fails as expected (`testEscapeDuringDragCancelsWithoutResizing` fails too), but
+   `SplitPaneHeadlessTests.testDividerDragCommitsOnRelease` PASSES, because the
+   headless runtime has its own drag code
+   (`Sources/LabanDebug/HeadlessDebugRuntime.swift:1167`) that a GUI mutation does
+   not touch. The same mutation applied to the headless `updateDividerDrag` does
+   make `testDividerDragCommitsOnRelease` fail, so each test guards its own
+   handler; the gate wording (one mutation failing both) cannot be met as
+   written. Either state two mutations in the gate or accept as written once
+   clarified. Logs: `mut3-*.log`, `mut3b-headless-equivalent-*.log`.
+
+All three source files were restored with `git checkout` and verified: `git diff`
+empty, sha256 of every mutated file equal to its pre-mutation value, and
+`git status` clean before this record was written.
+
+Round 1 fixes (2026-10-01): `testZoomedTabUsesSinglePaneFrame` now also
+asserts that hit-testing and mouse coordinates for a point in a hidden pane
+resolve to the zoomed pane's full-area rect, which only `Tab.visibleLayout`
+provides. The AppKit and headless divider drags now share
+`PaneDividerDrag.move(toX:y:in:)` and `commit(in:)`, and the mutation 3 wording
+above targets that shared path. Re-run at `0f380f8e`: mutation 2 fails
+`testZoomResizesOnlyZoomedPane` and `testZoomedTabUsesSinglePaneFrame`; mutation 3
+fails `testDividerDragCommitsOnRelease` and `testDividerDragDoesNotResizeBeforeRelease`;
+both reverted with a clean `git status`. Logs: `.artifacts/split-panes-2/review-1-fix/`.
 
 ## Surprises & Discoveries
 
@@ -379,6 +624,63 @@ Review findings (filled in by the review agent):
   `TerminalBitmapView.validateMenuItem` (`allSessionIds.count == 1` around line
   9756), and the menu offering only "Split Pane Right". `PaneTree.splitting`
   already handles any leaf at any depth.
+
+- Observation: the ranking tuple needs tolerances when comparing floating-point
+  rects. Overlap and centre offset are compared with a 1 pixel tolerance and
+  directional distance with 0.5, otherwise a one-pixel difference caused by the
+  divider (for example a 300 and a 299 pixel tall stacked pane) would beat the
+  focus-history tie-break. The history test uses a 601 pixel tall area so the
+  halves are exactly equal.
+  Evidence: `PaneTree.directionalNeighbour`, `testDirectionalNeighbourUsesHistoryOnTie`.
+
+- Observation: the remaining `allSessionIds.count` sites after M2 are deliberate:
+  `AppModel.splitPane` (M3 rewrites it), `TerminalBitmapView` 9326 (focus next
+  pane) and 9756/9759 (`validateMenuItem`, M7), `LiveIntentRouter` 551,
+  `ControlStateProjections` 67 and `DebugPaneActions` 30 (all marked unchanged
+  in the table).
+
+- Observation: the plan's premise "the view's coordinate system is flipped
+  (`isFlipped` is true), so top is the smaller y" is wrong. `TerminalBitmapView`
+  does not override `isFlipped`, the sidebar rows are placed at
+  `height - (i + 1) * rowHeight - topInset`, `terminalGridOriginY` measures from the
+  pane's bottom, and the Metal and software renderers are y-up. M1 laid a
+  horizontal split out with `first` at the smaller y, which is the *bottom* on
+  screen: Split Down would have put the new pane above the old one and
+  Cmd+Option+Up/Down would have moved the wrong way. It was invisible until M7 because
+  the tests only compared layout rects with each other and the first plan only
+  split left/right. The mouse, selection and IME geometry in the view also ignored a
+  pane's `minY`, so a pane stacked above another mapped clicks to the wrong row.
+  Evidence: `PaneTree.partition` (now places `first` at the high-y end),
+  `PaneTree.directionalNeighbour` (`.up` now means larger y),
+  `TerminalBitmapViewDividerTests.testSplitDownPlacesNewPaneBelowTheOriginal` and
+  `testSelectionInUpperPaneUsesItsOwnOrigin` (the latter fails if the pane origin is
+  dropped from `selectionGeometry`).
+
+- Observation: Cmd+Option+Left/Right cannot be menu key equivalents. They are the
+  hold-to-peek tab gesture (`peekCommitModifiers`), and the Tab menu deliberately
+  carries no key equivalent for them because AppKit would match the chord ahead of
+  `keyDown`. The same reasoning applies to "Select Pane Left/Right".
+  Evidence: the comment above `previousItem` in `MenuCommands.swift`.
+
+- Observation: four panes cost less than one pane in the headless frame path, so the
+  multi-grid GPU payload plan is not triggered. 20 warmed frames per layout (5 discarded),
+  identical 24-row ASCII content in each pane, a fresh tab per layout, a frame forced by
+  `pane.focus` on the focused pane and read from `GET /debug/timing`. Medians (ms)
+  total / command extraction / render: one pane 6.146 / 3.803 / 2.213, two panes
+  5.157 / 2.675 / 2.397, four panes 4.346 / 1.975 / 2.249 (four over one: 0.71; a second
+  run gave 6.281, 5.140 and 4.374, ratio 0.70). Smaller grids mean fewer cells per
+  pane and the render pass is flat. This measures the headless draw-command path, not
+  Metal GPU-cell throughput.
+  Evidence: `.artifacts/split-panes-2/perf/frame-cost.json` (second run),
+  `frame-cost-run1.json` and the script `measure-frame-cost.py` in the same directory
+  (`.artifacts` is untracked; rerun with `swift build --product laban-agent && python3
+  .artifacts/split-panes-2/perf/measure-frame-cost.py`).
+
+- Observation: the new scenario passed on the first run and its screenshots show what the
+  Review Gate asks for: `03-three-panes.png` has three panes and two dividers,
+  `05-dragged.png` has a left pane about one third wide, `06-zoomed.png` has one pane
+  filling the terminal area with no divider and the sidebar badge "⤢ 3".
+  Evidence: `.artifacts/split-panes-2/e2e/screenshots/`.
 
 ## Outcomes & Retrospective
 

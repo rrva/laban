@@ -1755,3 +1755,235 @@ extension AppModelTests {
     XCTAssertEqual(model.allSessions().count, 1)
   }
 }
+
+extension AppModelTests {
+  private func fixtureOpen(_ id: Session.ID, _ size: LabanTerminalSize, _ cwd: String?) throws
+    -> Session
+  { try Session.fixture(size: size, sessionID: id) }
+
+  /// A model with a roomy 1600x800 area and 8x16 cells: `A | (B / C)`, focus on C.
+  private func nestedModel() throws -> (AppModel, Tab.ID, String, String, String) {
+    let model = try AppModel()
+    model.resize(viewportWidth: 1600, viewportHeight: 800, cellWidth: 8, cellHeight: 16)
+    let tab = try XCTUnwrap(model.activeTab)
+    let a = tab.focusedSessionId
+    let b = try model.splitPane(inTab: tab.id, axis: .vertical, openSession: fixtureOpen)
+    let c = try model.splitPane(inTab: tab.id, axis: .horizontal, openSession: fixtureOpen)
+    return (model, tab.id, a, b, c)
+  }
+
+  func testSplitDownNestsInsideVerticalSplit() throws {
+    let (model, tabId, a, b, c) = try nestedModel()
+    let tab = try XCTUnwrap(model.tabs.first { $0.id == tabId })
+    XCTAssertEqual(
+      tab.panes,
+      .split(
+        axis: .vertical, fraction: 0.5, first: .leaf(sessionId: a),
+        second: .split(
+          axis: .horizontal, fraction: 0.5, first: .leaf(sessionId: b),
+          second: .leaf(sessionId: c))))
+    XCTAssertEqual(tab.focusedSessionId, c)
+    XCTAssertEqual(model.allSessions().count, 3)
+    // The new pane is half the right column's height; the left pane is untouched.
+    XCTAssertEqual(model.terminalSize(for: b).rows, model.terminalSize(for: c).rows, accuracy: 1)
+    XCTAssertLessThan(model.terminalSize(for: c).rows, 50)
+    XCTAssertGreaterThan(model.terminalSize(for: a).rows, model.terminalSize(for: c).rows)
+  }
+
+  func testSplitRefusedBelowMinimumSize() throws {
+    let model = try AppModel()
+    model.resize(viewportWidth: 160, viewportHeight: 320, cellWidth: 8, cellHeight: 16)
+    let tab = try XCTUnwrap(model.activeTab)
+    let before = tab.panes
+    // 160 px is 20 columns: a vertical split would leave 9 or 10 columns, one short.
+    XCTAssertThrowsError(
+      try model.splitPane(inTab: tab.id, axis: .vertical, openSession: fixtureOpen)
+    ) { error in
+      guard case AppModel.PaneError.tooSmall = error else {
+        return XCTFail("expected tooSmall, got \(error)")
+      }
+    }
+    XCTAssertEqual(model.activeTab?.panes, before)
+    XCTAssertEqual(model.allSessions().count, 1)
+    // Rows: 320 px is 20 rows; splitting down twice reaches the 3 row floor first.
+    _ = try model.splitPane(inTab: tab.id, axis: .horizontal, openSession: fixtureOpen)
+    XCTAssertEqual(model.allSessions().count, 2)
+    model.resize(viewportWidth: 160, viewportHeight: 90, cellWidth: 8, cellHeight: 16)
+    XCTAssertThrowsError(
+      try model.splitPane(inTab: tab.id, axis: .horizontal, openSession: fixtureOpen)
+    ) { error in
+      guard case AppModel.PaneError.tooSmall = error else {
+        return XCTFail("expected tooSmall, got \(error)")
+      }
+    }
+    XCTAssertEqual(model.allSessions().count, 2)
+  }
+
+  func testFocusByDirectionMovesToNeighbour() throws {
+    let (model, tabId, a, b, c) = try nestedModel()
+    XCTAssertTrue(model.focusPane(inTab: tabId, direction: .left))
+    XCTAssertEqual(model.activeTab?.focusedSessionId, a)
+    // Back to the right: the most recently focused right-hand pane wins the tie.
+    XCTAssertTrue(model.focusPane(inTab: tabId, direction: .right))
+    XCTAssertEqual(model.activeTab?.focusedSessionId, c)
+    XCTAssertTrue(model.focusPane(inTab: tabId, direction: .up))
+    XCTAssertEqual(model.activeTab?.focusedSessionId, b)
+    XCTAssertFalse(model.focusPane(inTab: tabId, direction: .up))
+    XCTAssertEqual(model.activeTab?.focusedSessionId, b)
+    XCTAssertFalse(model.focusPane(inTab: tabId, direction: .right))
+  }
+
+  func testZoomResizesOnlyZoomedPane() throws {
+    let (model, tabId, a, b, c) = try nestedModel()
+    let area = model.terminalAreaSize
+    let beforeA = model.terminalSize(for: a)
+    let beforeB = model.terminalSize(for: b)
+    let beforeC = model.terminalSize(for: c)
+    model.focusPane(inTab: tabId, sessionId: c)
+    model.setPaneZoom(inTab: tabId, zoomed: true)
+    XCTAssertEqual(model.activeTab?.zoomedSessionId, c)
+    XCTAssertEqual(model.terminalSize(for: c).cols, area.cols)
+    XCTAssertEqual(model.terminalSize(for: c).rows, area.rows)
+    XCTAssertEqual(model.terminalSize(for: a).cols, beforeA.cols)
+    XCTAssertEqual(model.terminalSize(for: a).rows, beforeA.rows)
+    XCTAssertEqual(model.terminalSize(for: b).cols, beforeB.cols)
+    XCTAssertEqual(model.terminalSize(for: b).rows, beforeB.rows)
+    // Toggling restores the layout sizes.
+    model.setPaneZoom(inTab: tabId, zoomed: nil)
+    XCTAssertNil(model.activeTab?.zoomedSessionId)
+    XCTAssertEqual(model.terminalSize(for: c).cols, beforeC.cols)
+    XCTAssertEqual(model.terminalSize(for: c).rows, beforeC.rows)
+  }
+
+  func testZoomOnSinglePaneTabIsNoOp() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    model.setPaneZoom(inTab: tab.id, zoomed: true)
+    XCTAssertNil(model.activeTab?.zoomedSessionId)
+    model.setPaneZoom(inTab: tab.id, zoomed: nil)
+    XCTAssertNil(model.activeTab?.zoomedSessionId)
+  }
+
+  func testSplitWhileZoomedUnzoomsFirst() throws {
+    let (model, tabId, _, _, c) = try nestedModel()
+    model.setPaneZoom(inTab: tabId, zoomed: true)
+    XCTAssertEqual(model.activeTab?.zoomedSessionId, c)
+    let d = try model.splitPane(inTab: tabId, axis: .vertical, openSession: fixtureOpen)
+    XCTAssertNil(model.activeTab?.zoomedSessionId)
+    XCTAssertEqual(model.activeTab?.allSessionIds.count, 4)
+    XCTAssertEqual(model.activeTab?.focusedSessionId, d)
+  }
+
+  func testFocusWhileZoomedUnzoomsOnlyWhenItMoves() throws {
+    let (model, tabId, a, _, c) = try nestedModel()
+    model.setPaneZoom(inTab: tabId, zoomed: true)
+    // No pane to the right of C: nothing changes, the tab stays zoomed.
+    XCTAssertFalse(model.focusPane(inTab: tabId, direction: .right))
+    XCTAssertEqual(model.activeTab?.zoomedSessionId, c)
+    XCTAssertTrue(model.focusPane(inTab: tabId, direction: .left))
+    XCTAssertNil(model.activeTab?.zoomedSessionId)
+    XCTAssertEqual(model.activeTab?.focusedSessionId, a)
+    model.setPaneZoom(inTab: tabId, zoomed: true)
+    model.focusAdjacentPane(inTab: tabId, forward: true)
+    XCTAssertNil(model.activeTab?.zoomedSessionId)
+  }
+
+  func testCloseZoomedPaneUnzooms() throws {
+    let (model, tabId, a, b, c) = try nestedModel()
+    model.setPaneZoom(inTab: tabId, zoomed: true)
+    model.closePane(inTab: tabId, sessionId: c, terminate: { _ in })
+    XCTAssertNil(model.activeTab?.zoomedSessionId)
+    XCTAssertEqual(model.activeTab?.allSessionIds, [a, b])
+    // Closing a hidden pane keeps the zoom; dropping to one pane ends it.
+    model.setPaneZoom(inTab: tabId, zoomed: true)
+    let zoomed = try XCTUnwrap(model.activeTab?.zoomedSessionId)
+    let other = zoomed == a ? b : a
+    model.closePane(inTab: tabId, sessionId: other, terminate: { _ in })
+    XCTAssertNil(model.activeTab?.zoomedSessionId)
+    XCTAssertEqual(model.activeTab?.allSessionIds, [zoomed])
+  }
+
+  func testEqualizeResizesAllPanes() throws {
+    let (model, tabId, a, b, c) = try nestedModel()
+    try model.setSplitFraction(inTab: tabId, path: [], fraction: 0.2)
+    try model.setSplitFraction(inTab: tabId, path: [.second], fraction: 0.7)
+    XCTAssertLessThan(model.terminalSize(for: a).cols, model.terminalSize(for: b).cols)
+    XCTAssertGreaterThan(model.terminalSize(for: b).rows, model.terminalSize(for: c).rows)
+    model.equalizePanes(inTab: tabId)
+    XCTAssertEqual(model.terminalSize(for: a).cols, model.terminalSize(for: b).cols, accuracy: 1)
+    XCTAssertEqual(model.terminalSize(for: b).rows, model.terminalSize(for: c).rows, accuracy: 1)
+    guard case .split(_, let root, _, .split(_, let nested, _, _))? = model.activeTab?.panes else {
+      return XCTFail("expected nested split")
+    }
+    XCTAssertEqual(root, 0.5)
+    XCTAssertEqual(nested, 0.5)
+  }
+
+  func testDragCommitIgnoresASplitThatChangedShapeUnderIt() throws {
+    let (model, tabId, a, b, c) = try nestedModel()
+    // V(a, H(b, V(c, d))): grab the horizontal divider between b and the c|d column.
+    let d = try model.splitPane(inTab: tabId, axis: .vertical, openSession: fixtureOpen)
+    let area = CGRect(x: 0, y: 0, width: 1600, height: 800)
+    let tab = try XCTUnwrap(model.activeTab)
+    let divider = try XCTUnwrap(tab.visibleDividers(in: area).first { $0.path == [.second] })
+    XCTAssertEqual(divider.axis, .horizontal)
+    var drag = PaneDividerDrag(
+      tab: tab, divider: divider, grabbedAt: CGPoint(x: divider.rect.midX, y: divider.rect.midY))
+    drag.move(toX: divider.rect.midX, y: divider.rect.midY - 100, in: model)
+    XCTAssertTrue(drag.hasMoved)
+
+    // b's shell exits mid-drag: [.second] now names the vertical c|d split.
+    model.closePane(inTab: tabId, sessionId: b, terminate: { _ in })
+    let before = try XCTUnwrap(model.activeTab?.panes)
+    guard case .split(.vertical, _, .leaf(a), .split(.vertical, _, .leaf(c), .leaf(d))) = before
+    else { return XCTFail("expected V(a, V(c, d)), got \(before)") }
+    drag.commit(in: model)
+    XCTAssertEqual(model.activeTab?.panes, before, "the release must not move an unrelated split")
+  }
+
+  func testDividerNudgeClampsToMinimumExtent() throws {
+    let (model, tabId, a, b, _) = try nestedModel()
+    model.focusPane(inTab: tabId, sessionId: a)
+    let before = model.terminalSize(for: a).cols
+    // Left pane, arrow right: the root divider moves right by two cells.
+    XCTAssertTrue(model.nudgeDivider(inTab: tabId, direction: .right))
+    XCTAssertEqual(Int(model.terminalSize(for: a).cols), Int(before) + 2)
+    // From the right-hand column, arrow left moves the same divider back.
+    model.focusPane(inTab: tabId, sessionId: b)
+    XCTAssertTrue(model.nudgeDivider(inTab: tabId, direction: .left))
+    XCTAssertEqual(model.terminalSize(for: a).cols, before)
+    // No divider to the left of the left-most pane.
+    model.focusPane(inTab: tabId, sessionId: a)
+    XCTAssertFalse(model.nudgeDivider(inTab: tabId, direction: .left))
+    // Repeated nudges stop at the minimum width of the other side (10 columns).
+    var guardCount = 0
+    while model.nudgeDivider(inTab: tabId, direction: .right, cells: 5), guardCount < 100 {
+      guardCount += 1
+    }
+    XCTAssertLessThan(guardCount, 100)
+    XCTAssertGreaterThanOrEqual(Int(model.terminalSize(for: b).cols), AppModel.minimumPaneColumns)
+    XCTAssertLessThan(Int(model.terminalSize(for: b).cols), AppModel.minimumPaneColumns + 5)
+    XCTAssertFalse(model.nudgeDivider(inTab: tabId, direction: .right))
+    // A direct set far past the limit clamps rather than inverting the split.
+    try model.setSplitFraction(inTab: tabId, path: [], fraction: 0.95)
+    XCTAssertGreaterThanOrEqual(Int(model.terminalSize(for: b).cols), AppModel.minimumPaneColumns)
+    try model.setSplitFraction(inTab: tabId, path: [], fraction: 0.05)
+    XCTAssertGreaterThanOrEqual(Int(model.terminalSize(for: a).cols), AppModel.minimumPaneColumns)
+  }
+
+  func testSetFractionByUnknownPathThrows() throws {
+    let (model, tabId, a, _, _) = try nestedModel()
+    let before = model.activeTab?.panes
+    XCTAssertThrowsError(
+      try model.setSplitFraction(inTab: tabId, path: [.first], fraction: 0.4)  // a leaf
+    ) { error in
+      guard case AppModel.PaneError.notSplit = error else {
+        return XCTFail("expected notSplit, got \(error)")
+      }
+    }
+    XCTAssertThrowsError(
+      try model.setSplitFraction(inTab: tabId, path: [.second, .second, .first], fraction: 0.4))
+    XCTAssertEqual(model.activeTab?.panes, before)
+    _ = a
+  }
+}

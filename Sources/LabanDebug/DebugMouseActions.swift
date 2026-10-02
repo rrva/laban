@@ -105,6 +105,11 @@ struct DebugMouseActions {
     if x < runtime.sidebarWidth {
       return clickSidebar(x: x, y: y)
     }
+    if request.sessionId == nil, runtime.dividerHit(x: x, y: y) != nil {
+      // A press in the grab zone belongs to the divider; a plain click does nothing.
+      runtime.appendEvent(EventEntry(kind: "mouse.divider", action: "click"))
+      return runtime.actionResult(ok: true)
+    }
     guard let hit = runtime.paneHit(x: x, y: y, sessionId: request.sessionId),
       let tab = runtime.model.tabProjection(forSession: hit.sessionId),
       let session = runtime.model.session(forSessionID: hit.sessionId)
@@ -146,6 +151,14 @@ struct DebugMouseActions {
     }
     if startX < runtime.sidebarWidth {
       runtime.appendEvent(EventEntry(kind: "mouse.sidebar", action: "mouseDrag"))
+      return runtime.actionResult(ok: true)
+    }
+    if request.sessionId == nil, runtime.beginDividerDrag(x: startX, y: startY) {
+      // Same preview-then-commit as the GUI: the tree changes once, at the end point.
+      runtime.updateDividerDrag(x: endX, y: endY)
+      runtime.commitDividerDrag()
+      runtime.renderFrameUnlocked()
+      runtime.appendEvent(EventEntry(kind: "mouse.divider", action: "mouseDrag"))
       return runtime.actionResult(ok: true)
     }
     guard let hit = runtime.paneHit(x: startX, y: startY, sessionId: request.sessionId),

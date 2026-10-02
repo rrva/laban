@@ -36,11 +36,11 @@ enum DebugRuntimeKeyInput {
 
     switch key {
     case .m: return ("appCommand", "minimize")
-    case .d: return ("appCommand", modifiers.contains(.shift) ? "closePane" : "splitPaneRight")
+    case .d: return ("appCommand", modifiers.contains(.shift) ? "splitPaneDown" : "splitPaneRight")
     case .bracketRight where modifiers.contains(.alt): return ("appCommand", "focusNextPane")
     case .bracketLeft where modifiers.contains(.alt): return ("appCommand", "focusPreviousPane")
     case .t: return ("appCommand", "newTab")
-    case .w: return ("appCommand", "closeTab")
+    case .w: return ("appCommand", modifiers.contains(.alt) ? "closeTab" : "closePaneOrTab")
     case .c: return ("appCommand", "copy")
     case .v: return ("appCommand", "paste")
     case .f: return ("appCommand", "find")
@@ -48,16 +48,32 @@ enum DebugRuntimeKeyInput {
       return ("appCommand", "selectTab")
     case .digit9:
       return ("appCommand", "selectLastTab")
+    case .equal where modifiers.contains(.control):
+      return ("appCommand", "equalizePanes")
     case .equal:
       return ("appCommand", "increaseFontSize")
     case .minus:
       return ("appCommand", "decreaseFontSize")
     case .digit0:
       return ("appCommand", "resetFontSize")
-    case .arrowRight where modifiers.contains(.alt):
-      return ("appCommand", "selectNextTab")
+    case .enter where modifiers.contains(.shift):
+      return ("appCommand", "togglePaneZoom")
+    case .arrowLeft where modifiers.contains(.control):
+      return ("appCommand", "nudgeDividerLeft")
+    case .arrowRight where modifiers.contains(.control):
+      return ("appCommand", "nudgeDividerRight")
+    case .arrowUp where modifiers.contains(.control):
+      return ("appCommand", "nudgeDividerUp")
+    case .arrowDown where modifiers.contains(.control):
+      return ("appCommand", "nudgeDividerDown")
     case .arrowLeft where modifiers.contains(.alt):
-      return ("appCommand", "selectPreviousTab")
+      return ("appCommand", "paneOrTabNavigationLeft")
+    case .arrowRight where modifiers.contains(.alt):
+      return ("appCommand", "paneOrTabNavigationRight")
+    case .arrowUp where modifiers.contains(.alt):
+      return ("appCommand", "paneOrTabNavigationUp")
+    case .arrowDown where modifiers.contains(.alt):
+      return ("appCommand", "paneOrTabNavigationDown")
     case .bracketRight where modifiers.contains(.shift):
       return ("appCommand", "selectNextTab")
     case .bracketLeft where modifiers.contains(.shift):
@@ -82,9 +98,9 @@ enum DebugRuntimeKeyInput {
   static func commandLineEditingBytes(for key: Key, modifiers: KeyModifiers) -> [UInt8]? {
     guard modifiers.contains(.command) else { return nil }
     switch key {
-    case .arrowLeft where !modifiers.contains(.alt):
+    case .arrowLeft where !modifiers.contains(.alt) && !modifiers.contains(.control):
       return [0x01]
-    case .arrowRight where !modifiers.contains(.alt):
+    case .arrowRight where !modifiers.contains(.alt) && !modifiers.contains(.control):
       return [0x05]
     case .backspace:
       return [0x15]

@@ -676,3 +676,92 @@ extension PersistenceRoundTripTests {
     XCTAssertEqual(state.windows[0].tabs[1].panes, .leaf(sessionId: "good"))
   }
 }
+
+extension PersistenceRoundTripTests {
+  /// Builds `A | (B / C)` with root fraction 0.3 and nested fraction 0.6, focus on C.
+  private func nestedThreePaneModel() throws -> (AppModel, Tab.ID, [String]) {
+    let model = try makeModel()
+    model.resize(viewportWidth: 1600, viewportHeight: 800, cellWidth: 8, cellHeight: 16)
+    let tabId = try XCTUnwrap(model.activeTab).id
+    let a = try XCTUnwrap(model.activeTab).focusedSessionId
+    let b = try model.splitPane(inTab: tabId, axis: .vertical) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    let c = try model.splitPane(inTab: tabId, axis: .horizontal) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    try model.setSplitFraction(inTab: tabId, path: [], fraction: 0.3)
+    try model.setSplitFraction(inTab: tabId, path: [.second], fraction: 0.6)
+    return (model, tabId, [a, b, c])
+  }
+
+  func testNestedMixedAxisTreeRoundTrips() throws {
+    let (model, _, ids) = try nestedThreePaneModel()
+    let expected = PaneTree.split(
+      axis: .vertical, fraction: 0.3, first: .leaf(sessionId: ids[0]),
+      second: .split(
+        axis: .horizontal, fraction: 0.6, first: .leaf(sessionId: ids[1]),
+        second: .leaf(sessionId: ids[2])))
+    XCTAssertEqual(model.activeTab?.panes, expected)
+    XCTAssertEqual(model.activeTab?.focusedSessionId, ids[2])
+
+    let state = model.snapshotForPersistence(windowId: "w")
+    let decoded = try JSONDecoder().decode(WorkspaceState.self, from: JSONEncoder().encode(state))
+    XCTAssertEqual(decoded, state)
+    XCTAssertEqual(decoded.windows[0].tabs[0].panes, expected)
+    XCTAssertEqual(decoded.windows[0].tabs[0].focusedSessionId, ids[2])
+    XCTAssertNil(decoded.windows[0].tabs[0].zoomedSessionId)
+
+    let restored = try makeModel()
+    restored.replaceTabs(from: decoded)
+    XCTAssertEqual(restored.activeTab?.panes, expected)
+    XCTAssertEqual(restored.activeTab?.focusedSessionId, ids[2])
+    XCTAssertNil(restored.activeTab?.zoomedSessionId)
+  }
+
+  func testZoomedSessionRoundTripsAndInvalidZoomIsDropped() throws {
+    let (model, tabId, ids) = try nestedThreePaneModel()
+    model.focusPane(inTab: tabId, sessionId: ids[1])
+    model.setPaneZoom(inTab: tabId, zoomed: true)
+    XCTAssertEqual(model.activeTab?.zoomedSessionId, ids[1])
+
+    let state = model.snapshotForPersistence(windowId: "w")
+    XCTAssertEqual(state.windows[0].tabs[0].zoomedSessionId, ids[1])
+    let decoded = try JSONDecoder().decode(WorkspaceState.self, from: JSONEncoder().encode(state))
+    XCTAssertEqual(decoded, state)
+    XCTAssertEqual(decoded.windows[0].tabs[0].zoomedSessionId, ids[1])
+
+    let restored = try makeModel()
+    restored.resize(viewportWidth: 1600, viewportHeight: 800, cellWidth: 8, cellHeight: 16)
+    restored.replaceTabs(from: decoded)
+    XCTAssertEqual(restored.activeTab?.zoomedSessionId, ids[1])
+    XCTAssertEqual(restored.activeTab?.panes, model.activeTab?.panes)
+
+    // A zoom naming a pane that is not in the tree is dropped; the tab survives.
+    var bad = decoded
+    bad.windows[0].tabs[0].zoomedSessionId = "no-such-pane"
+    let badDecoded = try JSONDecoder().decode(WorkspaceState.self, from: JSONEncoder().encode(bad))
+    XCTAssertNil(badDecoded.windows[0].tabs[0].zoomedSessionId)
+    XCTAssertEqual(badDecoded.windows[0].tabs[0].panes, decoded.windows[0].tabs[0].panes)
+    XCTAssertEqual(badDecoded.windows[0].tabs[0].focusedSessionId, ids[1])
+    let reloaded = try makeModel()
+    reloaded.replaceTabs(from: badDecoded)
+    XCTAssertNil(reloaded.activeTab?.zoomedSessionId)
+    XCTAssertEqual(reloaded.activeTab?.allSessionIds.count, 3)
+
+    // A state written before this field existed decodes with no zoom.
+    let legacy = try JSONDecoder().decode(
+      WorkspaceState.self, from: JSONEncoder().encode(state)
+    )
+    var legacyJSON = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+    var windows = try XCTUnwrap(legacyJSON["windows"] as? [[String: Any]])
+    var tabs = try XCTUnwrap(windows[0]["tabs"] as? [[String: Any]])
+    tabs[0].removeValue(forKey: "zoomedSessionId")
+    windows[0]["tabs"] = tabs
+    legacyJSON["windows"] = windows
+    let old = try JSONDecoder().decode(
+      WorkspaceState.self, from: JSONSerialization.data(withJSONObject: legacyJSON))
+    XCTAssertNil(old.windows[0].tabs[0].zoomedSessionId)
+  }
+}

@@ -1144,4 +1144,65 @@ extension LabanAppTests {
         knownSessionIds: Set(restored.tabs.flatMap(\.allSessionIds))
       ).isEmpty)
   }
+
+  /// `A | (B / C)` with the root at 0.3 and B zoomed: every pane is an ordinary labpty
+  /// session (each runs `sleep` as its child), so a relaunch must find all three
+  /// processes alive and rebuild the same tree, fractions and zoom.
+  func testNestedSplitSurvivesLabanAppRestartViaLabpty() throws {
+    let h = try SplitDaemonHarness()
+    _ = try h.split()
+    _ = try h.split(axis: .horizontal)
+    let tabId = try XCTUnwrap(h.model.activeTab?.id)
+    try h.model.setSplitFraction(inTab: tabId, path: [], fraction: 0.3)
+    let nested = try XCTUnwrap(h.model.activeTab)
+    guard
+      case .split(.vertical, _, .leaf, .split(.horizontal, _, .leaf(let upper), .leaf)) =
+        nested.panes
+    else { return XCTFail("expected A | (B / C), got \(nested.panes)") }
+    h.model.focusPane(inTab: tabId, sessionId: upper)
+    h.model.setPaneZoom(inTab: tabId, zoomed: true)
+    let tab = try XCTUnwrap(h.model.activeTab)
+    XCTAssertEqual(tab.zoomedSessionId, upper)
+    let before = try h.client.listLabptySessions().filter(\.alive)
+    XCTAssertEqual(before.count, 3)
+    let state = try JSONDecoder().decode(
+      WorkspaceState.self,
+      from: JSONEncoder().encode(h.model.snapshotForPersistence(windowId: "w")))
+    h.coordinator.detach()
+    h.model.closeAllSessions()
+    let restored = try AppModel(
+      initialSize: h.size,
+      sessionFactory: { size, context in
+        try Session.parserOnly(size: size, sessionID: context.sessionID)
+      })
+    restored.replaceTabs(from: state)
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try LabptyTerminalSessionClient(
+        socketPath: h.root.appendingPathComponent("s.sock").path),
+      shellLaunch: ShellIntegrationLaunch(argv: ["/bin/sleep", "60"]))
+    defer {
+      for tab in restored.tabs { coordinator.terminate(tab: tab) }
+      coordinator.detach()
+      restored.closeAllSessions()
+    }
+    try coordinator.ensureSessions(for: restored.tabs, in: restored, size: h.size)
+    let back = try XCTUnwrap(restored.activeTab)
+    XCTAssertEqual(back.panes, tab.panes)
+    guard case .split(_, let rootFraction, _, _) = back.panes else {
+      return XCTFail("restored tree is not split")
+    }
+    XCTAssertEqual(rootFraction, 0.3, accuracy: 0.0001)
+    XCTAssertEqual(back.focusedSessionId, tab.focusedSessionId)
+    XCTAssertEqual(back.zoomedSessionId, upper, "the zoomed pane is still zoomed")
+    for descriptor in before {
+      let projected = try XCTUnwrap(restored.tabProjection(forSession: descriptor.logicalSessionId))
+      XCTAssertEqual(coordinator.sessionInfo(for: projected)?.childPid, Int(descriptor.childPid))
+      XCTAssertEqual(
+        kill(descriptor.childPid, 0), 0, "every original pane process must still be alive")
+    }
+    XCTAssertTrue(
+      coordinator.unclaimedLabptySessions(
+        knownSessionIds: Set(restored.tabs.flatMap(\.allSessionIds))
+      ).isEmpty)
+  }
 }

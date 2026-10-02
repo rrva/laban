@@ -1,6 +1,8 @@
 import AppKit
 import Carbon.HIToolbox
 import LabanCore
+import LabanRenderer
+import LabanTerminalCore
 import XCTest
 
 @testable import LabanApp
@@ -17,9 +19,119 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(desc.route(hasMarkedText: true), .nativeText)
   }
 
-  func testCommandWRoutesToCloseTab() {
+  func testCommandWClosesPaneOrTab() {
     let desc = TerminalKeyDescriptor(action: .press, key: .w, modifiers: .command)
+    XCTAssertEqual(desc.route(), .appCommand(.closePaneOrTab))
+  }
+
+  func testCommandOptionWClosesTab() {
+    let desc = TerminalKeyDescriptor(action: .press, key: .w, modifiers: [.command, .alt])
     XCTAssertEqual(desc.route(), .appCommand(.closeTab))
+  }
+
+  func testCommandShiftDSplitsDown() {
+    let down = TerminalKeyDescriptor(action: .press, key: .d, modifiers: [.command, .shift])
+    XCTAssertEqual(down.route(), .appCommand(.splitPaneDown))
+    let right = TerminalKeyDescriptor(action: .press, key: .d, modifiers: .command)
+    XCTAssertEqual(right.route(), .appCommand(.splitPaneRight))
+  }
+
+  func testCommandControlEqualEqualizesNotZoom() {
+    let equalize = TerminalKeyDescriptor(
+      action: .press, key: .equal, modifiers: [.command, .control])
+    XCTAssertEqual(equalize.route(), .appCommand(.equalizePanes))
+    let bigger = TerminalKeyDescriptor(action: .press, key: .equal, modifiers: .command)
+    XCTAssertEqual(bigger.route(), .appCommand(.increaseFontSize))
+  }
+
+  func testCommandShiftReturnTogglesPaneZoom() {
+    let zoom = TerminalKeyDescriptor(action: .press, key: .enter, modifiers: [.command, .shift])
+    XCTAssertEqual(zoom.route(), .appCommand(.togglePaneZoom))
+    let plain = TerminalKeyDescriptor(action: .press, key: .enter, modifiers: .command)
+    XCTAssertEqual(plain.route(), .swallowCommand)
+  }
+
+  func testCommandControlArrowsNudgeDividersInsteadOfEditingTheLine() {
+    for (key, direction) in [
+      (Key.arrowLeft, PaneDirection.left), (.arrowRight, .right), (.arrowUp, .up),
+      (.arrowDown, .down),
+    ] {
+      let desc = TerminalKeyDescriptor(action: .press, key: key, modifiers: [.command, .control])
+      XCTAssertEqual(desc.route(), .appCommand(.nudgeDivider(direction)))
+    }
+  }
+
+  func testCommandOptionArrowNavigatesPanesOnlyWhenSplit() throws {
+    for (key, direction) in [
+      (Key.arrowLeft, PaneDirection.left), (.arrowRight, .right), (.arrowUp, .up),
+      (.arrowDown, .down),
+    ] {
+      let desc = TerminalKeyDescriptor(action: .press, key: key, modifiers: [.command, .alt])
+      XCTAssertEqual(desc.route(), .appCommand(.paneOrTabNavigation(direction)))
+    }
+
+    let oldRenderer = getenv("LABAN_RENDERER").map { String(cString: $0) }
+    setenv("LABAN_RENDERER", "software", 1)
+    defer {
+      if let oldRenderer {
+        setenv("LABAN_RENDERER", oldRenderer, 1)
+      } else {
+        unsetenv("LABAN_RENDERER")
+      }
+    }
+    var size = LabanTerminalSize()
+    size.rows = 30
+    size.cols = 120
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let cellWidth = Int(fontAtlas.cellSize.width)
+    let cellHeight = Int(fontAtlas.cellSize.height)
+    let insets = TerminalBitmapView.contentInsets
+    let view = TerminalBitmapView(
+      model: model, fontAtlas: fontAtlas, sidebarFontAtlas: FontAtlas(pointSize: 11),
+      cellWidth: cellWidth, cellHeight: cellHeight)
+    view.frame = NSRect(
+      x: 0, y: 0,
+      width: SidebarLayout.defaultWidth + insets.left + CGFloat(120 * cellWidth) + insets.right,
+      height: insets.top + CGFloat(30 * cellHeight) + insets.bottom)
+    view.advanceFrame()
+    let firstTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    model.selectTab(firstTab.id)
+
+    // Unsplit: left/right still switch tabs, up/down do nothing.
+    view.executeAppCommand(.paneOrTabNavigation(.down))
+    XCTAssertEqual(model.activeTab?.id, firstTab.id)
+    view.executeAppCommand(.paneOrTabNavigation(.right))
+    XCTAssertNotEqual(model.activeTab?.id, firstTab.id)
+    view.executeAppCommand(.paneOrTabNavigation(.left))
+    XCTAssertEqual(model.activeTab?.id, firstTab.id)
+
+    // Split: the chord moves pane focus and never falls through to tab switching.
+    let left = firstTab.focusedSessionId
+    view.splitPaneRight(nil)
+    let right = try XCTUnwrap(model.activeTab?.focusedSessionId)
+    view.executeAppCommand(.paneOrTabNavigation(.left))
+    XCTAssertEqual(model.activeTab?.focusedSessionId, left)
+    XCTAssertEqual(model.activeTab?.id, firstTab.id)
+    view.executeAppCommand(.paneOrTabNavigation(.left))
+    XCTAssertEqual(model.activeTab?.id, firstTab.id, "the layout edge does not switch tabs")
+    XCTAssertEqual(model.activeTab?.focusedSessionId, left)
+    view.executeAppCommand(.paneOrTabNavigation(.right))
+    XCTAssertEqual(model.activeTab?.focusedSessionId, right)
+    view.executeAppCommand(.paneOrTabNavigation(.up))
+    XCTAssertEqual(model.activeTab?.focusedSessionId, right, "no pane above: nothing happens")
+
+    // Cmd+W closes the focused pane of a split tab, then the tab.
+    view.executeAppCommand(.closePaneOrTab)
+    XCTAssertEqual(model.activeTab?.allSessionIds, [left])
+    XCTAssertEqual(model.tabs.count, 2)
+    view.executeAppCommand(.closePaneOrTab)
+    XCTAssertEqual(model.tabs.count, 1)
   }
 
   func testCommandFRoutesToFind() {
@@ -45,14 +157,15 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(desc.route(), .appCommand(.selectLastTab))
   }
 
-  func testCommandOptionArrowsRouteToAdjacentTabs() {
+  func testCommandOptionLeftRightKeepSwitchingTabsInUnsplitTabs() {
+    // The route is shared with pane navigation; `perform` decides by the active tab.
     let next = TerminalKeyDescriptor(
       action: .press, key: .arrowRight, modifiers: [.command, .alt])
-    XCTAssertEqual(next.route(), .appCommand(.selectNextTab))
+    XCTAssertEqual(next.route(), .appCommand(.paneOrTabNavigation(.right)))
 
     let previous = TerminalKeyDescriptor(
       action: .press, key: .arrowLeft, modifiers: [.command, .alt])
-    XCTAssertEqual(previous.route(), .appCommand(.selectPreviousTab))
+    XCTAssertEqual(previous.route(), .appCommand(.paneOrTabNavigation(.left)))
   }
 
   func testCommandShiftBracketsRouteToAdjacentTabs() {
@@ -143,6 +256,60 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(reset.action, #selector(TerminalBitmapView.resetFontSize(_:)))
     XCTAssertEqual(reset.keyEquivalent, "0")
     XCTAssertEqual(commandShortcutModifiers(for: reset), .command)
+  }
+
+  func testPaneMenuShortcutsMatchCommandRouter() throws {
+    let app = NSApplication.shared
+    let oldMainMenu = app.mainMenu
+    let oldWindowsMenu = app.windowsMenu
+    let oldHelpMenu = app.helpMenu
+    defer {
+      app.mainMenu = oldMainMenu
+      app.windowsMenu = oldWindowsMenu
+      app.helpMenu = oldHelpMenu
+    }
+    MenuCommands.setupMenuBar()
+
+    let fileMenu = try XCTUnwrap(app.mainMenu?.item(withTitle: "File")?.submenu)
+    let close = try XCTUnwrap(
+      fileMenu.items.first { $0.action == #selector(TerminalBitmapView.closePaneOrTab(_:)) })
+    XCTAssertEqual(close.keyEquivalent, "w")
+    XCTAssertEqual(commandShortcutModifiers(for: close), .command)
+    let closeTab = try XCTUnwrap(
+      fileMenu.items.first { $0.action == #selector(TerminalBitmapView.closeTab(_:)) })
+    XCTAssertEqual(closeTab.keyEquivalent, "w")
+    XCTAssertEqual(commandShortcutModifiers(for: closeTab), [.command, .option])
+    XCTAssertTrue(closeTab.isAlternate)
+    let right = try XCTUnwrap(
+      fileMenu.items.first { $0.action == #selector(TerminalBitmapView.splitPaneRight(_:)) })
+    XCTAssertEqual(commandShortcutModifiers(for: right), .command)
+    let down = try XCTUnwrap(
+      fileMenu.items.first { $0.action == #selector(TerminalBitmapView.splitPaneDown(_:)) })
+    XCTAssertEqual(down.keyEquivalent, "d")
+    XCTAssertEqual(commandShortcutModifiers(for: down), [.command, .shift])
+    XCTAssertNil(
+      fileMenu.items.first { $0.action == #selector(TerminalBitmapView.closePane(_:)) },
+      "Cmd+Shift+D no longer closes a pane")
+
+    let viewMenu = try XCTUnwrap(app.mainMenu?.item(withTitle: "View")?.submenu)
+    let paneMenu = try XCTUnwrap(viewMenu.item(withTitle: "Pane")?.submenu)
+    let zoom = try XCTUnwrap(paneMenu.item(withTitle: "Zoom Pane"))
+    XCTAssertEqual(zoom.keyEquivalent, "\r")
+    XCTAssertEqual(commandShortcutModifiers(for: zoom), [.command, .shift])
+    let equalize = try XCTUnwrap(paneMenu.item(withTitle: "Equalize Panes"))
+    XCTAssertEqual(equalize.keyEquivalent, "=")
+    XCTAssertEqual(commandShortcutModifiers(for: equalize), [.command, .control])
+    // Cmd+Option+Left/Right stay the hold-to-peek tab chord, so no key equivalent.
+    XCTAssertEqual(try XCTUnwrap(paneMenu.item(withTitle: "Select Pane Left")).keyEquivalent, "")
+    XCTAssertEqual(try XCTUnwrap(paneMenu.item(withTitle: "Select Pane Right")).keyEquivalent, "")
+    let above = try XCTUnwrap(paneMenu.item(withTitle: "Select Pane Above"))
+    XCTAssertEqual(commandShortcutModifiers(for: above), [.command, .option])
+    let resize = try XCTUnwrap(paneMenu.item(withTitle: "Resize Pane")?.submenu)
+    XCTAssertEqual(resize.items.count, 4)
+    for item in resize.items {
+      XCTAssertEqual(commandShortcutModifiers(for: item), [.command, .control])
+      XCTAssertEqual(item.action, #selector(TerminalBitmapView.moveDivider(_:)))
+    }
   }
 
   private func commandShortcutModifiers(for item: NSMenuItem) -> NSEvent.ModifierFlags {

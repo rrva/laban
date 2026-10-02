@@ -24,7 +24,15 @@ enum TerminalInputCaptureMetadata {
   static func captureName(for command: AppCommand) -> String {
     switch command {
     case .splitPaneRight: return "splitPaneRight"
+    case .splitPaneDown: return "splitPaneDown"
     case .closePane: return "closePane"
+    case .closePaneOrTab: return "closePaneOrTab"
+    case .togglePaneZoom: return "togglePaneZoom"
+    case .equalizePanes: return "equalizePanes"
+    case .focusPane(let direction): return "focusPane" + directionSuffix(direction)
+    case .paneOrTabNavigation(let direction):
+      return "paneOrTabNavigation" + directionSuffix(direction)
+    case .nudgeDivider(let direction): return "nudgeDivider" + directionSuffix(direction)
     case .focusNextPane: return "focusNextPane"
     case .focusPreviousPane: return "focusPreviousPane"
     case .newTab: return "newTab"
@@ -42,5 +50,10 @@ enum TerminalInputCaptureMetadata {
     case .decreaseFontSize: return "decreaseFontSize"
     case .resetFontSize: return "resetFontSize"
     }
+  }
+
+  /// `Left`, `Right`, `Up` or `Down`; the headless key path builds the same names.
+  static func directionSuffix(_ direction: PaneDirection) -> String {
+    direction.rawValue.prefix(1).uppercased() + direction.rawValue.dropFirst()
   }
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import ast
 import json
 import os
 from pathlib import Path
@@ -258,6 +259,17 @@ def assert_json_expectations(response, expectations):
         if condition and os.environ.get(condition["name"]) != condition["value"]:
             continue
         path = expectation["path"]
+        if "absent" in expectation:
+            try:
+                json_path(response, path)
+                present = True
+            except ScriptError:
+                present = False
+            if present == expectation["absent"]:
+                raise ScriptError(
+                    f"expected {path} to be {'absent' if expectation['absent'] else 'present'}"
+                )
+            continue
         value = json_path(response, path)
         if "equals" in expectation and value != expectation["equals"]:
             raise ScriptError(
@@ -308,10 +320,48 @@ def assert_json_expectations(response, expectations):
                     )
 
 
+_CALC_REFERENCE = re.compile(r"\$steps\.[A-Za-z0-9_.\[\]-]+")
+_CALC_OPERATORS = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+}
+
+
+def evaluate_calc(expression, responses):
+    """Evaluates `{"$calc": "..."}`: numbers, `$steps.label.path` references,
+    + - * / and parentheses. The result is truncated to an integer so scenarios can
+    compute pixel coordinates from the window size a previous step reported."""
+    substituted = _CALC_REFERENCE.sub(
+        lambda match: repr(json_path(responses, match.group(0)[len("$steps."):])),
+        expression,
+    )
+
+    def walk(node):
+        if isinstance(node, ast.Expression):
+            return walk(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return -walk(node.operand)
+        if isinstance(node, ast.BinOp) and type(node.op) in _CALC_OPERATORS:
+            return _CALC_OPERATORS[type(node.op)](walk(node.left), walk(node.right))
+        raise ScriptError(f"unsupported $calc expression: {expression}")
+
+    try:
+        return int(walk(ast.parse(substituted, mode="eval")))
+    except (SyntaxError, ZeroDivisionError) as exc:
+        raise ScriptError(f"invalid $calc expression {expression!r}: {exc}") from exc
+
+
 def resolve_step_references(value, responses):
-    """A whole `$steps.label.path` string refers to an earlier labeled response."""
+    """A whole `$steps.label.path` string refers to an earlier labeled response.
+    An object `{"$calc": "expression"}` becomes an integer (see `evaluate_calc`)."""
     if isinstance(value, str) and value.startswith("$steps."):
         return json_path(responses, value[len("$steps."):])
+    if isinstance(value, dict) and set(value) == {"$calc"}:
+        return evaluate_calc(value["$calc"], responses)
     if isinstance(value, list):
         return [resolve_step_references(item, responses) for item in value]
     if isinstance(value, dict):

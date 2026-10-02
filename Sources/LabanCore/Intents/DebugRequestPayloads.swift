@@ -74,7 +74,7 @@ public enum DebugActionIntentID {
   public static let unsupported = "debug.action.unsupported"
 
   public static let knownActionNames: [String] = [
-    "pane.split", "pane.close", "pane.focus",
+    "pane.split", "pane.close", "pane.focus", "pane.resize", "pane.equalize", "pane.zoom",
     "newTab",
     "closeTab",
     "selectTab",
@@ -123,7 +123,8 @@ public enum DebugActionIntentID {
 
   public static func intentID(forAction action: String) -> String? {
     switch action {
-    case "pane.split", "pane.close", "pane.focus": return action
+    case "pane.split", "pane.close", "pane.focus", "pane.resize", "pane.equalize", "pane.zoom":
+      return action
     case "newTab": return "tab.new"
     case "closeTab": return "tab.close"
     case "selectTab": return "tab.select"
@@ -1826,7 +1827,15 @@ public struct PaneActionRequest: Codable, Sendable, Equatable, JSONSchemaProvidi
   public var tabId: String?
   public var sessionId: String?
   public var axis: String?
+  /// `next|previous` cycle focus; `left|right|up|down` move focus by direction
+  /// (`pane.focus`) or name the divider to nudge (`pane.resize`).
   public var direction: String?
+  /// Route from the tree root to a split: `first`/`second` per level. `[]` is the root split.
+  public var path: [String]?
+  /// New divider position as a share of its container, `0...1` (clamped to the minimum pane size).
+  public var fraction: Double?
+  /// `pane.zoom`: `true` zooms, `false` restores, absent toggles.
+  public var zoomed: Bool?
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object([
@@ -1834,7 +1843,13 @@ public struct PaneActionRequest: Codable, Sendable, Equatable, JSONSchemaProvidi
       "axis": .string(
         enumValues: ["vertical", "horizontal"], const: nil, format: nil, pattern: nil),
       "direction": .string(
-        enumValues: ["next", "previous"], const: nil, format: nil, pattern: nil),
+        enumValues: ["next", "previous", "left", "right", "up", "down"], const: nil,
+        format: nil, pattern: nil),
+      "path": .array(
+        .string(enumValues: ["first", "second"], const: nil, format: nil, pattern: nil),
+        minItems: 0),
+      "fraction": .number(min: 0, max: 1),
+      "zoomed": DebugPayloadSchema.boolean,
     ])
   }
 }

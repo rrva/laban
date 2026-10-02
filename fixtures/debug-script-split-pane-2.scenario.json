@@ -1,0 +1,209 @@
+{
+  "name": "debug-script-split-pane-2",
+  "description": "Three real shells in a nested layout: focus by direction, a divider drag that commits on release, zoom and unzoom, equalize, and closing one pane.",
+  "deterministic": false,
+  "steps": [
+    {
+      "op": "action",
+      "label": "first",
+      "body": {
+        "action": "newTab"
+      }
+    },
+    {
+      "op": "action",
+      "label": "right",
+      "body": {
+        "action": "pane.split",
+        "axis": "vertical"
+      }
+    },
+    {
+      "op": "screenshot",
+      "label": "01-two",
+      "path": "screenshots/01-two.png"
+    },
+    {
+      "op": "action",
+      "label": "bottom",
+      "body": {
+        "action": "pane.split",
+        "axis": "horizontal"
+      }
+    },
+    {
+      "op": "get",
+      "path": "/debug/state",
+      "expectJson": [
+        {
+          "path": "tabs[1].panes.split.axis",
+          "equals": "vertical"
+        },
+        {
+          "path": "tabs[1].panes.split.second.split.axis",
+          "equals": "horizontal"
+        },
+        {
+          "path": "tabs[1].panes.split.first.leaf.sessionId",
+          "equals": "$steps.first.activeSessionId"
+        },
+        {
+          "path": "tabs[1].panes.split.second.split.first.leaf.sessionId",
+          "equals": "$steps.right.activeSessionId"
+        },
+        {
+          "path": "tabs[1].panes.split.second.split.second.leaf.sessionId",
+          "equals": "$steps.bottom.activeSessionId"
+        }
+      ]
+    },
+    {
+      "op": "screenshot",
+      "label": "03-three-panes",
+      "path": "screenshots/03-three-panes.png"
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "pane.focus",
+        "direction": "left"
+      },
+      "expectJson": [
+        {
+          "path": "activeSessionId",
+          "equals": "$steps.first.activeSessionId"
+        }
+      ]
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "typeText",
+        "text": "printf '\\114\\105\\106\\124\\n'\n"
+      }
+    },
+    {
+      "op": "wait",
+      "condition": {
+        "kind": "textVisible",
+        "sessionId": "$steps.first.activeSessionId",
+        "text": "LEFT"
+      }
+    },
+    {
+      "op": "get",
+      "label": "state",
+      "path": "/debug/state"
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "mouseDrag",
+        "button": "left",
+        "startX": {
+          "$calc": "200 + ($steps.state.window.width - 200) / 2"
+        },
+        "startY": {
+          "$calc": "$steps.state.window.height / 2"
+        },
+        "endX": {
+          "$calc": "200 + ($steps.state.window.width - 200) / 3"
+        },
+        "endY": {
+          "$calc": "$steps.state.window.height / 2"
+        }
+      }
+    },
+    {
+      "op": "get",
+      "path": "/debug/state",
+      "expectJson": [
+        {
+          "path": "tabs[1].panes.split.fraction",
+          "greaterThan": 0.31
+        },
+        {
+          "path": "tabs[1].panes.split.fraction",
+          "lessThan": 0.355
+        }
+      ]
+    },
+    {
+      "op": "screenshot",
+      "label": "05-dragged",
+      "path": "screenshots/05-dragged.png"
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "pane.zoom"
+      }
+    },
+    {
+      "op": "screenshot",
+      "label": "06-zoomed",
+      "path": "screenshots/06-zoomed.png"
+    },
+    {
+      "op": "get",
+      "path": "/debug/state",
+      "expectJson": [
+        {
+          "path": "tabs[1].zoomedSessionId",
+          "equals": "$steps.first.activeSessionId"
+        }
+      ]
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "pane.zoom"
+      }
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "pane.equalize"
+      }
+    },
+    {
+      "op": "get",
+      "path": "/debug/state",
+      "expectJson": [
+        {
+          "path": "tabs[1].zoomedSessionId",
+          "absent": true
+        },
+        {
+          "path": "tabs[1].panes.split.fraction",
+          "greaterThan": 0.49
+        },
+        {
+          "path": "tabs[1].panes.split.fraction",
+          "lessThan": 0.51
+        }
+      ]
+    },
+    {
+      "op": "action",
+      "body": {
+        "action": "pane.close",
+        "sessionId": "$steps.bottom.activeSessionId"
+      }
+    },
+    {
+      "op": "get",
+      "path": "/debug/state",
+      "expectJson": [
+        {
+          "path": "tabs[1].panes.split.first.leaf.sessionId",
+          "equals": "$steps.first.activeSessionId"
+        },
+        {
+          "path": "tabs[1].panes.split.second.leaf.sessionId",
+          "equals": "$steps.right.activeSessionId"
+        }
+      ]
+    }
+  ]
+}
