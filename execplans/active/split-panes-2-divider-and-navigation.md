@@ -152,6 +152,17 @@ does the same thing without a window and saves screenshots.
       labpty, four-pane frame-cost measurement.
 - [x] M9 (2026-10-02): Docs (`mvp.md`, `spec.md`, `dev-process.md`); Review Gate
       passed in round 2 at `0f380f8e`.
+- [x] PR review fixes (2026-10-02, after the PR review of #3): a divider drag
+      follows the pointer's movement from the press (an off-centre click in the
+      grab zone no longer moves the divider); a drag commits only if the split at
+      its path still holds the same panes on the same axis; every divider press
+      consumes the gesture, so Escape mid-drag cannot fall through to selection;
+      selection and link hit-testing use the row count of the pane under the
+      pointer; Cmd+Control+Left/Right send Ctrl+A/Ctrl+E again in an unsplit
+      tab (GUI and headless). Each fix has a test that fails with the fix
+      reverted. Deferred to rrva/laban#4: the titlebar inset applied to every
+      stacked pane, VoiceOver splitter reuse, headless Escape/double-click
+      parity, and duplicated grab-zone hit tests.
 
 ## Decision Log
 
