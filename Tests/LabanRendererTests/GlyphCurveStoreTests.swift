@@ -122,6 +122,38 @@ final class GlyphCurveStoreTests: XCTestCase {
     XCTAssertGreaterThan(deviation, 0.10)
   }
 
+  /// A wide S-shaped cubic is too far from the fixed two-quadratic split;
+  /// adaptive subdivision must bring it within the tolerance while leaving
+  /// tame cubics at two quadratics.
+  func testAdaptiveCubicApproximationMeetsTolerance() {
+    let p0 = CGPoint(x: 0, y: 0)
+    let p1 = CGPoint(x: 60, y: 90)
+    let p2 = CGPoint(x: -20, y: 90)
+    let p3 = CGPoint(x: 40, y: 0)
+    let tolerance: CGFloat = 0.05
+    let fixed = GlyphCurveStore.splitCubicToQuadratics(p0: p0, p1: p1, p2: p2, p3: p3)
+    XCTAssertGreaterThan(
+      sampledMaxDeviationFromCubic(p0: p0, p1: p1, p2: p2, p3: p3, quadratics: [fixed.0, fixed.1]),
+      tolerance * 10, "the fixed split must miss this cubic by far")
+    let adaptive = GlyphCurveStore.approximateCubic(
+      p0: p0, p1: p1, p2: p2, p3: p3, tolerance: tolerance)
+    XCTAssertGreaterThan(adaptive.count, 2)
+    XCTAssertLessThanOrEqual(adaptive.count, 16, "depth is capped at 3 halvings")
+    XCTAssertLessThanOrEqual(
+      sampledMaxDeviationFromCubic(p0: p0, p1: p1, p2: p2, p3: p3, quadratics: adaptive),
+      tolerance * 1.5)
+    XCTAssertEqual(adaptive.first?.p0, p0)
+    XCTAssertEqual(adaptive.last?.p2, p3)
+    for (lhs, rhs) in zip(adaptive, adaptive.dropFirst()) {
+      XCTAssertEqual(lhs.p2, rhs.p0, "pieces must join end to end")
+    }
+
+    let tame = GlyphCurveStore.approximateCubic(
+      p0: CGPoint(x: 0, y: 0), p1: CGPoint(x: 1, y: 1), p2: CGPoint(x: 2, y: 1),
+      p3: CGPoint(x: 3, y: 0), tolerance: tolerance)
+    XCTAssertEqual(tame.count, 2)
+  }
+
   func testCoreTextAlphaComparisonForPrintableASCII() throws {
     let fontCases: [(label: String, font: CTFont)] = [
       ("JetBrainsMono", FontAtlas(pointSize: 24, fontName: nil).font),

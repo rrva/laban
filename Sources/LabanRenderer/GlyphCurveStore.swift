@@ -124,7 +124,10 @@ public final class GlyphCurveStore {
       return nil
     }
 
-    guard let outline = Self.extractOutline(from: path, glyph: glyph) else {
+    guard
+      let outline = Self.extractOutline(
+        from: path, glyph: glyph, cubicTolerance: CTFontGetSize(font) * Self.cubicToleranceEm)
+    else {
       missingOutlines.insert(key)
       return nil
     }
@@ -132,8 +135,20 @@ public final class GlyphCurveStore {
     return outline
   }
 
-  public static func extractOutline(from path: CGPath, glyph: CGGlyph = 0) -> GlyphCurveOutline? {
-    var builder = OutlineBuilder(glyph: glyph, pathBounds: path.boundingBoxOfPath)
+  /// Largest allowed distance between a CFF cubic and its quadratic
+  /// replacement, as a fraction of the em: about 0.14 device pixels at 144
+  /// pixels per em, the top of the continuous-zoom range.
+  public static let cubicToleranceEm: CGFloat = 1.0 / 1024
+
+  /// Deepest cubic subdivision: at most 2^3 pieces of two quadratics each,
+  /// which bounds band-list growth for pathological outlines.
+  static let maxCubicSubdivisionDepth = 3
+
+  public static func extractOutline(
+    from path: CGPath, glyph: CGGlyph = 0, cubicTolerance: CGFloat = .infinity
+  ) -> GlyphCurveOutline? {
+    var builder = OutlineBuilder(
+      glyph: glyph, pathBounds: path.boundingBoxOfPath, cubicTolerance: cubicTolerance)
     path.applyWithBlock { elementPointer in
       let element = elementPointer.pointee
       switch element.type {
@@ -155,6 +170,58 @@ public final class GlyphCurveStore {
       }
     }
     return builder.finish()
+  }
+
+  /// Quadratics within `tolerance` of the cubic: the two-quadratic midpoint
+  /// split when it is close enough, otherwise the cubic is halved (de
+  /// Casteljau) and each half approximated again, down to
+  /// `maxCubicSubdivisionDepth`.
+  public static func approximateCubic(
+    p0: CGPoint,
+    p1: CGPoint,
+    p2: CGPoint,
+    p3: CGPoint,
+    tolerance: CGFloat,
+    depth: Int = 0
+  ) -> [GlyphQuadraticCurve] {
+    let split = splitCubicToQuadratics(p0: p0, p1: p1, p2: p2, p3: p3)
+    guard tolerance.isFinite, depth < maxCubicSubdivisionDepth,
+      splitDeviation(p0: p0, p1: p1, p2: p2, p3: p3, split: split) > tolerance
+    else { return [split.0, split.1] }
+    let p01 = p0.lerp(to: p1, t: 0.5)
+    let p12 = p1.lerp(to: p2, t: 0.5)
+    let p23 = p2.lerp(to: p3, t: 0.5)
+    let p012 = p01.lerp(to: p12, t: 0.5)
+    let p123 = p12.lerp(to: p23, t: 0.5)
+    let mid = p012.lerp(to: p123, t: 0.5)
+    return approximateCubic(
+      p0: p0, p1: p01, p2: p012, p3: mid, tolerance: tolerance, depth: depth + 1)
+      + approximateCubic(
+        p0: mid, p1: p123, p2: p23, p3: p3, tolerance: tolerance, depth: depth + 1)
+  }
+
+  /// Parametric distance between the cubic and its two-quadratic split at a
+  /// few interior samples. Parametric distance bounds the geometric error
+  /// from above, so passing this test never under-subdivides at the samples.
+  static func splitDeviation(
+    p0: CGPoint, p1: CGPoint, p2: CGPoint, p3: CGPoint,
+    split: (GlyphQuadraticCurve, GlyphQuadraticCurve)
+  ) -> CGFloat {
+    var worst: CGFloat = 0
+    for t in [0.125, 0.25, 0.375, 0.625, 0.75, 0.875] as [CGFloat] {
+      let u = 1 - t
+      let cubic = CGPoint(
+        x: u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x,
+        y: u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y)
+      let quadratic = t < 0.5 ? split.0 : split.1
+      let s = t < 0.5 ? t * 2 : t * 2 - 1
+      let v = 1 - s
+      let approx = CGPoint(
+        x: v * v * quadratic.p0.x + 2 * v * s * quadratic.p1.x + s * s * quadratic.p2.x,
+        y: v * v * quadratic.p0.y + 2 * v * s * quadratic.p1.y + s * s * quadratic.p2.y)
+      worst = max(worst, hypot(cubic.x - approx.x, cubic.y - approx.y))
+    }
+    return worst
   }
 
   public static func lineAsQuadratic(from p0: CGPoint, to p1: CGPoint) -> GlyphQuadraticCurve {
@@ -302,6 +369,7 @@ public enum GlyphCurveCPUOracle {
 private struct OutlineBuilder {
   let glyph: CGGlyph
   let pathBounds: CGRect
+  let cubicTolerance: CGFloat
 
   var curves: [GlyphQuadraticCurve] = []
   var contours: [GlyphContour] = []
@@ -310,9 +378,10 @@ private struct OutlineBuilder {
   private var currentPoint: CGPoint?
   private var currentStart = 0
 
-  init(glyph: CGGlyph, pathBounds: CGRect) {
+  init(glyph: CGGlyph, pathBounds: CGRect, cubicTolerance: CGFloat) {
     self.glyph = glyph
     self.pathBounds = pathBounds
+    self.cubicTolerance = cubicTolerance
   }
 
   mutating func move(to point: CGPoint) {
@@ -345,10 +414,11 @@ private struct OutlineBuilder {
       move(to: point)
       return
     }
-    let split = GlyphCurveStore.splitCubicToQuadratics(
-      p0: current, p1: control1, p2: control2, p3: point)
-    appendCurve(split.0)
-    appendCurve(split.1)
+    for curve in GlyphCurveStore.approximateCubic(
+      p0: current, p1: control1, p2: control2, p3: point, tolerance: cubicTolerance)
+    {
+      appendCurve(curve)
+    }
     currentPoint = point
   }
 
