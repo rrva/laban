@@ -114,6 +114,64 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertFalse(terminalCmds.isEmpty, "commands must include terminal-sourced commands")
   }
 
+  // MARK: - Engine columns
+
+  /// Renderers place a run's i-th Character at `origin.x + i * cellWidth`.
+  /// Zero-width characters attached to a cell and ZWJ sequences the engine
+  /// splits over several cells must not shift the cells that follow: every
+  /// ASCII letter is drawn at the column the engine gave it.
+  func testGlyphRunsDrawLettersAtTheirEngineColumns() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(
+      Array("[a\u{200B}bc]\r\n[\u{1F9D4}\u{200D}\u{2642}\u{FE0F}x]\r\n[\u{2764}\u{FE0F}y]".utf8))
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let snapshot = snap.pointee
+    let cols = Int(snapshot.cols)
+    let rows = Int(snapshot.rows)
+    let cellWidth: CGFloat = 10
+    let cellHeight: CGFloat = 20
+    var engineColumns: [Int: [Character: Int]] = [:]  // row -> letter -> column
+    for row in 0..<3 {
+      for col in 0..<cols {
+        let cell = snapshot.cells[row * cols + col]
+        // A cell's text may carry attached zero-width characters; its first
+        // byte is the letter that starts it.
+        guard cell.utf8_length >= 1, let storage = snapshot.utf8_storage else { continue }
+        let byte = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
+          .load(as: UInt8.self)
+        let letter = Character(Unicode.Scalar(byte))
+        if byte < 0x80, letter.isLetter { engineColumns[row, default: [:]][letter] = col }
+      }
+    }
+    XCTAssertEqual(Set(engineColumns.values.flatMap(\.keys)), ["a", "b", "c", "x", "y"])
+
+    for forceLegacy in [false, true] {
+      FrameProducer._forceLegacyGlyphRuns = forceLegacy
+      defer { FrameProducer._forceLegacyGlyphRuns = false }
+      let cmds = FrameProducer(cellWidth: Int(cellWidth), cellHeight: Int(cellHeight))
+        .commands(from: UnsafePointer(snap))
+      var drawn: [Int: [Character: Int]] = [:]
+      for cmd in cmds {
+        guard case .glyphRun(let origin, let text, _, _, _, .terminal, _, _, _, _, _, _, _) = cmd
+        else { continue }
+        let row = rows - 1 - Int((origin.y / cellHeight).rounded(.down))
+        for (index, character) in text.enumerated() where character.isLetter {
+          drawn[row, default: [:]][character] = Int(origin.x / cellWidth) + index
+        }
+      }
+      XCTAssertEqual(drawn, engineColumns, "legacy path: \(forceLegacy)")
+    }
+  }
+
   // MARK: - Box-drawing
 
   func testBoxDrawingFixtureProducesNonEmptyGlyphCommandsWithoutTextReplacement() throws {

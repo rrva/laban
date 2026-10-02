@@ -1434,6 +1434,8 @@ public struct FrameProducer {
       var runTransition: GlyphForegroundTransition? = nil
       var runWave: GlyphForegroundWave? = nil
       var pendingSpacer = false
+      // Byte offset in `runBytes` where the run's last Character starts.
+      var runLastClusterStart = 0
       runBytes.removeAll(keepingCapacity: true)
 
       func cellTransition(_ col: Int) -> GlyphForegroundTransition? {
@@ -1476,6 +1478,7 @@ public struct FrameProducer {
           ))
         runStart = nil
         runBytes.removeAll(keepingCapacity: true)
+        runLastClusterStart = 0
         runUnderlineStyle = .none
         runUnderlineColor = nil
         runHyperlink = nil
@@ -1559,38 +1562,14 @@ public struct FrameProducer {
           && runTransition == cellTransition
           && runWave == cellWave
 
-        if runStart != nil, sameStyle {
-          if pendingSpacer {
-            // Resolve the held SPACER_TAIL: keep the wide cell and this one in
-            // the same run iff merging shrinks the grapheme-cluster count.
-            var merged = runBytes
-            merged.append(contentsOf: cellBytes)
-            let mergedCount = FrameProducer.graphemeClusterCount(merged.span)
-            let separateCount =
-              FrameProducer.graphemeClusterCount(runBytes.span)
-              + FrameProducer.graphemeClusterCount(cellBytes.span)
-            if mergedCount < separateCount {
-              runBytes.append(contentsOf: cellBytes)
-              pendingSpacer = false
-            } else {
-              flushRun()
-              pendingSpacer = false
-              runStart = col
-              runFg = visuals.foreground
-              runBg = visuals.background
-              runAttrsRaw = visuals.attrsRaw
-              runUnderlineStyle = visuals.underlineStyle
-              runUnderlineColor = visuals.underlineColor
-              runHyperlink = visuals.hyperlink
-              runTransition = cellTransition
-              runWave = cellWave
-              runBytes.removeAll(keepingCapacity: true)
-              runBytes.append(contentsOf: cellBytes)
-            }
-          } else {
-            runBytes.append(contentsOf: cellBytes)
-          }
-        } else {
+        // Renderers place a run's i-th Character at column start + i, so every
+        // cell in a run must add exactly one Character (ADR 0021: the engine,
+        // not Swift segmentation, owns cluster boundaries and columns).
+        let cellIsASCII = length == 1 && cellBytes[0] < 0x80
+        let cellClusterCount =
+          cellIsASCII ? 1 : FrameProducer.graphemeClusterCount(cellBytes.span)
+
+        func startRun() {
           flushRun()
           pendingSpacer = false
           runStart = col
@@ -1603,7 +1582,44 @@ public struct FrameProducer {
           runTransition = cellTransition
           runWave = cellWave
           runBytes.removeAll(keepingCapacity: true)
+          runLastClusterStart = 0
           runBytes.append(contentsOf: cellBytes)
+        }
+
+        if runStart != nil, sameStyle {
+          let lastIsASCII =
+            runBytes.count - runLastClusterStart == 1 && runBytes[runLastClusterStart] < 0x80
+          var mergesIntoLast = false
+          if !(cellIsASCII && lastIsASCII) {
+            var joined = Array(runBytes[runLastClusterStart...])
+            joined.append(contentsOf: cellBytes)
+            mergesIntoLast =
+              FrameProducer.graphemeClusterCount(joined.span) < 1 + cellClusterCount
+          }
+          if mergesIntoLast {
+            // The cell extends the run's last Character (ZWJ chain, RI pair,
+            // skin tone across a wide cell): draw it as one cluster, then end
+            // the run so later cells keep their own engine columns.
+            runBytes.append(contentsOf: cellBytes)
+            flushRun()
+            pendingSpacer = false
+            continue
+          } else if pendingSpacer || cellClusterCount != 1 {
+            // A wide cell just ended, or this cell carries extra Characters.
+            startRun()
+          } else {
+            runLastClusterStart = runBytes.count
+            runBytes.append(contentsOf: cellBytes)
+          }
+        } else {
+          startRun()
+        }
+        if cellClusterCount != 1 {
+          // A cell holding several Characters (e.g. a letter plus an attached
+          // zero-width space) is drawn alone so its extras cannot push the
+          // following cells right.
+          flushRun()
+          pendingSpacer = false
         }
       }
       flushRun()
@@ -1749,34 +1765,10 @@ public struct FrameProducer {
               && runTransition == cellTransition
               && runWave == cellWave
 
-            if runStart != nil, sameStyle {
-              if pendingSpacer {
-                // Resolve the held SPACER_TAIL: if appending shrinks the
-                // grapheme-cluster count (Swift Character collapses), the
-                // wide cell and this one belong to the same cluster — keep
-                // them in the same run. Otherwise flush before the new cell.
-                let mergedCount = (runText + text).count
-                if mergedCount < runText.count + text.count {
-                  runText += text
-                  pendingSpacer = false
-                } else {
-                  flushRun()
-                  pendingSpacer = false
-                  runStart = col
-                  runFg = visuals.foreground
-                  runBg = visuals.background
-                  runAttrs = cellAttrs
-                  runUnderlineStyle = visuals.underlineStyle
-                  runUnderlineColor = visuals.underlineColor
-                  runHyperlink = visuals.hyperlink
-                  runTransition = cellTransition
-                  runWave = cellWave
-                  runText = text
-                }
-              } else {
-                runText += text
-              }
-            } else {
+            // Same one-Character-per-cell invariant as the fast path.
+            let cellClusterCount = text.count
+
+            func startRun() {
               flushRun()
               pendingSpacer = false
               runStart = col
@@ -1789,6 +1781,26 @@ public struct FrameProducer {
               runTransition = cellTransition
               runWave = cellWave
               runText = text
+            }
+
+            if runStart != nil, sameStyle {
+              let lastCluster = runText.last.map(String.init) ?? ""
+              if (lastCluster + text).count < 1 + cellClusterCount {
+                runText += text
+                flushRun()
+                pendingSpacer = false
+                continue
+              } else if pendingSpacer || cellClusterCount != 1 {
+                startRun()
+              } else {
+                runText += text
+              }
+            } else {
+              startRun()
+            }
+            if cellClusterCount != 1 {
+              flushRun()
+              pendingSpacer = false
             }
           } else {
             flushRun()
