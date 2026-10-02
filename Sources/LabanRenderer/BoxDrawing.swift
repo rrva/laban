@@ -106,7 +106,17 @@ public enum BoxDrawing {
     "0201", "1020", "0102", "2010",
   ]
 
+  /// Parsed once: index `value - 0x2500` for U+2500–U+257F.
+  private static let boxLineSpecs: [BoxLineSpec?] = (0x2500...0x257F).map {
+    parseBoxLineSpec(Unicode.Scalar($0)!)
+  }
+
   static func boxLineSpec(_ scalar: Unicode.Scalar) -> BoxLineSpec? {
+    guard (0x2500...0x257F).contains(scalar.value) else { return nil }
+    return boxLineSpecs[Int(scalar.value - 0x2500)]
+  }
+
+  private static func parseBoxLineSpec(_ scalar: Unicode.Scalar) -> BoxLineSpec? {
     let value = scalar.value
     let arms: String
     var dashes = 0

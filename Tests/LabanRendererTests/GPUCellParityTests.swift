@@ -1285,6 +1285,45 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpu.png)
   }
 
+  /// Selection tints sit under foreground ink in both paths: procedural box
+  /// lines, braille and block elements stay on top of a selection instead
+  /// of being dimmed by its translucent fill.
+  func testGPUCellPayloadDrawsSelectionUnderProceduralCells() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let selection = FrameCommand.selection(
+      CGRect(x: 0, y: CGFloat(rows - 1) * cellH, width: CGFloat(cols) * cellW, height: cellH),
+      color: 0x325B_6680)
+    // proceduralFrame's backgrounds are the full-width rects; the rest are
+    // the procedural foreground rects, which the producer emits after the
+    // selection.
+    func isBackground(_ command: FrameCommand) -> Bool {
+      if case .rect(let rect, _, _, _) = command { return rect.width == CGFloat(cols) * cellW }
+      return false
+    }
+    let backgrounds = proceduralFrame(seed: 23).filter(isBackground)
+    let foreground = proceduralFrame(seed: 23).filter { !isBackground($0) }
+    let payload = proceduralPayload(seed: 23, includedRows: Array(0..<rows))
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(
+      label: "classic-procedural-selection", commands: backgrounds + [selection] + foreground,
+      damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(
+      label: "gpu-payload-procedural-selection", commands: [selection], payload: payload,
+      damage: .full)
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-payload-procedural-selection",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
   func testGPUCellPayloadMatchesClassicForHyperlinkVisuals() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
