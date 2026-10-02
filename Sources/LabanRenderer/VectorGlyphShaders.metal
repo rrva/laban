@@ -1093,6 +1093,54 @@ fragment float4 slugGlyphAlphaFragment(
     return float4(in.color.rgb * alpha, alpha);
 }
 
+// Text blend gamma. Slug coverage is analytic and linear in area, but
+// source-over of that coverage in linear light renders dark-on-light text
+// visibly thinner and light-on-dark text heavier than CoreText, which blends
+// its text masks in an encoded (gamma) space. Opaque Slug text therefore
+// blends through a power curve with this exponent, reading the destination by
+// framebuffer fetch (Apple GPUs only; other GPUs keep the linear-light blend).
+// 1.8 is the measured best fit to the software (CoreText) reference across
+// sizes and polarities: 1.0 is the old linear-light behavior and 2.2 over-inks
+// dark text. See docs/adr/0038-slug-text-blends-in-gamma-space.md.
+constant float kSlugTextBlendGamma = 1.8;
+
+inline float3 slugTextBlendEncode(float3 linearColor) {
+    return powr(saturate(linearColor), float3(1.0 / kSlugTextBlendGamma));
+}
+
+inline float3 slugTextBlendDecode(float3 encodedColor) {
+    return powr(saturate(encodedColor), float3(kSlugTextBlendGamma));
+}
+
+// Framebuffer fetch only compiles for Apple GPUs, so the two gamma-blend
+// fragments exist only when SlugGlyphRenderer compiles this file with
+// LABAN_SLUG_FRAMEBUFFER_FETCH defined; every other compile of this file
+// (and every other GPU) omits them.
+#if defined(LABAN_SLUG_FRAMEBUFFER_FETCH)
+// Opaque-target grayscale text: source-over in kSlugTextBlendGamma space.
+// Used with blending disabled; the destination arrives by framebuffer fetch.
+// Zero coverage returns the destination untouched so pixels outside the ink
+// stay bit-identical to the background pass.
+fragment float4 slugGlyphGammaBlendFragment(
+    SlugGlyphVertexOut in [[stage_in]],
+    float4 dst [[color(0)]],
+    constant SlugGlyphUniforms &uniforms [[buffer(4)]],
+    constant VectorGlyphCurve *curves [[buffer(0)]],
+    constant SlugGlyph *glyphs [[buffer(1)]],
+    constant SlugGlyphBand *bands [[buffer(2)]],
+    constant uint *bandIndices [[buffer(3)]]
+) {
+    float coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices).g;
+    float alpha = coverage * in.color.a;
+    if (alpha <= 0.0) {
+        return dst;
+    }
+    float3 encoded = mix(
+        slugTextBlendEncode(dst.rgb), slugTextBlendEncode(in.color.rgb), alpha);
+    return float4(slugTextBlendDecode(encoded), alpha + dst.a * (1.0 - alpha));
+}
+#endif
+
 // Subpixel text preserves destination alpha. The two-pass path first writes
 // per-channel coverage with alpha = 0, then adds weighted color with alpha = 0.
 // This is only valid after an opaque background/solid pass has established
@@ -1226,6 +1274,32 @@ fragment float4 subpixelCompositeDarkenFragment(
     float3 cov = coverageTex.sample(s, in.position.xy).rgb;
     return float4(saturate(cov), 0.0);
 }
+
+#if defined(LABAN_SLUG_FRAMEBUFFER_FETCH)
+// Composite in kSlugTextBlendGamma space (Apple GPUs): one full-screen pass
+// replaces darken + additive. `color / cov` recovers the coverage-weighted
+// foreground (exactly the glyph color for a single glyph or same-colored
+// abutting glyphs), and saturating the coverage gives the seam the same
+// full-ink result the linear pair produces. Destination alpha is preserved,
+// matching configureSubpixelCoverageBlend/configureAdditiveRGBPreserveAlphaBlend.
+fragment float4 subpixelCompositeGammaFragment(
+    FullscreenOut in [[stage_in]],
+    float4 dst [[color(0)]],
+    texture2d<float, access::sample> colorTex [[texture(0)]],
+    texture2d<float, access::sample> coverageTex [[texture(1)]]
+) {
+    constexpr sampler s(coord::pixel, filter::nearest, address::clamp_to_edge);
+    float3 cov = coverageTex.sample(s, in.position.xy).rgb;
+    if (all(cov <= float3(0.0))) {
+        return dst;
+    }
+    float3 color = colorTex.sample(s, in.position.xy).rgb;
+    float3 foreground = color / max(cov, float3(1.0e-6));
+    float3 encoded = mix(
+        slugTextBlendEncode(dst.rgb), slugTextBlendEncode(foreground), saturate(cov));
+    return float4(slugTextBlendDecode(encoded), dst.a);
+}
+#endif
 
 // Composite additive: emit accumulated premultiplied color so
 // configureAdditiveRGBPreserveAlphaBlend (dst += src) adds the foreground.
