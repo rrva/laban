@@ -664,8 +664,9 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       "every color emoji must still draw from the color atlas after the replacement")
   }
 
-  /// When even a fresh max-size atlas cannot hold one frame's emoji, later
-  /// frames keep that atlas instead of allocating a new texture every frame.
+  /// When even a fresh max-size atlas cannot hold one frame's emoji, redraws
+  /// of that same frame keep the atlas instead of allocating a new texture
+  /// every frame, while changed text still evicts it.
   func testSlugFullMaxSizeAtlasIsNotReplacedEveryFrame() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -700,6 +701,16 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     XCTAssertEqual(
       renderer.fallbackAtlasResetCount, resetsAfterFirstFrame,
       "an atlas that overflowed on its first frame must not be replaced again")
+
+    // New text (a glyph the kept atlas lacks) still gets a fresh atlas.
+    commands.append(
+      .glyphRun(
+        origin: CGPoint(x: 0, y: 150), text: "\u{1F980}", foreground: 0xFFFF_FFFF,
+        background: 0x0000_00FF, attributes: [], source: .terminal))
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    XCTAssertEqual(
+      renderer.fallbackAtlasResetCount, resetsAfterFirstFrame + 1,
+      "a changed frame must evict the kept atlas")
   }
 
   func testSlugMonochromeEmojiRendersTintedNotColor() throws {
