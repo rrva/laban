@@ -190,6 +190,15 @@ private struct SlugGlyphEntry {
   var glyphIndex: Int
 }
 
+/// One glyph of a resolved cluster, offset from the cell origin in
+/// reference-size points. Most clusters are one glyph at the origin; combining
+/// marks, Indic conjuncts and reordered matras shape to several, and every one
+/// of them must be drawn.
+private struct SlugClusterGlyph {
+  var entry: SlugGlyphEntry
+  var offset: CGPoint
+}
+
 private struct SlugTranslucentPipelines {
   let solid: MTLRenderPipelineState
   let replaceSolid: MTLRenderPipelineState
@@ -470,7 +479,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   private let curveStore = GlyphCurveStore()
   private var entriesByKey: [SlugGlyphGeometryKey: SlugGlyphEntry] = [:]
-  private var entriesByResolveKey: [SlugGlyphResolveKey: SlugGlyphEntry] = [:]
+  private var entriesByResolveKey: [SlugGlyphResolveKey: [SlugClusterGlyph]] = [:]
   /// Resolve keys whose cold-path resolution previously returned nil (no
   /// CTFont glyph, or an empty outline such as a space character). Checked
   /// right after the `entriesByResolveKey` hit check so a cluster that can
@@ -2735,7 +2744,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     let runMayContainCJK = TerminalCJKFontPolicy.containsCJK(text)
 
-    func appendSlugGlyph(_ entry: SlugGlyphEntry, cellOriginX: CGFloat) {
+    func appendSlugGlyph(
+      _ entry: SlugGlyphEntry, cellOriginX: CGFloat, offset: CGPoint = .zero
+    ) {
       let bounds = entry.outline.bounds
       let localPixelPad =
         CGFloat(1 + perSideDilatePx) / max(pointScale * scale, .ulpOfOne)
@@ -2746,8 +2757,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         Float(bounds.maxX + localPixelPad),
         Float(bounds.maxY + localPixelPad))
       let instanceOrigin = SIMD2<Float>(
-        Float((cellOriginX + (bounds.minX - localPixelPad) * pointScale) * scale),
-        Float((baseline + (bounds.minY - localPixelPad) * pointScale) * scale))
+        Float((cellOriginX + (offset.x + bounds.minX - localPixelPad) * pointScale) * scale),
+        Float((baseline + (offset.y + bounds.minY - localPixelPad) * pointScale) * scale))
       let instanceSize = SIMD2<Float>(
         max(0, Float((bounds.width + localPixelPad * 2) * pointScale * scale)),
         max(0, Float((bounds.height + localPixelPad * 2) * pointScale * scale)))
@@ -2849,7 +2860,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         continue
       }
       guard
-        let entry = ensureGlyph(
+        let clusterGlyphs = ensureClusterGlyphs(
           for: cluster,
           referenceAtlas: referenceAtlas,
           referenceVariant: referenceVariant,
@@ -2871,7 +2882,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         }
         continue
       }
-      appendSlugGlyph(entry, cellOriginX: cellOriginX)
+      for glyph in clusterGlyphs {
+        appendSlugGlyph(glyph.entry, cellOriginX: cellOriginX, offset: glyph.offset)
+      }
     }
 
     if source == .sidebarPreview {
@@ -3059,21 +3072,21 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       postScriptName: FontAtlas.postScriptName(of: referenceVariant.font),
       bold: bold,
       italic: italic)
-    return ensureGlyph(
+    return ensureClusterGlyphs(
       for: cluster,
       referenceAtlas: referenceAtlas,
       referenceVariant: referenceVariant,
       fontID: fontID,
-      attributes: attributes)
+      attributes: attributes)?.first?.entry
   }
 
-  private func ensureGlyph(
+  private func ensureClusterGlyphs(
     for cluster: Character,
     referenceAtlas: FontAtlas,
     referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool),
     fontID: Int,
     attributes: TextAttributes
-  ) -> SlugGlyphEntry? {
+  ) -> [SlugClusterGlyph]? {
     let resolveKey = SlugGlyphResolveKey(fontID: fontID, cluster: cluster)
     if let cached = entriesByResolveKey[resolveKey] { return cached }
     if failedResolveKeys.contains(resolveKey) { return nil }
@@ -3093,12 +3106,31 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       failedResolveKeys.insert(resolveKey)
       return nil
     }
-    guard let entry = geometryEntry(font: resolved.font, glyph: resolved.glyph) else {
+    var clusterGlyphs: [SlugClusterGlyph] = []
+    clusterGlyphs.reserveCapacity(resolved.count)
+    for glyph in resolved {
+      if let entry = geometryEntry(font: glyph.font, glyph: glyph.glyph) {
+        clusterGlyphs.append(SlugClusterGlyph(entry: entry, offset: glyph.offset))
+      } else if Self.glyphHasInk(glyph.glyph, font: glyph.font) {
+        // Inked but outline-less (bitmap/color) glyph: the whole cluster
+        // takes the raster fallback so it is never drawn half-analytic.
+        failedResolveKeys.insert(resolveKey)
+        return nil
+      }
+    }
+    guard !clusterGlyphs.isEmpty else {
       failedResolveKeys.insert(resolveKey)
       return nil
     }
-    entriesByResolveKey[resolveKey] = entry
-    return entry
+    entriesByResolveKey[resolveKey] = clusterGlyphs
+    return clusterGlyphs
+  }
+
+  private static func glyphHasInk(_ glyph: CGGlyph, font: CTFont) -> Bool {
+    var glyph = glyph
+    var bounds = CGRect.zero
+    CTFontGetBoundingRectsForGlyphs(font, .horizontal, &glyph, &bounds, 1)
+    return !bounds.isEmpty
   }
 
   /// Geometry entry for a shaped ligature glyph id in the run's reference
@@ -3176,7 +3208,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     referenceAtlas: FontAtlas,
     referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool),
     attributes: TextAttributes
-  ) -> (font: CTFont, glyph: CGGlyph)? {
+  ) -> [(font: CTFont, glyph: CGGlyph, offset: CGPoint)]? {
     let text = String(cluster)
     if text.unicodeScalars.count == 1,
       let scalar = text.unicodeScalars.first,
@@ -3186,7 +3218,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       var unit = UniChar(scalar.value)
       var glyph = CGGlyph()
       if CTFontGetGlyphsForCharacters(referenceVariant.font, &unit, &glyph, 1), glyph != 0 {
-        return (referenceVariant.font, glyph)
+        return [(referenceVariant.font, glyph, .zero)]
       }
     }
     return fallbackResolvedGlyph(
@@ -3195,28 +3227,35 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       cellAdvance: referenceAtlas.cellSize.width)
   }
 
+  /// Every glyph CoreText shapes for the cluster, across all runs, with its
+  /// position relative to the line origin.
   private func fallbackResolvedGlyph(
     text: String,
     baseFont: CTFont,
     cellAdvance: CGFloat
-  ) -> (font: CTFont, glyph: CGGlyph)? {
+  ) -> [(font: CTFont, glyph: CGGlyph, offset: CGPoint)]? {
     let line = TerminalGlyphFallback.fallbackLine(
       text: text,
       font: baseFont,
       cellAdvance: cellAdvance)
+    var resolved: [(font: CTFont, glyph: CGGlyph, offset: CGPoint)] = []
     let runs = CTLineGetGlyphRuns(line) as NSArray
     for case let run as CTRun in runs {
-      guard CTRunGetGlyphCount(run) > 0 else { continue }
-      var glyph = CGGlyph()
-      CTRunGetGlyphs(run, CFRange(location: 0, length: 1), &glyph)
-      guard glyph != 0 else { continue }
+      let count = CTRunGetGlyphCount(run)
+      guard count > 0 else { continue }
+      var glyphs = [CGGlyph](repeating: 0, count: count)
+      var positions = [CGPoint](repeating: .zero, count: count)
+      CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &glyphs)
+      CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
       let attributes = CTRunGetAttributes(run) as NSDictionary
       let font =
         attributes[kCTFontAttributeName].map { $0 as! CTFont }
         ?? baseFont
-      return (font, glyph)
+      for index in 0..<count where glyphs[index] != 0 {
+        resolved.append((font, glyphs[index], positions[index]))
+      }
     }
-    return nil
+    return resolved.isEmpty ? nil : resolved
   }
 
   private func colorGlyphInstance(
