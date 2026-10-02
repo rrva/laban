@@ -5,9 +5,9 @@ import Foundation
 /// joined glyph that still occupies one terminal cell per source character
 /// (execplans/active/font-ligatures.md).
 ///
-/// Ships default-OFF per the repo's opt-in posture, which also keeps the MVP
-/// "no ligatures" rendering the shipped default. The effective renderer being
-/// non-Slug ignores the setting (see
+/// Ships default-ON (the user asked for ligatures as the out-of-box look; the
+/// setting turns them off). The effective renderer being non-Slug ignores the
+/// setting (see
 /// docs/adr/0037-font-ligatures-are-a-slug-capability.md).
 public enum FontLigatureSettings {
   /// `defaults write com.rrva.Laban LabanFontLigaturesEnabled -bool YES`.
@@ -39,7 +39,7 @@ public enum FontLigatureSettings {
   /// A process's environment cannot change after launch; resolve it once.
   private static let cachedEnvironmentOverride: Bool? = environmentOverride()
 
-  /// Whether ligatures are enabled. Defaults to `false` when the key is
+  /// Whether ligatures are enabled. Defaults to `true` when the key is
   /// absent. Env override wins over UserDefaults when present. Renderers cache
   /// this and refresh on `didChangeNotification`; never read it per frame.
   public static var enabled: Bool {
@@ -57,7 +57,7 @@ public enum FontLigatureSettings {
     if let override {
       return override
     }
-    return (defaults.object(forKey: enabledKey) as? Bool) ?? false
+    return (defaults.object(forKey: enabledKey) as? Bool) ?? true
   }
 
   /// Persist the setting and post `didChangeNotification`. Returns `false`

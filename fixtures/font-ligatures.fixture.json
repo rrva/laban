@@ -1,7 +1,7 @@
 {
   "name": "font-ligatures",
   "version": 1,
-  "description": "Writes programming-font ligature operators for Slug ligature verification (ADR 0037). Run with --renderer=slugGlyph and LABAN_FONT_LIGATURES=1; /debug/render ligatureGlyphs must be > 0, and 0 without the env override.",
+  "description": "Writes programming-font ligature operators for Slug ligature verification (ADR 0037). Run with --renderer=slugGlyph and LABAN_FONT_LIGATURES=1; /debug/render ligatureGlyphs must be > 0, and 0 with LABAN_FONT_LIGATURES=0.",
   "initialSize": {
     "cols": 60,
     "rows": 6

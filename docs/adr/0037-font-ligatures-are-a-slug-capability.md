@@ -4,7 +4,8 @@ Date: 2026-10-01
 
 ## Status
 
-Accepted. Implementation tracked in `execplans/active/font-ligatures.md`.
+Accepted; amended 2026-10-01 to ship the setting on by default.
+Implementation tracked in `execplans/active/font-ligatures.md`.
 
 ## Context
 
@@ -39,10 +40,11 @@ backend.
 
 ## Decision
 
-Font ligatures are a Slug-only, opt-in capability.
+Font ligatures are a Slug-only capability, on by default.
 
 - **Setting.** `FontLigatureSettings` (`LabanFontLigaturesEnabled`, default
-  off; `LABAN_FONT_LIGATURES` environment override for headless fixtures).
+  on, so new and existing installs get ligatures until the user unchecks the
+  setting; `LABAN_FONT_LIGATURES` environment override for headless fixtures).
   `SlugGlyphRenderer` caches the value and refreshes it on
   `didChangeNotification`. It never reads UserDefaults per frame.
 - **Shaping.** `TerminalLigatureShaper` shapes a run once with `CTLine` and
@@ -70,6 +72,9 @@ Font ligatures are a Slug-only, opt-in capability.
 
 ## Consequences
 
+- Slug's default output now differs from the MVP wherever an operator
+  appears; the MVP "no ligatures" look is one checkbox away, and the other
+  renderers keep it.
 - With the setting off, Slug's output is byte-identical to before
   (`SlugLigatureTests.testRunsWithoutLigaturesRenderIdenticallyWhenEnabled`
   guards the "nothing to ligate" case even with it on).

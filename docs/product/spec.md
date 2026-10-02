@@ -160,7 +160,7 @@ each source character still occupies exactly one cell, so cursor movement,
 selection, copy, find, and the text after an operator are unaffected. Only
 adjacent ASCII punctuation within one same-style run can ligate; letter
 ligatures (`fi`), spinner-motion runs, sidebar text, and IME preedit never do.
-The setting is off by default, applies live, and other renderers ignore it.
+The setting is on by default, applies live, and other renderers ignore it.
 `/debug/render` reports `ligatureGlyphs` for the last frame. See
 `docs/adr/0037-font-ligatures-are-a-slug-capability.md`.
 
