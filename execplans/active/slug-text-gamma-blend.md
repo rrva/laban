@@ -109,7 +109,13 @@ full sRGB encoding.
       frame time at three point sizes, two alternating rounds:
       this branch 17.6/22.8/22.3 and 18.2/22.4/22.7 ms, `main`
       17.2/22.3/21.9 and 17.3/22.5/23.0 ms. That is within run-to-run noise.
-- [ ] `./scripts/check` green.
+- [x] Fresh-context review. Finding fixed: the new small-size dilation entries
+      also reached linear-light text (Intel, translucent surfaces) and thinned
+      it. `perSideDilatePx` now takes `gammaBlend`, and linear text keeps the
+      old clamp to the 18 px entry (`SlugDilationBlendScopeTests`). A second
+      concern, that `testSlugCompositesCoverageInLinearLight` would fail under
+      the gamma blend, did not reproduce: the test passes.
+- [x] `./scripts/check` green (2026-10-02).
 
 ## Validation and Acceptance
 
