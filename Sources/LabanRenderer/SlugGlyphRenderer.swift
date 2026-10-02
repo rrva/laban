@@ -411,6 +411,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// High bit of an instance's `effectKind`: shear the glyph into a synthetic
   /// oblique (the font has no italic face). Mirrors kSlugSyntheticObliqueFlag.
   static let syntheticObliqueFlag: UInt32 = 0x8000_0000
+  /// Mirrors kSlugSyntheticObliqueShear in VectorGlyphShaders.metal.
+  static let syntheticObliqueShear: CGFloat = 0.18
 
   /// Extra per-side dilation, in device pixels, that stands in for a missing
   /// bold face: 2% of the em per side, roughly CoreText's synthetic stroke.
@@ -2797,10 +2799,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let localMax = SIMD2<Float>(
         Float(bounds.maxX + localPixelPad),
         Float(bounds.maxY + localPixelPad))
+      // The vertex shear pivots on the glyph's own baseline; a glyph shaped
+      // above or below the run baseline shifts by the matching constant so
+      // the whole run slants about one line.
+      let obliqueShift =
+        activeVariant.italicFallback ? Self.syntheticObliqueShear * offset.y * pointScale : 0
       let instanceOrigin = SIMD2<Float>(
         Float(
-          (cellOriginX + offset.x * pointScale + (bounds.minX - localPixelPad) * glyphScale)
-            * scale),
+          (cellOriginX + obliqueShift + offset.x * pointScale
+            + (bounds.minX - localPixelPad) * glyphScale) * scale),
         Float(
           (baseline + offset.y * pointScale + (bounds.minY - localPixelPad) * glyphScale) * scale))
       let instanceSize = SIMD2<Float>(
@@ -3196,8 +3203,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         || ink.maxY > box.maxY + box.height * 0.1
     else { return glyphs }
     let fit = min(1, box.width / ink.width, box.height / ink.height)
-    let dx = box.midX - ink.midX * fit
-    let dy = box.midY - ink.midY * fit
+    // Re-centre only along the axis that overflowed; the other keeps the
+    // glyph's own placement (scaled about the origin).
+    let overflowsWidth = ink.width > box.width * 1.1
+    let overflowsHeight =
+      ink.minY < box.minY - box.height * 0.1 || ink.maxY > box.maxY + box.height * 0.1
+    let dx = overflowsWidth ? box.midX - ink.midX * fit : 0
+    let dy = overflowsHeight ? box.midY - ink.midY * fit : 0
     return glyphs.map { glyph in
       var fitted = glyph
       fitted.offset = CGPoint(x: glyph.offset.x * fit + dx, y: glyph.offset.y * fit + dy)
