@@ -197,6 +197,9 @@ private struct SlugGlyphEntry {
 private struct SlugClusterGlyph {
   var entry: SlugGlyphEntry
   var offset: CGPoint
+  /// Uniform shrink applied to fallback-font glyphs whose ink would spill
+  /// out of the terminal cell; 1 for glyphs that fit.
+  var fit: CGFloat = 1
 }
 
 private struct SlugTranslucentPipelines {
@@ -405,6 +408,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// (GPUs without framebuffer fetch, translucent surfaces). Those paths keep
   /// the pre-ADR-0038 clamp to the 18 px entry, because the smaller
   /// entries were calibrated under the gamma blend and would thin linear text.
+  /// High bit of an instance's `effectKind`: shear the glyph into a synthetic
+  /// oblique (the font has no italic face). Mirrors kSlugSyntheticObliqueFlag.
+  static let syntheticObliqueFlag: UInt32 = 0x8000_0000
+
+  /// Extra per-side dilation, in device pixels, that stands in for a missing
+  /// bold face: 2% of the em per side, roughly CoreText's synthetic stroke.
+  static func syntheticBoldDilatePx(ppemPx: Double) -> Float {
+    Float(ppemPx * 0.02)
+  }
+
   static func perSideDilatePx(weight: Double, ppemPx: Double, gammaBlend: Bool) -> Float {
     guard weight > 0 else { return 0 }
     let ppem = Float(ppemPx)
@@ -2720,12 +2733,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let pointScale = activeAtlas.pointSize / Self.referencePointSize
     let foregroundColor = slugColor(foreground)
     let ppemPx = Double(activeAtlas.pointSize) * Double(scale)
-    let perSideDilatePx = Self.perSideDilatePx(
-      weight: textWeight, ppemPx: ppemPx,
-      gammaBlend: glyphGammaBlendPipeline != nil && surfaceTransparency.isOpaque)
     let bold = attributes.contains(.bold)
     let italic = attributes.contains(.italic)
     let activeVariant = activeAtlas.styledFontVariant(bold: bold, italic: italic)
+    // SGR 1/3 on a family without bold/italic faces (the bundled JetBrains
+    // Mono is Regular only): embolden by extra dilation, slant by a vertex
+    // shear, matching what the raster fallback already synthesizes.
+    let perSideDilatePx =
+      Self.perSideDilatePx(
+        weight: textWeight, ppemPx: ppemPx,
+        gammaBlend: glyphGammaBlendPipeline != nil && surfaceTransparency.isOpaque)
+      + (activeVariant.boldFallback ? Self.syntheticBoldDilatePx(ppemPx: ppemPx) : 0)
+    let instanceEffectKind =
+      activeVariant.italicFallback ? effectKind | Self.syntheticObliqueFlag : effectKind
     let (fontID, referenceVariant) = runFontIdentity(
       source: source, bold: bold, italic: italic, referenceAtlas: referenceAtlas)
     frameGlyphFontSizes.insert(Double(activeAtlas.pointSize))
@@ -2745,11 +2765,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let runMayContainCJK = TerminalCJKFontPolicy.containsCJK(text)
 
     func appendSlugGlyph(
-      _ entry: SlugGlyphEntry, cellOriginX: CGFloat, offset: CGPoint = .zero
+      _ entry: SlugGlyphEntry, cellOriginX: CGFloat, offset: CGPoint = .zero, fit: CGFloat = 1
     ) {
       let bounds = entry.outline.bounds
+      // `offset` is already in fitted reference points; the outline itself
+      // scales by `glyphScale`.
+      let glyphScale = pointScale * fit
       let localPixelPad =
-        CGFloat(1 + perSideDilatePx) / max(pointScale * scale, .ulpOfOne)
+        CGFloat(1 + perSideDilatePx) / max(glyphScale * scale, .ulpOfOne)
       let localMin = SIMD2<Float>(
         Float(bounds.minX - localPixelPad),
         Float(bounds.minY - localPixelPad))
@@ -2757,11 +2780,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         Float(bounds.maxX + localPixelPad),
         Float(bounds.maxY + localPixelPad))
       let instanceOrigin = SIMD2<Float>(
-        Float((cellOriginX + (offset.x + bounds.minX - localPixelPad) * pointScale) * scale),
-        Float((baseline + (offset.y + bounds.minY - localPixelPad) * pointScale) * scale))
+        Float(
+          (cellOriginX + offset.x * pointScale + (bounds.minX - localPixelPad) * glyphScale)
+            * scale),
+        Float(
+          (baseline + offset.y * pointScale + (bounds.minY - localPixelPad) * glyphScale) * scale))
       let instanceSize = SIMD2<Float>(
-        max(0, Float((bounds.width + localPixelPad * 2) * pointScale * scale)),
-        max(0, Float((bounds.height + localPixelPad * 2) * pointScale * scale)))
+        max(0, Float((bounds.width + localPixelPad * 2) * glyphScale * scale)),
+        max(0, Float((bounds.height + localPixelPad * 2) * glyphScale * scale)))
       guard instanceSize.x > 0, instanceSize.y > 0 else { return }
       frameQuadHeights.insert(Int((CGFloat(instanceSize.y) * gestureZoom).rounded()))
       if foregroundTransition != nil || foregroundWave != nil {
@@ -2774,7 +2800,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
             color: foregroundColor,
             glyphIndex: UInt32(entry.glyphIndex),
             dilation: perSideDilatePx,
-            effectKind: effectKind,
+            effectKind: instanceEffectKind,
             effectStart: effectStart,
             duration: effectDuration ?? 0,
             startColor: foregroundTransition?.startLinearRGBA ?? .zero,
@@ -2790,7 +2816,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
             color: foregroundColor,
             glyphIndex: UInt32(entry.glyphIndex),
             dilation: perSideDilatePx,
-            effectKind: effectKind,
+            effectKind: instanceEffectKind,
             effectStart: effectStart))
       }
     }
@@ -2883,7 +2909,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         continue
       }
       for glyph in clusterGlyphs {
-        appendSlugGlyph(glyph.entry, cellOriginX: cellOriginX, offset: glyph.offset)
+        appendSlugGlyph(glyph.entry, cellOriginX: cellOriginX, offset: glyph.offset, fit: glyph.fit)
       }
     }
 
@@ -3122,8 +3148,44 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       failedResolveKeys.insert(resolveKey)
       return nil
     }
+    let primaryName = FontAtlas.postScriptName(of: referenceVariant.font)
+    if resolved.contains(where: { FontAtlas.postScriptName(of: $0.font) != primaryName }) {
+      clusterGlyphs = Self.fittedToCell(
+        clusterGlyphs,
+        cellSpan: max(1, TerminalDisplayWidth.cells(of: String(cluster))),
+        atlas: referenceAtlas)
+    }
     entriesByResolveKey[resolveKey] = clusterGlyphs
     return clusterGlyphs
+  }
+
+  /// Shrinks a fallback cluster whose ink spills well outside its cell box
+  /// (cell span × cell height, baseline at the primary descent) and centres
+  /// it there, so a tall or wide glyph from another font cannot paint over
+  /// neighbouring cells or rows. Clusters within 10% of the box are left
+  /// untouched. Units are reference-size points, so the fit holds at any
+  /// zoom.
+  private static func fittedToCell(
+    _ glyphs: [SlugClusterGlyph], cellSpan: Int, atlas: FontAtlas
+  ) -> [SlugClusterGlyph] {
+    let box = CGRect(
+      x: 0, y: -atlas.descent,
+      width: atlas.cellSize.width * CGFloat(cellSpan), height: atlas.cellSize.height)
+    let ink = glyphs.map { $0.entry.outline.bounds.offsetBy(dx: $0.offset.x, dy: $0.offset.y) }
+      .reduce(CGRect.null) { $0.union($1) }
+    guard !ink.isNull, ink.width > 0, ink.height > 0,
+      ink.width > box.width * 1.1 || ink.minY < box.minY - box.height * 0.1
+        || ink.maxY > box.maxY + box.height * 0.1
+    else { return glyphs }
+    let fit = min(1, box.width / ink.width, box.height / ink.height)
+    let dx = box.midX - ink.midX * fit
+    let dy = box.midY - ink.midY * fit
+    return glyphs.map { glyph in
+      var fitted = glyph
+      fitted.offset = CGPoint(x: glyph.offset.x * fit + dx, y: glyph.offset.y * fit + dy)
+      fitted.fit = fit
+      return fitted
+    }
   }
 
   private static func glyphHasInk(_ glyph: CGGlyph, font: CTFont) -> Bool {

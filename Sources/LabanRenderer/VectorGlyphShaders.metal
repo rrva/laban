@@ -685,6 +685,24 @@ struct SlugGlyphVertexOut {
     float dilation;
 };
 
+// High bit of `effectKind`: draw the glyph with a synthetic oblique shear
+// because the font has no italic face. Mirrored from
+// SlugGlyphRenderer.syntheticObliqueFlag; the low bits stay the effect kind.
+#define kSlugSyntheticObliqueFlag 0x80000000u
+// Same slant as the raster atlas's synthetic italic (MetalGlyphAtlas).
+constant float kSlugSyntheticObliqueShear = 0.18;
+
+// Shears a quad corner right in proportion to its height above the baseline
+// (glyph-space y = 0). The interpolated glyphPoint stays upright, so the
+// fragment stage draws the upright outline onto a parallelogram.
+inline float2 slugGlyphApplyOblique(
+    float2 px, float2 unit, float2 originPx, float2 sizePx, float2 localMin, float2 localMax
+) {
+    float glyphY = mix(localMin.y, localMax.y, unit.y);
+    float pxPerUnitY = sizePx.y / max(localMax.y - localMin.y, 1.0e-6);
+    return float2(px.x + kSlugSyntheticObliqueShear * glyphY * pxPerUnitY, px.y);
+}
+
 inline float2 slugGlyphApplyGestureZoom(float2 px, constant SlugGlyphUniforms &uniforms) {
     return (px - uniforms.gestureZoomAnchor) * uniforms.gestureZoom + uniforms.gestureZoomAnchor;
 }
@@ -761,6 +779,11 @@ vertex SlugGlyphVertexOut slugGlyphVertex(
     SlugGlyphInstance instance = instances[instanceId];
     float2 unit = kVectorQuadVertices[vertexId];
     float2 px = instance.originPx + unit * instance.sizePx;
+    if ((instance.effectKind & kSlugSyntheticObliqueFlag) != 0u) {
+        px = slugGlyphApplyOblique(
+            px, unit, instance.originPx, instance.sizePx, instance.localMin, instance.localMax);
+        instance.effectKind &= ~kSlugSyntheticObliqueFlag;
+    }
     px = slugGlyphApplyGestureZoom(px, uniforms);
     float4 color = instance.color;
     float dilation = instance.dilation;
@@ -785,6 +808,11 @@ vertex SlugGlyphVertexOut slugGlyphMotionVertex(
     SlugGlyphMotionInstance instance = instances[instanceId];
     float2 unit = kVectorQuadVertices[vertexId];
     float2 px = instance.originPx + unit * instance.sizePx;
+    if ((instance.effectKind & kSlugSyntheticObliqueFlag) != 0u) {
+        px = slugGlyphApplyOblique(
+            px, unit, instance.originPx, instance.sizePx, instance.localMin, instance.localMax);
+        instance.effectKind &= ~kSlugSyntheticObliqueFlag;
+    }
     px = slugGlyphApplyGestureZoom(px, uniforms);
 
     float4 color;
