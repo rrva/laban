@@ -664,6 +664,56 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       "every color emoji must still draw from the color atlas after the replacement")
   }
 
+  /// The R8 raster atlas (all CJK) recovers from overflow the same way as
+  /// the color atlas: replaced once, every glyph still drawn from it.
+  func testSlugRasterAtlasOverflowReplacesAtlasAndKeepsEveryCJKGlyph() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let han = (0x4E00..<0x4E00 + 400).compactMap(Unicode.Scalar.init).map { Character($0) }
+    let atlas = FontAtlas(pointSize: 48)
+    func render(rows: Range<Int>) throws -> SlugGlyphRenderer {
+      let renderer = try XCTUnwrap(
+        SlugGlyphRenderer(fontAtlas: atlas, pixelWidth: 640, pixelHeight: 320, scale: 2))
+      renderer.waitForFrameCompletion = true
+      renderer.presentsToLayer = false
+      var commands: [FrameCommand] = [
+        .rect(CGRect(x: 0, y: 0, width: 320, height: 160), color: 0x0000_00FF, source: .terminal)
+      ]
+      for row in rows {
+        commands.append(
+          .glyphRun(
+            origin: CGPoint(x: 0, y: CGFloat(row) * 8),
+            text: String(han[(row * 20)..<(row * 20 + 20)]), foreground: 0xFFFF_FFFF,
+            background: 0x0000_00FF, attributes: [], source: .terminal))
+      }
+      XCTAssertTrue(renderer.render(commands, damage: .full))
+      return renderer
+    }
+    var expected = 0
+    for row in 0..<20 {
+      expected += try render(rows: row..<(row + 1)).lastFrameRasterGlyphsCountForTesting
+    }
+    let renderer = try render(rows: 0..<20)
+    XCTAssertGreaterThan(
+      renderer.fallbackAtlasResetCount, 0, "the full raster atlas must be replaced")
+    XCTAssertEqual(renderer.lastFrameRasterGlyphsCountForTesting, expected)
+  }
+
+  /// Every glyph of a multi-glyph cluster lands where CoreText shaped it: the
+  /// combining low line sits under the base letter, inside its cell.
+  func testSlugPlacesCombiningMarkUnderItsBase() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let plain = try XCTUnwrap(nonBackgroundBounds(try renderProbeText("a", width: 160, height: 80)))
+    let marked = try XCTUnwrap(
+      nonBackgroundBounds(try renderProbeText("a\u{0332}", width: 160, height: 80)))
+    XCTAssertGreaterThan(marked.maxY, plain.maxY + 1, "the low line extends below the a")
+    XCTAssertLessThanOrEqual(
+      abs(marked.midX - plain.midX), FontAtlas(pointSize: 18).cellSize.width / 2)
+  }
+
   func testSlugMonochromeEmojiRendersTintedNotColor() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

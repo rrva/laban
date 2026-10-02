@@ -3136,7 +3136,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
         fg: runFg,
         underlineStyle: runUnderlineStyle,
         underlineColor: runUnderlineColor,
-        phaseOriginX: payload.origin.x,
+        phaseOriginX: 0,
         appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
       runRow = nil
       runCellCount = 0
@@ -3837,7 +3837,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
             descent: fontAtlas.descent,
             fg: fg,
             underlineStyle: underlineStyle, underlineColor: underlineColor,
-            phaseOriginX: geometry.originX,
+            phaseOriginX: 0,
             appendSolid: { rect, color in appendSolid(rect: rect, color: color) })
           continue
         }
@@ -4255,7 +4255,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       fg: fg,
       underlineStyle: underlineStyle,
       underlineColor: underlineColor,
-      phaseOriginX: phaseOriginX,
+      // Surface-anchored like Slug, so both renderers draw the same phase.
+      phaseOriginX: phaseOriginX ?? 0,
       appendSolid: appendSolid)
   }
 
@@ -4282,7 +4283,7 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
         cellHeight: cellHeight,
         descent: descent,
         scale: layer.contentsScale,
-        phaseOriginX: phaseOriginX)
+        phaseOriginX: phaseOriginX ?? 0)
     else { return }
 
     let underlineRGBA = underlineColor ?? fg
