@@ -1171,6 +1171,19 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertEqual(rects.first?.height, 20, "default block must span the full cell height")
   }
 
+  /// Remote cells carry no wide flag: a multi-scalar wide emoji (whose
+  /// summed scalar widths exceed 2) still gets a two-column block cursor.
+  func testRemoteBlockCursorCoversMultiScalarWideEmoji() {
+    var snapshot = remoteSnapshotFixture()
+    snapshot.cells = [
+      LabandSnapshotCell(
+        row: 0, col: 0, text: "\u{1F44D}\u{1F3FD}", flags: 0, foregroundRGBA: 0xFFFF_FFFF,
+        backgroundRGBA: 0x0000_00FF)
+    ]
+    let cmds = FrameProducer(cellWidth: 10, cellHeight: 20).commands(from: snapshot)
+    XCTAssertEqual(remoteCursorRects(cmds).first?.width, 20)
+  }
+
   func testRemoteCursor_UserBarShapesRemoteCursor() {
     let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
     let cmds = producer.commands(from: remoteSnapshotFixture(), userCursorStyle: .bar)

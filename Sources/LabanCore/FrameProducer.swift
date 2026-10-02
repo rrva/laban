@@ -2183,7 +2183,7 @@ public struct FrameProducer {
           width: cw,
           height: ch),
         style: Int(userCursorStyle.labanStyleValue),
-        wide: remoteCell.map { TerminalDisplayWidth.cells(of: $0.text) == 2 } ?? false,
+        wide: remoteCell.map { TerminalDisplayWidth.cells(of: $0.text) > 1 } ?? false,
         col: caretCol, cols: cols)
       // Use the user's configured style for the remote cursor (ring snapshots
       // carry no explicit DECSCUSR override bits — Decision Log entry).
