@@ -82,6 +82,20 @@ final class GraphemeClusteringTests: XCTestCase {
       spans["A [\u{2764}\u{FE0F}y]"], 6, "narrow cells span one column each; got \(spans)")
   }
 
+  /// A wide cell that also holds a zero-width character is drawn alone, and
+  /// its span is left unknown rather than miscounted as one column.
+  func testMultiCharacterWideCellLeavesSpanUnknown() throws {
+    let cmds = try runWithText("\u{1F600}\u{200B}x\r\n")
+    var spans: [String: Int?] = [:]
+    for cmd in cmds {
+      if case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, let cells, _, _, _) = cmd {
+        spans[text] = cells
+      }
+    }
+    XCTAssertEqual(spans["\u{1F600}\u{200B}"], .some(nil), "got \(spans)")
+    XCTAssertEqual(spans["x"], 1)
+  }
+
   func testWideCJKFollowedByNarrowCharStillEmitsCorrectColumns() throws {
     // Regression: the cluster-extending logic must not over-merge — a wide
     // CJK char followed by a narrow ASCII char does NOT form one cluster, so

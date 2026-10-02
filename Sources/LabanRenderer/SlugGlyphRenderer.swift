@@ -2824,10 +2824,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     // FrameProducer ends a terminal run after any wide cell, so with the
     // engine's column span every cluster but the last is one cell wide.
-    let clusterCount = displayCellCount == nil ? 0 : text.count
+    // Only terminal runs carry an engine span; IME preedit counts the whole
+    // composition's Unicode width, which this rule cannot split.
+    let engineSpan = source == .terminal ? displayCellCount : nil
+    let clusterCount = engineSpan == nil ? 0 : text.count
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
-      let engineCellSpan = displayCellCount.map {
+      let engineCellSpan = engineSpan.map {
         cellIndex == clusterCount - 1 ? max(1, $0 - (clusterCount - 1)) : 1
       }
       let cellRect = CGRect(

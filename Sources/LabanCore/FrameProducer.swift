@@ -1516,6 +1516,9 @@ public struct FrameProducer {
       var runLastClusterStart = 0
       // One past the last engine column the run covers (spacer tails included).
       var runEndCol = 0
+      // Set for a run holding one cell with several Characters: the
+      // last-cluster-takes-the-remainder rule cannot split its span.
+      var runSpanUnknown = false
       runBytes.removeAll(keepingCapacity: true)
 
       func cellTransition(_ col: Int) -> GlyphForegroundTransition? {
@@ -1553,11 +1556,12 @@ public struct FrameProducer {
             underlineStyle: runUnderlineStyle,
             underlineColor: runUnderlineColor,
             hyperlink: runHyperlink,
-            displayCellCount: runEndCol - start,
+            displayCellCount: runSpanUnknown ? nil : runEndCol - start,
             foregroundTransition: runTransition,
             foregroundWave: runWave
           ))
         runStart = nil
+        runSpanUnknown = false
         runBytes.removeAll(keepingCapacity: true)
         runLastClusterStart = 0
         runUnderlineStyle = .none
@@ -1709,6 +1713,7 @@ public struct FrameProducer {
           // A cell holding several Characters (e.g. a letter plus an attached
           // zero-width space) is drawn alone so its extras cannot push the
           // following cells right.
+          runSpanUnknown = true
           flushRun()
           pendingSpacer = false
         }
@@ -1751,6 +1756,7 @@ public struct FrameProducer {
       // cell does not extend the cluster.
       var pendingSpacer = false
       var runEndCol = 0
+      var runSpanUnknown = false
 
       func cellTransition(_ col: Int) -> GlyphForegroundTransition? {
         foregroundTransitions?[SpinnerMotionCellKey(row: row, col: col)]
@@ -1787,11 +1793,12 @@ public struct FrameProducer {
             underlineStyle: runUnderlineStyle,
             underlineColor: runUnderlineColor,
             hyperlink: runHyperlink,
-            displayCellCount: runEndCol - start,
+            displayCellCount: runSpanUnknown ? nil : runEndCol - start,
             foregroundTransition: runTransition,
             foregroundWave: runWave
           ))
         runStart = nil
+        runSpanUnknown = false
         runText = ""
         runUnderlineStyle = .none
         runUnderlineColor = nil
@@ -1901,6 +1908,7 @@ public struct FrameProducer {
               startRun()
             }
             if cellClusterCount != 1 {
+              runSpanUnknown = true
               flushRun()
               pendingSpacer = false
             }
