@@ -195,6 +195,8 @@ private struct SlugGlyphEntry {
 struct SlugUnderlineInk {
   var outline: GlyphCurveOutline
   var originX: CGFloat
+  /// Vertical shaping offset of the glyph above the baseline, in outline units.
+  var offsetY: CGFloat = 0
 }
 
 /// One glyph of a resolved cluster, offset from the cell origin in
@@ -2780,7 +2782,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let bounds = entry.outline.bounds
       if drawsUnderline {
         underlineInk.append(
-          SlugUnderlineInk(outline: entry.outline, originX: cellOriginX + offset.x * pointScale))
+          SlugUnderlineInk(
+            outline: entry.outline, originX: cellOriginX + offset.x * pointScale,
+            offsetY: offset.y))
       }
       let localPixelPad =
         CGFloat(1 + perSideDilatePx) / max(pointScale * scale, .ulpOfOne)
@@ -3017,11 +3021,20 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     let underlineRGBA = underlineColor ?? foreground
     let baseline = origin.y + atlas.descent
+    // Dotted and dashed underlines are many rects on the same band; solve
+    // the run's ink once per band, not once per rect.
+    var cutsByBand: [CGFloat: [(CGFloat, CGFloat)]] = [:]
     for rect in layout.underlineRects {
-      for piece in Self.skippingInk(
-        rect, ink: underlineInk, baseline: baseline, pointScale: pointScale,
-        gap: layout.thickness)
-      {
+      let cuts: [(CGFloat, CGFloat)]
+      if let cached = cutsByBand[rect.minY] {
+        cuts = cached
+      } else {
+        cuts = Self.inkCuts(
+          bandMinY: rect.minY, bandMaxY: rect.maxY, ink: underlineInk, baseline: baseline,
+          pointScale: pointScale, gap: layout.thickness)
+        cutsByBand[rect.minY] = cuts
+      }
+      for piece in Self.subtracting(cuts, from: rect) {
         solids.append(solid(rect: piece, color: underlineRGBA))
       }
     }
@@ -3375,16 +3388,34 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     pointScale: CGFloat,
     gap: CGFloat
   ) -> [CGRect] {
-    guard !ink.isEmpty, pointScale > 0 else { return [rect] }
-    let scanlines = [rect.minY - gap, rect.midY, rect.maxY + gap]
+    subtracting(
+      inkCuts(
+        bandMinY: rect.minY, bandMaxY: rect.maxY, ink: ink, baseline: baseline,
+        pointScale: pointScale, gap: gap),
+      from: rect)
+  }
+
+  /// Sorted x intervals where glyph ink, widened by `gap`, crosses the
+  /// horizontal band `bandMinY...bandMaxY` (also widened by `gap`).
+  static func inkCuts(
+    bandMinY: CGFloat,
+    bandMaxY: CGFloat,
+    ink: [SlugUnderlineInk],
+    baseline: CGFloat,
+    pointScale: CGFloat,
+    gap: CGFloat
+  ) -> [(CGFloat, CGFloat)] {
+    guard !ink.isEmpty, pointScale > 0 else { return [] }
+    let scanlines = [bandMinY - gap, (bandMinY + bandMaxY) / 2, bandMaxY + gap]
     var cuts: [(CGFloat, CGFloat)] = []
     for placement in ink {
       let bounds = placement.outline.bounds
-      let localLow = (scanlines[0] - baseline) / pointScale
-      let localHigh = (scanlines[2] - baseline) / pointScale
+      let localLow = (scanlines[0] - baseline) / pointScale - placement.offsetY
+      let localHigh = (scanlines[2] - baseline) / pointScale - placement.offsetY
       guard bounds.minY <= localHigh, bounds.maxY >= localLow else { continue }
       for y in scanlines {
-        for span in inkSpans(placement.outline, y: (y - baseline) / pointScale) {
+        let localY = (y - baseline) / pointScale - placement.offsetY
+        for span in inkSpans(placement.outline, y: localY) {
           cuts.append(
             (
               placement.originX + span.lowerBound * pointScale - gap,
@@ -3393,14 +3424,20 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         }
       }
     }
-    guard !cuts.isEmpty else { return [rect] }
     cuts.sort { $0.0 < $1.0 }
+    return cuts
+  }
+
+  /// `rect` minus the sorted x intervals in `cuts`.
+  static func subtracting(_ cuts: [(CGFloat, CGFloat)], from rect: CGRect) -> [CGRect] {
+    guard !cuts.isEmpty else { return [rect] }
     var pieces: [CGRect] = []
     var x = rect.minX
     for (start, end) in cuts {
+      if end <= x { continue }
+      if start >= rect.maxX { break }
       if start > x {
-        pieces.append(
-          CGRect(x: x, y: rect.minY, width: min(start, rect.maxX) - x, height: rect.height))
+        pieces.append(CGRect(x: x, y: rect.minY, width: start - x, height: rect.height))
       }
       x = max(x, end)
       if x >= rect.maxX { break }
@@ -3408,7 +3445,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     if x < rect.maxX {
       pieces.append(CGRect(x: x, y: rect.minY, width: rect.maxX - x, height: rect.height))
     }
-    return pieces.filter { $0.width > 0 }
+    return pieces
   }
 
   /// Horizontal spans of `outline` filled (nonzero winding) on scanline `y`,
