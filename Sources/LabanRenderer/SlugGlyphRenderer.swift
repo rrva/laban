@@ -359,6 +359,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     (36, 0.34),
     (48, 0.42),
   ]
+  /// Smallest table entry linear-light text uses (the pre-ADR-0038 table start).
+  private static let linearBlendDilationPpemFloor: Float = 18
   /// On-screen em size at and above which the table's largest amount stops
   /// growing and the large-text taper begins (outside the calibrated range).
   private static let dilationPpemFull: Float = 96
@@ -390,10 +392,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Maps text weight and on-screen em size to a per-side device-pixel
   /// dilation amount for the slug shader's `dilate` parameter. Color-independent:
   /// the same geometry applies regardless of foreground/background.
-  private static func perSideDilatePx(weight: Double, ppemPx: Double) -> Float {
+  /// `gammaBlend` is false for text that still composites in linear light
+  /// (GPUs without framebuffer fetch, translucent surfaces). Those paths keep
+  /// the pre-ADR-0038 clamp to the 18 px entry, because the smaller
+  /// entries were calibrated under the gamma blend and would thin linear text.
+  static func perSideDilatePx(weight: Double, ppemPx: Double, gammaBlend: Bool) -> Float {
     guard weight > 0 else { return 0 }
     let ppem = Float(ppemPx)
-    let amount = dilationTableAmountPx(ppem: min(ppem, dilationPpemFull))
+    let tablePpem = gammaBlend ? ppem : max(ppem, linearBlendDilationPpemFloor)
+    let amount = dilationTableAmountPx(ppem: min(tablePpem, dilationPpemFull))
     let taper: Float
     if ppem <= dilationPpemFull {
       taper = 1
@@ -2704,7 +2711,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let pointScale = activeAtlas.pointSize / Self.referencePointSize
     let foregroundColor = slugColor(foreground)
     let ppemPx = Double(activeAtlas.pointSize) * Double(scale)
-    let perSideDilatePx = Self.perSideDilatePx(weight: textWeight, ppemPx: ppemPx)
+    let perSideDilatePx = Self.perSideDilatePx(
+      weight: textWeight, ppemPx: ppemPx,
+      gammaBlend: glyphGammaBlendPipeline != nil && surfaceTransparency.isOpaque)
     let bold = attributes.contains(.bold)
     let italic = attributes.contains(.italic)
     let activeVariant = activeAtlas.styledFontVariant(bold: bold, italic: italic)

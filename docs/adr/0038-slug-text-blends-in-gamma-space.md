@@ -55,8 +55,10 @@ fixed power space:
 - `RendererStatus.textCompositeModel` reports the new `gammaBlend` case when
   the gamma pipelines are active and `linearLight` otherwise.
 - The dilation table gains entries below 18 px per em (9 px: 0.08, 11 px: 0.12,
-  14 px: 0.16), recalibrated under the new blend. Entries from 18 px up are
-  unchanged because they were already the best fit.
+  14 px: 0.16), recalibrated under the new blend. Only gamma-blended text
+  uses them: linear-light text (Intel, translucent surfaces) keeps the old
+  clamp to the 18 px entry. Entries from 18 px up are unchanged because they
+  were already the best fit.
 
 ## Consequences
 

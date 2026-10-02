@@ -194,3 +194,17 @@ final class SlugWeightCoreTextParityTests: XCTestCase {
     return RGBAImage(width: w, height: h, bytes: bytes)
   }
 }
+
+/// ADR 0038's small-size dilation entries are calibrated for gamma-blended
+/// text only; linear-light paths (Intel, translucent) keep the old clamp.
+final class SlugDilationBlendScopeTests: XCTestCase {
+  func testSmallSizeEntriesApplyOnlyToGammaBlendedText() {
+    let linear9 = SlugGlyphRenderer.perSideDilatePx(weight: 1, ppemPx: 9, gammaBlend: false)
+    let linear18 = SlugGlyphRenderer.perSideDilatePx(weight: 1, ppemPx: 18, gammaBlend: false)
+    let gamma9 = SlugGlyphRenderer.perSideDilatePx(weight: 1, ppemPx: 9, gammaBlend: true)
+    let gamma18 = SlugGlyphRenderer.perSideDilatePx(weight: 1, ppemPx: 18, gammaBlend: true)
+    XCTAssertEqual(linear9, linear18, accuracy: 1e-6)
+    XCTAssertEqual(gamma18, linear18, accuracy: 1e-6)
+    XCTAssertLessThan(gamma9, linear9)
+  }
+}
