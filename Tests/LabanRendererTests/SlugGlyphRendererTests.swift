@@ -912,6 +912,68 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     }
   }
 
+  /// A square outline crossing the underline band cuts a gap one thickness
+  /// wider than its ink on each side; ink above the band leaves the line whole.
+  func testSlugSkipInkCutsUnderlineAroundCrossingInk() throws {
+    // Unit square from x 2...4, y -3...1 in glyph units (crosses y = -2).
+    let corners = [
+      CGPoint(x: 2, y: -3), CGPoint(x: 4, y: -3), CGPoint(x: 4, y: 1), CGPoint(x: 2, y: 1),
+    ]
+    let curves = (0..<4).map { i in
+      GlyphCurveStore.lineAsQuadratic(from: corners[i], to: corners[(i + 1) % 4])
+    }
+    let outline = GlyphCurveOutline(
+      glyph: 1, bounds: CGRect(x: 2, y: -3, width: 2, height: 4), curves: curves,
+      contours: [GlyphContour(seed: corners[0], curveStart: 0, curveCount: 4)])
+    let underline = CGRect(x: 0, y: 7.5, width: 20, height: 1)  // baseline 10 → y -2.5...-1.5
+    let pieces = SlugGlyphRenderer.skippingInk(
+      underline, ink: [SlugUnderlineInk(outline: outline, originX: 0)], baseline: 10,
+      pointScale: 1, gap: 1)
+    XCTAssertEqual(pieces.count, 2)
+    XCTAssertEqual(pieces[0].maxX, 1, accuracy: 1e-9)
+    XCTAssertEqual(pieces[1].minX, 5, accuracy: 1e-9)
+
+    let above = SlugGlyphRenderer.skippingInk(
+      CGRect(x: 0, y: 2, width: 20, height: 1),
+      ink: [SlugUnderlineInk(outline: outline, originX: 0)],
+      baseline: 10, pointScale: 1, gap: 1)
+    XCTAssertEqual(above, [CGRect(x: 0, y: 2, width: 20, height: 1)])
+  }
+
+  /// Rendered end to end: descenders under an underline leave gaps, so a
+  /// red underline under `gjpqy` has fewer red pixels than under `aceos`.
+  func testSlugUnderlineSkipsDescenderInk() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    func redPixels(_ text: String) throws -> Int {
+      let atlas = FontAtlas(pointSize: 24, fontName: nil)
+      let renderer = try XCTUnwrap(
+        SlugGlyphRenderer(
+          fontAtlas: atlas, sidebarFontAtlas: atlas, pixelWidth: 420, pixelHeight: 96, scale: 2))
+      renderer.waitForFrameCompletion = true
+      renderer.presentsToLayer = false
+      XCTAssertTrue(
+        renderer.render(
+          [
+            .rect(
+              CGRect(x: 0, y: 0, width: 210, height: 48), color: 0x10_10_10_FF, source: .terminal),
+            .glyphRun(
+              origin: CGPoint(x: 12, y: 10), text: text, foreground: 0xEE_EE_EE_FF,
+              background: 0x10_10_10_FF, attributes: [.underline], source: .terminal,
+              underlineStyle: .single, underlineColor: 0xFF_00_00_FF),
+          ], damage: .full))
+      let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+      return stride(from: 0, to: image.bytes.count, by: 4).filter {
+        image.bytes[$0] > 200 && image.bytes[$0 + 1] < 60 && image.bytes[$0 + 2] < 60
+      }.count
+    }
+    let plain = try redPixels("aceos")
+    let descenders = try redPixels("gjpqy")
+    XCTAssertGreaterThan(plain, 0)
+    XCTAssertLessThan(Double(descenders), Double(plain) * 0.9, "descenders must cut the underline")
+  }
+
   func testM2VisualSpotCheckArtifactWhenRequested() throws {
     guard let artifactRoot = ProcessInfo.processInfo.environment["LABAN_SLUG_GLYPH_ARTIFACTS"],
       !artifactRoot.isEmpty

@@ -190,6 +190,13 @@ private struct SlugGlyphEntry {
   var glyphIndex: Int
 }
 
+/// A glyph outline placed in a run, at its cell's x origin; outline units are
+/// reference-size points, scaled by the run's `pointScale`.
+struct SlugUnderlineInk {
+  var outline: GlyphCurveOutline
+  var originX: CGFloat
+}
+
 private struct SlugTranslucentPipelines {
   let solid: MTLRenderPipelineState
   let replaceSolid: MTLRenderPipelineState
@@ -2642,8 +2649,16 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     let runMayContainCJK = TerminalCJKFontPolicy.containsCJK(text)
 
+    // Outlines placed in this run, kept only when an underline needs them
+    // for skip-ink.
+    let drawsUnderline = attributes.contains(.underline) || underlineStyle != .none
+    var underlineInk: [SlugUnderlineInk] = []
+
     func appendSlugGlyph(_ entry: SlugGlyphEntry, cellOriginX: CGFloat) {
       let bounds = entry.outline.bounds
+      if drawsUnderline {
+        underlineInk.append(SlugUnderlineInk(outline: entry.outline, originX: cellOriginX))
+      }
       let localPixelPad =
         CGFloat(1 + perSideDilatePx) / max(pointScale * scale, .ulpOfOne)
       let localMin = SIMD2<Float>(
@@ -2790,6 +2805,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         underlineColor: underlineColor,
         atlas: activeAtlas,
         foreground: foreground,
+        underlineInk: underlineInk,
+        pointScale: pointScale,
         solids: &overlaySolids)
     } else {
       appendDecorations(
@@ -2800,6 +2817,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         underlineColor: underlineColor,
         atlas: activeAtlas,
         foreground: foreground,
+        underlineInk: underlineInk,
+        pointScale: pointScale,
         solids: &solids)
     }
   }
@@ -2842,6 +2861,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     underlineColor: UInt32?,
     atlas: FontAtlas,
     foreground: UInt32,
+    underlineInk: [SlugUnderlineInk] = [],
+    pointScale: CGFloat = 1,
     solids: inout [SlugSolidInstance]
   ) {
     // Mirrors TextDecorationLayout.make's own guard (below): bail before
@@ -2865,12 +2886,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         // Slug sees runs, not the grid, so anchor patterned underlines to the
         // surface origin: every run of a row then shares one dash/dot phase
         // instead of restarting at each style split.
-        phaseOriginX: 0)
+        phaseOriginX: 0,
+        underlineMetrics: (atlas.underlinePosition, atlas.underlineThickness))
     else { return }
 
     let underlineRGBA = underlineColor ?? foreground
+    let baseline = origin.y + atlas.descent
     for rect in layout.underlineRects {
-      solids.append(solid(rect: rect, color: underlineRGBA))
+      for piece in Self.skippingInk(
+        rect, ink: underlineInk, baseline: baseline, pointScale: pointScale,
+        gap: layout.thickness)
+      {
+        solids.append(solid(rect: piece, color: underlineRGBA))
+      }
     }
     if !layout.curlyUnderlinePoints.isEmpty {
       for (start, end) in zip(
@@ -3183,6 +3211,98 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         Float(entry.pixelWidth) / atlasSize,
         Float(entry.pixelHeight) / atlasSize),
       color: slugColor(color))
+  }
+
+  /// Underline pieces left after cutting gaps where glyph ink crosses the
+  /// underline band (skip-ink). Ink is sampled on three scanlines through
+  /// the band widened by `gap`, and each crossing span is widened by `gap`
+  /// on both sides, so descenders of g j p q y stand clear of the line.
+  static func skippingInk(
+    _ rect: CGRect,
+    ink: [SlugUnderlineInk],
+    baseline: CGFloat,
+    pointScale: CGFloat,
+    gap: CGFloat
+  ) -> [CGRect] {
+    guard !ink.isEmpty, pointScale > 0 else { return [rect] }
+    let scanlines = [rect.minY - gap, rect.midY, rect.maxY + gap]
+    var cuts: [(CGFloat, CGFloat)] = []
+    for placement in ink {
+      let bounds = placement.outline.bounds
+      let localLow = (scanlines[0] - baseline) / pointScale
+      let localHigh = (scanlines[2] - baseline) / pointScale
+      guard bounds.minY <= localHigh, bounds.maxY >= localLow else { continue }
+      for y in scanlines {
+        for span in inkSpans(placement.outline, y: (y - baseline) / pointScale) {
+          cuts.append(
+            (
+              placement.originX + span.lowerBound * pointScale - gap,
+              placement.originX + span.upperBound * pointScale + gap
+            ))
+        }
+      }
+    }
+    guard !cuts.isEmpty else { return [rect] }
+    cuts.sort { $0.0 < $1.0 }
+    var pieces: [CGRect] = []
+    var x = rect.minX
+    for (start, end) in cuts {
+      if start > x {
+        pieces.append(
+          CGRect(x: x, y: rect.minY, width: min(start, rect.maxX) - x, height: rect.height))
+      }
+      x = max(x, end)
+      if x >= rect.maxX { break }
+    }
+    if x < rect.maxX {
+      pieces.append(CGRect(x: x, y: rect.minY, width: rect.maxX - x, height: rect.height))
+    }
+    return pieces.filter { $0.width > 0 }
+  }
+
+  /// Horizontal spans of `outline` filled (nonzero winding) on scanline `y`,
+  /// in glyph units.
+  static func inkSpans(_ outline: GlyphCurveOutline, y: CGFloat) -> [ClosedRange<CGFloat>] {
+    var crossings: [(x: CGFloat, winding: Int)] = []
+    for curve in outline.curves {
+      let y0 = curve.p0.y - y
+      let y1 = curve.p1.y - y
+      let y2 = curve.p2.y - y
+      let a = y0 - 2 * y1 + y2
+      let b = y0 - y1
+      var roots: [CGFloat] = []
+      if abs(a) < 1e-9 {
+        if abs(b) > 1e-9 { roots.append(y0 / (2 * b)) }
+      } else {
+        let discriminant = b * b - a * y0
+        if discriminant >= 0 {
+          let root = discriminant.squareRoot()
+          roots.append((b - root) / a)
+          roots.append((b + root) / a)
+        }
+      }
+      for t in roots where t >= 0 && t < 1 {
+        let u = 1 - t
+        let x = u * u * curve.p0.x + 2 * u * t * curve.p1.x + t * t * curve.p2.x
+        let dy = 2 * (u * (curve.p1.y - curve.p0.y) + t * (curve.p2.y - curve.p1.y))
+        guard dy != 0 else { continue }
+        crossings.append((x, dy > 0 ? 1 : -1))
+      }
+    }
+    crossings.sort { $0.x < $1.x }
+    var spans: [ClosedRange<CGFloat>] = []
+    var winding = 0
+    var start: CGFloat = 0
+    for crossing in crossings {
+      let wasInside = winding != 0
+      winding += crossing.winding
+      if !wasInside, winding != 0 {
+        start = crossing.x
+      } else if wasInside, winding == 0 {
+        spans.append(start...crossing.x)
+      }
+    }
+    return spans
   }
 
   private enum SlugBandAxis {
