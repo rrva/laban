@@ -905,6 +905,31 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     }
   }
 
+  /// When one frame alone needs more geometry than the budget, the caches
+  /// reset once and are then kept, instead of rebuilding every frame.
+  func testSlugGeometryResetDoesNotRepeatEveryFrame() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 18), pixelWidth: 360, pixelHeight: 90, scale: 1))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    let commands: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 360, height: 90), color: 0x0000_00FF, source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 12, y: 32), text: "Budget gjq", foreground: 0xFFFF_FFFF,
+        background: 0x0000_00FF, attributes: [], source: .terminal),
+    ]
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    for _ in 0..<4 {
+      renderer.resetGeometryIfOverBudget(budgetBytes: 1)
+      XCTAssertTrue(renderer.render(commands, damage: .full))
+    }
+    XCTAssertEqual(renderer.geometryResetCount, 1)
+  }
+
   func testSlugBandCountFollowsCurveCount() {
     XCTAssertEqual(SlugGlyphRenderer.bandCount(forCurveCount: 2), 8)
     XCTAssertEqual(SlugGlyphRenderer.bandCount(forCurveCount: 20), 20)

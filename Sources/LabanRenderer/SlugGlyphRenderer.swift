@@ -793,6 +793,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   public private(set) var geometryEntryBuildCount = 0
   /// Times the geometry caches were dropped for exceeding the budget.
   public private(set) var geometryResetCount = 0
+  private var geometryMeasurePending = false
+  private var geometryFloorBytes = 0
 
   /// Bytes held by the CPU-side geometry arrays (mirrored on the GPU).
   var geometryBytes: Int {
@@ -807,7 +809,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// buffers alive, and the next `ensureGeometryBuffersIfNeeded` allocates
   /// fresh ones because the upload counters restart at zero.
   func resetGeometryIfOverBudget(budgetBytes: Int = SlugGlyphRenderer.geometryBudgetBytes) {
-    guard geometryBytes > budgetBytes else { return }
+    // The first frame after a reset rebuilds exactly what it draws; if that
+    // alone is near the budget, resetting again would rebuild everything
+    // every frame. Keep at least twice that frame's geometry before the next
+    // reset.
+    if geometryMeasurePending {
+      geometryFloorBytes = geometryBytes
+      geometryMeasurePending = false
+    }
+    guard geometryBytes > max(budgetBytes, geometryFloorBytes * 2) else { return }
     curves.removeAll()
     glyphs.removeAll()
     bands.removeAll()
@@ -828,6 +838,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     bandIndexBufferUploadedCount = 0
     geometryBuffersDirty = true
     geometryResetCount += 1
+    geometryMeasurePending = true
   }
 
   /// Number of times the accumulated curve/band arrays were uploaded to GPU
