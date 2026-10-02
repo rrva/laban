@@ -1668,7 +1668,11 @@ public struct FrameProducer {
           let lastIsASCII =
             runBytes.count - runLastClusterStart == 1 && runBytes[runLastClusterStart] < 0x80
           var mergesIntoLast = false
-          if !(cellIsASCII && lastIsASCII) {
+          if !(cellIsASCII && lastIsASCII),
+            pendingSpacer
+              || FrameProducer.mayJoinClusters(
+                last: runBytes[runLastClusterStart...], next: cellBytes)
+          {
             var joined = Array(runBytes[runLastClusterStart...])
             joined.append(contentsOf: cellBytes)
             mergesIntoLast =
@@ -1844,7 +1848,7 @@ public struct FrameProducer {
               && runWave == cellWave
 
             // Same one-Character-per-cell invariant as the fast path.
-            let cellClusterCount = text.count
+            let cellClusterCount = text.utf8.count == 1 ? 1 : text.count
 
             func startRun() {
               flushRun()
@@ -1863,7 +1867,11 @@ public struct FrameProducer {
 
             if runStart != nil, sameStyle {
               let lastCluster = runText.last.map(String.init) ?? ""
-              if (lastCluster + text).count < 1 + cellClusterCount {
+              if pendingSpacer
+                || FrameProducer.mayJoinClusters(
+                  last: Array(lastCluster.utf8)[...], next: Array(text.utf8)),
+                (lastCluster + text).count < 1 + cellClusterCount
+              {
                 runText += text
                 pendingSpacer = true
                 continue
@@ -2303,6 +2311,40 @@ public struct FrameProducer {
     Self.alphaColor(
       Theme.current.ansi16.indices.contains(11) ? Theme.current.ansi16[11] : 0xEBC1_3DFF,
       alpha: 0xB3)
+  }
+
+  /// Cheap pre-check before grapheme segmentation: a cell can only extend
+  /// the previous cell's cluster when it starts with an extending scalar
+  /// (combining mark, spacing mark, ZWJ, variation selector, emoji modifier,
+  /// tag) or regional indicator, or when the previous cluster ends in a ZWJ
+  /// or regional indicator. Keeps the per-cell path allocation-free for
+  /// ordinary non-ASCII text such as box lines, CJK and accented letters.
+  static func mayJoinClusters<Last: Collection, Next: Collection>(
+    last: Last, next: Next
+  ) -> Bool where Last.Element == UInt8, Next.Element == UInt8 {
+    func isRegionalIndicator(_ s: Unicode.Scalar) -> Bool { (0x1F1E6...0x1F1FF).contains(s.value) }
+    if let first = firstScalar(next) {
+      if first.value == 0x200D || isRegionalIndicator(first) || first.properties.isGraphemeExtend
+        || first.properties.generalCategory == .spacingMark
+        || (0x1F3FB...0x1F3FF).contains(first.value)
+      {
+        return true
+      }
+    }
+    var lastScalar: Unicode.Scalar?
+    var iterator = last.makeIterator()
+    var decoder = Unicode.UTF8()
+    while case .scalarValue(let scalar) = decoder.decode(&iterator) { lastScalar = scalar }
+    guard let lastScalar else { return false }
+    return lastScalar.value == 0x200D || isRegionalIndicator(lastScalar)
+  }
+
+  private static func firstScalar<Bytes: Collection>(_ bytes: Bytes) -> Unicode.Scalar?
+  where Bytes.Element == UInt8 {
+    var iterator = bytes.makeIterator()
+    var decoder = Unicode.UTF8()
+    if case .scalarValue(let scalar) = decoder.decode(&iterator) { return scalar }
+    return nil
   }
 
   private static func blend(
