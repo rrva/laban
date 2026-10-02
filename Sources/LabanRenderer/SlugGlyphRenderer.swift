@@ -340,15 +340,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// large-text taper) is the measured best fit here, not a guess: CoreText's
   /// own extra stem-darkening ink, as a fraction of total ink, grows faster
   /// for dark-on-light text than a constant-pixel dilation would supply.
-  /// Even at each size's optimum, dark-on-light wants more dilation while
-  /// mid-gray/light-on-dark want less, especially at the smallest size (9pt);
-  /// a single color-independent dilation cannot satisfy both exactly (see
-  /// Artifacts and Notes for the measured ratios). Sizes between table entries
+  /// That polarity split was the linear-light blend, not the dilation: with
+  /// text blended in gamma space (ADR 0038, `kSlugTextBlendGamma`) the
+  /// entries from 18 px up stay the best fit for every polarity, and the
+  /// 9/11/14 px entries were added from a 1x sweep under that blend (see
+  /// execplans/active/slug-text-gamma-blend.md). Sizes between table entries
   /// use linear interpolation; below the smallest entry the smallest amount is
   /// used; above `dilationPpemFull` (outside the calibrated range) dilation
   /// tapers down toward `dilationMinTaper` of the largest table amount, since
   /// FreeType/Adobe do not bother thickening already-thick stems.
   private static let dilationTable: [(ppem: Float, amountPx: Float)] = [
+    (9, 0.08),
+    (11, 0.12),
+    (14, 0.16),
     (18, 0.16),
     (22, 0.22),
     (28, 0.27),
@@ -411,6 +415,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private let slugAccumulatePipeline: MTLRenderPipelineState
   private let subpixelCompositeDarkenPipeline: MTLRenderPipelineState
   private let subpixelCompositeAdditivePipeline: MTLRenderPipelineState
+  /// Opaque-target text pipelines that blend in `kSlugTextBlendGamma` space
+  /// via framebuffer fetch (docs/adr/0038-slug-text-blends-in-gamma-space.md).
+  /// Nil on GPUs without programmable blending, which keep the linear-light
+  /// `glyphAlphaPipeline` and darken/additive composite pair.
+  private let glyphGammaBlendPipeline: MTLRenderPipelineState?
+  private let subpixelCompositeGammaPipeline: MTLRenderPipelineState?
   private let rasterGlyphPipeline: MTLRenderPipelineState
   private let colorGlyphPipeline: MTLRenderPipelineState
   /// Kitty graphics: opaque-target image pipeline (the translucent variant
@@ -440,6 +450,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var motionGlyphCoveragePipeline: MTLRenderPipelineState?
   private var motionGlyphColorPipeline: MTLRenderPipelineState?
   private var motionTranslucentGlyphAlphaPipeline: MTLRenderPipelineState?
+  private var motionGlyphGammaBlendPipeline: MTLRenderPipelineState?
   private let sampler: MTLSamplerState
   public let layer: CAMetalLayer
 
@@ -769,7 +780,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       ligatureGlyphs: lastFrameLigatureGlyphsCount,
       vectorSubpixelLayout: effectiveSubpixelLayout.name,
       vectorSubpixelFallbackReason: effectiveSubpixelFallbackReason,
-      textCompositeModel: .linearLight)
+      textCompositeModel: glyphGammaBlendPipeline == nil ? .linearLight : .gammaBlend)
   }
 
   public init?(
@@ -792,6 +803,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       options.mathMode = .safe
     } else {
       options.fastMathEnabled = false
+    }
+    // Programmable blending (framebuffer fetch) exists on every Apple GPU
+    // family and on no Intel/AMD Mac GPU.
+    let supportsFramebufferFetch = device.supportsFamily(.apple1)
+    if supportsFramebufferFetch {
+      options.preprocessorMacros = ["LABAN_SLUG_FRAMEBUFFER_FETCH": NSNumber(value: 1)]
     }
     guard
       let url = LabanRendererResources.bundle?.url(
@@ -887,6 +904,34 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     compositeDarkenDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
     configureSubpixelCoverageBlend(compositeDarkenDescriptor.colorAttachments[0])
 
+    var glyphGammaBlendPipeline: MTLRenderPipelineState?
+    var subpixelCompositeGammaPipeline: MTLRenderPipelineState?
+    if supportsFramebufferFetch {
+      guard
+        let gammaBlendFragment = library.makeFunction(name: "slugGlyphGammaBlendFragment"),
+        let compositeGammaFragment = library.makeFunction(name: "subpixelCompositeGammaFragment")
+      else { return nil }
+      let gammaBlendDescriptor = MTLRenderPipelineDescriptor()
+      gammaBlendDescriptor.label = "laban.slug.glyph-gamma-blend"
+      gammaBlendDescriptor.vertexFunction = glyphVertex
+      gammaBlendDescriptor.fragmentFunction = gammaBlendFragment
+      gammaBlendDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+      gammaBlendDescriptor.colorAttachments[0]?.isBlendingEnabled = false
+      let compositeGammaDescriptor = MTLRenderPipelineDescriptor()
+      compositeGammaDescriptor.label = "laban.slug.subpixel-composite-gamma"
+      compositeGammaDescriptor.vertexFunction = fullscreenVertex
+      compositeGammaDescriptor.fragmentFunction = compositeGammaFragment
+      compositeGammaDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+      compositeGammaDescriptor.colorAttachments[0]?.isBlendingEnabled = false
+      guard
+        let gammaBlend = try? device.makeRenderPipelineState(descriptor: gammaBlendDescriptor),
+        let compositeGamma = try? device.makeRenderPipelineState(
+          descriptor: compositeGammaDescriptor)
+      else { return nil }
+      glyphGammaBlendPipeline = gammaBlend
+      subpixelCompositeGammaPipeline = compositeGamma
+    }
+
     let compositeAdditiveDescriptor = MTLRenderPipelineDescriptor()
     compositeAdditiveDescriptor.label = "laban.slug.subpixel-composite-additive"
     compositeAdditiveDescriptor.vertexFunction = fullscreenVertex
@@ -973,6 +1018,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     self.slugAccumulatePipeline = slugAccumulatePipeline
     self.subpixelCompositeDarkenPipeline = subpixelCompositeDarkenPipeline
     self.subpixelCompositeAdditivePipeline = subpixelCompositeAdditivePipeline
+    self.glyphGammaBlendPipeline = glyphGammaBlendPipeline
+    self.subpixelCompositeGammaPipeline = subpixelCompositeGammaPipeline
     self.rasterGlyphPipeline = rasterGlyphPipeline
     self.colorGlyphPipeline = colorGlyphPipeline
     self.imagePipeline = imagePipeline
@@ -1131,6 +1178,21 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         descriptor: glyphCoverageDescriptor),
       let glyphColor = try? device.makeRenderPipelineState(descriptor: glyphColorDescriptor)
     else { return false }
+
+    if glyphGammaBlendPipeline != nil {
+      guard let gammaBlendFragment = shaderLibrary.makeFunction(name: "slugGlyphGammaBlendFragment")
+      else { return false }
+      let gammaBlendDescriptor = MTLRenderPipelineDescriptor()
+      gammaBlendDescriptor.label = "laban.slug.motion-glyph-gamma-blend"
+      gammaBlendDescriptor.vertexFunction = motionVertex
+      gammaBlendDescriptor.fragmentFunction = gammaBlendFragment
+      gammaBlendDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+      gammaBlendDescriptor.colorAttachments[0]?.isBlendingEnabled = false
+      guard
+        let gammaBlend = try? device.makeRenderPipelineState(descriptor: gammaBlendDescriptor)
+      else { return false }
+      motionGlyphGammaBlendPipeline = gammaBlend
+    }
 
     motionGlyphAlphaPipeline = glyphAlpha
     motionSlugAccumulatePipeline = slugAccumulate
@@ -1703,8 +1765,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     if isOpaque {
       activeSolidPipeline = solidPipeline
       activeReplaceSolidPipeline = replaceSolidPipeline
-      activeGlyphAlphaPipeline = glyphAlphaPipeline
-      activeMotionGlyphAlphaPipeline = motionGlyphAlphaPipeline
+      activeGlyphAlphaPipeline = glyphGammaBlendPipeline ?? glyphAlphaPipeline
+      activeMotionGlyphAlphaPipeline = motionGlyphGammaBlendPipeline ?? motionGlyphAlphaPipeline
       activeMotionGlyphCoveragePipeline = motionGlyphCoveragePipeline
       activeMotionGlyphColorPipeline = motionGlyphColorPipeline
       activeRasterGlyphPipeline = rasterGlyphPipeline
@@ -2006,6 +2068,28 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
               vertexCount: 6,
               instanceCount: motionGlyphs.count)
           }
+        }
+      } else if subpixelAccumReady, let coverageAccum, let colorAccum,
+        let subpixelCompositeGammaPipeline
+      {
+        // Gamma-space composite (Apple GPUs): a single full-screen pass reads
+        // the target by framebuffer fetch and blends the accumulated
+        // foreground over it in kSlugTextBlendGamma space. Pixels with zero
+        // accumulated coverage return the destination unchanged.
+        encoder.setViewport(
+          MTLViewport(
+            originX: 0, originY: 0,
+            width: Double(pixelWidth), height: Double(pixelHeight),
+            znear: 0, zfar: 1))
+        encoder.setRenderPipelineState(subpixelCompositeGammaPipeline)
+        encoder.setFragmentTexture(colorAccum, index: 0)
+        encoder.setFragmentTexture(coverageAccum, index: 1)
+        repeatingBands(scissorPlan, on: encoder) {
+          encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 3,
+            instanceCount: 1)
         }
       } else if subpixelAccumReady, let coverageAccum, let colorAccum {
         // Composite the accumulated coverage + premultiplied color over the

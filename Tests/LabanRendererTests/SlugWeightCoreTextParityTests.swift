@@ -68,31 +68,85 @@ final class SlugWeightCoreTextParityTests: XCTestCase {
     }
   }
 
-  private func inkSlug(fg: UInt32, bg: UInt32) throws -> Double {
+  /// Text weight must not depend on polarity or display density. Slug blends
+  /// its coverage in gamma space on Apple GPUs (ADR 0038), which is what lets
+  /// dark-on-light and light-on-dark text land on CoreText's ink at the same
+  /// time; under the old linear-light blend dark text sat 15-25% light and
+  /// light text up to 44% heavy at 1x. Every size/scale/polarity cell measured
+  /// 0.88-1.10 when the blend landed; the band below leaves room for font and
+  /// OS drift while still failing the linear-light behavior.
+  func testSlugInkTracksCoreTextAcrossSizesScalesAndPolarities() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    guard device.supportsFamily(.apple1) else {
+      throw XCTSkip("gamma text blend needs framebuffer fetch (Apple GPU)")
+    }
+    let key = VectorTextWeightSettings.defaultsKey
+    UserDefaults.standard.register(defaults: [key: VectorTextWeightSettings.defaultWeight])
+    let sweepCases = cases + [("blackOnWhite", 0x00_00_00_FF, 0xFF_FF_FF_FF)]
+    for scale in [CGFloat(1), CGFloat(2)] {
+      for pointSize in [CGFloat(9), 13, 20] {
+        for c in sweepCases {
+          let reference = try inkSoftware(fg: c.fg, bg: c.bg, pointSize: pointSize, scale: scale)
+          let slug = try inkSlug(fg: c.fg, bg: c.bg, pointSize: pointSize, scale: scale)
+          let ratio = slug / max(reference, 1)
+          XCTAssertTrue(
+            (0.85...1.15).contains(ratio),
+            "\(c.name) \(Int(pointSize))pt@\(Int(scale))x: slug ink \(Int(slug)) vs "
+              + "CoreText \(Int(reference)) (ratio \(ratio))")
+        }
+      }
+    }
+  }
+
+  private func inkSlug(
+    fg: UInt32, bg: UInt32, pointSize: CGFloat = 16, scale: CGFloat = 2
+  ) throws -> Double {
+    let size = surfaceSize(pointSize: pointSize, scale: scale)
     let r = try XCTUnwrap(
       SlugGlyphRenderer(
-        fontAtlas: FontAtlas(pointSize: 16), pixelWidth: 420, pixelHeight: 120, scale: 2))
+        fontAtlas: FontAtlas(pointSize: pointSize), pixelWidth: size.width,
+        pixelHeight: size.height, scale: scale))
     r.waitForFrameCompletion = true
     r.presentsToLayer = false
     r.setSubpixelLayout(.grayscale)
     r.refreshTextWeight()
-    XCTAssertTrue(r.render(commands(fg: fg, bg: bg), damage: .full))
+    XCTAssertTrue(
+      r.render(commands(fg: fg, bg: bg, pointSize: pointSize, scale: scale), damage: .full))
     return ink(try decodeRGBA(try XCTUnwrap(r.pngData)), bg: bg)
   }
 
-  private func inkSoftware(fg: UInt32, bg: UInt32) throws -> Double {
+  private func inkSoftware(
+    fg: UInt32, bg: UInt32, pointSize: CGFloat = 16, scale: CGFloat = 2
+  ) throws -> Double {
+    let size = surfaceSize(pointSize: pointSize, scale: scale)
     let b = SoftwareBackend(
-      fontAtlas: FontAtlas(pointSize: 16), pixelWidth: 420, pixelHeight: 120, scale: 2)
-    XCTAssertTrue(b.render(commands(fg: fg, bg: bg), damage: .full))
+      fontAtlas: FontAtlas(pointSize: pointSize), pixelWidth: size.width,
+      pixelHeight: size.height, scale: scale)
+    XCTAssertTrue(
+      b.render(commands(fg: fg, bg: bg, pointSize: pointSize, scale: scale), damage: .full))
     return ink(try decodeRGBA(try XCTUnwrap(b.pngData)), bg: bg)
   }
 
-  private func commands(fg: UInt32, bg: UInt32) -> [FrameCommand] {
-    [
-      .rect(CGRect(x: 0, y: 0, width: 210, height: 60), color: bg, source: .terminal),
+  /// 420x120 px at the original 16pt@2x probe; other sizes scale with it.
+  private func surfaceSize(pointSize: CGFloat, scale: CGFloat) -> (width: Int, height: Int) {
+    let factor = pointSize / 16 * scale / 2
+    return (Int((420 * factor).rounded()), Int((120 * factor).rounded()))
+  }
+
+  private func commands(
+    fg: UInt32, bg: UInt32, pointSize: CGFloat = 16, scale: CGFloat = 2
+  ) -> [FrameCommand] {
+    let size = surfaceSize(pointSize: pointSize, scale: scale)
+    return [
+      .rect(
+        CGRect(
+          x: 0, y: 0, width: CGFloat(size.width) / scale, height: CGFloat(size.height) / scale),
+        color: bg, source: .terminal),
       .glyphRun(
-        origin: CGPoint(x: 8, y: 16), text: probe, foreground: fg, background: bg,
-        attributes: [], source: .terminal),
+        origin: CGPoint(x: 8 * pointSize / 16, y: pointSize), text: probe, foreground: fg,
+        background: bg, attributes: [], source: .terminal),
     ]
   }
 
