@@ -250,6 +250,76 @@ public struct FrameProducer {
     }
   }
 
+  /// A filled block cursor is a solid over its cell, so the cell's glyph is
+  /// re-emitted after it in a contrasting color. Without this the character
+  /// under the cursor vanishes whenever the cursor color matches the text
+  /// color — Selenized Dark's cursor is its default foreground.
+  private func appendBlockCursorGlyph(
+    style: Int,
+    text: String,
+    visuals: ResolvedCellVisuals,
+    cellRect: CGRect,
+    into cmds: inout [FrameCommand]
+  ) {
+    guard style == LABAN_CURSOR_STYLE_BLOCK, !text.isEmpty, !visuals.isInvisible
+    else { return }
+    let fillColor = cursorFillColor()
+    cmds.append(
+      .glyphRun(
+        origin: cellRect.origin,
+        text: text,
+        foreground: Self.blockCursorTextColor(
+          cellBackground: visuals.background, cursor: fillColor),
+        background: fillColor,
+        attributes: visuals.attributes.subtracting([.underline, .strikethrough, .overline]),
+        source: .terminal))
+  }
+
+  /// The cell's own background reads as "inverted" text on the cursor, as in
+  /// other terminals; fall back to black/white when that background is too
+  /// close to the cursor fill to be legible.
+  static func blockCursorTextColor(cellBackground: UInt32, cursor: UInt32) -> UInt32 {
+    let opaqueBackground = (cellBackground & 0xFFFF_FF00) | 0xFF
+    guard abs(relativeLuminance(opaqueBackground) - relativeLuminance(cursor)) >= 0.25 else {
+      return contrastColor(against: cursor)
+    }
+    return opaqueBackground
+  }
+
+  /// Text and resolved visuals of a local snapshot cell, or nil for empty
+  /// cells and wide-glyph spacer tails (whose glyph belongs to the cell to
+  /// the left).
+  private func cellGlyph(
+    in snapshot: LabanSnapshot,
+    row: Int,
+    col: Int,
+    hyperlinkURIs: [String]
+  ) -> (text: String, visuals: ResolvedCellVisuals)? {
+    let cols = Int(snapshot.cols)
+    guard let cells = snapshot.cells, let storage = snapshot.utf8_storage,
+      row >= 0, col >= 0, row < Int(snapshot.rows), col < cols
+    else { return nil }
+    let cell = cells[row * cols + col]
+    guard cell.utf8_length > 0, cell.wide != UInt8(LABAN_CELL_WIDE_SPACER_TAIL) else {
+      return nil
+    }
+    let bytes = UnsafeBufferPointer<UInt8>(
+      start: UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
+        .assumingMemoryBound(to: UInt8.self),
+      count: Int(cell.utf8_length))
+    return (
+      String(decoding: bytes, as: UTF8.self),
+      resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+    )
+  }
+
+  private static func relativeLuminance(_ color: UInt32) -> Double {
+    let red = Double((color >> 24) & 0xFF)
+    let green = Double((color >> 16) & 0xFF)
+    let blue = Double((color >> 8) & 0xFF)
+    return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0
+  }
+
   private func appendPayloadCursorRects(
     style: Int,
     cellRect: CGRect,
@@ -747,6 +817,14 @@ public struct FrameProducer {
       let cy = originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
       appendCursorCommands(style: Int(effectiveCursorStyle), cellRect: cellRect, into: &cmds)
+      if activePreeditLayout == nil,
+        let glyph = cellGlyph(
+          in: snapshot, row: caretRow, col: caretCol, hyperlinkURIs: hyperlinkURIs)
+      {
+        appendBlockCursorGlyph(
+          style: Int(effectiveCursorStyle), text: glyph.text, visuals: glyph.visuals,
+          cellRect: cellRect, into: &cmds)
+      }
     }
 
     // Exit banner overlays the bottom terminal row after all terminal cells
@@ -2091,6 +2169,11 @@ public struct FrameProducer {
         style: Int(userCursorStyle.labanStyleValue),
         cellRect: cellRect,
         into: &cmds)
+      if activePreeditLayout == nil, let cell = cellAt(row: caretRow, col: caretCol) {
+        appendBlockCursorGlyph(
+          style: Int(userCursorStyle.labanStyleValue), text: cell.text,
+          visuals: resolvedVisuals(for: cell), cellRect: cellRect, into: &cmds)
+      }
     }
 
     appendRemoteExitBanner(snapshot, cols: cols, cellHeight: ch, commands: &cmds)
