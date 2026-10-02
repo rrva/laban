@@ -2954,7 +2954,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         cellAdvance: atlas.cellSize.width,
         cellHeight: atlas.cellSize.height,
         descent: atlas.descent,
-        scale: scale)
+        scale: scale,
+        // Slug sees runs, not the grid, so anchor patterned underlines to the
+        // surface origin: every run of a row then shares one dash/dot phase
+        // instead of restarting at each style split.
+        phaseOriginX: 0)
     else { return }
 
     let underlineRGBA = underlineColor ?? foreground
