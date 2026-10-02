@@ -2722,7 +2722,8 @@ public final class TerminalSurfaceController {
         cellWidth: cellWidth,
         gridOriginX: gridOriginX,
         freshXMin: xMin,
-        freshXMax: xMax)
+        freshXMax: xMax,
+        displayCellCount: displayCellCount)
       if pieces.count == 1, pieces[0].stamped == false {
         result.append(command)
         continue
@@ -2765,7 +2766,8 @@ public final class TerminalSurfaceController {
     cellWidth: CGFloat,
     gridOriginX: CGFloat,
     freshXMin: CGFloat,
-    freshXMax: CGFloat
+    freshXMax: CGFloat,
+    displayCellCount: Int? = nil
   ) -> [(text: String, origin: CGPoint, stamped: Bool)] {
     var pieces: [(text: String, origin: CGPoint, stamped: Bool)] = []
     var col = Int(((origin.x - gridOriginX) / cellWidth).rounded())
@@ -2779,8 +2781,12 @@ public final class TerminalSurfaceController {
       // FrameProducer ends a run after any wide cell, so every Character but
       // the last occupies exactly one column — the same placement renderers
       // use. Only the last may be wide.
-      let width =
-        next == text.endIndex ? max(1, TerminalDisplayWidth.cells(of: String(cluster))) : 1
+      // The engine's span, when the run carries it, sizes the last cluster
+      // exactly (a ZWJ sequence split over several cells covers them all).
+      let lastWidth =
+        displayCellCount.map { max(1, $0 - (text.count - 1)) }
+        ?? max(1, TerminalDisplayWidth.cells(of: String(cluster)))
+      let width = next == text.endIndex ? lastWidth : 1
       let cellMinX = gridOriginX + CGFloat(col) * cellWidth
       let cellMaxX = cellMinX + CGFloat(width) * cellWidth
       let stamped = cellMinX < freshXMax && freshXMin < cellMaxX
