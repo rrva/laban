@@ -150,8 +150,8 @@ does the same thing without a window and saves screenshots.
       layout's vertical orientation and per-pane mouse geometry, see Surprises.)
 - [x] M8: End-to-end: headless scenario, nested-split restart test through
       labpty, four-pane frame-cost measurement.
-- [ ] M9: Docs (`mvp.md`, `spec.md`, `dev-process.md`) are done; the Review Gate
-      is still to be run by a separate fresh reviewer.
+- [x] M9 (2026-10-02): Docs (`mvp.md`, `spec.md`, `dev-process.md`); Review Gate
+      passed in round 2 at `0f380f8e`.
 
 ## Decision Log
 
@@ -508,10 +508,10 @@ records `BASE` here in M0: `BASE = 958c85b502529fd194ef73ba966b2bb782e1511b`.
       directional-distance and overlap-length comparisons; expect
       `testDirectionalNeighbourPrefersAdjacentOverWiderOverlap` to fail;
       revert.
-- [ ] Mutation: in `Tab.visibleLayout(in:)`, ignore `zoomedSessionId`; expect
+- [x] Mutation: in `Tab.visibleLayout(in:)`, ignore `zoomedSessionId`; expect
       `testZoomResizesOnlyZoomedPane` and `testZoomedTabUsesSinglePaneFrame` to
       fail; revert.
-- [ ] Mutation: in `PaneDividerDrag.move(toX:y:in:)`
+- [x] Mutation: in `PaneDividerDrag.move(toX:y:in:)`
       (`Sources/LabanCore/PaneTree.swift`), the single drag-move path shared by
       the AppKit view and the headless runtime, call
       `model.setSplitFraction(inTab:path:fraction:)` after clamping; expect
@@ -521,8 +521,14 @@ records `BASE` here in M0: `BASE = 958c85b502529fd194ef73ba966b2bb782e1511b`.
       drag code, so one GUI-only mutation could not fail the headless test.
       Both now go through `PaneDividerDrag.move` and `commit`.)
 
-Review status: FAILED, round 1 (fresh reviewer, 2026-10-01, ran against commit
-4ca80f3e). 15 of 17 items pass. Two mutation items did not behave as written.
+Review status: PASSED, round 2 (2026-10-02, at `0f380f8e`). All 17 items pass:
+the 15 items that passed in round 1, plus mutations 2 and 3 after the round 1
+fixes. `LABAN_CHECK_NO_MEMO=1 ./scripts/check` exited 0 at `0f380f8e` (load
+average about 3-6; log `.artifacts/split-panes-2/review-1-fix/check-2.log`). An earlier
+attempt was killed at the 2-hour limit under host load near 200, during which
+`testHeadlessMouseWheelReachesChildOverLabandBackend` timed out waiting for the
+laband socket; it passes alone in 0.3 s and passed in the green run.
+Round 1 history follows: FAILED, 15 of 17 items, run against commit 4ca80f3e.
 Logs and screenshots: `.artifacts/split-panes-2/review-1/`.
 
 Review findings (filled in by the review agent):
@@ -581,7 +587,10 @@ asserts that hit-testing and mouse coordinates for a point in a hidden pane
 resolve to the zoomed pane's full-area rect, which only `Tab.visibleLayout`
 provides. The AppKit and headless divider drags now share
 `PaneDividerDrag.move(toX:y:in:)` and `commit(in:)`, and the mutation 3 wording
-above targets that shared path.
+above targets that shared path. Re-run at `0f380f8e`: mutation 2 fails
+`testZoomResizesOnlyZoomedPane` and `testZoomedTabUsesSinglePaneFrame`; mutation 3
+fails `testDividerDragCommitsOnRelease` and `testDividerDragDoesNotResizeBeforeRelease`;
+both reverted with a clean `git status`. Logs: `.artifacts/split-panes-2/review-1-fix/`.
 
 ## Surprises & Discoveries
 
