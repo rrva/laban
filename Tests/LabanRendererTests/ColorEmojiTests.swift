@@ -82,6 +82,35 @@ final class ColorEmojiTests: XCTestCase {
     XCTAssertLessThanOrEqual(entry.pixelWidth, Int(ceil(cell.width * 2)))
   }
 
+  /// When the engine laid the emoji out in one column (VS16 with mode 2027
+  /// off), the tile must fit that column instead of covering the next cell.
+  func testColorGlyphAtlasSizesTileToEngineCellSpan() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 18, fontName: "Helvetica")
+    let cell = fontAtlas.cellSize
+    let atlas = try XCTUnwrap(
+      ColorGlyphAtlas(
+        device: device,
+        cellWidth: cell.width,
+        cellHeight: cell.height,
+        descent: fontAtlas.descent,
+        scale: 2,
+        textureSize: 256))
+    let narrow = try XCTUnwrap(
+      atlas.entry(
+        character: "\u{2764}\u{FE0F}", font: fontAtlas.font, boldFallback: false,
+        italicFallback: false, cellSpan: 1))
+    XCTAssertEqual(narrow.logicalWidth, cell.width, accuracy: 0.001)
+    XCTAssertEqual(narrow.pixelWidth, Int(ceil(cell.width * 2)))
+    let wide = try XCTUnwrap(
+      atlas.entry(
+        character: "\u{2764}\u{FE0F}", font: fontAtlas.font, boldFallback: false,
+        italicFallback: false, cellSpan: 2))
+    XCTAssertEqual(wide.logicalWidth, cell.width * 2, accuracy: 0.001)
+  }
+
   private struct PixelStats {
     var nonBackground = 0
     var nonGray = 0

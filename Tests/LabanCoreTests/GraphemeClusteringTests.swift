@@ -66,6 +66,22 @@ final class GraphemeClusteringTests: XCTestCase {
       "skin-tone modifier must merge with base emoji into one Character; got runs: \(texts)")
   }
 
+  /// Terminal runs carry the engine's column span, so renderers can size the
+  /// run's last cluster (the only one that may be wide) from the engine
+  /// rather than from their own width table.
+  func testTerminalRunsCarryEngineColumnSpan() throws {
+    let cmds = try runWithText("\u{4E2D}A [\u{2764}\u{FE0F}y]\r\n")  // 中A [❤️y]
+    var spans: [String: Int?] = [:]
+    for cmd in cmds {
+      if case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, let cells, _, _, _) = cmd {
+        spans[text] = cells
+      }
+    }
+    XCTAssertEqual(spans["\u{4E2D}"], 2, "a wide CJK cell spans two columns; got \(spans)")
+    XCTAssertEqual(
+      spans["A [\u{2764}\u{FE0F}y]"], 6, "narrow cells span one column each; got \(spans)")
+  }
+
   func testWideCJKFollowedByNarrowCharStillEmitsCorrectColumns() throws {
     // Regression: the cluster-extending logic must not over-merge — a wide
     // CJK char followed by a narrow ASCII char does NOT form one cluster, so

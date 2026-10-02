@@ -2727,8 +2727,16 @@ public final class TerminalSurfaceController {
         result.append(command)
         continue
       }
-      for piece in pieces {
+      // Every cluster but the run's last is one engine column wide, so each
+      // piece but the last spans its Character count and the last piece takes
+      // the remainder of the engine span.
+      var remainingCells = displayCellCount
+      for (pieceIndex, piece) in pieces.enumerated() {
         guard !piece.text.isEmpty else { continue }
+        let pieceCells: Int? = remainingCells.map { remaining in
+          pieceIndex == pieces.count - 1 ? max(1, remaining) : piece.text.count
+        }
+        remainingCells = remainingCells.map { $0 - piece.text.count }
         result.append(
           .glyphRun(
             origin: piece.origin,
@@ -2740,8 +2748,7 @@ public final class TerminalSurfaceController {
             underlineStyle: underlineStyle,
             underlineColor: underlineColor,
             hyperlink: hyperlink,
-            displayCellCount: displayCellCount == nil
-              ? nil : TerminalDisplayWidth.cells(of: piece.text),
+            displayCellCount: pieceCells,
             outputTimestampSeconds: piece.stamped ? stamp : nil,
             foregroundTransition: foregroundTransition,
             foregroundWave: foregroundWave))

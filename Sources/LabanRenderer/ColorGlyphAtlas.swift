@@ -22,6 +22,7 @@ final class ColorGlyphAtlas {
     let font: ObjectIdentifier
     let boldFallback: Bool
     let italicFallback: Bool
+    let cellSpan: Int?
   }
 
   private let device: MTLDevice
@@ -80,17 +81,22 @@ final class ColorGlyphAtlas {
     didOverflow = false
   }
 
+  /// `cellSpan` is the number of grid columns the terminal engine gave the
+  /// cluster; when known it fixes the tile width, so an emoji the engine laid
+  /// out narrow (e.g. VS16 with mode 2027 off) never covers the next cell.
   func entry(
     character: Character,
     font: CTFont,
     boldFallback: Bool,
-    italicFallback: Bool
+    italicFallback: Bool,
+    cellSpan: Int? = nil
   ) -> Entry? {
     entry(
       text: String(character),
       font: font,
       boldFallback: boldFallback,
-      italicFallback: italicFallback)
+      italicFallback: italicFallback,
+      cellSpan: cellSpan)
   }
 
   /// Whether this cluster rasterizes to a color glyph in `font`. Memoized:
@@ -120,7 +126,8 @@ final class ColorGlyphAtlas {
       text: text,
       font: ObjectIdentifier(font),
       boldFallback: boldFallback,
-      italicFallback: italicFallback)
+      italicFallback: italicFallback,
+      cellSpan: nil)
     if let cached = colorClassification[key] { return cached }
     let result = ColorGlyphSupport.containsColorGlyph(
       text: text, font: font, cellAdvance: cellWidth)
@@ -132,14 +139,16 @@ final class ColorGlyphAtlas {
     text: String,
     font: CTFont,
     boldFallback: Bool,
-    italicFallback: Bool
+    italicFallback: Bool,
+    cellSpan: Int? = nil
   ) -> Entry? {
     guard !text.isEmpty else { return nil }
     let key = Key(
       text: text,
       font: ObjectIdentifier(font),
       boldFallback: boldFallback,
-      italicFallback: italicFallback)
+      italicFallback: italicFallback,
+      cellSpan: cellSpan)
     if let cached = entries[key] { return cached }
     guard
       isColorGlyph(
@@ -148,24 +157,26 @@ final class ColorGlyphAtlas {
         boldFallback: boldFallback,
         italicFallback: italicFallback)
     else { return nil }
-    let made = rasterizeAndPack(text: text, font: font)
+    let made = rasterizeAndPack(text: text, font: font, cellSpan: cellSpan)
     if let made {
       entries[key] = made
     }
     return made
   }
 
-  private func rasterizeAndPack(text: String, font: CTFont) -> Entry? {
+  private func rasterizeAndPack(text: String, font: CTFont, cellSpan: Int?) -> Entry? {
     let line = TerminalGlyphFallback.fallbackLine(
       text: text,
       font: font,
       cellAdvance: cellWidth,
       foreground: nil)
     let layoutWidth = ColorGlyphSupport.typographicWidth(line)
-    let logicalWidth = ColorGlyphSupport.logicalTileWidth(
-      text: text,
-      typographicWidth: layoutWidth,
-      cellAdvance: cellWidth)
+    let logicalWidth =
+      cellSpan.map { CGFloat(max(1, $0)) * cellWidth }
+      ?? ColorGlyphSupport.logicalTileWidth(
+        text: text,
+        typographicWidth: layoutWidth,
+        cellAdvance: cellWidth)
     let horizontalScale =
       layoutWidth > logicalWidth && layoutWidth > 0 ? logicalWidth / layoutWidth : 1
     let pixelW = max(1, Int((logicalWidth * scale).rounded(.up)))
@@ -208,7 +219,12 @@ final class ColorGlyphAtlas {
       else { return }
       ctx.scaleBy(x: scale, y: scale)
       ctx.textMatrix = .identity
-      if horizontalScale < 1 {
+      if horizontalScale < 1, cellSpan != nil {
+        // Engine-sized tiles shrink uniformly, centred in the cell, so a
+        // narrow emoji keeps its aspect ratio instead of being squashed.
+        ctx.translateBy(x: 0, y: cellHeight * (1 - horizontalScale) / 2)
+        ctx.scaleBy(x: horizontalScale, y: horizontalScale)
+      } else if horizontalScale < 1 {
         ctx.scaleBy(x: horizontalScale, y: 1)
       }
       ctx.textPosition = CGPoint(x: 0, y: descent)
