@@ -116,7 +116,10 @@ final class FrameProducerTests: XCTestCase {
 
   // MARK: - Box-drawing
 
-  func testBoxDrawingFixtureProducesNonEmptyGlyphCommandsWithoutTextReplacement() throws {
+  func testBoxDrawingLinesAreEmittedAsRectsNotGlyphs() throws {
+    // Straight Box Drawing lines are procedural, like block elements: font
+    // outlines rarely fill Laban's rounded-up cell, which left gaps between
+    // cells (the bundled font's ─ stops 0.3-0.6pt short at 12-14pt).
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
@@ -132,24 +135,55 @@ final class FrameProducerTests: XCTestCase {
     defer { laban_snapshot_destroy(snap) }
 
     let cmds = FrameProducer().commands(from: UnsafePointer(snap))
-
-    let glyphTexts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _, _) = cmd, src == .terminal
-      {
-        return text
-      }
+    let glyphText = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, _, _, _, _) = cmd { return text }
       return nil
+    }.joined()
+    for scalar in "┌─┐│└┘".unicodeScalars {
+      XCTAssertFalse(
+        glyphText.unicodeScalars.contains(scalar),
+        "box line U+\(String(scalar.value, radix: 16, uppercase: true)) must be a .rect")
     }
+    let terminalRects = cmds.filter {
+      if case .rect(_, _, .terminal, _) = $0 { return true }
+      return false
+    }
+    XCTAssertGreaterThan(terminalRects.count, 6, "box lines must produce procedural rects")
+  }
 
-    XCTAssertFalse(glyphTexts.isEmpty, "box-drawing fixture must produce glyph commands")
+  func testBoxDrawingLinesTileGapFreeEndToEnd() throws {
+    // A row of ─ and a column of │ rendered through producer + software
+    // renderer must leave no background pixel along the stroke.
+    var size = LabanTerminalSize()
+    size.rows = 3
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(Array("││──────\r\n│\r\n│".utf8))
+    session.poll()
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
 
-    // Producer must not replace the box-drawing characters with substitute text
-    let boxChars: [Character] = ["┌", "─", "┐", "│", "└", "┘"]
-    for ch in boxChars {
-      let found = glyphTexts.contains {
-        $0.unicodeScalars.contains { Unicode.Scalar($0.value) == ch.unicodeScalars.first }
+    for (cellW, cellH) in [(8, 16), (9, 19), (11, 23)] {
+      let surface = BitmapSurface(width: cellW * Int(size.cols), height: cellH * Int(size.rows))
+      let bg = snap.pointee.default_background_rgba
+      SoftwareRenderer(surface: surface, fontAtlas: FontAtlas()).render(
+        FrameProducer(cellWidth: cellW, cellHeight: cellH).commands(from: UnsafePointer(snap)))
+      // Horizontal stroke: some pixel row inside the top row must be fully inked
+      // across the six ─ cells (columns 2-7).
+      // `BitmapSurface.pixel` is y-up, so the top terminal row is the last band.
+      let horizontalInked = (cellH * 2..<cellH * 3).contains { y in
+        (cellW * 2..<cellW * 8).allSatisfy { x in surface.pixel(x: x, y: y) != bg }
       }
-      XCTAssertTrue(found, "box-drawing character '\(ch)' must appear verbatim in glyph commands")
+      XCTAssertTrue(horizontalInked, "─ must tile without gaps at cell \(cellW)x\(cellH)")
+      // Vertical stroke: some pixel column of column 0 must be inked top to bottom.
+      let verticalInked = (0..<cellW).contains { x in
+        (0..<cellH * 3).allSatisfy { y in surface.pixel(x: x, y: y) != bg }
+      }
+      XCTAssertTrue(verticalInked, "│ must tile without gaps at cell \(cellW)x\(cellH)")
     }
   }
 
