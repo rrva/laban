@@ -894,6 +894,61 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       renderer.geometryEntryBuildCount, builtBefore * 2, "every drawn glyph is rebuilt once")
   }
 
+  /// A dashed or dotted underline split into several style runs (a mid-span
+  /// foreground change) must keep one continuous pattern, identical to the
+  /// unsplit run, instead of restarting the phase at the split.
+  func testSlugPatternedUnderlinePhaseSurvivesRunSplit() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let underlineRed: UInt32 = 0xFF_00_00_FF
+    for style in [UnderlineStyle.dashed, .dotted] {
+      let atlas = FontAtlas(pointSize: 24, fontName: nil)
+      let cellAdvance = atlas.cellSize.width
+      func underlinePixels(_ runs: [(text: String, column: Int, foreground: UInt32)]) throws
+        -> Set<Int>
+      {
+        let renderer = try XCTUnwrap(
+          SlugGlyphRenderer(
+            fontAtlas: atlas, sidebarFontAtlas: atlas, pixelWidth: 420, pixelHeight: 96,
+            scale: 1))
+        renderer.waitForFrameCompletion = true
+        renderer.presentsToLayer = false
+        var commands: [FrameCommand] = [
+          .rect(
+            CGRect(x: 0, y: 0, width: 420, height: 96), color: 0x10_10_10_FF, source: .terminal)
+        ]
+        for run in runs {
+          commands.append(
+            .glyphRun(
+              origin: CGPoint(x: 24 + CGFloat(run.column) * cellAdvance, y: 32),
+              text: run.text, foreground: run.foreground, background: 0x10_10_10_FF,
+              attributes: [], source: .terminal, underlineStyle: style,
+              underlineColor: underlineRed))
+        }
+        XCTAssertTrue(renderer.render(commands, damage: .full))
+        let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+        var pixels = Set<Int>()
+        for y in 0..<image.height {
+          for x in 0..<image.width {
+            let offset = (y * image.width + x) * 4
+            if image.bytes[offset] > 200, image.bytes[offset + 1] < 60, image.bytes[offset + 2] < 60
+            {
+              pixels.insert(y * image.width + x)
+            }
+          }
+        }
+        return pixels
+      }
+      let single = try underlinePixels([("abcdefgh", 0, 0x40_C0_40_FF)])
+      let split = try underlinePixels([
+        ("abc", 0, 0x40_C0_40_FF), ("defgh", 3, 0x40_40_C0_FF),
+      ])
+      XCTAssertFalse(single.isEmpty, "\(style) underline must draw")
+      XCTAssertEqual(split, single, "\(style) underline phase must not restart at a run split")
+    }
+  }
+
   func testM2VisualSpotCheckArtifactWhenRequested() throws {
     guard let artifactRoot = ProcessInfo.processInfo.environment["LABAN_SLUG_GLYPH_ARTIFACTS"],
       !artifactRoot.isEmpty
