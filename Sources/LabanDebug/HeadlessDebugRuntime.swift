@@ -1158,7 +1158,8 @@ public final class HeadlessDebugRuntime {
   @discardableResult
   func beginDividerDrag(x: Int, y: Int) -> Bool {
     guard let divider = dividerHit(x: x, y: y), let tab = model.activeTab else { return false }
-    dividerDrag = PaneDividerDrag(tabId: tab.id, divider: divider)
+    dividerDrag = PaneDividerDrag(
+      tab: tab, divider: divider, grabbedAt: CGPoint(x: x, y: windowHeight - y))
     return true
   }
 

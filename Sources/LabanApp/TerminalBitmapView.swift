@@ -7077,7 +7077,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case .togglePaneZoom: togglePaneZoom(nil)
     case .equalizePanes: equalizePanes(nil)
     case .focusPane(let direction): focusPane(towards: direction)
-    case .nudgeDivider(let direction): nudgeFocusedPaneDivider(direction)
+    case .nudgeDivider(let direction):
+      // An unsplit tab has no divider: Cmd+Control+Left/Right keep their line-editing
+      // meaning there, as before splits existed.
+      if !activeTabIsSplit, let bytes = direction.unsplitNudgeLineEditingBytes {
+        sendBytes(bytes)
+      } else {
+        nudgeFocusedPaneDivider(direction)
+      }
     case .paneOrTabNavigation(let direction):
       if activeTabIsSplit {
         focusPane(towards: direction)
@@ -8467,12 +8474,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // starts no selection and does not move focus.
     if let divider = dividerHit(at: pt), let tab = model.activeTab {
       window?.makeFirstResponder(self)
+      // Consumed even for a drag: Escape can end the drag mid-gesture, and the rest of
+      // the gesture must not fall through to selection.
+      mouseDownConsumedByChrome = true
       if event.clickCount >= 2 {
-        mouseDownConsumedByChrome = true
         model.equalizePanes(inTab: tab.id)
         paneGeometryChanged()
       } else {
-        dividerDrag = PaneDividerDrag(tabId: tab.id, divider: divider)
+        dividerDrag = PaneDividerDrag(tab: tab, divider: divider, grabbedAt: pt)
         setHoverCursor(Self.cursorStyle(for: divider.axis))
         invalidateRenderAndWake()
       }
@@ -8845,8 +8854,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       sidebarWidth: rect.minX,
       cellWidth: CGFloat(cellWidth),
       cellHeight: CGFloat(cellHeight),
-      rows: lastRows,
+      rows: paneRows(for: rect),
       insets: Self.contentInsets)
+  }
+
+  /// The grid rows of the pane drawn in `rect`. `lastRows` is the focused pane's count as
+  /// of the last render, which is wrong for any other pane of a down split and stale for
+  /// a pane focused by this very click.
+  private func paneRows(for rect: CGRect) -> Int {
+    guard activeTabIsSplit, let tab = model.activeTab else { return lastRows }
+    let area = CGRect(
+      x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+    guard let pane = tab.visibleLayout(in: area).first(where: { $0.rect == rect }) else {
+      return lastRows
+    }
+    return max(1, Int(model.terminalSize(for: pane.sessionId).rows))
   }
 
   // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).

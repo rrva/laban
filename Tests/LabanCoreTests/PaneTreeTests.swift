@@ -255,10 +255,24 @@ final class PaneTreeTests: XCTestCase {
   func testDragMathMeasuresHorizontalFractionDownFromTheTop() {
     let container = CGRect(x: 0, y: 0, width: 1000, height: 600)
     var drag = PaneDividerDrag(
-      tabId: "t", path: [], axis: .horizontal, container: container, fraction: 0.5)
+      tabId: "t", path: [], axis: .horizontal, container: container, fraction: 0.5,
+      grabbedAt: CGPoint(x: 0, y: 300), splitLeaves: [])
     drag.moveTo(x: 0, y: 450)
-    XCTAssertEqual(drag.fraction, 0.25, accuracy: 1e-9, "450 up from the bottom is 25% down")
+    XCTAssertEqual(drag.fraction, 0.25, accuracy: 1e-9, "150 up from the grab is 25% further up")
     XCTAssertTrue(drag.hasMoved)
     XCTAssertEqual(drag.previewRect.midY, 450, accuracy: 0.5)
+  }
+
+  func testDragFollowsPointerMovementFromAnOffCentreGrab() {
+    let container = CGRect(x: 100, y: 0, width: 1000, height: 600)
+    // Pressed 3 px right of the divider line, inside the grab zone.
+    var drag = PaneDividerDrag(
+      tabId: "t", path: [], axis: .vertical, container: container, fraction: 0.5,
+      grabbedAt: CGPoint(x: 100 + 500 + 3, y: 300), splitLeaves: [])
+    drag.moveTo(x: 603, y: 300)
+    XCTAssertFalse(drag.hasMoved, "releasing where it was pressed is a bare click")
+    XCTAssertEqual(drag.fraction, 0.5)
+    drag.moveTo(x: 503, y: 120)
+    XCTAssertEqual(drag.fraction, 0.4, accuracy: 1e-9, "the divider moves by the pointer's delta")
   }
 }

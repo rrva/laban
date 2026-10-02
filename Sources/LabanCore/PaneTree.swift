@@ -25,6 +25,17 @@ public enum PaneDirection: String, Codable, Sendable {
 
   /// True when moving in this direction goes from a split's `first` towards its `second`.
   public var towardsSecond: Bool { self == .right || self == .down }
+
+  /// What Cmd+Control+arrow sends to the shell in a tab with no divider to nudge: the
+  /// readline start-of-line and end-of-line bytes (Ctrl+A, Ctrl+E) for Left and Right,
+  /// as before splits existed. Nil for Up and Down, which stay no-ops.
+  public var unsplitNudgeLineEditingBytes: [UInt8]? {
+    switch self {
+    case .left: return [0x01]
+    case .right: return [0x05]
+    case .up, .down: return nil
+    }
+  }
 }
 
 /// One divider of a laid-out tree plus the rect of the split that owns it.
@@ -76,9 +87,16 @@ public struct PaneDividerDrag: Equatable {
   /// Where the divider sat when the drag began, to tell a real drag from a bare click.
   public let startFraction: Double
   public var fraction: Double
+  /// The pointer's position along the drag axis at the press. The divider follows the
+  /// pointer's movement from here, so pressing off-centre in the grab zone moves nothing.
+  public let grabPointer: CGFloat
+  /// The panes under the dragged split at the press. A commit lands only while the split
+  /// at `path` still holds exactly these panes along the same axis.
+  public let splitLeaves: [Session.ID]
 
   public init(
-    tabId: Tab.ID, path: PanePath, axis: PaneAxis, container: CGRect, fraction: Double
+    tabId: Tab.ID, path: PanePath, axis: PaneAxis, container: CGRect, fraction: Double,
+    grabbedAt grab: CGPoint, splitLeaves: [Session.ID]
   ) {
     self.tabId = tabId
     self.path = path
@@ -86,27 +104,41 @@ public struct PaneDividerDrag: Equatable {
     self.container = container
     self.startFraction = fraction
     self.fraction = fraction
+    self.grabPointer = Self.pointer(grab, axis: axis, container: container)
+    self.splitLeaves = splitLeaves
   }
 
-  public init(tabId: Tab.ID, divider: PaneDivider) {
+  public init(tab: Tab, divider: PaneDivider, grabbedAt grab: CGPoint) {
     self.init(
-      tabId: tabId, path: divider.path, axis: divider.axis, container: divider.container,
-      fraction: divider.fraction)
+      tabId: tab.id, path: divider.path, axis: divider.axis, container: divider.container,
+      fraction: divider.fraction, grabbedAt: grab,
+      splitLeaves: tab.panes.subtree(at: divider.path)?.leafSessionIds() ?? [])
   }
 
   public var hasMoved: Bool { fraction != startFraction }
 
+  // y grows upward, so a horizontal divider's fraction is measured down from the top.
+  private static func pointer(_ point: CGPoint, axis: PaneAxis, container: CGRect) -> CGFloat {
+    axis == .vertical ? point.x - container.minX : container.maxY - point.y
+  }
+
   public mutating func moveTo(x: CGFloat, y: CGFloat) {
-    // y grows upward, so a horizontal divider's fraction is measured down from the top.
-    let pointer = axis == .vertical ? x - container.minX : container.maxY - y
     let extent = axis == .vertical ? container.width : container.height
     guard extent > 0 else { return }
-    fraction = Double(pointer / extent)
+    let delta = Self.pointer(CGPoint(x: x, y: y), axis: axis, container: container) - grabPointer
+    fraction = startFraction + Double(delta / extent)
   }
 
   /// The translucent line to draw for the proposed position.
   public var previewRect: CGRect {
     PaneDivider.previewRect(axis: axis, container: container, fraction: fraction)
+  }
+
+  /// Whether `tab` still holds the split this drag grabbed: same panes, same axis.
+  public func targetsSameSplit(in tab: Tab) -> Bool {
+    guard tab.id == tabId, case .split(let current, _, _, _)? = tab.panes.subtree(at: path)
+    else { return false }
+    return current == axis && tab.panes.subtree(at: path)?.leafSessionIds() == splitLeaves
   }
 }
 
@@ -116,16 +148,20 @@ extension PaneDividerDrag {
   /// the headless runtime; it must never touch the pane tree or the PTY sizes.
   public mutating func move(toX x: CGFloat, y: CGFloat, in model: AppModel) {
     moveTo(x: x, y: y)
+    // Back at the grab point is no move at all, even when the start sits outside the clamp.
+    guard hasMoved else { return }
     if let clamped = model.clampedSplitFraction(inTab: tabId, path: path, fraction: fraction) {
       fraction = clamped
     }
   }
 
   /// Release: applies the proposal to the tree once, which resizes the shells once. A bare
-  /// click, a tab that is no longer active and a zoomed tab change nothing. The one commit
-  /// path for the AppKit view and the headless runtime.
+  /// click, a tab that is no longer active, a zoomed tab and a split that changed shape
+  /// under the drag change nothing. The one commit path for the AppKit view and the
+  /// headless runtime.
   public func commit(in model: AppModel) {
-    guard hasMoved, let tab = model.activeTab, tab.id == tabId, !tab.isZoomed else { return }
+    guard hasMoved, let tab = model.activeTab, targetsSameSplit(in: tab), !tab.isZoomed
+    else { return }
     try? model.setSplitFraction(inTab: tabId, path: path, fraction: fraction)
   }
 }

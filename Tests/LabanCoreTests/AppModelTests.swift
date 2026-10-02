@@ -1919,6 +1919,28 @@ extension AppModelTests {
     XCTAssertEqual(nested, 0.5)
   }
 
+  func testDragCommitIgnoresASplitThatChangedShapeUnderIt() throws {
+    let (model, tabId, a, b, c) = try nestedModel()
+    // V(a, H(b, V(c, d))): grab the horizontal divider between b and the c|d column.
+    let d = try model.splitPane(inTab: tabId, axis: .vertical, openSession: fixtureOpen)
+    let area = CGRect(x: 0, y: 0, width: 1600, height: 800)
+    let tab = try XCTUnwrap(model.activeTab)
+    let divider = try XCTUnwrap(tab.visibleDividers(in: area).first { $0.path == [.second] })
+    XCTAssertEqual(divider.axis, .horizontal)
+    var drag = PaneDividerDrag(
+      tab: tab, divider: divider, grabbedAt: CGPoint(x: divider.rect.midX, y: divider.rect.midY))
+    drag.move(toX: divider.rect.midX, y: divider.rect.midY - 100, in: model)
+    XCTAssertTrue(drag.hasMoved)
+
+    // b's shell exits mid-drag: [.second] now names the vertical c|d split.
+    model.closePane(inTab: tabId, sessionId: b, terminate: { _ in })
+    let before = try XCTUnwrap(model.activeTab?.panes)
+    guard case .split(.vertical, _, .leaf(a), .split(.vertical, _, .leaf(c), .leaf(d))) = before
+    else { return XCTFail("expected V(a, V(c, d)), got \(before)") }
+    drag.commit(in: model)
+    XCTAssertEqual(model.activeTab?.panes, before, "the release must not move an unrelated split")
+  }
+
   func testDividerNudgeClampsToMinimumExtent() throws {
     let (model, tabId, a, b, _) = try nestedModel()
     model.focusPane(inTab: tabId, sessionId: a)

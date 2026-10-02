@@ -170,6 +170,91 @@ final class TerminalBitmapViewDividerTests: XCTestCase {
     XCTAssertEqual(harness.focused, focusedBefore)
   }
 
+  func testOffCentreClickInGrabZoneChangesNothing() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+    harness.view.splitPaneRight(nil)
+    harness.view.advanceFrame()
+    let divider = try XCTUnwrap(harness.dividers.first)
+    let before = sizes(harness)
+    let press = NSPoint(x: divider.rect.midX + 2.5, y: divider.rect.midY)
+    harness.view.mouseDown(with: mouseEvent(.leftMouseDown, at: press))
+    harness.view.mouseUp(with: mouseEvent(.leftMouseUp, at: press))
+    XCTAssertEqual(try XCTUnwrap(fraction(harness)), divider.fraction, "a bare click moves nothing")
+    XCTAssertEqual(sizes(harness), before, "a bare click resizes no shell")
+  }
+
+  func testEscapeMidDragDoesNotFallThroughToSelection() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+    harness.view.splitPaneRight(nil)
+    harness.view.advanceFrame()
+    let pane = try XCTUnwrap(
+      harness.tab.visibleLayout(in: harness.area).first { $0.sessionId == harness.focused })
+    let session = try XCTUnwrap(harness.model.session(forSessionID: harness.focused))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+    func cell(_ col: Int) -> NSPoint { point(row: 0, col: col, in: pane.rect, harness) }
+    harness.view.mouseDown(with: mouseEvent(.leftMouseDown, at: cell(0)))
+    harness.view.mouseDragged(with: mouseEvent(.leftMouseDragged, at: cell(4)))
+    harness.view.mouseUp(with: mouseEvent(.leftMouseUp, at: cell(4)))
+    XCTAssertEqual(copyText(harness), "alpha")
+
+    let divider = try XCTUnwrap(harness.dividers.first)
+    harness.view.mouseDown(with: mouseEvent(.leftMouseDown, at: midPoint(of: divider)))
+    harness.view.mouseDragged(
+      with: mouseEvent(
+        .leftMouseDragged, at: NSPoint(x: divider.rect.midX - 40, y: divider.rect.midY)))
+    harness.view.keyDown(with: escapeKeyDown())
+    harness.view.mouseDragged(with: mouseEvent(.leftMouseDragged, at: cell(10)))
+    harness.view.mouseUp(with: mouseEvent(.leftMouseUp, at: cell(10)))
+    XCTAssertEqual(copyText(harness), "alpha", "the cancelled drag must not extend the selection")
+  }
+
+  func testSelectingInTheShorterLowerPaneUsesThatPanesRows() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+    let top = harness.focused
+    harness.view.splitPaneDown(nil)
+    let bottom = harness.focused
+    try harness.model.setSplitFraction(inTab: harness.tab.id, path: [], fraction: 0.7)
+    harness.view.advanceFrame()
+    harness.model.focusPane(inTab: harness.tab.id, sessionId: top)
+    harness.view.advanceFrame()
+    XCTAssertGreaterThan(
+      harness.model.terminalSize(for: top).rows, harness.model.terminalSize(for: bottom).rows)
+    let pane = try XCTUnwrap(
+      harness.tab.visibleLayout(in: harness.area).first { $0.sessionId == bottom })
+    let session = try XCTUnwrap(harness.model.session(forSessionID: bottom))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    // One gesture focuses the lower pane and selects in it, before any render.
+    let start = point(row: 0, col: 0, in: pane.rect, harness)
+    let end = point(row: 0, col: 4, in: pane.rect, harness)
+    harness.view.mouseDown(with: mouseEvent(.leftMouseDown, at: start))
+    harness.view.mouseDragged(with: mouseEvent(.leftMouseDragged, at: end))
+    harness.view.mouseUp(with: mouseEvent(.leftMouseUp, at: end))
+    XCTAssertEqual(harness.focused, bottom)
+    XCTAssertEqual(copyText(harness), "alpha")
+  }
+
+  /// The centre of `(row, col)` in a pane drawn in `rect`; row 0 is the pane's top row.
+  private func point(row: Int, col: Int, in rect: CGRect, _ harness: Harness) -> NSPoint {
+    let insets = TerminalBitmapView.contentInsets
+    return NSPoint(
+      x: rect.minX + insets.left + (CGFloat(col) + 0.5) * harness.cellWidth,
+      y: rect.maxY - insets.top - (CGFloat(row) + 0.5) * harness.cellHeight)
+  }
+
+  private func copyText(_ harness: Harness) -> String? {
+    harness.view.pasteboardStringForTesting = "sentinel"
+    harness.view.copy(nil)
+    return harness.view.pasteboardStringForTesting
+  }
+
   func testDoubleClickOnDividerEqualizes() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }

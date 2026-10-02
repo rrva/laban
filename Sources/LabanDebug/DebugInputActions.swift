@@ -293,16 +293,21 @@ struct DebugInputActions {
   }
 
   private func executeDirectionalCommand(_ name: String, _ direction: PaneDirection) {
+    let activeTabIsSplit =
+      (runtime.model.activeTab?.allSessionIds.count ?? 0) > 1 && runtime.terminalBackend != .laband
     switch name {
     case "nudgeDivider":
-      applyPane("pane.resize", ["direction": direction.rawValue])
+      // No divider to nudge: Cmd+Control+Left/Right keep their line-editing bytes.
+      if !activeTabIsSplit, let bytes = direction.unsplitNudgeLineEditingBytes {
+        writeToFocusedSession(bytes)
+      } else {
+        applyPane("pane.resize", ["direction": direction.rawValue])
+      }
     case "focusPane":
       applyPane("pane.focus", ["direction": direction.rawValue])
     default:
       // Cmd+Option+arrow: pane focus in a split tab; tab switching (left/right only) otherwise.
-      if (runtime.model.activeTab?.allSessionIds.count ?? 0) > 1,
-        runtime.terminalBackend != .laband
-      {
+      if activeTabIsSplit {
         applyPane("pane.focus", ["direction": direction.rawValue])
       } else if direction == .left {
         selectRelativeTab(delta: -1)
@@ -310,6 +315,15 @@ struct DebugInputActions {
         selectRelativeTab(delta: 1)
       }
     }
+  }
+
+  private func writeToFocusedSession(_ bytes: [UInt8]) {
+    guard let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id)
+    else { return }
+    _ = session.scrollViewportToActiveBottom()
+    session.write(bytes)
+    runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
+    runtime.renderFrameUnlocked()
   }
 
   private func applyPane(_ action: String, _ payload: [String: String]) {

@@ -295,6 +295,28 @@ final class SplitPaneHeadlessTests: SplitPaneTestCase {
     XCTAssertNil(runtime.dividerDrag)
   }
 
+  func testCommandControlLeftRightEditTheLineInAnUnsplitTab() throws {
+    let id = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+    func inputs() throws -> [String] {
+      let body = try XCTUnwrap(
+        JSONSerialization.jsonObject(
+          with: runtime.terminalLogResponse(query: ["sessionId": id]).body)
+          as? [String: Any])
+      let events = try XCTUnwrap(body["events"] as? [[String: Any]])
+      return events.filter { $0["direction"] as? String == "input" }.compactMap {
+        $0["escaped"] as? String
+      }
+    }
+    try action("key", ["key": "arrowLeft", "modifiers": ["command", "control"]])
+    try action("key", ["key": "arrowRight", "modifiers": ["command", "control"]])
+    XCTAssertEqual(Array(try inputs().suffix(2)), ["\\x01", "\\x05"])
+
+    _ = try split()
+    let before = try inputs().count
+    try action("key", ["key": "arrowLeft", "modifiers": ["command", "control"]])
+    XCTAssertEqual(try inputs().count, before, "in a split tab the chord nudges a divider")
+  }
+
   func testDividerDragPreviewIsClampedToMinimumPaneWidth() throws {
     _ = try split()
     let divider = try XCTUnwrap(runtime.model.activeTab?.visibleDividers(in: area).first)
