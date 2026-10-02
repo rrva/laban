@@ -708,6 +708,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// `init` or adopted later at `resize`.
   public var debugRasterAtlasForTesting: MetalGlyphAtlas? { rasterAtlas }
   private var colorGlyphAtlas: ColorGlyphAtlas?
+  /// Times a full fallback atlas was replaced mid-frame; tests read it.
+  private(set) var fallbackAtlasResetCount = 0
   private var pixelWidth: Int
   private var pixelHeight: Int
   private var scale: CGFloat
@@ -1641,27 +1643,43 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     var rasterGlyphs: [SlugTextureInstance] = []
     var colorGlyphs: [SlugTextureInstance] = []
     var waveRegions: [SlugWaveRegionGPU] = []
-    solids.reserveCapacity(lastFrameSolidsCount)
-    slugGlyphs.reserveCapacity(lastFrameSlugGlyphsCount)
-    motionGlyphs.reserveCapacity(lastFrameMotionGlyphsCount)
-    rasterGlyphs.reserveCapacity(lastFrameRasterGlyphsCount)
-    colorGlyphs.reserveCapacity(lastFrameColorGlyphsCount)
-    frameGlyphFontSizes.removeAll(keepingCapacity: true)
-    frameQuadHeights.removeAll(keepingCapacity: true)
-    frameSpinnerFallbackSnapCount = 0
-    frameLigatureGlyphsCount = 0
-    buildInstances(
-      commands: commands,
-      solids: &solids,
-      replaceSolids: &replaceSolids,
-      overlaySolids: &overlaySolids,
-      overlayReplaceSolids: &overlayReplaceSolids,
-      glyphs: &slugGlyphs,
-      motionGlyphs: &motionGlyphs,
-      rasterGlyphs: &rasterGlyphs,
-      colorGlyphs: &colorGlyphs,
-      waveRegions: &waveRegions,
-      damageBands: damageBands)
+    // At most one rebuild: a frame whose fallback glyphs overflow a fresh
+    // atlas keeps the glyphs that fit rather than looping.
+    for attempt in 0..<2 {
+      solids.removeAll(keepingCapacity: true)
+      replaceSolids.removeAll(keepingCapacity: true)
+      overlaySolids.removeAll(keepingCapacity: true)
+      overlayReplaceSolids.removeAll(keepingCapacity: true)
+      slugGlyphs.removeAll(keepingCapacity: true)
+      motionGlyphs.removeAll(keepingCapacity: true)
+      rasterGlyphs.removeAll(keepingCapacity: true)
+      colorGlyphs.removeAll(keepingCapacity: true)
+      waveRegions.removeAll(keepingCapacity: true)
+      solids.reserveCapacity(lastFrameSolidsCount)
+      slugGlyphs.reserveCapacity(lastFrameSlugGlyphsCount)
+      motionGlyphs.reserveCapacity(lastFrameMotionGlyphsCount)
+      rasterGlyphs.reserveCapacity(lastFrameRasterGlyphsCount)
+      colorGlyphs.reserveCapacity(lastFrameColorGlyphsCount)
+      frameGlyphFontSizes.removeAll(keepingCapacity: true)
+      frameQuadHeights.removeAll(keepingCapacity: true)
+      frameSpinnerFallbackSnapCount = 0
+      frameLigatureGlyphsCount = 0
+      colorGlyphAtlas?.clearOverflowFlag()
+      rasterAtlas?.clearOverflowFlag()
+      buildInstances(
+        commands: commands,
+        solids: &solids,
+        replaceSolids: &replaceSolids,
+        overlaySolids: &overlaySolids,
+        overlayReplaceSolids: &overlayReplaceSolids,
+        glyphs: &slugGlyphs,
+        motionGlyphs: &motionGlyphs,
+        rasterGlyphs: &rasterGlyphs,
+        colorGlyphs: &colorGlyphs,
+        waveRegions: &waveRegions,
+        damageBands: damageBands)
+      guard attempt == 0, replaceOverflowedFallbackAtlases() else { break }
+    }
     kittyImages.endFrame()
     updateLiveGlyphEffectState()
     lastFrameSolidsCount =
@@ -3370,27 +3388,64 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private static func makeColorGlyphAtlas(
     device: MTLDevice,
     fontAtlas: FontAtlas,
-    scale: CGFloat
+    scale: CGFloat,
+    textureSize: Int = 2048
   ) -> ColorGlyphAtlas? {
     ColorGlyphAtlas(
       device: device,
       cellWidth: fontAtlas.cellSize.width,
       cellHeight: fontAtlas.cellSize.height,
       descent: fontAtlas.descent,
-      scale: scale)
+      scale: scale,
+      textureSize: textureSize)
   }
 
   private static func makeRasterGlyphAtlas(
     device: MTLDevice,
     fontAtlas: FontAtlas,
-    scale: CGFloat
+    scale: CGFloat,
+    textureSize: Int = 2048
   ) -> MetalGlyphAtlas? {
     MetalGlyphAtlas(
       device: device,
       cellWidth: fontAtlas.cellSize.width,
       cellHeight: fontAtlas.cellSize.height,
       descent: fontAtlas.descent,
-      scale: scale)
+      scale: scale,
+      textureSize: textureSize)
+  }
+
+  /// Largest fallback atlas side. 4096² is 64 MiB as BGRA; past it a fresh
+  /// same-size atlas replaces the full one, which is the eviction.
+  static let maxFallbackAtlasTextureSize = 4096
+
+  /// The color and R8 fallback atlases are shelf-packed and never evict
+  /// single entries, so a frame that overflows one swaps in a fresh atlas
+  /// (doubling up to `maxFallbackAtlasTextureSize`) and rebuilds its
+  /// instances. In-flight command buffers keep the old texture alive, and
+  /// pixels outside this frame's damage are already in the ring targets.
+  /// Returns whether any atlas was replaced.
+  private func replaceOverflowedFallbackAtlases() -> Bool {
+    var replaced = false
+    if let atlas = colorGlyphAtlas, atlas.didOverflow,
+      let fresh = Self.makeColorGlyphAtlas(
+        device: device, fontAtlas: fontAtlas, scale: scale,
+        textureSize: min(atlas.textureSize * 2, Self.maxFallbackAtlasTextureSize))
+    {
+      colorGlyphAtlas = fresh
+      fallbackAtlasResetCount += 1
+      replaced = true
+    }
+    if let atlas = rasterAtlas, atlas.didOverflow,
+      let fresh = Self.makeRasterGlyphAtlas(
+        device: device, fontAtlas: fontAtlas, scale: scale,
+        textureSize: min(atlas.textureSize * 2, Self.maxFallbackAtlasTextureSize))
+    {
+      rasterAtlas = fresh
+      fallbackAtlasResetCount += 1
+      replaced = true
+    }
+    return replaced
   }
 
   /// If a prewarm pass left a compatible raster atlas held aside for `scale`,
@@ -3589,6 +3644,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// (execplans/active/slug-hot-path-negative-cache-and-present-skip.md M5)
   /// instead of only checking pixel output.
   var lastFrameSlugGlyphsCountForTesting: Int { lastFrameSlugGlyphsCount }
+
+  /// Test-only: color-atlas glyph instances in the most recent frame.
+  var lastFrameColorGlyphsCountForTesting: Int { lastFrameColorGlyphsCount }
 
   /// Number of ring slots `render()` rotates through. 3 under the
   /// display-link present path (a slot is `ringDepth - 1` frames stale when

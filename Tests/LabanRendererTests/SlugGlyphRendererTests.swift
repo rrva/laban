@@ -616,6 +616,54 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     XCTAssertGreaterThan(chromaticPixelCount(image), 10)
   }
 
+  /// More distinct emoji than one 2048² color atlas holds: the renderer must
+  /// replace the full atlas and still draw every emoji as a color glyph,
+  /// instead of silently dropping the overflow to the tinted mask path.
+  func testSlugColorAtlasOverflowReplacesAtlasAndKeepsEveryEmoji() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    Self.registerEmojiMode("color")
+    let emoji = (0x1F300...0x1F6FF).compactMap(Unicode.Scalar.init)
+      .filter { $0.properties.isEmojiPresentation }
+      .prefix(400)
+      .map { Character($0) }
+    XCTAssertEqual(emoji.count, 400)
+    let atlas = FontAtlas(pointSize: 48)
+    func render(rows: Range<Int>) throws -> SlugGlyphRenderer {
+      let renderer = try XCTUnwrap(
+        SlugGlyphRenderer(fontAtlas: atlas, pixelWidth: 640, pixelHeight: 320, scale: 2))
+      renderer.waitForFrameCompletion = true
+      renderer.presentsToLayer = false
+      var commands: [FrameCommand] = [
+        .rect(CGRect(x: 0, y: 0, width: 320, height: 160), color: 0x0000_00FF, source: .terminal)
+      ]
+      for row in rows {
+        commands.append(
+          .glyphRun(
+            origin: CGPoint(x: 0, y: CGFloat(row) * 8),
+            text: String(emoji[(row * 20)..<(row * 20 + 20)]),
+            foreground: 0xFFFF_FFFF,
+            background: 0x0000_00FF,
+            attributes: [],
+            source: .terminal))
+      }
+      XCTAssertTrue(renderer.render(commands, damage: .full))
+      return renderer
+    }
+    // Baseline: 20 emoji per frame on fresh renderers never fill an atlas.
+    var expected = 0
+    for row in 0..<20 {
+      expected += try render(rows: row..<(row + 1)).lastFrameColorGlyphsCountForTesting
+    }
+    let renderer = try render(rows: 0..<20)
+    XCTAssertGreaterThan(
+      renderer.fallbackAtlasResetCount, 0, "the full color atlas must be replaced")
+    XCTAssertEqual(
+      renderer.lastFrameColorGlyphsCountForTesting, expected,
+      "every color emoji must still draw from the color atlas after the replacement")
+  }
+
   func testSlugMonochromeEmojiRendersTintedNotColor() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
