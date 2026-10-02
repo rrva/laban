@@ -378,6 +378,77 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertEqual(hollowRects.count, 4)
   }
 
+  /// A block cursor is a solid drawn over its cell; the glyph under it must
+  /// be re-emitted after the cursor in a contrasting color, or it vanishes
+  /// when the cursor color equals the text color (the default theme).
+  func testBlockCursorReemitsGlyphUnderCursorInContrastingColor() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("\u{1B}[2 qabc\u{1B}[3D".utf8))  // steady block cursor on 'a'
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let cmds = FrameProducer(cellWidth: 10, cellHeight: 20).commands(from: UnsafePointer(snap))
+    guard let cursorIndex = cmds.lastIndex(where: { if case .cursor = $0 { true } else { false } }),
+      case .cursor(let cursorRect, let cursorColor) = cmds[cursorIndex]
+    else {
+      XCTFail("block cursor command missing")
+      return
+    }
+    let overlay = cmds[(cursorIndex + 1)...].compactMap {
+      cmd -> (origin: CGPoint, text: String, foreground: UInt32)? in
+      if case .glyphRun(let origin, let text, let foreground, _, _, _, _, _, _, _, _, _, _) = cmd {
+        return (origin, text, foreground)
+      }
+      return nil
+    }
+    XCTAssertEqual(overlay.count, 1, "exactly one glyph run must follow the block cursor")
+    XCTAssertEqual(overlay.first?.text, "a")
+    XCTAssertEqual(overlay.first?.origin, cursorRect.origin)
+    XCTAssertNotEqual(overlay.first?.foreground, cursorColor)
+  }
+
+  func testNonBlockCursorDoesNotReemitGlyph() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("\u{1B}[6 qabc\u{1B}[3D".utf8))  // steady bar cursor on 'a'
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let cmds = FrameProducer(cellWidth: 10, cellHeight: 20).commands(from: UnsafePointer(snap))
+    guard let cursorIndex = cmds.lastIndex(where: { if case .cursor = $0 { true } else { false } })
+    else {
+      XCTFail("bar cursor command missing")
+      return
+    }
+    XCTAssertFalse(
+      cmds[(cursorIndex + 1)...].contains { if case .glyphRun = $0 { true } else { false } },
+      "a bar cursor leaves the glyph visible and must not re-emit it")
+  }
+
+  func testBlockCursorTextColorFallsBackWhenBackgroundMatchesCursor() {
+    XCTAssertEqual(
+      FrameProducer.blockCursorTextColor(cellBackground: 0x103C_48FF, cursor: 0xADBC_BCFF),
+      0x103C_48FF, "a dark cell background on a light cursor reads as inverted text")
+    XCTAssertEqual(
+      FrameProducer.blockCursorTextColor(cellBackground: 0xA0B0_B080, cursor: 0xADBC_BCFF),
+      0x0000_00FF, "a background close to the cursor fill falls back to black")
+  }
+
   func testAccessibilityVisualOptionsAddSelectionAndCursorOutlines() throws {
     var size = LabanTerminalSize()
     size.rows = 5
