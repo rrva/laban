@@ -664,6 +664,44 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       "every color emoji must still draw from the color atlas after the replacement")
   }
 
+  /// When even a fresh max-size atlas cannot hold one frame's emoji, later
+  /// frames keep that atlas instead of allocating a new texture every frame.
+  func testSlugFullMaxSizeAtlasIsNotReplacedEveryFrame() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    Self.registerEmojiMode("color")
+    let emoji = (0x1F300...0x1F6FF).compactMap(Unicode.Scalar.init)
+      .filter { $0.properties.isEmojiPresentation }
+      .prefix(400)
+      .map { Character($0) }
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 48), pixelWidth: 640, pixelHeight: 320, scale: 2))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    renderer.fallbackAtlasMaxTextureSize = 2048  // the initial size: replacement cannot grow
+    var commands: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 320, height: 160), color: 0x0000_00FF, source: .terminal)
+    ]
+    for row in 0..<20 {
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(x: 0, y: CGFloat(row) * 8),
+          text: String(emoji[(row * 20)..<(row * 20 + 20)]), foreground: 0xFFFF_FFFF,
+          background: 0x0000_00FF, attributes: [], source: .terminal))
+    }
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    let resetsAfterFirstFrame = renderer.fallbackAtlasResetCount
+    XCTAssertEqual(resetsAfterFirstFrame, 1, "the first overflow evicts once")
+    for _ in 0..<3 {
+      XCTAssertTrue(renderer.render(commands, damage: .full))
+    }
+    XCTAssertEqual(
+      renderer.fallbackAtlasResetCount, resetsAfterFirstFrame,
+      "an atlas that overflowed on its first frame must not be replaced again")
+  }
+
   func testSlugMonochromeEmojiRendersTintedNotColor() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

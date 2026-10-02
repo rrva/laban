@@ -737,6 +737,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var colorGlyphAtlas: ColorGlyphAtlas?
   /// Times a full fallback atlas was replaced mid-frame; tests read it.
   private(set) var fallbackAtlasResetCount = 0
+  private var colorAtlasIsUntestedReplacement = false
+  private var rasterAtlasIsUntestedReplacement = false
   private var pixelWidth: Int
   private var pixelHeight: Int
   private var scale: CGFloat
@@ -1758,6 +1760,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         damageBands: damageBands)
       guard attempt == 0, replaceOverflowedFallbackAtlases() else { break }
     }
+    noteFallbackAtlasFrameFinished()
     kittyImages.endFrame()
     updateLiveGlyphEffectState()
     lastFrameSolidsCount =
@@ -3554,6 +3557,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Largest fallback atlas side. 4096² is 64 MiB as BGRA; past it a fresh
   /// same-size atlas replaces the full one, which is the eviction.
   static let maxFallbackAtlasTextureSize = 4096
+  /// Instance cap, `maxFallbackAtlasTextureSize` unless a test lowers it.
+  var fallbackAtlasMaxTextureSize = SlugGlyphRenderer.maxFallbackAtlasTextureSize
 
   /// The color and R8 fallback atlases are shelf-packed and never evict
   /// single entries, so a frame that overflows one swaps in a fresh atlas
@@ -3563,25 +3568,40 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Returns whether any atlas was replaced.
   private func replaceOverflowedFallbackAtlases() -> Bool {
     var replaced = false
+    // A max-size replacement that overflows before it has ever finished a
+    // frame cleanly would overflow again if replaced: one frame needs more
+    // glyphs than the largest atlas holds. Keep it (the glyphs that fit stay
+    // drawn) instead of allocating a fresh 64 MiB texture every frame.
     if let atlas = colorGlyphAtlas, atlas.didOverflow,
+      !(colorAtlasIsUntestedReplacement && atlas.textureSize >= fallbackAtlasMaxTextureSize),
       let fresh = Self.makeColorGlyphAtlas(
         device: device, fontAtlas: fontAtlas, scale: scale,
-        textureSize: min(atlas.textureSize * 2, Self.maxFallbackAtlasTextureSize))
+        textureSize: min(atlas.textureSize * 2, fallbackAtlasMaxTextureSize))
     {
       colorGlyphAtlas = fresh
+      colorAtlasIsUntestedReplacement = true
       fallbackAtlasResetCount += 1
       replaced = true
     }
     if let atlas = rasterAtlas, atlas.didOverflow,
+      !(rasterAtlasIsUntestedReplacement && atlas.textureSize >= fallbackAtlasMaxTextureSize),
       let fresh = Self.makeRasterGlyphAtlas(
         device: device, fontAtlas: fontAtlas, scale: scale,
-        textureSize: min(atlas.textureSize * 2, Self.maxFallbackAtlasTextureSize))
+        textureSize: min(atlas.textureSize * 2, fallbackAtlasMaxTextureSize))
     {
       rasterAtlas = fresh
+      rasterAtlasIsUntestedReplacement = true
       fallbackAtlasResetCount += 1
       replaced = true
     }
     return replaced
+  }
+
+  /// Clears the untested-replacement marks once a frame finishes without
+  /// overflowing that atlas, so a later overflow can evict again.
+  private func noteFallbackAtlasFrameFinished() {
+    if colorGlyphAtlas?.didOverflow == false { colorAtlasIsUntestedReplacement = false }
+    if rasterAtlas?.didOverflow == false { rasterAtlasIsUntestedReplacement = false }
   }
 
   /// If a prewarm pass left a compatible raster atlas held aside for `scale`,
