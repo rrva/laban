@@ -77,9 +77,9 @@ struct TextDecorationLayout: Equatable {
         let amplitude = max(thickness * 1.2, 1.0)
         let period = max(cellAdvance, 6)
         let baseY = underlineY + thickness * 0.5
-        // One segment per device pixel column keeps the staircase as fine
-        // as solid quads allow.
-        let steps = max(Int(width * pixelScale), 8)
+        // One segment per point: finer than the old 1.5pt staircase without
+        // multiplying quads by the backing scale on wide underlined runs.
+        let steps = max(Int(width), 8)
         curlyUnderlinePoints.reserveCapacity(steps + 1)
         for i in 0...steps {
           let t = CGFloat(i) / CGFloat(steps)

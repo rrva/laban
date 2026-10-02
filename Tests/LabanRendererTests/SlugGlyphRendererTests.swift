@@ -1015,7 +1015,7 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
-    func redPixels(_ text: String) throws -> Int {
+    func redPixels(_ text: String, style: UnderlineStyle = .single) throws -> Int {
       let atlas = FontAtlas(pointSize: 24, fontName: nil)
       let renderer = try XCTUnwrap(
         SlugGlyphRenderer(
@@ -1030,7 +1030,7 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
             .glyphRun(
               origin: CGPoint(x: 12, y: 10), text: text, foreground: 0xEE_EE_EE_FF,
               background: 0x10_10_10_FF, attributes: [.underline], source: .terminal,
-              underlineStyle: .single, underlineColor: 0xFF_00_00_FF),
+              underlineStyle: style, underlineColor: 0xFF_00_00_FF),
           ], damage: .full))
       let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
       return stride(from: 0, to: image.bytes.count, by: 4).filter {
@@ -1041,6 +1041,11 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     let descenders = try redPixels("gjpqy")
     XCTAssertGreaterThan(plain, 0)
     XCTAssertLessThan(Double(descenders), Double(plain) * 0.9, "descenders must cut the underline")
+    for style in [UnderlineStyle.dotted, .dashed] {
+      XCTAssertLessThan(
+        try redPixels("gjpqy", style: style), try redPixels("aceos", style: style),
+        "\(style) underlines must skip descenders too")
+    }
   }
 
   func testM2VisualSpotCheckArtifactWhenRequested() throws {
