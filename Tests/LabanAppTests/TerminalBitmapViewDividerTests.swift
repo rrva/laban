@@ -243,10 +243,18 @@ final class TerminalBitmapViewDividerTests: XCTestCase {
 
   /// The centre of `(row, col)` in a pane drawn in `rect`; row 0 is the pane's top row.
   private func point(row: Int, col: Int, in rect: CGRect, _ harness: Harness) -> NSPoint {
-    let insets = TerminalBitmapView.contentInsets
+    let insets = paneInsets(rect, harness)
     return NSPoint(
       x: rect.minX + insets.left + (CGFloat(col) + 0.5) * harness.cellWidth,
       y: rect.maxY - insets.top - (CGFloat(row) + 0.5) * harness.cellHeight)
+  }
+
+  /// The insets of the pane drawn in `rect`: window insets at the window edges only.
+  private func paneInsets(_ rect: CGRect, _ harness: Harness) -> TerminalSurfaceInsets {
+    let window = TerminalBitmapView.contentInsets
+    return TerminalSurfaceInsets(
+      top: window.top, left: window.left, bottom: window.bottom, right: window.right
+    ).forPane(rect, in: harness.area)
   }
 
   private func copyText(_ harness: Harness) -> String? {
@@ -360,7 +368,7 @@ final class TerminalBitmapViewDividerTests: XCTestCase {
     let rows = Int(harness.model.terminalSize(for: upper).rows)
     let cellHeight = harness.cellHeight
     let cellWidth = harness.cellWidth
-    let insets = TerminalBitmapView.contentInsets
+    let insets = paneInsets(rect, harness)
     let originY = max(insets.bottom, rect.height - insets.top - CGFloat(rows) * cellHeight)
     let y = rect.minY + originY + CGFloat(rows - 2) * cellHeight + cellHeight / 2
     let x0 = rect.minX + insets.left + cellWidth / 2
