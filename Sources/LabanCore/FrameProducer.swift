@@ -1598,11 +1598,11 @@ public struct FrameProducer {
           }
           if mergesIntoLast {
             // The cell extends the run's last Character (ZWJ chain, RI pair,
-            // skin tone across a wide cell): draw it as one cluster, then end
-            // the run so later cells keep their own engine columns.
+            // skin tone across a wide cell): draw it as one cluster. That
+            // Character now spans several columns, so a later cell that does
+            // not extend it too must start a new run at its own column.
             runBytes.append(contentsOf: cellBytes)
-            flushRun()
-            pendingSpacer = false
+            pendingSpacer = true
             continue
           } else if pendingSpacer || cellClusterCount != 1 {
             // A wide cell just ended, or this cell carries extra Characters.
@@ -1787,8 +1787,7 @@ public struct FrameProducer {
               let lastCluster = runText.last.map(String.init) ?? ""
               if (lastCluster + text).count < 1 + cellClusterCount {
                 runText += text
-                flushRun()
-                pendingSpacer = false
+                pendingSpacer = true
                 continue
               } else if pendingSpacer || cellClusterCount != 1 {
                 startRun()

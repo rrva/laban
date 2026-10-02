@@ -2769,7 +2769,11 @@ public final class TerminalSurfaceController {
     while index < text.endIndex {
       let next = text.index(after: index)
       let cluster = text[index..<next]
-      let width = max(1, TerminalDisplayWidth.cells(of: String(cluster)))
+      // FrameProducer ends a run after any wide cell, so every Character but
+      // the last occupies exactly one column — the same placement renderers
+      // use. Only the last may be wide.
+      let width =
+        next == text.endIndex ? max(1, TerminalDisplayWidth.cells(of: String(cluster))) : 1
       let cellMinX = gridOriginX + CGFloat(col) * cellWidth
       let cellMaxX = cellMinX + CGFloat(width) * cellWidth
       let stamped = cellMinX < freshXMax && freshXMin < cellMaxX
