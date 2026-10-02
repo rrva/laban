@@ -154,6 +154,22 @@ final class GlyphCurveStoreTests: XCTestCase {
     XCTAssertEqual(tame.count, 2)
   }
 
+  /// Through the real cache path with a CFF font (Hiragino Sans ships with
+  /// macOS): its worst-case glyph gets extra quadratics at zoom-range
+  /// tolerance, while the fixed split would give exactly two per cubic.
+  func testCFFOutlineIsSubdividedThroughTheCachePath() throws {
+    let font = CTFontCreateWithName("HiraginoSans-W3" as CFString, 144, nil)
+    guard CTFontCopyPostScriptName(font) as String == "HiraginoSans-W3" else {
+      throw XCTSkip("Hiragino Sans is not installed")
+    }
+    let glyph: CGGlyph = 5786
+    let path = try XCTUnwrap(CTFontCreatePathForGlyph(font, glyph, nil))
+    let fixed = try XCTUnwrap(GlyphCurveStore.extractOutline(from: path, glyph: glyph))
+    let adaptive = try XCTUnwrap(GlyphCurveStore().outline(for: glyph, font: font))
+    XCTAssertGreaterThan(adaptive.curves.count, fixed.curves.count)
+    XCTAssertLessThanOrEqual(adaptive.curves.count, fixed.curves.count * 8)
+  }
+
   func testCoreTextAlphaComparisonForPrintableASCII() throws {
     let fontCases: [(label: String, font: CTFont)] = [
       ("JetBrainsMono", FontAtlas(pointSize: 24, fontName: nil).font),
