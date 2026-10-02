@@ -76,13 +76,15 @@ public final class AppModel {
   }
 
   private func insetTerminalRects(_ layout: [PaneRect]) -> [PaneRect] {
-    layout.map { pane in
-      PaneRect(
+    let area = terminalAreaRect
+    return layout.map { pane in
+      let insets = paneInsets.forPane(pane.rect, in: area)
+      return PaneRect(
         sessionId: pane.sessionId,
         rect: CGRect(
           x: 0, y: 0,
-          width: max(0, pane.rect.width - paneInsets.left - paneInsets.right),
-          height: max(0, pane.rect.height - paneInsets.top - paneInsets.bottom)))
+          width: max(0, pane.rect.width - insets.left - insets.right),
+          height: max(0, pane.rect.height - insets.top - insets.bottom)))
     }
   }
 

@@ -1678,6 +1678,48 @@ extension AppModelTests {
     }
   }
 
+  func testDownSplitReservesTitlebarOnlyForTopPane() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    let lower = try model.splitPane(inTab: tab.id, axis: .horizontal) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    // Window insets with a 28pt titlebar reserve, as the app passes them.
+    let insets = TerminalSurfaceInsets(top: 36, left: 14, bottom: 8, right: 8)
+    model.resizePanes(
+      in: CGRect(x: 200, y: 0, width: 720, height: 481), insets: insets,
+      cellWidth: 8, cellHeight: 16)
+    // 481 splits into 240 + 1 + 240. The top pane pays the titlebar and a divider
+    // padding: (240 - 36 - 4) / 16 = 12 rows. The lower pane pays only a divider
+    // padding and the window bottom: (240 - 4 - 8) / 16 = 14 rows, not 12.
+    let upper = model.paneSize(for: tab.focusedSessionId, in: tab.id)
+    let below = model.paneSize(for: lower, in: tab.id)
+    XCTAssertEqual(upper.rows, 12)
+    XCTAssertEqual(upper.pixel_height, 200)
+    XCTAssertEqual(below.rows, 14)
+    XCTAssertEqual(below.pixel_height, 228)
+    XCTAssertEqual(below.pixel_width, 720 - 14 - 8)
+  }
+
+  func testPaneInsetsKeepWindowInsetsOnlyAtWindowEdges() {
+    let window = TerminalSurfaceInsets(top: 36, left: 14, bottom: 8, right: 8)
+    let area = CGRect(x: 200, y: 0, width: 720, height: 481)
+    XCTAssertEqual(window.forPane(area, in: area), window)
+    let pad = TerminalSurfaceInsets.dividerPadding
+    XCTAssertEqual(
+      window.forPane(CGRect(x: 200, y: 241, width: 720, height: 240), in: area),
+      TerminalSurfaceInsets(top: 36, left: 14, bottom: pad, right: 8))
+    XCTAssertEqual(
+      window.forPane(CGRect(x: 200, y: 0, width: 720, height: 240), in: area),
+      TerminalSurfaceInsets(top: pad, left: 14, bottom: 8, right: 8))
+    XCTAssertEqual(
+      window.forPane(CGRect(x: 561, y: 0, width: 359, height: 240), in: area),
+      TerminalSurfaceInsets(top: pad, left: pad, bottom: 8, right: 8))
+    XCTAssertEqual(
+      TerminalSurfaceInsets.zero.forPane(CGRect(x: 561, y: 0, width: 359, height: 240), in: area),
+      .zero)
+  }
+
   func testUnfocusedPaneNotificationDoesNotChangeFocusedMetadata() throws {
     let (model, tab, right) = try splitModel()
     let session = try XCTUnwrap(model.session(forSessionID: tab.focusedSessionId))

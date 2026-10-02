@@ -66,6 +66,24 @@ public struct TerminalSurfaceInsets: Equatable, Sendable {
   }
 
   public static let zero = TerminalSurfaceInsets()
+
+  /// The most breathing room a pane keeps on an edge that faces a divider.
+  public static let dividerPadding: CGFloat = 4
+
+  /// The insets of a pane laid out at `pane` inside the terminal `area` (both y-up),
+  /// when these are the window's insets. Edges the pane shares with the area keep the
+  /// window insets, so only a top pane reserves the titlebar strip; edges that face a
+  /// divider keep at most `dividerPadding`. A pane filling the area gets `self`.
+  public func forPane(_ pane: CGRect, in area: CGRect) -> TerminalSurfaceInsets {
+    func edge(_ window: CGFloat, atWindowEdge: Bool) -> CGFloat {
+      atWindowEdge ? window : min(window, Self.dividerPadding)
+    }
+    return TerminalSurfaceInsets(
+      top: edge(top, atWindowEdge: pane.maxY >= area.maxY),
+      left: edge(left, atWindowEdge: pane.minX <= area.minX),
+      bottom: edge(bottom, atWindowEdge: pane.minY <= area.minY),
+      right: edge(right, atWindowEdge: pane.maxX >= area.maxX))
+  }
 }
 
 public enum TerminalSurfaceFrameContentMode: Equatable, Sendable {
@@ -1082,11 +1100,12 @@ public final class TerminalSurfaceController {
       defer { laban_snapshot_destroy(snap) }
       let snapshot = snap.pointee
       let rows = Int(snapshot.rows)
+      let insets = request.insets.forPane(pane.rect, in: area)
       let originY =
         pane.rect.minY
         + Self.terminalGridOriginY(
           viewportHeight: pane.rect.height,
-          rows: rows, cellHeight: CGFloat(cellHeight), insets: request.insets)
+          rows: rows, cellHeight: CGFloat(cellHeight), insets: insets)
       let offset = session.viewportState()?.viewportOffset ?? 0
       model.refreshFindVisible(
         sessionID: session.id, snapshot: UnsafePointer(snap), viewportOffset: offset)
@@ -1099,7 +1118,7 @@ public final class TerminalSurfaceController {
           source: .terminal, compositing: .replace))
       let producer = FrameProducer(
         cellWidth: cellWidth, cellHeight: cellHeight,
-        originX: pane.rect.minX + request.insets.left, originY: originY,
+        originX: pane.rect.minX + insets.left, originY: originY,
         contentYOffset: pane.isFocused ? request.contentYOffset : 0,
         accessibilityVisualOptions: request.accessibilityVisualOptions,
         backgroundCompositingOptions: request.backgroundCompositingOptions)
@@ -1113,7 +1132,7 @@ public final class TerminalSurfaceController {
         frame: request.frame, tabId: tab.id, sessionId: session.id, snapshot: UnsafePointer(snap),
         pane: CapturedPaneFrame(
           rect: CapturedRect(pane.rect),
-          originX: Double(pane.rect.minX + request.insets.left), originY: Double(originY),
+          originX: Double(pane.rect.minX + insets.left), originY: Double(originY),
           cellWidth: cellWidth, cellHeight: cellHeight,
           cursorStyle: cursor.style, cursorBlinking: cursor.blinking,
           cursorBlinkVisible: pane.isFocused ? request.cursorBlinkVisible : true,

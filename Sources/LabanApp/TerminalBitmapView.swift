@@ -6970,7 +6970,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       cellWidth: CGFloat(cellWidth),
       cellHeight: CGFloat(cellHeight),
       boundsHeight: focusedPaneRect.height,
-      insets: Self.contentInsets
+      insets: contentInsets(forPane: focusedPaneRect)
     )
     let paneRect = focusedPaneRect
     let windowRect = convert(rect.offsetBy(dx: 0, dy: paneRect.minY), to: nil)
@@ -8381,6 +8381,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalAreaSize)
   }
 
+  /// The content insets of the pane drawn in `rect`: the window insets on edges at the
+  /// window edge, a small padding on edges that face a divider.
+  private func contentInsets(forPane rect: CGRect) -> NSEdgeInsets {
+    let window = Self.contentInsets
+    let area = CGRect(
+      x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+    let insets = TerminalSurfaceInsets(
+      top: window.top, left: window.left, bottom: window.bottom, right: window.right
+    ).forPane(rect, in: area)
+    return NSEdgeInsets(
+      top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right)
+  }
+
   var focusedPaneRect: CGRect {
     let area = CGRect(
       x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
@@ -8855,7 +8868,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       cellWidth: CGFloat(cellWidth),
       cellHeight: CGFloat(cellHeight),
       rows: paneRows(for: rect),
-      insets: Self.contentInsets)
+      insets: contentInsets(forPane: rect))
   }
 
   /// The grid rows of the pane drawn in `rect`. `lastRows` is the focused pane's count as
@@ -9412,8 +9425,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func terminalMouseGeometry(at pt: NSPoint, paneRect explicitRect: CGRect? = nil) -> (
     x: Float, y: Float, screenWidth: Int, screenHeight: Int
   ) {
-    let insets = Self.contentInsets
     let paneRect = explicitRect ?? focusedPaneRect
+    let insets = contentInsets(forPane: paneRect)
     // A pane stacked above another starts higher in the (y-up) view: measure from its bottom.
     let local = NSPoint(x: pt.x, y: pt.y - paneRect.minY)
     let pos = TerminalMouseInput.surfacePosition(
