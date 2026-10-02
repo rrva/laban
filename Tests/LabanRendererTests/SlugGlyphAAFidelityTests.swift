@@ -615,11 +615,14 @@ final class SlugGlyphAAFidelityTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
     let renderer = try XCTUnwrap(SlugGlyphRenderer(fontAtlas: FontAtlas(pointSize: 14)))
+    // ADR 0038: Apple GPUs blend Slug text in gamma space via framebuffer
+    // fetch; GPUs without programmable blending keep linear light.
     XCTAssertEqual(
       renderer.rendererStatus.textCompositeModel,
-      .linearLight,
-      "slug renderer must report linear-light compositing")
+      device.supportsFamily(.apple1) ? .gammaBlend : .linearLight,
+      "slug renderer must report the composite model its text pipelines use")
   }
 
   // MARK: - Shape fidelity vs CPU oracle
