@@ -33,12 +33,17 @@ public struct DirtyYRange: Equatable, Sendable {
 /// - `linearLight` — compositing performed in linear light, typically by
 ///   linearizing sRGB inputs and writing to an sRGB-encoded surface so the
 ///   display sees correct gamma. Slug and vector use this path.
+/// - `gammaBlend` — text coverage composited through a fixed power curve
+///   (Slug's `kSlugTextBlendGamma`, 1.8) by framebuffer fetch, approximating
+///   CoreText's encoded-space text blend so dark-on-light and light-on-dark
+///   text carry the same weight. Slug on Apple GPUs; see ADR 0038.
 /// - `encodedSRGBCompatibility` — compositing performed directly in encoded
 ///   sRGB values without linearization. Used by the legacy Metal glyph paths
 ///   for compatibility with existing atlas and blend behavior.
 public enum TextCompositeModel: String, Equatable, Sendable, Encodable {
   case nativePlatformReference
   case linearLight
+  case gammaBlend
   case encodedSRGBCompatibility
 }
 
