@@ -857,6 +857,27 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     }
   }
 
+  /// Clusters that shape to several glyphs (combining marks, Indic consonant
+  /// plus reordered matra) must draw every glyph, not just the first one.
+  func testSlugDrawsEveryGlyphOfMultiGlyphCluster() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    func ink(_ text: String) throws -> Int {
+      let image = try renderProbeText(text, width: 160, height: 80)
+      return stride(from: 0, to: image.bytes.count, by: 4).reduce(0) { $0 + Int(image.bytes[$1]) }
+    }
+    let base = try ink("a")
+    let withMark = try ink("a\u{0332}")  // a + COMBINING LOW LINE
+    XCTAssertGreaterThan(
+      Double(withMark), Double(base) * 1.15, "the combining low line must be drawn")
+
+    let matra = try ink("\u{093F}")  // ि alone
+    let syllable = try ink("\u{0915}\u{093F}")  // कि: matra reorders before क
+    XCTAssertGreaterThan(
+      Double(syllable), Double(matra) * 1.5, "the consonant after a reordered matra must be drawn")
+  }
+
   func testM2VisualSpotCheckArtifactWhenRequested() throws {
     guard let artifactRoot = ProcessInfo.processInfo.environment["LABAN_SLUG_GLYPH_ARTIFACTS"],
       !artifactRoot.isEmpty
