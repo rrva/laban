@@ -336,7 +336,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 {
   public static let referencePointSize: CGFloat = 14
 
-  private static let bandCount = 64
+  private static let maxBandCount = 64
+  /// Bands per axis for a glyph: one per curve up to `maxBandCount`, never
+  /// fewer than 8. A band never holds more curves than the glyph has, so
+  /// simple glyphs (`-`, `.`, `l`) lose nothing by carrying fewer than 64.
+  static func bandCount(forCurveCount curveCount: Int) -> Int {
+    min(maxBandCount, max(8, curveCount))
+  }
+
+  /// Geometry storage above which the next frame starts from empty caches.
+  /// Curves, bands and indices only grow as new glyphs appear; a long
+  /// session streaming varied Unicode would otherwise keep every glyph it
+  /// ever drew. Visible glyphs rebuild on demand after the reset.
+  static let geometryBudgetBytes = 32 << 20
   private static let targetRingDepth = 3
   private static let presentLinkLog = Logger(
     subsystem: "com.rrva.laban", category: "present-link")
@@ -788,6 +800,60 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Number of size-independent glyph geometry entries built by this renderer.
   /// Used by tests to prove active point-size changes do not rebuild curves/bands.
   public private(set) var geometryEntryBuildCount = 0
+  /// Times the geometry caches were dropped for exceeding the budget.
+  public private(set) var geometryResetCount = 0
+  private var geometryMeasurePending = false
+  private var geometryFloorBytes = 0
+
+  /// Bytes held by the CPU-side geometry arrays (mirrored on the GPU).
+  var geometryBytes: Int {
+    curves.count * MemoryLayout<SlugGlyphGPUCurve>.stride
+      + glyphs.count * MemoryLayout<SlugGlyphGPUGlyph>.stride
+      + bands.count * MemoryLayout<SlugGlyphGPUBand>.stride
+      + bandIndices.count * MemoryLayout<UInt32>.stride
+  }
+
+  /// Drops every glyph geometry cache once storage passes `budgetBytes`.
+  /// Called between frames: in-flight command buffers keep the old Metal
+  /// buffers alive, and the next `ensureGeometryBuffersIfNeeded` allocates
+  /// fresh ones because the upload counters restart at zero.
+  /// Records the post-reset working set from the first full redraw after a
+  /// reset. Partial redraws (a cursor blink) build only their dirty rows and
+  /// would understate it.
+  func noteGeometryFrameBuilt(fullRedraw: Bool) {
+    guard geometryMeasurePending, fullRedraw else { return }
+    geometryFloorBytes = geometryBytes
+    geometryMeasurePending = false
+  }
+
+  func resetGeometryIfOverBudget(budgetBytes: Int = SlugGlyphRenderer.geometryBudgetBytes) {
+    // The first full redraw after a reset rebuilds exactly the glyphs on
+    // screen (see `noteGeometryFrameBuilt`). If that alone is near the
+    // budget, resetting again would rebuild everything every frame, so keep
+    // at least twice that working set before the next reset.
+    guard geometryBytes > max(budgetBytes, geometryFloorBytes * 2) else { return }
+    curves.removeAll()
+    glyphs.removeAll()
+    bands.removeAll()
+    bandIndices.removeAll()
+    entriesByKey.removeAll()
+    entriesByResolveKey.removeAll()
+    failedResolveKeys.removeAll()
+    ligatureEntriesByKey.removeAll()
+    failedLigatureGlyphKeys.removeAll()
+    curveStore.invalidate()
+    curveBuffer = nil
+    glyphBuffer = nil
+    bandBuffer = nil
+    bandIndexBuffer = nil
+    curveBufferUploadedCount = 0
+    glyphBufferUploadedCount = 0
+    bandBufferUploadedCount = 0
+    bandIndexBufferUploadedCount = 0
+    geometryBuffersDirty = true
+    geometryResetCount += 1
+    geometryMeasurePending = true
+  }
 
   /// Number of times the accumulated curve/band arrays were uploaded to GPU
   /// buffers. This may advance when a new glyph appears, but not merely because
@@ -1730,6 +1796,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     var rasterGlyphs: [SlugTextureInstance] = []
     var colorGlyphs: [SlugTextureInstance] = []
     var waveRegions: [SlugWaveRegionGPU] = []
+    resetGeometryIfOverBudget()
     // At most one rebuild: a frame whose fallback glyphs overflow a fresh
     // atlas keeps the glyphs that fit rather than looping.
     for attempt in 0..<2 {
@@ -1767,6 +1834,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         damageBands: damageBands)
       guard attempt == 0, replaceOverflowedFallbackAtlases() else { break }
     }
+    noteGeometryFrameBuilt(fullRedraw: damageBands == nil)
     kittyImages.endFrame()
     updateLiveGlyphEffectState()
     lastFrameSolidsCount =
@@ -3253,10 +3321,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           p2: SIMD2<Float>(Float(curve.p2.x), Float(curve.p2.y))))
     }
 
+    let bandCount = Self.bandCount(forCurveCount: outline.curves.count)
     let horizontalBandStart = bands.count
-    appendBands(outline: outline, curveStart: curveStart, axis: .horizontal)
+    appendBands(
+      outline: outline, curveStart: curveStart, axis: .horizontal, bandCount: bandCount)
     let verticalBandStart = bands.count
-    appendBands(outline: outline, curveStart: curveStart, axis: .vertical)
+    appendBands(outline: outline, curveStart: curveStart, axis: .vertical, bandCount: bandCount)
     glyphs.append(
       SlugGlyphGPUGlyph(
         boundsMin: SIMD2<Float>(Float(outline.bounds.minX), Float(outline.bounds.minY)),
@@ -3264,9 +3334,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         curveStart: UInt32(curveStart),
         curveCount: UInt32(outline.curves.count),
         horizontalBandStart: UInt32(horizontalBandStart),
-        horizontalBandCount: UInt32(Self.bandCount),
+        horizontalBandCount: UInt32(bandCount),
         verticalBandStart: UInt32(verticalBandStart),
-        verticalBandCount: UInt32(Self.bandCount)))
+        verticalBandCount: UInt32(bandCount)))
 
     let entry = SlugGlyphEntry(key: key, outline: outline, glyphIndex: glyphIndex)
     entriesByKey[key] = entry
@@ -3512,12 +3582,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     case vertical
   }
 
-  private func appendBands(outline: GlyphCurveOutline, curveStart: Int, axis: SlugBandAxis) {
+  private func appendBands(
+    outline: GlyphCurveOutline, curveStart: Int, axis: SlugBandAxis, bandCount: Int
+  ) {
     let minValue = axis == .horizontal ? outline.bounds.minY : outline.bounds.minX
     let extent = max(axis == .horizontal ? outline.bounds.height : outline.bounds.width, .ulpOfOne)
-    for band in 0..<Self.bandCount {
-      let bandMin = minValue + extent * CGFloat(band) / CGFloat(Self.bandCount)
-      let bandMax = minValue + extent * CGFloat(band + 1) / CGFloat(Self.bandCount)
+    for band in 0..<bandCount {
+      let bandMin = minValue + extent * CGFloat(band) / CGFloat(bandCount)
+      let bandMax = minValue + extent * CGFloat(band + 1) / CGFloat(bandCount)
       let indexStart = bandIndices.count
       let intersecting = outline.curves.enumerated()
         .filter { _, curve in curveIntersectsBand(curve, min: bandMin, max: bandMax, axis: axis) }
