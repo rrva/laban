@@ -7906,7 +7906,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       EventLog.shared.log(
         "paste.image.sshUpload.succeeded", ["bytes": bytes, "durationMs": durationMs])
       statusToast?.hide()
-      pasteUserText(path, rawBytes: path.utf8.count, session: session, activeTab: tab)
+      // Quote exactly like a dropped file path so a path with spaces stays one
+      // argument and agents recognize it as an image path.
+      let text = TerminalDropText.format(paths: [path])
+      pasteUserText(text, rawBytes: text.utf8.count, session: session, activeTab: tab)
     case .failure(let failure):
       var payload: [String: Any] = [
         "reason": failure.kind, "bytes": bytes, "durationMs": durationMs,

@@ -150,6 +150,12 @@ final class SSHImagePasteUploadTests: XCTestCase {
       SSHImagePasteUpload.uploadEnvironment(base: base, authSocket: nil), ["HOME": "/h"])
   }
 
+  func testRemotePathIsQuotedLikeADroppedFile() {
+    XCTAssertEqual(
+      TerminalDropText.format(paths: ["/home/a b/.cache/laban/paste/x.png"]),
+      "'/home/a b/.cache/laban/paste/x.png' ")
+  }
+
   func testEarlyExitDoesNotKillTheAppWithSIGPIPE() throws {
     let outcome = try SSHImagePasteUpload.runProcess(
       executable: URL(fileURLWithPath: "/bin/sh"),
