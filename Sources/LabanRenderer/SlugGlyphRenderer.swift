@@ -808,17 +808,20 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Called between frames: in-flight command buffers keep the old Metal
   /// buffers alive, and the next `ensureGeometryBuffersIfNeeded` allocates
   /// fresh ones because the upload counters restart at zero.
+  /// Records the post-reset working set from the first full redraw after a
+  /// reset. Partial redraws (a cursor blink) build only their dirty rows and
+  /// would understate it.
+  func noteGeometryFrameBuilt(fullRedraw: Bool) {
+    guard geometryMeasurePending, fullRedraw else { return }
+    geometryFloorBytes = geometryBytes
+    geometryMeasurePending = false
+  }
+
   func resetGeometryIfOverBudget(budgetBytes: Int = SlugGlyphRenderer.geometryBudgetBytes) {
-    // The first frame after a reset rebuilds exactly what it draws; if that
-    // alone is near the budget, resetting again would rebuild everything
-    // every frame. Keep at least twice that frame's geometry before the next
-    // reset.
-    // Measured at the first call that sees the rebuilt frame's geometry
-    // (the call at the start of the frame right after a reset sees none).
-    if geometryMeasurePending, geometryBytes > 0 {
-      geometryFloorBytes = geometryBytes
-      geometryMeasurePending = false
-    }
+    // The first full redraw after a reset rebuilds exactly the glyphs on
+    // screen (see `noteGeometryFrameBuilt`). If that alone is near the
+    // budget, resetting again would rebuild everything every frame, so keep
+    // at least twice that working set before the next reset.
     guard geometryBytes > max(budgetBytes, geometryFloorBytes * 2) else { return }
     curves.removeAll()
     glyphs.removeAll()
@@ -1822,6 +1825,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         damageBands: damageBands)
       guard attempt == 0, replaceOverflowedFallbackAtlases() else { break }
     }
+    noteGeometryFrameBuilt(fullRedraw: damageBands == nil)
     kittyImages.endFrame()
     updateLiveGlyphEffectState()
     lastFrameSolidsCount =
