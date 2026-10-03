@@ -2774,6 +2774,7 @@ public final class TerminalSurfaceController {
     var pieceStart = text.startIndex
     var pieceOriginX = origin.x
     var pieceStamped: Bool?
+    let clusterCount = displayCellCount == nil ? 0 : text.count
     var index = text.startIndex
     while index < text.endIndex {
       let next = text.index(after: index)
@@ -2783,10 +2784,11 @@ public final class TerminalSurfaceController {
       // use. Only the last may be wide.
       // The engine's span, when the run carries it, sizes the last cluster
       // exactly (a ZWJ sequence split over several cells covers them all).
-      let lastWidth =
-        displayCellCount.map { max(1, $0 - (text.count - 1)) }
-        ?? max(1, TerminalDisplayWidth.cells(of: String(cluster)))
-      let width = next == text.endIndex ? lastWidth : 1
+      let width =
+        next == text.endIndex
+        ? (displayCellCount.map { max(1, $0 - (clusterCount - 1)) }
+          ?? max(1, TerminalDisplayWidth.cells(of: String(cluster))))
+        : 1
       let cellMinX = gridOriginX + CGFloat(col) * cellWidth
       let cellMaxX = cellMinX + CGFloat(width) * cellWidth
       let stamped = cellMinX < freshXMax && freshXMin < cellMaxX
