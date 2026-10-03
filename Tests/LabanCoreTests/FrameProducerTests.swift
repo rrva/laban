@@ -114,9 +114,70 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertFalse(terminalCmds.isEmpty, "commands must include terminal-sourced commands")
   }
 
+  // MARK: - Engine columns
+
+  /// Renderers place a run's i-th Character at `origin.x + i * cellWidth`.
+  /// Zero-width characters attached to a cell and ZWJ sequences the engine
+  /// splits over several cells must not shift the cells that follow: every
+  /// ASCII letter is drawn at the column the engine gave it.
+  func testGlyphRunsDrawLettersAtTheirEngineColumns() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(
+      Array("[a\u{200B}bc]\r\n[\u{1F9D4}\u{200D}\u{2642}\u{FE0F}x]\r\n[\u{2764}\u{FE0F}y]".utf8))
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let snapshot = snap.pointee
+    let cols = Int(snapshot.cols)
+    let rows = Int(snapshot.rows)
+    let cellWidth: CGFloat = 10
+    let cellHeight: CGFloat = 20
+    var engineColumns: [Int: [Character: Int]] = [:]  // row -> letter -> column
+    for row in 0..<3 {
+      for col in 0..<cols {
+        let cell = snapshot.cells[row * cols + col]
+        // A cell's text may carry attached zero-width characters; its first
+        // byte is the letter that starts it.
+        guard cell.utf8_length >= 1, let storage = snapshot.utf8_storage else { continue }
+        let byte = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
+          .load(as: UInt8.self)
+        let letter = Character(Unicode.Scalar(byte))
+        if byte < 0x80, letter.isLetter { engineColumns[row, default: [:]][letter] = col }
+      }
+    }
+    XCTAssertEqual(Set(engineColumns.values.flatMap(\.keys)), ["a", "b", "c", "x", "y"])
+
+    for forceLegacy in [false, true] {
+      FrameProducer._forceLegacyGlyphRuns = forceLegacy
+      defer { FrameProducer._forceLegacyGlyphRuns = false }
+      let cmds = FrameProducer(cellWidth: Int(cellWidth), cellHeight: Int(cellHeight))
+        .commands(from: UnsafePointer(snap))
+      var drawn: [Int: [Character: Int]] = [:]
+      for cmd in cmds {
+        guard case .glyphRun(let origin, let text, _, _, _, .terminal, _, _, _, _, _, _, _) = cmd
+        else { continue }
+        let row = rows - 1 - Int((origin.y / cellHeight).rounded(.down))
+        for (index, character) in text.enumerated() where character.isLetter {
+          drawn[row, default: [:]][character] = Int(origin.x / cellWidth) + index
+        }
+      }
+      XCTAssertEqual(drawn, engineColumns, "legacy path: \(forceLegacy)")
+    }
+  }
+
   // MARK: - Box-drawing
 
-  func testBoxDrawingFixtureProducesNonEmptyGlyphCommandsWithoutTextReplacement() throws {
+  func testBoxDrawingLinesAreEmittedAsRectsNotGlyphs() throws {
+    // Straight Box Drawing lines are procedural, like block elements: font
+    // outlines rarely fill Laban's rounded-up cell, which left gaps between
+    // cells (the bundled font's ─ stops 0.3-0.6pt short at 12-14pt).
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
@@ -132,24 +193,55 @@ final class FrameProducerTests: XCTestCase {
     defer { laban_snapshot_destroy(snap) }
 
     let cmds = FrameProducer().commands(from: UnsafePointer(snap))
-
-    let glyphTexts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _, _, _, _, _) = cmd, src == .terminal
-      {
-        return text
-      }
+    let glyphText = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, _, _, _, _) = cmd { return text }
       return nil
+    }.joined()
+    for scalar in "┌─┐│└┘".unicodeScalars {
+      XCTAssertFalse(
+        glyphText.unicodeScalars.contains(scalar),
+        "box line U+\(String(scalar.value, radix: 16, uppercase: true)) must be a .rect")
     }
+    let terminalRects = cmds.filter {
+      if case .rect(_, _, .terminal, _) = $0 { return true }
+      return false
+    }
+    XCTAssertGreaterThan(terminalRects.count, 6, "box lines must produce procedural rects")
+  }
 
-    XCTAssertFalse(glyphTexts.isEmpty, "box-drawing fixture must produce glyph commands")
+  func testBoxDrawingLinesTileGapFreeEndToEnd() throws {
+    // A row of ─ and a column of │ rendered through producer + software
+    // renderer must leave no background pixel along the stroke.
+    var size = LabanTerminalSize()
+    size.rows = 3
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(Array("││──────\r\n│\r\n│".utf8))
+    session.poll()
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
 
-    // Producer must not replace the box-drawing characters with substitute text
-    let boxChars: [Character] = ["┌", "─", "┐", "│", "└", "┘"]
-    for ch in boxChars {
-      let found = glyphTexts.contains {
-        $0.unicodeScalars.contains { Unicode.Scalar($0.value) == ch.unicodeScalars.first }
+    for (cellW, cellH) in [(8, 16), (9, 19), (11, 23)] {
+      let surface = BitmapSurface(width: cellW * Int(size.cols), height: cellH * Int(size.rows))
+      let bg = snap.pointee.default_background_rgba
+      SoftwareRenderer(surface: surface, fontAtlas: FontAtlas()).render(
+        FrameProducer(cellWidth: cellW, cellHeight: cellH).commands(from: UnsafePointer(snap)))
+      // Horizontal stroke: some pixel row inside the top row must be fully inked
+      // across the six ─ cells (columns 2-7).
+      // `BitmapSurface.pixel` is y-up, so the top terminal row is the last band.
+      let horizontalInked = (cellH * 2..<cellH * 3).contains { y in
+        (cellW * 2..<cellW * 8).allSatisfy { x in surface.pixel(x: x, y: y) != bg }
       }
-      XCTAssertTrue(found, "box-drawing character '\(ch)' must appear verbatim in glyph commands")
+      XCTAssertTrue(horizontalInked, "─ must tile without gaps at cell \(cellW)x\(cellH)")
+      // Vertical stroke: some pixel column of column 0 must be inked top to bottom.
+      let verticalInked = (0..<cellW).contains { x in
+        (0..<cellH * 3).allSatisfy { y in surface.pixel(x: x, y: y) != bg }
+      }
+      XCTAssertTrue(verticalInked, "│ must tile without gaps at cell \(cellW)x\(cellH)")
     }
   }
 
@@ -355,6 +447,38 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertEqual(overlay.first?.text, "a")
     XCTAssertEqual(overlay.first?.origin, cursorRect.origin)
     XCTAssertNotEqual(overlay.first?.foreground, cursorColor)
+  }
+
+  /// On a wide character the block cursor covers both columns, so the
+  /// re-emitted glyph never paints its right half outside the cursor.
+  func testBlockCursorCoversBothColumnsOfWideCharacter() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("\u{1B}[2 q\u{4E2D}\u{1B}[2D".utf8))  // block cursor on 中
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let cmds = FrameProducer(cellWidth: 10, cellHeight: 20).commands(from: UnsafePointer(snap))
+    let cursorRects = cmds.compactMap { cmd -> CGRect? in
+      if case .cursor(let rect, _) = cmd { return rect }
+      return nil
+    }
+    XCTAssertEqual(cursorRects.count, 1)
+    XCTAssertEqual(cursorRects.first?.width, 20, "the cursor spans both columns of 中")
+    guard let cursorIndex = cmds.lastIndex(where: { if case .cursor = $0 { true } else { false } })
+    else { return }
+    let overlayTexts = cmds[(cursorIndex + 1)...].compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+    XCTAssertEqual(overlayTexts, ["\u{4E2D}"])
   }
 
   func testNonBlockCursorDoesNotReemitGlyph() throws {
@@ -1137,6 +1261,19 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertEqual(rects.count, 1, "remote default cursor must emit one rect")
     XCTAssertEqual(rects.first?.width, 10, "default block must span the full cell width")
     XCTAssertEqual(rects.first?.height, 20, "default block must span the full cell height")
+  }
+
+  /// Remote cells carry no wide flag: a multi-scalar wide emoji (whose
+  /// summed scalar widths exceed 2) still gets a two-column block cursor.
+  func testRemoteBlockCursorCoversMultiScalarWideEmoji() {
+    var snapshot = remoteSnapshotFixture()
+    snapshot.cells = [
+      LabandSnapshotCell(
+        row: 0, col: 0, text: "\u{1F44D}\u{1F3FD}", flags: 0, foregroundRGBA: 0xFFFF_FFFF,
+        backgroundRGBA: 0x0000_00FF)
+    ]
+    let cmds = FrameProducer(cellWidth: 10, cellHeight: 20).commands(from: snapshot)
+    XCTAssertEqual(remoteCursorRects(cmds).first?.width, 20)
   }
 
   func testRemoteCursor_UserBarShapesRemoteCursor() {

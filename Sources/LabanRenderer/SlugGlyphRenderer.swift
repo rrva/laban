@@ -190,6 +190,15 @@ private struct SlugGlyphEntry {
   var glyphIndex: Int
 }
 
+/// A glyph outline placed in a run, at its cell's x origin; outline units are
+/// reference-size points, scaled by the run's `pointScale`.
+struct SlugUnderlineInk {
+  var outline: GlyphCurveOutline
+  var originX: CGFloat
+  /// Vertical shaping offset of the glyph above the baseline, in outline units.
+  var offsetY: CGFloat = 0
+}
+
 /// One glyph of a resolved cluster, offset from the cell origin in
 /// reference-size points. Most clusters are one glyph at the origin; combining
 /// marks, Indic conjuncts and reordered matras shape to several, and every one
@@ -327,7 +336,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 {
   public static let referencePointSize: CGFloat = 14
 
-  private static let bandCount = 64
+  private static let maxBandCount = 64
+  /// Bands per axis for a glyph: one per curve up to `maxBandCount`, never
+  /// fewer than 8. A band never holds more curves than the glyph has, so
+  /// simple glyphs (`-`, `.`, `l`) lose nothing by carrying fewer than 64.
+  static func bandCount(forCurveCount curveCount: Int) -> Int {
+    min(maxBandCount, max(8, curveCount))
+  }
+
+  /// Geometry storage above which the next frame starts from empty caches.
+  /// Curves, bands and indices only grow as new glyphs appear; a long
+  /// session streaming varied Unicode would otherwise keep every glyph it
+  /// ever drew. Visible glyphs rebuild on demand after the reset.
+  static let geometryBudgetBytes = 32 << 20
   private static let targetRingDepth = 3
   private static let presentLinkLog = Logger(
     subsystem: "com.rrva.laban", category: "present-link")
@@ -737,6 +758,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var colorGlyphAtlas: ColorGlyphAtlas?
   /// Times a full fallback atlas was replaced mid-frame; tests read it.
   private(set) var fallbackAtlasResetCount = 0
+  /// Text signature of the frame that last overflowed a fresh max-size
+  /// atlas; an identical frame would overflow a replacement again.
+  private var colorAtlasUnfittableFrame: Int?
+  private var rasterAtlasUnfittableFrame: Int?
   private var pixelWidth: Int
   private var pixelHeight: Int
   private var scale: CGFloat
@@ -779,6 +804,60 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Number of size-independent glyph geometry entries built by this renderer.
   /// Used by tests to prove active point-size changes do not rebuild curves/bands.
   public private(set) var geometryEntryBuildCount = 0
+  /// Times the geometry caches were dropped for exceeding the budget.
+  public private(set) var geometryResetCount = 0
+  private var geometryMeasurePending = false
+  private var geometryFloorBytes = 0
+
+  /// Bytes held by the CPU-side geometry arrays (mirrored on the GPU).
+  var geometryBytes: Int {
+    curves.count * MemoryLayout<SlugGlyphGPUCurve>.stride
+      + glyphs.count * MemoryLayout<SlugGlyphGPUGlyph>.stride
+      + bands.count * MemoryLayout<SlugGlyphGPUBand>.stride
+      + bandIndices.count * MemoryLayout<UInt32>.stride
+  }
+
+  /// Drops every glyph geometry cache once storage passes `budgetBytes`.
+  /// Called between frames: in-flight command buffers keep the old Metal
+  /// buffers alive, and the next `ensureGeometryBuffersIfNeeded` allocates
+  /// fresh ones because the upload counters restart at zero.
+  /// Records the post-reset working set from the first full redraw after a
+  /// reset. Partial redraws (a cursor blink) build only their dirty rows and
+  /// would understate it.
+  func noteGeometryFrameBuilt(fullRedraw: Bool) {
+    guard geometryMeasurePending, fullRedraw else { return }
+    geometryFloorBytes = geometryBytes
+    geometryMeasurePending = false
+  }
+
+  func resetGeometryIfOverBudget(budgetBytes: Int = SlugGlyphRenderer.geometryBudgetBytes) {
+    // The first full redraw after a reset rebuilds exactly the glyphs on
+    // screen (see `noteGeometryFrameBuilt`). If that alone is near the
+    // budget, resetting again would rebuild everything every frame, so keep
+    // at least twice that working set before the next reset.
+    guard geometryBytes > max(budgetBytes, geometryFloorBytes * 2) else { return }
+    curves.removeAll()
+    glyphs.removeAll()
+    bands.removeAll()
+    bandIndices.removeAll()
+    entriesByKey.removeAll()
+    entriesByResolveKey.removeAll()
+    failedResolveKeys.removeAll()
+    ligatureEntriesByKey.removeAll()
+    failedLigatureGlyphKeys.removeAll()
+    curveStore.invalidate()
+    curveBuffer = nil
+    glyphBuffer = nil
+    bandBuffer = nil
+    bandIndexBuffer = nil
+    curveBufferUploadedCount = 0
+    glyphBufferUploadedCount = 0
+    bandBufferUploadedCount = 0
+    bandIndexBufferUploadedCount = 0
+    geometryBuffersDirty = true
+    geometryResetCount += 1
+    geometryMeasurePending = true
+  }
 
   /// Number of times the accumulated curve/band arrays were uploaded to GPU
   /// buffers. This may advance when a new glyph appears, but not merely because
@@ -1721,6 +1800,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     var rasterGlyphs: [SlugTextureInstance] = []
     var colorGlyphs: [SlugTextureInstance] = []
     var waveRegions: [SlugWaveRegionGPU] = []
+    resetGeometryIfOverBudget()
     // At most one rebuild: a frame whose fallback glyphs overflow a fresh
     // atlas keeps the glyphs that fit rather than looping.
     for attempt in 0..<2 {
@@ -1756,8 +1836,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         colorGlyphs: &colorGlyphs,
         waveRegions: &waveRegions,
         damageBands: damageBands)
-      guard attempt == 0, replaceOverflowedFallbackAtlases() else { break }
+      guard attempt == 0, replaceOverflowedFallbackAtlases(commands: commands) else { break }
     }
+    noteGeometryFrameBuilt(fullRedraw: damageBands == nil)
     kittyImages.endFrame()
     updateLiveGlyphEffectState()
     lastFrameSolidsCount =
@@ -2513,7 +2594,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, _, _, let outputTimestampSeconds,
+        let underlineStyle, let underlineColor, _, let displayCellCount, let outputTimestampSeconds,
         let foregroundTransition, let foregroundWave
       ):
         let activeAtlas = atlas(for: source)
@@ -2556,6 +2637,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           effectDuration: effectDuration,
           foregroundTransition: foregroundTransition,
           foregroundWave: foregroundWave,
+          displayCellCount: displayCellCount,
           overlayMaskRects: overlayMaskRects,
           solids: &solids,
           overlaySolids: &overlaySolids,
@@ -2721,6 +2803,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     effectDuration: Float? = nil,
     foregroundTransition: GlyphForegroundTransition? = nil,
     foregroundWave: GlyphForegroundWave? = nil,
+    displayCellCount: Int? = nil,
     overlayMaskRects: [CGRect],
     solids: inout [SlugSolidInstance],
     overlaySolids: inout [SlugSolidInstance],
@@ -2762,10 +2845,21 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     let runMayContainCJK = TerminalCJKFontPolicy.containsCJK(text)
 
+    // Outlines placed in this run, kept only when an underline needs them
+    // for skip-ink.
+    let drawsUnderline = attributes.contains(.underline) || underlineStyle != .none
+    var underlineInk: [SlugUnderlineInk] = []
+
     func appendSlugGlyph(
       _ entry: SlugGlyphEntry, cellOriginX: CGFloat, offset: CGPoint = .zero
     ) {
       let bounds = entry.outline.bounds
+      if drawsUnderline {
+        underlineInk.append(
+          SlugUnderlineInk(
+            outline: entry.outline, originX: cellOriginX + offset.x * pointScale,
+            offsetY: offset.y))
+      }
       let localPixelPad =
         CGFloat(1 + perSideDilatePx) / max(pointScale * scale, .ulpOfOne)
       let localMin = SIMD2<Float>(
@@ -2820,8 +2914,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       fontID: fontID,
       hasMotion: foregroundTransition != nil || foregroundWave != nil)
 
+    // FrameProducer ends a terminal run after any wide cell, so with the
+    // engine's column span every cluster but the last is one cell wide.
+    // Only terminal runs carry an engine span; IME preedit counts the whole
+    // composition's Unicode width, which this rule cannot split.
+    let engineSpan = source == .terminal ? displayCellCount : nil
+    let clusterCount = engineSpan == nil ? 0 : text.count
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
+      let engineCellSpan = engineSpan.map {
+        cellIndex == clusterCount - 1 ? max(1, $0 - (clusterCount - 1)) : 1
+      }
       let cellRect = CGRect(
         x: cellOriginX, y: origin.y,
         width: cellAdvance, height: activeAtlas.cellSize.height)
@@ -2850,6 +2953,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         ColorGlyphSupport.clusterMayBeColor(cluster),
         let colorFallback = colorGlyphInstance(
           cluster: cluster,
+          cellSpan: engineCellSpan,
           font: activeVariant.font,
           boldFallback: activeVariant.boldFallback,
           italicFallback: activeVariant.italicFallback,
@@ -2914,6 +3018,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         underlineColor: underlineColor,
         atlas: activeAtlas,
         foreground: foreground,
+        underlineInk: underlineInk,
+        pointScale: pointScale,
         solids: &overlaySolids)
     } else {
       appendDecorations(
@@ -2924,6 +3030,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         underlineColor: underlineColor,
         atlas: activeAtlas,
         foreground: foreground,
+        underlineInk: underlineInk,
+        pointScale: pointScale,
         solids: &solids)
     }
   }
@@ -2966,6 +3074,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     underlineColor: UInt32?,
     atlas: FontAtlas,
     foreground: UInt32,
+    underlineInk: [SlugUnderlineInk] = [],
+    pointScale: CGFloat = 1,
     solids: inout [SlugSolidInstance]
   ) {
     // Mirrors TextDecorationLayout.make's own guard (below): bail before
@@ -2989,12 +3099,28 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         // Slug sees runs, not the grid, so anchor patterned underlines to the
         // surface origin: every run of a row then shares one dash/dot phase
         // instead of restarting at each style split.
-        phaseOriginX: 0)
+        phaseOriginX: 0,
+        underlineMetrics: (atlas.underlinePosition, atlas.underlineThickness))
     else { return }
 
     let underlineRGBA = underlineColor ?? foreground
+    let baseline = origin.y + atlas.descent
+    // Dotted and dashed underlines are many rects on the same band; solve
+    // the run's ink once per band, not once per rect.
+    var cutsByBand: [CGFloat: [(CGFloat, CGFloat)]] = [:]
     for rect in layout.underlineRects {
-      solids.append(solid(rect: rect, color: underlineRGBA))
+      let cuts: [(CGFloat, CGFloat)]
+      if let cached = cutsByBand[rect.minY] {
+        cuts = cached
+      } else {
+        cuts = Self.inkCuts(
+          bandMinY: rect.minY, bandMaxY: rect.maxY, ink: underlineInk, baseline: baseline,
+          pointScale: pointScale, gap: layout.thickness)
+        cutsByBand[rect.minY] = cuts
+      }
+      for piece in Self.subtracting(cuts, from: rect) {
+        solids.append(solid(rect: piece, color: underlineRGBA))
+      }
     }
     if !layout.curlyUnderlinePoints.isEmpty {
       for (start, end) in zip(
@@ -3199,10 +3325,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           p2: SIMD2<Float>(Float(curve.p2.x), Float(curve.p2.y))))
     }
 
+    let bandCount = Self.bandCount(forCurveCount: outline.curves.count)
     let horizontalBandStart = bands.count
-    appendBands(outline: outline, curveStart: curveStart, axis: .horizontal)
+    appendBands(
+      outline: outline, curveStart: curveStart, axis: .horizontal, bandCount: bandCount)
     let verticalBandStart = bands.count
-    appendBands(outline: outline, curveStart: curveStart, axis: .vertical)
+    appendBands(outline: outline, curveStart: curveStart, axis: .vertical, bandCount: bandCount)
     glyphs.append(
       SlugGlyphGPUGlyph(
         boundsMin: SIMD2<Float>(Float(outline.bounds.minX), Float(outline.bounds.minY)),
@@ -3210,9 +3338,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         curveStart: UInt32(curveStart),
         curveCount: UInt32(outline.curves.count),
         horizontalBandStart: UInt32(horizontalBandStart),
-        horizontalBandCount: UInt32(Self.bandCount),
+        horizontalBandCount: UInt32(bandCount),
         verticalBandStart: UInt32(verticalBandStart),
-        verticalBandCount: UInt32(Self.bandCount)))
+        verticalBandCount: UInt32(bandCount)))
 
     let entry = SlugGlyphEntry(key: key, outline: outline, glyphIndex: glyphIndex)
     entriesByKey[key] = entry
@@ -3278,6 +3406,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   private func colorGlyphInstance(
     cluster: Character,
+    cellSpan: Int?,
     font: CTFont,
     boldFallback: Bool,
     italicFallback: Bool,
@@ -3288,7 +3417,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         character: cluster,
         font: font,
         boldFallback: boldFallback,
-        italicFallback: italicFallback)
+        italicFallback: italicFallback,
+        cellSpan: cellSpan)
     else { return nil }
     let atlasSize = Float(colorGlyphAtlas.textureSize)
     return SlugTextureInstance(
@@ -3335,17 +3465,135 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       color: slugColor(color))
   }
 
+  /// Underline pieces left after cutting gaps where glyph ink crosses the
+  /// underline band (skip-ink). Ink is sampled on three scanlines through
+  /// the band widened by `gap`, and each crossing span is widened by `gap`
+  /// on both sides, so descenders of g j p q y stand clear of the line.
+  static func skippingInk(
+    _ rect: CGRect,
+    ink: [SlugUnderlineInk],
+    baseline: CGFloat,
+    pointScale: CGFloat,
+    gap: CGFloat
+  ) -> [CGRect] {
+    subtracting(
+      inkCuts(
+        bandMinY: rect.minY, bandMaxY: rect.maxY, ink: ink, baseline: baseline,
+        pointScale: pointScale, gap: gap),
+      from: rect)
+  }
+
+  /// Sorted x intervals where glyph ink, widened by `gap`, crosses the
+  /// horizontal band `bandMinY...bandMaxY` (also widened by `gap`).
+  static func inkCuts(
+    bandMinY: CGFloat,
+    bandMaxY: CGFloat,
+    ink: [SlugUnderlineInk],
+    baseline: CGFloat,
+    pointScale: CGFloat,
+    gap: CGFloat
+  ) -> [(CGFloat, CGFloat)] {
+    guard !ink.isEmpty, pointScale > 0 else { return [] }
+    let scanlines = [bandMinY - gap, (bandMinY + bandMaxY) / 2, bandMaxY + gap]
+    var cuts: [(CGFloat, CGFloat)] = []
+    for placement in ink {
+      let bounds = placement.outline.bounds
+      let localLow = (scanlines[0] - baseline) / pointScale - placement.offsetY
+      let localHigh = (scanlines[2] - baseline) / pointScale - placement.offsetY
+      guard bounds.minY <= localHigh, bounds.maxY >= localLow else { continue }
+      for y in scanlines {
+        let localY = (y - baseline) / pointScale - placement.offsetY
+        for span in inkSpans(placement.outline, y: localY) {
+          cuts.append(
+            (
+              placement.originX + span.lowerBound * pointScale - gap,
+              placement.originX + span.upperBound * pointScale + gap
+            ))
+        }
+      }
+    }
+    cuts.sort { $0.0 < $1.0 }
+    return cuts
+  }
+
+  /// `rect` minus the sorted x intervals in `cuts`.
+  static func subtracting(_ cuts: [(CGFloat, CGFloat)], from rect: CGRect) -> [CGRect] {
+    guard !cuts.isEmpty else { return [rect] }
+    var pieces: [CGRect] = []
+    var x = rect.minX
+    for (start, end) in cuts {
+      if end <= x { continue }
+      if start >= rect.maxX { break }
+      if start > x {
+        pieces.append(CGRect(x: x, y: rect.minY, width: start - x, height: rect.height))
+      }
+      x = max(x, end)
+      if x >= rect.maxX { break }
+    }
+    if x < rect.maxX {
+      pieces.append(CGRect(x: x, y: rect.minY, width: rect.maxX - x, height: rect.height))
+    }
+    return pieces
+  }
+
+  /// Horizontal spans of `outline` filled (nonzero winding) on scanline `y`,
+  /// in glyph units.
+  static func inkSpans(_ outline: GlyphCurveOutline, y: CGFloat) -> [ClosedRange<CGFloat>] {
+    var crossings: [(x: CGFloat, winding: Int)] = []
+    for curve in outline.curves {
+      let y0 = curve.p0.y - y
+      let y1 = curve.p1.y - y
+      let y2 = curve.p2.y - y
+      let a = y0 - 2 * y1 + y2
+      let b = y0 - y1
+      var roots: [CGFloat] = []
+      if abs(a) < 1e-9 {
+        if abs(b) > 1e-9 { roots.append(y0 / (2 * b)) }
+      } else {
+        let discriminant = b * b - a * y0
+        if discriminant >= 0 {
+          let root = discriminant.squareRoot()
+          roots.append((b - root) / a)
+          roots.append((b + root) / a)
+        }
+      }
+      for t in roots where t >= 0 && t < 1 {
+        let u = 1 - t
+        let x = u * u * curve.p0.x + 2 * u * t * curve.p1.x + t * t * curve.p2.x
+        let dy = 2 * (u * (curve.p1.y - curve.p0.y) + t * (curve.p2.y - curve.p1.y))
+        guard dy != 0 else { continue }
+        crossings.append((x, dy > 0 ? 1 : -1))
+      }
+    }
+    crossings.sort { $0.x < $1.x }
+    var spans: [ClosedRange<CGFloat>] = []
+    var winding = 0
+    var start: CGFloat = 0
+    for crossing in crossings {
+      let wasInside = winding != 0
+      winding += crossing.winding
+      if !wasInside, winding != 0 {
+        start = crossing.x
+      } else if wasInside, winding == 0 {
+        spans.append(start...crossing.x)
+      }
+    }
+    return spans
+  }
+
   private enum SlugBandAxis {
     case horizontal
     case vertical
   }
 
-  private func appendBands(outline: GlyphCurveOutline, curveStart: Int, axis: SlugBandAxis) {
+  private func appendBands(
+    outline: GlyphCurveOutline, curveStart: Int, axis: SlugBandAxis, bandCount: Int
+  ) {
     let minValue = axis == .horizontal ? outline.bounds.minY : outline.bounds.minX
     let extent = max(axis == .horizontal ? outline.bounds.height : outline.bounds.width, .ulpOfOne)
-    for band in 0..<Self.bandCount {
-      let bandMin = minValue + extent * CGFloat(band) / CGFloat(Self.bandCount)
-      let bandMax = minValue + extent * CGFloat(band + 1) / CGFloat(Self.bandCount)
+    for band in 0..<bandCount {
+      let bandMin = minValue + extent * CGFloat(band) / CGFloat(bandCount)
+      let bandMax = minValue + extent * CGFloat(band + 1) / CGFloat(bandCount)
       let indexStart = bandIndices.count
       let intersecting = outline.curves.enumerated()
         .filter { _, curve in curveIntersectsBand(curve, min: bandMin, max: bandMax, axis: axis) }
@@ -3554,6 +3802,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Largest fallback atlas side. 4096² is 64 MiB as BGRA; past it a fresh
   /// same-size atlas replaces the full one, which is the eviction.
   static let maxFallbackAtlasTextureSize = 4096
+  /// Instance cap, `maxFallbackAtlasTextureSize` unless a test lowers it.
+  var fallbackAtlasMaxTextureSize = SlugGlyphRenderer.maxFallbackAtlasTextureSize
 
   /// The color and R8 fallback atlases are shelf-packed and never evict
   /// single entries, so a frame that overflows one swaps in a fresh atlas
@@ -3561,27 +3811,61 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// instances. In-flight command buffers keep the old texture alive, and
   /// pixels outside this frame's damage are already in the ring targets.
   /// Returns whether any atlas was replaced.
-  private func replaceOverflowedFallbackAtlases() -> Bool {
+  private func replaceOverflowedFallbackAtlases(commands: [FrameCommand]) -> Bool {
     var replaced = false
+    // A max-size atlas that already overflowed on this exact frame text would
+    // overflow a replacement too: one frame needs more glyphs than the largest
+    // atlas holds. Keep it (the glyphs that fit stay drawn) instead of
+    // allocating a fresh 64 MiB texture for every redraw of that frame. Any
+    // other frame (new text, a newly needed glyph) still gets a fresh atlas.
+    lazy var signature = Self.frameTextSignature(commands)
     if let atlas = colorGlyphAtlas, atlas.didOverflow,
-      let fresh = Self.makeColorGlyphAtlas(
-        device: device, fontAtlas: fontAtlas, scale: scale,
-        textureSize: min(atlas.textureSize * 2, Self.maxFallbackAtlasTextureSize))
+      !(atlas.textureSize >= fallbackAtlasMaxTextureSize && colorAtlasUnfittableFrame == signature)
     {
-      colorGlyphAtlas = fresh
-      fallbackAtlasResetCount += 1
-      replaced = true
+      if atlas.textureSize >= fallbackAtlasMaxTextureSize { colorAtlasUnfittableFrame = signature }
+      if let fresh = Self.makeColorGlyphAtlas(
+        device: device, fontAtlas: fontAtlas, scale: scale,
+        textureSize: min(atlas.textureSize * 2, fallbackAtlasMaxTextureSize))
+      {
+        colorGlyphAtlas = fresh
+        fallbackAtlasResetCount += 1
+        replaced = true
+      }
     }
     if let atlas = rasterAtlas, atlas.didOverflow,
-      let fresh = Self.makeRasterGlyphAtlas(
-        device: device, fontAtlas: fontAtlas, scale: scale,
-        textureSize: min(atlas.textureSize * 2, Self.maxFallbackAtlasTextureSize))
+      !(atlas.textureSize >= fallbackAtlasMaxTextureSize && rasterAtlasUnfittableFrame == signature)
     {
-      rasterAtlas = fresh
-      fallbackAtlasResetCount += 1
-      replaced = true
+      if atlas.textureSize >= fallbackAtlasMaxTextureSize { rasterAtlasUnfittableFrame = signature }
+      if let fresh = Self.makeRasterGlyphAtlas(
+        device: device, fontAtlas: fontAtlas, scale: scale,
+        textureSize: min(atlas.textureSize * 2, fallbackAtlasMaxTextureSize))
+      {
+        rasterAtlas = fresh
+        fallbackAtlasResetCount += 1
+        replaced = true
+      }
     }
     return replaced
+  }
+
+  /// Hash of the frame's glyph-run text, computed only on overflow.
+  private static func frameTextSignature(_ commands: [FrameCommand]) -> Int {
+    // The block-cursor glyph re-emitted after a .cursor command exists only
+    // in the visible blink phase; leave it out so blinking does not look
+    // like new text.
+    var hasher = Hasher()
+    var afterCursor = false
+    for command in commands {
+      switch command {
+      case .cursor:
+        afterCursor = true
+      case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _):
+        if !afterCursor { hasher.combine(text) }
+      default:
+        break
+      }
+    }
+    return hasher.finalize()
   }
 
   /// If a prewarm pass left a compatible raster atlas held aside for `scale`,

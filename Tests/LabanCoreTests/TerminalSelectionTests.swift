@@ -529,10 +529,17 @@ final class TerminalSelectionTests: XCTestCase {
     var lastSelIndex = -1
     var firstGlyphIndex = Int.max
 
+    // The fixture's box lines are procedural foreground rects in its two
+    // truecolor foregrounds; they belong to the glyph pass, not the background.
+    let boxLineColors: Set<UInt32> = [0xFFCC_00FF, 0x74C7_ECFF]
     for (i, cmd) in cmds.enumerated() {
       switch cmd {
-      case .rect(_, _, let src, _) where src == .terminal:
-        lastBgIndex = i
+      case .rect(_, let color, let src, _) where src == .terminal:
+        if boxLineColors.contains(color) {
+          firstGlyphIndex = min(firstGlyphIndex, i)
+        } else {
+          lastBgIndex = i
+        }
       case .selection:
         firstSelIndex = min(firstSelIndex, i)
         lastSelIndex = max(lastSelIndex, i)

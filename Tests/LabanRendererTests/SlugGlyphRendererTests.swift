@@ -714,6 +714,55 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       abs(marked.midX - plain.midX), FontAtlas(pointSize: 18).cellSize.width / 2)
   }
 
+  /// When even a fresh max-size atlas cannot hold one frame's emoji, redraws
+  /// of that same frame keep the atlas instead of allocating a new texture
+  /// every frame, while changed text still evicts it.
+  func testSlugFullMaxSizeAtlasIsNotReplacedEveryFrame() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    Self.registerEmojiMode("color")
+    let emoji = (0x1F300...0x1F6FF).compactMap(Unicode.Scalar.init)
+      .filter { $0.properties.isEmojiPresentation }
+      .prefix(400)
+      .map { Character($0) }
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 48), pixelWidth: 640, pixelHeight: 320, scale: 2))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    renderer.fallbackAtlasMaxTextureSize = 2048  // the initial size: replacement cannot grow
+    var commands: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 320, height: 160), color: 0x0000_00FF, source: .terminal)
+    ]
+    for row in 0..<20 {
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(x: 0, y: CGFloat(row) * 8),
+          text: String(emoji[(row * 20)..<(row * 20 + 20)]), foreground: 0xFFFF_FFFF,
+          background: 0x0000_00FF, attributes: [], source: .terminal))
+    }
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    let resetsAfterFirstFrame = renderer.fallbackAtlasResetCount
+    XCTAssertEqual(resetsAfterFirstFrame, 1, "the first overflow evicts once")
+    for _ in 0..<3 {
+      XCTAssertTrue(renderer.render(commands, damage: .full))
+    }
+    XCTAssertEqual(
+      renderer.fallbackAtlasResetCount, resetsAfterFirstFrame,
+      "an atlas that overflowed on its first frame must not be replaced again")
+
+    // New text (a glyph the kept atlas lacks) still gets a fresh atlas.
+    commands.append(
+      .glyphRun(
+        origin: CGPoint(x: 0, y: 150), text: "\u{1F980}", foreground: 0xFFFF_FFFF,
+        background: 0x0000_00FF, attributes: [], source: .terminal))
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    XCTAssertEqual(
+      renderer.fallbackAtlasResetCount, resetsAfterFirstFrame + 1,
+      "a changed frame must evict the kept atlas")
+  }
+
   func testSlugMonochromeEmojiRendersTintedNotColor() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -955,6 +1004,73 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     }
   }
 
+  /// When one frame alone needs more geometry than the budget, the caches
+  /// reset once and are then kept, instead of rebuilding every frame.
+  func testSlugGeometryResetDoesNotRepeatEveryFrame() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 18), pixelWidth: 360, pixelHeight: 90, scale: 1))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    let commands: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 360, height: 90), color: 0x0000_00FF, source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 12, y: 32), text: "Budget gjq", foreground: 0xFFFF_FFFF,
+        background: 0x0000_00FF, attributes: [], source: .terminal),
+    ]
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    for _ in 0..<4 {
+      renderer.resetGeometryIfOverBudget(budgetBytes: 1)
+      XCTAssertTrue(renderer.render(commands, damage: .full))
+      // A partial redraw in between (a cursor blink) must not shrink the
+      // remembered working set.
+      renderer.resetGeometryIfOverBudget(budgetBytes: 1)
+      XCTAssertTrue(
+        renderer.render(commands, damage: .partial(yRanges: [DirtyYRange(y: 0, height: 1)])))
+    }
+    XCTAssertEqual(renderer.geometryResetCount, 1)
+  }
+
+  func testSlugBandCountFollowsCurveCount() {
+    XCTAssertEqual(SlugGlyphRenderer.bandCount(forCurveCount: 2), 8)
+    XCTAssertEqual(SlugGlyphRenderer.bandCount(forCurveCount: 20), 20)
+    XCTAssertEqual(SlugGlyphRenderer.bandCount(forCurveCount: 400), 64)
+  }
+
+  /// Past the geometry budget the caches start over between frames, and the
+  /// next frame rebuilds exactly the glyphs it draws with identical pixels.
+  func testSlugGeometryResetOverBudgetRebuildsIdenticalFrame() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 18), pixelWidth: 360, pixelHeight: 90, scale: 1))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    let commands: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 360, height: 90), color: 0x0000_00FF, source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 12, y: 32), text: "Budget gjq", foreground: 0xFFFF_FFFF,
+        background: 0x0000_00FF, attributes: [], source: .terminal),
+    ]
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    let before = try XCTUnwrap(renderer.pngData)
+    let builtBefore = renderer.geometryEntryBuildCount
+    XCTAssertGreaterThan(renderer.geometryBytes, 0)
+
+    renderer.resetGeometryIfOverBudget(budgetBytes: 0)
+    XCTAssertEqual(renderer.geometryResetCount, 1)
+    XCTAssertEqual(renderer.geometryBytes, 0)
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    XCTAssertEqual(try XCTUnwrap(renderer.pngData), before)
+    XCTAssertEqual(
+      renderer.geometryEntryBuildCount, builtBefore * 2, "every drawn glyph is rebuilt once")
+  }
+
   /// Clusters that shape to several glyphs (combining marks, Indic consonant
   /// plus reordered matra) must draw every glyph, not just the first one.
   func testSlugDrawsEveryGlyphOfMultiGlyphCluster() throws {
@@ -1028,6 +1144,73 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       ])
       XCTAssertFalse(single.isEmpty, "\(style) underline must draw")
       XCTAssertEqual(split, single, "\(style) underline phase must not restart at a run split")
+    }
+  }
+
+  /// A square outline crossing the underline band cuts a gap one thickness
+  /// wider than its ink on each side; ink above the band leaves the line whole.
+  func testSlugSkipInkCutsUnderlineAroundCrossingInk() throws {
+    // Unit square from x 2...4, y -3...1 in glyph units (crosses y = -2).
+    let corners = [
+      CGPoint(x: 2, y: -3), CGPoint(x: 4, y: -3), CGPoint(x: 4, y: 1), CGPoint(x: 2, y: 1),
+    ]
+    let curves = (0..<4).map { i in
+      GlyphCurveStore.lineAsQuadratic(from: corners[i], to: corners[(i + 1) % 4])
+    }
+    let outline = GlyphCurveOutline(
+      glyph: 1, bounds: CGRect(x: 2, y: -3, width: 2, height: 4), curves: curves,
+      contours: [GlyphContour(seed: corners[0], curveStart: 0, curveCount: 4)])
+    let underline = CGRect(x: 0, y: 7.5, width: 20, height: 1)  // baseline 10 → y -2.5...-1.5
+    let pieces = SlugGlyphRenderer.skippingInk(
+      underline, ink: [SlugUnderlineInk(outline: outline, originX: 0)], baseline: 10,
+      pointScale: 1, gap: 1)
+    XCTAssertEqual(pieces.count, 2)
+    XCTAssertEqual(pieces[0].maxX, 1, accuracy: 1e-9)
+    XCTAssertEqual(pieces[1].minX, 5, accuracy: 1e-9)
+
+    let above = SlugGlyphRenderer.skippingInk(
+      CGRect(x: 0, y: 2, width: 20, height: 1),
+      ink: [SlugUnderlineInk(outline: outline, originX: 0)],
+      baseline: 10, pointScale: 1, gap: 1)
+    XCTAssertEqual(above, [CGRect(x: 0, y: 2, width: 20, height: 1)])
+  }
+
+  /// Rendered end to end: descenders under an underline leave gaps, so a
+  /// red underline under `gjpqy` has fewer red pixels than under `aceos`.
+  func testSlugUnderlineSkipsDescenderInk() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    func redPixels(_ text: String, style: UnderlineStyle = .single) throws -> Int {
+      let atlas = FontAtlas(pointSize: 24, fontName: nil)
+      let renderer = try XCTUnwrap(
+        SlugGlyphRenderer(
+          fontAtlas: atlas, sidebarFontAtlas: atlas, pixelWidth: 420, pixelHeight: 96, scale: 2))
+      renderer.waitForFrameCompletion = true
+      renderer.presentsToLayer = false
+      XCTAssertTrue(
+        renderer.render(
+          [
+            .rect(
+              CGRect(x: 0, y: 0, width: 210, height: 48), color: 0x10_10_10_FF, source: .terminal),
+            .glyphRun(
+              origin: CGPoint(x: 12, y: 10), text: text, foreground: 0xEE_EE_EE_FF,
+              background: 0x10_10_10_FF, attributes: [.underline], source: .terminal,
+              underlineStyle: style, underlineColor: 0xFF_00_00_FF),
+          ], damage: .full))
+      let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+      return stride(from: 0, to: image.bytes.count, by: 4).filter {
+        image.bytes[$0] > 200 && image.bytes[$0 + 1] < 60 && image.bytes[$0 + 2] < 60
+      }.count
+    }
+    let plain = try redPixels("aceos")
+    let descenders = try redPixels("gjpqy")
+    XCTAssertGreaterThan(plain, 0)
+    XCTAssertLessThan(Double(descenders), Double(plain) * 0.9, "descenders must cut the underline")
+    for style in [UnderlineStyle.dotted, .dashed] {
+      XCTAssertLessThan(
+        try redPixels("gjpqy", style: style), try redPixels("aceos", style: style),
+        "\(style) underlines must skip descenders too")
     }
   }
 

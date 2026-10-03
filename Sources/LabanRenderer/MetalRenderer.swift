@@ -3027,6 +3027,20 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
       appendSolid(rect: rect, color: run.color, compositing: .replace)
     }
 
+    // Selection and find highlights tint the cell backgrounds and sit under
+    // the foreground, so they come before procedural box lines, braille and
+    // block elements, which are foreground ink like glyphs.
+    for cmd in commands {
+      switch cmd {
+      case .selection(let rect, let color),
+        .findMatch(let rect, let color),
+        .findSelected(let rect, let color):
+        appendSolid(rect: rect, color: color)
+      default:
+        break
+      }
+    }
+
     for procedural in payload.proceduralCells {
       guard procedural.row >= 0, procedural.row < payload.rows,
         procedural.col >= 0, procedural.col < payload.cols,
@@ -3051,10 +3065,8 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
 
     for cmd in commands {
       switch cmd {
-      case .selection(let rect, let color),
-        .findMatch(let rect, let color),
-        .findSelected(let rect, let color):
-        appendSolid(rect: rect, color: color)
+      case .selection, .findMatch, .findSelected:
+        break  // appended before the procedural cells above
       case .cursor(let rect, let color):
         guard rect.width > 0, rect.height > 0 else { break }
         cursorInstances.append(
