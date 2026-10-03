@@ -51,13 +51,20 @@ respected. The session metadata cap stays at 16 because nothing here reads it.
 bundled flags (`-At`), joined arguments (`-p22`, `-oKey=value`), options after
 the destination, `--`. It keeps connection options (`-J -i -F -o -p -l -c -m
 -b -B -E -e -I -S -P -C -q -4 -6 …`), drops the remote command, strips
-session-shaping flags (`-t -T -N -f -n -M -A -X -Y -v`) and forwards (`-L -R -D
--w`), and **refuses** (no upload, today's behavior) on `-O -W -Q -G -V -s`, an
-unknown option, a missing option argument, or no usable destination. It then
-prepends, so they win under first-value-wins:
+session-shaping flags (`-t -T -f -n -M -A -X -Y -v`) and forwards (`-L -R -D
+-w`), and **refuses** (no upload, today's ⌃V forward) on `-O -W -Q -G -V -s`,
+on a forward-only `-N`, on a user `-o SessionType` other than `default` or
+`-o StdinNull=yes`, on an unknown option, a missing option argument, or no
+usable destination. It then prepends, so they win under first-value-wins over
+the user's `-o` and `ssh_config`:
 `-T -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes
--o ControlMaster=no -o PermitLocalCommand=no -o RemoteCommand=none`.
-`ControlMaster=no` still reuses an existing master socket.
+-o ControlMaster=no -o PermitLocalCommand=no -o RemoteCommand=none
+-o StdinNull=no -o SessionType=default -o ForkAfterAuthentication=no
+-o ForwardAgent=no -o ForwardX11=no` (a config-file `StdinNull yes` would
+otherwise upload a 0-byte file that reports success, and `SessionType none`
+would hang to the timeout). `ControlMaster=no` still reuses an existing master
+socket. A test resolves the generated argv with `ssh -G` and asserts these
+effective values.
 
 **Remote command (`SSHImageUploadScript`).** One `sh -c '…'` with a
 single-quoted script, so it means the same under sh, bash, zsh, and fish login
@@ -68,15 +75,20 @@ if its last non-empty stdout line is a printable absolute path ending in
 non-interactive sessions).
 
 **Upload.** PNG bytes (the pasteboard's `.png` representation, else TIFF
-re-encoded), capped at 20 MB, are piped on stdin off the main thread with a
-30 s timeout. The running ssh's `SSH_AUTH_SOCK` is passed through.
+re-encoded), capped at 20 MB, are piped on stdin off the main thread. ssh is
+spawned in its own process group; the wait is bounded: after 30 s the group gets
+SIGTERM, then SIGKILL after 1 s, and the output pipes are read for at most 1 s
+after exit (a ProxyCommand child holding stderr cannot stall the paste). The
+running ssh's `SSH_AUTH_SOCK` is passed through; if it has none, the upload runs
+with none rather than Laban's own agent.
 
 **Consent.** The first upload to a destination (keyed by destination plus
-`-l`/`-p`) asks "Upload the clipboard image to <destination>?"; "Upload" is
+`-l`/`-p`, each field percent-encoded so no combination collides) asks "Upload the clipboard image to <destination>?"; "Upload" is
 remembered in `UserDefaults` (`sshImageUpload.approvedDestinations`), "Cancel"
 is not.
 
-**Result.** The path goes through the same `pasteUserText` path as ⌘V text, so
+**Result.** The path, shell-quoted exactly like a dropped file path
+(`TerminalDropText`) so a path with spaces stays one argument, goes through the same `pasteUserText` path as ⌘V text, so
 `TerminalPaste.sanitize` and bracketed paste apply (ADR 0020), and only into the
 pane that asked — if focus moved during the upload nothing is pasted. A status
 toast (the generalized OSC 52 copy pill) shows "Uploading image to …" and, on
@@ -101,8 +113,12 @@ byte count, duration, and failure kind — never the image, destination, or argv
 Known gaps: ssh running inside a *local* tmux/screen is invisible (the
 foreground process is the multiplexer), so that pane keeps the ⌃V forward;
 mosh and other non-OpenSSH transports are not handled; uploaded files are never
-cleaned up on the remote; a `-p`-less alias that resolves to the same host as
-another alias is asked about separately. `HeadlessDebugRuntime` has no image
+cleaned up on the remote. The consent key is the destination as typed plus
+`-l`/`-p`: options that change where or as whom ssh connects without touching
+those (`-F`, `-J`, `-o HostName=`, `-o User=`, `-o Port=`) reuse the consent
+already given for that key, and two aliases for the same host are asked about
+separately. The user re-confirms nothing in those cases; the upload still goes
+only where the pane's own ssh connects. `HeadlessDebugRuntime` has no image
 clipboard (its debug clipboard is text-only), so it has no image paste to
 mirror; the decision, parser, script, and reply validation are LabanCore and
 unit-tested, and the remote script is executed under each local shell in tests.
