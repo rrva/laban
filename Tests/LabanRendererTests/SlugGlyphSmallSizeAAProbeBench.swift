@@ -8,11 +8,10 @@ import XCTest
 /// M3 exploration harness for
 /// `execplans/active/slug-render-loop-perf-and-aa-quality.md`: prints
 /// Slug-vs-`SoftwareBackend` fidelity metrics at small point sizes (9, 11 pt),
-/// where more of every stem is "edge" and `kSlugAreaAASampleCount`
-/// (`VectorGlyphShaders.metal:654`) matters most. Print-only, asserts nothing:
-/// the shader define is edited by hand between runs to A/B sample counts
-/// 2/4/8, and results are recorded in the plan's M3 Artifacts section, not
-/// pinned here as a regression gate (that happens after M3 decides).
+/// where more of every stem is "edge" and the AA filter matters most.
+/// Print-only, asserts nothing: it was used to A/B per-pixel sample counts
+/// (results in the plan's M3 Artifacts section). The shader now takes one
+/// sample per pixel; `SlugGlyphOracleErrorTests` pins its error.
 ///
 /// Opt in (off in normal CI):
 ///   LABAN_RUN_PERF_BENCH=1 swift test --filter SlugGlyphSmallSizeAAProbeBench
@@ -36,7 +35,7 @@ final class SlugGlyphSmallSizeAAProbeBench: XCTestCase {
       throw XCTSkip("no Metal device available")
     }
 
-    print("\n=== Slug small-size AA fidelity vs software (kSlugAreaAASampleCount, see .metal) ===")
+    print("\n=== Slug small-size AA fidelity vs software (one sample per pixel) ===")
     print(
       "  pt  scale  mode          ink%delta  gradRatio  edgeRatio%delta  edgeChroma  covSpread")
     for pointSize in [CGFloat(9), CGFloat(11)] {

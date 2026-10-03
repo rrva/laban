@@ -2506,11 +2506,15 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     ensureGlyph(for: Character(String(scalar)), referenceAtlas: referenceFontAtlas)?.outline
   }
 
+  /// Grayscale, undilated coverage of one glyph over a `width` x `height`
+  /// pixel grid whose bottom-left corner is `origin` in reference-outline
+  /// units, `unitsPerPixel` outline units per pixel on both axes.
   public func coverageMask(
     for scalar: Unicode.Scalar,
     origin: CGPoint,
     width: Int,
-    height: Int
+    height: Int,
+    unitsPerPixel: CGFloat = 1
   ) -> [UInt8]? {
     guard width > 0, height > 0 else { return nil }
     guard
@@ -2527,7 +2531,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       originPx: .zero,
       sizePx: SIMD2<Float>(Float(width), Float(height)),
       localMin: SIMD2<Float>(Float(origin.x), Float(origin.y)),
-      localMax: SIMD2<Float>(Float(origin.x + CGFloat(width)), Float(origin.y + CGFloat(height))),
+      localMax: SIMD2<Float>(
+        Float(origin.x + CGFloat(width) * unitsPerPixel),
+        Float(origin.y + CGFloat(height) * unitsPerPixel)),
       color: SIMD4<Float>(1, 1, 1, 1),
       glyphIndex: UInt32(entry.glyphIndex),
       effectKind: 0,
