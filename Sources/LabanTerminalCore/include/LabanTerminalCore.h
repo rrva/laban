@@ -1069,6 +1069,37 @@ typedef struct {
     size_t bytes_written; /* number of bytes written to the PTY / VT parser */
 } LabanPasteResult;
 
+/*
+ * Kitty clipboard protocol paste events (DEC private mode 5522, ADR 0040).
+ *
+ * laban_session_paste_events_enabled reports whether the running program has
+ * enabled paste events. laban_session_encode_paste_event, for a user paste
+ * while they are enabled, stores a copy of `items` (the pasteboard's MIME
+ * representations) as the snapshot the program's follow-up OSC 5522 read is
+ * served from, and returns the paste-event bytes for the caller to send as
+ * input (they are NOT written to the PTY). Returns 0 with *out_len 0 when
+ * paste events are off or no item is usable, 1 when out_capacity is too small
+ * (*out_len is the size needed; the snapshot and one-time password are already
+ * consumed, so callers pass a buffer of a few KiB), -1 on error.
+ */
+typedef struct {
+    const char *mime;
+    size_t mime_len;
+    const uint8_t *data;
+    size_t data_len;
+} LabanPasteItem;
+
+int laban_session_paste_events_enabled(LabanSession *session, int *out_enabled);
+
+int laban_session_encode_paste_event(
+    LabanSession *session,
+    const LabanPasteItem *items,
+    size_t count,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+);
+
 /* Returns 1 in *out_enabled if bracketed paste mode is active, 0 otherwise. */
 int laban_session_bracketed_paste_enabled(LabanSession *session, int *out_enabled);
 

@@ -56,6 +56,7 @@ void laban_effect_write_pty(GhosttyTerminal terminal, void *userdata,
     (void)terminal;
     LabanSession *s = (LabanSession *)userdata;
     if (!s) return;
+    if (laban_effect_write_pty_intercept(s, data, len)) return;
     (void)laban_write_terminal_response(s, data, len);
 }
 

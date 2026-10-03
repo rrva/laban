@@ -519,6 +519,7 @@ void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t 
                  * dispatching: a reply must read post-update state and land in
                  * stream order relative to parser-emitted replies (CPR). */
                 flush_vt_pending(s, bytes, i + 1, &flushed);
+                s->drop_osc52_read_reply = 0;
                 if (sc->osc_number == 52) {
                     if (!sc->osc52_overflow) dispatch_osc52(s);
                 } else if (!sc->payload_overflow) {
@@ -541,6 +542,7 @@ void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t 
              * back-to-back OSC is not lost. */
             if (b == '\\') {
                 flush_vt_pending(s, bytes, i + 1, &flushed);
+                s->drop_osc52_read_reply = 0;
                 if (sc->osc_number == 52) {
                     if (!sc->osc52_overflow) dispatch_osc52(s);
                 } else if (!sc->payload_overflow) {
