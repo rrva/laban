@@ -69,8 +69,69 @@ final class SSHCommandLineTests: XCTestCase {
 
   func testStdinAndBackgroundAndVerbosityFlagsAreStripped() {
     XCTAssertEqual(
-      upload(["ssh", "-n", "-f", "-N", "-T", "-v", "-M", "-X", "-Y", "host"]),
+      upload(["ssh", "-n", "-f", "-T", "-v", "-M", "-X", "-Y", "host"]),
       forced + ["host", "CMD"])
+  }
+
+  func testForwardOnlyAndNoStdinSessionsAreRefused() {
+    for argv in [
+      ["ssh", "-N", "-L", "8080:localhost:80", "host"],
+      ["ssh", "-fN", "host"],
+      ["ssh", "-o", "SessionType=none", "host"],
+      ["ssh", "-oSessionType none", "host"],
+      ["ssh", "-o", "sessiontype=subsystem", "host"],
+      ["ssh", "-o", "StdinNull=yes", "host"],
+      ["ssh", "host", "-o", "stdinnull yes"],
+    ] {
+      XCTAssertNil(SSHCommandLine.parse(argv), "\(argv)")
+    }
+    XCTAssertNotNil(SSHCommandLine.parse(["ssh", "-o", "SessionType=default", "host"]))
+    XCTAssertNotNil(SSHCommandLine.parse(["ssh", "-o", "StdinNull=no", "host"]))
+  }
+
+  /// `ssh -G` resolves the effective configuration without connecting: the
+  /// forced options must win over a user's conflicting `-o` (first value wins).
+  func testForcedOptionsWinInOpenSSHEffectiveConfig() throws {
+    let ssh = "/usr/bin/ssh"
+    guard FileManager.default.isExecutableFile(atPath: ssh) else {
+      throw XCTSkip("no /usr/bin/ssh")
+    }
+    let parsed = try XCTUnwrap(
+      SSHCommandLine.parse([
+        "ssh", "-A", "-X", "-t", "-o", "BatchMode=no", "-o", "ForkAfterAuthentication=yes",
+        "-o", "ForwardAgent=yes", "-o", "ForwardX11=yes", "-o", "RemoteCommand=tmux",
+        "-o", "ControlMaster=yes", "-o", "PermitLocalCommand=yes", "-o", "ConnectTimeout=99",
+        "-o", "ClearAllForwardings=no", "-o", "RequestTTY=force", "-F", "/dev/null", "host",
+      ]))
+    var arguments = parsed.uploadArguments(remoteCommand: "true")
+    arguments.removeLast()  // -G takes no remote command
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: ssh)
+    process.arguments = ["-G"] + arguments
+    let out = Pipe()
+    process.standardOutput = out
+    process.standardError = Pipe()
+    try process.run()
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    XCTAssertEqual(process.terminationStatus, 0)
+    var config: [String: String] = [:]
+    for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+      let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+      if parts.count == 2 { config[parts[0]] = parts[1] }
+    }
+    XCTAssertEqual(config["batchmode"], "yes")
+    XCTAssertEqual(config["connecttimeout"], "10")
+    XCTAssertEqual(config["clearallforwardings"], "yes")
+    XCTAssertEqual(config["controlmaster"], "false")
+    XCTAssertEqual(config["permitlocalcommand"], "no")
+    XCTAssertNil(config["remotecommand"])
+    XCTAssertEqual(config["requesttty"], "false")
+    XCTAssertEqual(config["stdinnull"], "no")
+    XCTAssertEqual(config["sessiontype"], "default")
+    XCTAssertEqual(config["forkafterauthentication"], "no")
+    XCTAssertEqual(config["forwardagent"], "no")
+    XCTAssertEqual(config["forwardx11"], "no")
   }
 
   func testForwardsAreStripped() {
