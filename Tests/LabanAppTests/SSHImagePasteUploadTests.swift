@@ -93,7 +93,8 @@ final class SSHImagePasteUploadTests: XCTestCase {
   func testRunProcessPipesStdinAndCapturesOutput() throws {
     let payload = Data((0..<200_000).map { UInt8($0 % 251) })
     let outcome = try SSHImagePasteUpload.runProcess(
-      executable: URL(fileURLWithPath: "/bin/cat"), arguments: [], environment: nil, input: payload,
+      executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
+      environment: ProcessInfo.processInfo.environment, input: payload,
       timeout: 10)
     XCTAssertEqual(outcome.status, 0)
     XCTAssertFalse(outcome.timedOut)
@@ -103,17 +104,48 @@ final class SSHImagePasteUploadTests: XCTestCase {
   func testRunProcessTimesOut() throws {
     let start = Date()
     let outcome = try SSHImagePasteUpload.runProcess(
-      executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"], environment: nil,
+      executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"],
+      environment: ProcessInfo.processInfo.environment,
       input: Data("x".utf8), timeout: 0.3)
     XCTAssertTrue(outcome.timedOut)
     XCTAssertLessThan(Date().timeIntervalSince(start), 10)
     XCTAssertEqual(SSHImagePasteUpload.interpret(outcome, fileName: "a.png"), .failure(.timedOut))
   }
 
+  /// A ProxyCommand-like child that ignores TERM/HUP and holds stderr must not
+  /// stretch the wait past timeout + grace periods.
+  func testTimeoutBoundsTheWaitEvenWhenAChildIgnoresTerm() throws {
+    let start = Date()
+    let outcome = try SSHImagePasteUpload.runProcess(
+      executable: URL(fileURLWithPath: "/bin/sh"),
+      arguments: ["-c", "(trap '' TERM HUP; sleep 20) & exec sleep 100"],
+      environment: ProcessInfo.processInfo.environment, input: Data(), timeout: 0.5)
+    let elapsed = Date().timeIntervalSince(start)
+    XCTAssertTrue(outcome.timedOut)
+    XCTAssertLessThan(
+      elapsed,
+      0.5 + SSHImagePasteUpload.terminateGrace + SSHImagePasteUpload.drainGrace + 1.5)
+  }
+
+  /// ssh exited fine but a straggler still holds stderr: return after the
+  /// drain grace with what was read, not when the straggler exits.
+  func testExitedProcessWithStragglerHoldingStderrReturnsPromptly() throws {
+    let start = Date()
+    let outcome = try SSHImagePasteUpload.runProcess(
+      executable: URL(fileURLWithPath: "/bin/sh"),
+      arguments: ["-c", "(trap '' TERM HUP; sleep 20) >/dev/null & printf ok"],
+      environment: ProcessInfo.processInfo.environment, input: Data(), timeout: 10)
+    XCTAssertLessThan(Date().timeIntervalSince(start), SSHImagePasteUpload.drainGrace + 2)
+    XCTAssertFalse(outcome.timedOut)
+    XCTAssertEqual(outcome.status, 0)
+    XCTAssertEqual(outcome.stdout, Data("ok".utf8))
+  }
+
   func testEarlyExitDoesNotKillTheAppWithSIGPIPE() throws {
     let outcome = try SSHImagePasteUpload.runProcess(
       executable: URL(fileURLWithPath: "/bin/sh"),
-      arguments: ["-c", "echo 'Permission denied (publickey).' >&2; exit 255"], environment: nil,
+      arguments: ["-c", "echo 'Permission denied (publickey).' >&2; exit 255"],
+      environment: ProcessInfo.processInfo.environment,
       input: Data(count: 4 * 1024 * 1024), timeout: 10)
     XCTAssertEqual(
       SSHImagePasteUpload.interpret(outcome, fileName: "a.png"),
@@ -155,7 +187,8 @@ final class SSHImagePasteUploadTests: XCTestCase {
     }
     let commandLine = try XCTUnwrap(SSHCommandLine.parse(["ssh", "-t", host, "tmux", "attach"]))
     let ssh = SSHImagePasteUpload.ForegroundSSH(
-      executable: URL(fileURLWithPath: "/usr/bin/ssh"), commandLine: commandLine, authSocket: nil)
+      executable: URL(fileURLWithPath: "/usr/bin/ssh"), commandLine: commandLine,
+      authSocket: ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"])
     let path = try SSHImagePasteUpload.upload(onePixelPNG, via: ssh).get()
     XCTAssertTrue(path.hasSuffix(".png"), path)
     if host == "localhost" {

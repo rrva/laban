@@ -139,52 +139,182 @@ enum SSHImagePasteUpload {
     var timedOut: Bool
   }
 
-  /// Run `executable arguments` with `input` on stdin, killing it after
-  /// `timeout`. Blocking — call off the main thread.
+  /// Grace between SIGTERM and SIGKILL of the process group on timeout.
+  static let terminateGrace: TimeInterval = 1
+  /// How long to keep reading stdout/stderr after ssh exits. A ProxyCommand
+  /// child (or anything else) still holding the pipes must not stall the paste.
+  static let drainGrace: TimeInterval = 1
+
+  enum SpawnError: Error, CustomStringConvertible {
+    case pipe(Int32)
+    case spawn(Int32)
+    var description: String {
+      switch self {
+      case .pipe(let code), .spawn(let code): return String(cString: strerror(code))
+      }
+    }
+  }
+
+  /// Run `executable arguments` with `input` on stdin in its own process
+  /// group. Bounded: returns within about `timeout + terminateGrace +
+  /// drainGrace` even if the group's processes ignore SIGTERM or a descendant
+  /// keeps the output pipes open. Blocking — call off the main thread.
   static func runProcess(
-    executable: URL, arguments: [String], environment: [String: String]?, input: Data,
+    executable: URL, arguments: [String], environment: [String: String], input: Data,
     timeout: TimeInterval
   ) throws -> ProcessOutcome {
-    let process = Process()
-    process.executableURL = executable
-    process.arguments = arguments
-    if let environment { process.environment = environment }
-    let stdin = Pipe()
-    let stdout = Pipe()
-    let stderr = Pipe()
-    process.standardInput = stdin
-    process.standardOutput = stdout
-    process.standardError = stderr
+    var stdinFDs: [Int32] = [-1, -1]
+    var stdoutFDs: [Int32] = [-1, -1]
+    var stderrFDs: [Int32] = [-1, -1]
+    for index in 0..<3 {
+      let rc: Int32
+      switch index {
+      case 0: rc = pipe(&stdinFDs)
+      case 1: rc = pipe(&stdoutFDs)
+      default: rc = pipe(&stderrFDs)
+      }
+      guard rc == 0 else {
+        let code = errno
+        for fd in stdinFDs + stdoutFDs + stderrFDs where fd >= 0 { close(fd) }
+        throw SpawnError.pipe(code)
+      }
+    }
     // ssh exits without draining stdin on failure; a write to the closed pipe
     // must be an EPIPE error, not an app-killing SIGPIPE.
-    _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-    try process.run()
+    _ = fcntl(stdinFDs[1], F_SETNOSIGPIPE, 1)
+    // Non-blocking so the writer can give up once the run is over, even if
+    // a descendant holds the read end open without reading.
+    _ = fcntl(stdinFDs[1], F_SETFL, fcntl(stdinFDs[1], F_GETFL) | O_NONBLOCK)
 
-    let timedOut = LockedFlag()
-    let killer = DispatchWorkItem {
-      timedOut.set()
-      process.terminate()
-    }
-    DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
+    var actions: posix_spawn_file_actions_t?
+    posix_spawn_file_actions_init(&actions)
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    posix_spawn_file_actions_adddup2(&actions, stdinFDs[0], 0)
+    posix_spawn_file_actions_adddup2(&actions, stdoutFDs[1], 1)
+    posix_spawn_file_actions_adddup2(&actions, stderrFDs[1], 2)
+    var attributes: posix_spawnattr_t?
+    posix_spawnattr_init(&attributes)
+    defer { posix_spawnattr_destroy(&attributes) }
+    // Own process group (so a timeout can kill ssh *and* its ProxyCommand),
+    // and no inherited descriptors beyond the three dup2'd above.
+    posix_spawnattr_setflags(
+      &attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
+    posix_spawnattr_setpgroup(&attributes, 0)
 
-    let group = DispatchGroup()
-    var out = Data()
-    var err = Data()
-    DispatchQueue.global().async(group: group) {
-      try? stdin.fileHandleForWriting.write(contentsOf: input)
-      try? stdin.fileHandleForWriting.close()
+    let argv = [executable.path] + arguments
+    let envp = environment.map { "\($0.key)=\($0.value)" }
+    var pid: pid_t = 0
+    let spawnResult = withCStringArray(argv) { cArgv in
+      withCStringArray(envp) { cEnvp in
+        posix_spawn(&pid, executable.path, &actions, &attributes, cArgv, cEnvp)
+      }
     }
-    DispatchQueue.global().async(group: group) {
-      out = stdout.fileHandleForReading.readDataToEndOfFile()
+    close(stdinFDs[0])
+    close(stdoutFDs[1])
+    close(stderrFDs[1])
+    guard spawnResult == 0 else {
+      close(stdinFDs[1])
+      close(stdoutFDs[0])
+      close(stderrFDs[0])
+      throw SpawnError.spawn(spawnResult)
     }
-    DispatchQueue.global().async(group: group) {
-      err = stderr.fileHandleForReading.readDataToEndOfFile()
+
+    let cancelReads = LockedFlag()
+    let stdoutBox = DataBox()
+    let stderrBox = DataBox()
+    let readers = DispatchGroup()
+    let finished = LockedFlag()
+    defer { finished.set() }
+    DispatchQueue.global().async {
+      var offset = 0
+      input.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return }
+        while offset < raw.count && !finished.value {
+          var pollFD = pollfd(fd: stdinFDs[1], events: Int16(POLLOUT), revents: 0)
+          let ready = poll(&pollFD, 1, 100)
+          if ready < 0 && errno != EINTR { break }
+          if ready <= 0 { continue }
+          if pollFD.revents & Int16(POLLOUT) == 0 { break }  // POLLHUP / POLLERR
+          let written = write(stdinFDs[1], base + offset, raw.count - offset)
+          if written < 0 {
+            if errno == EINTR || errno == EAGAIN { continue }
+            break
+          }
+          offset += written
+        }
+      }
+      close(stdinFDs[1])
     }
-    process.waitUntilExit()
-    killer.cancel()
-    group.wait()
+    for (fd, box) in [(stdoutFDs[0], stdoutBox), (stderrFDs[0], stderrBox)] {
+      DispatchQueue.global().async(group: readers) {
+        drain(fd, into: box, cancel: cancelReads)
+        close(fd)
+      }
+    }
+
+    let exited = DispatchSemaphore(value: 0)
+    let statusBox = StatusBox()
+    DispatchQueue.global().async {
+      var status: Int32 = 0
+      while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+      statusBox.set(status)
+      exited.signal()
+    }
+
+    var timedOut = false
+    if exited.wait(timeout: .now() + timeout) == .timedOut {
+      timedOut = true
+      kill(-pid, SIGTERM)
+      if exited.wait(timeout: .now() + terminateGrace) == .timedOut {
+        kill(-pid, SIGKILL)
+        exited.wait()
+      }
+    }
+    if readers.wait(timeout: .now() + drainGrace) == .timedOut {
+      // Something left in the group still holds a pipe: kill it and stop reading.
+      kill(-pid, SIGKILL)
+      cancelReads.set()
+      _ = readers.wait(timeout: .now() + 0.5)
+    }
+    let raw = statusBox.value
+    let status: Int32
+    if raw & 0x7F == 0 {
+      status = (raw >> 8) & 0xFF
+    } else {
+      status = 128 + (raw & 0x7F)
+    }
     return ProcessOutcome(
-      status: process.terminationStatus, stdout: out, stderr: err, timedOut: timedOut.value)
+      status: status, stdout: stdoutBox.value, stderr: stderrBox.value, timedOut: timedOut)
+  }
+
+  /// Read `fd` to EOF in 100 ms poll slices, stopping early once `cancel` is set.
+  private static func drain(_ fd: Int32, into box: DataBox, cancel: LockedFlag) {
+    var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+    while !cancel.value {
+      var pollFD = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+      let ready = poll(&pollFD, 1, 100)
+      if ready < 0 {
+        if errno == EINTR { continue }
+        return
+      }
+      if ready == 0 { continue }
+      let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+      if count < 0 {
+        if errno == EINTR || errno == EAGAIN { continue }
+        return
+      }
+      if count == 0 { return }
+      box.append(buffer[0..<count])
+    }
+  }
+
+  private static func withCStringArray<R>(
+    _ strings: [String], _ body: ([UnsafeMutablePointer<CChar>?]) -> R
+  ) -> R {
+    var pointers: [UnsafeMutablePointer<CChar>?] = strings.map { strdup($0) }
+    pointers.append(nil)
+    defer { for pointer in pointers { free(pointer) } }
+    return body(pointers)
   }
 
   /// Upload `png` to the foreground ssh's host and return the remote path.
@@ -228,6 +358,20 @@ enum SSHImagePasteUpload {
       String.UnicodeScalarView(line.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F }))
     return clean.count > 120 ? String(clean.prefix(119)) + "…" : clean
   }
+}
+
+private final class DataBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var data = Data()
+  var value: Data { lock.withLock { data } }
+  func append(_ bytes: ArraySlice<UInt8>) { lock.withLock { data.append(contentsOf: bytes) } }
+}
+
+private final class StatusBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var status: Int32 = 0
+  var value: Int32 { lock.withLock { status } }
+  func set(_ value: Int32) { lock.withLock { status = value } }
 }
 
 private final class LockedFlag: @unchecked Sendable {
