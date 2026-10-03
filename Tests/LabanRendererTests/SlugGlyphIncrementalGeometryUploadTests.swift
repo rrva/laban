@@ -8,7 +8,7 @@ import XCTest
 
 /// M4 correctness gate for
 /// `execplans/active/slug-render-loop-perf-and-aa-quality.md`: the geometry
-/// arrays (`curves`/`glyphs`/`bands`/`bandCurves`) are append-only, and
+/// arrays (`curves`/`glyphs`/`bands`/`bandIndices`) are append-only, and
 /// `ensureGeometryBuffersIfNeeded` now grows their backing `MTLBuffer`s
 /// incrementally (tail-only writes within capacity, capacity-doubling
 /// reallocation-and-recopy-from-CPU-array on overflow) instead of
@@ -40,7 +40,7 @@ final class SlugGlyphIncrementalGeometryUploadTests: XCTestCase {
 
     // Walk well past the incremental buffer's initial 1024-element capacity
     // (Latin Extended Additional has simple, few-curve outlines, so plenty
-    // of new glyphs are needed to grow `curves`/`bands`/`bandCurves` past
+    // of new glyphs are needed to grow `curves`/`bands`/`bandIndices` past
     // that threshold; 40 frames x 20 new glyphs = 800 unique glyphs is
     // comfortably enough to force at least one doubling for every array).
     var nextScalar: UInt32 = 0x1E00

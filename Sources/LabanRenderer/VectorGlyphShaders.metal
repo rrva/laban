@@ -601,8 +601,8 @@ struct SlugGlyph {
     uint verticalBandCount;
 };
 
-// A run of the band-curve buffer (the curves themselves, in walk order),
-// sorted for one ray direction; see slugGlyphReferenceCoverage.
+// A run of the band-index buffer, sorted for one ray direction; see
+// slugGlyphReferenceCoverage.
 struct SlugGlyphBand {
     uint indexStart;
     uint indexCount;
@@ -921,7 +921,7 @@ inline float slugGlyphCombineCoverage(float xcov, float ycov, float xwgt, float 
 inline float slugGlyphReferenceCoverage(
     device const VectorGlyphCurve *curves,
     device const SlugGlyphBand *bands,
-    device const VectorGlyphCurve *bandCurves,
+    device const uint *bandIndices,
     SlugGlyph glyph,
     float2 sample,
     float2 unitsPerPixel,
@@ -957,7 +957,8 @@ inline float slugGlyphReferenceCoverage(
         SlugGlyphBand band = bands[
             glyph.horizontalBandStart + (towardPositive ? 0u : glyph.horizontalBandCount) + bandIndex];
         for (uint i = 0; i < band.indexCount; i++) {
-            VectorGlyphCurve curve = bandCurves[band.indexStart + i];
+            uint curveIndex = bandIndices[band.indexStart + i];
+            VectorGlyphCurve curve = curves[curveIndex];
             curve.p0 -= sample;
             curve.p1 -= sample;
             curve.p2 -= sample;
@@ -995,7 +996,8 @@ inline float slugGlyphReferenceCoverage(
         SlugGlyphBand band = bands[
             glyph.verticalBandStart + (towardPositive ? 0u : glyph.verticalBandCount) + bandIndex];
         for (uint i = 0; i < band.indexCount; i++) {
-            VectorGlyphCurve curve = bandCurves[band.indexStart + i];
+            uint curveIndex = bandIndices[band.indexStart + i];
+            VectorGlyphCurve curve = curves[curveIndex];
             curve.p0 -= sample;
             curve.p1 -= sample;
             curve.p2 -= sample;
@@ -1026,7 +1028,7 @@ inline float slugGlyphReferenceCoverage(
 inline float slugGlyphAreaCoverage(
     device const VectorGlyphCurve *curves,
     device const SlugGlyphBand *bands,
-    device const VectorGlyphCurve *bandCurves,
+    device const uint *bandIndices,
     SlugGlyph glyph,
     float4 sampleBounds,
     float2 center,
@@ -1038,7 +1040,7 @@ inline float slugGlyphAreaCoverage(
     float coverage = slugGlyphReferenceCoverage(
         curves,
         bands,
-        bandCurves,
+        bandIndices,
         glyph,
         slugGlyphSubpixelSample(sampleBounds, float2(0.5, 0.5), center, dx, dy),
         unitsPerPixel,
@@ -1058,7 +1060,7 @@ inline float slugGlyphAreaCoverage(
         sum += slugGlyphReferenceCoverage(
             curves,
             bands,
-            bandCurves,
+            bandIndices,
             glyph,
             slugGlyphSubpixelSample(sampleBounds, kSlugAreaAASamples[i], center, dx, dy),
             unitsPerPixel,
@@ -1074,7 +1076,7 @@ inline float3 slugGlyphCoverageRGB(
     device const VectorGlyphCurve *curves,
     device const SlugGlyph *glyphs,
     device const SlugGlyphBand *bands,
-    device const VectorGlyphCurve *bandCurves
+    device const uint *bandIndices
 ) {
     uint glyphIndex = uint(in.glyphIndex + 0.5);
     SlugGlyph glyph = glyphs[glyphIndex];
@@ -1084,7 +1086,7 @@ inline float3 slugGlyphCoverageRGB(
 
     if (uniforms.subpixelMode == 0) {
         float coverage = slugGlyphAreaCoverage(
-            curves, bands, bandCurves, glyph,
+            curves, bands, bandIndices, glyph,
             float4(0.0, 0.0, 1.0, 1.0),
             in.glyphPoint, dx, dy, unitsPerPixel, in.dilation);
         return float3(coverage);
@@ -1103,7 +1105,7 @@ inline float3 slugGlyphCoverageRGB(
     float2 centerSample = slugGlyphSubpixelSample(
         float4(0.0, 0.0, 1.0, 1.0), float2(0.5, 0.5), in.glyphPoint, dx, dy);
     float centerCoverage = slugGlyphReferenceCoverage(
-        curves, bands, bandCurves, glyph,
+        curves, bands, bandIndices, glyph,
         centerSample, unitsPerPixel, in.dilation);
     if (centerCoverage <= 1.0 / 255.0 || centerCoverage >= 254.0 / 255.0) {
         return float3(centerCoverage);
@@ -1119,11 +1121,11 @@ inline float3 slugGlyphCoverageRGB(
     // subpixel sharpness while horizontal edges fill like grayscale — eliminating
     // the RGB-subpixel-specific `│` seam notch absent in grayscale.
     return float3(
-        slugGlyphAreaCoverage(curves, bands, bandCurves, glyph,
+        slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
             uniforms.subpixelRBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation),
-        slugGlyphAreaCoverage(curves, bands, bandCurves, glyph,
+        slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
             uniforms.subpixelGBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation),
-        slugGlyphAreaCoverage(curves, bands, bandCurves, glyph,
+        slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
             uniforms.subpixelBBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation));
 }
 
@@ -1133,9 +1135,9 @@ fragment float4 slugGlyphAlphaFragment(
     device const VectorGlyphCurve *curves [[buffer(0)]],
     device const SlugGlyph *glyphs [[buffer(1)]],
     device const SlugGlyphBand *bands [[buffer(2)]],
-    device const VectorGlyphCurve *bandCurves [[buffer(3)]]
+    device const uint *bandIndices [[buffer(3)]]
 ) {
-    float coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandCurves).g;
+    float coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices).g;
     float alpha = coverage * in.color.a;
     return float4(in.color.rgb * alpha, alpha);
 }
@@ -1175,9 +1177,9 @@ fragment float4 slugGlyphGammaBlendFragment(
     device const VectorGlyphCurve *curves [[buffer(0)]],
     device const SlugGlyph *glyphs [[buffer(1)]],
     device const SlugGlyphBand *bands [[buffer(2)]],
-    device const VectorGlyphCurve *bandCurves [[buffer(3)]]
+    device const uint *bandIndices [[buffer(3)]]
 ) {
-    float coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandCurves).g;
+    float coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices).g;
     float alpha = coverage * in.color.a;
     if (alpha <= 0.0) {
         return dst;
@@ -1199,9 +1201,9 @@ fragment float4 slugGlyphCoverageFragment(
     device const VectorGlyphCurve *curves [[buffer(0)]],
     device const SlugGlyph *glyphs [[buffer(1)]],
     device const SlugGlyphBand *bands [[buffer(2)]],
-    device const VectorGlyphCurve *bandCurves [[buffer(3)]]
+    device const uint *bandIndices [[buffer(3)]]
 ) {
-    float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandCurves);
+    float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices);
     return float4(coverage * in.color.a, 0.0);
 }
 
@@ -1211,9 +1213,9 @@ fragment float4 slugGlyphColorFragment(
     device const VectorGlyphCurve *curves [[buffer(0)]],
     device const SlugGlyph *glyphs [[buffer(1)]],
     device const SlugGlyphBand *bands [[buffer(2)]],
-    device const VectorGlyphCurve *bandCurves [[buffer(3)]]
+    device const uint *bandIndices [[buffer(3)]]
 ) {
-    float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandCurves);
+    float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices);
     return float4(in.color.rgb * coverage * in.color.a, 0.0);
 }
 
@@ -1271,9 +1273,9 @@ fragment SubpixelAccumOut slugGlyphAccumulateFragment(
     device const VectorGlyphCurve *curves [[buffer(0)]],
     device const SlugGlyph *glyphs [[buffer(1)]],
     device const SlugGlyphBand *bands [[buffer(2)]],
-    device const VectorGlyphCurve *bandCurves [[buffer(3)]]
+    device const uint *bandIndices [[buffer(3)]]
 ) {
-    float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandCurves);
+    float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices);
     float3 weighted = coverage * in.color.a;
     SubpixelAccumOut out;
     out.coverage = float4(weighted, 0.0);
