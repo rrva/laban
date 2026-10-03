@@ -272,8 +272,13 @@ enum SSHImagePasteUpload {
     let statusBox = StatusBox()
     DispatchQueue.global().async {
       var status: Int32 = 0
-      while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
-      statusBox.set(status)
+      var result: pid_t
+      var waitErrno: Int32 = 0
+      repeat {
+        result = waitpid(pid, &status, 0)
+        waitErrno = result < 0 ? errno : 0
+      } while result < 0 && waitErrno == EINTR
+      statusBox.set(exitStatus(waitResult: result, rawStatus: status))
       exited.signal()
     }
 
@@ -292,16 +297,21 @@ enum SSHImagePasteUpload {
       cancelReads.set()
       _ = readers.wait(timeout: .now() + 0.5)
     }
-    let raw = statusBox.value
-    let status: Int32
-    if raw & 0x7F == 0 {
-      status = (raw >> 8) & 0xFF
-    } else {
-      status = 128 + (raw & 0x7F)
-    }
     return ProcessOutcome(
-      status: status, stdout: stdoutBox.value, stderr: stderrBox.value, timedOut: timedOut)
+      status: statusBox.value, stdout: stdoutBox.value, stderr: stderrBox.value, timedOut: timedOut)
   }
+
+  /// Shell-style exit status from a `waitpid` result: the exit code, `128 +
+  /// signal` when killed, or `waitFailedStatus` when `waitpid` itself failed
+  /// (the outcome is unknown, so it must never read as success).
+  static func exitStatus(waitResult: pid_t, rawStatus: Int32) -> Int32 {
+    guard waitResult > 0 else { return waitFailedStatus }
+    if rawStatus & 0x7F == 0 { return (rawStatus >> 8) & 0xFF }
+    return 128 + (rawStatus & 0x7F)
+  }
+
+  /// Status reported when `waitpid` failed with anything but EINTR.
+  static let waitFailedStatus: Int32 = -1
 
   /// A pipe whose both ends are close-on-exec. Laban forks shells in-process
   /// (session_lifecycle.c); a shell spawned mid-upload must not inherit these

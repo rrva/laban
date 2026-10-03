@@ -166,6 +166,20 @@ final class SSHImagePasteUploadTests: XCTestCase {
     XCTAssertEqual(box.value, Data("fghi".utf8))
   }
 
+  func testWaitpidFailureIsNeverSuccess() {
+    XCTAssertEqual(SSHImagePasteUpload.exitStatus(waitResult: -1, rawStatus: 0), -1)
+    XCTAssertEqual(SSHImagePasteUpload.exitStatus(waitResult: 42, rawStatus: 0), 0)
+    XCTAssertEqual(SSHImagePasteUpload.exitStatus(waitResult: 42, rawStatus: 255 << 8), 255)
+    XCTAssertEqual(SSHImagePasteUpload.exitStatus(waitResult: 42, rawStatus: SIGTERM), 143)
+    let name = SSHImageUploadScript.makeFileName()
+    let failed = SSHImagePasteUpload.ProcessOutcome(
+      status: SSHImagePasteUpload.waitFailedStatus, stdout: Data("/tmp/x/\(name)".utf8),
+      stderr: Data(), timedOut: false)
+    guard case .failure = SSHImagePasteUpload.interpret(failed, fileName: name) else {
+      return XCTFail("a failed waitpid must not be a successful upload")
+    }
+  }
+
   func testUploadPipesAreCloseOnExec() throws {
     let fds = try SSHImagePasteUpload.makePipe()
     defer { for fd in fds { close(fd) } }
