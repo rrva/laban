@@ -197,9 +197,22 @@ enum SSHImagePasteUpload {
     defer { posix_spawnattr_destroy(&attributes) }
     // Own process group (so a timeout can kill ssh *and* its ProxyCommand),
     // and no inherited descriptors beyond the three dup2'd above.
+    // Reset the signal mask and dispositions: the upload runs on a GCD worker
+    // whose mask blocks SIGTERM/SIGHUP/SIGINT, and posix_spawn would hand that
+    // mask to ssh and its ProxyCommand, making the timeout's SIGTERM (and ssh's
+    // own SIGHUP to its proxy) a no-op.
     posix_spawnattr_setflags(
-      &attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
+      &attributes,
+      Int16(
+        POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK
+          | POSIX_SPAWN_SETSIGDEF))
     posix_spawnattr_setpgroup(&attributes, 0)
+    var emptyMask = sigset_t()
+    sigemptyset(&emptyMask)
+    posix_spawnattr_setsigmask(&attributes, &emptyMask)
+    var allSignals = sigset_t()
+    sigfillset(&allSignals)
+    posix_spawnattr_setsigdefault(&attributes, &allSignals)
 
     let argv = [executable.path] + arguments
     let envp = environment.map { "\($0.key)=\($0.value)" }

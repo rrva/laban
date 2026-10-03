@@ -114,6 +114,25 @@ final class SSHImagePasteUploadTests: XCTestCase {
 
   /// A ProxyCommand-like child that ignores TERM/HUP and holds stderr must not
   /// stretch the wait past timeout + grace periods.
+  /// GCD workers block SIGTERM; the spawned process must not inherit that, or
+  /// the timeout's SIGTERM is ignored and only the SIGKILL fallback ends it.
+  func testTimeoutSIGTERMReachesProcessSpawnedFromAGlobalQueue() throws {
+    var result: Result<SSHImagePasteUpload.ProcessOutcome, Error>?
+    let done = expectation(description: "runProcess")
+    DispatchQueue.global().async {
+      result = Result {
+        try SSHImagePasteUpload.runProcess(
+          executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"],
+          environment: ProcessInfo.processInfo.environment, input: Data(), timeout: 0.3)
+      }
+      done.fulfill()
+    }
+    wait(for: [done], timeout: 10)
+    let outcome = try XCTUnwrap(result).get()
+    XCTAssertTrue(outcome.timedOut)
+    XCTAssertEqual(outcome.status, 128 + SIGTERM, "ended by SIGTERM, not the SIGKILL fallback")
+  }
+
   func testTimeoutBoundsTheWaitEvenWhenAChildIgnoresTerm() throws {
     let start = Date()
     let outcome = try SSHImagePasteUpload.runProcess(
