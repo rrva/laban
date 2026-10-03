@@ -42,13 +42,14 @@ public struct SSHCommandLine: Equatable, Sendable {
   /// OpenSSH options that take no argument.
   static let flagOptions = Set("1246AaCfGgKkMNnqsTtVvXxYy")
   /// Options that change what ssh *does* (control commands, stdio forwarding,
-  /// queries, config dump, version, subsystems): never re-run them.
-  static let refusedOptions = Set("GOQsVW")
+  /// queries, config dump, version, subsystems, forward-only sessions with
+  /// no remote shell): never re-run them.
+  static let refusedOptions = Set("GNOQsVW")
   /// Session-shaping flags the upload must not inherit: TTY allocation (-t,
-  /// -T is re-added), no-command (-N), background (-f), stdin from /dev/null
-  /// (-n, which would starve the upload), agent/X11 forwarding (-A -X -Y),
-  /// master mode (-M), and verbosity (-v, which would bury the failure reason).
-  static let strippedFlags = Set("AfMNnTtvXY")
+  /// -T is re-added), background (-f), stdin from /dev/null (-n, which would
+  /// starve the upload), agent/X11 forwarding (-A -X -Y), master mode (-M),
+  /// and verbosity (-v, which would bury the failure reason).
+  static let strippedFlags = Set("AfMnTtvXY")
   /// Forwards the upload must not open again: -L -R -D ports, -w tunnel.
   static let strippedArgumentOptions = Set("DLRw")
 
@@ -63,6 +64,11 @@ public struct SSHCommandLine: Equatable, Sendable {
     "-o", "ControlMaster=no",
     "-o", "PermitLocalCommand=no",
     "-o", "RemoteCommand=none",
+    "-o", "StdinNull=no",
+    "-o", "SessionType=default",
+    "-o", "ForkAfterAuthentication=no",
+    "-o", "ForwardAgent=no",
+    "-o", "ForwardX11=no",
   ]
 
   public init(options: [Option], destination: String, login: String? = nil, port: String? = nil) {
@@ -114,6 +120,7 @@ public struct SSHCommandLine: Equatable, Sendable {
             guard index < argv.count else { return nil }
             value = argv[index]
           }
+          if flag == "o", isRefusedConfigOption(value) { return nil }
           if flag == "l" { login = value }
           if flag == "p" { port = value }
           if !strippedArgumentOptions.contains(flag) {
@@ -152,6 +159,22 @@ public struct SSHCommandLine: Equatable, Sendable {
     if let login { key = "\(login) " + key }
     if let port { key += ":\(port)" }
     return key
+  }
+
+  /// A user `-o` that turns the session into one with no usable remote shell
+  /// or stdin (`SessionType none|subsystem`, `StdinNull yes`): the pane is a
+  /// forward-only or subsystem session, so the image paste keeps today's ⌃V.
+  static func isRefusedConfigOption(_ option: String) -> Bool {
+    let separators = CharacterSet(charactersIn: "= \t")
+    guard let split = option.rangeOfCharacter(from: separators) else { return false }
+    let key = option[..<split.lowerBound].lowercased()
+    let value = option[split.upperBound...]
+      .trimmingCharacters(in: CharacterSet(charactersIn: "= \t\"")).lowercased()
+    switch key {
+    case "sessiontype": return value != "default"
+    case "stdinnull": return value == "yes" || value == "true"
+    default: return false
+    }
   }
 
   /// Destination as shown to the user in the consent prompt and toasts.
