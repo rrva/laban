@@ -117,6 +117,11 @@ VT-only boundary intact and reuses the established scanner pattern.
 - Lives in the shared C core, so all three session tiers inherit the scanner.
   The clipboard *touch*, however, is wired only for the in-process tier (the
   AppKit host and the headless runtime), as OSC 9 is.
+- A labpty reattach replays historical output through the viewer session, so
+  `LabptyParserFeed` wraps replay reads in `Session.withHostEffectsSuppressed`:
+  an OSC 52 write (or read query, or OSC 9 notification) from before the
+  restart is parsed but not re-run, and cannot overwrite the user's current
+  clipboard. Verified by `SessionHostEffectSuppressionTests`.
 - Read remains off until a future preference exposes `osc52ReadEnabled`; the
   provider is already wired so flipping it on needs no re-plumbing.
 
