@@ -449,6 +449,38 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertNotEqual(overlay.first?.foreground, cursorColor)
   }
 
+  /// On a wide character the block cursor covers both columns, so the
+  /// re-emitted glyph never paints its right half outside the cursor.
+  func testBlockCursorCoversBothColumnsOfWideCharacter() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("\u{1B}[2 q\u{4E2D}\u{1B}[2D".utf8))  // block cursor on 中
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let cmds = FrameProducer(cellWidth: 10, cellHeight: 20).commands(from: UnsafePointer(snap))
+    let cursorRects = cmds.compactMap { cmd -> CGRect? in
+      if case .cursor(let rect, _) = cmd { return rect }
+      return nil
+    }
+    XCTAssertEqual(cursorRects.count, 1)
+    XCTAssertEqual(cursorRects.first?.width, 20, "the cursor spans both columns of 中")
+    guard let cursorIndex = cmds.lastIndex(where: { if case .cursor = $0 { true } else { false } })
+    else { return }
+    let overlayTexts = cmds[(cursorIndex + 1)...].compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+    XCTAssertEqual(overlayTexts, ["\u{4E2D}"])
+  }
+
   func testNonBlockCursorDoesNotReemitGlyph() throws {
     var size = LabanTerminalSize()
     size.rows = 5
@@ -1229,6 +1261,19 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertEqual(rects.count, 1, "remote default cursor must emit one rect")
     XCTAssertEqual(rects.first?.width, 10, "default block must span the full cell width")
     XCTAssertEqual(rects.first?.height, 20, "default block must span the full cell height")
+  }
+
+  /// Remote cells carry no wide flag: a multi-scalar wide emoji (whose
+  /// summed scalar widths exceed 2) still gets a two-column block cursor.
+  func testRemoteBlockCursorCoversMultiScalarWideEmoji() {
+    var snapshot = remoteSnapshotFixture()
+    snapshot.cells = [
+      LabandSnapshotCell(
+        row: 0, col: 0, text: "\u{1F44D}\u{1F3FD}", flags: 0, foregroundRGBA: 0xFFFF_FFFF,
+        backgroundRGBA: 0x0000_00FF)
+    ]
+    let cmds = FrameProducer(cellWidth: 10, cellHeight: 20).commands(from: snapshot)
+    XCTAssertEqual(remoteCursorRects(cmds).first?.width, 20)
   }
 
   func testRemoteCursor_UserBarShapesRemoteCursor() {

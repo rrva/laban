@@ -294,7 +294,7 @@ public struct FrameProducer {
     row: Int,
     col: Int,
     hyperlinkURIs: [String]
-  ) -> (text: String, visuals: ResolvedCellVisuals)? {
+  ) -> (text: String, visuals: ResolvedCellVisuals, wide: Bool)? {
     let cols = Int(snapshot.cols)
     guard let cells = snapshot.cells, let storage = snapshot.utf8_storage,
       row >= 0, col >= 0, row < Int(snapshot.rows), col < cols
@@ -309,8 +309,22 @@ public struct FrameProducer {
       count: Int(cell.utf8_length))
     return (
       String(decoding: bytes, as: UTF8.self),
-      resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+      resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs),
+      cell.wide == UInt8(LABAN_CELL_WIDE_WIDE)
     )
+  }
+
+  /// A block cursor over a wide (two-column) character covers both columns,
+  /// as in other terminals; otherwise the re-emitted glyph's right half would
+  /// be painted in the background color outside the one-cell cursor.
+  private static func blockCursorRect(
+    _ cellRect: CGRect, style: Int, wide: Bool, col: Int, cols: Int
+  ) -> CGRect {
+    guard wide, col + 1 < cols,
+      style == LABAN_CURSOR_STYLE_BLOCK || style == LABAN_CURSOR_STYLE_BLOCK_HOLLOW
+    else { return cellRect }
+    return CGRect(
+      x: cellRect.minX, y: cellRect.minY, width: cellRect.width * 2, height: cellRect.height)
   }
 
   private static func relativeLuminance(_ color: UInt32) -> Double {
@@ -815,12 +829,15 @@ public struct FrameProducer {
       let caretCol = activePreeditLayout?.caretCol ?? Int(snapshot.cursor_col)
       let cx = originX + CGFloat(caretCol) * cw
       let cy = originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset
-      let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
+      let glyph =
+        activePreeditLayout == nil
+        ? cellGlyph(in: snapshot, row: caretRow, col: caretCol, hyperlinkURIs: hyperlinkURIs)
+        : nil
+      let cellRect = Self.blockCursorRect(
+        CGRect(x: cx, y: cy, width: cw, height: ch), style: Int(effectiveCursorStyle),
+        wide: glyph?.wide == true, col: caretCol, cols: cols)
       appendCursorCommands(style: Int(effectiveCursorStyle), cellRect: cellRect, into: &cmds)
-      if activePreeditLayout == nil,
-        let glyph = cellGlyph(
-          in: snapshot, row: caretRow, col: caretCol, hyperlinkURIs: hyperlinkURIs)
-      {
+      if let glyph {
         appendBlockCursorGlyph(
           style: Int(effectiveCursorStyle), text: glyph.text, visuals: glyph.visuals,
           cellRect: cellRect, into: &cmds)
@@ -2201,19 +2218,24 @@ public struct FrameProducer {
     {
       let caretRow = activePreeditLayout?.caretRow ?? snapshot.cursorRow
       let caretCol = activePreeditLayout?.caretCol ?? snapshot.cursorCol
-      let cellRect = CGRect(
-        x: originX + CGFloat(caretCol) * cw,
-        y: originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset,
-        width: cw,
-        height: ch
-      )
+      let remoteCell = activePreeditLayout == nil ? cellAt(row: caretRow, col: caretCol) : nil
+      // Ring cells carry no wide flag; the cluster's display width stands in.
+      let cellRect = Self.blockCursorRect(
+        CGRect(
+          x: originX + CGFloat(caretCol) * cw,
+          y: originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset,
+          width: cw,
+          height: ch),
+        style: Int(userCursorStyle.labanStyleValue),
+        wide: remoteCell.map { TerminalDisplayWidth.cells(of: $0.text) > 1 } ?? false,
+        col: caretCol, cols: cols)
       // Use the user's configured style for the remote cursor (ring snapshots
       // carry no explicit DECSCUSR override bits — Decision Log entry).
       appendCursorCommands(
         style: Int(userCursorStyle.labanStyleValue),
         cellRect: cellRect,
         into: &cmds)
-      if activePreeditLayout == nil, let cell = cellAt(row: caretRow, col: caretCol) {
+      if let cell = remoteCell {
         appendBlockCursorGlyph(
           style: Int(userCursorStyle.labanStyleValue), text: cell.text,
           visuals: resolvedVisuals(for: cell), cellRect: cellRect, into: &cmds)
