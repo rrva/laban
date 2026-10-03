@@ -92,10 +92,14 @@ final class SlugGlyphFrameAllocationTests: XCTestCase {
 
     var total = ThreadAllocationCounter.Tally()
     for _ in 0..<measuredFrames {
-      let tally = try XCTUnwrap(
-        ThreadAllocationCounter.measure {
-          XCTAssertTrue(renderer.render(commands, damage: .full))
-        })
+      // A fresh pool per frame, pushed before counting starts: a frame that
+      // overflowed a long-lived pool would count its new 16 KB pool page.
+      let tally = try autoreleasepool {
+        try XCTUnwrap(
+          ThreadAllocationCounter.measure {
+            XCTAssertTrue(renderer.render(commands, damage: .full))
+          })
+      }
       total.allocations += tally.allocations
       total.bytes += tally.bytes
       total.largeAllocations += tally.largeAllocations
