@@ -4146,6 +4146,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Test-only: color-atlas glyph instances in the most recent frame.
   var lastFrameColorGlyphsCountForTesting: Int { lastFrameColorGlyphsCount }
 
+  /// Test-only: R8 raster-atlas glyph instances in the most recent frame.
+  var lastFrameRasterGlyphsCountForTesting: Int { lastFrameRasterGlyphsCount }
+
   /// Number of ring slots `render()` rotates through. 3 under the
   /// display-link present path (a slot is `ringDepth - 1` frames stale when
   /// next drawn into); 1 outside it (headless/legacy single persistent
