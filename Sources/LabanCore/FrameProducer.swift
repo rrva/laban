@@ -294,7 +294,7 @@ public struct FrameProducer {
     row: Int,
     col: Int,
     hyperlinkURIs: [String]
-  ) -> (text: String, visuals: ResolvedCellVisuals)? {
+  ) -> (text: String, visuals: ResolvedCellVisuals, wide: Bool)? {
     let cols = Int(snapshot.cols)
     guard let cells = snapshot.cells, let storage = snapshot.utf8_storage,
       row >= 0, col >= 0, row < Int(snapshot.rows), col < cols
@@ -309,8 +309,22 @@ public struct FrameProducer {
       count: Int(cell.utf8_length))
     return (
       String(decoding: bytes, as: UTF8.self),
-      resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+      resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs),
+      cell.wide == UInt8(LABAN_CELL_WIDE_WIDE)
     )
+  }
+
+  /// A block cursor over a wide (two-column) character covers both columns,
+  /// as in other terminals; otherwise the re-emitted glyph's right half would
+  /// be painted in the background color outside the one-cell cursor.
+  private static func blockCursorRect(
+    _ cellRect: CGRect, style: Int, wide: Bool, col: Int, cols: Int
+  ) -> CGRect {
+    guard wide, col + 1 < cols,
+      style == LABAN_CURSOR_STYLE_BLOCK || style == LABAN_CURSOR_STYLE_BLOCK_HOLLOW
+    else { return cellRect }
+    return CGRect(
+      x: cellRect.minX, y: cellRect.minY, width: cellRect.width * 2, height: cellRect.height)
   }
 
   private static func relativeLuminance(_ color: UInt32) -> Double {
@@ -815,12 +829,15 @@ public struct FrameProducer {
       let caretCol = activePreeditLayout?.caretCol ?? Int(snapshot.cursor_col)
       let cx = originX + CGFloat(caretCol) * cw
       let cy = originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset
-      let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
+      let glyph =
+        activePreeditLayout == nil
+        ? cellGlyph(in: snapshot, row: caretRow, col: caretCol, hyperlinkURIs: hyperlinkURIs)
+        : nil
+      let cellRect = Self.blockCursorRect(
+        CGRect(x: cx, y: cy, width: cw, height: ch), style: Int(effectiveCursorStyle),
+        wide: glyph?.wide == true, col: caretCol, cols: cols)
       appendCursorCommands(style: Int(effectiveCursorStyle), cellRect: cellRect, into: &cmds)
-      if activePreeditLayout == nil,
-        let glyph = cellGlyph(
-          in: snapshot, row: caretRow, col: caretCol, hyperlinkURIs: hyperlinkURIs)
-      {
+      if let glyph {
         appendBlockCursorGlyph(
           style: Int(effectiveCursorStyle), text: glyph.text, visuals: glyph.visuals,
           cellRect: cellRect, into: &cmds)
@@ -1512,6 +1529,13 @@ public struct FrameProducer {
       var runTransition: GlyphForegroundTransition? = nil
       var runWave: GlyphForegroundWave? = nil
       var pendingSpacer = false
+      // Byte offset in `runBytes` where the run's last Character starts.
+      var runLastClusterStart = 0
+      // One past the last engine column the run covers (spacer tails included).
+      var runEndCol = 0
+      // Set for a run holding one cell with several Characters: the
+      // last-cluster-takes-the-remainder rule cannot split its span.
+      var runSpanUnknown = false
       runBytes.removeAll(keepingCapacity: true)
 
       func cellTransition(_ col: Int) -> GlyphForegroundTransition? {
@@ -1549,11 +1573,14 @@ public struct FrameProducer {
             underlineStyle: runUnderlineStyle,
             underlineColor: runUnderlineColor,
             hyperlink: runHyperlink,
+            displayCellCount: runSpanUnknown ? nil : runEndCol - start,
             foregroundTransition: runTransition,
             foregroundWave: runWave
           ))
         runStart = nil
+        runSpanUnknown = false
         runBytes.removeAll(keepingCapacity: true)
+        runLastClusterStart = 0
         runUnderlineStyle = .none
         runUnderlineColor = nil
         runHyperlink = nil
@@ -1567,7 +1594,10 @@ public struct FrameProducer {
         let hasContent = cell.utf8_length > 0 && storage != nil
 
         if isSpacerTail {
-          if runStart != nil { pendingSpacer = true }
+          if runStart != nil {
+            pendingSpacer = true
+            runEndCol = col + 1
+          }
           continue
         }
 
@@ -1637,38 +1667,14 @@ public struct FrameProducer {
           && runTransition == cellTransition
           && runWave == cellWave
 
-        if runStart != nil, sameStyle {
-          if pendingSpacer {
-            // Resolve the held SPACER_TAIL: keep the wide cell and this one in
-            // the same run iff merging shrinks the grapheme-cluster count.
-            var merged = runBytes
-            merged.append(contentsOf: cellBytes)
-            let mergedCount = FrameProducer.graphemeClusterCount(merged.span)
-            let separateCount =
-              FrameProducer.graphemeClusterCount(runBytes.span)
-              + FrameProducer.graphemeClusterCount(cellBytes.span)
-            if mergedCount < separateCount {
-              runBytes.append(contentsOf: cellBytes)
-              pendingSpacer = false
-            } else {
-              flushRun()
-              pendingSpacer = false
-              runStart = col
-              runFg = visuals.foreground
-              runBg = visuals.background
-              runAttrsRaw = visuals.attrsRaw
-              runUnderlineStyle = visuals.underlineStyle
-              runUnderlineColor = visuals.underlineColor
-              runHyperlink = visuals.hyperlink
-              runTransition = cellTransition
-              runWave = cellWave
-              runBytes.removeAll(keepingCapacity: true)
-              runBytes.append(contentsOf: cellBytes)
-            }
-          } else {
-            runBytes.append(contentsOf: cellBytes)
-          }
-        } else {
+        // Renderers place a run's i-th Character at column start + i, so every
+        // cell in a run must add exactly one Character (ADR 0021: the engine,
+        // not Swift segmentation, owns cluster boundaries and columns).
+        let cellIsASCII = length == 1 && cellBytes[0] < 0x80
+        let cellClusterCount =
+          cellIsASCII ? 1 : FrameProducer.graphemeClusterCount(cellBytes.span)
+
+        func startRun() {
           flushRun()
           pendingSpacer = false
           runStart = col
@@ -1681,7 +1687,52 @@ public struct FrameProducer {
           runTransition = cellTransition
           runWave = cellWave
           runBytes.removeAll(keepingCapacity: true)
+          runLastClusterStart = 0
           runBytes.append(contentsOf: cellBytes)
+          runEndCol = col + 1
+        }
+
+        if runStart != nil, sameStyle {
+          let lastIsASCII =
+            runBytes.count - runLastClusterStart == 1 && runBytes[runLastClusterStart] < 0x80
+          var mergesIntoLast = false
+          if !(cellIsASCII && lastIsASCII),
+            pendingSpacer
+              || FrameProducer.mayJoinClusters(
+                last: runBytes[runLastClusterStart...], next: cellBytes)
+          {
+            var joined = Array(runBytes[runLastClusterStart...])
+            joined.append(contentsOf: cellBytes)
+            mergesIntoLast =
+              FrameProducer.graphemeClusterCount(joined.span) < 1 + cellClusterCount
+          }
+          if mergesIntoLast {
+            // The cell extends the run's last Character (ZWJ chain, RI pair,
+            // skin tone across a wide cell): draw it as one cluster. That
+            // Character now spans several columns, so a later cell that does
+            // not extend it too must start a new run at its own column.
+            runBytes.append(contentsOf: cellBytes)
+            runEndCol = col + 1
+            pendingSpacer = true
+            continue
+          } else if pendingSpacer || cellClusterCount != 1 {
+            // A wide cell just ended, or this cell carries extra Characters.
+            startRun()
+          } else {
+            runLastClusterStart = runBytes.count
+            runBytes.append(contentsOf: cellBytes)
+            runEndCol = col + 1
+          }
+        } else {
+          startRun()
+        }
+        if cellClusterCount != 1 {
+          // A cell holding several Characters (e.g. a letter plus an attached
+          // zero-width space) is drawn alone so its extras cannot push the
+          // following cells right.
+          runSpanUnknown = true
+          flushRun()
+          pendingSpacer = false
         }
       }
       flushRun()
@@ -1721,6 +1772,8 @@ public struct FrameProducer {
       // is provisionally swallowed; we only flush it if the next visible
       // cell does not extend the cluster.
       var pendingSpacer = false
+      var runEndCol = 0
+      var runSpanUnknown = false
 
       func cellTransition(_ col: Int) -> GlyphForegroundTransition? {
         foregroundTransitions?[SpinnerMotionCellKey(row: row, col: col)]
@@ -1757,10 +1810,12 @@ public struct FrameProducer {
             underlineStyle: runUnderlineStyle,
             underlineColor: runUnderlineColor,
             hyperlink: runHyperlink,
+            displayCellCount: runSpanUnknown ? nil : runEndCol - start,
             foregroundTransition: runTransition,
             foregroundWave: runWave
           ))
         runStart = nil
+        runSpanUnknown = false
         runText = ""
         runUnderlineStyle = .none
         runUnderlineColor = nil
@@ -1779,7 +1834,10 @@ public struct FrameProducer {
         // grapheme cluster (ZWJ chain, RI pair, skin-tone modifier), we'll
         // append into the same run — otherwise we'll flush below.
         if isSpacerTail {
-          if runStart != nil { pendingSpacer = true }
+          if runStart != nil {
+            pendingSpacer = true
+            runEndCol = col + 1
+          }
           continue
         }
 
@@ -1827,34 +1885,10 @@ public struct FrameProducer {
               && runTransition == cellTransition
               && runWave == cellWave
 
-            if runStart != nil, sameStyle {
-              if pendingSpacer {
-                // Resolve the held SPACER_TAIL: if appending shrinks the
-                // grapheme-cluster count (Swift Character collapses), the
-                // wide cell and this one belong to the same cluster — keep
-                // them in the same run. Otherwise flush before the new cell.
-                let mergedCount = (runText + text).count
-                if mergedCount < runText.count + text.count {
-                  runText += text
-                  pendingSpacer = false
-                } else {
-                  flushRun()
-                  pendingSpacer = false
-                  runStart = col
-                  runFg = visuals.foreground
-                  runBg = visuals.background
-                  runAttrs = cellAttrs
-                  runUnderlineStyle = visuals.underlineStyle
-                  runUnderlineColor = visuals.underlineColor
-                  runHyperlink = visuals.hyperlink
-                  runTransition = cellTransition
-                  runWave = cellWave
-                  runText = text
-                }
-              } else {
-                runText += text
-              }
-            } else {
+            // Same one-Character-per-cell invariant as the fast path.
+            let cellClusterCount = text.utf8.count == 1 ? 1 : text.count
+
+            func startRun() {
               flushRun()
               pendingSpacer = false
               runStart = col
@@ -1867,6 +1901,33 @@ public struct FrameProducer {
               runTransition = cellTransition
               runWave = cellWave
               runText = text
+              runEndCol = col + 1
+            }
+
+            if runStart != nil, sameStyle {
+              let lastCluster = runText.last.map(String.init) ?? ""
+              if pendingSpacer
+                || FrameProducer.mayJoinClusters(
+                  last: lastCluster.utf8, next: text.utf8),
+                (lastCluster + text).count < 1 + cellClusterCount
+              {
+                runText += text
+                runEndCol = col + 1
+                pendingSpacer = true
+                continue
+              } else if pendingSpacer || cellClusterCount != 1 {
+                startRun()
+              } else {
+                runText += text
+                runEndCol = col + 1
+              }
+            } else {
+              startRun()
+            }
+            if cellClusterCount != 1 {
+              runSpanUnknown = true
+              flushRun()
+              pendingSpacer = false
             }
           } else {
             flushRun()
@@ -2157,19 +2218,24 @@ public struct FrameProducer {
     {
       let caretRow = activePreeditLayout?.caretRow ?? snapshot.cursorRow
       let caretCol = activePreeditLayout?.caretCol ?? snapshot.cursorCol
-      let cellRect = CGRect(
-        x: originX + CGFloat(caretCol) * cw,
-        y: originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset,
-        width: cw,
-        height: ch
-      )
+      let remoteCell = activePreeditLayout == nil ? cellAt(row: caretRow, col: caretCol) : nil
+      // Ring cells carry no wide flag; the cluster's display width stands in.
+      let cellRect = Self.blockCursorRect(
+        CGRect(
+          x: originX + CGFloat(caretCol) * cw,
+          y: originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset,
+          width: cw,
+          height: ch),
+        style: Int(userCursorStyle.labanStyleValue),
+        wide: remoteCell.map { TerminalDisplayWidth.cells(of: $0.text) > 1 } ?? false,
+        col: caretCol, cols: cols)
       // Use the user's configured style for the remote cursor (ring snapshots
       // carry no explicit DECSCUSR override bits — Decision Log entry).
       appendCursorCommands(
         style: Int(userCursorStyle.labanStyleValue),
         cellRect: cellRect,
         into: &cmds)
-      if activePreeditLayout == nil, let cell = cellAt(row: caretRow, col: caretCol) {
+      if let cell = remoteCell {
         appendBlockCursorGlyph(
           style: Int(userCursorStyle.labanStyleValue), text: cell.text,
           visuals: resolvedVisuals(for: cell), cellRect: cellRect, into: &cmds)
@@ -2292,6 +2358,40 @@ public struct FrameProducer {
     Self.alphaColor(
       Theme.current.ansi16.indices.contains(11) ? Theme.current.ansi16[11] : 0xEBC1_3DFF,
       alpha: 0xB3)
+  }
+
+  /// Cheap pre-check before grapheme segmentation: a cell can only extend
+  /// the previous cell's cluster when it starts with an extending scalar
+  /// (combining mark, spacing mark, ZWJ, variation selector, emoji modifier,
+  /// tag) or regional indicator, or when the previous cluster ends in a ZWJ
+  /// or regional indicator. Keeps the per-cell path allocation-free for
+  /// ordinary non-ASCII text such as box lines, CJK and accented letters.
+  static func mayJoinClusters<Last: Collection, Next: Collection>(
+    last: Last, next: Next
+  ) -> Bool where Last.Element == UInt8, Next.Element == UInt8 {
+    func isRegionalIndicator(_ s: Unicode.Scalar) -> Bool { (0x1F1E6...0x1F1FF).contains(s.value) }
+    if let first = firstScalar(next) {
+      if first.value == 0x200D || isRegionalIndicator(first) || first.properties.isGraphemeExtend
+        || first.properties.generalCategory == .spacingMark
+        || (0x1F3FB...0x1F3FF).contains(first.value)
+      {
+        return true
+      }
+    }
+    var lastScalar: Unicode.Scalar?
+    var iterator = last.makeIterator()
+    var decoder = Unicode.UTF8()
+    while case .scalarValue(let scalar) = decoder.decode(&iterator) { lastScalar = scalar }
+    guard let lastScalar else { return false }
+    return lastScalar.value == 0x200D || isRegionalIndicator(lastScalar)
+  }
+
+  private static func firstScalar<Bytes: Collection>(_ bytes: Bytes) -> Unicode.Scalar?
+  where Bytes.Element == UInt8 {
+    var iterator = bytes.makeIterator()
+    var decoder = Unicode.UTF8()
+    if case .scalarValue(let scalar) = decoder.decode(&iterator) { return scalar }
+    return nil
   }
 
   private static func blend(

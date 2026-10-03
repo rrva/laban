@@ -9,6 +9,10 @@ public final class FontAtlas {
   public let ascent: CGFloat
   public let descent: CGFloat
   public let leading: CGFloat
+  /// The font's own underline metrics at `pointSize`: position of the line
+  /// relative to the baseline (negative is below) and its thickness.
+  public let underlinePosition: CGFloat
+  public let underlineThickness: CGFloat
   // Nominal cell size (width = advance of 'M', height = ascent + descent + leading).
   // Stored rather than computed: `font` is immutable per instance (a new
   // FontAtlas is created for every font/size change, see `withPointSize`),
@@ -130,6 +134,8 @@ public final class FontAtlas {
     self.ascent = ascent
     self.descent = descent
     self.leading = leading
+    self.underlinePosition = CTFontGetUnderlinePosition(font)
+    self.underlineThickness = CTFontGetUnderlineThickness(font)
     var glyph: CGGlyph = 0
     var cp: UniChar = 77  // 'M'
     CTFontGetGlyphsForCharacters(font, &cp, &glyph, 1)

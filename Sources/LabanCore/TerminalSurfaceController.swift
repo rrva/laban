@@ -2722,13 +2722,22 @@ public final class TerminalSurfaceController {
         cellWidth: cellWidth,
         gridOriginX: gridOriginX,
         freshXMin: xMin,
-        freshXMax: xMax)
+        freshXMax: xMax,
+        displayCellCount: displayCellCount)
       if pieces.count == 1, pieces[0].stamped == false {
         result.append(command)
         continue
       }
-      for piece in pieces {
+      // Every cluster but the run's last is one engine column wide, so each
+      // piece but the last spans its Character count and the last piece takes
+      // the remainder of the engine span.
+      var remainingCells = displayCellCount
+      for (pieceIndex, piece) in pieces.enumerated() {
         guard !piece.text.isEmpty else { continue }
+        let pieceCells: Int? = remainingCells.map { remaining in
+          pieceIndex == pieces.count - 1 ? max(1, remaining) : piece.text.count
+        }
+        remainingCells = remainingCells.map { $0 - piece.text.count }
         result.append(
           .glyphRun(
             origin: piece.origin,
@@ -2740,8 +2749,7 @@ public final class TerminalSurfaceController {
             underlineStyle: underlineStyle,
             underlineColor: underlineColor,
             hyperlink: hyperlink,
-            displayCellCount: displayCellCount == nil
-              ? nil : TerminalDisplayWidth.cells(of: piece.text),
+            displayCellCount: pieceCells,
             outputTimestampSeconds: piece.stamped ? stamp : nil,
             foregroundTransition: foregroundTransition,
             foregroundWave: foregroundWave))
@@ -2758,18 +2766,29 @@ public final class TerminalSurfaceController {
     cellWidth: CGFloat,
     gridOriginX: CGFloat,
     freshXMin: CGFloat,
-    freshXMax: CGFloat
+    freshXMax: CGFloat,
+    displayCellCount: Int? = nil
   ) -> [(text: String, origin: CGPoint, stamped: Bool)] {
     var pieces: [(text: String, origin: CGPoint, stamped: Bool)] = []
     var col = Int(((origin.x - gridOriginX) / cellWidth).rounded())
     var pieceStart = text.startIndex
     var pieceOriginX = origin.x
     var pieceStamped: Bool?
+    let clusterCount = displayCellCount == nil ? 0 : text.count
     var index = text.startIndex
     while index < text.endIndex {
       let next = text.index(after: index)
       let cluster = text[index..<next]
-      let width = max(1, TerminalDisplayWidth.cells(of: String(cluster)))
+      // FrameProducer ends a run after any wide cell, so every Character but
+      // the last occupies exactly one column — the same placement renderers
+      // use. Only the last may be wide.
+      // The engine's span, when the run carries it, sizes the last cluster
+      // exactly (a ZWJ sequence split over several cells covers them all).
+      let width =
+        next == text.endIndex
+        ? (displayCellCount.map { max(1, $0 - (clusterCount - 1)) }
+          ?? max(1, TerminalDisplayWidth.cells(of: String(cluster))))
+        : 1
       let cellMinX = gridOriginX + CGFloat(col) * cellWidth
       let cellMaxX = cellMinX + CGFloat(width) * cellWidth
       let stamped = cellMinX < freshXMax && freshXMin < cellMaxX

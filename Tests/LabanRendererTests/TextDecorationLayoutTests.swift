@@ -21,6 +21,40 @@ final class TextDecorationLayoutTests: XCTestCase {
     XCTAssertEqual(layout?.overlineRect, CGRect(x: 5, y: 22, width: 33, height: 1))
   }
 
+  /// With the font's underline metrics the line sits where the font puts
+  /// it, snapped to device pixels, between the cell bottom and the baseline;
+  /// a double underline's second line goes below the first.
+  func testLayoutUsesFontUnderlineMetricsWhenSupplied() throws {
+    let origin = CGPoint(x: 0, y: 40)
+    let descent: CGFloat = 5
+    let layout = try XCTUnwrap(
+      TextDecorationLayout.make(
+        origin: origin, cellCount: 2, attributes: [.underline], underlineStyle: .single,
+        cellAdvance: 10, cellHeight: 20, descent: descent, scale: 2,
+        underlineMetrics: (position: -1.3, thickness: 0.8)))
+    XCTAssertEqual(layout.thickness, 1, "0.8pt rounds to 2 device pixels at 2x")
+    let rect = try XCTUnwrap(layout.underlineRects.first)
+    // Top at baseline - 1.3 = 43.7, minus thickness = 42.7, snapped down to 42.5.
+    XCTAssertEqual(rect.minY, 42.5)
+    XCTAssertLessThanOrEqual(rect.maxY, origin.y + descent, "the line stays below the baseline")
+
+    let double = try XCTUnwrap(
+      TextDecorationLayout.make(
+        origin: origin, cellCount: 2, attributes: [], underlineStyle: .double,
+        cellAdvance: 10, cellHeight: 20, descent: descent, scale: 2,
+        underlineMetrics: (position: -1.3, thickness: 0.8)))
+    XCTAssertEqual(double.underlineRects.count, 2)
+    XCTAssertLessThan(double.underlineRects[1].minY, double.underlineRects[0].minY)
+    XCTAssertGreaterThanOrEqual(double.underlineRects[1].minY, origin.y)
+
+    let clamped = try XCTUnwrap(
+      TextDecorationLayout.make(
+        origin: origin, cellCount: 1, attributes: [.underline], underlineStyle: .single,
+        cellAdvance: 10, cellHeight: 20, descent: descent, scale: 2,
+        underlineMetrics: (position: -40, thickness: 1)))
+    XCTAssertEqual(clamped.underlineRects.first?.minY, origin.y, "never below the cell")
+  }
+
   func testCurlyUnderlineUsesSharedPointPath() throws {
     let layout = try XCTUnwrap(
       TextDecorationLayout.make(

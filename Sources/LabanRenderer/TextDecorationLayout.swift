@@ -17,7 +17,8 @@ struct TextDecorationLayout: Equatable {
     cellHeight: CGFloat,
     descent: CGFloat,
     scale: CGFloat,
-    phaseOriginX: CGFloat? = nil
+    phaseOriginX: CGFloat? = nil,
+    underlineMetrics: (position: CGFloat, thickness: CGFloat)? = nil
   ) -> TextDecorationLayout? {
     let drawsUnderline = attributes.contains(.underline) || underlineStyle != .none
     let drawsStrike = attributes.contains(.strikethrough)
@@ -27,8 +28,21 @@ struct TextDecorationLayout: Equatable {
     }
 
     let width = CGFloat(cellCount) * cellAdvance
-    let thickness = max(1.0 / max(scale, 1), 1)
-    let underlineY = origin.y + max(1, floor(descent * 0.45))
+    let pixelScale = max(scale, 1)
+    let thickness: CGFloat
+    let underlineY: CGFloat
+    if let metrics = underlineMetrics, metrics.thickness > 0 {
+      // The font's own underline, snapped to device pixels and kept inside
+      // the cell between its bottom edge and the baseline.
+      thickness = max(1 / pixelScale, (metrics.thickness * pixelScale).rounded() / pixelScale)
+      let baseline = origin.y + descent
+      let top = baseline + metrics.position
+      let snapped = ((top - thickness) * pixelScale).rounded(.down) / pixelScale
+      underlineY = min(max(snapped, origin.y), baseline - thickness)
+    } else {
+      thickness = max(1.0 / max(scale, 1), 1)
+      underlineY = origin.y + max(1, floor(descent * 0.45))
+    }
     // Patterned underlines (dashed/dotted/curly) seed their phase from this x.
     // When a continuous terminal underline is split into several style runs
     // (a mid-span foreground/hyperlink/colour change), each run passes the
@@ -51,13 +65,21 @@ struct TextDecorationLayout: Equatable {
       case .double:
         underlineRects.append(CGRect(x: origin.x, y: underlineY, width: width, height: thickness))
         let gap = max(thickness, 1)
+        // With font metrics the second line goes below, toward the cell
+        // bottom, so it never climbs into the baseline; without them (or when
+        // there is no room below) it stacks above as before.
+        let below = underlineY - thickness - gap
+        let secondY =
+          underlineMetrics != nil && below >= origin.y ? below : underlineY + thickness + gap
         underlineRects.append(
-          CGRect(x: origin.x, y: underlineY + thickness + gap, width: width, height: thickness))
+          CGRect(x: origin.x, y: secondY, width: width, height: thickness))
       case .curly:
         let amplitude = max(thickness * 1.2, 1.0)
         let period = max(cellAdvance, 6)
         let baseY = underlineY + thickness * 0.5
-        let steps = max(Int(width / 1.5), 8)
+        // One segment per point: finer than the old 1.5pt staircase without
+        // multiplying quads by the backing scale on wide underlined runs.
+        let steps = max(Int(width), 8)
         curlyUnderlinePoints.reserveCapacity(steps + 1)
         for i in 0...steps {
           let t = CGFloat(i) / CGFloat(steps)
