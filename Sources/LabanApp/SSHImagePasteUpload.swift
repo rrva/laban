@@ -163,21 +163,20 @@ enum SSHImagePasteUpload {
     executable: URL, arguments: [String], environment: [String: String], input: Data,
     timeout: TimeInterval
   ) throws -> ProcessOutcome {
-    var stdinFDs: [Int32] = [-1, -1]
-    var stdoutFDs: [Int32] = [-1, -1]
-    var stderrFDs: [Int32] = [-1, -1]
-    for index in 0..<3 {
-      let rc: Int32
-      switch index {
-      case 0: rc = pipe(&stdinFDs)
-      case 1: rc = pipe(&stdoutFDs)
-      default: rc = pipe(&stderrFDs)
-      }
-      guard rc == 0 else {
-        let code = errno
-        for fd in stdinFDs + stdoutFDs + stderrFDs where fd >= 0 { close(fd) }
-        throw SpawnError.pipe(code)
-      }
+    let stdinFDs = try makePipe()
+    let stdoutFDs: [Int32]
+    let stderrFDs: [Int32]
+    do {
+      stdoutFDs = try makePipe()
+    } catch {
+      stdinFDs.forEach { close($0) }
+      throw error
+    }
+    do {
+      stderrFDs = try makePipe()
+    } catch {
+      (stdinFDs + stdoutFDs).forEach { close($0) }
+      throw error
     }
     // ssh exits without draining stdin on failure; a write to the closed pipe
     // must be an EPIPE error, not an app-killing SIGPIPE.
@@ -298,6 +297,19 @@ enum SSHImagePasteUpload {
     }
     return ProcessOutcome(
       status: status, stdout: stdoutBox.value, stderr: stderrBox.value, timedOut: timedOut)
+  }
+
+  /// A pipe whose both ends are close-on-exec. Laban forks shells in-process
+  /// (session_lifecycle.c); a shell spawned mid-upload must not inherit these
+  /// ends — a leaked stdin write end would keep the remote `cat` from ever
+  /// seeing EOF. posix_spawn's dup2 onto 0/1/2 clears the flag for ssh's copies.
+  static func makePipe() throws -> [Int32] {
+    var fds: [Int32] = [-1, -1]
+    guard pipe(&fds) == 0 else { throw SpawnError.pipe(errno) }
+    for fd in fds {
+      _ = fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC)
+    }
+    return fds
   }
 
   /// Read `fd` to EOF in 100 ms poll slices, stopping early once `cancel` is set.

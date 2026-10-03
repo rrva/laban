@@ -133,6 +133,14 @@ final class SSHImagePasteUploadTests: XCTestCase {
     XCTAssertEqual(outcome.status, 128 + SIGTERM, "ended by SIGTERM, not the SIGKILL fallback")
   }
 
+  func testUploadPipesAreCloseOnExec() throws {
+    let fds = try SSHImagePasteUpload.makePipe()
+    defer { fds.forEach { close($0) } }
+    for fd in fds {
+      XCTAssertNotEqual(fcntl(fd, F_GETFD) & FD_CLOEXEC, 0, "fd \(fd)")
+    }
+  }
+
   func testTimeoutBoundsTheWaitEvenWhenAChildIgnoresTerm() throws {
     let start = Date()
     let outcome = try SSHImagePasteUpload.runProcess(
