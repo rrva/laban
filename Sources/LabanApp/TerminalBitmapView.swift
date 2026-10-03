@@ -697,6 +697,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// every tab, so it must drop the outgoing tab's visible state here or it
   /// flashes the previous tab's thumb for a beat when a new tab is selected.
   var onActiveTabChanged: (() -> Void)?
+  /// Status pill for clipboard image uploads over SSH (ADR 0039); the window
+  /// shares it with the OSC 52 copy confirmation.
+  weak var statusToast: ClipboardCopyToastView?
+  private var sshImageUploadInFlight = false
+  private let sshImageUploadConsent: SSHImageUploadConsentStore =
+    UserDefaultsSSHImageUploadConsentStore()
   private var renderedFrameCount: Int = 0
   var renderedFrameCountForTests: Int { renderedFrameCount }
 
@@ -7609,9 +7615,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case .empty:
       // Image-only clipboard: mirror Ghostty's performable-keybind pass-through —
       // when the clipboard has no text, forward as ctrl+v so TUIs like Claude
-      // Code can read the image from the system pasteboard themselves.
-      if hasImage {
+      // Code can read the image from the system pasteboard themselves. A pane
+      // running ssh cannot reach this Mac's pasteboard, so there the image is
+      // uploaded to the same host and its remote path pasted (ADR 0039).
+      guard hasImage else { return }
+      let ssh = SSHImagePasteUpload.foregroundSSH(pid: activeTab.titleMetadata.process.pid)
+      switch ClipboardPasteAction.decide(hasText: false, hasImage: true, ssh: ssh?.commandLine) {
+      case .uploadOverSSH:
+        if let ssh { uploadClipboardImageOverSSH(ssh, session: session) }
+      case .forwardControlV:
         forwardClipboardImagePasteToTerminal(session: session)
+      case .pasteText, .none:
+        break
       }
       return
     case .tooLarge(let bytes):
@@ -7631,7 +7646,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       raw = value
       rawBytes = bytes
     }
+    pasteUserText(raw, rawBytes: rawBytes, session: session, activeTab: activeTab)
+  }
 
+  /// The user-paste delivery path shared by ⌘V text and the remote path of an
+  /// SSH image upload: sanitize (ADR 0020), size and unsafe-paste prompts,
+  /// bracketed-paste encoding, and the backend-specific write.
+  private func pasteUserText(_ raw: String, rawBytes: Int, session: Session, activeTab: Tab) {
     // Sanitize control characters out of the paste before handing it to
     // libghostty's bracketed-paste encoder. Strips ESC and the rest of the
     // C0 range (plus DEL) — keeps tab / newline / CR. This is the post-
@@ -7751,6 +7772,104 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     // The paste has been emitted; drop the selection the user just pasted from.
     clearSelectionAfterPaste()
+  }
+
+  /// Upload the pasteboard image to the host the pane's ssh is connected to,
+  /// then paste the remote path through `pasteUserText` (ADR 0039).
+  private func uploadClipboardImageOverSSH(
+    _ ssh: SSHImagePasteUpload.ForegroundSSH, session: Session
+  ) {
+    guard !sshImageUploadInFlight else {
+      EventLog.shared.log("paste.image.sshUpload.ignored", ["reason": "inFlight"])
+      return
+    }
+    guard SSHImagePasteUpload.confirmUpload(to: ssh.commandLine, store: sshImageUploadConsent)
+    else {
+      EventLog.shared.log("paste.image.sshUpload.declined")
+      return
+    }
+    let png: Data
+    switch SSHImagePasteUpload.pngData(from: .general) {
+    case .png(let data):
+      png = data
+    case .tooLarge(let bytes):
+      EventLog.shared.log("paste.image.sshUpload.failed", ["reason": "tooLarge", "bytes": bytes])
+      showStatusToast(
+        ClipboardCopyToastView.imageUploadFailedMessage(reason: L10n.tr("image is too large")),
+        duration: 4)
+      return
+    case .unavailable:
+      EventLog.shared.log("paste.image.sshUpload.failed", ["reason": "noImage", "bytes": 0])
+      showStatusToast(
+        ClipboardCopyToastView.imageUploadFailedMessage(
+          reason: L10n.tr("could not read the image")),
+        duration: 4)
+      return
+    }
+
+    sshImageUploadInFlight = true
+    let sessionId = session.id
+    let started = Date()
+    // Never log the image, the destination, or the argv (it can carry key
+    // paths and proxy commands); the option count is enough to correlate.
+    EventLog.shared.log(
+      "paste.image.sshUpload.started",
+      ["bytes": png.count, "userOptions": ssh.commandLine.options.count])
+    showStatusToast(
+      ClipboardCopyToastView.uploadingImageMessage(destination: ssh.commandLine.displayDestination),
+      duration: SSHImagePasteUpload.timeout)
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      let result = SSHImagePasteUpload.upload(png, via: ssh)
+      DispatchQueue.main.async {
+        self?.finishSSHImageUpload(result, sessionId: sessionId, bytes: png.count, started: started)
+      }
+    }
+  }
+
+  private func finishSSHImageUpload(
+    _ result: Result<String, SSHImagePasteUpload.Failure>, sessionId: Session.ID, bytes: Int,
+    started: Date
+  ) {
+    sshImageUploadInFlight = false
+    let durationMs = Int(Date().timeIntervalSince(started) * 1000)
+    switch result {
+    case .success(let path):
+      // Paste only into the pane that asked; focus may have moved meanwhile.
+      guard let tab = model.activeTab, tab.focusedSessionId == sessionId,
+        let session = model.session(forTab: tab.id)
+      else {
+        EventLog.shared.log(
+          "paste.image.sshUpload.failed",
+          ["reason": "paneChanged", "bytes": bytes, "durationMs": durationMs])
+        showStatusToast(
+          ClipboardCopyToastView.imageUploadFailedMessage(
+            reason: L10n.tr("the pane changed before the upload finished")),
+          duration: 4)
+        return
+      }
+      EventLog.shared.log(
+        "paste.image.sshUpload.succeeded", ["bytes": bytes, "durationMs": durationMs])
+      statusToast?.hide()
+      // Quote exactly like a dropped file path so a path with spaces stays one
+      // argument and agents recognize it as an image path.
+      let text = TerminalDropText.format(paths: [path])
+      pasteUserText(text, rawBytes: text.utf8.count, session: session, activeTab: tab)
+    case .failure(let failure):
+      var payload: [String: Any] = [
+        "reason": failure.kind, "bytes": bytes, "durationMs": durationMs,
+      ]
+      if case .exit(let status, _) = failure { payload["status"] = Int(status) }
+      EventLog.shared.log("paste.image.sshUpload.failed", payload)
+      showStatusToast(
+        ClipboardCopyToastView.imageUploadFailedMessage(reason: failure.reason), duration: 4)
+    }
+  }
+
+  private func showStatusToast(_ message: String, duration: TimeInterval) {
+    guard let statusToast, let superview = statusToast.superview else { return }
+    // Centered on the terminal area, like the OSC 52 copy toast.
+    let area = convert(terminalAreaRect, to: superview)
+    statusToast.show(message: message, in: area, duration: duration)
   }
 
   private func forwardClipboardImagePasteToTerminal(session: Session) {

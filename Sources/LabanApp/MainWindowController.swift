@@ -856,6 +856,7 @@ final class MainWindowController: NSWindowController {
     // the terminal area (not the sidebar strip).
     let clipboardToast = ClipboardCopyToastView(frame: .zero)
     window.contentView?.addSubview(clipboardToast)
+    termView.statusToast = clipboardToast
     model.onClipboardWrite = { [weak clipboardToast, weak termView] _, data in
       TerminalClipboard.writeOSC52(data, to: .general)
       if let clipboardToast, let termView {
