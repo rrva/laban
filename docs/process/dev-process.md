@@ -1665,6 +1665,21 @@ Rules of thumb:
 - Cached exports persist in `~/.cache/analyze-metal-trace` (never for
   sensitive schemas); `--clear-cache` removes them.
 
+## Slug Frame Allocations
+
+`SlugGlyphFrameAllocationTests` counts the heap allocations the Slug backend
+makes on the render thread per steady-state frame, through libmalloc's
+`malloc_logger` hook (`ThreadAllocationCounter` in the renderer tests). Under
+`swift test` (debug) it fails on any allocation of 16 KB or more, the size of a
+per-frame instance list. Debug code allocates per glyph by itself, so the full
+gate, that a 160x48 frame allocates no more blocks than a 20x4 one, runs
+optimized, and prints render-thread CPU time per full frame too:
+
+    scripts/bench-slug-frame-alloc
+    LABAN_ALLOC_SITES=1 scripts/bench-slug-frame-alloc   # + allocating call sites
+
+Compare CPU time by its minimum: the median moves with P/E-core placement.
+
 ## Definition Of Done
 
 A behavior is done when an agent can:
