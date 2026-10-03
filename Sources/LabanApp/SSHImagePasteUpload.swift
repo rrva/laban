@@ -325,8 +325,8 @@ enum SSHImagePasteUpload {
     let fileName = SSHImageUploadScript.makeFileName()
     let arguments = ssh.commandLine.uploadArguments(
       remoteCommand: SSHImageUploadScript.remoteCommand(fileName: fileName))
-    var environment = ProcessInfo.processInfo.environment
-    if let authSocket = ssh.authSocket { environment["SSH_AUTH_SOCK"] = authSocket }
+    let environment = uploadEnvironment(
+      base: ProcessInfo.processInfo.environment, authSocket: ssh.authSocket)
     let outcome: ProcessOutcome
     do {
       outcome = try runProcess(
@@ -336,6 +336,14 @@ enum SSHImagePasteUpload {
       return .failure(.launch(String(describing: error)))
     }
     return interpret(outcome, fileName: fileName)
+  }
+
+  /// Laban's environment with the running ssh's agent socket. When that ssh
+  /// has no `SSH_AUTH_SOCK`, the upload must not fall back to Laban's own agent.
+  static func uploadEnvironment(base: [String: String], authSocket: String?) -> [String: String] {
+    var environment = base
+    environment["SSH_AUTH_SOCK"] = authSocket
+    return environment
   }
 
   static func interpret(_ outcome: ProcessOutcome, fileName: String) -> Result<String, Failure> {

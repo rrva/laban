@@ -141,6 +141,15 @@ final class SSHImagePasteUploadTests: XCTestCase {
     XCTAssertEqual(outcome.stdout, Data("ok".utf8))
   }
 
+  func testUploadUsesTheRunningSSHsAgentOrNone() {
+    let base = ["SSH_AUTH_SOCK": "/laban/agent", "HOME": "/h"]
+    XCTAssertEqual(
+      SSHImagePasteUpload.uploadEnvironment(base: base, authSocket: "/ssh/agent"),
+      ["SSH_AUTH_SOCK": "/ssh/agent", "HOME": "/h"])
+    XCTAssertEqual(
+      SSHImagePasteUpload.uploadEnvironment(base: base, authSocket: nil), ["HOME": "/h"])
+  }
+
   func testEarlyExitDoesNotKillTheAppWithSIGPIPE() throws {
     let outcome = try SSHImagePasteUpload.runProcess(
       executable: URL(fileURLWithPath: "/bin/sh"),
