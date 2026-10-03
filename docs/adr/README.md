@@ -47,3 +47,4 @@ Write a new ADR when a change establishes durable architectural policy, reverses
 - [0036: Pane layout is view state above session tiers](0036-pane-layout-is-view-state-above-session-tiers.md)
 - [0037: Font ligatures are a Slug capability](0037-font-ligatures-are-a-slug-capability.md)
 - [0038: Slug text blends in gamma space](0038-slug-text-blends-in-gamma-space.md)
+- [0040: Kitty clipboard paste events (OSC 5522)](0040-kitty-clipboard-paste-events.md)
