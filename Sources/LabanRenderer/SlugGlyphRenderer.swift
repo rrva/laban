@@ -3606,9 +3606,20 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   /// Hash of the frame's glyph-run text, computed only on overflow.
   private static func frameTextSignature(_ commands: [FrameCommand]) -> Int {
+    // The block-cursor glyph re-emitted after a .cursor command exists only
+    // in the visible blink phase; leave it out so blinking does not look
+    // like new text.
     var hasher = Hasher()
-    for case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _) in commands {
-      hasher.combine(text)
+    var afterCursor = false
+    for command in commands {
+      switch command {
+      case .cursor:
+        afterCursor = true
+      case .glyphRun(_, let text, _, _, _, _, _, _, _, _, _, _, _):
+        if !afterCursor { hasher.combine(text) }
+      default:
+        break
+      }
     }
     return hasher.finalize()
   }
