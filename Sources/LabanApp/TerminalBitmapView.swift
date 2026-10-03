@@ -7922,8 +7922,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func showStatusToast(_ message: String, duration: TimeInterval) {
-    guard let statusToast, let bounds = statusToast.superview?.bounds else { return }
-    statusToast.show(message: message, in: bounds, duration: duration)
+    guard let statusToast, let superview = statusToast.superview else { return }
+    // Centered on the terminal area, like the OSC 52 copy toast.
+    let area = convert(terminalAreaRect, to: superview)
+    statusToast.show(message: message, in: area, duration: duration)
   }
 
   private func forwardClipboardImagePasteToTerminal(session: Session) {
