@@ -1869,7 +1869,7 @@ public struct FrameProducer {
               let lastCluster = runText.last.map(String.init) ?? ""
               if pendingSpacer
                 || FrameProducer.mayJoinClusters(
-                  last: Array(lastCluster.utf8)[...], next: Array(text.utf8)),
+                  last: lastCluster.utf8, next: text.utf8),
                 (lastCluster + text).count < 1 + cellClusterCount
               {
                 runText += text
