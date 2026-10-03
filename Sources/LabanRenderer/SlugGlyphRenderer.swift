@@ -44,6 +44,7 @@ private struct SlugGlyphGPUGlyph {
   var verticalBandCount: UInt32
 }
 
+/// A run of `bandCurves`, sorted for one ray direction.
 private struct SlugGlyphGPUBand {
   var indexStart: UInt32
   var indexCount: UInt32
@@ -684,11 +685,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var curves: [SlugGlyphGPUCurve] = []
   private var glyphs: [SlugGlyphGPUGlyph] = []
   private var bands: [SlugGlyphGPUBand] = []
-  private var bandIndices: [UInt32] = []
+  /// Each band's curves, copied in walk order rather than indexed into
+  /// `curves`: the fragment shader's band walk then makes one dependent load
+  /// per curve instead of two.
+  private var bandCurves: [SlugGlyphGPUCurve] = []
   private var curveBuffer: MTLBuffer?
   private var glyphBuffer: MTLBuffer?
   private var bandBuffer: MTLBuffer?
-  private var bandIndexBuffer: MTLBuffer?
+  private var bandCurveBuffer: MTLBuffer?
   // M4: how many of the corresponding CPU-side array's (append-only)
   // elements are already present in the matching `MTLBuffer`. A capacity
   // overflow reallocates (doubling) and re-copies from the CPU array (the
@@ -697,7 +701,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var curveBufferUploadedCount = 0
   private var glyphBufferUploadedCount = 0
   private var bandBufferUploadedCount = 0
-  private var bandIndexBufferUploadedCount = 0
+  private var bandCurveBufferUploadedCount = 0
   private var subpixelCoverageAccum: MTLTexture?
   private var subpixelColorAccum: MTLTexture?
   private var geometryBuffersDirty = false
@@ -829,7 +833,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     curves.count * MemoryLayout<SlugGlyphGPUCurve>.stride
       + glyphs.count * MemoryLayout<SlugGlyphGPUGlyph>.stride
       + bands.count * MemoryLayout<SlugGlyphGPUBand>.stride
-      + bandIndices.count * MemoryLayout<UInt32>.stride
+      + bandCurves.count * MemoryLayout<SlugGlyphGPUCurve>.stride
   }
 
   /// Drops every glyph geometry cache once storage passes `budgetBytes`.
@@ -854,7 +858,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     curves.removeAll()
     glyphs.removeAll()
     bands.removeAll()
-    bandIndices.removeAll()
+    bandCurves.removeAll()
     entriesByKey.removeAll()
     entriesByResolveKey.removeAll()
     failedResolveKeys.removeAll()
@@ -864,11 +868,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     curveBuffer = nil
     glyphBuffer = nil
     bandBuffer = nil
-    bandIndexBuffer = nil
+    bandCurveBuffer = nil
     curveBufferUploadedCount = 0
     glyphBufferUploadedCount = 0
     bandBufferUploadedCount = 0
-    bandIndexBufferUploadedCount = 0
+    bandCurveBufferUploadedCount = 0
     geometryBuffersDirty = true
     geometryResetCount += 1
     geometryMeasurePending = true
@@ -1922,13 +1926,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let slugCurveBuffer = curveBuffer
     let slugGlyphBuffer = glyphBuffer
     let slugBandBuffer = bandBuffer
-    let slugBandIndexBuffer = bandIndexBuffer
+    let slugBandCurveBuffer = bandCurveBuffer
     let slugBuffersReady =
       (slugInstanceBuffer != nil || motionInstanceBuffer != nil)
       && slugCurveBuffer != nil
       && slugGlyphBuffer != nil
       && slugBandBuffer != nil
-      && slugBandIndexBuffer != nil
+      && slugBandCurveBuffer != nil
     var glyphUniform = glyphUniforms(width: pixelWidth, height: pixelHeight)
     let (coverageAccum, colorAccum) = ensureSubpixelAccumTextures()
     let subpixelAccumReady = coverageAccum != nil && colorAccum != nil
@@ -1971,7 +1975,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         accumEncoder.setFragmentBuffer(slugCurveBuffer, offset: 0, index: 0)
         accumEncoder.setFragmentBuffer(slugGlyphBuffer, offset: 0, index: 1)
         accumEncoder.setFragmentBuffer(slugBandBuffer, offset: 0, index: 2)
-        accumEncoder.setFragmentBuffer(slugBandIndexBuffer, offset: 0, index: 3)
+        accumEncoder.setFragmentBuffer(slugBandCurveBuffer, offset: 0, index: 3)
         repeatingBands(scissorPlan, on: accumEncoder) {
           accumEncoder.drawPrimitives(
             type: .triangle,
@@ -2178,7 +2182,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         encoder.setFragmentBuffer(slugCurveBuffer, offset: 0, index: 0)
         encoder.setFragmentBuffer(slugGlyphBuffer, offset: 0, index: 1)
         encoder.setFragmentBuffer(slugBandBuffer, offset: 0, index: 2)
-        encoder.setFragmentBuffer(slugBandIndexBuffer, offset: 0, index: 3)
+        encoder.setFragmentBuffer(slugBandCurveBuffer, offset: 0, index: 3)
         encoder.setRenderPipelineState(activeGlyphAlphaPipeline)
         repeatingBands(scissorPlan, on: encoder) {
           encoder.drawPrimitives(
@@ -2268,7 +2272,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         encoder.setFragmentBuffer(slugCurveBuffer, offset: 0, index: 0)
         encoder.setFragmentBuffer(slugGlyphBuffer, offset: 0, index: 1)
         encoder.setFragmentBuffer(slugBandBuffer, offset: 0, index: 2)
-        encoder.setFragmentBuffer(slugBandIndexBuffer, offset: 0, index: 3)
+        encoder.setFragmentBuffer(slugBandCurveBuffer, offset: 0, index: 3)
         encoder.setRenderPipelineState(glyphCoveragePipeline)
         repeatingBands(scissorPlan, on: encoder) {
           encoder.drawPrimitives(
@@ -2473,7 +2477,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let curveBuffer,
       let glyphBuffer,
       let bandBuffer,
-      let bandIndexBuffer
+      let bandCurveBuffer
     else { return nil }
     encoder.setRenderPipelineState(glyphAlphaPipeline)
     encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
@@ -2491,7 +2495,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     encoder.setFragmentBuffer(curveBuffer, offset: 0, index: 0)
     encoder.setFragmentBuffer(glyphBuffer, offset: 0, index: 1)
     encoder.setFragmentBuffer(bandBuffer, offset: 0, index: 2)
-    encoder.setFragmentBuffer(bandIndexBuffer, offset: 0, index: 3)
+    encoder.setFragmentBuffer(bandCurveBuffer, offset: 0, index: 3)
     encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: 1)
     encoder.endEncoding()
     commandBuffer.commit()
@@ -3669,23 +3673,27 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   ) {
     let minValue = axis == .horizontal ? outline.bounds.minY : outline.bounds.minX
     let extent = max(axis == .horizontal ? outline.bounds.height : outline.bounds.width, .ulpOfOne)
-    for band in 0..<bandCount {
-      let bandMin = minValue + extent * CGFloat(band) / CGFloat(bandCount)
-      let bandMax = minValue + extent * CGFloat(band + 1) / CGFloat(bandCount)
-      let indexStart = bandIndices.count
-      let intersecting = outline.curves.enumerated()
-        .filter { _, curve in curveIntersectsBand(curve, min: bandMin, max: bandMax, axis: axis) }
-        .sorted { lhs, rhs in
-          curveBreakCoordinate(lhs.element, axis: axis)
-            > curveBreakCoordinate(rhs.element, axis: axis)
+    // `bandCount` bands whose rays point toward +x (+y), then `bandCount`
+    // toward -x (-y); the shader casts toward the nearer side of the glyph.
+    for towardPositive in [true, false] {
+      for band in 0..<bandCount {
+        let bandMin = minValue + extent * CGFloat(band) / CGFloat(bandCount)
+        let bandMax = minValue + extent * CGFloat(band + 1) / CGFloat(bandCount)
+        let indexStart = bandCurves.count
+        let intersecting = outline.curves.enumerated()
+          .filter { _, curve in curveIntersectsBand(curve, min: bandMin, max: bandMax, axis: axis) }
+          .sorted { lhs, rhs in
+            curveBreakCoordinate(lhs.element, axis: axis, towardPositive: towardPositive)
+              > curveBreakCoordinate(rhs.element, axis: axis, towardPositive: towardPositive)
+          }
+        for (localIndex, _) in intersecting {
+          bandCurves.append(curves[curveStart + localIndex])
         }
-      for (localIndex, _) in intersecting {
-        bandIndices.append(UInt32(curveStart + localIndex))
+        bands.append(
+          SlugGlyphGPUBand(
+            indexStart: UInt32(indexStart),
+            indexCount: UInt32(bandCurves.count - indexStart)))
       }
-      bands.append(
-        SlugGlyphGPUBand(
-          indexStart: UInt32(indexStart),
-          indexCount: UInt32(bandIndices.count - indexStart)))
     }
   }
 
@@ -3716,13 +3724,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
   }
 
-  private func curveBreakCoordinate(_ curve: GlyphQuadraticCurve, axis: SlugBandAxis) -> CGFloat {
-    switch axis {
-    case .horizontal:
-      return Swift.max(curve.p0.x, curve.p1.x, curve.p2.x)
-    case .vertical:
-      return Swift.max(curve.p0.y, curve.p1.y, curve.p2.y)
-    }
+  /// The coordinate a band walk sorts by, descending, so it can stop at the
+  /// first curve wholly behind the sample: the far extent along the ray.
+  /// Rays toward -x (-y) see the curve mirrored, so the far extent is the
+  /// negated minimum.
+  private func curveBreakCoordinate(
+    _ curve: GlyphQuadraticCurve, axis: SlugBandAxis, towardPositive: Bool
+  ) -> CGFloat {
+    let (a, b, c) =
+      axis == .horizontal
+      ? (curve.p0.x, curve.p1.x, curve.p2.x) : (curve.p0.y, curve.p1.y, curve.p2.y)
+    return towardPositive ? Swift.max(a, b, c) : -Swift.min(a, b, c)
   }
 
   private func ensureGeometryBuffersIfNeeded(glyphsNeeded: Bool) -> Bool {
@@ -3744,20 +3756,20 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       ensureIncrementalBuffer(
         bands, buffer: &bandBuffer, uploadedCount: &bandBufferUploadedCount)
     else { return false }
-    // `bandIndices` can only be empty before the first glyph's bands are
+    // `bandCurves` can only be empty before the first glyph's bands are
     // appended, which the `curves`/`glyphs` emptiness guard above already
     // excludes in practice; kept as a defensive fallback (matching the
     // pre-M4 behavior) rather than folded into the incremental path so an
     // unreachable edge case cannot corrupt the tracked upload count.
-    if bandIndices.isEmpty {
-      if bandIndexBuffer == nil {
+    if bandCurves.isEmpty {
+      if bandCurveBuffer == nil {
         guard let placeholder = makeBuffer([UInt32(0)]) else { return false }
-        bandIndexBuffer = placeholder
+        bandCurveBuffer = placeholder
       }
     } else {
       guard
         ensureIncrementalBuffer(
-          bandIndices, buffer: &bandIndexBuffer, uploadedCount: &bandIndexBufferUploadedCount)
+          bandCurves, buffer: &bandCurveBuffer, uploadedCount: &bandCurveBufferUploadedCount)
       else { return false }
     }
     geometryBuffersDirty = false
@@ -3768,7 +3780,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Uploads `values[uploadedCount...]` into `buffer`, the M4 incremental
   /// geometry upload path (see
   /// `execplans/active/slug-render-loop-perf-and-aa-quality.md` M4): the
-  /// geometry arrays (`curves`/`glyphs`/`bands`/`bandIndices`) only ever grow
+  /// geometry arrays (`curves`/`glyphs`/`bands`/`bandCurves`) only ever grow
   /// by appending whole new glyphs, so once a buffer has spare capacity, a
   /// later call only needs to copy the newly appended tail, not the whole
   /// array. Capacity doubles (starting from `minimumCapacity`) only when the
@@ -4142,6 +4154,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// (execplans/active/slug-hot-path-negative-cache-and-present-skip.md M5)
   /// instead of only checking pixel output.
   var lastFrameSlugGlyphsCountForTesting: Int { lastFrameSlugGlyphsCount }
+
+  /// Test-only: GPU execution time of the most recent committed frame, in
+  /// milliseconds, once it has completed.
+  var lastFrameGPUMillisecondsForTesting: Double? {
+    guard let buffer = lastCommandBuffer, buffer.status == .completed else { return nil }
+    return (buffer.gpuEndTime - buffer.gpuStartTime) * 1000
+  }
 
   /// Test-only: color-atlas glyph instances in the most recent frame.
   var lastFrameColorGlyphsCountForTesting: Int { lastFrameColorGlyphsCount }
