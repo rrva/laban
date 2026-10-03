@@ -916,8 +916,8 @@ inline float slugGlyphCombineCoverage(float xcov, float ycov, float xwgt, float 
 // subpixel samples, `offsets` pixels apart in x on one row: they share one
 // band, one curve walk and one set of roots, and only the filter is applied
 // per channel. Each channel's filter is a box `boxWidths` pixels wide: one
-// pixel widened by the channel's sample spread (the per-area supersamples
-// this replaces sat a quarter of the area width either side of center), so
+// pixel widened to the spread of the per-area supersamples it replaces
+// (they sat a quarter of the area width either side of center), so
 // the area width still shapes the colour fringe at the cost of a scale per
 // root instead of two more band walks.
 
@@ -1241,10 +1241,13 @@ inline float3 slugGlyphCoverageRGB(
         (sampleB.x - centerSample.x) * pixelsPerUnit.x);
     float3 xcov;
     float3 xwgt;
-    float3 boxWidths = 1.0 + 0.5 * float3(
+    float3 areaWidths = float3(
         uniforms.subpixelRBounds.z - uniforms.subpixelRBounds.x,
         uniforms.subpixelGBounds.z - uniforms.subpixelGBounds.x,
         uniforms.subpixelBBounds.z - uniforms.subpixelBBounds.x);
+    // The box with the variance of the filter this replaces: the 1 px box
+    // averaged at offsets 0 and +/- areaWidth / 4.
+    float3 boxWidths = sqrt(1.0 + 0.5 * areaWidths * areaWidths);
     slugGlyphXRay3(curves, bands, bandIndices, glyph, centerSample, offsets, boxWidths,
         pixelsPerUnit, in.dilation, xcov, xwgt);
     float2 yR = slugGlyphYRay(curves, bands, bandIndices, glyph, sampleR, pixelsPerUnit, in.dilation);
