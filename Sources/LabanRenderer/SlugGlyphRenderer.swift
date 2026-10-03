@@ -184,6 +184,25 @@ private struct SlugLigatureShapeKey: Hashable {
   var text: String
 }
 
+/// `render()`'s per-frame instance lists, kept between frames for their
+/// capacity only: every list is emptied before it is rebuilt.
+private struct SlugFrameInstances {
+  var solids: [SlugSolidInstance] = []
+  var replaceSolids: [SlugSolidInstance] = []
+  var overlaySolids: [SlugSolidInstance] = []
+  var overlayReplaceSolids: [SlugSolidInstance] = []
+  var slugGlyphs: [SlugGlyphGPUInstance] = []
+  var motionGlyphs: [SlugGlyphMotionGPUInstance] = []
+  var rasterGlyphs: [SlugTextureInstance] = []
+  var colorGlyphs: [SlugTextureInstance] = []
+  var waveRegions: [SlugWaveRegionGPU] = []
+}
+
+private enum SlugFrameBufferRole: Hashable {
+  case solids, replaceSolids, overlaySolids, overlayReplaceSolids
+  case slugGlyphs, motionGlyphs, waveRegions, rasterGlyphs, colorGlyphs
+}
+
 private struct SlugGlyphEntry {
   var key: SlugGlyphGeometryKey
   var outline: GlyphCurveOutline
@@ -748,6 +767,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Metal worker thread. The two captures below (`addCompletedHandler`) carry
   /// this rationale.
   private let frameInFlight = DispatchSemaphore(value: 1)
+  /// Instance arrays and upload buffers reused across frames; see `render()`
+  /// and `frameBuffer(_:role:)`.
+  private var frameInstances = SlugFrameInstances()
+  private var frameBuffers: [SlugFrameBufferRole: MTLBuffer] = [:]
   private var targetRing: [MTLTexture] = []
   private var translucentWorkingRing: [MTLTexture] = []
   private var targetRingCursor = 0
@@ -1806,15 +1829,28 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       damageBands = nil
     }
 
-    var solids: [SlugSolidInstance] = []
-    var replaceSolids: [SlugSolidInstance] = []
-    var overlaySolids: [SlugSolidInstance] = []
-    var overlayReplaceSolids: [SlugSolidInstance] = []
-    var slugGlyphs: [SlugGlyphGPUInstance] = []
-    var motionGlyphs: [SlugGlyphMotionGPUInstance] = []
-    var rasterGlyphs: [SlugTextureInstance] = []
-    var colorGlyphs: [SlugTextureInstance] = []
-    var waveRegions: [SlugWaveRegionGPU] = []
+    // Last frame's instance arrays, moved out (not copied) so their capacity
+    // carries over: a full 160x48 screen is ~0.5 MB of glyph instances, and a
+    // fresh array per frame paid a large malloc, and fresh zero-filled pages,
+    // every frame. Moved back on every exit path.
+    var scratch = SlugFrameInstances()
+    swap(&scratch, &frameInstances)
+    var solids = Self.take(&scratch.solids)
+    var replaceSolids = Self.take(&scratch.replaceSolids)
+    var overlaySolids = Self.take(&scratch.overlaySolids)
+    var overlayReplaceSolids = Self.take(&scratch.overlayReplaceSolids)
+    var slugGlyphs = Self.take(&scratch.slugGlyphs)
+    var motionGlyphs = Self.take(&scratch.motionGlyphs)
+    var rasterGlyphs = Self.take(&scratch.rasterGlyphs)
+    var colorGlyphs = Self.take(&scratch.colorGlyphs)
+    var waveRegions = Self.take(&scratch.waveRegions)
+    defer {
+      frameInstances = SlugFrameInstances(
+        solids: solids, replaceSolids: replaceSolids, overlaySolids: overlaySolids,
+        overlayReplaceSolids: overlayReplaceSolids, slugGlyphs: slugGlyphs,
+        motionGlyphs: motionGlyphs, rasterGlyphs: rasterGlyphs, colorGlyphs: colorGlyphs,
+        waveRegions: waveRegions)
+    }
     resetGeometryIfOverBudget()
     // At most one rebuild: a frame whose fallback glyphs overflow a fresh
     // atlas keeps the glyphs that fit rather than looping.
@@ -1913,11 +1949,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       activeColorGlyphPipeline = pipelines.colorGlyph
     }
     let useSubpixel = isOpaque && effectiveSubpixelLayout != .grayscale
-    let slugInstanceBuffer = makeBuffer(slugGlyphs)
+    let slugInstanceBuffer = frameBuffer(slugGlyphs, role: .slugGlyphs)
     if let slugInstanceBuffer { retainedBuffers.append(slugInstanceBuffer) }
-    let motionInstanceBuffer = makeBuffer(motionGlyphs)
+    let motionInstanceBuffer = frameBuffer(motionGlyphs, role: .motionGlyphs)
     if let motionInstanceBuffer { retainedBuffers.append(motionInstanceBuffer) }
-    let waveRegionBuffer = makeBuffer(waveRegions)
+    let waveRegionBuffer = frameBuffer(waveRegions, role: .waveRegions)
     if let waveRegionBuffer { retainedBuffers.append(waveRegionBuffer) }
     let slugCurveBuffer = curveBuffer
     let slugGlyphBuffer = glyphBuffer
@@ -2066,9 +2102,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let textSplit =
       frameBelowTextSplit ?? (solids: solids.count, replaceSolids: replaceSolids.count)
     let backgroundSplit = frameBelowBackgroundSplit ?? textSplit
-    let replaceSolidBuffer = replaceSolids.isEmpty ? nil : makeBuffer(replaceSolids)
+    let replaceSolidBuffer =
+      replaceSolids.isEmpty ? nil : frameBuffer(replaceSolids, role: .replaceSolids)
     if let replaceSolidBuffer { retainedBuffers.append(replaceSolidBuffer) }
-    let solidBuffer = solids.isEmpty ? nil : makeBuffer(solids)
+    let solidBuffer = solids.isEmpty ? nil : frameBuffer(solids, role: .solids)
     if let solidBuffer { retainedBuffers.append(solidBuffer) }
     func drawSolids(
       _ buffer: MTLBuffer?, _ pipeline: MTLRenderPipelineState, _ range: Range<Int>
@@ -2129,7 +2166,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     // translucent replacement background cannot be overpainted by opaque
     // active-terminal cells, selections, cursors, or find highlights.
     if !overlayReplaceSolids.isEmpty,
-      let overlayReplaceSolidBuffer = makeBuffer(overlayReplaceSolids)
+      let overlayReplaceSolidBuffer = frameBuffer(overlayReplaceSolids, role: .overlayReplaceSolids)
     {
       retainedBuffers.append(overlayReplaceSolidBuffer)
       encoder.setRenderPipelineState(activeReplaceSolidPipeline)
@@ -2147,7 +2184,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       }
     }
 
-    if !overlaySolids.isEmpty, let overlaySolidBuffer = makeBuffer(overlaySolids) {
+    if !overlaySolids.isEmpty,
+      let overlaySolidBuffer = frameBuffer(overlaySolids, role: .overlaySolids)
+    {
       retainedBuffers.append(overlaySolidBuffer)
       encoder.setRenderPipelineState(activeSolidPipeline)
       encoder.setVertexBuffer(overlaySolidBuffer, offset: 0, index: 0)
@@ -2313,7 +2352,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     if !rasterGlyphs.isEmpty,
       let rasterAtlas,
-      let rasterBuffer = makeBuffer(rasterGlyphs)
+      let rasterBuffer = frameBuffer(rasterGlyphs, role: .rasterGlyphs)
     {
       retainedBuffers.append(rasterBuffer)
       encoder.setRenderPipelineState(activeRasterGlyphPipeline)
@@ -2335,7 +2374,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     if !colorGlyphs.isEmpty,
       let colorGlyphAtlas,
-      let colorBuffer = makeBuffer(colorGlyphs)
+      let colorBuffer = frameBuffer(colorGlyphs, role: .colorGlyphs)
     {
       retainedBuffers.append(colorBuffer)
       encoder.setRenderPipelineState(activeColorGlyphPipeline)
@@ -4380,12 +4419,44 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   private func makeBuffer<T>(_ values: [T]) -> MTLBuffer? {
     guard !values.isEmpty else { return nil }
-    var copy = values
-    let length = copy.count * MemoryLayout<T>.stride
-    return copy.withUnsafeMutableBytes { raw in
+    let length = values.count * MemoryLayout<T>.stride
+    return values.withUnsafeBytes { raw in
       guard let base = raw.baseAddress else { return nil }
       return device.makeBuffer(bytes: base, length: length, options: .storageModeShared)
     }
+  }
+
+  /// Uploads one of `render()`'s per-frame instance arrays into the buffer
+  /// kept for `role`, growing it geometrically, instead of creating a new
+  /// `MTLBuffer` (a kernel round trip plus a copy) every frame. Overwriting
+  /// last frame's contents is safe because `frameInFlight` admits one frame
+  /// at a time and is only signalled once that frame's command buffer has
+  /// completed (or was never committed). Each role is uploaded at most once
+  /// per frame.
+  private func frameBuffer<T>(_ values: [T], role: SlugFrameBufferRole) -> MTLBuffer? {
+    guard !values.isEmpty else { return nil }
+    let length = values.count * MemoryLayout<T>.stride
+    var buffer = frameBuffers[role]
+    if buffer == nil || buffer!.length < length {
+      buffer = device.makeBuffer(
+        length: max(length, (buffer?.length ?? 0) * 2), options: .storageModeShared)
+      buffer?.label = "laban.slug.frame.\(role)"
+      frameBuffers[role] = buffer
+    }
+    guard let buffer else { return nil }
+    values.withUnsafeBytes { raw in
+      guard let base = raw.baseAddress else { return }
+      buffer.contents().copyMemory(from: base, byteCount: length)
+    }
+    return buffer
+  }
+
+  /// Moves `array` out, leaving an empty array behind, so the caller holds
+  /// the only reference and can append without a copy-on-write.
+  private static func take<T>(_ array: inout [T]) -> [T] {
+    var taken: [T] = []
+    swap(&taken, &array)
+    return taken
   }
 }
 

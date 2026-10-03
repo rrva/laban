@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+# Optimized-build gate for Slug steady-state frame allocations, printing
+# render-thread CPU time per full frame alongside. Debug builds allocate per
+# glyph on their own, so `swift test` only checks the large-buffer half of
+# SlugGlyphFrameAllocationTests; this runs the whole test optimized.
+#
+#   scripts/bench-slug-frame-alloc            # gate + numbers
+#   LABAN_ALLOC_SITES=1 scripts/bench-slug-frame-alloc   # + call sites
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+# WMO: the default per-file release build fails to plan a single test target
+# (see `_fastProfile` in Package.swift). -enable-testing serves @testable.
+if ! build_log=$(LABAN_WMO_PROFILE=1 swift build -c release -Xswiftc -enable-testing \
+  --target LabanRendererTests 2>&1); then
+  printf '%s\n' "$build_log" >&2
+  exit 1
+fi
+bundle=$(swift build -c release --show-bin-path)/LabanRendererTests.xctest
+exec xcrun xctest -XCTest LabanRendererTests.SlugGlyphFrameAllocationTests "$bundle"
