@@ -3412,12 +3412,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// for "typing is molasses whenever a tab needs me". Pointer hover and drag
   /// still set `renderInvalidated`; `hoverPreviewShowing` additionally covers
   /// later output frames whose scaled preview cannot use main-grid row damage.
+  ///
+  /// A sidebar scroll frame moves only sidebar pixels, so on a quiet terminal
+  /// its natural damage is empty. Only `MetalRenderer` has the strip pass that
+  /// repaints the sidebar on such a frame; Slug (the default) and the other
+  /// backends drop an empty-damage frame, so the sidebar sat still until some
+  /// unrelated row or cursor damage happened to repaint it, and then jumped.
+  /// Without a strip pass the frame repaints in full, as a terminal scroll
+  /// frame already does.
   nonisolated static func shouldForceFullDamage(
     renderInvalidated: Bool,
     tabChanged: Bool,
     scrollAnimating: Bool,
     fractionalScrollOffset: Bool,
-    hoverPreviewShowing: Bool = false
+    hoverPreviewShowing: Bool = false,
+    sidebarScrollAnimating: Bool = false,
+    rendererHasSidebarStripPass: Bool = true
   ) -> Bool {
     // fractionalScrollOffset: while rows sit at a sub-cell offset, a
     // partial-damage frame (output, blink, attention) would composite its
@@ -3428,7 +3438,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // describe that projection, so any frame rendered while it is visible
     // repaints the whole surface.
     renderInvalidated || tabChanged || scrollAnimating || hoverPreviewShowing
-      || fractionalScrollOffset
+      || fractionalScrollOffset || (sidebarScrollAnimating && !rendererHasSidebarStripPass)
   }
 
   /// A preview panel can first materialize on a frame whose active-terminal
@@ -4331,7 +4341,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         fractionalScrollOffset: subCellRows != 0,
         hoverPreviewShowing: Self.hoverPreviewShowing(
           eligibleTabId: visibleHoverPreviewTab?.id,
-          renderedTabId: lastRenderedHoverPreviewTabId)),
+          renderedTabId: lastRenderedHoverPreviewTabId),
+        sidebarScrollAnimating: sidebarScrollFrame.animating,
+        rendererHasSidebarStripPass: metalRenderer != nil),
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
       surfaceScale: Double(backend.surfaceScale),
@@ -8227,7 +8239,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     guard abs(Double(next) - targetSidebarScrollOffset) > 0.001 else { return }
     targetSidebarScrollOffset = Double(next)
     sidebarScrollAnimating = true
-    advanceFrame(wake: .scrollWheel)
+    // Same wake discipline as the terminal's precise stream: a synchronous
+    // render per event coalesces a 120 Hz trackpad stream (and its frames)
+    // and hands the spring irregular ticks. A ticking link already runs while
+    // `sidebarScrollAnimating` holds, so it paces the frames; only a parked
+    // link needs the explicit wake.
+    if displayLinkIsTicking {
+      updateDisplayLinkRunState()
+    } else {
+      advanceFrame(wake: .scrollWheel)
+    }
   }
 
   private func externalHyperlinkURI(at pt: NSPoint) -> String? {
