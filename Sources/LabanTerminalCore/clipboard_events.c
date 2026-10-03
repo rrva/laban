@@ -253,8 +253,7 @@ int laban_session_consume_queued_output(LabanSession *s, size_t len) {
 int laban_session_discard_queued_output(LabanSession *s) {
     if (!s) return -1;
     SESSION_LOCK(s);
-    s->output_queue.len = 0;
-    s->output_queue_head = 0;
+    laban_output_queue_free(s);
     return 0;
 }
 

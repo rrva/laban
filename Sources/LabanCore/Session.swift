@@ -1375,18 +1375,20 @@ public final class Session {
   }
 
   /// Queue caller input behind a pending queued response so the child does
-  /// not read it inside that sequence. Returns false (nothing queued) when no
-  /// response is pending; the caller then sends `bytes` as usual.
+  /// not read it inside that sequence. Returns false when no response is
+  /// pending; the caller then sends `bytes` as usual. Returns true whenever
+  /// one is pending, even if the queue is full and `bytes` had to be dropped:
+  /// losing a keystroke beats splicing it into the middle of the reply.
   public func queueOutputIfPending(_ bytes: [UInt8]) -> Bool {
     handleLock.lock()
     defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return false }
     var pending: Int32 = 0
     guard laban_session_has_queued_output(h, &pending) == 0, pending != 0 else { return false }
-    let rc = bytes.withUnsafeBufferPointer { buf in
+    _ = bytes.withUnsafeBufferPointer { buf in
       laban_session_queue_output(h, buf.baseAddress, buf.count)
     }
-    return rc == 0
+    return true
   }
 
   /// Up to `maxBytes` of the queued output, without removing it.

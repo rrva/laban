@@ -67,8 +67,12 @@ Install libghostty's `clipboard_read` effect (`clipboard_events.c`) and serve
   child never reads them inside the sequence. A PTY-backed session pumps the
   queue from its drain loop, also waking on writability. A labpty viewer's
   feed sends it to the daemon in 16 KiB chunks, keeping a chunk refused for
-  backpressure, and the coordinator queues keystrokes behind it. A replayed
-  read's queued output is discarded like its other responses.
+  backpressure, with one follow-up poll at a time, and the coordinator queues
+  keystrokes behind it. If the daemon accepts nothing for 3 s (a
+  canonical-mode reader never can), the queue is dropped so input is not
+  trapped; keystrokes typed during that stall are lost. Output queued by the
+  reattach catch-up read is discarded like its other responses; an overflow
+  read is new bytes and keeps its queue.
 - **OSC 52 stays with osc_host.c.** libghostty routes an OSC 52 `?` to the
   effect as an unnamed, passwordless, single `text/plain` read. The effect
   leaves a read of that shape unanswered and sets a flag, and the write_pty
@@ -101,7 +105,8 @@ the second changes ADR 0014's silent-deny to an empty reply.
   queued whole and in order), `OutputQueuePumpTests` (2 MB through a real
   PTY), `testLabptyChildReadsALargePastedImageThroughPasteEvents` (300 KB
   image end to end through labpty), `HeadlessKittyPasteEventTests`, and
-  `PasteEventClipboardTests`.
+  `PasteEventClipboardTests`, and
+  `testLabptyStalledQueuedReplyIsDroppedSoInputFlowsAgain`.
 
 ## Applies To New Code
 

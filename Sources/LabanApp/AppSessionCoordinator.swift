@@ -1625,7 +1625,9 @@ private final class LabptyParserFeed {
     if !responses.isEmpty && !replayRead {
       onResponse(responses)
     }
-    if replayRead {
+    // Only the reattach catch-up read is history; an overflow read is new
+    // bytes and must not drop a live reply still being sent.
+    if catchUpRead {
       session.discardQueuedOutput()
     } else if session.hasQueuedOutput() {
       pumpQueuedOutput()
@@ -1634,22 +1636,55 @@ private final class LabptyParserFeed {
   }
 
   /// Send queued output (a large clipboard reply plus anything queued behind
-  /// it, ADR 0040) to the daemon in chunks, re-polling soon while some is left.
-  /// A refused chunk (input backpressure) stays queued for the next pump.
+  /// it, ADR 0040) to the daemon in chunks. While some is left, one follow-up
+  /// poll is scheduled (never more than one), backing off while the daemon
+  /// refuses chunks. A refused chunk stays queued. If nothing is accepted for
+  /// `queuedOutputStallLimit` (a canonical-mode reader can never take a
+  /// multi-kilobyte line), the queue is dropped so input is not trapped
+  /// behind it; keystrokes typed during that stall are lost with it.
   private func pumpQueuedOutput() {
     var sent = 0
+    var refused = false
     while sent < Self.queuedOutputBytesPerPump {
       let chunk = session.peekQueuedOutput(maxBytes: Self.queuedOutputChunkBytes)
-      guard !chunk.isEmpty else { return }
-      guard onQueuedOutput(chunk) else { break }
+      guard !chunk.isEmpty else {
+        queuedOutputStalledSince = nil
+        return
+      }
+      guard onQueuedOutput(chunk) else {
+        refused = true
+        break
+      }
       session.consumeQueuedOutput(chunk.count)
       sent += chunk.count
     }
-    queue.asyncAfter(deadline: .now() + .milliseconds(4)) { [weak self] in
+    if sent > 0 {
+      queuedOutputStalledSince = nil
+    } else if refused {
+      let now = Date()
+      let since = queuedOutputStalledSince ?? now
+      queuedOutputStalledSince = since
+      if now.timeIntervalSince(since) >= Self.queuedOutputStallLimit {
+        AppLog.app.error(
+          "labpty queued output stalled for pty handle \(self.ptyHandle); dropping it")
+        session.discardQueuedOutput()
+        queuedOutputStalledSince = nil
+        return
+      }
+    }
+    guard !queuedOutputRepollScheduled else { return }
+    queuedOutputRepollScheduled = true
+    let delay = refused && sent == 0 ? 50 : 2
+    queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+      self?.queuedOutputRepollScheduled = false
       self?.poll()
     }
   }
 
+  // Touched only on the serial feed queue, like `lastOffset`.
+  private var queuedOutputRepollScheduled = false
+  private var queuedOutputStalledSince: Date?
   private static let queuedOutputChunkBytes = 16 * 1024
   private static let queuedOutputBytesPerPump = 1024 * 1024
+  private static let queuedOutputStallLimit: TimeInterval = 3
 }
