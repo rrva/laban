@@ -54,14 +54,27 @@ Install libghostty's `clipboard_read` effect (`clipboard_events.c`) and serve
   same route as any paste (the PTY in process, the daemon for labpty). This
   replaces the text paste and the image ⌃V forwarding for that program.
 - **Reads.** A read with `granted` set (it carried the event's password) is
-  answered from the snapshot with the requested MIME types. A list-only read
-  gets the snapshot's types. Every other read is denied (EPERM), so a remote
-  program still cannot read the clipboard unasked. The live pasteboard is
-  never read from the effect.
-- **OSC 52 stays with osc_host.c.** The effect recognizes an OSC 52 read by
-  the osc_host scanner state (it fires while osc_host flushes that OSC into
-  libghostty), does not reply, and the write_pty effect drops libghostty's
-  empty fallback reply. ADR 0014's behavior is unchanged.
+  answered from the snapshot with the requested MIME types, and the snapshot
+  is then dropped. A list-only read gets the last paste's types without a
+  grant, as Kitty does; it reveals no data. Every other read is denied
+  (EPERM), so a remote program still cannot read the clipboard unasked. The
+  live pasteboard is never read from the effect.
+- **Large replies go through an ordered output queue.** libghostty writes a
+  read reply in one call, and an image is megabytes of base64: past the
+  64 KiB response buffer a labpty viewer forwards from, and past the 20 ms
+  bounded PTY write. Responses over 16 KiB are queued (capped at 96 MiB), and
+  while anything is queued, later responses and input queue behind it so the
+  child never reads them inside the sequence. A PTY-backed session pumps the
+  queue from its drain loop, also waking on writability. A labpty viewer's
+  feed sends it to the daemon in 16 KiB chunks, keeping a chunk refused for
+  backpressure, and the coordinator queues keystrokes behind it. A replayed
+  read's queued output is discarded like its other responses.
+- **OSC 52 stays with osc_host.c.** libghostty routes an OSC 52 `?` to the
+  effect as an unnamed, passwordless, single `text/plain` read. The effect
+  leaves a read of that shape unanswered and sets a flag, and the write_pty
+  effect drops libghostty's empty OSC 52 fallback reply. A Kitty read of the
+  same shape is answered EPERM by libghostty, which the drop lets through.
+  ADR 0014's behavior is unchanged.
 
 Patching libghostty to skip OSC 52 reads, or moving OSC 52 reads into
 libghostty, was rejected: the first adds a vendored patch (ADR 0011's cost),
@@ -75,13 +88,20 @@ the second changes ADR 0014's silent-deny to an empty reply.
 - Paste-event text is sanitized like every other paste (ADR 0020). Image data
   is delivered as-is: it is what the program asked for and is never rendered
   as terminal input.
-- The snapshot lives in the session until the next paste event or session
-  teardown, so a program can read several types after one paste.
+- The snapshot lives until the paste's data read (one read may request
+  several types), the next paste event, or session teardown. A grant left
+  unused by one paste and used after the next is served the newer snapshot;
+  both came from the user's own pastes.
 - Multi-client `laband` viewers do not parse output, never see mode 5522, and
   fall back to the text paste.
+- A failed encode falls back to the ordinary paste. The headless runtime
+  sends events only when it parses locally (not through laband).
 - Verified by `KittyClipboardPasteEventTests` (event, granted read, denied
-  unsolicited read, OSC 52 still silent), `HeadlessKittyPasteEventTests`
-  (debug-runtime parity), and `PasteEventClipboardTests` (pasteboard snapshot).
+  unsolicited read, OSC 52 silent in every framing and on replay, large reply
+  queued whole and in order), `OutputQueuePumpTests` (2 MB through a real
+  PTY), `testLabptyChildReadsALargePastedImageThroughPasteEvents` (300 KB
+  image end to end through labpty), `HeadlessKittyPasteEventTests`, and
+  `PasteEventClipboardTests`.
 
 ## Applies To New Code
 
