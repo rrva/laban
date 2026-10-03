@@ -153,12 +153,22 @@ public struct SSHCommandLine: Equatable, Sendable {
   }
 
   /// Key under which per-destination upload consent is remembered. Includes
-  /// `-l` and `-p` so `-p 2222 host` and `host` are asked separately.
+  /// `-l` and `-p` so `-p 2222 host` and `host` are asked separately. Each
+  /// field is percent-encoded, so no destination/login/port combination can
+  /// collide with another (`host:1` + port 2 vs `host` + port `1:2`).
   public var consentKey: String {
-    var key = destination
-    if let login { key = "\(login) " + key }
-    if let port { key += ":\(port)" }
-    return key
+    let fields = [("d", destination), ("l", login), ("p", port)]
+    return fields.map { name, value in
+      "\(name)=" + (value.map(Self.percentEncode) ?? "-")
+    }.joined(separator: "&")
+  }
+
+  private static func percentEncode(_ value: String) -> String {
+    var allowed = CharacterSet.alphanumerics
+    allowed.insert(charactersIn: "._~@[]")
+    // An empty value must stay distinct from a missing one ("-").
+    guard !value.isEmpty else { return "%" }
+    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
   }
 
   /// A user `-o` that turns the session into one with no usable remote shell
