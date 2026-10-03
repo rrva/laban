@@ -245,6 +245,29 @@ typedef struct {
     int osc52_overflow;
 } LabanOSCHostScanner;
 
+/* One clipboard representation held for a Kitty paste event's follow-up
+ * read (clipboard_events.c). */
+#define LABAN_PASTE_SNAPSHOT_MAX_ITEMS 8
+#define LABAN_PASTE_SNAPSHOT_MAX_BYTES (64u * 1024u * 1024u)
+typedef struct {
+    char *mime;
+    size_t mime_len;
+    uint8_t *data;
+    size_t data_len;
+} LabanPasteSnapshotItem;
+
+typedef struct {
+    LabanPasteSnapshotItem items[LABAN_PASTE_SNAPSHOT_MAX_ITEMS];
+    size_t count;
+} LabanPasteSnapshot;
+
+typedef struct {
+    uint8_t *bytes;
+    size_t len;
+    size_t cap;
+    int failed;
+} LabanByteBuffer;
+
 /* DECSCUSR / DEC-mode-12 cursor-override scanner state (decscusr.c). Sniffs
  * cursor-style and cursor-blink override sequences out of the PTY byte stream
  * in parallel with libghostty's VT parser:
@@ -397,6 +420,28 @@ struct LabanSession {
     void *osc_clipboard_userdata;
     int osc52_read_enabled;
 
+    /* Kitty clipboard protocol (OSC 5522) reads (clipboard_events.c, ADR 0040).
+     * libghostty owns the protocol; Laban serves only reads that follow a
+     * user paste event, from the snapshot taken at that paste.
+     * drop_osc52_read_reply: set while libghostty answers an OSC 52 `?` it
+     *   also routes to the clipboard_read effect; osc_host owns OSC 52 reads
+     *   (ADR 0014), so that duplicate reply is dropped in the write_pty effect.
+     * paste_event_capture: non-NULL while encoding a paste event, so the
+     *   event bytes are returned to the caller instead of written. */
+    LabanPasteSnapshot paste_snapshot;
+    int drop_osc52_read_reply;
+    LabanByteBuffer *paste_event_capture;
+
+    /* Ordered queue of bytes bound for the child (clipboard_events.c). A
+     * large terminal response (an OSC 5522 image reply is megabytes) cannot
+     * go through the 20 ms bounded PTY write or the 64 KiB response buffer,
+     * so it is queued; while anything is queued, later responses and input
+     * queue behind it so the child never sees them interleaved. In process
+     * the PTY drain loop pumps it on writability; a labpty viewer session
+     * hands it to the feed loop in chunks (peek/consume). */
+    LabanByteBuffer output_queue;
+    size_t output_queue_head;
+
     /* OSC 7 working-directory report (osc_host.c). osc7_cwd holds the last
      * local-host cwd a shell reported; laban_session_process_metadata prefers it
      * over the proc_pidinfo cwd once valid. osc_cwd_callback observes reports. */
@@ -493,6 +538,16 @@ int laban_write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len);
 pid_t laban_waitpid_retry(pid_t pid, int *status, int options);
 void laban_signal_child_process_group(pid_t child_pid, int sig);
 int laban_session_mode_active_locked(LabanSession *s, GhosttyMode mode, int *out_active);
+
+/* clipboard_events.c */
+void laban_effect_clipboard_read(GhosttyTerminal terminal, void *userdata,
+                                 const GhosttyClipboardRead *read);
+int laban_effect_write_pty_intercept(LabanSession *s, const uint8_t *data, size_t len);
+void laban_paste_snapshot_clear(LabanPasteSnapshot *snapshot);
+int laban_output_queue_pending(const LabanSession *s);
+int laban_output_queue_append(LabanSession *s, const uint8_t *data, size_t len);
+void laban_output_queue_pump_locked(LabanSession *s);
+void laban_output_queue_free(LabanSession *s);
 int laban_write_terminal_response(LabanSession *s, const uint8_t *data, size_t len);
 int laban_session_spawn_now_(LabanSession *s, const char *override_cwd,
                              const char *exe_override,

@@ -1362,6 +1362,132 @@ public final class Session {
     return PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written)
   }
 
+  /// True while a large terminal response (an OSC 5522 image reply, ADR 0040)
+  /// is still queued for the child. A labpty feed pumps it with
+  /// `peekQueuedOutput` / `consumeQueuedOutput`.
+  public func hasQueuedOutput() -> Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return false }
+    var pending: Int32 = 0
+    guard laban_session_has_queued_output(h, &pending) == 0 else { return false }
+    return pending != 0
+  }
+
+  /// Queue caller input behind a pending queued response so the child does
+  /// not read it inside that sequence. Returns false when no response is
+  /// pending; the caller then sends `bytes` as usual. Returns true whenever
+  /// one is pending, even if the queue is full and `bytes` had to be dropped:
+  /// losing a keystroke beats splicing it into the middle of the reply.
+  public func queueOutputIfPending(_ bytes: [UInt8]) -> Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return false }
+    var pending: Int32 = 0
+    guard laban_session_has_queued_output(h, &pending) == 0, pending != 0 else { return false }
+    _ = bytes.withUnsafeBufferPointer { buf in
+      laban_session_queue_output(h, buf.baseAddress, buf.count)
+    }
+    return true
+  }
+
+  /// Up to `maxBytes` of the queued output, without removing it.
+  public func peekQueuedOutput(maxBytes: Int) -> [UInt8] {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle, maxBytes > 0 else { return [] }
+    var out = [UInt8](repeating: 0, count: maxBytes)
+    var len = 0
+    let rc = out.withUnsafeMutableBufferPointer { buf in
+      laban_session_peek_queued_output(h, buf.baseAddress, buf.count, &len)
+    }
+    guard rc == 0 else { return [] }
+    return Array(out.prefix(len))
+  }
+
+  public func consumeQueuedOutput(_ count: Int) {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle, count > 0 else { return }
+    _ = laban_session_consume_queued_output(h, count)
+  }
+
+  /// Drop queued output regenerated while replaying historical bytes.
+  public func discardQueuedOutput() {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return }
+    _ = laban_session_discard_queued_output(h)
+  }
+
+  /// One clipboard representation offered in a Kitty paste event (ADR 0040).
+  public struct PasteEventItem: Equatable, Sendable {
+    public var mime: String
+    public var data: Data
+
+    public init(mime: String, data: Data) {
+      self.mime = mime
+      self.data = data
+    }
+  }
+
+  /// Whether the running program has enabled Kitty clipboard protocol paste
+  /// events (DEC private mode 5522). When it has, a user paste should go
+  /// through `encodePasteEvent` instead of `encodePaste`.
+  public func pasteEventsEnabled() -> Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return false }
+    var enabled: Int32 = 0
+    guard laban_session_paste_events_enabled(h, &enabled) == 0 else { return false }
+    return enabled != 0
+  }
+
+  /// Encode a user paste as a Kitty paste event (ADR 0040): the program is
+  /// told which MIME types the clipboard holds plus a one-time password, and
+  /// reads the ones it wants with an OSC 5522 read that this session serves
+  /// from a copy of `items`. Returns the event bytes for the caller to send as
+  /// input (nothing is written to the PTY), or `[]` when paste events are off
+  /// or encoding failed.
+  public func encodePasteEvent(_ items: [PasteEventItem]) -> [UInt8] {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle, !items.isEmpty else { return [] }
+    let mimes = items.map { Array($0.mime.utf8) }
+    let datas = items.map { [UInt8]($0.data) }
+    var out = [UInt8](repeating: 0, count: 8192)
+    let outCapacity = out.count
+    var outLen = 0
+    let rc: Int32 = Self.withPasteItems(mimes: mimes, datas: datas) { cItems in
+      out.withUnsafeMutableBufferPointer { outBuf in
+        laban_session_encode_paste_event(
+          h, cItems.baseAddress, cItems.count, outBuf.baseAddress, outCapacity, &outLen)
+      }
+    }
+    guard rc == 0 else { return [] }
+    return Array(out.prefix(outLen))
+  }
+
+  private static func withPasteItems<R>(
+    mimes: [[UInt8]], datas: [[UInt8]], index: Int = 0, collected: [LabanPasteItem] = [],
+    _ body: (UnsafeBufferPointer<LabanPasteItem>) -> R
+  ) -> R {
+    guard index < mimes.count else {
+      return collected.withUnsafeBufferPointer(body)
+    }
+    return mimes[index].withUnsafeBufferPointer { mime in
+      datas[index].withUnsafeBufferPointer { data in
+        var next = collected
+        next.append(
+          LabanPasteItem(
+            mime: mime.baseAddress.map { UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self) },
+            mime_len: mime.count, data: data.baseAddress, data_len: data.count))
+        return withPasteItems(
+          mimes: mimes, datas: datas, index: index + 1, collected: next, body)
+      }
+    }
+  }
+
   /// Encode `text` as the terminal's paste byte sequence (bracketed
   /// if DECSET 2004 is active, raw otherwise) and return the bytes
   /// **without** writing them to this session's PTY or fixture VT.

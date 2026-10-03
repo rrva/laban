@@ -407,6 +407,8 @@ static void free_ghostty_resources(LabanSession *s) {
     s->osc_host_scanner.osc52_buf = NULL;
     s->osc_host_scanner.osc52_len = 0;
     s->osc_host_scanner.osc52_cap = 0;
+    laban_paste_snapshot_clear(&s->paste_snapshot);
+    laban_output_queue_free(s);
 }
 
 int laban_session_create(
@@ -492,6 +494,8 @@ int laban_session_create(
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_USERDATA, (const void *)s);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
                          (const void *)laban_effect_write_pty);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,
+                         (const void *)laban_effect_clipboard_read);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_SIZE,
                          (const void *)laban_effect_size);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
