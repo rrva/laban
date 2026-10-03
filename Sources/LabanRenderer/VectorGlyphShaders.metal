@@ -865,12 +865,6 @@ inline float2 slugGlyphSubpixelSample(float4 bounds, float2 uv, float2 center, f
     return center + x * dx + y * dy;
 }
 
-#define kSlugAreaAASampleCount 2
-constant float2 kSlugAreaAASamples[kSlugAreaAASampleCount] = {
-    float2(0.25, 0.75),
-    float2(0.75, 0.25),
-};
-
 inline uint slugGlyphRootCode(float y1, float y2, float y3) {
     uint i1 = as_type<uint>(y1) >> 31u;
     uint i2 = as_type<uint>(y2) >> 30u;
@@ -916,6 +910,141 @@ inline float slugGlyphCombineCoverage(float xcov, float ycov, float xwgt, float 
     float weighted = abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0);
     float coverage = max(weighted, min(abs(xcov), abs(ycov)));
     return clamp(coverage, 0.0, 1.0);
+}
+
+// The horizontal ray of slugGlyphReferenceCoverage for the three R/G/B
+// subpixel samples, `offsets` pixels apart in x on one row: they share one
+// band, one curve walk and one set of roots, and only the filter is applied
+// per channel. Each channel's filter is a box `boxWidths` pixels wide: one
+// pixel widened by the channel's sample spread (the per-area supersamples
+// this replaces sat a quarter of the area width either side of center), so
+// the area width still shapes the colour fringe at the cost of a scale per
+// root instead of two more band walks.
+
+inline void slugGlyphXRay3(
+    device const VectorGlyphCurve *curves,
+    device const SlugGlyphBand *bands,
+    device const uint *bandIndices,
+    SlugGlyph glyph,
+    float2 sample,
+    float3 offsets,
+    float3 boxWidths,
+    float2 pixelsPerUnit,
+    float dilate,
+    thread float3 &xcov,
+    thread float3 &xwgt
+) {
+    xcov = 0.0;
+    xwgt = 0.0;
+    if (glyph.horizontalBandCount == 0) {
+        return;
+    }
+    float2 glyphCenter = (glyph.boundsMin + glyph.boundsMax) * 0.5;
+    float height = max(glyph.boundsMax.y - glyph.boundsMin.y, 1.0e-6);
+    float normalizedY = clamp((sample.y - glyph.boundsMin.y) / height, 0.0, 0.999999);
+    uint bandIndex = min(
+        glyph.horizontalBandCount - 1,
+        uint(floor(normalizedY * float(glyph.horizontalBandCount))));
+    bool towardPositive = sample.x >= glyphCenter.x;
+    float side = towardPositive ? 1.0 : -1.0;
+    // Offsets in the mirrored frame of the walk.
+    float3 mirroredOffsets = side * offsets;
+    float3 inverseBoxWidths = 1.0 / boxWidths;
+    float3 extent = abs(offsets) + 0.5 * boxWidths;
+    float reach = dilate + max(max(extent.x, extent.y), extent.z);
+    SlugGlyphBand band = bands[
+        glyph.horizontalBandStart + (towardPositive ? 0u : glyph.horizontalBandCount) + bandIndex];
+    for (uint i = 0; i < band.indexCount; i++) {
+        uint curveIndex = bandIndices[band.indexStart + i];
+        VectorGlyphCurve curve = curves[curveIndex];
+        curve.p0 -= sample;
+        curve.p1 -= sample;
+        curve.p2 -= sample;
+        curve.p0.x *= side;
+        curve.p1.x *= side;
+        curve.p2.x *= side;
+        if (max(max(curve.p0.x, curve.p1.x), curve.p2.x) * pixelsPerUnit.x < -reach) {
+            break;
+        }
+        uint code = slugGlyphRootCode(curve.p0.y, curve.p1.y, curve.p2.y);
+        if (code != 0u) {
+            float2 roots = slugGlyphSolveHorizontal(curve) * pixelsPerUnit.x;
+            if ((code & 1u) != 0u) {
+                float3 r = roots.x - mirroredOffsets;
+                xcov += side * clamp((r + side * dilate) * inverseBoxWidths + 0.5, 0.0, 1.0);
+                xwgt = max(xwgt, clamp(1.0 - abs(r) * inverseBoxWidths * 2.0, 0.0, 1.0));
+            }
+            if (code > 1u) {
+                float3 r = roots.y - mirroredOffsets;
+                xcov -= side * clamp((r - side * dilate) * inverseBoxWidths + 0.5, 0.0, 1.0);
+                xwgt = max(xwgt, clamp(1.0 - abs(r) * inverseBoxWidths * 2.0, 0.0, 1.0));
+            }
+        }
+    }
+}
+
+// The vertical ray of slugGlyphReferenceCoverage alone: signed box-filtered
+// crossing sum and edge-proximity weight.
+inline float2 slugGlyphYRay(
+    device const VectorGlyphCurve *curves,
+    device const SlugGlyphBand *bands,
+    device const uint *bandIndices,
+    SlugGlyph glyph,
+    float2 sample,
+    float2 pixelsPerUnit,
+    float dilate
+) {
+    float ycov = 0.0;
+    float ywgt = 0.0;
+    if (glyph.verticalBandCount == 0) {
+        return float2(0.0);
+    }
+    float2 glyphCenter = (glyph.boundsMin + glyph.boundsMax) * 0.5;
+    float width = max(glyph.boundsMax.x - glyph.boundsMin.x, 1.0e-6);
+    float normalizedX = clamp((sample.x - glyph.boundsMin.x) / width, 0.0, 0.999999);
+    uint bandIndex = min(
+        glyph.verticalBandCount - 1,
+        uint(floor(normalizedX * float(glyph.verticalBandCount))));
+    bool towardPositive = sample.y >= glyphCenter.y;
+    float side = towardPositive ? 1.0 : -1.0;
+    SlugGlyphBand band = bands[
+        glyph.verticalBandStart + (towardPositive ? 0u : glyph.verticalBandCount) + bandIndex];
+    for (uint i = 0; i < band.indexCount; i++) {
+        uint curveIndex = bandIndices[band.indexStart + i];
+        VectorGlyphCurve curve = curves[curveIndex];
+        curve.p0 -= sample;
+        curve.p1 -= sample;
+        curve.p2 -= sample;
+        curve.p0.y *= side;
+        curve.p1.y *= side;
+        curve.p2.y *= side;
+        if (max(max(curve.p0.y, curve.p1.y), curve.p2.y) * pixelsPerUnit.y < -(0.5 + dilate)) {
+            break;
+        }
+        uint code = slugGlyphRootCode(curve.p0.x, curve.p1.x, curve.p2.x);
+        if (code != 0u) {
+            float2 roots = slugGlyphSolveVertical(curve) * pixelsPerUnit.y;
+            if ((code & 1u) != 0u) {
+                ycov -= side * clamp(roots.x + 0.5 - side * dilate, 0.0, 1.0);
+                ywgt = max(ywgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
+            }
+            if (code > 1u) {
+                ycov += side * clamp(roots.y + 0.5 + side * dilate, 0.0, 1.0);
+                ywgt = max(ywgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
+            }
+        }
+    }
+    return float2(ycov, ywgt);
+}
+
+inline bool slugGlyphSampleOutside(
+    SlugGlyph glyph, float2 sample, float2 unitsPerPixel, float dilate
+) {
+    float2 dilatedUnitsPerPixel = unitsPerPixel * (1.0 + dilate);
+    return sample.x < glyph.boundsMin.x - dilatedUnitsPerPixel.x ||
+        sample.x > glyph.boundsMax.x + dilatedUnitsPerPixel.x ||
+        sample.y < glyph.boundsMin.y - dilatedUnitsPerPixel.y ||
+        sample.y > glyph.boundsMax.y + dilatedUnitsPerPixel.y;
 }
 
 inline float slugGlyphReferenceCoverage(
@@ -1025,49 +1154,20 @@ inline float slugGlyphReferenceCoverage(
     return slugGlyphCombineCoverage(xcov, ycov, xwgt, ywgt);
 }
 
-inline float slugGlyphAreaCoverage(
+// Grayscale coverage for the alpha and gamma-blend fragments. Kept apart
+// from slugGlyphCoverageRGB so these pipelines do not carry the subpixel
+// path's registers: on M1 sharing one function cost the grayscale pass about
+// 40% of its throughput.
+inline float slugGlyphCoverageGray(
+    SlugGlyphVertexOut in,
     device const VectorGlyphCurve *curves,
+    device const SlugGlyph *glyphs,
     device const SlugGlyphBand *bands,
-    device const uint *bandIndices,
-    SlugGlyph glyph,
-    float4 sampleBounds,
-    float2 center,
-    float2 dx,
-    float2 dy,
-    float2 unitsPerPixel,
-    float dilate
+    device const uint *bandIndices
 ) {
-    float coverage = slugGlyphReferenceCoverage(
-        curves,
-        bands,
-        bandIndices,
-        glyph,
-        slugGlyphSubpixelSample(sampleBounds, float2(0.5, 0.5), center, dx, dy),
-        unitsPerPixel,
-        dilate
-    );
-
-    // Slug's analytic coverage gives a high-quality single-sample answer for
-    // hard interior/exterior pixels. Only integrate subpixel sample areas near
-    // edges, where point sampling of the vector text AA bounds would otherwise
-    // leave jagged curves and ignore overlap width.
-    if (coverage <= 1.0 / 255.0 || coverage >= 254.0 / 255.0) {
-        return coverage;
-    }
-
-    float sum = coverage;
-    for (uint i = 0; i < kSlugAreaAASampleCount; i++) {
-        sum += slugGlyphReferenceCoverage(
-            curves,
-            bands,
-            bandIndices,
-            glyph,
-            slugGlyphSubpixelSample(sampleBounds, kSlugAreaAASamples[i], center, dx, dy),
-            unitsPerPixel,
-            dilate
-        );
-    }
-    return clamp(sum / float(kSlugAreaAASampleCount + 1), 0.0, 1.0);
+    SlugGlyph glyph = glyphs[uint(in.glyphIndex + 0.5)];
+    return slugGlyphReferenceCoverage(
+        curves, bands, bandIndices, glyph, in.glyphPoint, fwidth(in.glyphPoint), in.dilation);
 }
 
 inline float3 slugGlyphCoverageRGB(
@@ -1084,49 +1184,79 @@ inline float3 slugGlyphCoverageRGB(
     float2 dy = dfdy(in.glyphPoint);
     float2 unitsPerPixel = fwidth(in.glyphPoint);
 
-    if (uniforms.subpixelMode == 0) {
-        float coverage = slugGlyphAreaCoverage(
-            curves, bands, bandIndices, glyph,
-            float4(0.0, 0.0, 1.0, 1.0),
-            in.glyphPoint, dx, dy, unitsPerPixel, in.dilation);
-        return float3(coverage);
-    }
-
-    // Subpixel fast path. The three R/G/B sample areas each occupy a third of
-    // the pixel in X, so every subpixel sample point lies within half a pixel of
-    // the pixel center. slugGlyphReferenceCoverage only goes fractional when a
-    // curve is within the half-pixel-plus-dilate margin of the sample point, so
-    // a single full-pixel center sample that is deep (0 or 1) proves no curve is
-    // within that margin of the center — and therefore no curve is within the
-    // margin of any subpixel sample either. All three channels then equal the
-    // center value, identical to computing them separately. This skips three
-    // independent band walks for the interior/exterior pixels that dominate a
-    // glyph quad; edge pixels (center fractional) fall through unchanged.
+    // One analytic sample per pixel (per channel in subpixel mode). Each ray
+    // already box-filters its crossings exactly, so this is exact area
+    // coverage on straight horizontal and vertical edges; corners and curve
+    // tips are where the two-ray combination over-estimates. Extra samples
+    // at edge pixels were tried and dropped: they doubled the GPU time,
+    // softened only one diagonal, and did not move corners to the true area
+    // (as in Lengyel's reference shader, which also takes one sample).
     float2 centerSample = slugGlyphSubpixelSample(
         float4(0.0, 0.0, 1.0, 1.0), float2(0.5, 0.5), in.glyphPoint, dx, dy);
     float centerCoverage = slugGlyphReferenceCoverage(
         curves, bands, bandIndices, glyph,
         centerSample, unitsPerPixel, in.dilation);
-    if (centerCoverage <= 1.0 / 255.0 || centerCoverage >= 254.0 / 255.0) {
+    if (uniforms.subpixelMode == 0) {
         return float3(centerCoverage);
     }
 
-    // At a glyph's horizontal edges (top/bottom), per-subpixel X coverage
-    // leaves a seam gap when stacked box-drawing glyphs overlap the cell: the
-    // edge subpixel's coverage is X-limited (min(xcov_sub, ycov)), so two
-    // abutting glyphs sum to less than the full-pixel width and the seam is
-    // brighter than the steady interior. Grayscale's full-pixel X coverage
-    // saturates at the seam and fills it. Take the per-channel max of the
-    // subpixel and grayscale (full-pixel) coverage so vertical edges keep
-    // subpixel sharpness while horizontal edges fill like grayscale — eliminating
-    // the RGB-subpixel-specific `│` seam notch absent in grayscale.
+    // Subpixel: pixels whose full-pixel center is deep (no edge within half a
+    // pixel plus dilation) take that value in all three channels. This is an
+    // approximation, not an identity: each channel's sample sits up to a
+    // third of a pixel off center, so a fringe that would reach about 0.8 px
+    // from an edge is cut at 0.5 px. It keeps the colour fringes narrow and
+    // skips three band walks on the interior/exterior pixels that dominate.
+    if (centerCoverage <= 1.0 / 255.0 || centerCoverage >= 254.0 / 255.0) {
+        return float3(centerCoverage);
+    }
+    // The channel samples share the center's row, so one horizontal walk
+    // serves all three (filtered per channel width, see slugGlyphXRay3);
+    // each still needs its own vertical ray.
+    float2 sampleR = slugGlyphSubpixelSample(
+        uniforms.subpixelRBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy);
+    float2 sampleG = slugGlyphSubpixelSample(
+        uniforms.subpixelGBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy);
+    float2 sampleB = slugGlyphSubpixelSample(
+        uniforms.subpixelBBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy);
+    // Custom layouts may give the channels their own rows; those take a full
+    // sample each (the branch is uniform across a draw).
+    float3 rowsY = float3(
+        uniforms.subpixelRBounds.y + uniforms.subpixelRBounds.w,
+        uniforms.subpixelGBounds.y + uniforms.subpixelGBounds.w,
+        uniforms.subpixelBBounds.y + uniforms.subpixelBBounds.w);
+    if (any(abs(rowsY - 1.0) > 1.0e-4)) {
+        return float3(
+            slugGlyphReferenceCoverage(curves, bands, bandIndices, glyph, sampleR,
+                unitsPerPixel, in.dilation),
+            slugGlyphReferenceCoverage(curves, bands, bandIndices, glyph, sampleG,
+                unitsPerPixel, in.dilation),
+            slugGlyphReferenceCoverage(curves, bands, bandIndices, glyph, sampleB,
+                unitsPerPixel, in.dilation));
+    }
+    float2 safeUnitsPerPixel = max(abs(unitsPerPixel), float2(1.0e-6));
+    float2 pixelsPerUnit = 1.0 / safeUnitsPerPixel;
+    float3 offsets = float3(
+        (sampleR.x - centerSample.x) * pixelsPerUnit.x,
+        (sampleG.x - centerSample.x) * pixelsPerUnit.x,
+        (sampleB.x - centerSample.x) * pixelsPerUnit.x);
+    float3 xcov;
+    float3 xwgt;
+    float3 boxWidths = 1.0 + 0.5 * float3(
+        uniforms.subpixelRBounds.z - uniforms.subpixelRBounds.x,
+        uniforms.subpixelGBounds.z - uniforms.subpixelGBounds.x,
+        uniforms.subpixelBBounds.z - uniforms.subpixelBBounds.x);
+    slugGlyphXRay3(curves, bands, bandIndices, glyph, centerSample, offsets, boxWidths,
+        pixelsPerUnit, in.dilation, xcov, xwgt);
+    float2 yR = slugGlyphYRay(curves, bands, bandIndices, glyph, sampleR, pixelsPerUnit, in.dilation);
+    float2 yG = slugGlyphYRay(curves, bands, bandIndices, glyph, sampleG, pixelsPerUnit, in.dilation);
+    float2 yB = slugGlyphYRay(curves, bands, bandIndices, glyph, sampleB, pixelsPerUnit, in.dilation);
     return float3(
-        slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
-            uniforms.subpixelRBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation),
-        slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
-            uniforms.subpixelGBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation),
-        slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
-            uniforms.subpixelBBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation));
+        slugGlyphSampleOutside(glyph, sampleR, safeUnitsPerPixel, in.dilation)
+            ? 0.0 : slugGlyphCombineCoverage(xcov.x, yR.x, xwgt.x, yR.y),
+        slugGlyphSampleOutside(glyph, sampleG, safeUnitsPerPixel, in.dilation)
+            ? 0.0 : slugGlyphCombineCoverage(xcov.y, yG.x, xwgt.y, yG.y),
+        slugGlyphSampleOutside(glyph, sampleB, safeUnitsPerPixel, in.dilation)
+            ? 0.0 : slugGlyphCombineCoverage(xcov.z, yB.x, xwgt.z, yB.y));
 }
 
 fragment float4 slugGlyphAlphaFragment(
@@ -1137,7 +1267,7 @@ fragment float4 slugGlyphAlphaFragment(
     device const SlugGlyphBand *bands [[buffer(2)]],
     device const uint *bandIndices [[buffer(3)]]
 ) {
-    float coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices).g;
+    float coverage = slugGlyphCoverageGray(in, curves, glyphs, bands, bandIndices);
     float alpha = coverage * in.color.a;
     return float4(in.color.rgb * alpha, alpha);
 }
@@ -1179,7 +1309,7 @@ fragment float4 slugGlyphGammaBlendFragment(
     device const SlugGlyphBand *bands [[buffer(2)]],
     device const uint *bandIndices [[buffer(3)]]
 ) {
-    float coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices).g;
+    float coverage = slugGlyphCoverageGray(in, curves, glyphs, bands, bandIndices);
     float alpha = coverage * in.color.a;
     if (alpha <= 0.0) {
         return dst;

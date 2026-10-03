@@ -645,6 +645,23 @@ Phrased as behavior:
   any future revisit of this question without carrying assertion maintenance
   cost for a milestone that answered "no change."
   Date/Author: 2026-07-05 / plan author.
+- Decision: drop the two extra edge samples (`kSlugAreaAASampleCount`); every
+  pixel takes one analytic sample, and subpixel channels share one
+  horizontal band walk. Supersedes the M3 "keep 2" outcome.
+  Rationale: on M1 the extra samples were over half of the grayscale GPU
+  time. A full 2880x1824 redraw (`SlugGlyphGPUTimeBench`, GPU min) goes from
+  10.4 / 7.8 / 5.9 ms at 9 / 14 / 28 pt to 5.7 / 4.6 / 3.1 ms, and to
+  4.5 / 3.6 / 2.8 ms with relaxed math; RGB stripe at 14 pt from 23.9 to
+  11.2 ms (8.0 with relaxed math). The extra samples softened only one
+  diagonal orientation, and against the 8x8 box-filter oracle the
+  one-sample output has equal or lower mean error. The cost is stem
+  corners and the shade blocks, where single pixels err by up to about 0.5
+  in coverage; `SlugGlyphOracleErrorTests` pins the error and outlier
+  budget. Subpixel channels keep their area width as a widened box filter
+  on the shared horizontal roots, so overlapping layouts still reduce
+  fringing. Lengyel's reference shader also takes one sample. Owner
+  approved 2026-10-03.
+  Date/Author: 2026-10-03 / Claude for Ragnar.
 
 ## Review Gate
 
