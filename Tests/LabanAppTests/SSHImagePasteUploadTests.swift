@@ -168,7 +168,7 @@ final class SSHImagePasteUploadTests: XCTestCase {
 
   func testUploadPipesAreCloseOnExec() throws {
     let fds = try SSHImagePasteUpload.makePipe()
-    defer { fds.forEach { close($0) } }
+    defer { for fd in fds { close(fd) } }
     for fd in fds {
       XCTAssertNotEqual(fcntl(fd, F_GETFD) & FD_CLOEXEC, 0, "fd \(fd)")
     }

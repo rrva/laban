@@ -173,13 +173,13 @@ enum SSHImagePasteUpload {
     do {
       stdoutFDs = try makePipe()
     } catch {
-      stdinFDs.forEach { close($0) }
+      for fd in stdinFDs { close(fd) }
       throw error
     }
     do {
       stderrFDs = try makePipe()
     } catch {
-      (stdinFDs + stdoutFDs).forEach { close($0) }
+      for fd in stdinFDs + stdoutFDs { close(fd) }
       throw error
     }
     // ssh exits without draining stdin on failure; a write to the closed pipe
