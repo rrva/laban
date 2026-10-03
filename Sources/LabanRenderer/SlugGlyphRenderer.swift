@@ -44,6 +44,7 @@ private struct SlugGlyphGPUGlyph {
   var verticalBandCount: UInt32
 }
 
+/// A run of `bandIndices`, sorted for one ray direction.
 private struct SlugGlyphGPUBand {
   var indexStart: UInt32
   var indexCount: UInt32
@@ -381,8 +382,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// Geometry storage above which the next frame starts from empty caches.
   /// Curves, bands and indices only grow as new glyphs appear; a long
   /// session streaming varied Unicode would otherwise keep every glyph it
-  /// ever drew. Visible glyphs rebuild on demand after the reset.
-  static let geometryBudgetBytes = 32 << 20
+  /// ever drew. Visible glyphs rebuild on demand after the reset. Sized for
+  /// about as many glyphs as 32 MiB held before each band carried a second,
+  /// reverse-sorted index list (~1.65x the bytes per glyph).
+  static let geometryBudgetBytes = 54 << 20
   private static let targetRingDepth = 3
   private static let presentLinkLog = Logger(
     subsystem: "com.rrva.laban", category: "present-link")
@@ -3880,23 +3883,27 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   ) {
     let minValue = axis == .horizontal ? outline.bounds.minY : outline.bounds.minX
     let extent = max(axis == .horizontal ? outline.bounds.height : outline.bounds.width, .ulpOfOne)
-    for band in 0..<bandCount {
-      let bandMin = minValue + extent * CGFloat(band) / CGFloat(bandCount)
-      let bandMax = minValue + extent * CGFloat(band + 1) / CGFloat(bandCount)
-      let indexStart = bandIndices.count
-      let intersecting = outline.curves.enumerated()
-        .filter { _, curve in curveIntersectsBand(curve, min: bandMin, max: bandMax, axis: axis) }
-        .sorted { lhs, rhs in
-          curveBreakCoordinate(lhs.element, axis: axis)
-            > curveBreakCoordinate(rhs.element, axis: axis)
+    // `bandCount` bands whose rays point toward +x (+y), then `bandCount`
+    // toward -x (-y); the shader casts toward the nearer side of the glyph.
+    for towardPositive in [true, false] {
+      for band in 0..<bandCount {
+        let bandMin = minValue + extent * CGFloat(band) / CGFloat(bandCount)
+        let bandMax = minValue + extent * CGFloat(band + 1) / CGFloat(bandCount)
+        let indexStart = bandIndices.count
+        let intersecting = outline.curves.enumerated()
+          .filter { _, curve in curveIntersectsBand(curve, min: bandMin, max: bandMax, axis: axis) }
+          .sorted { lhs, rhs in
+            curveBreakCoordinate(lhs.element, axis: axis, towardPositive: towardPositive)
+              > curveBreakCoordinate(rhs.element, axis: axis, towardPositive: towardPositive)
+          }
+        for (localIndex, _) in intersecting {
+          bandIndices.append(UInt32(curveStart + localIndex))
         }
-      for (localIndex, _) in intersecting {
-        bandIndices.append(UInt32(curveStart + localIndex))
+        bands.append(
+          SlugGlyphGPUBand(
+            indexStart: UInt32(indexStart),
+            indexCount: UInt32(bandIndices.count - indexStart)))
       }
-      bands.append(
-        SlugGlyphGPUBand(
-          indexStart: UInt32(indexStart),
-          indexCount: UInt32(bandIndices.count - indexStart)))
     }
   }
 
@@ -3927,13 +3934,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
   }
 
-  private func curveBreakCoordinate(_ curve: GlyphQuadraticCurve, axis: SlugBandAxis) -> CGFloat {
-    switch axis {
-    case .horizontal:
-      return Swift.max(curve.p0.x, curve.p1.x, curve.p2.x)
-    case .vertical:
-      return Swift.max(curve.p0.y, curve.p1.y, curve.p2.y)
-    }
+  /// The coordinate a band walk sorts by, descending, so it can stop at the
+  /// first curve wholly behind the sample: the far extent along the ray.
+  /// Rays toward -x (-y) see the curve mirrored, so the far extent is the
+  /// negated minimum.
+  private func curveBreakCoordinate(
+    _ curve: GlyphQuadraticCurve, axis: SlugBandAxis, towardPositive: Bool
+  ) -> CGFloat {
+    let (a, b, c) =
+      axis == .horizontal
+      ? (curve.p0.x, curve.p1.x, curve.p2.x) : (curve.p0.y, curve.p1.y, curve.p2.y)
+    return towardPositive ? Swift.max(a, b, c) : -Swift.min(a, b, c)
   }
 
   private func ensureGeometryBuffersIfNeeded(glyphsNeeded: Bool) -> Bool {
@@ -4353,6 +4364,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// (execplans/active/slug-hot-path-negative-cache-and-present-skip.md M5)
   /// instead of only checking pixel output.
   var lastFrameSlugGlyphsCountForTesting: Int { lastFrameSlugGlyphsCount }
+
+  /// Test-only: GPU execution time of the most recent committed frame, in
+  /// milliseconds, once it has completed.
+  var lastFrameGPUMillisecondsForTesting: Double? {
+    guard let buffer = lastCommandBuffer, buffer.status == .completed else { return nil }
+    return (buffer.gpuEndTime - buffer.gpuStartTime) * 1000
+  }
 
   /// Test-only: color-atlas glyph instances in the most recent frame.
   var lastFrameColorGlyphsCountForTesting: Int { lastFrameColorGlyphsCount }
