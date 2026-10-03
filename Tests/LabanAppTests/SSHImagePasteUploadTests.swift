@@ -93,12 +93,25 @@ final class SSHImagePasteUploadTests: XCTestCase {
   func testRunProcessPipesStdinAndCapturesOutput() throws {
     let payload = Data((0..<200_000).map { UInt8($0 % 251) })
     let outcome = try SSHImagePasteUpload.runProcess(
-      executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
+      executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "cksum"],
       environment: ProcessInfo.processInfo.environment, input: payload,
       timeout: 10)
     XCTAssertEqual(outcome.status, 0)
     XCTAssertFalse(outcome.timedOut)
-    XCTAssertEqual(outcome.stdout, payload)
+    let expected = try SSHImagePasteUpload.runProcess(
+      executable: URL(fileURLWithPath: "/bin/sh"),
+      arguments: ["-c", "head -c 200000 \"$0\" | cksum", payloadFile(payload)],
+      environment: ProcessInfo.processInfo.environment, input: Data(), timeout: 10)
+    XCTAssertEqual(outcome.stdout, expected.stdout, "all of stdin reached the child")
+    XCTAssertTrue(String(decoding: outcome.stdout, as: UTF8.self).contains(" 200000"))
+  }
+
+  private func payloadFile(_ payload: Data) throws -> String {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-ssh-payload-\(UUID().uuidString)")
+    try payload.write(to: url)
+    addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+    return url.path
   }
 
   func testRunProcessTimesOut() throws {
@@ -131,6 +144,26 @@ final class SSHImagePasteUploadTests: XCTestCase {
     let outcome = try XCTUnwrap(result).get()
     XCTAssertTrue(outcome.timedOut)
     XCTAssertEqual(outcome.status, 128 + SIGTERM, "ended by SIGTERM, not the SIGKILL fallback")
+  }
+
+  func testOutputIsCappedToItsTailWhileStillDrained() throws {
+    let outcome = try SSHImagePasteUpload.runProcess(
+      executable: URL(fileURLWithPath: "/bin/sh"),
+      arguments: ["-c", "head -c 3000000 /dev/zero | tr '\\0' x; printf '\\n/tmp/end.png'"],
+      environment: ProcessInfo.processInfo.environment, input: Data(), timeout: 10)
+    XCTAssertFalse(outcome.timedOut)
+    XCTAssertEqual(outcome.status, 0)
+    XCTAssertEqual(outcome.stdout.count, SSHImagePasteUpload.outputLimit)
+    XCTAssertTrue(String(decoding: outcome.stdout, as: UTF8.self).hasSuffix("\n/tmp/end.png"))
+  }
+
+  func testDataBoxKeepsTheLastBytes() {
+    let box = DataBox(limit: 4)
+    box.append(ArraySlice(Array("abc".utf8)))
+    box.append(ArraySlice(Array("defgh".utf8)))
+    XCTAssertEqual(box.value, Data("efgh".utf8))
+    box.append(ArraySlice(Array("i".utf8)))
+    XCTAssertEqual(box.value, Data("fghi".utf8))
   }
 
   func testUploadPipesAreCloseOnExec() throws {

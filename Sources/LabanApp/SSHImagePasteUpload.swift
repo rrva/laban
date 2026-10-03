@@ -139,6 +139,10 @@ enum SSHImagePasteUpload {
     var timedOut: Bool
   }
 
+  /// Bytes of stdout and of stderr kept per upload (the tail); the rest is
+  /// read and discarded so the pipes never block ssh. A remote path is at
+  /// most 4096 bytes.
+  static let outputLimit = 8 * 1024
   /// Grace between SIGTERM and SIGKILL of the process group on timeout.
   static let terminateGrace: TimeInterval = 1
   /// How long to keep reading stdout/stderr after ssh exits. A ProxyCommand
@@ -393,11 +397,28 @@ enum SSHImagePasteUpload {
   }
 }
 
-private final class DataBox: @unchecked Sendable {
+/// Keeps only the last `limit` bytes appended, so a chatty remote cannot grow
+/// memory for the whole upload. The tail is what matters: the remote path and
+/// ssh's failure reason are both the last line.
+final class DataBox: @unchecked Sendable {
   private let lock = NSLock()
   private var data = Data()
+  private let limit: Int
+
+  init(limit: Int = SSHImagePasteUpload.outputLimit) {
+    self.limit = limit
+  }
+
   var value: Data { lock.withLock { data } }
-  func append(_ bytes: ArraySlice<UInt8>) { lock.withLock { data.append(contentsOf: bytes) } }
+
+  func append(_ bytes: ArraySlice<UInt8>) {
+    lock.withLock {
+      data.append(contentsOf: bytes.suffix(limit))
+      if data.count > limit {
+        data = Data(data.suffix(limit))
+      }
+    }
+  }
 }
 
 private final class StatusBox: @unchecked Sendable {
