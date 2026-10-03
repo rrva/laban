@@ -31,12 +31,23 @@ extension FrameProducer {
       for col in 0..<cols {
         let cell = cells[rowStart + col]
         guard cell.utf8_length > 0 else { continue }
-        let lead = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
-          .load(as: UInt8.self)
-        if TerminalBidi.mayBeRightToLeft(leadByte: lead) {
-          mayNeedBidi = true
-          break
+        let bytes = UnsafeBufferPointer<UInt8>(
+          start: UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
+            .assumingMemoryBound(to: UInt8.self),
+          count: Int(cell.utf8_length))
+        // Lead byte first (ASCII, Latin, Cyrillic never qualify), then the
+        // real scalar check, so box drawing, emoji and CJK rows stay on the
+        // ordinary path.
+        guard TerminalBidi.mayBeRightToLeft(leadByte: bytes[0]) else { continue }
+        var iterator = bytes.makeIterator()
+        var decoder = Unicode.UTF8()
+        while case .scalarValue(let scalar) = decoder.decode(&iterator) {
+          if TerminalBidi.isStrongRightToLeft(scalar) {
+            mayNeedBidi = true
+            break
+          }
         }
+        if mayNeedBidi { break }
       }
       guard mayNeedBidi else { continue }
       let rowCells = localBidiCells(
@@ -136,7 +147,9 @@ extension FrameProducer {
       cmds.append(
         .glyphRun(
           origin: CGPoint(x: originX + CGFloat(visualStart) * cw, y: cellY),
-          text: run.map(\.text).joined(),
+          text: runRightToLeft
+            ? BidiMirroring.mirrored(run.map(\.text).joined())
+            : run.map(\.text).joined(),
           foreground: first.visuals.foreground,
           background: first.visuals.background,
           attributes: attributes,
@@ -209,7 +222,7 @@ extension FrameProducer {
     ch: CGFloat
   ) -> [CGRect] {
     guard !layouts.isEmpty, cw > 0, ch > 0 else { return [rect] }
-    let row = rows - 1 - Int(((rect.minY - originY - contentYOffset) / ch).rounded(.down))
+    let row = rows - 1 - Int(((rect.minY - originY - contentYOffset) / ch).rounded())
     guard let layout = layouts[row] else { return [rect] }
     let firstColumn = max(0, Int(((rect.minX - originX) / cw).rounded()))
     let lastColumn = min(cols, Int(((rect.maxX - originX) / cw).rounded()))

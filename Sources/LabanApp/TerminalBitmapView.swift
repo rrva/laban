@@ -369,6 +369,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var emojiRenderingObserver: NSObjectProtocol?
   private var fontLigatureObserver: NSObjectProtocol?
   private var bidiDisplayObserver: NSObjectProtocol?
+  private var bidiHitCache: (session: Session.ID?, generation: UInt64, columns: [Int: Int]) = (
+    nil, 0, [:]
+  )
   private var cjkFontSettingsObserver: NSObjectProtocol?
   private var vectorSubpixelLayoutObserver: NSObjectProtocol?
   private var vectorTextWeightObserver: NSObjectProtocol?
@@ -8906,19 +8909,44 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         at: pt, geometry: selectionGeometry(paneRect: paneRect))
     else { return nil }
     return TerminalCellCoordinate(
-      row: cell.row, col: logicalColumn(row: cell.row, visualColumn: cell.col))
+      row: cell.row,
+      col: logicalColumn(row: cell.row, visualColumn: cell.col, paneRect: paneRect))
   }
 
   /// Right-to-left rows are drawn in visual order; a click selects the cell
-  /// shown under the pointer, which may be stored at another column.
-  private func logicalColumn(row: Int, visualColumn: Int) -> Int {
-    guard BidiDisplaySettings.isEnabled(),
-      let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
-      let snap = session.snapshot()
-    else { return visualColumn }
+  /// shown under the pointer, which may be stored at another column. Results
+  /// are cached per session until its content changes, so pointer moves do
+  /// not take a snapshot each.
+  private func logicalColumn(row: Int, visualColumn: Int, paneRect: CGRect? = nil) -> Int {
+    guard BidiDisplaySettings.isEnabled(), let session = session(forPane: paneRect) else {
+      return visualColumn
+    }
+    let generation = session.dirtyGeneration()
+    if bidiHitCache.session != session.id || bidiHitCache.generation != generation {
+      bidiHitCache = (session.id, generation, [:])
+    }
+    let key = row &* 65_536 &+ visualColumn
+    if let cached = bidiHitCache.columns[key] { return cached }
+    guard let snap = session.snapshot() else { return visualColumn }
     defer { laban_snapshot_destroy(snap) }
-    return FrameProducer.logicalColumn(row: row, visualColumn: visualColumn, in: snap.pointee)
+    let logical = FrameProducer.logicalColumn(
+      row: row, visualColumn: visualColumn, in: snap.pointee)
+    bidiHitCache.columns[key] = logical
+    return logical
+  }
+
+  /// The session drawn in `paneRect` (the focused session when nil or not a
+  /// split pane).
+  private func session(forPane paneRect: CGRect?) -> Session? {
+    guard let tab = model.activeTab else { return nil }
+    if let paneRect, activeTabIsSplit {
+      let area = CGRect(
+        x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+      if let pane = tab.visibleLayout(in: area).first(where: { $0.rect == paneRect }) {
+        return model.session(forSessionID: pane.sessionId)
+      }
+    }
+    return model.session(forTab: tab.id)
   }
 
   /// Like `termCell(at:)` but always returns a valid cell, clamped to the

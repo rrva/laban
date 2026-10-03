@@ -203,6 +203,12 @@ struct SlugUnderlineInk {
 /// reference-size points. Most clusters are one glyph at the origin; combining
 /// marks, Indic conjuncts and reordered matras shape to several, and every one
 /// of them must be drawn.
+/// A right-to-left run shaped as one CoreText line, in reference-size points.
+private struct SlugShapedLine {
+  var glyphs: [(entry: SlugGlyphEntry, position: CGPoint)]
+  var width: CGFloat
+}
+
 private struct SlugClusterGlyph {
   var entry: SlugGlyphEntry
   var offset: CGPoint
@@ -533,6 +539,11 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// a re-shape is a cold-path cost and terminal text repeats heavily.
   private var ligatureShapeCache: [SlugLigatureShapeKey: [TerminalLigatureCell]] = [:]
   private static let ligatureShapeCacheLimit = 4096
+  /// Shaped right-to-left joining-script runs, keyed like `ligatureShapeCache`
+  /// by (interned font, text): glyph entries with their CoreText positions and
+  /// the line's typographic width, or nil when the run must draw per cell.
+  /// Same wholesale bound; cleared with the geometry caches it points into.
+  private var shapedRightToLeftCache: [SlugLigatureShapeKey: SlugShapedLine?] = [:]
   private var ligaturesEnabled = FontLigatureSettings.enabled
   public private(set) var lastFrameLigatureGlyphsCount = 0
   private var frameLigatureGlyphsCount = 0
@@ -859,6 +870,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     entriesByResolveKey.removeAll()
     failedResolveKeys.removeAll()
     ligatureEntriesByKey.removeAll()
+    shapedRightToLeftCache.removeAll()
     failedLigatureGlyphKeys.removeAll()
     curveStore.invalidate()
     curveBuffer = nil
@@ -2962,11 +2974,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     // A right-to-left run of joining-script letters (Arabic, ...) is shaped
     // as one CoreText line, so letters take their joined forms, and drawn
     // squeezed into exactly its cells.
+    // Overlay masks (IME composition, hover preview) are honoured per cell,
+    // so a masked run takes the per-cell path.
+    let runRect = CGRect(
+      x: origin.x, y: origin.y, width: CGFloat(text.count) * cellAdvance,
+      height: activeAtlas.cellSize.height)
     if rightToLeft, source == .terminal,
       text.unicodeScalars.contains(where: Self.isJoiningScript),
+      !overlayMaskRects.contains(where: { $0.intersects(runRect) }),
       appendShapedRightToLeftLine(
-        text, origin: origin, referenceAtlas: referenceAtlas,
-        referenceFont: referenceVariant.font, pointScale: pointScale,
+        // FrameProducer pre-mirrors brackets for per-cell drawing; CoreText
+        // mirrors them itself, so shape the original text.
+        BidiMirroring.mirrored(text), origin: origin, referenceAtlas: referenceAtlas,
+        referenceFont: referenceVariant.font, fontID: fontID, pointScale: pointScale,
         cellAdvance: cellAdvance, append: appendSlugGlyph)
     {
       appendDecorations(
@@ -3703,17 +3723,44 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     origin: CGPoint,
     referenceAtlas: FontAtlas,
     referenceFont: CTFont,
+    fontID: Int,
     pointScale: CGFloat,
     cellAdvance: CGFloat,
     append: (SlugGlyphEntry, CGFloat, CGPoint, CGFloat, CGFloat) -> Void
   ) -> Bool {
+    let key = SlugLigatureShapeKey(fontID: fontID, text: text)
+    let shaped: SlugShapedLine?
+    if let cached = shapedRightToLeftCache[key] {
+      shaped = cached
+    } else {
+      shaped = shapeRightToLeftLine(
+        text, referenceAtlas: referenceAtlas, referenceFont: referenceFont)
+      if shapedRightToLeftCache.count >= Self.ligatureShapeCacheLimit {
+        shapedRightToLeftCache.removeAll(keepingCapacity: true)
+      }
+      shapedRightToLeftCache[key] = shaped
+    }
+    guard let shaped else { return false }
+    let xScale = CGFloat(text.count) * cellAdvance / (shaped.width * pointScale)
+    for glyph in shaped.glyphs {
+      append(
+        glyph.entry, origin.x, CGPoint(x: glyph.position.x * xScale, y: glyph.position.y), 1,
+        xScale)
+    }
+    return true
+  }
+
+  /// CoreText shaping of a right-to-left run (contextual Arabic forms, glyphs
+  /// in right-to-left visual order); nil when any inked glyph lacks an
+  /// outline, so the caller draws per cell instead.
+  private func shapeRightToLeftLine(
+    _ text: String, referenceAtlas: FontAtlas, referenceFont: CTFont
+  ) -> SlugShapedLine? {
     let line = TerminalGlyphFallback.fallbackLine(
       text: text, font: referenceFont, cellAdvance: referenceAtlas.cellSize.width)
     let lineWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-    guard lineWidth > 0 else { return false }
-    let runWidth = CGFloat(text.count) * cellAdvance
-    let xScale = runWidth / (lineWidth * pointScale)
-    var placements: [(SlugGlyphEntry, CGPoint)] = []
+    guard lineWidth > 0 else { return nil }
+    var glyphsOut: [(entry: SlugGlyphEntry, position: CGPoint)] = []
     for case let run as CTRun in CTLineGetGlyphRuns(line) as NSArray {
       let count = CTRunGetGlyphCount(run)
       guard count > 0 else { continue }
@@ -3725,16 +3772,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let font = attributes[kCTFontAttributeName].map { $0 as! CTFont } ?? referenceFont
       for index in 0..<count where glyphs[index] != 0 {
         if let entry = geometryEntry(font: font, glyph: glyphs[index]) {
-          placements.append((entry, positions[index]))
+          glyphsOut.append((entry, positions[index]))
         } else if Self.glyphHasInk(glyphs[index], font: font) {
-          return false
+          return nil
         }
       }
     }
-    for (entry, position) in placements {
-      append(entry, origin.x, CGPoint(x: position.x * xScale, y: position.y), 1, xScale)
-    }
-    return true
+    return SlugShapedLine(glyphs: glyphsOut, width: lineWidth)
   }
 
   private enum SlugBandAxis {

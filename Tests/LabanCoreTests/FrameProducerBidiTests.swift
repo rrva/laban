@@ -53,6 +53,35 @@ final class FrameProducerBidiTests: XCTestCase {
     XCTAssertLessThan(digits.x, hebrew.x, "digits inside the RTL run display before the word")
   }
 
+  func testBracketsInRightToLeftRunAreMirrored() throws {
+    // "שלום (עולם)": the brackets sit between Hebrew letters, so they are in
+    // the RTL run; drawn mirrored, each must be its counterpart so it still
+    // opens toward the word it encloses.
+    let emitted = runs(
+      try commands(
+        "\u{05E9}\u{05DC}\u{05D5}\u{05DD} (\u{05E2}\u{05D5}\u{05DC}\u{05DD})"))
+    XCTAssertTrue(
+      emitted.contains { $0.rtl && $0.text == ")\u{05E2}\u{05D5}\u{05DC}\u{05DD}(" },
+      "got \(emitted.map(\.text))")
+  }
+
+  func testBoxDrawingAndEmojiRowsStayOnTheOrdinaryPath() throws {
+    let emitted = runs(try commands("\u{2500}\u{2502} \u{1F600} \u{4E2D}\u{6587} abc"))
+    XCTAssertFalse(emitted.contains { $0.rtl })
+    var size = LabanTerminalSize()
+    size.rows = 3
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(Array("\u{2500}\u{2502} \u{1F600} \u{4E2D}\u{6587} abc".utf8))
+    guard let snap = session.snapshot() else { return XCTFail("snapshot nil") }
+    defer { laban_snapshot_destroy(snap) }
+    XCTAssertTrue(
+      FrameProducer(cellWidth: 10, cellHeight: 20).bidiLayouts(
+        snapshot: snap.pointee, rows: 3, cols: 20, hyperlinkURIs: []
+      ).isEmpty, "rows without strong RTL text must not get a BiDi layout")
+  }
+
   func testBidiOffKeepsLogicalOrder() throws {
     let emitted = runs(try commands("ab \u{05E9}\u{05DC}\u{05D5}\u{05DD} cd", bidi: false))
     XCTAssertFalse(emitted.contains { $0.rtl })
