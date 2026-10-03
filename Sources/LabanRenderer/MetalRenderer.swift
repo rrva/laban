@@ -3812,8 +3812,12 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
           let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
 
+          let runCellCount = text.count
           for (cellIndex, cluster) in text.enumerated() {
-            let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
+            // Right-to-left BiDi runs are mirrored.
+            let visualIndex =
+              attrs.contains(.rightToLeft) ? runCellCount - 1 - cellIndex : cellIndex
+            let cellX = origin.x + CGFloat(visualIndex) * glyphCellAdvance
             let cellRect = CGRect(
               x: cellX, y: origin.y,
               width: glyphCellAdvance, height: runHeight)
@@ -4113,8 +4117,12 @@ public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer
           !isSidebar && emojiRenderingMode == .color
           && ColorGlyphSupport.mayContainColorGlyph(text: text, font: font)
 
+        let runCellCount = text.count
         for (cellIndex, cluster) in text.enumerated() {
-          let cellX = origin.x + CGFloat(cellIndex) * activeAdvance
+          // Right-to-left BiDi runs are mirrored.
+          let visualIndex =
+            attrs.contains(.rightToLeft) ? runCellCount - 1 - cellIndex : cellIndex
+          let cellX = origin.x + CGFloat(visualIndex) * activeAdvance
           let cellRect = CGRect(
             x: cellX, y: origin.y, width: activeAdvance, height: runHeight)
           if !isSidebar, runSource != .preedit,

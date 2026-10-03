@@ -368,6 +368,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var cursorSettingsObserver: NSObjectProtocol?
   private var emojiRenderingObserver: NSObjectProtocol?
   private var fontLigatureObserver: NSObjectProtocol?
+  private var bidiDisplayObserver: NSObjectProtocol?
+  private var bidiHitCache: (session: Session.ID?, generation: UInt64, columns: [Int: Int]) = (
+    nil, 0, [:]
+  )
   private var cjkFontSettingsObserver: NSObjectProtocol?
   private var vectorSubpixelLayoutObserver: NSObjectProtocol?
   private var vectorTextWeightObserver: NSObjectProtocol?
@@ -996,6 +1000,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       guard let self else { return }
       guard let slug = self.backend as? SlugGlyphRenderer else { return }
       slug.refreshFontLigatures()
+      self.renderInvalidated = true
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    // BiDi reordering is applied by the frame producer; redraw everything.
+    bidiDisplayObserver = NotificationCenter.default.addObserver(
+      forName: BidiDisplaySettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
@@ -3256,6 +3271,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if let emojiRenderingObserver {
       NotificationCenter.default.removeObserver(emojiRenderingObserver)
+    }
+    if let bidiDisplayObserver {
+      NotificationCenter.default.removeObserver(bidiDisplayObserver)
     }
     if let fontLigatureObserver {
       NotificationCenter.default.removeObserver(fontLigatureObserver)
@@ -8886,7 +8904,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
   private func termCell(at pt: NSPoint, paneRect: CGRect? = nil) -> TerminalCellCoordinate? {
-    TerminalSelectionInput.terminalCell(at: pt, geometry: selectionGeometry(paneRect: paneRect))
+    guard
+      let cell = TerminalSelectionInput.terminalCell(
+        at: pt, geometry: selectionGeometry(paneRect: paneRect))
+    else { return nil }
+    return TerminalCellCoordinate(
+      row: cell.row,
+      col: logicalColumn(row: cell.row, visualColumn: cell.col, paneRect: paneRect))
+  }
+
+  /// Right-to-left rows are drawn in visual order; a click selects the cell
+  /// shown under the pointer, which may be stored at another column. Results
+  /// are cached per session until its content changes, so pointer moves do
+  /// not take a snapshot each.
+  private func logicalColumn(row: Int, visualColumn: Int, paneRect: CGRect? = nil) -> Int {
+    guard BidiDisplaySettings.isEnabled(), let session = session(forPane: paneRect) else {
+      return visualColumn
+    }
+    let generation = session.dirtyGeneration()
+    if bidiHitCache.session != session.id || bidiHitCache.generation != generation {
+      bidiHitCache = (session.id, generation, [:])
+    }
+    let key = row &* 65_536 &+ visualColumn
+    if let cached = bidiHitCache.columns[key] { return cached }
+    guard let snap = session.snapshot() else { return visualColumn }
+    defer { laban_snapshot_destroy(snap) }
+    let logical = FrameProducer.logicalColumn(
+      row: row, visualColumn: visualColumn, in: snap.pointee)
+    bidiHitCache.columns[key] = logical
+    return logical
+  }
+
+  /// The session drawn in `paneRect` (the focused session when nil or not a
+  /// split pane).
+  private func session(forPane paneRect: CGRect?) -> Session? {
+    guard let tab = model.activeTab else { return nil }
+    if let paneRect, activeTabIsSplit {
+      let area = CGRect(
+        x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+      if let pane = tab.visibleLayout(in: area).first(where: { $0.rect == paneRect }) {
+        return model.session(forSessionID: pane.sessionId)
+      }
+    }
+    return model.session(forTab: tab.id)
   }
 
   /// Like `termCell(at:)` but always returns a valid cell, clamped to the
@@ -8895,10 +8955,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// in-progress selection. Captures libghostty's viewport offset so the
   /// point tracks the actual content as the viewport scrolls.
   private func clampedSelectionPoint(at pt: NSPoint) -> TerminalSelectionPoint {
-    TerminalSelectionInput.clampedPoint(
+    let point = TerminalSelectionInput.clampedPoint(
       at: pt,
       geometry: selectionGeometry(),
       viewportOffset: currentViewportOffset())
+    return TerminalSelectionPoint(
+      row: point.row, col: logicalColumn(row: point.row, visualColumn: point.col),
+      viewportOffsetAtCapture: point.viewportOffsetAtCapture)
   }
 
   /// Word-grain selection at the click cell.

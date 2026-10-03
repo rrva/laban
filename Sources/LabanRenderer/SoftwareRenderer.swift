@@ -202,6 +202,7 @@ public final class SoftwareRenderer {
       cellAdvance: cellAdvance,
       cellHeight: atlas.cellSize.height,
       descent: atlas.descent,
+      rightToLeft: attributes.contains(.rightToLeft),
       in: ctx
     )
     if needsBoldFallback {
@@ -216,6 +217,7 @@ public final class SoftwareRenderer {
         cellAdvance: cellAdvance,
         cellHeight: atlas.cellSize.height,
         descent: atlas.descent,
+        rightToLeft: attributes.contains(.rightToLeft),
         in: ctx
       )
     }
@@ -241,6 +243,7 @@ public final class SoftwareRenderer {
     cellAdvance: CGFloat,
     cellHeight: CGFloat,
     descent: CGFloat,
+    rightToLeft: Bool = false,
     in ctx: CGContext
   ) {
     var glyphs: [CGGlyph] = []
@@ -269,9 +272,13 @@ public final class SoftwareRenderer {
       positions.removeAll(keepingCapacity: true)
     }
 
+    // Right-to-left BiDi runs are mirrored: the first logical cell is drawn
+    // rightmost (FrameProducer keeps their cells one column wide).
+    let runCellCount = text.count
     for (cellIndex, cluster) in text.enumerated() {
+      let visualIndex = rightToLeft ? runCellCount - 1 - cellIndex : cellIndex
       let cellOrigin = CGPoint(
-        x: origin.x + CGFloat(cellIndex) * cellAdvance + xOffset,
+        x: origin.x + CGFloat(visualIndex) * cellAdvance + xOffset,
         y: baseline
       )
       if runMayColor,

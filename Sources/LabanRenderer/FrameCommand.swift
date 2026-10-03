@@ -137,6 +137,11 @@ public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
   public static let strikethrough = TextAttributes(rawValue: 1 << 6)
   public static let overline = TextAttributes(rawValue: 1 << 7)
   public static let blink = TextAttributes(rawValue: 1 << 8)
+  /// Layout-only attribute set by FrameProducer, never a terminal cell flag:
+  /// the run's cells are a right-to-left BiDi run, so `Character` i is drawn
+  /// at `origin.x + (count - 1 - i) * cellWidth`. Every cell of such a run is
+  /// one column wide.
+  public static let rightToLeft = TextAttributes(rawValue: 1 << 15)
 
   public static let renderableMask: TextAttributes = [
     .bold, .italic, .faint, .inverse, .invisible, .underline, .strikethrough, .overline, .blink,
