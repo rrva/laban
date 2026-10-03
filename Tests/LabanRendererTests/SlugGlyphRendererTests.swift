@@ -929,7 +929,8 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       // A partial redraw in between (a cursor blink) must not shrink the
       // remembered working set.
       renderer.resetGeometryIfOverBudget(budgetBytes: 1)
-      XCTAssertTrue(renderer.render(commands, damage: .partial(yRanges: [DirtyYRange(y: 0, height: 1)])))
+      XCTAssertTrue(
+        renderer.render(commands, damage: .partial(yRanges: [DirtyYRange(y: 0, height: 1)])))
     }
     XCTAssertEqual(renderer.geometryResetCount, 1)
   }
