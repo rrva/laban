@@ -53,4 +53,31 @@ final class TerminalAttentionDamageTests: XCTestCase {
         hoverPreviewShowing: false),
       "persistent optional-preview failure must not defeat active-terminal row damage")
   }
+
+  // A sidebar scroll frame on a quiet terminal has empty natural damage.
+  // Slug drops such a frame, so without a strip pass the sidebar froze until
+  // unrelated damage repainted it and then jumped: the scroll judder.
+  func testSidebarScrollWithoutStripPassForcesFullDamage() {
+    XCTAssertTrue(
+      TerminalBitmapView.shouldForceFullDamage(
+        renderInvalidated: false,
+        tabChanged: false,
+        scrollAnimating: false,
+        fractionalScrollOffset: false,
+        sidebarScrollAnimating: true,
+        rendererHasSidebarStripPass: false))
+  }
+
+  // MetalRenderer repaints the sidebar through its strip pass, so a sidebar
+  // scroll must not cost it a full-surface repaint.
+  func testSidebarScrollWithStripPassKeepsTerminalDamage() {
+    XCTAssertFalse(
+      TerminalBitmapView.shouldForceFullDamage(
+        renderInvalidated: false,
+        tabChanged: false,
+        scrollAnimating: false,
+        fractionalScrollOffset: false,
+        sidebarScrollAnimating: true,
+        rendererHasSidebarStripPass: true))
+  }
 }
