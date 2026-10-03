@@ -1564,9 +1564,12 @@ private final class LabptyParserFeed {
     }
     let diagBefore =
       ScrollDiagnostics.shared.isEnabled ? session.viewportState() : nil
-    // A replay read also re-runs the host side effects in that history: an
-    // OSC 52 copy made before the restart would overwrite whatever the user
-    // copied since, and old OSC 9 notifications would post again. Drop them.
+    // The reattach catch-up read also re-runs the host side effects in that
+    // history: an OSC 52 copy made before the restart would overwrite whatever
+    // the user copied since, and old OSC 9 notifications would post again, so
+    // drop them. An overflow read is NOT suppressed here: its window tail
+    // starts past `lastOffset`, so every byte in it is new and a copy or
+    // notification in it is live.
     let feed: () -> Void = {
       if catchUpRead, let catchUpGrid = self.catchUpGrid {
         self.session.feedOutput(
@@ -1575,7 +1578,7 @@ private final class LabptyParserFeed {
         _ = self.session.feedOutput(Array(result.bytes))
       }
     }
-    if replayRead {
+    if catchUpRead {
       session.withHostEffectsSuppressed(feed)
     } else {
       feed()
