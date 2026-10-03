@@ -75,7 +75,11 @@ struct DebugClipboardActions {
     {
       // Parity with the AppKit paste (ADR 0040): a program with Kitty paste
       // events enabled gets an event and reads the clipboard itself.
-      if session.pasteEventsEnabled(), !runtime.debugClipboard.isEmpty {
+      // A laband-backed runtime parses in the daemon, so the local session
+      // could mint an event the daemon's terminal would not honor; skip it.
+      if runtime.terminalSessionClient == nil, session.pasteEventsEnabled(),
+        !runtime.debugClipboard.isEmpty
+      {
         return pasteEvent(session: session, tab: tab, frameBefore: frameBefore)
       }
       let result: Session.PasteWriteResult?
@@ -164,21 +168,7 @@ struct DebugClipboardActions {
     guard !bytes.isEmpty else { return jsonError("paste event encoding failed") }
     let deltaRows = session.scrollViewportToActiveBottom()
     appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
-    if let client = runtime.terminalSessionClient {
-      do {
-        try runtime.ensureTerminalClientSessionUnlocked(for: tab)
-        try client.writeInput(
-          sessionId: runtime.terminalClientRemoteSessionId(for: tab.focusedSessionId),
-          bytes: bytes)
-      } catch {
-        runtime.appendError(
-          kind: "laband.writeInput.failed", message: String(describing: error),
-          sessionId: tab.focusedSessionId, tabId: tab.id)
-        return jsonError("paste failed: \(error)")
-      }
-    } else {
-      _ = session.write(bytes)
-    }
+    _ = session.write(bytes)
     runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
     runtime.appendInputEnvelope(
       InputEventEnvelope(

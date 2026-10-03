@@ -7590,8 +7590,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         testPasteboardEnabled
         ? PasteEventClipboard.items(text: testPasteboardString ?? "")
         : PasteEventClipboard.items(from: .general)
-      if !items.isEmpty {
-        sendPasteEvent(items, session: session)
+      // A failed encode (or mode 5522 switched off meanwhile) falls through
+      // to the ordinary paste below rather than losing the paste.
+      if !items.isEmpty, sendPasteEvent(items, session: session) {
         return
       }
     }
@@ -7768,12 +7769,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     clearSelectionAfterPaste()
   }
 
-  private func sendPasteEvent(_ items: [Session.PasteEventItem], session: Session) {
+  /// Returns false when no event was sent, so the caller pastes normally.
+  private func sendPasteEvent(_ items: [Session.PasteEventItem], session: Session) -> Bool {
     let bytes = session.encodePasteEvent(items)
     let mimes = items.map(\.mime).joined(separator: ",")
     guard !bytes.isEmpty else {
       EventLog.shared.log("paste.event.failed", ["mimes": mimes])
-      return
+      return false
     }
     let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
     recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
@@ -7785,7 +7787,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         AppLog.app.error("paste event write failed: \(String(describing: error))")
         EventLog.shared.log(
           "paste.event.failed", ["mimes": mimes, "error": String(describing: error)])
-        return
+        return true
       }
     } else {
       _ = session.write(bytes)
@@ -7804,6 +7806,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
     )
     clearSelectionAfterPaste()
+    return true
   }
 
   private func forwardClipboardImagePasteToTerminal(session: Session) {
