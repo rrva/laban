@@ -2513,7 +2513,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
       case .glyphRun(
         let origin, let text, let foreground, let background, let attributes, let source,
-        let underlineStyle, let underlineColor, _, _, let outputTimestampSeconds,
+        let underlineStyle, let underlineColor, _, let displayCellCount, let outputTimestampSeconds,
         let foregroundTransition, let foregroundWave
       ):
         let activeAtlas = atlas(for: source)
@@ -2556,6 +2556,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           effectDuration: effectDuration,
           foregroundTransition: foregroundTransition,
           foregroundWave: foregroundWave,
+          displayCellCount: displayCellCount,
           overlayMaskRects: overlayMaskRects,
           solids: &solids,
           overlaySolids: &overlaySolids,
@@ -2721,6 +2722,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     effectDuration: Float? = nil,
     foregroundTransition: GlyphForegroundTransition? = nil,
     foregroundWave: GlyphForegroundWave? = nil,
+    displayCellCount: Int? = nil,
     overlayMaskRects: [CGRect],
     solids: inout [SlugSolidInstance],
     overlaySolids: inout [SlugSolidInstance],
@@ -2820,8 +2822,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       fontID: fontID,
       hasMotion: foregroundTransition != nil || foregroundWave != nil)
 
+    // FrameProducer ends a terminal run after any wide cell, so with the
+    // engine's column span every cluster but the last is one cell wide.
+    // Only terminal runs carry an engine span; IME preedit counts the whole
+    // composition's Unicode width, which this rule cannot split.
+    let engineSpan = source == .terminal ? displayCellCount : nil
+    let clusterCount = engineSpan == nil ? 0 : text.count
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
+      let engineCellSpan = engineSpan.map {
+        cellIndex == clusterCount - 1 ? max(1, $0 - (clusterCount - 1)) : 1
+      }
       let cellRect = CGRect(
         x: cellOriginX, y: origin.y,
         width: cellAdvance, height: activeAtlas.cellSize.height)
@@ -2850,6 +2861,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         ColorGlyphSupport.clusterMayBeColor(cluster),
         let colorFallback = colorGlyphInstance(
           cluster: cluster,
+          cellSpan: engineCellSpan,
           font: activeVariant.font,
           boldFallback: activeVariant.boldFallback,
           italicFallback: activeVariant.italicFallback,
@@ -3278,6 +3290,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   private func colorGlyphInstance(
     cluster: Character,
+    cellSpan: Int?,
     font: CTFont,
     boldFallback: Bool,
     italicFallback: Bool,
@@ -3288,7 +3301,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         character: cluster,
         font: font,
         boldFallback: boldFallback,
-        italicFallback: italicFallback)
+        italicFallback: italicFallback,
+        cellSpan: cellSpan)
     else { return nil }
     let atlasSize = Float(colorGlyphAtlas.textureSize)
     return SlugTextureInstance(
