@@ -960,8 +960,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     else { return nil }
 
     let options = MTLCompileOptions()
+    // Relaxed math keeps IEEE infinities and NaNs (the root solve divides by
+    // near-zero quadratic terms and relies on them) but allows reciprocal
+    // division and other fast forms: about 20% of Slug's GPU time on M1,
+    // where a precise divide costs ~5x a fast one. macOS 13-14 can only turn
+    // fast math fully on or off, and fully on drops infinity handling.
     if #available(macOS 15.0, *) {
-      options.mathMode = .safe
+      options.mathMode = .relaxed
     } else {
       options.fastMathEnabled = false
     }
