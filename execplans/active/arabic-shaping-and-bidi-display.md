@@ -82,11 +82,29 @@ them as BiDi dictates.
 
 ## Progress
 
-- [ ] TerminalBidi layout + tests
-- [ ] TextAttributes.rightToLeft; producer RTL rows (local + remote): backgrounds, runs, procedural, cursor
-- [ ] Renderers: mirrored placement (Slug, software, Metal); Slug joining for Arabic RTL runs
-- [ ] Selection/find visual rects; mouse visual→logical
-- [ ] Setting, screenshots, `./scripts/check`, PR, review
+- [x] TerminalBidi layout + tests (`TerminalBidiTests`)
+- [x] TextAttributes.rightToLeft; producer RTL rows (local + remote): backgrounds, runs, procedural, cursor (`FrameProducerBidiTests`)
+- [x] Renderers: mirrored placement (Slug, software, Metal); Slug joining for Arabic RTL runs (`testSlugJoinsArabicLettersInRightToLeftRun`, headless screenshot)
+- [x] Selection/find visual rects; mouse visual→logical (`testLogicalColumnForClickOnBidiRow`)
+- [x] Setting (Settings > Rendering checkbox, live observer)
+- [ ] `./scripts/check`, PR, review
+
+## Decision Log
+
+- Implicit BiDi with a left-to-right base paragraph direction, on by default,
+  as VTE does; a checkbox turns it off for programs that reorder text
+  themselves. Mouse reports to applications are not remapped.
+- Joining is done only for right-to-left runs, by shaping the run as one
+  CoreText line squeezed into its cells. Without BiDi the letters would join
+  on the wrong sides, so per-cell drawing is kept when the setting is off.
+- The GPU-cell renderer path (`overlayCommands`, not the default) is not
+  BiDi-aware.
+
+## Surprises & Discoveries
+
+- CoreText returns a line's runs in visual order with a right-to-left status
+  per run, which is all the row layout needs; no separate BiDi library is
+  required.
 
 ## Validation and Acceptance
 

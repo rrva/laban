@@ -1294,6 +1294,45 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     }
   }
 
+  /// A right-to-left Arabic run is shaped as a line: its letters join, so
+  /// the ink forms fewer separate horizontal pieces than the same letters
+  /// drawn one per cell in isolated form.
+  func testSlugJoinsArabicLettersInRightToLeftRun() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    func inkPieces(_ attributes: TextAttributes) throws -> Int {
+      let renderer = try XCTUnwrap(
+        SlugGlyphRenderer(
+          fontAtlas: FontAtlas(pointSize: 24, fontName: nil), pixelWidth: 240, pixelHeight: 80,
+          scale: 1))
+      renderer.waitForFrameCompletion = true
+      renderer.presentsToLayer = false
+      XCTAssertTrue(
+        renderer.render(
+          [
+            .rect(
+              CGRect(x: 0, y: 0, width: 240, height: 80), color: 0x0000_00FF, source: .terminal),
+            .glyphRun(
+              origin: CGPoint(x: 20, y: 24), text: "\u{0645}\u{062D}\u{0645}\u{062F}",
+              foreground: 0xFFFF_FFFF, background: 0x0000_00FF, attributes: attributes,
+              source: .terminal),
+          ], damage: .full))
+      let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+      var pieces = 0
+      var inInk = false
+      for x in 0..<image.width {
+        let inked = (0..<image.height).contains { image.bytes[($0 * image.width + x) * 4] > 96 }
+        if inked && !inInk { pieces += 1 }
+        inInk = inked
+      }
+      return pieces
+    }
+    let isolated = try inkPieces([])
+    let joined = try inkPieces([.rightToLeft])
+    XCTAssertLessThan(joined, isolated, "joined Arabic (محمد) must connect its letters")
+  }
+
   func testM2VisualSpotCheckArtifactWhenRequested() throws {
     guard let artifactRoot = ProcessInfo.processInfo.environment["LABAN_SLUG_GLYPH_ARTIFACTS"],
       !artifactRoot.isEmpty

@@ -368,6 +368,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var cursorSettingsObserver: NSObjectProtocol?
   private var emojiRenderingObserver: NSObjectProtocol?
   private var fontLigatureObserver: NSObjectProtocol?
+  private var bidiDisplayObserver: NSObjectProtocol?
   private var cjkFontSettingsObserver: NSObjectProtocol?
   private var vectorSubpixelLayoutObserver: NSObjectProtocol?
   private var vectorTextWeightObserver: NSObjectProtocol?
@@ -996,6 +997,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       guard let self else { return }
       guard let slug = self.backend as? SlugGlyphRenderer else { return }
       slug.refreshFontLigatures()
+      self.renderInvalidated = true
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    // BiDi reordering is applied by the frame producer; redraw everything.
+    bidiDisplayObserver = NotificationCenter.default.addObserver(
+      forName: BidiDisplaySettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
@@ -3256,6 +3268,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if let emojiRenderingObserver {
       NotificationCenter.default.removeObserver(emojiRenderingObserver)
+    }
+    if let bidiDisplayObserver {
+      NotificationCenter.default.removeObserver(bidiDisplayObserver)
     }
     if let fontLigatureObserver {
       NotificationCenter.default.removeObserver(fontLigatureObserver)
@@ -8886,7 +8901,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
   private func termCell(at pt: NSPoint, paneRect: CGRect? = nil) -> TerminalCellCoordinate? {
-    TerminalSelectionInput.terminalCell(at: pt, geometry: selectionGeometry(paneRect: paneRect))
+    guard
+      let cell = TerminalSelectionInput.terminalCell(
+        at: pt, geometry: selectionGeometry(paneRect: paneRect))
+    else { return nil }
+    return TerminalCellCoordinate(
+      row: cell.row, col: logicalColumn(row: cell.row, visualColumn: cell.col))
+  }
+
+  /// Right-to-left rows are drawn in visual order; a click selects the cell
+  /// shown under the pointer, which may be stored at another column.
+  private func logicalColumn(row: Int, visualColumn: Int) -> Int {
+    guard BidiDisplaySettings.isEnabled(),
+      let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let snap = session.snapshot()
+    else { return visualColumn }
+    defer { laban_snapshot_destroy(snap) }
+    return FrameProducer.logicalColumn(row: row, visualColumn: visualColumn, in: snap.pointee)
   }
 
   /// Like `termCell(at:)` but always returns a valid cell, clamped to the
@@ -8895,10 +8927,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// in-progress selection. Captures libghostty's viewport offset so the
   /// point tracks the actual content as the viewport scrolls.
   private func clampedSelectionPoint(at pt: NSPoint) -> TerminalSelectionPoint {
-    TerminalSelectionInput.clampedPoint(
+    let point = TerminalSelectionInput.clampedPoint(
       at: pt,
       geometry: selectionGeometry(),
       viewportOffset: currentViewportOffset())
+    return TerminalSelectionPoint(
+      row: point.row, col: logicalColumn(row: point.row, visualColumn: point.col),
+      viewportOffsetAtCapture: point.viewportOffsetAtCapture)
   }
 
   /// Word-grain selection at the click cell.

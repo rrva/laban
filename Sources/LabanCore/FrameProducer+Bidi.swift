@@ -237,3 +237,31 @@ extension FrameProducer {
     return result
   }
 }
+
+extension FrameProducer {
+  /// The logical column of the cell drawn at `visualColumn` on `row`, for
+  /// mouse hit-testing: on a BiDi row a click lands on the cell shown there,
+  /// not on the cell stored at that column. Other rows return the column
+  /// unchanged.
+  public static func logicalColumn(
+    row: Int, visualColumn: Int, in snapshot: LabanSnapshot,
+    bidiDisplay: Bool = BidiDisplaySettings.isEnabled()
+  ) -> Int {
+    let rows = Int(snapshot.rows)
+    let cols = Int(snapshot.cols)
+    guard bidiDisplay, row >= 0, row < rows, visualColumn >= 0, visualColumn < cols,
+      let cells = snapshot.cells, let storage = snapshot.utf8_storage
+    else { return visualColumn }
+    let producer = FrameProducer()
+    let rowCells = producer.localBidiCells(
+      cells: cells, storage: storage, rowStart: row * cols, cols: cols, hyperlinkURIs: [])
+    guard
+      let layout = TerminalBidi.layout(
+        cells: rowCells.map {
+          TerminalBidi.Cell(column: $0.column, width: $0.width, text: $0.text)
+        },
+        columns: cols)
+    else { return visualColumn }
+    return layout.logicalColumn[visualColumn]
+  }
+}

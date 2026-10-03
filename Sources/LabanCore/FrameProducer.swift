@@ -2037,8 +2037,52 @@ public struct FrameProducer {
       return snapshot.cells.first { $0.row == row && $0.col == col }
     }
 
+    // Implicit BiDi for rows holding right-to-left text (ring cells carry no
+    // wide flag; the cluster's display width stands in).
+    var bidiRowCells: [Int: [BidiCell]] = [:]
+    var bidiRows: [Int: TerminalBidiRowLayout] = [:]
+    if bidiDisplay {
+      for row in 0..<rows {
+        guard
+          (0..<cols).contains(where: {
+            cellAt(row: row, col: $0).map { TerminalBidi.containsStrongRightToLeft($0.text) }
+              ?? false
+          })
+        else { continue }
+        var rowCells: [BidiCell] = []
+        var col = 0
+        while col < cols {
+          let cell = cellAt(row: row, col: col)
+          let text = cell.map { $0.text.isEmpty ? " " : $0.text } ?? " "
+          let width = min(cols - col, TerminalDisplayWidth.cells(of: text) > 1 ? 2 : 1)
+          let visuals =
+            cell.map { resolvedVisuals(for: $0) }
+            ?? ResolvedCellVisuals(
+              foreground: Theme.current.fg0, background: defaultBg, attrsRaw: 0,
+              underlineStyle: .none, underlineColor: nil, hyperlink: nil, isInvisible: false)
+          rowCells.append(BidiCell(column: col, width: width, text: text, visuals: visuals))
+          col += width
+        }
+        if let layout = TerminalBidi.layout(
+          cells: rowCells.map {
+            TerminalBidi.Cell(column: $0.column, width: $0.width, text: $0.text)
+          },
+          columns: cols)
+        {
+          bidiRows[row] = layout
+          bidiRowCells[row] = rowCells
+        }
+      }
+    }
+
     for row in 0..<rows {
       let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
+      if let layout = bidiRows[row], let rowCells = bidiRowCells[row] {
+        appendBidiBackgrounds(
+          rowCells, layout: layout, cellY: cellY, cw: cw, ch: ch, defaultBackground: defaultBg,
+          into: &cmds)
+        continue
+      }
       var bgStart: Int? = nil
       var bgColor: UInt32 = 0
 
@@ -2095,13 +2139,16 @@ public struct FrameProducer {
         originX: originX,
         originY: originY
       ) {
-        appendSelectionCommand(
+        for piece in bidiRemapped(
           CGRect(
             x: rect.origin.x,
             y: rect.origin.y + contentYOffset,
             width: rect.width,
             height: rect.height),
-          into: &cmds)
+          layouts: bidiRows, rows: rows, cols: cols, cw: cw, ch: ch)
+        {
+          appendSelectionCommand(piece, into: &cmds)
+        }
       }
     }
 
@@ -2115,7 +2162,14 @@ public struct FrameProducer {
           velocityCellsPerSecond: Float(wave.wave.velocityCellsPerSecond)))
     }
 
-    for row in 0..<rows {
+    for (row, layout) in bidiRows {
+      guard let rowCells = bidiRowCells[row] else { continue }
+      appendBidiRowGlyphRuns(
+        rowCells, layout: layout,
+        cellY: originY + CGFloat(rows - 1 - row) * ch + contentYOffset, cw: cw, ch: ch,
+        into: &cmds)
+    }
+    for row in 0..<rows where bidiRows[row] == nil {
       let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
       var runStart: Int? = nil
       var runFg: UInt32 = 0
@@ -2261,10 +2315,14 @@ public struct FrameProducer {
       let caretRow = activePreeditLayout?.caretRow ?? snapshot.cursorRow
       let caretCol = activePreeditLayout?.caretCol ?? snapshot.cursorCol
       let remoteCell = activePreeditLayout == nil ? cellAt(row: caretRow, col: caretCol) : nil
+      let visualCaretCol =
+        activePreeditLayout == nil
+        ? bidiRows[caretRow].map { $0.visualColumn[min(caretCol, cols - 1)] } ?? caretCol
+        : caretCol
       // Ring cells carry no wide flag; the cluster's display width stands in.
       let cellRect = Self.blockCursorRect(
         CGRect(
-          x: originX + CGFloat(caretCol) * cw,
+          x: originX + CGFloat(visualCaretCol) * cw,
           y: originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset,
           width: cw,
           height: ch),

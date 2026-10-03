@@ -114,6 +114,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     checkboxWithTitle: L10n.tr("Sidebar hover preview"), target: nil, action: nil)
   private let fontLigaturesCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Font ligatures"), target: nil, action: nil)
+  private let bidiDisplayCheckbox = NSButton(
+    checkboxWithTitle: L10n.tr("Right-to-left text in reading order"), target: nil, action: nil)
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Option as Meta"), target: nil, action: nil)
@@ -593,6 +595,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       "Needs Slug Glyph; joins operators such as -> != === into the font's ligature glyphs while keeping one cell per character."
     )
     fontLigaturesCheckbox.setAccessibilityLabel(L10n.tr("Font ligatures"))
+    bidiDisplayCheckbox.target = self
+    bidiDisplayCheckbox.action = #selector(bidiDisplayChanged(_:))
+    bidiDisplayCheckbox.toolTip = L10n.tr(
+      "Shows Hebrew and Arabic lines in visual order and joins Arabic letters. Turn off for programs that reorder right-to-left text themselves."
+    )
+    bidiDisplayCheckbox.setAccessibilityLabel(L10n.tr("Right-to-left text in reading order"))
 
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
@@ -702,6 +710,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [vectorSmoothScrollLabel, vectorSmoothScrollPopUp],
       [NSGridCell.emptyContentView, hoverPreviewCheckbox],
       [NSGridCell.emptyContentView, fontLigaturesCheckbox],
+      [NSGridCell.emptyContentView, bidiDisplayCheckbox],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
     let notificationsGrid = makeSettingsGrid([
@@ -1009,6 +1018,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     refreshVectorControlsForRenderer(rendererSelection)
     hoverPreviewCheckbox.state = HoverPreviewSettings.enabled ? .on : .off
     fontLigaturesCheckbox.state = FontLigatureSettings.enabled ? .on : .off
+    bidiDisplayCheckbox.state = BidiDisplaySettings.isEnabled() ? .on : .off
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off
@@ -1474,6 +1484,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       sender.state = HoverPreviewSettings.enabled ? .on : .off
       return
     }
+    refresh()
+  }
+
+  @objc private func bidiDisplayChanged(_ sender: NSButton) {
+    BidiDisplaySettings.set(sender.state == .on)
     refresh()
   }
 
