@@ -813,7 +813,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     // alone is near the budget, resetting again would rebuild everything
     // every frame. Keep at least twice that frame's geometry before the next
     // reset.
-    if geometryMeasurePending {
+    // Measured at the first call that sees the rebuilt frame's geometry
+    // (the call at the start of the frame right after a reset sees none).
+    if geometryMeasurePending, geometryBytes > 0 {
       geometryFloorBytes = geometryBytes
       geometryMeasurePending = false
     }
