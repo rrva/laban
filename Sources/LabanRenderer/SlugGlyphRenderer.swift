@@ -3208,8 +3208,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let overflowsWidth = ink.width > box.width * 1.1
     let overflowsHeight =
       ink.minY < box.minY - box.height * 0.1 || ink.maxY > box.maxY + box.height * 0.1
-    let dx = overflowsWidth ? box.midX - ink.midX * fit : 0
-    let dy = overflowsHeight ? box.midY - ink.midY * fit : 0
+    // Without width overflow, shrink about the ink's own centre so the
+    // glyph keeps its horizontal placement.
+    let dx = overflowsWidth ? box.midX - ink.midX * fit : ink.midX * (1 - fit)
+    let dy = overflowsHeight ? box.midY - ink.midY * fit : ink.midY * (1 - fit)
     return glyphs.map { glyph in
       var fitted = glyph
       fitted.offset = CGPoint(x: glyph.offset.x * fit + dx, y: glyph.offset.y * fit + dy)
