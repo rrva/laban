@@ -189,9 +189,18 @@ final class SSHCommandLineTests: XCTestCase {
   }
 
   func testConsentKeyIncludesLoginAndPort() {
-    XCTAssertEqual(SSHCommandLine.parse(["ssh", "host"])?.consentKey, "host")
+    XCTAssertEqual(SSHCommandLine.parse(["ssh", "host"])?.consentKey, "d=host&l=-&p=-")
     XCTAssertEqual(
-      SSHCommandLine.parse(["ssh", "-p", "2", "-l", "bob", "host"])?.consentKey, "bob host:2")
+      SSHCommandLine.parse(["ssh", "-p", "2", "-l", "bob", "host"])?.consentKey, "d=host&l=bob&p=2")
+    XCTAssertNotEqual(
+      SSHCommandLine.parse(["ssh", "-p", "2", "host:1"])?.consentKey,
+      SSHCommandLine.parse(["ssh", "-p", "1:2", "host"])?.consentKey)
+    XCTAssertNotEqual(
+      SSHCommandLine.parse(["ssh", "-l", "a&p=2", "host"])?.consentKey,
+      SSHCommandLine.parse(["ssh", "-l", "a", "-p", "2", "host"])?.consentKey)
+    XCTAssertNotEqual(
+      SSHCommandLine.parse(["ssh", "-l", "", "host"])?.consentKey,
+      SSHCommandLine.parse(["ssh", "host"])?.consentKey)
     XCTAssertEqual(SSHCommandLine.parse(["ssh", "-p1", "-p2", "host"])?.port, "2")
     XCTAssertEqual(
       SSHCommandLine.parse(["ssh", "-p", "2", "host"])?.displayDestination, "host -p 2")
