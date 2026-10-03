@@ -45,6 +45,8 @@ public struct FrameProducer {
   public let contentYOffset: CGFloat
   public let accessibilityVisualOptions: TerminalAccessibilityVisualOptions
   public let backgroundCompositingOptions: TerminalBackgroundCompositingOptions
+  /// Implicit BiDi: rows holding right-to-left text draw in visual order.
+  public var bidiDisplay: Bool = BidiDisplaySettings.isEnabled()
 
   public init(
     cellWidth: Int = 8,
@@ -92,7 +94,7 @@ public struct FrameProducer {
   }
 
   @inline(__always)
-  private func compositedBackgroundColor(_ color: UInt32, explicit: Bool) -> UInt32 {
+  func compositedBackgroundColor(_ color: UInt32, explicit: Bool) -> UInt32 {
     let alpha: UInt8 =
       explicit && !backgroundCompositingOptions.applyToExplicitCellBackgrounds
       ? 0xFF
@@ -101,7 +103,7 @@ public struct FrameProducer {
   }
 
   @inline(__always)
-  private func isExplicitBackground(flags: UInt16) -> Bool {
+  func isExplicitBackground(flags: UInt16) -> Bool {
     (flags & UInt16(LABAN_CELL_FLAG_EXPLICIT_BACKGROUND)) != 0
   }
 
@@ -400,7 +402,7 @@ public struct FrameProducer {
   private let underlineRaw: UInt16 = TextAttributes.underline.rawValue
   private let gpuCellUnsupportedMaskRaw: UInt16 = ~TextAttributes.gpuCellRenderableMask.rawValue
 
-  private struct ResolvedCellVisuals {
+  struct ResolvedCellVisuals {
     var foreground: UInt32
     var background: UInt32
     var attrsRaw: UInt16
@@ -413,7 +415,7 @@ public struct FrameProducer {
     var isInvisible: Bool
   }
 
-  private func resolvedVisuals(
+  func resolvedVisuals(
     for cell: LabanCell,
     hyperlinkURIs: [String]
   ) -> ResolvedCellVisuals {
@@ -421,7 +423,7 @@ public struct FrameProducer {
   }
 
   @inline(__always)
-  private func resolvedVisuals(
+  func resolvedVisuals(
     for cell: LabanCell,
     hyperlinkURIs: UnsafeBufferPointer<String>
   ) -> ResolvedCellVisuals {
@@ -465,7 +467,7 @@ public struct FrameProducer {
   /// spinner motion detection and remote glyph-run splitting, which must agree
   /// on the resolved foreground/background/attributes the renderer will see.
   @inline(__always)
-  private func resolvedVisuals(for cell: LabandSnapshotCell) -> ResolvedCellVisuals {
+  func resolvedVisuals(for cell: LabandSnapshotCell) -> ResolvedCellVisuals {
     let attrsRaw = (cell.flags & renderableMaskRaw) & ~inverseRaw
     let background = compositedBackgroundColor(
       cell.backgroundRGBA,
@@ -665,10 +667,27 @@ public struct FrameProducer {
     // compositing) cover them; default-background cells show them.
     appendImageQuads(.belowBackground, snapshot: snapshot, rows: rows, cols: cols, into: &cmds)
 
+    let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
+    let bidiRows = bidiLayouts(
+      snapshot: snapshot, rows: rows, cols: cols, hyperlinkURIs: hyperlinkURIs)
+    let bidiRowCells: [Int: [BidiCell]] = bidiRows.keys.reduce(into: [:]) { result, row in
+      if let storage = snapshot.utf8_storage {
+        result[row] = localBidiCells(
+          cells: cells, storage: storage, rowStart: row * cols, cols: cols,
+          hyperlinkURIs: hyperlinkURIs)
+      }
+    }
+
     // ---- Pass 1: Background rects for all rows ----
     for row in 0..<rows {
       let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
       let rowStart = row * cols
+      if let layout = bidiRows[row], let rowCells = bidiRowCells[row] {
+        appendBidiBackgrounds(
+          rowCells, layout: layout, cellY: cellY, cw: cw, ch: ch, defaultBackground: defaultBg,
+          into: &cmds)
+        continue
+      }
 
       var bgStart: Int? = nil
       var bgColor: UInt32 = 0
@@ -724,7 +743,11 @@ public struct FrameProducer {
         let shifted = CGRect(
           x: rect.origin.x, y: rect.origin.y + contentYOffset,
           width: rect.width, height: rect.height)
-        appendSelectionCommand(shifted, into: &cmds)
+        for piece in bidiRemapped(
+          shifted, layouts: bidiRows, rows: rows, cols: cols, cw: cw, ch: ch)
+        {
+          appendSelectionCommand(piece, into: &cmds)
+        }
       }
     }
 
@@ -742,7 +765,9 @@ public struct FrameProducer {
             cellHeight: ch
           )
         else { continue }
-        cmds.append(.findMatch(rect, color: findMatchColor()))
+        for piece in bidiRemapped(rect, layouts: bidiRows, rows: rows, cols: cols, cw: cw, ch: ch) {
+          cmds.append(.findMatch(piece, color: findMatchColor()))
+        }
       }
       if let selectedMatch,
         let rect = findRect(
@@ -754,7 +779,9 @@ public struct FrameProducer {
           cellHeight: ch
         )
       {
-        cmds.append(.findSelected(rect, color: findSelectedColor()))
+        for piece in bidiRemapped(rect, layouts: bidiRows, rows: rows, cols: cols, cw: cw, ch: ch) {
+          cmds.append(.findSelected(piece, color: findSelectedColor()))
+        }
       }
     }
 
@@ -774,19 +801,27 @@ public struct FrameProducer {
           anchorTimestampSeconds: wave.wave.anchorTimestamp,
           velocityCellsPerSecond: Float(wave.wave.velocityCellsPerSecond)))
     }
-    let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
     if #available(macOS 26, *), !FrameProducer._forceLegacyGlyphRuns {
       appendFastTerminalGlyphRuns(
         into: &cmds, snapshot: snapshot, rows: rows, cols: cols, cw: cw, ch: ch,
         hyperlinkURIs: hyperlinkURIs,
         foregroundTransitions: foregroundTransitions,
-        foregroundWave: foregroundWave)
+        foregroundWave: foregroundWave,
+        skippingRows: Set(bidiRows.keys))
     } else {
       appendLegacyTerminalGlyphRuns(
         into: &cmds, snapshot: snapshot, rows: rows, cols: cols, cw: cw, ch: ch,
         hyperlinkURIs: hyperlinkURIs,
         foregroundTransitions: foregroundTransitions,
-        foregroundWave: foregroundWave)
+        foregroundWave: foregroundWave,
+        skippingRows: Set(bidiRows.keys))
+    }
+    for (row, layout) in bidiRows {
+      guard let rowCells = bidiRowCells[row] else { continue }
+      appendBidiRowGlyphRuns(
+        rowCells, layout: layout,
+        cellY: originY + CGFloat(rows - 1 - row) * ch + contentYOffset, cw: cw, ch: ch,
+        into: &cmds)
     }
 
     // Kitty graphics above text (the protocol default, z >= 0). IME
@@ -827,7 +862,12 @@ public struct FrameProducer {
       // the pre-edit glyphs so the caret follows the AppKit insertion point.
       let caretRow = activePreeditLayout?.caretRow ?? Int(snapshot.cursor_row)
       let caretCol = activePreeditLayout?.caretCol ?? Int(snapshot.cursor_col)
-      let cx = originX + CGFloat(caretCol) * cw
+      // On a BiDi row the cursor sits on its cell where that cell is drawn.
+      let visualCaretCol =
+        activePreeditLayout == nil
+        ? bidiRows[caretRow].map { $0.visualColumn[min(caretCol, cols - 1)] } ?? caretCol
+        : caretCol
+      let cx = originX + CGFloat(visualCaretCol) * cw
       let cy = originY + CGFloat(rows - 1 - caretRow) * ch + contentYOffset
       let glyph =
         activePreeditLayout == nil
@@ -1506,7 +1546,8 @@ public struct FrameProducer {
     ch: CGFloat,
     hyperlinkURIs: [String],
     foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]?,
-    foregroundWave: SpinnerWavePublication? = nil
+    foregroundWave: SpinnerWavePublication? = nil,
+    skippingRows: Set<Int> = []
   ) {
     guard let cells = snapshot.cells else { return }
     let storage = snapshot.utf8_storage
@@ -1515,7 +1556,7 @@ public struct FrameProducer {
     var runBytes: [UInt8] = []
     runBytes.reserveCapacity(cols * 4)
 
-    for row in 0..<rows {
+    for row in 0..<rows where !skippingRows.contains(row) {
       let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
       let rowStart = row * cols
 
@@ -1751,10 +1792,11 @@ public struct FrameProducer {
     ch: CGFloat,
     hyperlinkURIs: [String],
     foregroundTransitions: [SpinnerMotionCellKey: GlyphForegroundTransition]?,
-    foregroundWave: SpinnerWavePublication? = nil
+    foregroundWave: SpinnerWavePublication? = nil,
+    skippingRows: Set<Int> = []
   ) {
     guard let cells = snapshot.cells else { return }
-    for row in 0..<rows {
+    for row in 0..<rows where !skippingRows.contains(row) {
       let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
       let rowStart = row * cols
 
