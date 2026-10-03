@@ -408,6 +408,7 @@ static void free_ghostty_resources(LabanSession *s) {
     s->osc_host_scanner.osc52_len = 0;
     s->osc_host_scanner.osc52_cap = 0;
     laban_paste_snapshot_clear(&s->paste_snapshot);
+    laban_output_queue_free(s);
 }
 
 int laban_session_create(

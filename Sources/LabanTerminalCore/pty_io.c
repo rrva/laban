@@ -91,6 +91,13 @@ int laban_write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len) {
         (void)laban_session_drain_locked_(s);
         s->suppress_pty_output_until_input = 0;
     }
+    if (s && laban_output_queue_pending(s)) {
+        /* Input typed while a large reply is still going out queues behind
+         * it, so the child never reads keystrokes inside that sequence. */
+        if (laban_output_queue_append(s, bytes, len) != 0) return -1;
+        laban_output_queue_pump_locked(s);
+        return 0;
+    }
     return laban_write_pty_bytes(s, bytes, len, LABAN_CAPTURE_BYTES_PTY_INPUT);
 }
 
@@ -185,6 +192,7 @@ int laban_session_poll(LabanSession *s) {
     SESSION_LOCK(s);
     if (s->fixture_mode) return 0; /* no PTY to drain */
     if (s->status != 0) return 0;  /* already exited */
+    laban_output_queue_pump_locked(s);
     (void)laban_session_drain_locked_(s);
     return 0;
 }
@@ -198,26 +206,33 @@ int laban_session_poll_blocking(LabanSession *s, int timeout_ms) {
     int fd;
     int fixture;
     int exited;
+    int queued;
     {
         SESSION_LOCK(s);
         fd = s->pty_fd;
         fixture = s->fixture_mode;
         exited = (s->status != 0);
+        queued = laban_output_queue_pending(s);
     }
     if (fixture) return 0;
     if (exited) return 0;
     if (fd < 0) return 0;
 
     fd_set rfds;
+    fd_set wfds;
     FD_ZERO(&rfds);
+    FD_ZERO(&wfds);
     FD_SET(fd, &rfds);
+    /* A queued large reply (clipboard_events.c) is pumped as the child
+     * drains its input, so also wake on writability while one is pending. */
+    if (queued) FD_SET(fd, &wfds);
     struct timeval tv = {
         .tv_sec = timeout_ms / 1000,
         .tv_usec = (timeout_ms % 1000) * 1000,
     };
     int sr;
     do {
-        sr = select(fd + 1, &rfds, NULL, NULL,
+        sr = select(fd + 1, &rfds, queued ? &wfds : NULL, NULL,
                     timeout_ms < 0 ? NULL : &tv);
     } while (sr < 0 && errno == EINTR);
     if (sr < 0) return -1;
@@ -230,5 +245,7 @@ int laban_session_poll_blocking(LabanSession *s, int timeout_ms) {
     if (s->pty_fd != fd) return 0;
     if (s->fixture_mode) return 0;
     if (s->status != 0) return 0;
+    laban_output_queue_pump_locked(s);
+    if (!FD_ISSET(fd, &rfds)) return 0;
     return (int)laban_session_drain_locked_(s);
 }

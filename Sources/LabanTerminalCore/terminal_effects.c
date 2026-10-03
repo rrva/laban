@@ -39,6 +39,12 @@ static void laban_session_capture_response(
 int laban_write_terminal_response(LabanSession *s, const uint8_t *data, size_t len) {
     if (!s || !data) return -1;
     if (len == 0) return 0;
+    if (laban_output_queue_pending(s)) {
+        /* Keep stream order behind a queued large reply (clipboard_events.c). */
+        int rc = laban_output_queue_append(s, data, len);
+        laban_output_queue_pump_locked(s);
+        return rc;
+    }
     if (s->pty_fd >= 0) {
         int rc = laban_write_pty_bytes(s, data, len, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE);
         if (rc == 0) {

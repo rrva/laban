@@ -432,6 +432,16 @@ struct LabanSession {
     int drop_osc52_read_reply;
     LabanByteBuffer *paste_event_capture;
 
+    /* Ordered queue of bytes bound for the child (clipboard_events.c). A
+     * large terminal response (an OSC 5522 image reply is megabytes) cannot
+     * go through the 20 ms bounded PTY write or the 64 KiB response buffer,
+     * so it is queued; while anything is queued, later responses and input
+     * queue behind it so the child never sees them interleaved. In process
+     * the PTY drain loop pumps it on writability; a labpty viewer session
+     * hands it to the feed loop in chunks (peek/consume). */
+    LabanByteBuffer output_queue;
+    size_t output_queue_head;
+
     /* OSC 7 working-directory report (osc_host.c). osc7_cwd holds the last
      * local-host cwd a shell reported; laban_session_process_metadata prefers it
      * over the proc_pidinfo cwd once valid. osc_cwd_callback observes reports. */
@@ -534,6 +544,10 @@ void laban_effect_clipboard_read(GhosttyTerminal terminal, void *userdata,
                                  const GhosttyClipboardRead *read);
 int laban_effect_write_pty_intercept(LabanSession *s, const uint8_t *data, size_t len);
 void laban_paste_snapshot_clear(LabanPasteSnapshot *snapshot);
+int laban_output_queue_pending(const LabanSession *s);
+int laban_output_queue_append(LabanSession *s, const uint8_t *data, size_t len);
+void laban_output_queue_pump_locked(LabanSession *s);
+void laban_output_queue_free(LabanSession *s);
 int laban_write_terminal_response(LabanSession *s, const uint8_t *data, size_t len);
 int laban_session_spawn_now_(LabanSession *s, const char *override_cwd,
                              const char *exe_override,

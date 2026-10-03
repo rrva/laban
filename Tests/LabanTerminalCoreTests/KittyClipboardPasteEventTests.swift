@@ -143,4 +143,113 @@ final class KittyClipboardPasteEventTests: XCTestCase {
     write(session, "\u{1b}]52;c;?\u{1b}\\")
     XCTAssertEqual(drain(session), "")
   }
+
+  // MARK: - Review fixes
+
+  private func queued(_ session: OpaquePointer) -> String {
+    var out: [UInt8] = []
+    var buf = [UInt8](repeating: 0, count: 16 * 1024)
+    while true {
+      var len = 0
+      guard laban_session_peek_queued_output(session, &buf, buf.count, &len) == 0, len > 0
+      else { break }
+      out.append(contentsOf: buf[0..<len])
+      XCTAssertEqual(laban_session_consume_queued_output(session, len), 0)
+    }
+    return String(decoding: out, as: UTF8.self)
+  }
+
+  /// The decoded data of every `status=DATA` packet in `reply`, in order (the
+  /// protocol splits a large representation across many packets).
+  private func decodedData(_ reply: String) -> [UInt8] {
+    var out: [UInt8] = []
+    for packet in reply.components(separatedBy: "\u{1b}]5522;") where packet.contains("status=DATA")
+    {
+      guard let semi = packet.firstIndex(of: ";") else { continue }
+      var payload = packet[packet.index(after: semi)...]
+      if let end = payload.firstIndex(of: "\u{1b}") { payload = payload[..<end] }
+      out += Data(base64Encoded: String(payload)).map { [UInt8]($0) } ?? []
+    }
+    return out
+  }
+
+  /// An image reply is far past the 64 KiB response buffer; it must reach a
+  /// labpty viewer session's feed whole, through the ordered output queue.
+  func testLargeImageReplyIsQueuedWhole() throws {
+    let session = try makeSession()
+    defer { laban_session_destroy(session) }
+    write(session, "\u{1b}[?5522h")
+    let png = (0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31) }
+    let event = encodePasteEvent(session, [("image/png", png)])
+    let pw = try XCTUnwrap(password(in: event.bytes))
+
+    write(
+      session, "\u{1b}]5522;type=read:name=\(base64("t")):pw=\(pw);\(base64("image/png"))\u{1b}\\")
+    _ = drain(session)
+    var pending: Int32 = 0
+    XCTAssertEqual(laban_session_has_queued_output(session, &pending), 0)
+    XCTAssertEqual(pending, 1)
+    let reply = queued(session)
+    XCTAssertEqual(decodedData(reply), png, "reply bytes: \(reply.count)")
+    XCTAssertTrue(reply.hasSuffix("\u{1b}\\"), "the reply must end with its terminator")
+
+    // Later responses queue behind it rather than overtaking it.
+    write(session, "\u{1b}[?5522h")
+    let png2 = [UInt8](repeating: 7, count: 100_000)
+    let event2 = encodePasteEvent(session, [("image/png", png2)])
+    let pw2 = try XCTUnwrap(password(in: event2.bytes))
+    write(
+      session, "\u{1b}]5522;type=read:name=\(base64("t")):pw=\(pw2);\(base64("image/png"))\u{1b}\\")
+    write(session, "\u{1b}[6n")
+    _ = drain(session)
+    let ordered = queued(session)
+    XCTAssertEqual(decodedData(ordered), png2)
+    let lastImagePacket = try XCTUnwrap(ordered.range(of: "status=DONE", options: .backwards))
+    let cpr = try XCTUnwrap(ordered.range(of: "\u{1b}[1;1R"), ordered.suffix(40).debugDescription)
+    XCTAssertLessThan(
+      lastImagePacket.upperBound, cpr.lowerBound, "the CPR must follow the queued image reply")
+  }
+
+  func testGrantedReadIsServedEvenWhenAnOSC52FollowsInTheSameChunk() throws {
+    let session = try makeSession()
+    defer { laban_session_destroy(session) }
+    write(session, "\u{1b}[?5522h")
+    let event = encodePasteEvent(session, [("text/plain", Array("hello".utf8))])
+    let pw = try XCTUnwrap(password(in: event.bytes))
+    write(
+      session,
+      "\u{1b}]5522;type=read:name=\(base64("t")):pw=\(pw);\(base64("text/plain"))\u{07}"
+        + "\u{1b}]52;c;?\u{07}")
+    let reply = drain(session)
+    XCTAssertTrue(reply.contains(base64("hello")), reply.debugDescription)
+    XCTAssertFalse(reply.contains("\u{1b}]52;"), "OSC 52 stays silent: \(reply.debugDescription)")
+  }
+
+  func testOSC52ReadStaysSilentInEveryFramingAndOnReplay() throws {
+    let session = try makeSession()
+    defer { laban_session_destroy(session) }
+    write(session, "\u{1b}]52;c;?\u{1b}]2;title\u{07}")
+    write(session, "\u{1b}]52;c;?\u{1b}[0m")
+    write(session, "x")
+    let replayed = Array("\u{1b}]52;c;?\u{07}".utf8)
+    replayed.withUnsafeBufferPointer { buf in
+      _ = laban_session_replay_pty_output(session, buf.baseAddress, buf.count)
+    }
+    XCTAssertEqual(drain(session), "")
+  }
+
+  func testSnapshotIsDroppedAfterItsGrantedRead() throws {
+    let session = try makeSession()
+    defer { laban_session_destroy(session) }
+    write(session, "\u{1b}[?5522h")
+    let event = encodePasteEvent(session, [("text/plain", Array("once".utf8))])
+    let pw = try XCTUnwrap(password(in: event.bytes))
+    write(
+      session, "\u{1b}]5522;type=read:name=\(base64("t")):pw=\(pw);\(base64("text/plain"))\u{07}")
+    XCTAssertTrue(drain(session).contains(base64("once")))
+
+    // A listing afterwards no longer reveals the spent paste's types.
+    write(session, "\u{1b}]5522;type=read;\u{07}")
+    XCTAssertFalse(drain(session).contains(base64("text/plain")))
+  }
 }

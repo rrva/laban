@@ -1100,6 +1100,22 @@ int laban_session_encode_paste_event(
     size_t *out_len
 );
 
+/*
+ * Ordered output queue (ADR 0040). Terminal responses too large for the
+ * bounded PTY write or the 64 KiB response buffer (OSC 5522 image replies)
+ * are queued, and while anything is queued later responses and input queue
+ * behind them. A PTY-backed session pumps the queue from its drain loop. A
+ * labpty viewer session (no PTY) is pumped by its caller: peek a chunk, send
+ * it to the daemon, consume what was sent; discard after a replayed read.
+ * laban_session_queue_output appends caller input behind a pending queue.
+ */
+int laban_session_has_queued_output(LabanSession *session, int *out_pending);
+int laban_session_queue_output(LabanSession *session, const uint8_t *bytes, size_t len);
+int laban_session_peek_queued_output(
+    LabanSession *session, uint8_t *out_bytes, size_t out_capacity, size_t *out_len);
+int laban_session_consume_queued_output(LabanSession *session, size_t len);
+int laban_session_discard_queued_output(LabanSession *session);
+
 /* Returns 1 in *out_enabled if bracketed paste mode is active, 0 otherwise. */
 int laban_session_bracketed_paste_enabled(LabanSession *session, int *out_enabled);
 

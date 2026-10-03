@@ -438,6 +438,13 @@ final class AppSessionCoordinator {
     guard !bytes.isEmpty else { return }
     if let labptyClient {
       let descriptor = try ensureLabptyDescriptor(for: tab, session: session, size: size)
+      // Input typed while a large clipboard reply is still going out queues
+      // behind it (ADR 0040); the feed loop pumps both in order.
+      if let session, session.queueOutputIfPending(bytes) {
+        session.captureInput(bytes)
+        labptyFeedBySessionId[tab.focusedSessionId]?.wake()
+        return
+      }
       try labptyClient.writeInput(handle: descriptor.ptyHandle, bytes: bytes)
       // The daemon owns the PTY; the app's viewer session sees output via the
       // byte ring but never these keystrokes. Tee them into the capture sink so
@@ -811,6 +818,16 @@ final class AppSessionCoordinator {
             labpty terminal response write failed for pty handle \
             \(descriptor.ptyHandle): \(error)
             """)
+        }
+      },
+      onQueuedOutput: { [weak self] bytes in
+        guard let client = self?.labptyClient else { return false }
+        do {
+          try client.writeInput(handle: descriptor.ptyHandle, bytes: bytes)
+          return true
+        } catch {
+          // Backpressure: keep the chunk queued and retry on the next pump.
+          return false
         }
       })
     labptyFeedBySessionId[tab.focusedSessionId] = feed
@@ -1382,6 +1399,7 @@ private final class LabptyParserFeed {
   private let onDirty: @Sendable (Session.ID) -> Void
   private let onOverflow: @Sendable () -> Void
   private let onResponse: @Sendable ([UInt8]) -> Void
+  private let onQueuedOutput: @Sendable ([UInt8]) -> Bool
   private let queue: DispatchQueue
   private let timer: DispatchSourceTimer
   private let lock = NSLock()
@@ -1416,7 +1434,8 @@ private final class LabptyParserFeed {
     catchUpGrid: (cols: Int, rows: Int)?,
     onDirty: @escaping @Sendable (Session.ID) -> Void,
     onOverflow: @escaping @Sendable () -> Void,
-    onResponse: @escaping @Sendable ([UInt8]) -> Void
+    onResponse: @escaping @Sendable ([UInt8]) -> Void,
+    onQueuedOutput: @escaping @Sendable ([UInt8]) -> Bool
   ) {
     self.ptyHandle = ptyHandle
     self.reader = reader
@@ -1426,6 +1445,7 @@ private final class LabptyParserFeed {
     self.onDirty = onDirty
     self.onOverflow = onOverflow
     self.onResponse = onResponse
+    self.onQueuedOutput = onQueuedOutput
     self.queue = DispatchQueue(label: "com.laban.labpty.parser.\(ptyHandle)", qos: .userInteractive)
     self.timer = DispatchSource.makeTimerSource(queue: queue)
   }
@@ -1517,6 +1537,9 @@ private final class LabptyParserFeed {
     if lock.withLock({ stopped }) {
       return
     }
+    if session.hasQueuedOutput() {
+      pumpQueuedOutput()
+    }
     let result = reader.readSince(lastOffset)
     lastOffset = result.newOffset
     // Publish right after consuming, so a concurrent `wakeIfOutputPending()`
@@ -1602,6 +1625,31 @@ private final class LabptyParserFeed {
     if !responses.isEmpty && !replayRead {
       onResponse(responses)
     }
+    if replayRead {
+      session.discardQueuedOutput()
+    } else if session.hasQueuedOutput() {
+      pumpQueuedOutput()
+    }
     onDirty(session.id)
   }
+
+  /// Send queued output (a large clipboard reply plus anything queued behind
+  /// it, ADR 0040) to the daemon in chunks, re-polling soon while some is left.
+  /// A refused chunk (input backpressure) stays queued for the next pump.
+  private func pumpQueuedOutput() {
+    var sent = 0
+    while sent < Self.queuedOutputBytesPerPump {
+      let chunk = session.peekQueuedOutput(maxBytes: Self.queuedOutputChunkBytes)
+      guard !chunk.isEmpty else { return }
+      guard onQueuedOutput(chunk) else { break }
+      session.consumeQueuedOutput(chunk.count)
+      sent += chunk.count
+    }
+    queue.asyncAfter(deadline: .now() + .milliseconds(4)) { [weak self] in
+      self?.poll()
+    }
+  }
+
+  private static let queuedOutputChunkBytes = 16 * 1024
+  private static let queuedOutputBytesPerPump = 1024 * 1024
 }

@@ -11,15 +11,27 @@
  * clipboard and never needs the main thread. Every other read is denied
  * (EPERM), keeping ADR 0014's default-deny stance for unsolicited reads.
  *
+ * A list-only read (no MIME types requested) is answered with the types of
+ * the last paste without a grant, as Kitty does; it reveals no data.
+ *
  * OSC 52 `?` reads stay with osc_host.c (ADR 0014). Installing a
  * clipboard_read effect makes libghostty route them here too and answer
  * with an empty clipboard when the effect does not reply; that duplicate
  * reply is dropped by laban_effect_write_pty_intercept.
+ *
+ * Large replies (an image is megabytes of base64) go through the ordered
+ * output queue below instead of the bounded PTY write and response buffer.
  */
 #include "session_internal.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+/* Responses larger than this skip the bounded PTY write / response buffer. */
+#define LABAN_OUTPUT_QUEUE_THRESHOLD (16u * 1024u)
+#define LABAN_OUTPUT_QUEUE_MAX (96u * 1024u * 1024u)
 
 void laban_paste_snapshot_clear(LabanPasteSnapshot *snapshot) {
     if (!snapshot) return;
@@ -30,12 +42,17 @@ void laban_paste_snapshot_clear(LabanPasteSnapshot *snapshot) {
     memset(snapshot, 0, sizeof(*snapshot));
 }
 
-/* True while osc_host.c is flushing an OSC 52 sequence into libghostty, i.e.
- * the clipboard_read effect is firing for an OSC 52 `?`, not OSC 5522. */
-static int osc52_in_flight(const LabanSession *s) {
-    const LabanOSCHostScanner *sc = &s->osc_host_scanner;
-    return (sc->state == OH_BODY || sc->state == OH_BODY_AFTER_ESC)
-        && sc->osc_number == 52;
+/* libghostty routes an OSC 52 `?` to this effect as a passwordless,
+ * unnamed, single `text/plain` read. A Kitty read of that exact shape is
+ * also unserved here, and leaving it unreplied makes libghostty answer it
+ * EPERM, which the reply drop below lets through (it only drops `OSC 52`). */
+static int looks_like_osc52_read(const GhosttyClipboardRead *read) {
+    static const char text_plain[] = "text/plain";
+    return read->mimes_len == 1 && read->mimes
+        && read->mimes[0].len == sizeof(text_plain) - 1
+        && memcmp(read->mimes[0].ptr, text_plain, sizeof(text_plain) - 1) == 0
+        && !read->list && !read->granted && !read->can_remember
+        && read->name.len == 0;
 }
 
 static int mime_eq(const LabanPasteSnapshotItem *item, GhosttyString mime) {
@@ -49,7 +66,7 @@ void laban_effect_clipboard_read(GhosttyTerminal terminal, void *userdata,
     LabanSession *s = (LabanSession *)userdata;
     if (!s || !read || !read->reply) return;
 
-    if (osc52_in_flight(s)) {
+    if (looks_like_osc52_read(read)) {
         /* osc_host answers (or silently drops) this read; suppress the
          * empty reply libghostty sends when we return without one. */
         s->drop_osc52_read_reply = 1;
@@ -100,6 +117,9 @@ void laban_effect_clipboard_read(GhosttyTerminal terminal, void *userdata,
         reply.available_len = snap->count;
     }
     read->reply(read, &reply);
+    /* The one-time password is spent on this data read; drop the copy so a
+     * multi-megabyte screenshot does not outlive the paste it belonged to. */
+    if (!list_only) laban_paste_snapshot_clear(&s->paste_snapshot);
 }
 
 static void byte_buffer_append(LabanByteBuffer *buf, const uint8_t *data, size_t len) {
@@ -126,6 +146,115 @@ int laban_effect_write_pty_intercept(LabanSession *s, const uint8_t *data, size_
         byte_buffer_append(s->paste_event_capture, data, len);
         return 1;
     }
+    if (len > LABAN_OUTPUT_QUEUE_THRESHOLD || laban_output_queue_pending(s)) {
+        (void)laban_output_queue_append(s, data, len);
+        laban_output_queue_pump_locked(s);
+        return 1;
+    }
+    return 0;
+}
+
+/* --- Ordered output queue ------------------------------------------------ */
+
+int laban_output_queue_pending(const LabanSession *s) {
+    return s->output_queue.len > s->output_queue_head;
+}
+
+int laban_output_queue_append(LabanSession *s, const uint8_t *data, size_t len) {
+    LabanByteBuffer *q = &s->output_queue;
+    if (len == 0) return 0;
+    if (s->output_queue_head > 0 && s->output_queue_head == q->len) {
+        q->len = 0;
+        s->output_queue_head = 0;
+    }
+    if (len > LABAN_OUTPUT_QUEUE_MAX - (q->len - s->output_queue_head)) return -1;
+    if (s->output_queue_head > 0 && q->len + len > q->cap) {
+        size_t live = q->len - s->output_queue_head;
+        memmove(q->bytes, q->bytes + s->output_queue_head, live);
+        q->len = live;
+        s->output_queue_head = 0;
+    }
+    q->failed = 0;
+    byte_buffer_append(q, data, len);
+    return q->failed ? -1 : 0;
+}
+
+static void output_queue_consume(LabanSession *s, size_t n) {
+    s->output_queue_head += n;
+    if (s->output_queue_head >= s->output_queue.len) {
+        s->output_queue.len = 0;
+        s->output_queue_head = 0;
+        if (s->output_queue.cap > (1u << 20)) {
+            free(s->output_queue.bytes);
+            memset(&s->output_queue, 0, sizeof(s->output_queue));
+        }
+    }
+}
+
+void laban_output_queue_pump_locked(LabanSession *s) {
+    if (s->pty_fd < 0) return;  /* a viewer session is pumped by its feed */
+    while (laban_output_queue_pending(s)) {
+        size_t avail = s->output_queue.len - s->output_queue_head;
+        if (avail > 65536) avail = 65536;
+        const uint8_t *p = s->output_queue.bytes + s->output_queue_head;
+        ssize_t n = write(s->pty_fd, p, avail);
+        if (n > 0) {
+            laban_emit_capture_bytes(s, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE, p, (size_t)n);
+            output_queue_consume(s, (size_t)n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        return;  /* EAGAIN or error: the drain loop retries on writability */
+    }
+}
+
+void laban_output_queue_free(LabanSession *s) {
+    free(s->output_queue.bytes);
+    memset(&s->output_queue, 0, sizeof(s->output_queue));
+    s->output_queue_head = 0;
+}
+
+int laban_session_has_queued_output(LabanSession *s, int *out_pending) {
+    if (out_pending) *out_pending = 0;
+    if (!s || !out_pending) return -1;
+    SESSION_LOCK(s);
+    *out_pending = laban_output_queue_pending(s);
+    return 0;
+}
+
+int laban_session_queue_output(LabanSession *s, const uint8_t *bytes, size_t len) {
+    if (!s || (len > 0 && !bytes)) return -1;
+    SESSION_LOCK(s);
+    int rc = laban_output_queue_append(s, bytes, len);
+    laban_output_queue_pump_locked(s);
+    return rc;
+}
+
+int laban_session_peek_queued_output(
+    LabanSession *s, uint8_t *out_bytes, size_t out_capacity, size_t *out_len) {
+    if (out_len) *out_len = 0;
+    if (!s || !out_len || (!out_bytes && out_capacity > 0)) return -1;
+    SESSION_LOCK(s);
+    size_t avail = s->output_queue.len - s->output_queue_head;
+    size_t n = avail < out_capacity ? avail : out_capacity;
+    if (n) memcpy(out_bytes, s->output_queue.bytes + s->output_queue_head, n);
+    *out_len = n;
+    return 0;
+}
+
+int laban_session_consume_queued_output(LabanSession *s, size_t len) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    size_t avail = s->output_queue.len - s->output_queue_head;
+    output_queue_consume(s, len < avail ? len : avail);
+    return 0;
+}
+
+int laban_session_discard_queued_output(LabanSession *s) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    s->output_queue.len = 0;
+    s->output_queue_head = 0;
     return 0;
 }
 

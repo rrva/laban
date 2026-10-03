@@ -1362,6 +1362,62 @@ public final class Session {
     return PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written)
   }
 
+  /// True while a large terminal response (an OSC 5522 image reply, ADR 0040)
+  /// is still queued for the child. A labpty feed pumps it with
+  /// `peekQueuedOutput` / `consumeQueuedOutput`.
+  public func hasQueuedOutput() -> Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return false }
+    var pending: Int32 = 0
+    guard laban_session_has_queued_output(h, &pending) == 0 else { return false }
+    return pending != 0
+  }
+
+  /// Queue caller input behind a pending queued response so the child does
+  /// not read it inside that sequence. Returns false (nothing queued) when no
+  /// response is pending; the caller then sends `bytes` as usual.
+  public func queueOutputIfPending(_ bytes: [UInt8]) -> Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return false }
+    var pending: Int32 = 0
+    guard laban_session_has_queued_output(h, &pending) == 0, pending != 0 else { return false }
+    let rc = bytes.withUnsafeBufferPointer { buf in
+      laban_session_queue_output(h, buf.baseAddress, buf.count)
+    }
+    return rc == 0
+  }
+
+  /// Up to `maxBytes` of the queued output, without removing it.
+  public func peekQueuedOutput(maxBytes: Int) -> [UInt8] {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle, maxBytes > 0 else { return [] }
+    var out = [UInt8](repeating: 0, count: maxBytes)
+    var len = 0
+    let rc = out.withUnsafeMutableBufferPointer { buf in
+      laban_session_peek_queued_output(h, buf.baseAddress, buf.count, &len)
+    }
+    guard rc == 0 else { return [] }
+    return Array(out.prefix(len))
+  }
+
+  public func consumeQueuedOutput(_ count: Int) {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle, count > 0 else { return }
+    _ = laban_session_consume_queued_output(h, count)
+  }
+
+  /// Drop queued output regenerated while replaying historical bytes.
+  public func discardQueuedOutput() {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return }
+    _ = laban_session_discard_queued_output(h)
+  }
+
   /// One clipboard representation offered in a Kitty paste event (ADR 0040).
   public struct PasteEventItem: Equatable, Sendable {
     public var mime: String
