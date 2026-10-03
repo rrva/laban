@@ -851,13 +851,16 @@ final class MainWindowController: NSWindowController {
     // model.osc52ReadEnabled (off by default); the provider is wired so flipping
     // it on works without re-plumbing. Headless parity lives in
     // HeadlessDebugRuntime against its debug clipboard.
-    // The copy is otherwise silent, so a short toast confirms it landed.
+    // The copy is otherwise silent, so a short toast confirms it landed. It
+    // shows for a copy from any tab, background ones included, centered on
+    // the terminal area (not the sidebar strip).
     let clipboardToast = ClipboardCopyToastView(frame: .zero)
     window.contentView?.addSubview(clipboardToast)
-    model.onClipboardWrite = { [weak clipboardToast] _, data in
+    model.onClipboardWrite = { [weak clipboardToast, weak termView] _, data in
       TerminalClipboard.writeOSC52(data, to: .general)
-      if let clipboardToast, let bounds = clipboardToast.superview?.bounds {
-        clipboardToast.show(byteCount: data.count, in: bounds)
+      if let clipboardToast, let termView {
+        let area = termView.convert(termView.terminalAreaRect, to: clipboardToast.superview)
+        clipboardToast.show(byteCount: data.count, in: area)
       }
     }
     model.clipboardReadProvider = {

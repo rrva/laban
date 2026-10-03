@@ -8433,9 +8433,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right)
   }
 
-  var focusedPaneRect: CGRect {
-    let area = CGRect(
+  /// The terminal area beside the sidebar strip, in this view's coordinates.
+  var terminalAreaRect: CGRect {
+    CGRect(
       x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+  }
+
+  var focusedPaneRect: CGRect {
+    let area = terminalAreaRect
     guard sessionCoordinator?.usesRemoteSnapshots != true, let tab = model.activeTab else {
       return area
     }
