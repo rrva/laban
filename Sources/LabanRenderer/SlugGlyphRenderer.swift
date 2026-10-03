@@ -174,6 +174,12 @@ private struct SlugGlyphResolveKey: Hashable {
   var cluster: Character
 }
 
+private enum SlugASCIIResolve {
+  case unknown
+  case failed
+  case resolved([SlugClusterGlyph])
+}
+
 private struct SlugLigatureGlyphKey: Hashable {
   var fontID: Int
   var glyph: CGGlyph
@@ -542,6 +548,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// appears. Never cleared: like `entriesByResolveKey`, the key embeds the
   /// interned font identity, so a font change produces new keys naturally.
   private var failedResolveKeys: Set<SlugGlyphResolveKey> = []
+  /// Both caches above for single-byte ASCII clusters, indexed by interned
+  /// font ID then byte, so the per-cell hot path does no hashing. Cleared
+  /// with them.
+  private var asciiResolveCache: [[SlugASCIIResolve]] = []
   /// Shaped ligature glyph ids, keyed like `entriesByResolveKey` by interned
   /// font identity so they are never cleared either.
   private var ligatureEntriesByKey: [SlugLigatureGlyphKey: SlugGlyphEntry] = [:]
@@ -881,6 +891,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     entriesByKey.removeAll()
     entriesByResolveKey.removeAll()
     failedResolveKeys.removeAll()
+    asciiResolveCache.removeAll()
     ligatureEntriesByKey.removeAll()
     failedLigatureGlyphKeys.removeAll()
     curveStore.invalidate()
@@ -3297,6 +3308,45 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   private func ensureClusterGlyphs(
+    for cluster: Character,
+    referenceAtlas: FontAtlas,
+    referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool),
+    fontID: Int,
+    attributes: TextAttributes
+  ) -> [SlugClusterGlyph]? {
+    // Single-byte ASCII clusters, nearly every cell of a terminal frame,
+    // skip hashing the `Character` key and the cold path's large stack frame.
+    let asciiByte = Self.singleASCIIByte(cluster)
+    if let asciiByte, fontID < asciiResolveCache.count {
+      switch asciiResolveCache[fontID][Int(asciiByte)] {
+      case .resolved(let glyphs): return glyphs
+      case .failed: return nil
+      case .unknown: break
+      }
+    }
+    let resolved = resolveClusterGlyphs(
+      for: cluster,
+      referenceAtlas: referenceAtlas,
+      referenceVariant: referenceVariant,
+      fontID: fontID,
+      attributes: attributes)
+    if let asciiByte {
+      while asciiResolveCache.count <= fontID {
+        asciiResolveCache.append(Array(repeating: .unknown, count: 128))
+      }
+      asciiResolveCache[fontID][Int(asciiByte)] = resolved.map { .resolved($0) } ?? .failed
+    }
+    return resolved
+  }
+
+  private static func singleASCIIByte(_ cluster: Character) -> UInt8? {
+    let utf8 = cluster.utf8
+    guard let byte = utf8.first, byte < 0x80, utf8.count == 1 else { return nil }
+    return byte
+  }
+
+  @inline(never)
+  private func resolveClusterGlyphs(
     for cluster: Character,
     referenceAtlas: FontAtlas,
     referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool),
