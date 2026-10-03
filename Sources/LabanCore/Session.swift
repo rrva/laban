@@ -613,6 +613,22 @@ public final class Session {
     }
   }
 
+  /// Run `body` with the one-shot host side effects of parsed output — OSC 52
+  /// clipboard writes and read queries, OSC 9 notifications — dropped. Wrap
+  /// `feedOutput` in this when the bytes are a replay of output that was
+  /// already live once (a labpty reattach catch-up or overflow re-feed): those
+  /// effects ran back then, and re-running them would overwrite the user's
+  /// current clipboard with stale text and re-post old notifications. The
+  /// parser still consumes every byte, so screen state is unaffected. The
+  /// callbacks fire synchronously inside `feedOutput`, so the suppression only
+  /// has to span the call.
+  @discardableResult
+  public func withHostEffectsSuppressed<T>(_ body: () throws -> T) rethrows -> T {
+    callbackState.beginHostEffectsSuppression()
+    defer { callbackState.endHostEffectsSuppression() }
+    return try body()
+  }
+
   /// Drain terminal responses (CPR, DA, OSC 10/11 color replies, ...) the VT
   /// parser generated while consuming output. For a PTY-backed session the C
   /// layer already wrote these to the PTY and this buffer is inspection-only;
@@ -1632,6 +1648,10 @@ private final class SessionCallbackState {
   private var workingDirectoryHandler: ((String) -> Void)?
   private var shellIntegrationHandler: ((ShellIntegrationState) -> Void)?
   private var shellIntegration = ShellIntegrationState()
+  // Nesting depth of `Session.withHostEffectsSuppressed`. While non-zero the
+  // one-shot host side effects (clipboard, notifications) resolve to no
+  // handler, so replayed historical output cannot re-run them.
+  private var hostEffectsSuppressionDepth = 0
 
   init(sessionId: Session.ID) {
     self.sessionId = sessionId
@@ -1688,6 +1708,18 @@ private final class SessionCallbackState {
   func setCaptureFrame(_ frame: Int) {
     lock.lock()
     captureFrame = frame
+    lock.unlock()
+  }
+
+  func beginHostEffectsSuppression() {
+    lock.lock()
+    hostEffectsSuppressionDepth += 1
+    lock.unlock()
+  }
+
+  func endHostEffectsSuppression() {
+    lock.lock()
+    hostEffectsSuppressionDepth -= 1
     lock.unlock()
   }
 
@@ -1785,19 +1817,19 @@ private final class SessionCallbackState {
   func oscNotificationTarget() -> ((String) -> Void)? {
     lock.lock()
     defer { lock.unlock() }
-    return oscNotificationHandler
+    return hostEffectsSuppressionDepth > 0 ? nil : oscNotificationHandler
   }
 
   func clipboardWriteTarget() -> ((Data) -> Void)? {
     lock.lock()
     defer { lock.unlock() }
-    return clipboardWriteHandler
+    return hostEffectsSuppressionDepth > 0 ? nil : clipboardWriteHandler
   }
 
   func clipboardReadTarget() -> ((String) -> Void)? {
     lock.lock()
     defer { lock.unlock() }
-    return clipboardReadHandler
+    return hostEffectsSuppressionDepth > 0 ? nil : clipboardReadHandler
   }
 
   func workingDirectoryTarget() -> ((String) -> Void)? {

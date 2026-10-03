@@ -1564,11 +1564,21 @@ private final class LabptyParserFeed {
     }
     let diagBefore =
       ScrollDiagnostics.shared.isEnabled ? session.viewportState() : nil
-    if catchUpRead, let catchUpGrid {
-      session.feedOutput(
-        Array(result.bytes), writtenAtCols: catchUpGrid.cols, rows: catchUpGrid.rows)
+    // A replay read also re-runs the host side effects in that history: an
+    // OSC 52 copy made before the restart would overwrite whatever the user
+    // copied since, and old OSC 9 notifications would post again. Drop them.
+    let feed: () -> Void = {
+      if catchUpRead, let catchUpGrid = self.catchUpGrid {
+        self.session.feedOutput(
+          Array(result.bytes), writtenAtCols: catchUpGrid.cols, rows: catchUpGrid.rows)
+      } else {
+        _ = self.session.feedOutput(Array(result.bytes))
+      }
+    }
+    if replayRead {
+      session.withHostEffectsSuppressed(feed)
     } else {
-      _ = session.feedOutput(Array(result.bytes))
+      feed()
     }
     if ScrollDiagnostics.shared.isEnabled, let after = session.viewportState() {
       // Does appending output on the background timer move `viewportOffset` with
