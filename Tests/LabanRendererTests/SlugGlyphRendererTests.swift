@@ -1097,6 +1097,86 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     }
   }
 
+  private func renderStyled(
+    _ text: String, attributes: TextAttributes, width: Int = 160, height: Int = 80
+  ) throws -> RGBAImage {
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 24, fontName: nil), pixelWidth: width,
+        pixelHeight: height, scale: 1))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    XCTAssertTrue(
+      renderer.render(
+        [
+          .rect(
+            CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)),
+            color: 0x0000_00FF, source: .terminal),
+          .glyphRun(
+            origin: CGPoint(x: 20, y: 24), text: text, foreground: 0xFFFF_FFFF,
+            background: 0x0000_00FF, attributes: attributes, source: .terminal),
+        ], damage: .full))
+    return try decodeRGBA(try XCTUnwrap(renderer.pngData))
+  }
+
+  /// SGR 1 must look bold under Slug whether the family has a bold face or
+  /// the renderer has to synthesize one (the bundled font is Regular only).
+  func testSlugBoldDrawsHeavierThanRegular() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    func ink(_ image: RGBAImage) -> Int {
+      stride(from: 0, to: image.bytes.count, by: 4).reduce(0) { $0 + Int(image.bytes[$1]) }
+    }
+    let regular = ink(try renderStyled("Hlm", attributes: []))
+    let bold = ink(try renderStyled("Hlm", attributes: [.bold]))
+    XCTAssertGreaterThan(Double(bold), Double(regular) * 1.1)
+  }
+
+  /// SGR 3 must slant under Slug: the ink of an `l` sits further right at
+  /// its top than at its bottom.
+  func testSlugItalicSlantsTheGlyph() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    func slant(_ image: RGBAImage) throws -> Double {
+      let bounds = try XCTUnwrap(nonBackgroundBounds(image))
+      func centroidX(rows: ClosedRange<Int>) -> Double {
+        var sum = 0.0
+        var weight = 0.0
+        for y in rows {
+          for x in 0..<image.width {
+            let value = Double(image.bytes[(y * image.width + x) * 4])
+            sum += Double(x) * value
+            weight += value
+          }
+        }
+        return weight > 0 ? sum / weight : 0
+      }
+      let top = Int(bounds.minY)
+      let bottom = Int(bounds.maxY) - 1
+      let third = max(1, (bottom - top) / 3)
+      // Image rows run top-down, so `top...` is the glyph's top.
+      return centroidX(rows: top...(top + third)) - centroidX(rows: (bottom - third)...bottom)
+    }
+    let upright = try slant(try renderStyled("l", attributes: []))
+    let italic = try slant(try renderStyled("l", attributes: [.italic]))
+    XCTAssertGreaterThan(italic - upright, 1.5, "italic l must lean right")
+  }
+
+  /// A fallback glyph far larger than a cell (U+FDFD) is shrunk into its
+  /// cell instead of painting over its neighbours.
+  func testSlugFitsOversizedFallbackGlyphIntoItsCell() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let atlas = FontAtlas(pointSize: 24, fontName: nil)
+    let image = try renderStyled("\u{FDFD}", attributes: [], width: 240, height: 80)
+    let bounds = try XCTUnwrap(nonBackgroundBounds(image))
+    XCTAssertLessThanOrEqual(bounds.width, atlas.cellSize.width + 2)
+    XCTAssertLessThanOrEqual(bounds.height, atlas.cellSize.height + 2)
+  }
+
   /// A square outline crossing the underline band cuts a gap one thickness
   /// wider than its ink on each side; ink above the band leaves the line whole.
   func testSlugSkipInkCutsUnderlineAroundCrossingInk() throws {
