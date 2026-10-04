@@ -73,6 +73,15 @@ struct DebugClipboardActions {
     if let tab = runtime.model.activeTab,
       let session = runtime.model.session(forSessionID: tab.focusedSessionId)
     {
+      // Parity with the AppKit paste (ADR 0040): a program with Kitty paste
+      // events enabled gets an event and reads the clipboard itself.
+      // A laband-backed runtime parses in the daemon, so the local session
+      // could mint an event the daemon's terminal would not honor; skip it.
+      if runtime.terminalSessionClient == nil, session.pasteEventsEnabled(),
+        !runtime.debugClipboard.isEmpty
+      {
+        return pasteEvent(session: session, tab: tab, frameBefore: frameBefore)
+      }
       let result: Session.PasteWriteResult?
       if sanitized.isEmpty {
         result = nil
@@ -147,6 +156,35 @@ struct DebugClipboardActions {
       ))
     runtime.renderFrameUnlocked()
     runtime.appendEvent(EventEntry(kind: "clipboard.pasted", text: sanitized))
+    return runtime.actionResult(ok: true)
+  }
+
+  private func pasteEvent(session: Session, tab: Tab, frameBefore: Int) -> DebugResponse {
+    // Sanitized like the AppKit paste-event text (ADR 0020).
+    let text = TerminalPaste.sanitize(runtime.debugClipboard)
+    guard !text.isEmpty else { return runtime.actionResult(ok: true) }
+    let bytes = session.encodePasteEvent(
+      [Session.PasteEventItem(mime: "text/plain", data: Data(text.utf8))])
+    guard !bytes.isEmpty else { return jsonError("paste event encoding failed") }
+    let deltaRows = session.scrollViewportToActiveBottom()
+    appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
+    _ = session.write(bytes)
+    runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
+    runtime.appendInputEnvelope(
+      InputEventEnvelope(
+        inputId: UUID().uuidString,
+        source: "debug",
+        kind: "paste",
+        route: "terminal",
+        frameBefore: frameBefore,
+        tabId: tab.id,
+        sessionId: tab.focusedSessionId,
+        command: "pasteEvent",
+        encodedHex: bytes.map { String(format: "%02x", $0) }.joined(),
+        encodedLength: bytes.count
+      ))
+    runtime.renderFrameUnlocked()
+    runtime.appendEvent(EventEntry(kind: "clipboard.pasteEvent", text: "text/plain"))
     return runtime.actionResult(ok: true)
   }
 

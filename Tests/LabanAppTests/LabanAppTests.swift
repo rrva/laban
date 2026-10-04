@@ -1206,3 +1206,137 @@ extension LabanAppTests {
       ).isEmpty)
   }
 }
+
+// MARK: - Kitty paste events through labpty (ADR 0040)
+
+extension LabanAppTests {
+  /// End to end through a labpty daemon: a child that enabled mode 5522
+  /// receives a paste event, reads a 300 KB image with its password, and gets
+  /// every byte. The reply is far past the 64 KiB response buffer, so this
+  /// exercises the viewer session's ordered output queue and the feed pump.
+  func testLabptyChildReadsALargePastedImageThroughPasteEvents() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-5522")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let tabId = "paste-event-tab"
+    let script = root.appendingPathComponent("paste_event_child.py")
+    try #"""
+    import os, re, base64, tty
+    tty.setraw(0)
+    os.write(1, b"\x1b[?5522hREADY\r\n")
+
+    def read_until_done():
+        buf = b""
+        while not re.search(rb"status=DONE[^\x1b]*\x1b\\", buf):
+            buf += os.read(0, 65536)
+        return buf
+
+    event = read_until_done()
+    pw = re.search(rb"pw=([A-Za-z0-9+/=]+)", event).group(1)
+    name = base64.b64encode(b"test")
+    mime = base64.b64encode(b"image/png")
+    os.write(1, b"\x1b]5522;type=read:name=" + name + b":pw=" + pw + b";" + mime + b"\x1b\\")
+    reply = read_until_done()
+    chunks = re.findall(rb"status=DATA[^;]*;([A-Za-z0-9+/=]*)", reply)
+    data = b"".join(base64.b64decode(c) for c in chunks)
+    os.write(1, b"GOT:%d:%d\r\n" % (len(data), sum(data) % 65521))
+    os.read(0, 1)
+    """#.write(to: script, atomically: true, encoding: .utf8)
+    let command = ["/usr/bin/env", "python3", script.path]
+    let model = try parserModel(tabId: tabId, size: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+    _ = try coordinator.ensureSession(for: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "READY")
+    XCTAssertTrue(session.pasteEventsEnabled())
+
+    let png = (0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) }
+    let event = session.encodePasteEvent([
+      Session.PasteEventItem(mime: "image/png", data: Data(png))
+    ])
+    XCTAssertFalse(event.isEmpty)
+    try coordinator.write(event, to: tab, session: session, size: size)
+
+    let checksum = png.reduce(0) { ($0 + Int($1)) % 65521 }
+    _ = try waitForLocalSnapshotText(
+      model: model, tab: tab, text: "GOT:\(png.count):\(checksum)",
+      message: "the child must receive the whole image through the queued reply")
+  }
+}
+
+extension LabanAppTests {
+  /// A cooked-mode reader can never take a multi-kilobyte reply (labpty's
+  /// canonical-input preflight refuses every chunk). The feed must give up on
+  /// it instead of trapping all later input behind it forever.
+  func testLabptyStalledQueuedReplyIsDroppedSoInputFlowsAgain() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-5522-stall")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let tabId = "paste-event-stall-tab"
+    let command = [
+      "/bin/sh", "-c", "printf 'READY\\r\\n'; read -r line; echo \"LINE:$line\"; read -r _",
+    ]
+    let model = try parserModel(tabId: tabId, size: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdBySessionId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+    _ = try coordinator.ensureSession(for: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "READY")
+
+    // Mint a grant locally and answer a granted read on the viewer, as if the
+    // child had asked: a 300 KB reply lands in the queue for the cooked child.
+    _ = session.feedOutput(Array("\u{1b}[?5522h".utf8))
+    let event = session.encodePasteEvent([
+      Session.PasteEventItem(mime: "image/png", data: Data(count: 300_000))
+    ])
+    let eventText = String(decoding: event, as: UTF8.self)
+    let pwStart = try XCTUnwrap(eventText.range(of: "pw=")).upperBound
+    let pw = eventText[pwStart...].prefix { $0 != ":" && $0 != ";" && $0 != "\u{1b}" }
+    let name = Data("t".utf8).base64EncodedString()
+    let mime = Data("image/png".utf8).base64EncodedString()
+    _ = session.feedOutput(
+      Array("\u{1b}]5522;type=read:name=\(name):pw=\(pw);\(mime)\u{1b}\\".utf8))
+    XCTAssertTrue(session.hasQueuedOutput())
+
+    let deadline = Date().addingTimeInterval(10)
+    while session.hasQueuedOutput(), Date() < deadline { usleep(50_000) }
+    XCTAssertFalse(session.hasQueuedOutput(), "a stalled reply must be dropped")
+    try coordinator.write(Array("ok\r".utf8), to: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(
+      model: model, tab: tab, text: "LINE:ok",
+      message: "input after the dropped reply must reach the child")
+  }
+}

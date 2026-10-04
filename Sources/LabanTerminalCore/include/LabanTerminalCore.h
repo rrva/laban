@@ -1069,6 +1069,53 @@ typedef struct {
     size_t bytes_written; /* number of bytes written to the PTY / VT parser */
 } LabanPasteResult;
 
+/*
+ * Kitty clipboard protocol paste events (DEC private mode 5522, ADR 0040).
+ *
+ * laban_session_paste_events_enabled reports whether the running program has
+ * enabled paste events. laban_session_encode_paste_event, for a user paste
+ * while they are enabled, stores a copy of `items` (the pasteboard's MIME
+ * representations) as the snapshot the program's follow-up OSC 5522 read is
+ * served from, and returns the paste-event bytes for the caller to send as
+ * input (they are NOT written to the PTY). Returns 0 with *out_len 0 when
+ * paste events are off or no item is usable, 1 when out_capacity is too small
+ * (*out_len is the size needed; the snapshot and one-time password are already
+ * consumed, so callers pass a buffer of a few KiB), -1 on error.
+ */
+typedef struct {
+    const char *mime;
+    size_t mime_len;
+    const uint8_t *data;
+    size_t data_len;
+} LabanPasteItem;
+
+int laban_session_paste_events_enabled(LabanSession *session, int *out_enabled);
+
+int laban_session_encode_paste_event(
+    LabanSession *session,
+    const LabanPasteItem *items,
+    size_t count,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+);
+
+/*
+ * Ordered output queue (ADR 0040). Terminal responses too large for the
+ * bounded PTY write or the 64 KiB response buffer (OSC 5522 image replies)
+ * are queued, and while anything is queued later responses and input queue
+ * behind them. A PTY-backed session pumps the queue from its drain loop. A
+ * labpty viewer session (no PTY) is pumped by its caller: peek a chunk, send
+ * it to the daemon, consume what was sent; discard after a replayed read.
+ * laban_session_queue_output appends caller input behind a pending queue.
+ */
+int laban_session_has_queued_output(LabanSession *session, int *out_pending);
+int laban_session_queue_output(LabanSession *session, const uint8_t *bytes, size_t len);
+int laban_session_peek_queued_output(
+    LabanSession *session, uint8_t *out_bytes, size_t out_capacity, size_t *out_len);
+int laban_session_consume_queued_output(LabanSession *session, size_t len);
+int laban_session_discard_queued_output(LabanSession *session);
+
 /* Returns 1 in *out_enabled if bracketed paste mode is active, 0 otherwise. */
 int laban_session_bracketed_paste_enabled(LabanSession *session, int *out_enabled);
 

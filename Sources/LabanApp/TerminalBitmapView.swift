@@ -7581,6 +7581,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let session = model.session(forTab: activeTab.id)
     else { return }
 
+    // A program that enabled Kitty paste events (mode 5522, e.g. a wrapper
+    // around a coding agent reached over SSH) gets an event listing the
+    // clipboard's types and reads what it wants itself, images included
+    // (ADR 0040). This replaces the text paste and the image ⌃V forwarding.
+    if session.pasteEventsEnabled() {
+      let items =
+        testPasteboardEnabled
+        ? PasteEventClipboard.items(text: testPasteboardString ?? "")
+        : PasteEventClipboard.items(from: .general)
+      // A failed encode (or mode 5522 switched off meanwhile) falls through
+      // to the ordinary paste below rather than losing the paste.
+      if !items.isEmpty, sendPasteEvent(items, session: session) {
+        return
+      }
+    }
+
     // Read the clipboard text BEFORE deciding to forward an image read. A mixed
     // text+image clipboard (web selection, screenshot annotation, Figma) must
     // paste its text; only an image-only clipboard (the .empty case below)
@@ -7751,6 +7767,46 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     // The paste has been emitted; drop the selection the user just pasted from.
     clearSelectionAfterPaste()
+  }
+
+  /// Returns false when no event was sent, so the caller pastes normally.
+  private func sendPasteEvent(_ items: [Session.PasteEventItem], session: Session) -> Bool {
+    let bytes = session.encodePasteEvent(items)
+    let mimes = items.map(\.mime).joined(separator: ",")
+    guard !bytes.isEmpty else {
+      EventLog.shared.log("paste.event.failed", ["mimes": mimes])
+      return false
+    }
+    let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
+    recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
+    if let sessionCoordinator, let activeTab = model.activeTab {
+      do {
+        try sessionCoordinator.write(
+          bytes, to: activeTab, session: session, size: model.terminalAreaSize)
+      } catch {
+        AppLog.app.error("paste event write failed: \(String(describing: error))")
+        EventLog.shared.log(
+          "paste.event.failed", ["mimes": mimes, "error": String(describing: error)])
+        return true
+      }
+    } else {
+      _ = session.write(bytes)
+    }
+    EventLog.shared.log(
+      "paste.event",
+      [
+        "mimes": mimes,
+        "bytes": items.reduce(0) { $0 + $1.data.count },
+      ])
+    recordInput(
+      kind: "paste",
+      route: "terminal",
+      command: "pasteEvent",
+      encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
+    )
+    clearSelectionAfterPaste()
+    return true
   }
 
   private func forwardClipboardImagePasteToTerminal(session: Session) {

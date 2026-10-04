@@ -438,6 +438,13 @@ final class AppSessionCoordinator {
     guard !bytes.isEmpty else { return }
     if let labptyClient {
       let descriptor = try ensureLabptyDescriptor(for: tab, session: session, size: size)
+      // Input typed while a large clipboard reply is still going out queues
+      // behind it (ADR 0040); the feed loop pumps both in order.
+      if let session, session.queueOutputIfPending(bytes) {
+        session.captureInput(bytes)
+        labptyFeedBySessionId[tab.focusedSessionId]?.wake()
+        return
+      }
       try labptyClient.writeInput(handle: descriptor.ptyHandle, bytes: bytes)
       // The daemon owns the PTY; the app's viewer session sees output via the
       // byte ring but never these keystrokes. Tee them into the capture sink so
@@ -811,6 +818,16 @@ final class AppSessionCoordinator {
             labpty terminal response write failed for pty handle \
             \(descriptor.ptyHandle): \(error)
             """)
+        }
+      },
+      onQueuedOutput: { [weak self] bytes in
+        guard let client = self?.labptyClient else { return false }
+        do {
+          try client.writeInput(handle: descriptor.ptyHandle, bytes: bytes)
+          return true
+        } catch {
+          // Backpressure: keep the chunk queued and retry on the next pump.
+          return false
         }
       })
     labptyFeedBySessionId[tab.focusedSessionId] = feed
@@ -1382,6 +1399,7 @@ private final class LabptyParserFeed {
   private let onDirty: @Sendable (Session.ID) -> Void
   private let onOverflow: @Sendable () -> Void
   private let onResponse: @Sendable ([UInt8]) -> Void
+  private let onQueuedOutput: @Sendable ([UInt8]) -> Bool
   private let queue: DispatchQueue
   private let timer: DispatchSourceTimer
   private let lock = NSLock()
@@ -1416,7 +1434,8 @@ private final class LabptyParserFeed {
     catchUpGrid: (cols: Int, rows: Int)?,
     onDirty: @escaping @Sendable (Session.ID) -> Void,
     onOverflow: @escaping @Sendable () -> Void,
-    onResponse: @escaping @Sendable ([UInt8]) -> Void
+    onResponse: @escaping @Sendable ([UInt8]) -> Void,
+    onQueuedOutput: @escaping @Sendable ([UInt8]) -> Bool
   ) {
     self.ptyHandle = ptyHandle
     self.reader = reader
@@ -1426,6 +1445,7 @@ private final class LabptyParserFeed {
     self.onDirty = onDirty
     self.onOverflow = onOverflow
     self.onResponse = onResponse
+    self.onQueuedOutput = onQueuedOutput
     self.queue = DispatchQueue(label: "com.laban.labpty.parser.\(ptyHandle)", qos: .userInteractive)
     self.timer = DispatchSource.makeTimerSource(queue: queue)
   }
@@ -1517,6 +1537,9 @@ private final class LabptyParserFeed {
     if lock.withLock({ stopped }) {
       return
     }
+    if session.hasQueuedOutput() {
+      pumpQueuedOutput()
+    }
     let result = reader.readSince(lastOffset)
     lastOffset = result.newOffset
     // Publish right after consuming, so a concurrent `wakeIfOutputPending()`
@@ -1605,6 +1628,66 @@ private final class LabptyParserFeed {
     if !responses.isEmpty && !replayRead {
       onResponse(responses)
     }
+    // Only the reattach catch-up read is history; an overflow read is new
+    // bytes and must not drop a live reply still being sent.
+    if catchUpRead {
+      session.discardQueuedOutput()
+    } else if session.hasQueuedOutput() {
+      pumpQueuedOutput()
+    }
     onDirty(session.id)
   }
+
+  /// Send queued output (a large clipboard reply plus anything queued behind
+  /// it, ADR 0040) to the daemon in chunks. While some is left, one follow-up
+  /// poll is scheduled (never more than one), backing off while the daemon
+  /// refuses chunks. A refused chunk stays queued. If nothing is accepted for
+  /// `queuedOutputStallLimit` (a canonical-mode reader can never take a
+  /// multi-kilobyte line), the queue is dropped so input is not trapped
+  /// behind it; keystrokes typed during that stall are lost with it.
+  private func pumpQueuedOutput() {
+    var sent = 0
+    var refused = false
+    while sent < Self.queuedOutputBytesPerPump {
+      let chunk = session.peekQueuedOutput(maxBytes: Self.queuedOutputChunkBytes)
+      guard !chunk.isEmpty else {
+        queuedOutputStalledSince = nil
+        return
+      }
+      guard onQueuedOutput(chunk) else {
+        refused = true
+        break
+      }
+      session.consumeQueuedOutput(chunk.count)
+      sent += chunk.count
+    }
+    if sent > 0 {
+      queuedOutputStalledSince = nil
+    } else if refused {
+      let now = Date()
+      let since = queuedOutputStalledSince ?? now
+      queuedOutputStalledSince = since
+      if now.timeIntervalSince(since) >= Self.queuedOutputStallLimit {
+        AppLog.app.error(
+          "labpty queued output stalled for pty handle \(self.ptyHandle); dropping it")
+        session.discardQueuedOutput()
+        queuedOutputStalledSince = nil
+        return
+      }
+    }
+    guard !queuedOutputRepollScheduled else { return }
+    queuedOutputRepollScheduled = true
+    let delay = refused && sent == 0 ? 50 : 2
+    queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+      self?.queuedOutputRepollScheduled = false
+      self?.poll()
+    }
+  }
+
+  // Touched only on the serial feed queue, like `lastOffset`.
+  private var queuedOutputRepollScheduled = false
+  private var queuedOutputStalledSince: Date?
+  private static let queuedOutputChunkBytes = 16 * 1024
+  private static let queuedOutputBytesPerPump = 1024 * 1024
+  private static let queuedOutputStallLimit: TimeInterval = 3
 }
