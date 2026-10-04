@@ -213,6 +213,15 @@ public enum ControlRouteCatalog {
       intentID: "shellIntegration.state"),
     endpoint(
       method: "GET",
+      path: "/debug/close-confirmation",
+      category: "state",
+      summary:
+        "Return the busy/idle verdict per pane and the dialog a pane, tab, window, or quit close would show.",
+      queryParameters: ["scope", "sessionID", "sessionId", "tabId"],
+      responseSchema: "schemas/debug/close-confirmation.schema.json",
+      intentID: "closeConfirmation.state"),
+    endpoint(
+      method: "GET",
       path: "/debug/text",
       category: "terminal",
       summary:
@@ -504,6 +513,7 @@ public enum ControlRouteCatalog {
     ("GET", "/debug/persistence/restore-picker"),
     ("GET", "/debug/find/state"),
     ("GET", "/debug/shell-integration/state"),
+    ("GET", "/debug/close-confirmation"),
     ("GET", "/debug/text"),
     ("GET", "/debug/scroll-indicator/state"),
     ("GET", "/debug/scroll-trace"),

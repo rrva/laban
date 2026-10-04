@@ -449,7 +449,7 @@ public enum ControlStateProjections {
     return ctx.model.tabProjection(forSession: scoped).map { [$0] } ?? []
   }
 
-  private static func resolvedDefaultSessionID(ctx: ControlProjectionContext) -> Session.ID? {
+  static func resolvedDefaultSessionID(ctx: ControlProjectionContext) -> Session.ID? {
     if let scoped = ctx.scopedSessionID {
       return scoped
     }

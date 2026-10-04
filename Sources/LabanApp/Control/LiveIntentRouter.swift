@@ -20,6 +20,7 @@ struct LiveControlEnvironment {
   var glyphEffectsStateProvider: (() -> GlyphEffectsStateResponse?)?
   var spinnerMotionStateProvider: (() -> SpinnerMotionStateResponse?)?
   var hoverPreviewStateProvider: (() -> HoverPreviewStateResponse?)?
+  var closeConfirmationEnvironmentProvider: (() -> CloseConfirmationEnvironment)? = nil
 
   static func `default`(model: AppModel) -> LiveControlEnvironment {
     LiveControlEnvironment(
@@ -313,6 +314,9 @@ final class LiveIntentRouter: IntentRouter {
       case "shellIntegration.state":
         return legacyJSON(
           ControlStateProjections.shellIntegrationState(query: query.params, ctx: ctx))
+      case "closeConfirmation.state":
+        return legacyJSON(
+          ControlStateProjections.closeConfirmationState(query: query.params, ctx: ctx))
       case "terminal.getText":
         return legacyJSON(ControlStateProjections.getTextResponse(query: query.params, ctx: ctx))
       case "window.screenshot":
@@ -685,7 +689,7 @@ final class LiveIntentRouter: IntentRouter {
         selectionBySession[id] = selection
       }
     }
-    return ControlProjectionContext(
+    var ctx = ControlProjectionContext(
       model: model,
       mode: "gui",
       frame: environment.frame,
@@ -706,6 +710,8 @@ final class LiveIntentRouter: IntentRouter {
       glyphEffectsProvider: environment.glyphEffectsStateProvider,
       spinnerMotionProvider: environment.spinnerMotionStateProvider,
       hoverPreviewProvider: environment.hoverPreviewStateProvider)
+    ctx.closeConfirmationEnvironment = environment.closeConfirmationEnvironmentProvider?()
+    return ctx
   }
 
   private func guiDiscoveryResponse(readRedaction: ControlReadRedaction) -> DebugDiscoveryResponse {

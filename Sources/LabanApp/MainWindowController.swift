@@ -1116,7 +1116,11 @@ final class MainWindowController: NSWindowController {
         sessionClientInfoById: [:],
         glyphEffectsStateProvider: { [weak termView] in termView?.glyphEffectsState },
         spinnerMotionStateProvider: { [weak termView] in termView?.spinnerMotionState },
-        hoverPreviewStateProvider: { [weak termView] in termView?.hoverPreviewState }))
+        hoverPreviewStateProvider: { [weak termView] in termView?.hoverPreviewState },
+        closeConfirmationEnvironmentProvider: { [weak termView] in
+          termView?.closeConfirmationEnvironment
+            ?? CloseConfirmationEnvironment(shellPid: { _ in nil }, sessionsSurviveQuit: false)
+        }))
   }
 
   func applyControlServerEnabled(_ enabled: Bool) {

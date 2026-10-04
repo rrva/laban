@@ -1018,6 +1018,43 @@ Returns bounded find state:
 rectangles for the current frame so agents can verify highlighted cells without
 desktop automation.
 
+### Close confirmation
+
+`GET /debug/close-confirmation?scope=tab&sessionID=session-1`
+
+Returns what closing a pane, tab, the window, or the app would ask
+(`docs/product/spec.md` §28) without showing the dialog. `scope` is `pane`,
+`tab` (default), `window`, or `quit`; `pane` and `tab` target the named or
+default session, or `tabId`. Each pane reports `busy`, the `signal` that decided
+it (`safeList`, `foregroundProcess`, `exited`, `noProcessInfo`), the foreground
+`program`, and `agentState` (`working` or `waiting`) for a coding agent.
+`asks` is true when the close would show `dialog`; `window` and `quit` never ask
+when `sessionsSurviveQuit` is true.
+
+```json
+{
+  "scope": "tab",
+  "mode": "whenRunning",
+  "safeList": ["bash", "sh", "zsh", "fish", "nu", "tmux", "screen"],
+  "sessionsSurviveQuit": false,
+  "asks": true,
+  "panes": [
+    {"sessionId": "session-1", "tabId": "tab-1", "tabTitle": "~/src", "busy": true,
+     "signal": "foregroundProcess", "program": "Claude Code", "foregroundPid": 4242,
+     "agentState": "working"}
+  ],
+  "dialog": {
+    "messageText": "Close this tab?",
+    "informativeText": "Claude Code is working and will be interrupted.",
+    "confirmButtonTitle": "Close Tab",
+    "busyPanes": ["…"]
+  }
+}
+```
+
+The app logs `close.confirm.shown` and `close.confirm.answered` to the event
+log. Debug close actions (the `closeTab` and pane-close debug actions) never ask.
+
 ### Shell integration (OSC 133)
 
 `GET /debug/shell-integration/state?sessionID=session-1`

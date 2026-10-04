@@ -227,6 +227,19 @@
     "summary" : "Return OSC 133 shell-integration phase + last exit code for the active or named session."
   },
   {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/close-confirmation",
+    "queryParameters" : [
+      "scope",
+      "sessionID",
+      "sessionId",
+      "tabId"
+    ],
+    "responseSchema" : "schemas\/debug\/close-confirmation.schema.json",
+    "summary" : "Return the busy\/idle verdict per pane and the dialog a pane, tab, window, or quit close would show."
+  },
+  {
     "category" : "terminal",
     "method" : "GET",
     "path" : "\/debug\/text",
