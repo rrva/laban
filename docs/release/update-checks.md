@@ -41,9 +41,11 @@ instead of checking.
   download for people (drag-to-Applications window); link to it. The zip is
   the Sparkle enclosure only. `scripts/package-dmg` builds the DMG from the
   notarized zip, so both hold the identical app, then signs, notarizes, and
-  staples the DMG itself. The image is APFS on purpose: HFS+ normalizes file
-  names to Unicode NFD, which breaks the code seal over the bundled
-  `rosé-pine*` themes. A DMG matters because an app run straight out of
+  staples the DMG itself. The image is APFS, and every bundled file name is
+  ASCII (`testBundledResourceFileNamesAreASCII`): HFS+ and a Finder copy into
+  /Applications both rewrite non-ASCII names into Unicode NFD, which breaks
+  the code seal, so Gatekeeper calls the app damaged. 0.8.2 shipped
+  `rosé-pine*` theme files and broke this way. A DMG matters because an app run straight out of
   `~/Downloads` is translocated to a read-only path where Sparkle cannot
   update it.
 

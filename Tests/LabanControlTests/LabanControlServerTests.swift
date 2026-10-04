@@ -1,8 +1,9 @@
 import Darwin
 import Foundation
-@testable import LabanControl
 import LabanCore
 import XCTest
+
+@testable import LabanControl
 
 final class LabanControlServerTests: XCTestCase {
   override func setUp() {
@@ -513,7 +514,8 @@ final class LabanControlServerTests: XCTestCase {
   /// answers 404 in the GUI (as `/debug/close-confirmation` once did).
   func testEveryAdvertisedEndpointIsServed() {
     let served = Set(
-      ControlRouteCatalog.routes.map { "\($0.endpoint.binding.method) \($0.endpoint.binding.path)" })
+      ControlRouteCatalog.routes.map { "\($0.endpoint.binding.method) \($0.endpoint.binding.path)" }
+    )
     let unserved = ControlRouteCatalog.endpoints
       .map { "\($0.binding.method) \($0.binding.path)" }
       .filter { !served.contains($0) }
