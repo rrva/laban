@@ -2,6 +2,12 @@
 
 **A native macOS terminal your agents can drive, with sessions that survive quits, crashes, and upgrades.**
 
+[![Latest release](https://img.shields.io/github/v/release/rrva/laban)](https://github.com/rrva/laban/releases/latest)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)
+[![License: MIT](https://img.shields.io/github/license/rrva/laban)](LICENSE)
+
+![Laban with vertical tabs, an agent session queried over the laban CLI, and CJK and emoji text](docs/images/laban.png)
+
 Laban is a native macOS terminal where every visible part of the running app
 — tabs, selection, cursor, scrollback, rendered frames, event log — is also
 queryable and controllable over a local HTTP control plane. It behaves like a
@@ -47,6 +53,15 @@ and CI.
 
 > **Status: beta.** APIs, scripts, debug endpoints, and on-disk artifact
 > formats change without notice.
+
+## Install
+
+Download the notarized `Laban-<version>.dmg` from the
+[latest release](https://github.com/rrva/laban/releases/latest), open it, and
+drag Laban into `/Applications`. Laban updates itself from then on. Requires
+macOS 13 (Ventura) or later.
+
+To build from source instead, read on.
 
 ## Build
 
