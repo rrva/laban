@@ -58,7 +58,8 @@ final class CloseConfirmationTests: XCTestCase {
   }
 
   func testUnknownShellPidFallsBackToName() {
-    XCTAssertFalse(CloseConfirmation.evaluate(input(["zsh"], shellPid: nil), safeList: safeList).busy)
+    XCTAssertFalse(
+      CloseConfirmation.evaluate(input(["zsh"], shellPid: nil), safeList: safeList).busy)
   }
 
   func testMultiplexerIsIdle() {
@@ -66,7 +67,8 @@ final class CloseConfirmationTests: XCTestCase {
   }
 
   func testOtherProgramIsBusy() {
-    let verdict = CloseConfirmation.evaluate(input(["/usr/bin/vim", "notes.md"]), safeList: safeList)
+    let verdict = CloseConfirmation.evaluate(
+      input(["/usr/bin/vim", "notes.md"]), safeList: safeList)
     XCTAssertTrue(verdict.busy)
     XCTAssertEqual(verdict.signal, .foregroundProcess)
     XCTAssertEqual(verdict.program, "vim")
@@ -246,7 +248,8 @@ final class CloseConfirmationTests: XCTestCase {
       ).busy, "\(atPrompt.name) at its prompt must be idle")
 
     _ = session.write(Array("sleep 30\r".utf8))
-    let job = try XCTUnwrap(waitForProbe(pid) { $0.name == "sleep" }, "sleep never took the foreground")
+    let job = try XCTUnwrap(
+      waitForProbe(pid) { $0.name == "sleep" }, "sleep never took the foreground")
     XCTAssertNotEqual(job.pid, pid)
     XCTAssertTrue(
       CloseConfirmation.evaluate(
@@ -271,7 +274,8 @@ final class CloseConfirmationTests: XCTestCase {
     // `; :` keeps sh from exec-ing sleep, so the script shell stays the leader.
     _ = session.write(Array("sh -c 'sleep 30; :'\r".utf8))
     let job = try XCTUnwrap(
-      waitForProbe(pid) { $0.pid != pid && $0.name == "sh" }, "script shell never took the foreground")
+      waitForProbe(pid) { $0.pid != pid && $0.name == "sh" },
+      "script shell never took the foreground")
     let verdict = CloseConfirmation.evaluate(
       PaneCloseInput(sessionId: "s", tabId: "t", tabTitle: "t", shellPid: pid, foreground: job),
       safeList: safeList)
