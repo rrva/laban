@@ -1,55 +1,48 @@
 # Laban
 
-**A native macOS terminal your agents can drive, with sessions that survive quits, crashes, and upgrades.**
+**Quit, update or crash Laban. Your shells keep running.**
 
 [![Latest release](https://img.shields.io/github/v/release/rrva/laban)](https://github.com/rrva/laban/releases/latest)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)
 [![License: MIT](https://img.shields.io/github/license/rrva/laban)](LICENSE)
 
-<img src="docs/images/laban.png" width="877" alt="Laban with vertical tabs, an agent session queried over the laban CLI, and CJK and emoji text">
+<img src="docs/images/laban.png" width="877" alt="Laban with vertical tabs, JSON and git output, and CJK and emoji text">
 
-Laban is a native macOS terminal where every visible part of the running app
-— tabs, selection, cursor, scrollback, rendered frames, event log — is also
-queryable and controllable over a local HTTP control plane. It behaves like a
-normal terminal for humans, and like a deterministic test fixture for agents
-and CI.
+Laban is a native macOS terminal whose sessions live in a background daemon,
+not the window. Reopen it and you are back in the same tabs, with the same
+running processes and scrollback, and no tmux. Text is drawn from font curves
+on the GPU, on top of Ghostty's VT core.
 
 ## Why Laban
 
-- **Your sessions outlive the app.** Shells run in a small background daemon,
-  not inside the window. Quit Laban, upgrade it, or let it crash: everything
-  keeps running, and reopening drops you back exactly where you were,
-  scrollback and all.
-- **Never lose a working agent.** A Claude Code or Codex run that has been
-  going for an hour survives a terminal restart untouched.
-- **Agents can see what you see.** Tabs, cursor, scrollback, rendered frames,
-  and the event log are all queryable and drivable as JSON over a local Unix
-  socket (no TCP port is ever opened), so "check what happened in my session"
-  is a query, not a copy-paste. A bundled `laban` CLI makes those queries
-  one-liners. The same terminal boots headless too: CI can type, wait on
-  conditions, and take screenshots without a window server.
-- **A real terminal.** VT parsing comes from libghostty-vt, Ghostty's
-  terminal core; the rendering, daemons, and app around it are Laban's own.
-  True color, hyperlinks, mouse, synchronized output, and modern key
-  protocols work as they would in any modern terminal.
-- **Text that stays sharp.** The default renderer draws glyphs straight
-  from font curves on the GPU. There is no bitmap atlas to re-bake when you
-  zoom or land on a fractional display scale, so text stays pixel-crisp
-  where most terminal renderers go soft. CJK and color emoji deliberately
-  stay on the proven raster path that complex scripts need, and tests hold
-  that line.
+- **Shells outlive the app.** A small daemon owns your shells. Quit Laban,
+  let it auto-update, or let it crash: your processes keep running, and
+  reopening drops you back where you were, scrollback included. You keep the
+  terminal's own scrollback, selection, and mouse, with no prefix keys. (A
+  reboot still ends them; they are processes, not snapshots.)
+- **Text drawn from font curves.** The default renderer draws glyphs
+  straight from font outlines on the GPU. There is no bitmap atlas to
+  re-bake, so text stays sharp while you zoom and on fractional display
+  scales. Ligatures are on by default. CJK and color emoji stay on the
+  raster path that complex scripts need, and tests hold that line.
 - **A native Mac app.** AppKit, not Electron. Native text input (including
   layout-specific Option characters), vertical tabs, JetBrains Mono and
   Selenized (Light or Dark, following system appearance) as defaults.
 - **Chinese, Japanese, and Korean just work.** A CJK-capable font (PingFang,
   Noto CJK, or Sarasa) is paired with JetBrains Mono automatically and can
   be overridden in Settings. Double-width cell layout comes from the
-  conformance-tested terminal core, and native macOS text input means
-  Pinyin and other IMEs keep their normal candidate window and inline
-  composition, backed by CJK-specific tests.
-- **One command to trust a change.** `./scripts/check` runs everything:
-  schemas, docs, debug-contract drift, formatting, build, unit tests, a
-  runtime smoke test, and a headless end-to-end debug-server scenario.
+  conformance-tested terminal core, and Pinyin and other IMEs keep their
+  normal candidate window and inline composition.
+- **A modern terminal core.** VT parsing comes from libghostty-vt, Ghostty's
+  terminal core; the rendering, daemons, and app around it are Laban's own.
+  True color, hyperlinks, mouse, synchronized output, Kitty graphics, and
+  modern key protocols all work.
+- **Scriptable when you want it.** Tabs, scrollback, and screenshots are
+  queryable as JSON over a local Unix socket (no TCP port is ever opened),
+  and the bundled `laban` CLI makes that a one-liner. An hour-long Claude
+  Code or Codex run survives a restart, and with your approval the agent can
+  read your session instead of you pasting it. The same terminal also boots
+  headless, so CI can type, wait on conditions, and take screenshots.
 
 > **Status: beta.** APIs, scripts, debug endpoints, and on-disk artifact
 > formats change without notice.
