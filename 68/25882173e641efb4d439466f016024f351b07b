@@ -1,0 +1,24 @@
+Tests/LabanCoreTests/TerminalThemeStoreTests.swift
+  s_58ccbbd3725b13::t_5cf64c0910e31d 248,259-279
+  s_58ccbbd3725b13::t_f5720a01bbdbe6 280-282
+scripts/package-dmg
+  s_58ccbbd3725b13::t_35d34761772b7d 67-71
+docs/release/update-checks.md
+  s_58ccbbd3725b13::t_35d34761772b7d 44-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6825882173e641efb4d439466f016024f351b07b",
+  "prompts": {},
+  "sessions": {
+    "s_58ccbbd3725b13": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "167a0765-a42c-4542-9d6b-1d03c71c77f4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
