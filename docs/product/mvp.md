@@ -166,7 +166,8 @@ the user's login shell or dotfiles.
 ### Session Teardown
 
 Closing a tab immediately tears down its terminal session. The MVP does not ask
-for close confirmation. Teardown closes the pty, signals a still-running child
+for close confirmation; post-MVP, `spec.md` §28 asks first when a program is
+running, and teardown is unchanged once the user confirms. Teardown closes the pty, signals a still-running child
 as a normal terminal disconnect, reaps the child where the platform requires
 it, and releases terminal resources.
 

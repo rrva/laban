@@ -476,3 +476,71 @@ live process and system, not from constants:
   foundation, Eric Lengyel's Slug algorithm behind the Slug Glyph renderer,
   JetBrains Mono, Sparkle and the Selenized palette, with an **Open Licenses**
   button that opens the bundled `THIRD_PARTY_LICENSES.md`.
+
+## 28. Close confirmation for running programs
+
+Closing a pane, tab, or window, or quitting the app, asks first when a program
+other than the shell is running in an affected pane. A pane sitting at its
+shell prompt closes without a prompt. This supersedes the MVP's
+close-without-confirmation teardown; teardown itself is unchanged once the user
+confirms.
+
+**Deciding whether a pane is busy.** Evaluate each pane at the moment of the
+close request. Read the foreground process group of the pane's terminal from
+the kernel's view of the shell process (`e_tpgid`), which works for every
+session backend without the pty descriptor. The pane is idle when the name of
+that process (its `argv[0]`, without a login shell's leading dash) is on the
+user-editable **safe list**, and busy otherwise. The default safe list is the
+common shells and multiplexers: `bash`, `sh`, `zsh`, `fish`, `nu`, `tmux`,
+`screen`. A shell name counts as idle only when that process is the pane's own
+shell: any other shell in the foreground is running something (a script such as
+`./deploy.sh` or `bash build.sh`, `sh -c …`, a subshell, or a nested
+interactive shell), so it is busy and the dialog names the script when there is
+one. A pane whose process has exited, or whose shell cannot be inspected, is
+idle.
+
+OSC 133 prompt state is not used: Laban's bash integration emits no
+command-start marker, so a bash pane running a program still reads as "at
+prompt". As a consequence an ssh session always counts as busy.
+
+Background jobs of an idle shell (`cmd &`) do not count as busy, matching
+Terminal.app, iTerm2, and WezTerm.
+
+**The prompt.** The dialog names what is running, for example "vim is running
+and will be ended". One close action produces at most one dialog. A tab with
+several panes, a window, or a quit lists every busy pane with its tab rather
+than asking once per pane. Return confirms and Escape cancels. A "Don't ask
+again" checkbox sets the setting below to Never. Closing a window or quitting
+asks only when it ends sessions: with a daemon backend (labpty, laband) and
+restore-on-launch on, quitting detaches the sessions and the next launch
+restores them, so nothing is asked. Quits Laban starts itself (restart,
+automation) never ask, and the quit that follows a confirmed window close or
+last-tab close does not ask again. A window-close or quit dialog first brings
+Laban and its window to the front, so a quit from the Dock or a logout never
+waits on a hidden sheet; if another sheet already owns the window, it asks
+with an app-modal alert. A second quit request while the quit dialog is up
+quits, as AppKit forces a pending termination.
+
+**Coding agents.** When the foreground program is a coding agent (Claude Code,
+Codex, Gemini CLI, Aider, opencode, matched on `argv[0]` or, for script
+launches such as `node …/claude`, `argv[1]`), or pane metadata names an agent,
+the dialog distinguishes:
+
+- **working**: OSC 9;4 progress is showing for the pane. The dialog says the
+  agent is working and will be interrupted.
+- **waiting**: no progress is showing; the agent is at its own input or
+  awaiting the user. The dialog uses the running-program wording.
+
+**Setting.** "Ask before closing" with values **When a program is running**
+(default), **Always**, and **Never**, plus the editable safe list.
+
+**Verification.** `GET /debug/close-confirmation` (intent
+`closeConfirmation.state`) reports the busy/idle verdict per pane, the signal
+that produced it, and the dialog a pane, tab, window, or quit close would show,
+in both the app and the headless runtime, so the decision is testable without
+showing a modal. Debug close actions never ask.
+
+**Later: undo close.** Like iTerm2's Undo Close, a closed pane or tab may be
+kept alive hidden for a short grace period (about 10 seconds) and restored
+with Cmd+Z before teardown runs. This would complement the dialog, not replace
+it.
