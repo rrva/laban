@@ -1,0 +1,19 @@
+README.md
+  s_7b23916bfdc11b::t_71a125a2108047 3,9,11-14,18-27,34-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eea0c7d592346b8c59437232bcf499ab0609d1e8",
+  "prompts": {},
+  "sessions": {
+    "s_7b23916bfdc11b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a7cbb33-c588-4896-a620-e8fee428912b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
