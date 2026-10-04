@@ -1,0 +1,21 @@
+docs/product/mvp.md
+  s_f45dd88f08a292::t_d55ebc6c18b1f3 169-170
+docs/product/spec.md
+  s_f45dd88f08a292::t_d4197b172878d3 479-546
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7b81b7968020b092349ad8f167827b14e0574f2b",
+  "prompts": {},
+  "sessions": {
+    "s_f45dd88f08a292": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfc7cb7e-b345-4b41-8692-fb67886bb59f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
