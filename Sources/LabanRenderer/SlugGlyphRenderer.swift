@@ -3261,7 +3261,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           pointScale: pointScale, gap: layout.thickness)
         cutsByBand[rect.minY] = cuts
       }
-      for piece in Self.subtracting(cuts, from: rect) {
+      for piece in TextDecorationLayout.subtracting(cuts, from: rect) {
         solids.append(solid(rect: piece, color: underlineRGBA))
       }
     }
@@ -3281,7 +3281,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
           y: min(start.y, end.y),
           width: max(end.x - start.x, layout.thickness),
           height: max(layout.thickness, abs(end.y - start.y)))
-        for piece in Self.subtracting(cuts, from: segment) {
+        for piece in TextDecorationLayout.subtracting(cuts, from: segment) {
           solids.append(solid(rect: piece, color: underlineRGBA))
         }
       }
@@ -3709,7 +3709,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     pointScale: CGFloat,
     gap: CGFloat
   ) -> [CGRect] {
-    subtracting(
+    TextDecorationLayout.subtracting(
       inkCuts(
         bandMinY: rect.minY, bandMaxY: rect.maxY, ink: ink, baseline: baseline,
         pointScale: pointScale, gap: gap),
@@ -3747,26 +3747,6 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     cuts.sort { $0.0 < $1.0 }
     return cuts
-  }
-
-  /// `rect` minus the sorted x intervals in `cuts`.
-  static func subtracting(_ cuts: [(CGFloat, CGFloat)], from rect: CGRect) -> [CGRect] {
-    guard !cuts.isEmpty else { return [rect] }
-    var pieces: [CGRect] = []
-    var x = rect.minX
-    for (start, end) in cuts {
-      if end <= x { continue }
-      if start >= rect.maxX { break }
-      if start > x {
-        pieces.append(CGRect(x: x, y: rect.minY, width: start - x, height: rect.height))
-      }
-      x = max(x, end)
-      if x >= rect.maxX { break }
-    }
-    if x < rect.maxX {
-      pieces.append(CGRect(x: x, y: rect.minY, width: rect.maxX - x, height: rect.height))
-    }
-    return pieces
   }
 
   /// Horizontal spans of `outline` filled (nonzero winding) on scanline `y`,

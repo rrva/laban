@@ -179,6 +179,37 @@ public final class SoftwareRenderer {
   ) {
     let fgColor = color(fg)
     let font = styledFont(for: attributes, in: atlas)
+    drawRunGlyphs(
+      text, at: origin, attributes: attributes, font: font, foreground: fgColor,
+      atlas: atlas, cellAdvance: cellAdvance, in: ctx)
+
+    let underlineColorCG = underlineColor.map { color($0) } ?? fgColor
+    drawDecorations(
+      for: text, at: origin, attributes: attributes,
+      foreground: fgColor,
+      underlineStyle: underlineStyle, underlineColor: underlineColorCG,
+      atlas: atlas, cellAdvance: cellAdvance,
+      inkMask: { [self] maskContext in
+        drawRunGlyphs(
+          text, at: origin, attributes: attributes, font: font,
+          foreground: CGColor(gray: 1, alpha: 1),
+          atlas: atlas, cellAdvance: cellAdvance, in: maskContext)
+      },
+      in: ctx)
+  }
+
+  /// The run's glyphs, including synthesized italic and bold, exactly as
+  /// drawn on the surface. Also replayed into the skip-ink mask.
+  private func drawRunGlyphs(
+    _ text: String,
+    at origin: CGPoint,
+    attributes: TextAttributes,
+    font: CTFont,
+    foreground fgColor: CGColor,
+    atlas: FontAtlas,
+    cellAdvance: CGFloat,
+    in ctx: CGContext
+  ) {
     let traits = CTFontGetSymbolicTraits(font)
     let needsBoldFallback = attributes.contains(.bold) && !traits.contains(.traitBold)
     let needsItalicFallback = attributes.contains(.italic) && !traits.contains(.traitItalic)
@@ -222,14 +253,6 @@ public final class SoftwareRenderer {
       )
     }
     ctx.restoreGState()
-
-    let underlineColorCG = underlineColor.map { color($0) } ?? fgColor
-    drawDecorations(
-      for: text, at: origin, attributes: attributes,
-      foreground: fgColor,
-      underlineStyle: underlineStyle, underlineColor: underlineColorCG,
-      atlas: atlas, cellAdvance: cellAdvance,
-      in: ctx)
   }
 
   private func drawGlyphPass(
@@ -478,28 +501,65 @@ public final class SoftwareRenderer {
     underlineColor: CGColor,
     atlas: FontAtlas,
     cellAdvance: CGFloat,
+    inkMask drawInk: (CGContext) -> Void,
     in ctx: CGContext
   ) {
+    let cellCount = TerminalDisplayWidth.cells(of: text)
     guard
       let layout = TextDecorationLayout.make(
         origin: origin,
-        cellCount: TerminalDisplayWidth.cells(of: text),
+        cellCount: cellCount,
         attributes: attributes,
         underlineStyle: underlineStyle,
         cellAdvance: cellAdvance,
         cellHeight: atlas.cellSize.height,
         descent: atlas.descent,
-        scale: surface.scale)
+        scale: surface.scale,
+        // The font's own underline position, as SlugGlyphRenderer uses: the
+        // older fixed offset sat so close to the baseline that skip-ink cut
+        // it under letters without descenders.
+        underlineMetrics: (atlas.underlinePosition, atlas.underlineThickness))
     else {
       return
     }
 
+    // Skip-ink, as in SlugGlyphRenderer: the underline stops a thickness
+    // short of every glyph crossing it, so descenders stand clear.
+    let hasUnderline = !layout.underlineRects.isEmpty || !layout.curlyUnderlinePoints.isEmpty
+    let ink =
+      hasUnderline
+      ? UnderlineInkMask(
+        runRect: CGRect(
+          x: origin.x - cellAdvance, y: origin.y,
+          width: CGFloat(cellCount + 2) * cellAdvance, height: atlas.cellSize.height),
+        scale: surface.scale, draw: drawInk)
+      : nil
+    let gap = layout.thickness
+
     ctx.saveGState()
     ctx.setFillColor(underlineColor)
+    var cutsByBand: [CGFloat: [(CGFloat, CGFloat)]] = [:]
     for rect in layout.underlineRects {
-      ctx.fill(rect)
+      let cuts: [(CGFloat, CGFloat)]
+      if let cached = cutsByBand[rect.minY] {
+        cuts = cached
+      } else {
+        cuts = ink?.cuts(bandMinY: rect.minY, bandMaxY: rect.maxY, gap: gap) ?? []
+        cutsByBand[rect.minY] = cuts
+      }
+      for piece in TextDecorationLayout.subtracting(cuts, from: rect) {
+        ctx.fill(piece)
+      }
     }
     if !layout.curlyUnderlinePoints.isEmpty {
+      let ys = layout.curlyUnderlinePoints.map(\.y)
+      let band = CGRect(
+        x: origin.x - layout.thickness, y: (ys.min() ?? 0) - layout.thickness,
+        width: CGFloat(cellCount) * cellAdvance + layout.thickness * 2,
+        height: (ys.max() ?? 0) - (ys.min() ?? 0) + layout.thickness * 2)
+      let cuts = ink?.cuts(bandMinY: band.minY, bandMaxY: band.maxY, gap: gap) ?? []
+      ctx.saveGState()
+      ctx.clip(to: TextDecorationLayout.subtracting(cuts, from: band))
       ctx.setStrokeColor(underlineColor)
       ctx.setLineWidth(layout.thickness)
       ctx.setLineJoin(.round)
@@ -512,6 +572,7 @@ public final class SoftwareRenderer {
         }
       }
       ctx.strokePath()
+      ctx.restoreGState()
     }
     ctx.setFillColor(fgColor)
     if let rect = layout.strikethroughRect {
@@ -522,4 +583,61 @@ public final class SoftwareRenderer {
     }
     ctx.restoreGState()
   }
+}
+
+/// A run's glyph ink rasterized on its own, so underlines can find where
+/// glyphs cross them without reading back a surface that already holds
+/// backgrounds and other runs.
+private struct UnderlineInkMask {
+  private let pixels: [UInt8]
+  private let width: Int
+  private let height: Int
+  private let origin: CGPoint
+  private let scale: CGFloat
+
+  init?(runRect: CGRect, scale: CGFloat, draw: (CGContext) -> Void) {
+    let width = max(1, Int((runRect.width * scale).rounded(.up)))
+    let height = max(1, Int((runRect.height * scale).rounded(.up)))
+    guard
+      let ctx = CGContext(
+        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
+        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
+    else { return nil }
+    ctx.scaleBy(x: scale, y: scale)
+    ctx.translateBy(x: -runRect.minX, y: -runRect.minY)
+    draw(ctx)
+    guard let data = ctx.data else { return nil }
+    pixels = Array(
+      UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: width * height))
+    self.width = width
+    self.height = height
+    self.origin = runRect.origin
+    self.scale = scale
+  }
+
+  /// Sorted x intervals where ink crosses the band widened by `gap`, each
+  /// widened by `gap`; sampled on the band's edges and middle like
+  /// `SlugGlyphRenderer.inkCuts`.
+  func cuts(bandMinY: CGFloat, bandMaxY: CGFloat, gap: CGFloat) -> [(CGFloat, CGFloat)] {
+    var cuts: [(CGFloat, CGFloat)] = []
+    for y in [bandMinY - gap, (bandMinY + bandMaxY) / 2, bandMaxY + gap] {
+      let fromBottom = Int(((y - origin.y) * scale).rounded(.down))
+      guard fromBottom >= 0, fromBottom < height else { continue }
+      let row = (height - 1 - fromBottom) * width
+      var x = 0
+      while x < width {
+        guard pixels[row + x] >= 128 else {
+          x += 1
+          continue
+        }
+        let start = x
+        while x < width, pixels[row + x] >= 128 { x += 1 }
+        cuts.append(
+          (origin.x + CGFloat(start) / scale - gap, origin.x + CGFloat(x) / scale + gap))
+      }
+    }
+    cuts.sort { $0.0 < $1.0 }
+    return cuts
+  }
+
 }
