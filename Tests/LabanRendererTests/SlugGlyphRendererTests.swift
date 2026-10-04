@@ -1283,11 +1283,59 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
         image.bytes[$0] > 200 && image.bytes[$0 + 1] < 60 && image.bytes[$0 + 2] < 60
       }.count
     }
+    /// Red underline pixels within two pixels of (green) glyph ink: near zero
+    /// when the underline stops short of every descender. Unlike a plain red
+    /// count, glyphs painted over an uncut underline cannot hide it.
+    func redTouchingInk(_ text: String, style: UnderlineStyle) throws -> Int {
+      let atlas = FontAtlas(pointSize: 24, fontName: nil)
+      let renderer = try XCTUnwrap(
+        SlugGlyphRenderer(
+          fontAtlas: atlas, sidebarFontAtlas: atlas, pixelWidth: 420, pixelHeight: 96, scale: 2))
+      renderer.waitForFrameCompletion = true
+      renderer.presentsToLayer = false
+      XCTAssertTrue(
+        renderer.render(
+          [
+            .rect(
+              CGRect(x: 0, y: 0, width: 210, height: 48), color: 0x10_10_10_FF, source: .terminal),
+            .glyphRun(
+              origin: CGPoint(x: 12, y: 10), text: text, foreground: 0x00_EE_00_FF,
+              background: 0x10_10_10_FF, attributes: [.underline], source: .terminal,
+              underlineStyle: style, underlineColor: 0xFF_00_00_FF),
+          ], damage: .full))
+      let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+      func at(_ x: Int, _ y: Int) -> (Int, Int, Int)? {
+        guard x >= 0, y >= 0, x < image.width, y < image.height else { return nil }
+        let i = (y * image.width + x) * 4
+        return (Int(image.bytes[i]), Int(image.bytes[i + 1]), Int(image.bytes[i + 2]))
+      }
+      var count = 0
+      for y in 0..<image.height {
+        for x in 0..<image.width {
+          guard let (r, g, b) = at(x, y), r > 200, g < 60, b < 60 else { continue }
+          var nearInk = false
+          for dy in -2...2 {
+            for dx in -2...2 {
+              if let (_, gg, _) = at(x + dx, y + dy), gg > 120 { nearInk = true }
+            }
+          }
+          if nearInk { count += 1 }
+        }
+      }
+      return count
+    }
+    for style in [UnderlineStyle.single, .dotted, .dashed, .double, .curly] {
+      // Anti-aliased glyph edges leave a few pixels; an uncut underline
+      // crossing five descenders leaves dozens.
+      XCTAssertLessThanOrEqual(
+        try redTouchingInk("gjpqy", style: style), 12,
+        "\(style) underline must stop short of descender ink")
+    }
     let plain = try redPixels("aceos")
     let descenders = try redPixels("gjpqy")
     XCTAssertGreaterThan(plain, 0)
     XCTAssertLessThan(Double(descenders), Double(plain) * 0.9, "descenders must cut the underline")
-    for style in [UnderlineStyle.dotted, .dashed] {
+    for style in [UnderlineStyle.dotted, .dashed, .double, .curly] {
       XCTAssertLessThan(
         try redPixels("gjpqy", style: style), try redPixels("aceos", style: style),
         "\(style) underlines must skip descenders too")
