@@ -6,7 +6,7 @@
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)
 [![License: MIT](https://img.shields.io/github/license/rrva/laban)](LICENSE)
 
-![Laban with vertical tabs, an agent session queried over the laban CLI, and CJK and emoji text](docs/images/laban.png)
+<img src="docs/images/laban.png" width="877" alt="Laban with vertical tabs, an agent session queried over the laban CLI, and CJK and emoji text">
 
 Laban is a native macOS terminal where every visible part of the running app
 — tabs, selection, cursor, scrollback, rendered frames, event log — is also
