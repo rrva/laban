@@ -3,6 +3,25 @@
     <channel>
         <title>Laban</title>
         <item>
+            <title>0.8.4</title>
+            <pubDate>Sun, 04 Oct 2026 22:00:38 +0200</pubDate>
+            <sparkle:version>1791143888</sparkle:version>
+            <sparkle:shortVersionString>0.8.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[## Fixed
+
+- Laban dragged from the disk image into Applications no longer reports "Laban is damaged and can't be opened". Two bundled theme files had accented names that Finder rewrites while copying, which invalidated the app's signature. This affected the 0.8.2 and 0.8.3 disk images.
+]]></description>
+            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.4/Laban-0.8.4.zip" length="21734466" type="application/octet-stream" sparkle:edSignature="6126PfmyNs95D+Te4qUvmx98gevB5cvH1j5BcTqZzJOfJjVfTpiTWHzqdB5gnU5dJUw0g008vTUdoyyhqOY0CA=="/>
+            <sparkle:deltas>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.4/Laban1791143888-1791140982.delta" sparkle:deltaFrom="1791140982" length="21058" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="xg8jtwHx4eCcaDgjp5LSvJ87wYjUysPomvy50VCGwjblHl8zw929/hfpCBwbTEDuHGP7OX0XkeO2U/f61CpFBA=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.4/Laban1791143888-1791107097.delta" sparkle:deltaFrom="1791107097" length="2293394" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="fvCi9jdi04xOVfjIwKrM/qGnwVCnze96MI8+gOxJ76IsHHhLPEkoH/InZuYKWVLWvZC8/g62EHHOWXwB48GeAw=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.4/Laban1791143888-1790539201.delta" sparkle:deltaFrom="1790539201" length="4364458" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="5qjjqcVmjmnpk4Rmk9lYiOELD+TvqqNEucdStLWFeFJEixMdkwosj1GffeJo3doqbgLBlMzqwgMY2W4xLFFtAg=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.4/Laban1791143888-1790250962.delta" sparkle:deltaFrom="1790250962" length="6270754" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="ssoZsmhq5eLV7s8+EUeG4UMWxH2wTWas3nsQr7bHzOd3kVsKpL1g4ya3AnKQxmBQJTbiFjZ47X5IT17RPwuHCQ=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>0.8.3</title>
             <pubDate>Sun, 04 Oct 2026 21:12:04 +0200</pubDate>
             <sparkle:version>1791140982</sparkle:version>
@@ -73,34 +92,6 @@
             <sparkle:deltas>
                 <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.2/Laban1791107097-1790539201.delta" sparkle:deltaFrom="1790539201" length="4152670" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="uRcsbrskXlREHnmUpHsAx69QiZHT9IccSgDs9NlkMNnW86F81Yzq4xwDzR/PKYqt5COZasmvfv+pTN+LBS0xAg=="/>
                 <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.2/Laban1791107097-1790250962.delta" sparkle:deltaFrom="1790250962" length="6065530" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="E6+zDKn4b+O3YgB3mzAKi4DwC1QPmgXSpfJiujyLIqONKF7xCh2ln4boyjS5EFXqa7V8uXHkr4hymtOKJ0cYAQ=="/>
-            </sparkle:deltas>
-        </item>
-        <item>
-            <title>0.8.1</title>
-            <pubDate>Sun, 27 Sep 2026 22:02:11 +0200</pubDate>
-            <sparkle:version>1790539201</sparkle:version>
-            <sparkle:shortVersionString>0.8.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[## New
-
-- **Inline images.** Laban now draws Kitty graphics protocol images, on by default, so tools and agents that show pictures in the terminal work out of the box. Turn it off with `defaults write com.laban.LabanApp LabanKittyGraphicsEnabled -bool NO`.
-- **Help → Diagnostics…** shows the build, component stack and verified terminal capabilities for bug reports. `laban version --verbose` prints the same for scripts and agents. About is back to a simple native panel.
-- New installs get color emoji and agent completion notifications by default.
-
-## Fixed
-
-- After an ssh connection drops under a full-screen program, the next shell prompt now turns off the mouse reporting, focus reporting and alternate screen it left behind. Scrolling and dragging no longer type escape codes into zsh, and scrollback works again.
-- The scroll wheel scrolls `less`, `man` and other pagers again.
-- Restarting Laban no longer brings back a dead program's mouse mode, and zsh's prompt no longer gets a stray `%` beside it after a restart.
-- Closing a tab hangs up its shell and programs even when Laban was started with hangups ignored.
-- Rendering no longer freezes after a display is unplugged.
-- Programs started from Laban can reach local-network hosts and other protected resources after granting permission.
-- Images from a terminal program only reach the PNG decoder when they really are PNGs within the size budget.
-]]></description>
-            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.1/Laban-0.8.1.zip" length="20599419" type="application/octet-stream" sparkle:edSignature="iSQnBStzHudnjy5+DAaXY0mBtCr5dnAlGVafh7FG+yoc3RfHCHT5IJjHYkxMHANVSlEf1/Hx+nhlB7zSplW7Bg=="/>
-            <sparkle:deltas>
-                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.1/Laban1790539201-1790250962.delta" sparkle:deltaFrom="1790250962" length="4252122" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="1mXkMvipI8O+Q+GMz3tESShDykvbG6ZI7RDwtJyKqpPVO9eXFqSJdT/Bn+3ukKRyA3Sw+BeNFP9CXR3ShGVMAA=="/>
             </sparkle:deltas>
         </item>
     </channel>
