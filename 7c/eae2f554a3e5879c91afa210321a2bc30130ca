@@ -1,0 +1,26 @@
+Tests/LabanCoreTests/FrameProducerSpanParityTests.swift
+  s_49ace9fc1d63bd::t_d8039f5f2e5c9b 159-160
+  s_49ace9fc1d63bd::t_2d60968d0e20cb 155-158
+Sources/LabanCore/FrameProducer.swift
+  s_49ace9fc1d63bd::t_2d60968d0e20cb 2518
+  s_49ace9fc1d63bd::t_5a9f168246f4ca 2519-2520,2540
+Tests/LabanCoreTests/GraphemeClusteringTests.swift
+  s_49ace9fc1d63bd::t_2d60968d0e20cb 139-146,151-156
+  s_49ace9fc1d63bd::t_7a3410a156b3a8 112,147-150,157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7ceae2f554a3e5879c91afa210321a2bc30130ca",
+  "prompts": {},
+  "sessions": {
+    "s_49ace9fc1d63bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c054a1d0-9b72-495e-87ce-5e8879b4617d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
