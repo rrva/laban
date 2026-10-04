@@ -310,6 +310,8 @@ final class AppSessionCoordinator {
     launchCwdOverrideBySessionId[tabId] = cwd
   }
 
+  var backend: TerminalSessionBackend { mode }
+
   var usesRemoteSnapshots: Bool {
     mode == .laband
   }

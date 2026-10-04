@@ -10,6 +10,20 @@ extension HeadlessDebugRuntime {
     }
   }
 
+  public func closeConfirmationState(query: [String: String]) -> DebugResponse {
+    withRuntimeLock {
+      var ctx = controlProjectionContext()
+      let model = model
+      let clientInfo = ctx.sessionClientInfoById
+      ctx.closeConfirmationEnvironment = CloseConfirmationEnvironment(
+        shellPid: { CloseConfirmation.shellPid(for: $0, model: model, clientInfo: clientInfo) },
+        sessionsSurviveQuit: CloseConfirmationEnvironment.sessionsSurviveQuit(
+          backend: terminalBackend))
+      let response = ControlStateProjections.closeConfirmationState(query: query, ctx: ctx)
+      return DebugResponse(status: response.status, body: response.body)
+    }
+  }
+
   /// Record one OSC 133 transition on the event stream so
   /// `GET /debug/events` shows prompt/command/exit changes. Wired to
   /// `AppModel.onShellIntegrationChange`, which fires on the main queue.

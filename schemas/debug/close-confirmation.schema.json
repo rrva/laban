@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/close-confirmation.schema.json",
+  "title": "Debug Close Confirmation",
+  "description": "What closing a pane, tab, the window, or the app would ask (docs/product/spec.md §28), without showing the dialog.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["scope", "mode", "safeList", "sessionsSurviveQuit", "asks", "panes"],
+  "properties": {
+    "scope": {"type": "string", "enum": ["pane", "tab", "window", "quit"]},
+    "mode": {"type": "string", "enum": ["whenRunning", "always", "never"]},
+    "safeList": {"type": "array", "items": {"type": "string"}},
+    "sessionsSurviveQuit": {"type": "boolean"},
+    "asks": {"type": "boolean"},
+    "panes": {"type": "array", "items": {"$ref": "#/$defs/pane"}},
+    "dialog": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["messageText", "informativeText", "confirmButtonTitle", "busyPanes"],
+      "properties": {
+        "messageText": {"type": "string"},
+        "informativeText": {"type": "string"},
+        "confirmButtonTitle": {"type": "string"},
+        "busyPanes": {"type": "array", "items": {"$ref": "#/$defs/pane"}}
+      }
+    }
+  },
+  "$defs": {
+    "pane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "tabId", "tabTitle", "busy", "signal"],
+      "properties": {
+        "sessionId": {"type": "string"},
+        "tabId": {"type": "string"},
+        "tabTitle": {"type": "string"},
+        "busy": {"type": "boolean"},
+        "signal": {
+          "type": "string",
+          "enum": ["safeList", "foregroundProcess", "exited", "noProcessInfo"]
+        },
+        "program": {"type": ["string", "null"]},
+        "foregroundPid": {"type": ["integer", "null"]},
+        "agentState": {"type": ["string", "null"], "enum": ["working", "waiting", null]}
+      }
+    }
+  }
+}

@@ -2403,6 +2403,64 @@ TRANSLATIONS.update({
     },
 })
 
+# Close confirmation for running programs (spec §28).
+TRANSLATIONS.update({
+    "Close this pane?": {
+        "zh-Hans": "要关闭此窗格吗？", "zh-Hant": "要關閉此窗格嗎？", "ja": "このペインを閉じますか？", "ko": "이 창을 닫으시겠습니까?", "fr": "Fermer ce volet ?", "es": "¿Cerrar este panel?", "hi": "यह पेन बंद करें?", "ru": "Закрыть эту панель?", "de": "Diesen Bereich schließen?", "pt-BR": "Fechar este painel?", "it": "Chiudere questo riquadro?",
+    },
+    "Close this tab?": {
+        "zh-Hans": "要关闭此标签页吗？", "zh-Hant": "要關閉此標籤頁嗎？", "ja": "このタブを閉じますか？", "ko": "이 탭을 닫으시겠습니까?", "fr": "Fermer cet onglet ?", "es": "¿Cerrar esta pestaña?", "hi": "यह टैब बंद करें?", "ru": "Закрыть эту вкладку?", "de": "Diesen Tab schließen?", "pt-BR": "Fechar esta aba?", "it": "Chiudere questa scheda?",
+    },
+    "Close this window?": {
+        "zh-Hans": "要关闭此窗口吗？", "zh-Hant": "要關閉此視窗嗎？", "ja": "このウインドウを閉じますか？", "ko": "이 윈도우를 닫으시겠습니까?", "fr": "Fermer cette fenêtre ?", "es": "¿Cerrar esta ventana?", "hi": "यह विंडो बंद करें?", "ru": "Закрыть это окно?", "de": "Dieses Fenster schließen?", "pt-BR": "Fechar esta janela?", "it": "Chiudere questa finestra?",
+    },
+    "Quit Laban?": {
+        "zh-Hans": "要退出 Laban 吗？", "zh-Hant": "要結束 Laban 嗎？", "ja": "Laban を終了しますか？", "ko": "Laban을 종료하시겠습니까?", "fr": "Quitter Laban ?", "es": "¿Salir de Laban?", "hi": "Laban बंद करें?", "ru": "Завершить Laban?", "de": "Laban beenden?", "pt-BR": "Encerrar o Laban?", "it": "Uscire da Laban?",
+    },
+    "Close Window": {
+        "zh-Hans": "关闭窗口", "zh-Hant": "關閉視窗", "ja": "ウインドウを閉じる", "ko": "윈도우 닫기", "fr": "Fermer la fenêtre", "es": "Cerrar ventana", "hi": "विंडो बंद करें", "ru": "Закрыть окно", "de": "Fenster schließen", "pt-BR": "Fechar janela", "it": "Chiudi finestra",
+    },
+    "A program": {
+        "zh-Hans": "一个程序", "zh-Hant": "一個程式", "ja": "プログラム", "ko": "프로그램", "fr": "Un programme", "es": "Un programa", "hi": "एक प्रोग्राम", "ru": "Программа", "de": "Ein Programm", "pt-BR": "Um programa", "it": "Un programma",
+    },
+    "The terminal session will end.": {
+        "zh-Hans": "终端会话将结束。", "zh-Hant": "終端機工作階段將會結束。", "ja": "ターミナルセッションは終了します。", "ko": "터미널 세션이 종료됩니다.", "fr": "La session de terminal prendra fin.", "es": "La sesión de terminal finalizará.", "hi": "टर्मिनल सत्र समाप्त हो जाएगा।", "ru": "Сеанс терминала будет завершён.", "de": "Die Terminalsitzung wird beendet.", "pt-BR": "A sessão do terminal será encerrada.", "it": "La sessione del terminale verrà chiusa.",
+    },
+    "%@ is running and will be ended.": {
+        "zh-Hans": "%@ 正在运行，将被结束。", "zh-Hant": "%@ 正在執行，將被結束。", "ja": "%@ が実行中です。終了されます。", "ko": "%@이(가) 실행 중이며 종료됩니다.", "fr": "%@ est en cours d’exécution et sera arrêté.", "es": "%@ se está ejecutando y se terminará.", "hi": "%@ चल रहा है और बंद कर दिया जाएगा।", "ru": "%@ выполняется и будет завершён.", "de": "%@ wird ausgeführt und wird beendet.", "pt-BR": "%@ está em execução e será encerrado.", "it": "%@ è in esecuzione e verrà terminato.",
+    },
+    "%@ is working and will be interrupted.": {
+        "zh-Hans": "%@ 正在工作，将被中断。", "zh-Hant": "%@ 正在工作，將被中斷。", "ja": "%@ が作業中です。中断されます。", "ko": "%@이(가) 작업 중이며 중단됩니다.", "fr": "%@ est en train de travailler et sera interrompu.", "es": "%@ está trabajando y se interrumpirá.", "hi": "%@ काम कर रहा है और बाधित हो जाएगा।", "ru": "%@ работает и будет прерван.", "de": "%@ arbeitet gerade und wird unterbrochen.", "pt-BR": "%@ está trabalhando e será interrompido.", "it": "%@ sta lavorando e verrà interrotto.",
+    },
+    "These programs will be ended:": {
+        "zh-Hans": "以下程序将被结束：", "zh-Hant": "以下程式將被結束：", "ja": "次のプログラムは終了されます:", "ko": "다음 프로그램이 종료됩니다:", "fr": "Ces programmes seront arrêtés :", "es": "Estos programas se terminarán:", "hi": "ये प्रोग्राम बंद कर दिए जाएँगे:", "ru": "Эти программы будут завершены:", "de": "Diese Programme werden beendet:", "pt-BR": "Estes programas serão encerrados:", "it": "Questi programmi verranno terminati:",
+    },
+    "%1$@ in “%2$@”": {
+        "zh-Hans": "“%2$@”中的 %1$@", "zh-Hant": "「%2$@」中的 %1$@", "ja": "「%2$@」の %1$@", "ko": "“%2$@”의 %1$@", "fr": "%1$@ dans « %2$@ »", "es": "%1$@ en «%2$@»", "hi": "“%2$@” में %1$@", "ru": "%1$@ в «%2$@»", "de": "%1$@ in „%2$@“", "pt-BR": "%1$@ em “%2$@”", "it": "%1$@ in “%2$@”",
+    },
+    "%1$@ (working) in “%2$@”": {
+        "zh-Hans": "“%2$@”中的 %1$@（工作中）", "zh-Hant": "「%2$@」中的 %1$@（工作中）", "ja": "「%2$@」の %1$@（作業中）", "ko": "“%2$@”의 %1$@(작업 중)", "fr": "%1$@ (en cours) dans « %2$@ »", "es": "%1$@ (trabajando) en «%2$@»", "hi": "“%2$@” में %1$@ (काम कर रहा है)", "ru": "%1$@ (работает) в «%2$@»", "de": "%1$@ (arbeitet) in „%2$@“", "pt-BR": "%1$@ (trabalhando) em “%2$@”", "it": "%1$@ (al lavoro) in “%2$@”",
+    },
+    "Don’t ask again": {
+        "zh-Hans": "不再询问", "zh-Hant": "不再詢問", "ja": "今後確認しない", "ko": "다시 묻지 않기", "fr": "Ne plus demander", "es": "No volver a preguntar", "hi": "फिर से न पूछें", "ru": "Больше не спрашивать", "de": "Nicht mehr fragen", "pt-BR": "Não perguntar novamente", "it": "Non chiedere più",
+    },
+    "Ask before closing:": {
+        "zh-Hans": "关闭前询问：", "zh-Hant": "關閉前詢問：", "ja": "閉じる前に確認:", "ko": "닫기 전에 확인:", "fr": "Demander avant de fermer :", "es": "Preguntar antes de cerrar:", "hi": "बंद करने से पहले पूछें:", "ru": "Спрашивать перед закрытием:", "de": "Vor dem Schließen fragen:", "pt-BR": "Perguntar antes de fechar:", "it": "Chiedi prima di chiudere:",
+    },
+    "Except for:": {
+        "zh-Hans": "以下除外：", "zh-Hant": "以下除外：", "ja": "次を除く:", "ko": "다음 제외:", "fr": "Sauf pour :", "es": "Excepto para:", "hi": "इनके अलावा:", "ru": "Кроме:", "de": "Außer für:", "pt-BR": "Exceto para:", "it": "Tranne per:",
+    },
+    "When a program is running": {
+        "zh-Hans": "有程序运行时", "zh-Hant": "有程式執行時", "ja": "プログラムの実行中", "ko": "프로그램이 실행 중일 때", "fr": "Si un programme est en cours", "es": "Si hay un programa en ejecución", "hi": "जब कोई प्रोग्राम चल रहा हो", "ru": "Если выполняется программа", "de": "Wenn ein Programm läuft", "pt-BR": "Quando um programa estiver em execução", "it": "Quando un programma è in esecuzione",
+    },
+    "Always": {
+        "zh-Hans": "始终", "zh-Hant": "永遠", "ja": "常に", "ko": "항상", "fr": "Toujours", "es": "Siempre", "hi": "हमेशा", "ru": "Всегда", "de": "Immer", "pt-BR": "Sempre", "it": "Sempre",
+    },
+    "Never": {
+        "zh-Hans": "从不", "zh-Hant": "永不", "ja": "しない", "ko": "안 함", "fr": "Jamais", "es": "Nunca", "hi": "कभी नहीं", "ru": "Никогда", "de": "Nie", "pt-BR": "Nunca", "it": "Mai",
+    },
+})
+
 
 def build_xcstrings() -> dict:
     strings: dict = {}

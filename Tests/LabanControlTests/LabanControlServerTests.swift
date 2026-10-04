@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import LabanControl
+@testable import LabanControl
 import LabanCore
 import XCTest
 
@@ -509,10 +509,21 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(state.legacyResponseSchemaPath, "schemas/debug/state.schema.json")
   }
 
+  /// An endpoint advertised in discovery but missing from the served routes
+  /// answers 404 in the GUI (as `/debug/close-confirmation` once did).
+  func testEveryAdvertisedEndpointIsServed() {
+    let served = Set(
+      ControlRouteCatalog.routes.map { "\($0.endpoint.binding.method) \($0.endpoint.binding.path)" })
+    let unserved = ControlRouteCatalog.endpoints
+      .map { "\($0.binding.method) \($0.binding.path)" }
+      .filter { !served.contains($0) }
+    XCTAssertEqual(unserved, [])
+  }
+
   func testRouteCatalogCoversLegacyDebugSurfaceAndDescriptors() throws {
     let endpoints = ControlRouteCatalog.endpoints
-    XCTAssertEqual(endpoints.count, 52)
-    XCTAssertEqual(Set(endpoints.map { "\($0.binding.method) \($0.binding.path)" }).count, 52)
+    XCTAssertEqual(endpoints.count, 53)
+    XCTAssertEqual(Set(endpoints.map { "\($0.binding.method) \($0.binding.path)" }).count, 53)
     XCTAssertNotNil(
       endpoints.first { $0.binding.method == "GET" && $0.binding.path == "/debug/sessions/<id>" })
 

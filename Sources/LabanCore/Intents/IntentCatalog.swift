@@ -1169,6 +1169,11 @@ public struct IntentCatalog: Sendable {
       requiredCapability: .observeSensitive, dataSensitivity: .nonSensitiveState,
       availability: guiObserve),
     descriptor(
+      id: "closeConfirmation.state", kind: .query, category: "state",
+      summary: "Return what closing a pane, tab, window, or the app would ask.",
+      requiredCapability: .observeSensitive, dataSensitivity: .nonSensitiveState,
+      availability: guiObserve),
+    descriptor(
       id: "scrollIndicator.state", kind: .query, category: "state",
       summary: "Return scroll indicator debug state.",
       requiredCapability: .observe, dataSensitivity: .nonSensitiveState,

@@ -201,6 +201,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+  /// Quits the app starts itself (restart, automation) never wait on a
+  /// close-confirmation dialog.
+  static func terminateWithoutConfirmation() {
+    QuitConfirmation.shared.noteQuitConfirmed()
+    NSApp.terminate(nil)
+  }
+
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    let terminalView = windowController?.terminalView
+    return QuitConfirmation.shared.shouldTerminate(
+      asks: { terminalView?.closeConfirmationDecision(.quit).asks ?? false },
+      present: { answer in
+        terminalView?.confirmClose(.quit, onCancel: { answer(false) }) { answer(true) }
+      },
+      reply: { sender.reply(toApplicationShouldTerminate: $0) })
+  }
+
   /// Opt in to the macOS 14+ secure state-restoration contract. Without it
   /// AppKit logs a warning each launch and declines to restore window state.
   func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
@@ -646,7 +663,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     task.arguments = command.arguments
     do {
       try task.run()
-      NSApp.terminate(nil)
+      Self.terminateWithoutConfirmation()
     } catch {
       AppLog.app.error("restart failed: \(error)")
     }

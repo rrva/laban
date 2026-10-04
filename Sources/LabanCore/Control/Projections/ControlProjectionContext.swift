@@ -29,6 +29,9 @@ public struct ControlProjectionContext {
   /// Reports the sidebar hover-preview state for `/debug/state`; nil when
   /// the serving runtime has no renderer to report (GUI control server).
   public var hoverPreviewProvider: (() -> HoverPreviewStateResponse?)?
+  /// How `closeConfirmation.state` resolves shell pids and quit survival; nil
+  /// falls back to `sessionClientInfoById` and in-process sessions.
+  public var closeConfirmationEnvironment: CloseConfirmationEnvironment?
 
   public init(
     model: AppModel,

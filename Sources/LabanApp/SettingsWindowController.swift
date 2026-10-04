@@ -76,6 +76,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let identityPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let restoreCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Restore tabs on launch"), target: nil, action: nil)
+  private let closeConfirmationPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let closeConfirmationSafeListField = NSTextField(string: "")
+  private let closeConfirmationOptions: [CloseConfirmationMode] = [.whenRunning, .always, .never]
   private let controlServerCheckbox = NSButton(
     checkboxWithTitle: L10n.tr("Enable agent control server"), target: nil, action: nil)
   private let agentAttachedSessionCheckbox = NSButton(
@@ -498,6 +501,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       + "the next launch — toggle it before quitting to control whether your "
       + "tabs return."
 
+    closeConfirmationPopUp.target = self
+    closeConfirmationPopUp.action = #selector(closeConfirmationModeChanged(_:))
+    for option in closeConfirmationOptions {
+      closeConfirmationPopUp.addItem(withTitle: closeConfirmationTitle(option))
+    }
+    closeConfirmationPopUp.toolTip =
+      "Whether closing a pane, tab, or window, or quitting, asks first. "
+      + "“When a program is running” asks only when something other than the "
+      + "programs listed below is in the foreground. Quitting asks only when "
+      + "it ends sessions: background sessions that restore on launch keep "
+      + "running."
+    closeConfirmationSafeListField.target = self
+    closeConfirmationSafeListField.action = #selector(closeConfirmationSafeListChanged(_:))
+    closeConfirmationSafeListField.cell?.sendsActionOnEndEditing = true
+    closeConfirmationSafeListField.placeholderString = "bash, zsh, fish, tmux"
+    closeConfirmationSafeListField.toolTip =
+      "Comma-separated program names that never trigger the question, such "
+      + "as shells at their prompt and terminal multiplexers."
+
     controlServerCheckbox.target = self
     controlServerCheckbox.action = #selector(controlServerChanged(_:))
     controlServerCheckbox.toolTip =
@@ -696,6 +718,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel(L10n.tr("Unicode width:")), graphemeWidthPopUp],
       [makeLabel(L10n.tr("Sessions:")), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
+      [makeLabel(L10n.tr("Ask before closing:")), closeConfirmationPopUp],
+      [makeLabel(L10n.tr("Except for:")), closeConfirmationSafeListField],
       [NSGridCell.emptyContentView, autoUpdateCheckbox],
       [NSGridCell.emptyContentView, controlServerCheckbox],
       [NSGridCell.emptyContentView, agentAttachedSessionCheckbox],
@@ -982,6 +1006,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       backendPopUp.selectItem(at: row)
     }
     restoreCheckbox.state = RestoreOnLaunchSettings.isEnabled ? .on : .off
+    if let row = closeConfirmationOptions.firstIndex(of: CloseConfirmationSettings.mode()) {
+      closeConfirmationPopUp.selectItem(at: row)
+    }
+    closeConfirmationSafeListField.stringValue =
+      CloseConfirmationSettings.safeList().joined(separator: ", ")
+    closeConfirmationSafeListField.isEnabled = CloseConfirmationSettings.mode() == .whenRunning
     autoUpdateCheckbox.isEnabled = UpdaterController.shared.isConfigured
     autoUpdateCheckbox.state =
       UpdaterController.shared.automaticallyChecksForUpdates ? .on : .off
@@ -1414,6 +1444,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   @objc private func restoreChanged(_ sender: NSButton) {
     RestoreOnLaunchSettings.set(sender.state == .on)
+  }
+
+  private func closeConfirmationTitle(_ mode: CloseConfirmationMode) -> String {
+    switch mode {
+    case .whenRunning: return L10n.tr("When a program is running")
+    case .always: return L10n.tr("Always")
+    case .never: return L10n.tr("Never")
+    }
+  }
+
+  @objc private func closeConfirmationModeChanged(_ sender: NSPopUpButton) {
+    guard closeConfirmationOptions.indices.contains(sender.indexOfSelectedItem) else { return }
+    let mode = closeConfirmationOptions[sender.indexOfSelectedItem]
+    CloseConfirmationSettings.setMode(mode)
+    closeConfirmationSafeListField.isEnabled = mode == .whenRunning
+  }
+
+  @objc private func closeConfirmationSafeListChanged(_ sender: NSTextField) {
+    CloseConfirmationSettings.setSafeList(sender.stringValue.split(separator: ",").map(String.init))
+    sender.stringValue = CloseConfirmationSettings.safeList().joined(separator: ", ")
   }
 
   @objc private func autoUpdateChanged(_ sender: NSButton) {
