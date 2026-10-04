@@ -1,0 +1,14 @@
+appcast.xml
+  h_5045ed1a731aeb 5-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "556df127868088a4cae6f2b85fd208fdef499b22",
+  "prompts": {},
+  "humans": {
+    "h_5045ed1a731aeb": {
+      "author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
