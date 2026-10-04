@@ -152,4 +152,72 @@ final class GraphemeClusteringTests: XCTestCase {
       XCTAssertEqual(runs, expected, "\(text.unicodeScalars.map { String($0.value, radix: 16) })")
     }
   }
+
+  /// A one-column emoji (VS16 with mode 2027 off) draws two columns wide when
+  /// the next cell is blank, exactly like a wide emoji and its spacer tail. A
+  /// visible neighbor, or an underline that would change length, keeps it in
+  /// one column.
+  func testNarrowEmojiBorrowsBlankNeighbor() throws {
+    let heart = "\u{2764}\u{FE0F}"
+    let cmds = try runWithText(
+      "[\(heart) x|\(heart)y|\u{1b}[4m\(heart) \u{1b}[0m|\(heart)\r\n")
+    var runs: [String] = []
+    for cmd in cmds {
+      if case .glyphRun(let origin, let text, _, _, _, .terminal, _, _, _, let cells, _, _, _) = cmd
+      {
+        runs.append("\(Int(origin.x / 9)):\(text):\(cells.map(String.init) ?? "nil")")
+      }
+    }
+    XCTAssertEqual(
+      runs,
+      [
+        "0:[\(heart):3",  // the space after it is borrowed
+        "3:x|\(heart)y|:5",  // `y` is visible, so the heart keeps one column
+        "8:\(heart) :2",  // underlined: the space stays a cell of its own
+        "10:|\(heart):3",  // the empty cell at the end of the line is borrowed
+      ],
+      "got runs: \(runs)")
+  }
+
+  /// A borrowed blank ends the emoji's run: a ZWJ before it cannot pull the
+  /// next emoji across the space into one cluster.
+  func testBorrowedBlankEndsTheEmojiRun() throws {
+    let cmds = try runWithText("\u{2764}\u{FE0F}\u{200D} \u{1F525}x\r\n")  // ❤️‍ 🔥x
+    var runs: [String] = []
+    for cmd in cmds {
+      if case .glyphRun(let origin, let text, _, _, _, .terminal, _, _, _, let cells, _, _, _) = cmd
+      {
+        let scalars = text.unicodeScalars.map { String($0.value, radix: 16) }.joined(separator: ".")
+        runs.append("\(Int(origin.x / 9)):\(scalars):\(cells.map(String.init) ?? "nil")")
+      }
+    }
+    XCTAssertEqual(runs, ["0:2764.fe0f.200d:2", "2:1f525:2", "4:78:1"], "got runs: \(runs)")
+  }
+
+  /// The cursor covers one column, so an emoji under it or right before it
+  /// keeps one column rather than having half of it hidden.
+  func testCursorBesideNarrowEmojiKeepsItOneColumn() throws {
+    // The cursor ends right after the heart, on the blank it would borrow.
+    let cmds = try runWithText("\u{2764}\u{FE0F}")
+    var spans: [String: Int?] = [:]
+    for cmd in cmds {
+      if case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, let cells, _, _, _) = cmd {
+        spans[text] = cells
+      }
+    }
+    XCTAssertEqual(spans["\u{2764}\u{FE0F}"], 1, "got \(spans)")
+  }
+
+  /// The emoji paints over the cell it borrows, so an empty cell with another
+  /// background (here red from an erase) keeps the emoji to one column.
+  func testEmptyNeighborWithOtherBackgroundIsNotBorrowed() throws {
+    let cmds = try runWithText("\u{2764}\u{FE0F}\u{1b}[41m\u{1b}[K\u{1b}[0m\r\n")
+    var spans: [String: Int?] = [:]
+    for cmd in cmds {
+      if case .glyphRun(_, let text, _, _, _, .terminal, _, _, _, let cells, _, _, _) = cmd {
+        spans[text] = cells
+      }
+    }
+    XCTAssertEqual(spans["\u{2764}\u{FE0F}"], 1, "got \(spans)")
+  }
 }
