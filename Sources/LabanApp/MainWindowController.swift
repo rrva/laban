@@ -712,6 +712,7 @@ final class MainWindowController: NSWindowController {
     window.addTitlebarAccessoryViewController(accessory)
 
     let controller = MainWindowController(window: window)
+    window.delegate = controller
     controller.terminalBackgroundImageStore = backgroundImageStore
     controller.terminalBackgroundFixtureRootURL = backgroundFixtureRootURL
     controller.controlSessionLaunchCoordinator = launchCoordinator
@@ -1554,5 +1555,21 @@ final class MainWindowController: NSWindowController {
           sessionCoordinator: sessionCoordinator)
       }
     }
+  }
+}
+
+// MARK: - Close confirmation (spec §28)
+
+extension MainWindowController: NSWindowDelegate {
+  /// The close button asks when closing the window would end running
+  /// programs; closing the last window quits, and that quit does not ask again.
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    guard let terminalView else { return true }
+    return QuitConfirmation.shared.windowShouldClose(
+      asks: { terminalView.closeConfirmationDecision(.window).asks },
+      present: { answer in
+        terminalView.confirmClose(.window, onCancel: { answer(false) }) { answer(true) }
+      },
+      close: { [weak sender] in sender?.close() })
   }
 }

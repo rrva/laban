@@ -1266,7 +1266,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       if let self, self.captureRecorder != nil {
         self.toggleCapture(nil)
       }
-      NSApp.terminate(nil)
+      AppDelegate.terminateWithoutConfirmation()
     }
   }
 
@@ -1297,7 +1297,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           renderedFrame: renderedFrameCount)
         if config.autoQuit {
           postAutomationAutoQuitNotice("Resize automation will quit Laban after the final step.")
-          NSApp.terminate(nil)
+          AppDelegate.terminateWithoutConfirmation()
         }
         return
       }
@@ -8689,14 +8689,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           tabId: id, origin: pt, activated: false, currentSlot: nil)
         invalidateRenderAndWake()
       case .closeTab(let id):
-        do {
-          try closeTabRegisteringUndo(id)
-          pruneClosedTabState(id)
-        } catch AppError.lastTabClosed {
-          pruneClosedTabState(id)
-          window?.close()
-        } catch {}
-        invalidateRenderAndWake()
+        requestCloseTab(id)
       case .none: break
       }
       return
@@ -9747,12 +9740,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   @objc func closePane(_ sender: Any?) {
     guard let tab = model.activeTab, tab.allSessionIds.count > 1 else { return }
+    let sessionId = tab.focusedSessionId
+    confirmClose(.pane, sessionIds: [sessionId]) { [weak self] in
+      self?.performClosePane(tabId: tab.id, sessionId: sessionId)
+    }
+  }
+
+  private func performClosePane(tabId: Tab.ID, sessionId: Session.ID) {
+    guard let tab = model.tabs.first(where: { $0.id == tabId }),
+      tab.allSessionIds.contains(sessionId)
+    else { return }
+    // A sibling may have exited while the dialog was up; the last pane closes its tab.
+    guard tab.allSessionIds.count > 1 else { return performCloseTab(tabId) }
     discardMarkedComposition()
-    model.closePane(inTab: tab.id, sessionId: tab.focusedSessionId) { id in
+    model.closePane(inTab: tabId, sessionId: sessionId) { id in
       sessionCoordinator?.terminate(sessionId: id, in: tab)
     }
-    selectionsBySession.removeValue(forKey: tab.focusedSessionId)
-    remoteMouseEncodingBySession.removeValue(forKey: tab.focusedSessionId)
+    selectionsBySession.removeValue(forKey: sessionId)
+    remoteMouseEncodingBySession.removeValue(forKey: sessionId)
     paneFocusChanged()
   }
 
@@ -9932,15 +9937,126 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   @objc func closeTab(_ sender: Any?) {
     guard let tabId = model.activeTab?.id else { return }
+    requestCloseTab(tabId)
+  }
+
+  private func requestCloseTab(_ tabId: Tab.ID) {
+    guard let tab = model.tabs.first(where: { $0.id == tabId }) else { return }
+    confirmClose(.tab, sessionIds: tab.allSessionIds) { [weak self] in
+      self?.performCloseTab(tabId)
+    }
+  }
+
+  private func performCloseTab(_ tabId: Tab.ID) {
+    guard model.tabs.contains(where: { $0.id == tabId }) else { return }
     do {
       try closeTabRegisteringUndo(tabId)
       pruneClosedTabState(tabId)
     } catch AppError.lastTabClosed {
       pruneClosedTabState(tabId)
+      // Closing the last tab quits; this close was already confirmed (or
+      // needed none), so the quit must not ask about the same tab again.
+      quitConfirmation.noteQuitConfirmed()
       window?.close()
       return
     } catch {}
     invalidateRenderAndWake()
+  }
+
+  // MARK: - Close confirmation (spec §28)
+
+  /// Test seam: answers close confirmations in place of the sheet. Returns
+  /// true to confirm.
+  var closeConfirmationResponderForTesting: ((CloseConfirmationDialog) -> Bool)?
+  /// Where a quit that follows closing the last tab is marked confirmed.
+  var quitConfirmation = QuitConfirmation.shared
+  /// Test seam: stands in for the backend's process inspection.
+  var closeConfirmationEnvironmentForTesting: CloseConfirmationEnvironment?
+
+  /// How this window's backend resolves shell pids and whether its sessions
+  /// survive quit.
+  var closeConfirmationEnvironment: CloseConfirmationEnvironment {
+    if let closeConfirmationEnvironmentForTesting { return closeConfirmationEnvironmentForTesting }
+    let coordinator = sessionCoordinator
+    let model = model
+    return CloseConfirmationEnvironment(
+      shellPid: { id in
+        coordinator?.attachShellPID(forSessionId: id).map { Int32($0) }
+          ?? CloseConfirmation.shellPid(for: id, model: model)
+      },
+      sessionsSurviveQuit: CloseConfirmationEnvironment.sessionsSurviveQuit(
+        backend: coordinator?.backend ?? .inProcess))
+  }
+
+  func closeConfirmationDecision(
+    _ scope: CloseConfirmationScope, sessionIds: [Session.ID]? = nil
+  ) -> CloseConfirmationDecision {
+    CloseConfirmation.decide(
+      scope: scope, sessionIds: sessionIds ?? model.tabs.flatMap(\.allSessionIds), model: model,
+      environment: closeConfirmationEnvironment, localize: { L10n.dynamic($0) })
+  }
+
+  /// Runs `proceed` once the user confirms closing `sessionIds`, or at once
+  /// when nothing needs asking; runs `onCancel` when the user declines. A pane
+  /// or tab close requested while another sheet is up is declined; a window
+  /// close or quit then asks with an app-modal alert instead.
+  func confirmClose(
+    _ scope: CloseConfirmationScope, sessionIds: [Session.ID]? = nil,
+    onCancel: @escaping () -> Void = {},
+    then proceed: @escaping () -> Void
+  ) {
+    let decision = closeConfirmationDecision(scope, sessionIds: sessionIds)
+    guard let dialog = decision.dialog else { return proceed() }
+    EventLog.shared.log(
+      "close.confirm.shown",
+      ["scope": scope.rawValue, "busy": String(dialog.busyPanes.count)])
+    if let responder = closeConfirmationResponderForTesting {
+      if responder(dialog) { proceed() } else { onCancel() }
+      return
+    }
+    let alert = Self.closeConfirmationAlert(dialog)
+    let finish = { (response: NSApplication.ModalResponse) in
+      if alert.suppressionButton?.state == .on {
+        CloseConfirmationSettings.setMode(.never)
+      }
+      let confirmed = response == .alertFirstButtonReturn
+      EventLog.shared.log(
+        "close.confirm.answered", ["scope": scope.rawValue, "confirmed": String(confirmed)])
+      if confirmed { proceed() } else { onCancel() }
+    }
+    let affectsWholeApp = scope == .window || scope == .quit
+    guard let window else { return finish(alert.runModal()) }
+    if window.attachedSheet != nil {
+      // Another sheet owns the window. A quit or window close still gets an
+      // answer through an app-modal alert; a pane or tab close is dropped.
+      guard affectsWholeApp else {
+        EventLog.shared.log("close.confirm.blockedBySheet", ["scope": scope.rawValue])
+        return onCancel()
+      }
+      NSApp.activate(ignoringOtherApps: true)
+      return finish(alert.runModal())
+    }
+    if affectsWholeApp {
+      // A quit from the Dock or a logout can arrive while Laban is hidden or
+      // the window is minimized; the sheet must come up where it is seen.
+      NSApp.unhide(nil)
+      if window.isMiniaturized { window.deminiaturize(nil) }
+      NSApp.activate(ignoringOtherApps: true)
+      window.makeKeyAndOrderFront(nil)
+    }
+    alert.beginSheetModal(for: window, completionHandler: finish)
+  }
+
+  static func closeConfirmationAlert(_ dialog: CloseConfirmationDialog) -> NSAlert {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = dialog.messageText
+    alert.informativeText = dialog.informativeText
+    alert.addButton(withTitle: dialog.confirmButtonTitle)
+    alert.addButton(withTitle: L10n.tr("Cancel"))
+    alert.showsSuppressionButton = true
+    alert.suppressionButton?.title = L10n.tr("Don’t ask again")
+    return alert
   }
 
   @objc func selectTabByIndex(_ sender: Any?) {
