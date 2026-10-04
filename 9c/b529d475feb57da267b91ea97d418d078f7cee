@@ -1,0 +1,40 @@
+Tests/LabanAppTests/CloseConfirmationViewTests.swift
+  s_f45dd88f08a292::t_7fac3fe0ea1f9f 1-185
+  s_f45dd88f08a292::t_7f16c62f19d580 186-208
+Sources/LabanApp/QuitConfirmation.swift
+  s_f45dd88f08a292::t_ab9d32e88c763e 1-69
+Sources/LabanApp/AppDelegate.swift
+  s_f45dd88f08a292::t_2909004f06c979 204-220,666
+Sources/LabanApp/AppSessionCoordinator.swift
+  s_f45dd88f08a292::t_639acceedb3947 313-314
+Sources/LabanApp/Localization.swift
+  s_f45dd88f08a292::t_f2c4b49e05bfd8 14-19
+Sources/LabanApp/MainWindowController.swift
+  s_f45dd88f08a292::t_c1db05cb466ef6 715,1560-1575
+Sources/LabanApp/Resources/Localizable.xcstrings
+  s_f45dd88f08a292::t_e1cf6218f4c01e 18893-20152
+Sources/LabanApp/SettingsWindowController.swift
+  s_f45dd88f08a292::t_4fd7e75f01595f 79-81,504-522,720-721,1008-1013,1448-1467
+Sources/LabanApp/TerminalBitmapView.swift
+  s_f45dd88f08a292::t_1ad822d586275b 1269,1300,8692,9743-9754,9756,9759-9760,9940-9951,9957-9959,9966-10061
+Tests/LabanAppTests/QuitConfirmationTests.swift
+  s_f45dd88f08a292::t_1ad423ccf3d4e5 1-87
+scripts/gen-localizable-xcstrings.py
+  s_f45dd88f08a292::t_0694a8f9200ea3 2406-2463
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9cb529d475feb57da267b91ea97d418d078f7cee",
+  "prompts": {},
+  "sessions": {
+    "s_f45dd88f08a292": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfc7cb7e-b345-4b41-8692-fb67886bb59f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
