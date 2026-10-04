@@ -2463,8 +2463,9 @@ public struct FrameProducer {
   /// Cheap pre-check before grapheme segmentation: a cell can only extend
   /// the previous cell's cluster when it starts with an extending scalar
   /// (combining mark, spacing mark, ZWJ, variation selector, emoji modifier,
-  /// tag) or regional indicator, or when the previous cluster ends in a ZWJ
-  /// or regional indicator. Keeps the per-cell path allocation-free for
+  /// tag) or regional indicator, or when the previous cluster ends in a ZWJ,
+  /// regional indicator or virama (an Indic conjunct such as `स्` + `ते`,
+  /// which the engine lays out in two cells with mode 2027 off). Keeps the per-cell path allocation-free for
   /// ordinary non-ASCII text such as box lines, CJK and accented letters.
   static func mayJoinClusters<Last: Collection, Next: Collection>(
     last: Last, next: Next
@@ -2484,6 +2485,7 @@ public struct FrameProducer {
     while case .scalarValue(let scalar) = decoder.decode(&iterator) { lastScalar = scalar }
     guard let lastScalar else { return false }
     return lastScalar.value == 0x200D || isRegionalIndicator(lastScalar)
+      || lastScalar.properties.canonicalCombiningClass == .virama
   }
 
   private static func firstScalar<Bytes: Collection>(_ bytes: Bytes) -> Unicode.Scalar?
