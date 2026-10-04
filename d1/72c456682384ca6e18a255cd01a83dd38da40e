@@ -1,0 +1,21 @@
+Tests/LabanCoreTests/GraphemeClusteringTests.swift
+  s_49ace9fc1d63bd::t_7a3410a156b3a8 112-128
+Sources/LabanCore/FrameProducer.swift
+  s_49ace9fc1d63bd::t_208b5cb164e735 2466-2468,2488
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d172c456682384ca6e18a255cd01a83dd38da40e",
+  "prompts": {},
+  "sessions": {
+    "s_49ace9fc1d63bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c054a1d0-9b72-495e-87ce-5e8879b4617d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
