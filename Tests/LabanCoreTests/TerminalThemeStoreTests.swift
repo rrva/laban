@@ -245,6 +245,7 @@ final class TerminalThemeStoreTests: XCTestCase {
     let examplesDir = repoRoot.appendingPathComponent("schemas/theme/examples")
     for theme in bundled {
       let slug = theme.name.lowercased().replacingOccurrences(of: " ", with: "-")
+        .folding(options: .diacriticInsensitive, locale: nil)
       let url = examplesDir.appendingPathComponent("\(slug).laban-theme.json")
       let data = try Data(contentsOf: url)
       let file = try JSONDecoder().decode(TerminalThemeFile.self, from: data)
@@ -252,6 +253,30 @@ final class TerminalThemeStoreTests: XCTestCase {
       XCTAssertEqual(
         resolved, theme,
         "JSON example for \(theme.name) drifts from the bundled Swift constant")
+    }
+  }
+
+  /// Every file shipped in the app's resources has an ASCII name. Finder
+  /// rewrites non-ASCII names into Unicode NFD when it copies an app (for
+  /// example from the DMG into /Applications), which no longer matches the
+  /// names the code signature sealed, so Gatekeeper reports the app as
+  /// damaged.
+  func testBundledResourceFileNamesAreASCII() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    for dir in ["Sources/LabanApp/Resources", "schemas/theme/examples"] {
+      let base = repoRoot.appendingPathComponent(dir)
+      let walker = try XCTUnwrap(FileManager.default.enumerator(atPath: base.path))
+      var count = 0
+      while let relative = walker.nextObject() as? String {
+        count += 1
+        XCTAssertTrue(
+          relative.unicodeScalars.allSatisfy(\.isASCII),
+          "\(dir)/\(relative) must have an ASCII name so a Finder copy keeps the code seal")
+      }
+      XCTAssertGreaterThan(count, 0, "\(dir) must exist")
     }
   }
 

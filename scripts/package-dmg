@@ -64,9 +64,11 @@ codesign --verify --deep --strict "$staging/Laban.app"
 # app translocated to a read-only path, where Sparkle cannot update it.
 ln -s /Applications "$staging/Applications"
 
-# APFS, not HFS+: HFS+ rewrites file names into Unicode NFD, which renames the
-# bundled `rosé-pine*` themes out from under the code seal and gets the DMG
-# rejected by notarization ("The signature of the binary is invalid").
+# APFS, not HFS+: HFS+ rewrites non-ASCII file names into Unicode NFD, which
+# renames files out from under the code seal and gets the DMG rejected by
+# notarization ("The signature of the binary is invalid"). Bundled file names
+# are kept ASCII for the same reason: a Finder copy to /Applications also
+# rewrites them.
 rm -f "$dmg" "${dmg}.tmp.dmg"
 hdiutil create -volname "Laban ${version}" -srcfolder "$staging" \
   -fs APFS -format UDZO -ov "${dmg}.tmp.dmg" >/dev/null
