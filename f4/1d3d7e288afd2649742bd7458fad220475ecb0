@@ -1,0 +1,30 @@
+Sources/LabanCore/FrameProducer.swift
+  s_49ace9fc1d63bd::t_bc5b42f66f534b 1574,1793-1796,1838,2009-2012,2503,2506-2514,2518,2524-2527,2529-2540
+  s_49ace9fc1d63bd::t_5c83e1f0f0c1be 2515-2517
+  s_49ace9fc1d63bd::t_c546ac2a9481fb 2541-2542
+  s_49ace9fc1d63bd::t_c51e3a54b955b1 1573,1575-1579,1641-1649,1792,1837,1839-1843,1898-1906,2008,2504-2505,2519-2523,2528
+Tests/LabanCoreTests/GraphemeClusteringTests.swift
+  s_49ace9fc1d63bd::t_c51e3a54b955b1 144,149-150,152,159-179
+  s_49ace9fc1d63bd::t_b465b56678fe5b 112-122,125-137,143
+  s_49ace9fc1d63bd::t_16d546348f9baf 123-124,145-146
+  s_49ace9fc1d63bd::t_41d1a1613f2d56 138-142,147-148,151,153-158
+Tests/LabanCoreTests/FrameProducerSpanParityTests.swift
+  s_49ace9fc1d63bd::t_b465b56678fe5b 150-155
+  s_49ace9fc1d63bd::t_4e60218ca58ddc 28-29,38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f41d3d7e288afd2649742bd7458fad220475ecb0",
+  "prompts": {},
+  "sessions": {
+    "s_49ace9fc1d63bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c054a1d0-9b72-495e-87ce-5e8879b4617d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
