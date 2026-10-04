@@ -3,6 +3,37 @@
     <channel>
         <title>Laban</title>
         <item>
+            <title>0.8.3</title>
+            <pubDate>Sun, 04 Oct 2026 21:12:04 +0200</pubDate>
+            <sparkle:version>1791140982</sparkle:version>
+            <sparkle:shortVersionString>0.8.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[## New
+
+- **Ask before closing a running program.** Closing a pane, tab, or window, or quitting, now asks first when a program other than the shell is running, and names what will be ended ("vim is running and will be ended"). A pane at its shell prompt closes without asking. Closing a tab, window, or the app lists every busy pane in one dialog. Coding agents such as Claude Code and Codex are recognized, and the dialog says when one is in the middle of working.
+  - Settings → "Ask before closing": When a program is running (default), Always, or Never, plus an editable list of programs that count as idle (shells, `tmux`, `screen`).
+  - Quitting with background sessions and restore-on-launch on doesn't ask, because your sessions come back on the next launch.
+
+## Changed
+
+- **New sessions use grapheme-cluster width by default** (DEC mode 2027). A ZWJ emoji such as a technologist or a farmer now takes two columns instead of four. This keeps the screen aligned in programs that assume cluster width without asking for it, including Claude Code's fullscreen view, where a stale "Jump to bottom" pill or jumbled lines could otherwise appear. Choose "Legacy width" under Settings → Unicode width to restore the previous behavior; programs can still switch the mode themselves.
+
+## Fixed
+
+- Curly underlines now break around descenders (g, j, p, q, y), like the other underline styles.
+- An Indic conjunct split across two cells draws as one cluster, and later text on the line keeps its columns.
+- Thai SARA AM and clusters with Prepend characters no longer shift the rest of their row one column left.
+- A one-column emoji next to a blank cell draws at full two-column size instead of shrinking.
+]]></description>
+            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban-0.8.3.zip" length="21734473" type="application/octet-stream" sparkle:edSignature="lX2OxV4Z8ibrGYXh1bm3FbxtMqEO71zzSkD1Y/QJp3yrCfDB8BJyGrCWTXUDD8jy/yKU7Uf7oHwcx82pIOa2AA=="/>
+            <sparkle:deltas>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban1791140982-1791107097.delta" sparkle:deltaFrom="1791107097" length="2293222" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="n5PSUV4GEWCZmTlxYXzoPhp7QJLyVrgAE1qgN4BFOk4TPgdjXkBE1/gdLu1YP7wQVBFI+KgOZtsr8ETdZNQgBQ=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban1791140982-1790539201.delta" sparkle:deltaFrom="1790539201" length="4363018" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="luN+KZ+9SKfN1o7cQoTFdciTCD87KJZLqbMwazNuAQnBNH1lUMZSYhg1DxnrBHZfj1RnyxG89lCA6jYRQKwmBA=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban1791140982-1790250962.delta" sparkle:deltaFrom="1790250962" length="6269366" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="l+z0nfosaYnNQe7Qa2tU9CSSQVCuqOhyPPWEzu7Wd2QVMJ0O8lazoA4kQRMh7WslYnZrVJRgLuemVRauWfmVAg=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>0.8.2</title>
             <pubDate>Sun, 04 Oct 2026 11:47:19 +0200</pubDate>
             <sparkle:version>1791107097</sparkle:version>
@@ -71,17 +102,6 @@
             <sparkle:deltas>
                 <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.1/Laban1790539201-1790250962.delta" sparkle:deltaFrom="1790250962" length="4252122" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="1mXkMvipI8O+Q+GMz3tESShDykvbG6ZI7RDwtJyKqpPVO9eXFqSJdT/Bn+3ukKRyA3Sw+BeNFP9CXR3ShGVMAA=="/>
             </sparkle:deltas>
-        </item>
-        <item>
-            <title>0.8.0</title>
-            <pubDate>Thu, 24 Sep 2026 13:58:45 +0200</pubDate>
-            <sparkle:version>1790250962</sparkle:version>
-            <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[First public version.
-]]></description>
-            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.0/Laban-0.8.0.zip" length="22966284" type="application/octet-stream" sparkle:edSignature="ykr5mQ/deH6122uIjmBV2KGzbllpOPHAlqvJn0zHwxC4KDnCO46bxZs4u+pzk2tvPwWxBCA+gZfCpJ6422/kDw=="/>
         </item>
     </channel>
 </rss>
