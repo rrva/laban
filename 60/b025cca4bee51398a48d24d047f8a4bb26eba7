@@ -1,0 +1,33 @@
+Tests/LabanCoreTests/GraphemeClusteringTests.swift
+  s_49ace9fc1d63bd::t_7a3410a156b3a8 112-131
+Sources/LabanCore/FrameProducer.swift
+  s_49ace9fc1d63bd::t_208b5cb164e735 2466-2468,2488
+docs/product/spec.md
+  s_f45dd88f08a292::t_ccac1a353ed1f7 479-531
+Tests/LabanCoreTests/FrameProducerSpanParityTests.swift
+  s_49ace9fc1d63bd::t_d8039f5f2e5c9b 149-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "60b025cca4bee51398a48d24d047f8a4bb26eba7",
+  "prompts": {},
+  "sessions": {
+    "s_49ace9fc1d63bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c054a1d0-9b72-495e-87ce-5e8879b4617d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    },
+    "s_f45dd88f08a292": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfc7cb7e-b345-4b41-8692-fb67886bb59f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
