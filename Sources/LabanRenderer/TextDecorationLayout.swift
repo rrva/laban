@@ -139,3 +139,26 @@ struct TextDecorationLayout: Equatable {
     )
   }
 }
+
+extension TextDecorationLayout {
+  /// `rect` minus the sorted x intervals in `cuts`: the pieces of an
+  /// underline left after skip-ink gaps.
+  static func subtracting(_ cuts: [(CGFloat, CGFloat)], from rect: CGRect) -> [CGRect] {
+    guard !cuts.isEmpty else { return [rect] }
+    var pieces: [CGRect] = []
+    var x = rect.minX
+    for (start, end) in cuts {
+      if end <= x { continue }
+      if start >= rect.maxX { break }
+      if start > x {
+        pieces.append(CGRect(x: x, y: rect.minY, width: start - x, height: rect.height))
+      }
+      x = max(x, end)
+      if x >= rect.maxX { break }
+    }
+    if x < rect.maxX {
+      pieces.append(CGRect(x: x, y: rect.minY, width: rect.maxX - x, height: rect.height))
+    }
+    return pieces
+  }
+}
