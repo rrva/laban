@@ -18,12 +18,17 @@ final class GraphemeWidthSettingsTests: XCTestCase {
     super.tearDown()
   }
 
-  func testDefaultModeIsAuto() {
-    XCTAssertEqual(GraphemeWidthSettings.current(defaults: defaults), .auto)
+  func testDefaultModeIsPreferGrapheme() {
+    XCTAssertEqual(GraphemeWidthSettings.current(defaults: defaults), .preferGrapheme)
   }
 
-  func testGarbageValueFallsBackToAuto() {
+  func testGarbageValueFallsBackToPreferGrapheme() {
     defaults.set("preferLegacy", forKey: GraphemeWidthSettings.defaultsKey)
+    XCTAssertEqual(GraphemeWidthSettings.current(defaults: defaults), .preferGrapheme)
+  }
+
+  func testExplicitAutoIsKept() {
+    GraphemeWidthSettings.set(.auto, defaults: defaults)
     XCTAssertEqual(GraphemeWidthSettings.current(defaults: defaults), .auto)
   }
 

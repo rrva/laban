@@ -18,6 +18,8 @@ final class GraphemeClusteringTests: XCTestCase {
     size.cols = 80
     let session = try Session.fixture(size: size)
     defer { session.close() }
+    // These cases pin legacy (mode 2027 OFF) widths, e.g. a one-column `❤️`.
+    session.write(Array("\u{1b}[?2027l".utf8))
     session.write(Array(bytes.utf8))
     session.poll()
     guard let snap = session.snapshot() else {

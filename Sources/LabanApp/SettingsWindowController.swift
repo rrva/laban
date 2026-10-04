@@ -546,9 +546,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       graphemeWidthPopUp.addItem(withTitle: graphemeWidthTitle(option))
     }
     graphemeWidthPopUp.toolTip =
-      "How new sessions start measuring Unicode width (DEC mode 2027). Auto "
-      + "starts off and lets programs opt in; prefer grapheme width starts on "
-      + "so emoji and clusters line up immediately. A program can still toggle "
+      "How new sessions start measuring Unicode width (DEC mode 2027). Grapheme "
+      + "width starts on so emoji and clusters line up immediately, including in "
+      + "programs that assume it without asking; legacy width starts off and lets "
+      + "programs opt in. A program can still toggle "
       + "it at runtime. Applies to new sessions; a running program isn't "
       + "affected until it restarts, though a fresh program launched in an "
       + "idle tab (e.g. starting Claude Code at the prompt) picks it up."
@@ -1886,8 +1887,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   private func graphemeWidthTitle(_ mode: GraphemeWidthMode) -> String {
     switch mode {
-    case .auto: return L10n.tr("Auto (recommended)")
-    case .preferGrapheme: return L10n.tr("Prefer grapheme width")
+    case .auto: return L10n.tr("Legacy width (programs opt in)")
+    case .preferGrapheme: return L10n.tr("Grapheme width (recommended)")
     }
   }
 

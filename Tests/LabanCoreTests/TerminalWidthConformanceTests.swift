@@ -164,7 +164,11 @@ final class TerminalWidthConformanceTests: XCTestCase {
     var size = LabanTerminalSize()
     size.rows = rows
     size.cols = cols
-    return try Session.fixture(size: size)
+    let session = try Session.fixture(size: size)
+    // Start from mode 2027 OFF regardless of the factory default; ON cases
+    // re-enable it explicitly.
+    _ = session.write(Array("\u{1b}[?2027l".utf8))
+    return session
   }
 
   /// Occupied cells of row 0 (text-carrying or spacer), plus cursor column.
@@ -201,7 +205,7 @@ final class TerminalWidthConformanceTests: XCTestCase {
   private func cprColumnAfter(_ bytes: [UInt8], modeOn: Bool) throws -> Int? {
     let session = try makeSession()
     defer { session.close() }
-    if modeOn { _ = session.write(Array("\u{1b}[?2027h".utf8)) }
+    _ = session.write(Array((modeOn ? "\u{1b}[?2027h" : "\u{1b}[?2027l").utf8))
     _ = session.write(bytes)
     _ = session.write(Array("\u{1b}[6n".utf8))
     let reply = session.drainResponse()
@@ -221,7 +225,7 @@ final class TerminalWidthConformanceTests: XCTestCase {
     size.cols = 80
     let session = try Session.fixture(size: size)
     defer { session.close() }
-    if modeOn { _ = session.write(Array("\u{1b}[?2027h".utf8)) }
+    _ = session.write(Array((modeOn ? "\u{1b}[?2027h" : "\u{1b}[?2027l").utf8))
     _ = session.write(bytes)
     _ = session.write([0x0D])  // CR to col 0
     _ = session.write(Array(repeating: 0x0A, count: 12))  // LFs push row 0 to history
@@ -235,7 +239,7 @@ final class TerminalWidthConformanceTests: XCTestCase {
     size.cols = 80
     let session = try Session.fixture(size: size)
     defer { session.close() }
-    if modeOn { _ = session.write(Array("\u{1b}[?2027h".utf8)) }
+    _ = session.write(Array((modeOn ? "\u{1b}[?2027h" : "\u{1b}[?2027l").utf8))
     _ = session.write(bytes)
     _ = session.write([0x0D])
     _ = session.write(Array(repeating: 0x0A, count: 12))

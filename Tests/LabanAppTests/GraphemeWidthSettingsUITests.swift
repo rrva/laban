@@ -22,10 +22,10 @@ final class GraphemeWidthSettingsUITests: XCTestCase {
     super.tearDown()
   }
 
-  func testDefaultModeIsAuto() {
+  func testDefaultModeIsPreferGrapheme() {
     XCTAssertEqual(
-      GraphemeWidthSettings.current(), .auto,
-      "missing defaults key must return .auto")
+      GraphemeWidthSettings.current(), .preferGrapheme,
+      "missing defaults key must return .preferGrapheme")
   }
 
   func testSelectingPreferGraphemeWritesDefaultsKey() {
