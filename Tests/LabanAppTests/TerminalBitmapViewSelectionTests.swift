@@ -151,15 +151,29 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     defer { harness.restoreRenderer() }
 
     let prefix = "中👩\u{200D}💻"
-    harness.view.setMarkedText(
-      prefix + "a",
-      selectedRange: NSRange(location: (prefix as NSString).length, length: 0),
-      replacementRange: NSRange(location: NSNotFound, length: 0))
+    func mark() {
+      harness.view.setMarkedText(
+        prefix + "a",
+        selectedRange: NSRange(location: (prefix as NSString).length, length: 0),
+        replacementRange: NSRange(location: NSNotFound, length: 0))
+    }
 
+    // Factory default: mode 2027 ON, so the ZWJ emoji is one 2-cell cluster.
+    mark()
+    XCTAssertEqual(
+      harness.view.markedTextCaretCellsForTesting,
+      4,
+      "IME caret cells must follow the terminal grid width of wide text (2027 ON)")
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("\u{1b}[?2027l".utf8))
+    session.poll()
+    mark()
     XCTAssertEqual(
       harness.view.markedTextCaretCellsForTesting,
       6,
-      "IME caret cells must follow the terminal grid width of wide text")
+      "IME caret cells must follow the terminal grid width of wide text (2027 OFF)")
   }
 
   func testColumnChangingResizeClearsCachedInactiveSelections() throws {

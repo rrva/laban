@@ -15,14 +15,16 @@ import Foundation
 /// the configured default — matching Ghostty's model. Live sessions are never
 /// retroactively toggled (that would force a mid-session grid reflow).
 public enum GraphemeWidthMode: String, CaseIterable, Codable, Sendable {
-  /// Today's behavior and the safe default: a new session starts with mode 2027
-  /// OFF; programs opt in by sending `ESC [ ? 2027 h`. Enabling clustering
-  /// unilaterally is known to break shells that assume legacy `wcwidth` (the
+  /// A new session starts with mode 2027 OFF; programs opt in by sending
+  /// `ESC [ ? 2027 h`. Opt-in for shells that assume legacy `wcwidth` (the
   /// `fish` breakage documented in the mode-2027 ExecPlan Decision Log).
   case auto
-  /// A new session starts with mode 2027 ON, so emoji and clusters use grapheme
-  /// width immediately even for programs that never negotiate it; a program can
-  /// still turn it off with `ESC [ ? 2027 l`.
+  /// The factory default: a new session starts with mode 2027 ON, so emoji and
+  /// clusters use grapheme width immediately even for programs that never
+  /// negotiate it (Claude Code measures ZWJ emoji as 2 columns without asking,
+  /// and desyncs its relative-cursor redraw when the terminal counts 4). A
+  /// program can still turn it off with `ESC [ ? 2027 l`. Matches upstream
+  /// Ghostty's `grapheme-width-method = unicode` default.
   case preferGrapheme
 }
 
@@ -34,11 +36,12 @@ public enum GraphemeWidthSettings {
     "LabanGraphemeWidthSettingsDidChange")
 
   /// The user's preferred starting width mode for new sessions. Defaults to
-  /// `.auto` when the key is absent (fresh install) or holds an unknown value.
+  /// `.preferGrapheme` when the key is absent (fresh install, or a user who
+  /// never touched the setting) or holds an unknown value.
   public static func current(defaults: UserDefaults = .standard) -> GraphemeWidthMode {
     guard let raw = defaults.string(forKey: defaultsKey),
       let parsed = GraphemeWidthMode(rawValue: raw)
-    else { return .auto }
+    else { return .preferGrapheme }
     return parsed
   }
 

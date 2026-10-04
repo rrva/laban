@@ -42,9 +42,8 @@ final class Mode2027ScrollbackWidthTests: XCTestCase {
   /// toggles DEC 2027 before printing.
   private func sessionWithScrolledOff(_ bytes: [UInt8], modeOn: Bool) throws -> Session {
     let session = try Session.fixture(size: size(rows: 4, cols: 80))
-    if modeOn {
-      XCTAssertEqual(session.write(Array("\u{1b}[?2027h".utf8)), 0)
-    }
+    XCTAssertEqual(
+      session.write(Array((modeOn ? "\u{1b}[?2027h" : "\u{1b}[?2027l").utf8)), 0)
     XCTAssertEqual(session.write(bytes), 0)
     XCTAssertEqual(session.write([0x0D]), 0)  // CR
     // rows=4, so 12 LFs guarantees row 0 scrolled into history.

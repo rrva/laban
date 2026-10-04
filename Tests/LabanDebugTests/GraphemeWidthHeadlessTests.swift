@@ -6,9 +6,10 @@ import XCTest
 
 /// Headless end-to-end coverage for the "Unicode width" user preference
 /// (`GraphemeWidthSettings`): a fresh session created under `.preferGrapheme`
-/// must start with DEC mode 2027 (grapheme cluster) ON — observable via
-/// `GET /debug/terminal-modes` BEFORE any program sends a sequence — while
-/// `.auto` leaves it OFF until a program negotiates the mode. The preference is
+/// (also the factory default when no preference is stored) must start with DEC
+/// mode 2027 (grapheme cluster) ON — observable via `GET /debug/terminal-modes`
+/// BEFORE any program sends a sequence — while `.auto` leaves it OFF until a
+/// program negotiates the mode. The preference is
 /// read by `Session.init` (the single shared session-creation funnel reachable
 /// by both the app and the headless runtime), so this exercises the real
 /// production wiring, not a parallel rig.
@@ -33,6 +34,15 @@ final class GraphemeWidthHeadlessTests: XCTestCase {
     XCTAssertEqual(
       try modes(runtime)["grapheme_cluster_2027"] as? Bool, true,
       "a session created under .preferGrapheme must report mode 2027 ON before any program output")
+  }
+
+  func testUnsetPreferenceStartsFreshSessionWithMode2027On() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "grapheme-unset")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    XCTAssertEqual(
+      try modes(runtime)["grapheme_cluster_2027"] as? Bool, true,
+      "with no stored preference the factory default must start mode 2027 ON")
   }
 
   func testAutoStartsFreshSessionWithMode2027Off() throws {

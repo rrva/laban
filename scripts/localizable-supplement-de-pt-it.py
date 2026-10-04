@@ -617,15 +617,15 @@ SUPPLEMENT_DE_PT_IT: dict[str, dict[str, str]] = {
         "pt-BR": "Quantizado por linha",
         "it": "Quantizzato per riga",
     },
-    "Auto (recommended)": {
-        "de": "Automatisch (empfohlen)",
-        "pt-BR": "Automático (recomendado)",
-        "it": "Automatico (consigliato)",
+    "Legacy width (programs opt in)": {
+        "de": "Klassische Breite (Programme aktivieren)",
+        "pt-BR": "Largura legada (programas ativam)",
+        "it": "Larghezza classica (attivata dai programmi)",
     },
-    "Prefer grapheme width": {
-        "de": "Graphem-Breite bevorzugen",
-        "pt-BR": "Preferir largura de grafema",
-        "it": "Preferisci larghezza grafema",
+    "Grapheme width (recommended)": {
+        "de": "Graphem-Breite (empfohlen)",
+        "pt-BR": "Largura de grafema (recomendado)",
+        "it": "Larghezza grafema (consigliato)",
     },
     "Monochrome": {
         "de": "Monochrom",

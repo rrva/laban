@@ -11541,142 +11541,142 @@
         }
       }
     },
-    "Auto (recommended)": {
+    "Legacy width (programs opt in)": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "自动（推荐）"
+            "value": "传统宽度（由程序启用）"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "自動（建議）"
+            "value": "傳統寬度（由程式啟用）"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "自動（推奨）"
+            "value": "従来の幅（プログラムが有効化）"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "자동(권장)"
+            "value": "기존 너비(프로그램이 활성화)"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Auto (recommandé)"
+            "value": "Largeur héritée (activée par les programmes)"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Automático (recomendado)"
+            "value": "Ancho heredado (los programas lo activan)"
           }
         },
         "hi": {
           "stringUnit": {
             "state": "translated",
-            "value": "स्वचालित (अनुशंसित)"
+            "value": "पुरानी चौड़ाई (प्रोग्राम सक्षम करते हैं)"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Авто (рекомендуется)"
+            "value": "Устаревшая ширина (включают программы)"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Automatisch (empfohlen)"
+            "value": "Klassische Breite (Programme aktivieren)"
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Automático (recomendado)"
+            "value": "Largura legada (programas ativam)"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Automatico (consigliato)"
+            "value": "Larghezza classica (attivata dai programmi)"
           }
         }
       }
     },
-    "Prefer grapheme width": {
+    "Grapheme width (recommended)": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "优先字素宽度"
+            "value": "字素宽度（推荐）"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "優先字素寬度"
+            "value": "字素寬度（建議）"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "書記素幅を優先"
+            "value": "書記素幅（推奨）"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "자소 너비 우선"
+            "value": "자소 너비(권장)"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Préférer la largeur graphémique"
+            "value": "Largeur graphémique (recommandé)"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Preferir ancho de grafema"
+            "value": "Ancho de grafema (recomendado)"
           }
         },
         "hi": {
           "stringUnit": {
             "state": "translated",
-            "value": "ग्राफ़ेम चौड़ाई प्राथमिकता"
+            "value": "ग्राफ़ेम चौड़ाई (अनुशंसित)"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Предпочитать ширину графемы"
+            "value": "Ширина графемы (рекомендуется)"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Graphem-Breite bevorzugen"
+            "value": "Graphem-Breite (empfohlen)"
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Preferir largura de grafema"
+            "value": "Largura de grafema (recomendado)"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Preferisci larghezza grafema"
+            "value": "Larghezza grafema (consigliato)"
           }
         }
       }

@@ -55,7 +55,9 @@ engine used 2).
    width consumers read the engine's decision — the snapshot `wide` flag for the
    live viewport, and engine-carried width for scrollback.
 
-2. **Factory default OFF / opt-in, with a user-selectable default.** Laban does not
+2. **Factory default OFF / opt-in, with a user-selectable default.**
+   *(Superseded 2026-10-04 by the Decision Log entry below: the factory default
+   is now ON — `.preferGrapheme` — and `.auto` is the opt-out.)* Laban does not
    enable mode 2027 on its own. A program opts in via DECSET. A user may set a
    per-session default through the native Settings "Unicode width" preference
    (`Sources/LabanCore/GraphemeWidthSettings.swift`: `.auto` = start OFF;
@@ -115,6 +117,24 @@ engine used 2).
   environment variable) and then surface it in Settings. Until that upstream
   capability exists, behavior follows libghostty's current rule.
 
+- **2026-10-04 — Factory default flips to grapheme width (mode 2027 ON).** A
+  capture of Claude Code's fullscreen renderer in Laban showed the cost of the
+  opt-in default. Claude Code never sends `CSI ? 2027 h` yet measures a ZWJ
+  emoji (`🧑‍💻`) as one 2-column cluster; it pads each line to the full width
+  and redraws with CR + relative cursor-down. Laban counted 4 columns, wrapped
+  the line, and every later relative move landed one row low, leaving a stale
+  "Jump to bottom" toast in a row the app never repaints until a resize. Modern
+  TUIs assume cluster width without negotiating it far more often than legacy
+  `wcwidth` apps break under it, and upstream Ghostty ships
+  `grapheme-width-method = unicode` by default. `GraphemeWidthSettings` now
+  returns `.preferGrapheme` when no preference is stored; an explicit `.auto`
+  ("Legacy width" in Settings) is kept and still starts sessions OFF, and a
+  program's `CSI ? 2027 l` still wins. Not fixed by this: Devanagari spacing
+  marks, which the engine (like upstream Ghostty) lets widen a cluster in both
+  modes while Claude Code counts them as zero. Regression:
+  `DefaultGraphemeWidthRedrawTests`,
+  `GraphemeWidthHeadlessTests.testUnsetPreferenceStartsFreshSessionWithMode2027On`.
+
 ## Applies To New Code
 
 - Any new consumer of cell width MUST read the engine's width — the snapshot `wide`
@@ -125,5 +145,7 @@ engine used 2).
 - When threading new data through scrollback extraction, follow the versioned-entry-
   point pattern (`*_extract2_alloc`) so existing callers keep the byte-identical v1
   behavior.
-- Treat mode 2027 as opt-in: do not enable it implicitly; a program's DECSET/DECRST
-  is authoritative over any Laban default, and defaults apply only to new sessions.
+- The starting mode comes only from `GraphemeWidthSettings` (factory default ON);
+  a program's DECSET/DECRST is authoritative over any Laban default, and defaults
+  apply only to new sessions. Tests that pin legacy widths must send
+  `CSI ? 2027 l` themselves rather than rely on the default.

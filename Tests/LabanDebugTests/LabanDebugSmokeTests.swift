@@ -130,20 +130,20 @@ final class LabanDebugSmokeTests: XCTestCase {
       XCTAssertEqual(runtime.applyAction(action).status, 200)
     }
 
-    // Default: mode 2027 OFF.
-    XCTAssertEqual(try modes()["grapheme_cluster_2027"] as? Bool, false)
+    // Factory default: mode 2027 ON.
+    XCTAssertEqual(try modes()["grapheme_cluster_2027"] as? Bool, true)
 
-    // DECSET 2027 → endpoint reports ON.
-    try feed("\u{1b}[?2027h")
-    XCTAssertEqual(
-      try modes()["grapheme_cluster_2027"] as? Bool, true,
-      "GET /debug/terminal-modes should report grapheme_cluster_2027 ON after DECSET")
-
-    // DECRST 2027 → endpoint reports OFF again.
+    // DECRST 2027 → endpoint reports OFF.
     try feed("\u{1b}[?2027l")
     XCTAssertEqual(
       try modes()["grapheme_cluster_2027"] as? Bool, false,
       "GET /debug/terminal-modes should report grapheme_cluster_2027 OFF after DECRST")
+
+    // DECSET 2027 → endpoint reports ON again.
+    try feed("\u{1b}[?2027h")
+    XCTAssertEqual(
+      try modes()["grapheme_cluster_2027"] as? Bool, true,
+      "GET /debug/terminal-modes should report grapheme_cluster_2027 ON after DECSET")
   }
 
   func testDebugHTTPServerWaitDoesNotBlockHealthRequest() throws {

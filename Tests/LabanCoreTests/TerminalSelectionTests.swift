@@ -435,6 +435,8 @@ final class TerminalSelectionTests: XCTestCase {
     let session = try Session.fixture(size: size)
     defer { session.close() }
 
+    // Legacy width (mode 2027 OFF): the ZWJ emoji spans four columns.
+    session.write(Array("\u{1b}[?2027l".utf8))
     session.write(Array("👩\u{200D}💻Alpha\r\nplain-1\r\nplain-2\r\nplain-3\r\n".utf8))
     session.poll()
 
