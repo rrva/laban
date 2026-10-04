@@ -1,0 +1,28 @@
+Sources/LabanRenderer/SoftwareRenderer.swift
+  s_58ccbbd3725b13::t_d89333b61364c3 182-212,504,507,511,517-521,526-538,541,543-552,555-562,575,587-642
+  s_58ccbbd3725b13::t_8392a588e26ca3 643
+Sources/LabanRenderer/TextDecorationLayout.swift
+  s_58ccbbd3725b13::t_5e3172b3bb99d8 142-164
+Sources/LabanRenderer/SlugGlyphRenderer.swift
+  s_58ccbbd3725b13::t_5e3172b3bb99d8 3264,3284,3712
+Tests/LabanRendererTests/SoftwareUnderlineSkipInkTests.swift
+  s_58ccbbd3725b13::t_c2fdb5c3a4e83a 1-42,49-78,86-87
+  s_58ccbbd3725b13::t_a174102b81c219 43-45,47-48,79-80,82-84
+  s_58ccbbd3725b13::t_d89333b61364c3 46,81,85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "699eea24431e1b639af49bcbf20a49f9bcdb050d",
+  "prompts": {},
+  "sessions": {
+    "s_58ccbbd3725b13": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "167a0765-a42c-4542-9d6b-1d03c71c77f4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
