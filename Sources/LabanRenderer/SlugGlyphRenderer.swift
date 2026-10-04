@@ -3266,18 +3266,24 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       }
     }
     if !layout.curlyUnderlinePoints.isEmpty {
+      // The wave spans one band from its trough to its crest; cut it where
+      // descenders cross that band, like the straight styles above.
+      let ys = layout.curlyUnderlinePoints.map(\.y)
+      let cuts = Self.inkCuts(
+        bandMinY: ys.min() ?? 0, bandMaxY: (ys.max() ?? 0) + layout.thickness,
+        ink: underlineInk, baseline: baseline, pointScale: pointScale, gap: layout.thickness)
       for (start, end) in zip(
         layout.curlyUnderlinePoints,
         layout.curlyUnderlinePoints.dropFirst())
       {
-        solids.append(
-          solid(
-            rect: CGRect(
-              x: start.x,
-              y: min(start.y, end.y),
-              width: max(end.x - start.x, layout.thickness),
-              height: max(layout.thickness, abs(end.y - start.y))),
-            color: underlineRGBA))
+        let segment = CGRect(
+          x: start.x,
+          y: min(start.y, end.y),
+          width: max(end.x - start.x, layout.thickness),
+          height: max(layout.thickness, abs(end.y - start.y)))
+        for piece in Self.subtracting(cuts, from: segment) {
+          solids.append(solid(rect: piece, color: underlineRGBA))
+        }
       }
     }
     if let rect = layout.strikethroughRect {
