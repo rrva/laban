@@ -25,8 +25,8 @@ final class FrameProducerSpanParityTests: XCTestCase {
     case .rect(let rect, let color, let source, let compositing):
       return "rect|\(r(rect))|\(color)|\(source.rawValue)|\(compositing.rawValue)"
     case .glyphRun(
-      let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link, _, _,
-      _, _
+      let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link,
+      let span, _, _, _
     ):
       // Encode text by scalar so any decode discrepancy surfaces, and pin the
       // grapheme-cluster count so RI/ZWJ/skin-tone merges must match exactly.
@@ -35,6 +35,7 @@ final class FrameProducerSpanParityTests: XCTestCase {
         "glyph|\(p(origin))|chars=\(text.count)|scalars=\(scalars)|fg=\(fg)|bg=\(bg)"
         + "|attrs=\(attrs.rawValue)|src=\(source.rawValue)|us=\(us.rawValue)"
         + "|uc=\(uc.map(String.init) ?? "nil")|link=\(link ?? "nil")"
+        + "|span=\(span.map(String.init) ?? "nil")"
     case .cursor(let rect, let color):
       return "cursor|\(r(rect))|\(color)"
     case .selection(let rect, let color):
@@ -144,6 +145,12 @@ final class FrameProducerSpanParityTests: XCTestCase {
 
   func testCombiningMarks() throws {
     try assertParity("e\u{0301}a\u{0300}o\u{0308} cafe\u{0301}\r\n", "combining")
+  }
+
+  func testNarrowEmojiBesideBlankAndNonBlankCells() throws {
+    try assertParity(
+      "[\u{2764}\u{FE0F} x|\u{2764}\u{FE0F}y|\u{1b}[4m\u{2764}\u{FE0F} \u{1b}[0m|\u{2764}\u{FE0F}\r\n",
+      "narrow-emoji")
   }
 
   func testHyperlinkOSC8() throws {

@@ -1570,6 +1570,13 @@ public struct FrameProducer {
       var runTransition: GlyphForegroundTransition? = nil
       var runWave: GlyphForegroundWave? = nil
       var pendingSpacer = false
+      // A blank cell a one-column emoji draws into.
+      var borrowedTailCol = -1
+      // The cursor stays on a single column, so an emoji under it or beside it
+      // keeps its own column and the cursor never hides half of it.
+      let cursorCol =
+        snapshot.cursor_visible != 0 && Int(snapshot.cursor_row) == row
+        ? Int(snapshot.cursor_col) : -2
       // Byte offset in `runBytes` where the run's last Character starts.
       var runLastClusterStart = 0
       // One past the last engine column the run covers (spacer tails included).
@@ -1631,7 +1638,15 @@ public struct FrameProducer {
 
       for col in 0..<cols {
         let cell = cells[rowStart + col]
-        let isSpacerTail = (cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL))
+        // The borrowed blank ends the emoji's run, so no later cell can join
+        // the emoji across it.
+        if col == borrowedTailCol {
+          runEndCol = col + 1
+          flushRun()
+          pendingSpacer = false
+          continue
+        }
+        let isSpacerTail = cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL)
         let hasContent = cell.utf8_length > 0 && storage != nil
 
         if isSpacerTail {
@@ -1774,6 +1789,11 @@ public struct FrameProducer {
           runSpanUnknown = true
           flushRun()
           pendingSpacer = false
+        } else if col + 1 < cols, cursorCol != col, cursorCol != col + 1,
+          FrameProducer.drawsIntoBlankNeighbor(
+            cell, bytes: cellBytes, next: cells[rowStart + col + 1], storage: storage)
+        {
+          borrowedTailCol = col + 1
         }
       }
       flushRun()
@@ -1814,6 +1834,13 @@ public struct FrameProducer {
       // is provisionally swallowed; we only flush it if the next visible
       // cell does not extend the cluster.
       var pendingSpacer = false
+      // A blank cell a one-column emoji draws into.
+      var borrowedTailCol = -1
+      // The cursor stays on a single column, so an emoji under it or beside it
+      // keeps its own column and the cursor never hides half of it.
+      let cursorCol =
+        snapshot.cursor_visible != 0 && Int(snapshot.cursor_row) == row
+        ? Int(snapshot.cursor_col) : -2
       var runEndCol = 0
       var runSpanUnknown = false
 
@@ -1868,7 +1895,15 @@ public struct FrameProducer {
 
       for col in 0..<cols {
         let cell = cells[rowStart + col]
-        let isSpacerTail = (cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL))
+        // The borrowed blank ends the emoji's run, so no later cell can join
+        // the emoji across it.
+        if col == borrowedTailCol {
+          runEndCol = col + 1
+          flushRun()
+          pendingSpacer = false
+          continue
+        }
+        let isSpacerTail = cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL)
         let hasContent = cell.utf8_length > 0 && snapshot.utf8_storage != nil
 
         // SPACER_TAIL belongs to the wide cell that precedes it. Hold off on
@@ -1970,6 +2005,11 @@ public struct FrameProducer {
               runSpanUnknown = true
               flushRun()
               pendingSpacer = false
+            } else if col + 1 < cols, cursorCol != col, cursorCol != col + 1,
+              FrameProducer.drawsIntoBlankNeighbor(
+                cell, bytes: buf, next: cells[rowStart + col + 1], storage: storage)
+            {
+              borrowedTailCol = col + 1
             }
           } else {
             flushRun()
@@ -2458,6 +2498,46 @@ public struct FrameProducer {
     Self.alphaColor(
       Theme.current.ansi16.indices.contains(11) ? Theme.current.ansi16[11] : 0xEBC1_3DFF,
       alpha: 0xB3)
+  }
+
+  /// Whether a one-column emoji (VS16 with mode 2027 off, such as `❤️`) may
+  /// draw two columns wide because the next cell is blank: empty or an
+  /// undecorated space, painted like the emoji. Like Ghostty, this keeps the
+  /// emoji at full size without ever covering a visible neighbor; the engine's
+  /// grid widths are unchanged (ADR 0021).
+  static func drawsIntoBlankNeighbor<Bytes: Collection>(
+    _ cell: LabanCell, bytes: Bytes, next: LabanCell, storage: UnsafePointer<CChar>?
+  ) -> Bool where Bytes.Element == UInt8 {
+    // Every emoji scalar is at least U+00A9, so ASCII is never one.
+    guard cell.wide == UInt8(LABAN_CELL_WIDE_NARROW), let lead = bytes.first, lead >= 0xC2,
+      next.wide == UInt8(LABAN_CELL_WIDE_NARROW)
+    else { return false }
+    let decorations = UInt16(
+      LABAN_CELL_FLAG_UNDERLINE | LABAN_CELL_FLAG_STRIKETHROUGH | LABAN_CELL_FLAG_OVERLINE)
+    guard cell.flags & decorations == 0, cell.underline_style == UInt8(LABAN_UNDERLINE_NONE)
+    else { return false }
+    // The emoji spills onto the neighbor's background, so it must match, as
+    // must inverse and the other attributes that change how a cell paints.
+    guard next.background_rgba == cell.background_rgba, next.flags == cell.flags else {
+      return false
+    }
+    if next.utf8_length != 0 {
+      guard next.utf8_length == 1, let storage,
+        UInt8(bitPattern: storage[Int(next.utf8_offset)]) == 0x20,
+        next.foreground_rgba == cell.foreground_rgba,
+        next.hyperlink_id == cell.hyperlink_id,
+        next.underline_style == cell.underline_style
+      else { return false }
+    }
+    var iterator = bytes.makeIterator()
+    var decoder = Unicode.UTF8()
+    guard case .scalarValue(let first) = decoder.decode(&iterator), first.properties.isEmoji
+    else { return false }
+    if first.properties.isEmojiPresentation { return true }
+    while case .scalarValue(let scalar) = decoder.decode(&iterator) {
+      if scalar.value == 0xFE0F { return true }
+    }
+    return false
   }
 
   /// Cheap pre-check before grapheme segmentation: a cell can only extend
