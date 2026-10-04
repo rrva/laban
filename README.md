@@ -1,7 +1,5 @@
 # Laban
 
-[![check](https://github.com/rrva/laban/actions/workflows/check.yml/badge.svg)](https://github.com/rrva/laban/actions/workflows/check.yml)
-
 **A native macOS terminal your agents can drive, with sessions that survive quits, crashes, and upgrades.**
 
 Laban is a native macOS terminal where every visible part of the running app
