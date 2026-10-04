@@ -3,6 +3,48 @@
     <channel>
         <title>Laban</title>
         <item>
+            <title>0.8.2</title>
+            <pubDate>Sun, 04 Oct 2026 11:47:19 +0200</pubDate>
+            <sparkle:version>1791107097</sparkle:version>
+            <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[## New
+
+- **Split panes.** ⌘D splits right and ⌘⇧D splits down, nested in any combination. Drag a divider to resize, or double-click it to equalize. ⌘⌥Arrows move focus between panes, ⌘⌃Arrows nudge a divider, ⌘⌃= equalizes, and ⌘⇧Return zooms the focused pane. Layouts survive restarts.
+  - ⌘W now closes the focused pane (and the tab when it is the last one). ⌘⌥W always closes the tab.
+- **Paste screenshots into SSH sessions.** With an image on the clipboard, ⌘V in a pane running `ssh` uploads it to the same host and pastes the remote path, so Claude Code and Codex on the remote can see it. The first upload to each host asks for consent.
+- **Kitty clipboard protocol.** Programs that enable Kitty paste events (OSC 5522), such as `kitten clipboard`, can now read pasted images and text.
+- **Right-to-left text.** Arabic and Hebrew are shown in visual order, and Arabic letters join.
+- **Font ligatures** are on by default for programming fonts that have them.
+- OSC 52 copies from remote programs now show a confirmation toast.
+
+## Faster
+
+- Text rendering takes roughly half the GPU time it did, and much less with subpixel antialiasing. Steady-state frames no longer allocate.
+- Scrolling the sidebar is smooth.
+
+## Fixed
+
+- Restarting Laban no longer replays old OSC 52 copies over your clipboard or re-posts old notifications.
+- The character under a block cursor stays visible, and the cursor covers both columns of a wide character.
+- Box-drawing lines, braille and sextants join seamlessly between cells.
+- Text weight matches macOS rendering in both light and dark themes.
+- Fonts without bold or italic faces get synthesized bold and italic.
+- Underlines sit at the font's metrics, skip descenders, and keep dashed and dotted patterns continuous across color changes.
+- Combining marks and Indic clusters draw every glyph, and zero-width characters no longer shift the rest of the line.
+- Emoji and CJK keep drawing in long sessions instead of disappearing once the glyph atlas fills, and memory for glyph outlines is bounded.
+- Oversized fallback glyphs stay inside their cells, and single-width emoji no longer cover the next character.
+- `.otf` fonts draw curves accurately at large sizes.
+- Panes below a split no longer lose two rows to empty space under the titlebar.
+]]></description>
+            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.2/Laban-0.8.2.zip" length="21557813" type="application/octet-stream" sparkle:edSignature="gvCdf0WwQw2zXoJQe+afQMKloJShMPibFcZV4EKBntJVCwD7iylCxxn1HZoe+9qZu3uesHJFqiblV1QkUKKrDg=="/>
+            <sparkle:deltas>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.2/Laban1791107097-1790539201.delta" sparkle:deltaFrom="1790539201" length="4152670" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="uRcsbrskXlREHnmUpHsAx69QiZHT9IccSgDs9NlkMNnW86F81Yzq4xwDzR/PKYqt5COZasmvfv+pTN+LBS0xAg=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.2/Laban1791107097-1790250962.delta" sparkle:deltaFrom="1790250962" length="6065530" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="E6+zDKn4b+O3YgB3mzAKi4DwC1QPmgXSpfJiujyLIqONKF7xCh2ln4boyjS5EFXqa7V8uXHkr4hymtOKJ0cYAQ=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>0.8.1</title>
             <pubDate>Sun, 27 Sep 2026 22:02:11 +0200</pubDate>
             <sparkle:version>1790539201</sparkle:version>
