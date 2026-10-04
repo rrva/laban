@@ -146,6 +146,12 @@ final class FrameProducerSpanParityTests: XCTestCase {
     try assertParity("e\u{0301}a\u{0300}o\u{0308} cafe\u{0301}\r\n", "combining")
   }
 
+  func testIndicConjunctsAndSpacingMarks() throws {
+    try assertParity(
+      "|\u{928}\u{92E}\u{938}\u{94D}\u{924}\u{947} \u{926}\u{941}\u{928}\u{93F}\u{92F}\u{93E}|\r\n",
+      "indic")
+  }
+
   func testHyperlinkOSC8() throws {
     let link =
       "\u{1B}]8;;https://example.com/path\u{1B}\\click here\u{1B}]8;;\u{1B}\\ and plain\r\n"

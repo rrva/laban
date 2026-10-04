@@ -2463,16 +2463,21 @@ public struct FrameProducer {
   /// Cheap pre-check before grapheme segmentation: a cell can only extend
   /// the previous cell's cluster when it starts with an extending scalar
   /// (combining mark, spacing mark, ZWJ, variation selector, emoji modifier,
-  /// tag) or regional indicator, or when the previous cluster ends in a ZWJ
-  /// or regional indicator. Keeps the per-cell path allocation-free for
-  /// ordinary non-ASCII text such as box lines, CJK and accented letters.
+  /// tag), Thai or Lao SARA AM, or regional indicator, or when the previous
+  /// cluster ends in a ZWJ, regional indicator, virama (an Indic conjunct such
+  /// as `स्` + `ते`, which the engine lays out in two cells with mode 2027 off)
+  /// or Prepend scalar. Keeps the per-cell path allocation-free for ordinary
+  /// non-ASCII text such as box lines, CJK and accented letters.
   static func mayJoinClusters<Last: Collection, Next: Collection>(
     last: Last, next: Next
   ) -> Bool where Last.Element == UInt8, Next.Element == UInt8 {
     func isRegionalIndicator(_ s: Unicode.Scalar) -> Bool { (0x1F1E6...0x1F1FF).contains(s.value) }
     if let first = firstScalar(next) {
+      // SARA AM is a grapheme SpacingMark although its general category is
+      // Lo, so the category check below misses it.
       if first.value == 0x200D || isRegionalIndicator(first) || first.properties.isGraphemeExtend
         || first.properties.generalCategory == .spacingMark
+        || first.value == 0x0E33 || first.value == 0x0EB3
         || (0x1F3FB...0x1F3FF).contains(first.value)
       {
         return true
@@ -2484,6 +2489,20 @@ public struct FrameProducer {
     while case .scalarValue(let scalar) = decoder.decode(&iterator) { lastScalar = scalar }
     guard let lastScalar else { return false }
     return lastScalar.value == 0x200D || isRegionalIndicator(lastScalar)
+      || lastScalar.properties.canonicalCombiningClass == .virama
+      || isGraphemePrepend(lastScalar)
+  }
+
+  /// Unicode 15.1 Grapheme_Cluster_Break=Prepend: a cluster never breaks after
+  /// these (GB9b), and Swift does not expose the property.
+  private static func isGraphemePrepend(_ s: Unicode.Scalar) -> Bool {
+    switch s.value {
+    case 0x0600...0x0605, 0x06DD, 0x070F, 0x0890...0x0891, 0x08E2, 0x0D4E, 0x110BD, 0x110CD,
+      0x111C2...0x111C3, 0x1193F, 0x11941, 0x11A3A, 0x11A84...0x11A89, 0x11D46, 0x11F02:
+      return true
+    default:
+      return false
+    }
   }
 
   private static func firstScalar<Bytes: Collection>(_ bytes: Bytes) -> Unicode.Scalar?

@@ -109,4 +109,47 @@ final class GraphemeClusteringTests: XCTestCase {
     XCTAssertTrue(
       totalCharacters >= 2, "中 and A must both survive as visible characters; got runs: \(texts)")
   }
+
+  /// With mode 2027 off the engine puts an Indic conjunct in two narrow cells
+  /// (`स्` then `ते`). Swift joins them into one Character, so the conjunct
+  /// must end its run like any other multi-column cluster; otherwise every
+  /// later cluster in the run is drawn one column left of its engine column.
+  func testIndicConjunctAcrossCellsEndsItsRun() throws {
+    // |नमस्ते दु|
+    let cmds = try runWithText(
+      "|\u{928}\u{92E}\u{938}\u{94D}\u{924}\u{947} \u{926}\u{941}|\r\n")
+    var runs: [String] = []
+    for cmd in cmds {
+      if case .glyphRun(let origin, let text, _, _, _, .terminal, _, _, _, let cells, _, _, _) = cmd
+      {
+        runs.append("\(Int(origin.x / 9)):\(text.count):\(cells.map(String.init) ?? "nil")")
+      }
+    }
+    // Column:Characters:span. The conjunct's run covers columns 0-4; the rest
+    // starts at the conjunct's end, column 5.
+    XCTAssertEqual(runs, ["0:4:5", "5:3:3"], "got runs: \(runs)")
+  }
+
+  /// Thai SARA AM and Prepend scalars (Malayalam dot reph, Arabic number
+  /// sign) join across cells the same way, so a run never holds fewer
+  /// Characters than it has columns.
+  func testSaraAmAndPrependAcrossCellsEndTheirRun() throws {
+    for (text, expected) in [
+      ("|\u{0E01}\u{0E33}x|", ["0:2:3", "3:2:2"]),  // |กำx|
+      ("|\u{0D4E}\u{0D2F}x|", ["0:2:3", "3:2:2"]),  // |ൎയx|
+      // |؀12x| is a BiDi row (U+0600 is Arabic), whose runs never join cells
+      // that would merge, so every cell keeps its own Character.
+      ("|\u{0600}12x|", ["0:2:2", "2:4:4"]),
+    ] {
+      var runs: [String] = []
+      for cmd in try runWithText(text + "\r\n") {
+        if case .glyphRun(let origin, let run, _, _, _, .terminal, _, _, _, let cells, _, _, _) =
+          cmd
+        {
+          runs.append("\(Int(origin.x / 9)):\(run.count):\(cells.map(String.init) ?? "nil")")
+        }
+      }
+      XCTAssertEqual(runs, expected, "\(text.unicodeScalars.map { String($0.value, radix: 16) })")
+    }
+  }
 }
