@@ -199,6 +199,10 @@ extension FrameProducer {
         let canJoin =
           adjacent && sameStyle && rightToLeft == runRightToLeft && previous.width == 1
           && cell.width == 1 && singleCharacter && previous.text.count == 1
+          // Cells whose text would merge into one Character (e.g. a Prepend
+          // scalar and its base) are drawn apart so each keeps its column.
+          && !(FrameProducer.mayJoinClusters(last: previous.text.utf8, next: cell.text.utf8)
+            && (previous.text + cell.text).count < 2)
         if !canJoin { flush() }
       }
       if run.isEmpty { runRightToLeft = rightToLeft }

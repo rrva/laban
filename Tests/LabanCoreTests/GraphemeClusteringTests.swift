@@ -129,4 +129,27 @@ final class GraphemeClusteringTests: XCTestCase {
     // starts at the conjunct's end, column 5.
     XCTAssertEqual(runs, ["0:4:5", "5:3:3"], "got runs: \(runs)")
   }
+
+  /// Thai SARA AM and Prepend scalars (Malayalam dot reph, Arabic number
+  /// sign) join across cells the same way, so a run never holds fewer
+  /// Characters than it has columns.
+  func testSaraAmAndPrependAcrossCellsEndTheirRun() throws {
+    for (text, expected) in [
+      ("|\u{0E01}\u{0E33}x|", ["0:2:3", "3:2:2"]),  // |กำx|
+      ("|\u{0D4E}\u{0D2F}x|", ["0:2:3", "3:2:2"]),  // |ൎയx|
+      // |؀12x| is a BiDi row (U+0600 is Arabic), whose runs never join cells
+      // that would merge, so every cell keeps its own Character.
+      ("|\u{0600}12x|", ["0:2:2", "2:4:4"]),
+    ] {
+      var runs: [String] = []
+      for cmd in try runWithText(text + "\r\n") {
+        if case .glyphRun(let origin, let run, _, _, _, .terminal, _, _, _, let cells, _, _, _) =
+          cmd
+        {
+          runs.append("\(Int(origin.x / 9)):\(run.count):\(cells.map(String.init) ?? "nil")")
+        }
+      }
+      XCTAssertEqual(runs, expected, "\(text.unicodeScalars.map { String($0.value, radix: 16) })")
+    }
+  }
 }
