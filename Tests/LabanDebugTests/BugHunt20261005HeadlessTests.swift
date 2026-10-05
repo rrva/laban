@@ -70,6 +70,51 @@ final class BugHunt20261005HeadlessTests: XCTestCase {
     }
   }
 
+  // MARK: - #6 headless forwarded wheel / alt-scroll do not clear the selection
+
+  func testBug6_trackedWheelClearsHeadlessSelection() throws {
+    let (runtime, artifacts) = try makeRuntime("bh6-tracked")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let sessionId = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+    feed(runtime, "alpha bravo\r\n\u{1b}[?1000h\u{1b}[?1006h")
+    select(runtime)
+    XCTAssertNotNil(runtime.selectionBySession[sessionId], "precondition: selection set")
+
+    let wheel = runtime.applyAction(
+      try JSONSerialization.data(withJSONObject: [
+        "action": "mouseWheel", "x": runtime.sidebarWidth + 10, "y": 20, "deltaY": 3,
+      ]))
+    XCTAssertEqual(wheel.status, 200)
+    XCTAssertEqual(
+      (try JSONSerialization.jsonObject(with: wheel.body) as? [String: Any])?["mouseTracking"]
+        as? Bool, true, "precondition: wheel took the forwarded (tracked) path")
+    XCTExpectFailure("Bug #6: sendTrackedWheel never clears runtime.selectionBySession") {
+      XCTAssertNil(
+        runtime.selectionBySession[sessionId],
+        "a wheel forwarded to a mouse-tracking app must dismiss the local selection (app parity)")
+    }
+  }
+
+  func testBug6_altScrollWheelClearsHeadlessSelection() throws {
+    let (runtime, artifacts) = try makeRuntime("bh6-alt")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let sessionId = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+    feed(runtime, "\u{1b}[?1049h\u{1b}[?1007halpha bravo\r\n")
+    select(runtime)
+    XCTAssertNotNil(runtime.selectionBySession[sessionId], "precondition: selection set")
+
+    let wheel = runtime.applyAction(
+      try JSONSerialization.data(withJSONObject: [
+        "action": "mouseWheel", "x": runtime.sidebarWidth + 10, "y": 20, "deltaY": 3,
+      ]))
+    XCTAssertEqual(wheel.status, 200)
+    XCTExpectFailure("Bug #6: sendAltScrollWheel never clears runtime.selectionBySession") {
+      XCTAssertNil(
+        runtime.selectionBySession[sessionId],
+        "an alt-scroll wheel forwarded as cursor keys must dismiss the local selection")
+    }
+  }
+
   // MARK: - Helpers
 
   private func makeRuntime(_ name: String) throws -> (HeadlessDebugRuntime, URL) {
