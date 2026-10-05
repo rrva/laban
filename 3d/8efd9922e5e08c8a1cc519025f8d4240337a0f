@@ -1,0 +1,19 @@
+execplans/active/zoom-input-smoothing.md
+  s_df4a39e30a53c5::t_1ed924e3a59f9f 125-138,157-198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3d8efd9922e5e08c8a1cc519025f8d4240337a0f",
+  "prompts": {},
+  "sessions": {
+    "s_df4a39e30a53c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a749dfd-65ad-4299-a920-03824fa7296b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
