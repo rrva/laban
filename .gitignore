@@ -3,6 +3,7 @@
 .build-smoke/
 .build-coverage/
 .build-e2e/
+.build-screenshot/
 .swiftpm/
 .external
 .external/

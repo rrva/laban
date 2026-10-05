@@ -152,15 +152,7 @@ enum TerminalDrop {
   }
 
   static func defaultDropRoot() -> URL {
-    let appSupport =
-      FileManager.default
-      .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-      ?? URL(fileURLWithPath: NSHomeDirectory())
-
-    return
-      appSupport
-      .appendingPathComponent("Laban", isDirectory: true)
-      .appendingPathComponent("drops", isDirectory: true)
+    PersistenceStore.defaultBaseURL().appendingPathComponent("drops", isDirectory: true)
   }
 
   static func makeDropDirectory(root: URL = defaultDropRoot()) throws -> URL {

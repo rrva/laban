@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LabanCore
 
 public enum ControlAdvertisement {
   public static func directory() -> URL {
@@ -27,10 +28,7 @@ public enum ControlAdvertisement {
         attributes: [.posixPermissions: 0o700])
       return url
     }
-    let base =
-      FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-      ?? URL(fileURLWithPath: NSHomeDirectory())
-    return base.appendingPathComponent("Laban", isDirectory: true)
+    return PersistenceStore.defaultBaseURL()
   }
 
   public static func write(

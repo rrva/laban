@@ -105,6 +105,19 @@ without building via:
 ./scripts/build-app --print-bundle-identifier
 ```
 
+A bundle identifier only separates UserDefaults. Every other piece of state
+(`workspace.json`, the labpty and laband daemons and their sockets, `log/`,
+`events/`, `drops/`, and the control socket) lives under
+`~/Library/Application Support/Laban/` whatever the identity, so a second GUI
+build would restore the user's workspace and attach to their live shells. Set
+`LABAN_SUPPORT_DIR` to a private directory to move all of it; child daemons
+inherit the variable. Keep the path short, since the daemon sockets live under
+it and Unix socket paths are limited to 104 bytes:
+
+```sh
+LABAN_SUPPORT_DIR=/tmp/laban-wt-$RANDOM .build/laban/Laban.app/Contents/MacOS/LabanApp
+```
+
 Do not override a linked worktree back to `com.laban.LabanApp` unless the task
 explicitly intends to replace the canonical install.
 
