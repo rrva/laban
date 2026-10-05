@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LabanCore
 import XCTest
 
 @testable import LabanDebug
@@ -47,6 +48,48 @@ final class LabandHeadlessBackendTests: XCTestCase {
       XCTAssertGreaterThan(first["daemonProcessPid"] as? Int ?? 0, 0)
       XCTAssertFalse((first["logicalSessionId"] as? String ?? "").isEmpty)
       XCTAssertFalse((first["incarnationId"] as? String ?? "").isEmpty)
+    }
+  }
+
+  func testRestoreSelectionAttachesLiveDaemonSessionInsteadOfReplacingIt() throws {
+    let socketPath = ".tmp/laband-restore-\(UUID().uuidString.prefix(8))/laband.sock"
+    try withEnvironment([
+      "LABAN_TERMINAL_BACKEND": "laband",
+      "LABAN_LABAND_SOCKET": socketPath,
+      "LABAN_LABAND_BIN": ".build/debug/laband",
+    ]) {
+      let runtime = try makeRuntime(runId: "laband-restore-attach")
+      defer {
+        runtime.shutdown(terminateRemoteSessions: true)
+        try? FileManager.default.removeItem(
+          at: URL(fileURLWithPath: socketPath).deletingLastPathComponent())
+      }
+
+      let sessionId = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+      let live = try XCTUnwrap(runtime.terminalClientSessionInfoById[sessionId])
+      let childPid = try XCTUnwrap(live.childPid)
+      runtime.pendingAgentRestoreCandidatesBySession[sessionId] = AgentRestoreCandidate(
+        tabId: sessionId,
+        agentName: .claude,
+        sessionId: "agent-session",
+        command: "claude --resume agent-session",
+        cwd: NSHomeDirectory(),
+        launchCwd: NSHomeDirectory(),
+        lastActiveAt: Date(),
+        ageSeconds: 0,
+        checkedByDefault: true,
+        warnings: [])
+
+      let body = try jsonObject(
+        runtime.persistenceRestoreSelection(
+          try JSONEncoder().encode(AgentRestoreSelectionRequest(tabIds: [sessionId]))))
+      XCTAssertEqual(body["ok"] as? Bool, true, "\(body)")
+      let restored = try XCTUnwrap(body["restored"] as? [[String: Any]])
+      XCTAssertEqual(restored.first?["incarnationId"] as? String, live.incarnationId)
+      XCTAssertEqual(
+        runtime.terminalClientSessionInfoById[sessionId]?.incarnationId, live.incarnationId)
+      XCTAssertNil(runtime.pendingAgentRestoreCandidatesBySession[sessionId])
+      XCTAssertEqual(kill(pid_t(childPid), 0), 0, "the live session's child must survive")
     }
   }
 
