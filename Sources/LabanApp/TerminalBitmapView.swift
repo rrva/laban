@@ -1160,6 +1160,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       EventLog.shared.log(
         "render.displayChange", self.presentLinkDebugPayload(reason: "screenParameters"))
       self.rebuildPresentLinksAfterDisplayChange()
+      self.scheduleRendererRefreshAfterDisplayChange()
       if self.updateDisplayDownsampledState() {
         self.renderInvalidated = true
         if self.window != nil {
@@ -2076,6 +2077,55 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// display notification can arrive after the pending renderer created its
   /// CAMetalDisplayLink but before `installPendingBackendSwap`; rebuilding only
   /// `backend` would later install the pending renderer with that stale link.
+  /// `/window/screen`: the display the terminal window is on.
+  func debugWindowScreen() -> [String: Any] {
+    guard let screen = window?.screen else { return ["screen": NSNull()] }
+    return [
+      "screen": screen.localizedName,
+      "displayID": currentScreenDisplayID().map { $0 as Any } ?? NSNull(),
+      "maximumFramesPerSecond": screen.maximumFramesPerSecond,
+      "rendererRefreshesAfterDisplayChange": debugDisplayChangeRendererRefreshCount,
+      "rendererRefreshesForCadence": debugPresentCadenceRefreshCount,
+      "presentCadenceCheckArmed": presentCadenceCheck.armed,
+    ]
+  }
+
+  /// `/window/move-to-display`: move the terminal window onto the display with
+  /// `displayID`, keeping its size where it fits. Lets display-change bugs be
+  /// reproduced against a virtual display without driving the mouse.
+  func debugMoveWindow(toDisplayID displayID: UInt32) -> [String: Any] {
+    guard let window else { return ["ok": false, "error": "no window"] }
+    guard
+      let screen = NSScreen.screens.first(where: {
+        ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+          .uint32Value == displayID
+      })
+    else {
+      return ["ok": false, "error": "no screen with displayID \(displayID)"]
+    }
+    let visible = screen.visibleFrame
+    let size = NSSize(
+      width: min(window.frame.width, visible.width), height: min(window.frame.height, visible.height))
+    window.setFrame(
+      NSRect(origin: NSPoint(x: visible.minX, y: visible.maxY - size.height), size: size),
+      display: true)
+    return ["ok": true, "screen": screen.localizedName]
+  }
+
+  /// `/window/visibility`: minimize the terminal window (hidden, as the link
+  /// policy sees a covered window) or restore it. Lets a display change be
+  /// reproduced while the window is hidden. Not `orderOut`: Laban quits when
+  /// its last window goes away (`applicationShouldTerminateAfterLastWindowClosed`).
+  func debugSetWindowHidden(_ hidden: Bool) -> [String: Any] {
+    guard let window else { return ["ok": false, "error": "no window"] }
+    if hidden {
+      window.miniaturize(nil)
+    } else {
+      window.deminiaturize(nil)
+    }
+    return ["ok": true, "miniaturized": window.isMiniaturized]
+  }
+
   /// `/config/drawable-count`: resize the Slug layer's drawable pool, then
   /// rebuild the present link so it binds to the resized pool. Not persisted.
   func debugSetMaximumDrawableCount(_ count: Int) -> [String: Any] {
@@ -2101,6 +2151,74 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     PresentLinkFrameLatency.current = frames
     rebuildPresentLinksAfterDisplayChange()
     return ["ok": true, "frames": PresentLinkFrameLatency.current]
+  }
+
+  /// Replace the renderer, and with it the CAMetalLayer and its present link,
+  /// once a display change has settled. Rebuilding the link alone is not
+  /// enough: after a 60 Hz display was removed from under the window, Laban's
+  /// present link kept calling back at ~60/s on the 120 Hz built-in panel
+  /// through any number of link rebuilds, while a new layer restored 120/s
+  /// (reproduced with a virtual display, 2026-10-05; see
+  /// execplans/active/zoom-input-smoothing.md). The swap renders the new
+  /// backend's first frame before installing it, so nothing blanks.
+  private var displayChangeRendererRefresh: DispatchWorkItem?
+  private static let displayChangeSettleSeconds: TimeInterval = 1.0
+  private(set) var debugDisplayChangeRendererRefreshCount = 0
+  /// Confirms the present link's cadence after a display change and refreshes
+  /// the renderer again if it is still stuck (a refresh made while the window
+  /// was hidden did not always stick). See `PresentCadenceCheck`.
+  private var presentCadenceCheck = PresentCadenceCheck()
+  private(set) var debugPresentCadenceRefreshCount = 0
+
+  private func scheduleRendererRefreshAfterDisplayChange() {
+    guard backend is DisplayLinkPresentingRenderer else { return }
+    presentCadenceCheck.arm()
+    // macOS posts several screen notifications over a few seconds; refresh
+    // once, after the last of them.
+    displayChangeRendererRefresh?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      self.displayChangeRendererRefresh = nil
+      self.refreshRendererAfterDisplayChange()
+    }
+    displayChangeRendererRefresh = work
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + Self.displayChangeSettleSeconds, execute: work)
+  }
+
+  private func refreshRendererAfterDisplayChange() {
+    guard window != nil, backend is DisplayLinkPresentingRenderer else { return }
+    // Never swap under a zoom gesture (its scale lives in the old backend) or
+    // over a swap already in flight; try again after another settle period.
+    if pendingBackendSwap != nil || zoomGestureBasePointSize != nil {
+      scheduleRendererRefreshAfterDisplayChange()
+      return
+    }
+    debugDisplayChangeRendererRefreshCount += 1
+    EventLog.shared.log(
+      "render.displayChange.rendererRefresh",
+      ["renderer": activeRendererSelection.rawValue, "screen": window?.screen?.localizedName ?? ""])
+    beginPendingBackendSwap(to: activeRendererSelection)
+  }
+
+  /// Main display-link tick, while `presentCadenceCheck` is armed.
+  private func checkPresentCadence(now: TimeInterval) {
+    guard presentCadenceCheck.armed else { return }
+    let liveness = (backend as? DisplayLinkPresentingRenderer)?.presentLinkLiveness()
+    let running =
+      animationVisibleToUser && displayLinkIsTicking && liveness?.paused == false
+      && liveness?.hostWantsRunning == true
+    let verdict = presentCadenceCheck.tick(
+      at: now, presentCallbacks: liveness?.callbacks, linksRunning: running)
+    guard case .refresh(let ratio) = verdict,
+      window != nil, pendingBackendSwap == nil, zoomGestureBasePointSize == nil
+    else { return }
+    debugPresentCadenceRefreshCount += 1
+    EventLog.shared.log(
+      "render.presentCadence.rendererRefresh",
+      ["renderer": activeRendererSelection.rawValue, "ratio": ratio,
+       "screen": window?.screen?.localizedName ?? ""])
+    beginPendingBackendSwap(to: activeRendererSelection)
   }
 
   private func rebuildPresentLinksAfterDisplayChange() {
@@ -2591,6 +2709,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         EventLog.shared.log(
           "render.displayChange", self.presentLinkDebugPayload(reason: "windowScreenChange"))
         self.rebuildPresentLinksAfterDisplayChange()
+        self.scheduleRendererRefreshAfterDisplayChange()
       })
     // A terminal window does not receive another key-window notification when
     // Settings is key and the whole app deactivates/reactivates. Observe app
@@ -2716,6 +2835,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// CADisplayLink target/selector. Already on main, so no dispatch hop.
   @objc private func displayLinkTick(_ link: AnyObject) {
     noteDisplayLinkTick()
+    checkPresentCadence(now: ProcessInfo.processInfo.systemUptime)
     advanceFrame(wake: .displayLink)
   }
 
