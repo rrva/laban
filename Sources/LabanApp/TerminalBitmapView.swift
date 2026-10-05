@@ -2087,6 +2087,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return ["ok": true, "count": slug.layer.maximumDrawableCount]
   }
 
+  /// `/config/present-rate`: rebuild the present links pinned to `hz`, or back
+  /// to the shipped range for nil. Not persisted.
+  func debugSetPresentLinkFrameRate(_ hz: Int?) -> [String: Any] {
+    PresentLinkFrameRateOverride.current = hz
+    rebuildPresentLinksAfterDisplayChange()
+    return ["ok": true, "hz": hz.map { $0 as Any } ?? "default"]
+  }
+
   /// `/config/present-latency`: rebuild the present links with `frames` of
   /// Core Animation lead, for A/B pacing runs. Not persisted.
   func debugSetPresentLinkFrameLatency(_ frames: Int) -> [String: Any] {

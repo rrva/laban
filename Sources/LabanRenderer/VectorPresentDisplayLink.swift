@@ -206,12 +206,37 @@ public enum PresentLinkFrameLatency {
   }
 }
 
+/// Debug A/B override for the present link's preferred frame rate (Hz);
+/// nil keeps the shipped 30-120 range preferring 120. `/config/present-rate`.
+public enum PresentLinkFrameRateOverride {
+  private static let lock = NSLock()
+  nonisolated(unsafe) private static var hz: Int?
+
+  public static var current: Int? {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return hz
+    }
+    set {
+      lock.lock()
+      hz = newValue
+      lock.unlock()
+    }
+  }
+}
+
 @available(macOS 14.0, *)
 private func configurePresentLink(
   _ link: CAMetalDisplayLink, delegate: any CAMetalDisplayLinkDelegate
 ) {
   link.delegate = delegate
-  link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+  if let hz = PresentLinkFrameRateOverride.current {
+    link.preferredFrameRateRange = CAFrameRateRange(
+      minimum: Float(hz), maximum: Float(hz), preferred: Float(hz))
+  } else {
+    link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+  }
   // A terminal finishes a frame in ~1–2 ms, but live scroll traces can still
   // miss whole present callbacks with latency 1. Give Core Animation one more
   // frame of scheduling slack so the display-link presenter holds 120 Hz.

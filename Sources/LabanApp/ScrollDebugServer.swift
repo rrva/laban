@@ -365,6 +365,11 @@ final class ScrollDebugServer {
       return onMain { tv, _, _ in
         Response.json(tv.debugSetMaximumDrawableCount(count))
       }
+    case ("POST", "/config/present-rate"):
+      let hz = Int(query["hz"] ?? "")
+      return onMain { tv, _, _ in
+        Response.json(tv.debugSetPresentLinkFrameRate(hz))
+      }
     case ("GET", "/config/present-latency"):
       return Response.json(["frames": PresentLinkFrameLatency.current])
     case ("POST", "/config/smooth-scroll"):
@@ -631,6 +636,8 @@ final class ScrollDebugServer {
     POST /config/present-latency?frames=N  rebuild the Slug/Vector present link with N
                                       frames of Core Animation lead (1-3, default 2);
                                       GET reads it. Not persisted
+    POST /config/present-rate[?hz=N]  pin the present link to N Hz (no hz: the
+                                      shipped 30-120 range); rebuilds the link
     POST /config/drawable-count?count=N  Slug layer drawable pool size (2 or 3,
                                       default 3); rebuilds the present link
     POST /config/tab?index=N          select tab N (0-based); use a normal-buffer
