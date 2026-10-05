@@ -351,6 +351,15 @@ final class ScrollDebugServer {
         for (k, v) in tv.debugApplySubpixelLayout(layout) { payload[k] = v }
         return Response.json(payload)
       }
+    case ("POST", "/config/present-latency"):
+      guard let frames = Int(query["frames"] ?? ""), (1...3).contains(frames) else {
+        return Response.json(["error": "frames must be 1, 2, or 3"], status: 400)
+      }
+      return onMain { tv, _, _ in
+        Response.json(tv.debugSetPresentLinkFrameLatency(frames))
+      }
+    case ("GET", "/config/present-latency"):
+      return Response.json(["frames": PresentLinkFrameLatency.current])
     case ("POST", "/config/smooth-scroll"):
       let mode = query["mode"] ?? ""
       guard let parsed = VectorSmoothScrollMode(rawValue: mode) else {
@@ -612,6 +621,9 @@ final class ScrollDebugServer {
                                       rgbStripe|bgrStripe); slug/vector only, reports the
                                       effective layout after the auto-policy resolves
     POST /config/smooth-scroll?mode=M switch vector smooth-scroll mode (fluid|perPhase)
+    POST /config/present-latency?frames=N  rebuild the Slug/Vector present link with N
+                                      frames of Core Animation lead (1-3, default 2);
+                                      GET reads it. Not persisted
     POST /config/tab?index=N          select tab N (0-based); use a normal-buffer
                                       shell tab so scroll bursts hit Laban scrollback
                                       (not a fullscreen alt-screen TUI)

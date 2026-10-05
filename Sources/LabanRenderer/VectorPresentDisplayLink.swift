@@ -185,6 +185,27 @@ struct PresentStallDecision: Equatable {
   }
 }
 
+/// Frames of lead the present link asks Core Animation for
+/// (`CAMetalDisplayLink.preferredFrameLatency`). Links read it when built or
+/// rebuilt; `/config/present-latency` switches it live for A/B pacing runs.
+public enum PresentLinkFrameLatency {
+  private static let lock = NSLock()
+  nonisolated(unsafe) private static var frames = 2
+
+  public static var current: Int {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return frames
+    }
+    set {
+      lock.lock()
+      frames = newValue
+      lock.unlock()
+    }
+  }
+}
+
 @available(macOS 14.0, *)
 private func configurePresentLink(
   _ link: CAMetalDisplayLink, delegate: any CAMetalDisplayLinkDelegate
@@ -194,7 +215,7 @@ private func configurePresentLink(
   // A terminal finishes a frame in ~1–2 ms, but live scroll traces can still
   // miss whole present callbacks with latency 1. Give Core Animation one more
   // frame of scheduling slack so the display-link presenter holds 120 Hz.
-  link.preferredFrameLatency = 2
+  link.preferredFrameLatency = Float(PresentLinkFrameLatency.current)
   // Start paused; `notifyContentUpdated()` unpauses on the first rendered frame.
   link.isPaused = true
 }

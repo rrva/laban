@@ -2075,6 +2075,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// display notification can arrive after the pending renderer created its
   /// CAMetalDisplayLink but before `installPendingBackendSwap`; rebuilding only
   /// `backend` would later install the pending renderer with that stale link.
+  /// `/config/present-latency`: rebuild the present links with `frames` of
+  /// Core Animation lead, for A/B pacing runs. Not persisted.
+  func debugSetPresentLinkFrameLatency(_ frames: Int) -> [String: Any] {
+    PresentLinkFrameLatency.current = frames
+    rebuildPresentLinksAfterDisplayChange()
+    return ["ok": true, "frames": PresentLinkFrameLatency.current]
+  }
+
   private func rebuildPresentLinksAfterDisplayChange() {
     (backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
     (pendingBackendSwap?.backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
