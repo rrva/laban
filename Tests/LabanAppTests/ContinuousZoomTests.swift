@@ -15,6 +15,24 @@ import XCTest
 /// integer `(cols, rows)` actually change — is backend-independent, so the
 /// software backend exercises it faithfully.
 final class ContinuousZoomTests: XCTestCase {
+  /// A committed zoom persists the font size to `UserDefaults.standard`, which
+  /// every xctest process shares on disk. Restore it after each test, or a
+  /// fractional size (e.g. 24.08) leaks into other suites' baselines.
+  private var savedFontSize: Any?
+
+  override func setUp() {
+    super.setUp()
+    savedFontSize = UserDefaults.standard.object(forKey: FontAtlas.userFontSizeKey)
+  }
+
+  override func tearDown() {
+    if let savedFontSize {
+      UserDefaults.standard.set(savedFontSize, forKey: FontAtlas.userFontSizeKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: FontAtlas.userFontSizeKey)
+    }
+    super.tearDown()
+  }
 
   // MARK: - M1: pure size-mapping function
 
@@ -236,6 +254,12 @@ final class ContinuousZoomTests: XCTestCase {
       settled["presentationScale"] as! Double,
       s["targetPresentationScale"] as! Double, accuracy: 1e-9,
       "the glide lands exactly on the input's scale")
+
+    // Let the coalesce timer commit here rather than in a later test.
+    let deadline = Date().addingTimeInterval(2)
+    while harness.view.debugZoomState()["gestureActive"] as! Bool, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    }
   }
 
   /// Measured on a RollerMouse Pro: slow notches arrive 160-400 ms apart with
@@ -323,6 +347,13 @@ final class ContinuousZoomTests: XCTestCase {
       previous = scale
     }
     XCTAssertLessThan(largestFrameStep, 0.08, "measured before the cap: up to 87 % in one frame")
+
+    // Let the run commit here rather than in a later test's run loop.
+    let deadline = Date().addingTimeInterval(2)
+    while harness.view.debugZoomState()["gestureActive"] as! Bool, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    }
+    XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 1)
   }
 
   /// The 60 Hz judder: trackpad events land 1, 1, 0, 2, ... per vsync. Each
