@@ -356,6 +356,44 @@ final class ContinuousZoomTests: XCTestCase {
     XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 1)
   }
 
+  /// Recorded on the LG trace: lifting and re-touching mid-zoom sends `.ended`,
+  /// `.mayBegin`, `.began` within ~100 ms. The visible size must continue from
+  /// where it was, not drop back to the gesture-start size for a frame.
+  func testTrackpadRetouchContinuesZoomInsteadOfSnappingBack() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    activateRenderer(.slugGlyph, on: harness.view)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("slug backend not active (no GPU in this environment)")
+    }
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    func scroll(_ delta: CGFloat, _ phase: NSEvent.Phase) {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 0, scrollingDeltaY: delta,
+          hasPreciseScrollingDeltas: true, modifierFlags: .command, phase: phase))
+    }
+    scroll(5, .began)
+    for _ in 0..<20 { scroll(7, .changed) }
+    scroll(0, .ended)
+    for _ in 0..<30 { harness.view.debugAdvanceZoomSpring(by: 1.0 / 60) }
+    let beforeRetouch = harness.view.debugZoomState()["visualPointSize"] as! Double
+    XCTAssertGreaterThan(beforeRetouch, 14 * 1.5)
+
+    scroll(0, .mayBegin)
+    scroll(3, .began)
+    harness.view.debugAdvanceZoomSpring(by: 1.0 / 60)
+    let afterRetouch = harness.view.debugZoomState()["visualPointSize"] as! Double
+    XCTAssertGreaterThanOrEqual(
+      afterRetouch, beforeRetouch,
+      "re-touch must continue the zoom, not snap to the start size (14 pt)")
+    XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 0, "still one open session")
+  }
+
   /// The 60 Hz judder: trackpad events land 1, 1, 0, 2, ... per vsync. Each
   /// vsync must still move the visible size, by a similar amount.
   func testTrackpadCmdScrollStepsEvenlyWhenEventsBeatAgainstVsync() throws {

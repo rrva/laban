@@ -6496,11 +6496,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let resumingDebouncedSession = zoomGestureCommitSettle != nil
     zoomGestureCommitSettle?.cancel()
     zoomGestureCommitSettle = nil
+    // Any uncommitted session is still open, not only one with a commit pending:
+    // a trackpad re-touch sends `.ended`, then `.mayBegin` (which cancels the
+    // pending commit above as a `.changed`), then `.began`. Restarting there
+    // reset the scale to 1 over the uncommitted base atlas, so one frame showed
+    // the gesture-start size (10.3 pt -> 8.0 pt) and the zoom so far was lost.
+    // Continuing cannot stack transforms: the scale is always derived from the
+    // session's base and accumulator.
+    let sessionOpen = resumingDebouncedSession || zoomGestureBasePointSize != nil
 
-    if phase == .began && !resumingDebouncedSession {
-      // Clear any scale left by a prior gesture that did not deliver `.ended`
-      // (rare, but a back-to-back `.began` must start from identity, not stack
-      // transforms).
+    if phase == .began && !sessionOpen {
+      // Nothing uncommitted: start from identity.
       if debugGestureZoomScale != 1 { setGestureZoomPresentationScale(1) }
       zoomSpring = nil
       zoomGestureBasePointSize = fontAtlas.pointSize
