@@ -488,6 +488,49 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     }
   }
 
+  /// Bug #10: the 20 Hz drag-edge autoscroll tick assigns the raw clamped cell
+  /// to the focus instead of re-extending in the active grain, so a word-grain
+  /// drag held past the bottom edge ends mid-word.
+  func testBug10_dragEdgeAutoscrollKeepsWordGrain() throws {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+    let session = try XCTUnwrap(harness.model.session(forTab: harness.model.activeTab!.id))
+    session.write(
+      Array((1...30).map { String(format: "l%02d alpha bravo\r\n", $0) }.joined().utf8))
+    session.poll()
+    harness.view.advanceFrame()
+    let bottomOffset = try XCTUnwrap(session.viewportState()?.viewportOffset)
+    for _ in 0..<15 { scrollOneRowTowardHistory(in: harness, session: session) }
+    XCTAssertLessThan(
+      try XCTUnwrap(session.viewportState()?.viewportOffset), bottomOffset,
+      "precondition: viewport scrolled into history so bottom-edge autoscroll can move")
+
+    // Double-click "alpha" (cols 4...8) on row 1.
+    let press = point(row: 1, col: 5, in: harness)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: press, clickCount: 2))
+    XCTAssertEqual(copyText(from: harness.view), "alpha", "precondition: double-click")
+
+    // Drag below the content bottom with the pointer inside "bravo" (cols 10...14).
+    var below = point(row: harness.rows - 1, col: 12, in: harness)
+    below.y = -5
+    harness.view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: below, clickCount: 2))
+    let beforeTick = try XCTUnwrap(copyText(from: harness.view))
+    XCTAssertTrue(beforeTick.hasSuffix("bravo"), "precondition: drag is word-grain: \(beforeTick)")
+
+    let offsetBeforeTicks = session.viewportState()?.viewportOffset
+    RunLoop.current.run(until: Date().addingTimeInterval(0.12))
+    XCTAssertNotEqual(
+      session.viewportState()?.viewportOffset, offsetBeforeTicks,
+      "precondition: autoscroll ticks fired and moved the viewport")
+    let duringAutoscroll = try XCTUnwrap(copyText(from: harness.view))
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: below, clickCount: 2))
+    XCTExpectFailure("Bug #10: dragAutoscrollTick collapses word grain to char grain") {
+      XCTAssertTrue(
+        duringAutoscroll.hasSuffix("bravo"),
+        "autoscroll must keep the word grain; copied: \(duringAutoscroll.debugDescription)")
+    }
+  }
+
   func testScrollWheelInTitlebarStripDoesNotScrollTerminalViewport() throws {
     let harness = try makeHarness(rows: 5, cols: 20)
     defer { harness.restoreRenderer() }
