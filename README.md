@@ -47,6 +47,93 @@ on the GPU, on top of Ghostty's VT core.
 > **Status: beta.** APIs, scripts, debug endpoints, and on-disk artifact
 > formats change without notice.
 
+## Features
+
+Everything below ships in the app today. Most of it lives in the menu bar or
+in **Laban → Settings** (⌘,); shortcuts are listed where they exist.
+
+### Sessions and tabs
+
+- **Sessions survive quits, crashes, and updates.** **Laban → Restart Laban**
+  (⌥⌘R) relaunches the app without touching your shells. Settings → Terminal
+  → *Restore tabs on launch* and *Ask before closing* control the rest.
+- **Vertical tab sidebar** (⌃⌘S to show or hide). Each tab shows its folder,
+  git branch, and running command. Agents that report status (iTerm2's OSC
+  21337) get a colored dot and an Idle / Working / Waiting label. Hover a
+  background tab to see a live preview of it (Slug renderer).
+- **Tabs:** new ⌘T, close ⌘W, jump with ⌘1–⌘8 and ⌘9 for the last one,
+  previous and next with ⌥⌘← / ⌥⌘→. New tabs open in the current tab's
+  directory.
+- **Split panes:** ⌘D splits right, ⇧⌘D splits down. ⌥⌘[ and ⌥⌘] cycle
+  panes, ⌥⌘↑ / ⌥⌘↓ move up and down, ⇧⌘↩ zooms one pane, ⌃⌘= equalizes, and
+  ⌃⌘ plus an arrow moves a divider. All of it is in the **Pane** menu.
+- **Notifications** when a tab needs you, when a task finishes, or on a bell,
+  only for tabs you are not looking at. Each kind can be turned off in
+  Settings → Notifications, which also has a sound toggle and a test button.
+
+### Working with text and files
+
+- **Find** in the session with ⌘F.
+- **Quick Look** (⌘Y) a selected file path, resolved against the shell's
+  current directory.
+- **Clickable hyperlinks** (OSC 8) and **drag and drop**: drop files or images
+  onto a tab to paste their paths.
+- **Clipboard over SSH.** Programs can copy to your Mac clipboard with OSC 52.
+  Pasting an image (⌘V) into an `ssh` session uploads it to the remote host,
+  once you allow that host, and pastes its path, so Claude Code or Codex on a
+  server can take a screenshot. Programs that speak Kitty's clipboard protocol get the image
+  in-band instead.
+- **Inline images** through the Kitty graphics protocol.
+- **Export the last few seconds as an asciinema cast**: ⌘E for the last 10 s,
+  or **File → Export Recent…** for 5, 30, or 60 s.
+- **Unicode:** grapheme-cluster widths for emoji (mode 2027), automatic CJK
+  font pairing, and optional right-to-left text in reading order (Settings →
+  Rendering).
+
+### Look and feel
+
+- **Themes:** pick separate light and dark themes that follow the system
+  appearance, or import your own `.laban-theme.json`. The import dialog opens
+  on bundled examples: Catppuccin, Dracula, Gruvbox, Nord, Rosé Pine,
+  Selenized, and Terminal Basic.
+- **Background opacity, blur, and an image** behind the text, with Frosted
+  and other presets (Settings → Appearance).
+- **Text:** font, CJK font, ligatures, text weight, cursor shape and blink,
+  emoji rendering, and ⌘+ / ⌘− / ⌘0 to zoom.
+- **Keyboard:** *Option as Meta* (Settings → Terminal) for Emacs and shell
+  bindings, off by default so layout-specific ⌥ characters still type.
+- **Renderers:** Slug Glyph (the default, drawn from font curves), GPU-driven
+  Metal, classic Metal, and software. Switch under Settings → Rendering.
+
+### Agents and automation
+
+- **The `laban` CLI** reads a session's screen or scrollback, takes window
+  screenshots, scrolls, and waits for a prompt or a finished command. Every
+  read asks for your approval in the app first.
+- **Command proposals:** `laban propose` lets an agent suggest a command that
+  you approve or reject in the app. Nothing is typed into your shell without
+  you.
+- **Agent control** is switched on or off in Settings → Terminal or from
+  **Debug → Disable Agent Control Server**, and Settings → Agent lists and
+  revokes the approvals you have given. See
+  [`docs/process/controlling-agent-control-plane.md`](docs/process/controlling-agent-control-plane.md)
+  and the [threat model](docs/process/control-plane-threat-model.md).
+- **Headless mode and scenario scripts** for CI: see
+  [Debugging and agent control](#debugging-and-agent-control) below.
+
+### Troubleshooting
+
+- **Help → Diagnostics…**, **Help → Reveal Log Folder in Finder**, and
+  **Debug → Send Diagnostics…** collect what a bug report needs.
+- **Debug → Start PTY Capture** (⇧⌘R) records raw terminal output for a
+  rendering bug.
+- Laban checks for updates automatically; turn that off in Settings →
+  Terminal. See
+  [`docs/release/update-checks.md`](docs/release/update-checks.md).
+
+Design decisions behind each feature are recorded in [`docs/adr/`](docs/adr/);
+the documentation index is [`docs/README.md`](docs/README.md).
+
 ## Install
 
 Download the notarized `Laban-<version>.dmg` from the
