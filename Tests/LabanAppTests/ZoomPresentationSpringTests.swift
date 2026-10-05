@@ -26,7 +26,8 @@ final class ZoomPresentationSpringTests: XCTestCase {
         framesToNinetyPercent = frame
       }
     }
-    XCTAssertLessThan(largestStep, 0.025, "no single 60 Hz frame takes more than a third of a notch")
+    XCTAssertLessThan(
+      largestStep, 0.025, "no single 60 Hz frame takes more than a third of a notch")
     XCTAssertGreaterThanOrEqual(framesToNinetyPercent, 4)
     XCTAssertLessThanOrEqual(framesToNinetyPercent, 9, "the glide still lands in ~150 ms")
   }
