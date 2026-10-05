@@ -48,10 +48,17 @@ public final class PersistenceStore {
     self.agentMirrorURL = baseURL.appendingPathComponent("agent-mirror", isDirectory: true)
   }
 
-  /// Default base URL is `~/Library/Application Support/Laban/`. The
-  /// Application Support directory is created on demand; callers should
-  /// not rely on its prior existence.
-  public static func defaultBaseURL() -> URL {
+  /// Default base URL is `~/Library/Application Support/Laban/`, or
+  /// `$LABAN_SUPPORT_DIR` when set, so a second Laban (another worktree, a
+  /// screenshot rig) can keep its workspace, daemon sockets, and logs apart
+  /// from the user's live install. The Application Support directory is
+  /// created on demand; callers should not rely on its prior existence.
+  public static func defaultBaseURL(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> URL {
+    if let override = environment["LABAN_SUPPORT_DIR"], !override.isEmpty {
+      return URL(fileURLWithPath: override, isDirectory: true)
+    }
     let fm = FileManager.default
     let support: URL
     do {

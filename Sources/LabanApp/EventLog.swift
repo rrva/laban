@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LabanCore
 import os
 
 /// Append-only JSON-lines event recorder. One entry per line, one file
@@ -24,14 +25,7 @@ final class EventLog: @unchecked Sendable {
   private static let retainDays = 7
 
   private init() {
-    let appSupport =
-      FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask
-      ).first ?? URL(fileURLWithPath: NSHomeDirectory())
-    self.dirURL =
-      appSupport
-      .appendingPathComponent("Laban")
-      .appendingPathComponent("events")
+    self.dirURL = PersistenceStore.defaultBaseURL().appendingPathComponent("events")
     try? FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
   }
 
