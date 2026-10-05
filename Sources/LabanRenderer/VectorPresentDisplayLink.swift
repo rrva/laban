@@ -241,6 +241,9 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// latest target and presents. Return value is advisory (stats only): the link's
   /// run state is controlled externally via `setRunning(_:)`, not by this result.
   var onPresent: ((any CAMetalDrawable) -> Bool)?
+  /// `targetPresentationTimestamp` of the update being handled, set just before
+  /// `onPresent` runs. Present thread only.
+  private(set) var currentUpdateTargetPresentationTimestamp: CFTimeInterval = 0
 
   /// Present-side cadence stats: intervals (ms) between successive callbacks that
   /// actually presented a frame, sampled while the link is active. This is the
@@ -721,6 +724,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     // on vsyncs where content did not re-render (a presented frame stays on screen
     // until replaced; re-presenting is a ~0.05 ms blit). The link only fires while
     // the host policy says active — `setRunning(false)` parks it when idle.
+    currentUpdateTargetPresentationTimestamp = update.targetPresentationTimestamp
     let presented = onPresent?(update.drawable) ?? false
     statsLock.lock()
     callbackCount += 1

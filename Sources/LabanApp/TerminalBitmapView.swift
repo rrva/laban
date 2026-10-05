@@ -6935,7 +6935,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         ["t": $0.time, "gpuMs": $0.gpuMs, "size": $0.visualPointSize]
       },
       "displayed": zoomTraceDisplayed.map {
-        ["callbackT": $0.callbackTime, "presentedT": $0.presentedTime]
+        ["callbackT": $0.callbackTime, "targetT": $0.targetTime, "presentedT": $0.presentedTime]
       },
       "linkPolicy": zoomTraceLinkPolicy.map {
         ["t": $0.time, "shouldRun": $0.shouldRun, "reason": $0.reason] as [String: Any]

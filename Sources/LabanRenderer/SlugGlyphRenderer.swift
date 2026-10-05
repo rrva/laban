@@ -1264,8 +1264,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     presentQueue.label = "laban.slug.present"
     self.presentQueue = presentQueue
     let presentLink = VectorPresentDisplayLink(layer: layer)
-    presentLink.onPresent = { [weak self] drawable in
-      self?.presentLatestTarget(into: drawable) ?? false
+    presentLink.onPresent = { [weak self, unowned presentLink] drawable in
+      self?.presentLatestTarget(
+        into: drawable,
+        targetTime: presentLink.currentUpdateTargetPresentationTimestamp) ?? false
     }
     presentLink.onAbandon = { [weak self, weak presentLink] in
       DispatchQueue.main.async {
@@ -1304,13 +1306,6 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       drawable.texture.height == target.height
     else { return }
     encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
-    if zoomPresentTraceArmed {
-      let callbackTime = CACurrentMediaTime()
-      drawable.addPresentedHandler { [weak self] presented in
-        self?.recordZoomDisplayedSample(
-          callbackTime: callbackTime, presentedTime: presented.presentedTime)
-      }
-    }
     commandBuffer.present(drawable)
     commandBuffer.commit()
     fallbackPresentedCount += 1
@@ -4328,7 +4323,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     return true
   }
 
-  private func presentLatestTarget(into drawable: any CAMetalDrawable) -> Bool {
+  private func presentLatestTarget(
+    into drawable: any CAMetalDrawable, targetTime: CFTimeInterval
+  ) -> Bool {
     presentTargetLock.lock()
     let target = latestPresentedTarget
     let version = publishedFrameVersion
@@ -4364,7 +4361,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let callbackTime = CACurrentMediaTime()
       drawable.addPresentedHandler { [weak self] presented in
         self?.recordZoomDisplayedSample(
-          callbackTime: callbackTime, presentedTime: presented.presentedTime)
+          callbackTime: callbackTime, targetTime: targetTime,
+          presentedTime: presented.presentedTime)
       }
     }
     commandBuffer.present(drawable)
@@ -4416,7 +4414,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   }
 
   /// Drawable presented-handler thread.
-  private func recordZoomDisplayedSample(callbackTime: Double, presentedTime: Double) {
+  private func recordZoomDisplayedSample(
+    callbackTime: Double, targetTime: Double, presentedTime: Double
+  ) {
     zoomPresentTraceLock.lock()
     defer { zoomPresentTraceLock.unlock() }
     guard zoomPresentTraceEnabled else { return }
@@ -4424,7 +4424,8 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       zoomDisplayedTrace.removeFirst(zoomDisplayedTrace.count - Self.zoomPresentTraceCapacity + 1)
     }
     zoomDisplayedTrace.append(
-      ZoomDisplayedSample(callbackTime: callbackTime, presentedTime: presentedTime))
+      ZoomDisplayedSample(
+        callbackTime: callbackTime, targetTime: targetTime, presentedTime: presentedTime))
   }
 
   /// Debug A/B (`/config/drawable-count`): resize the layer's drawable pool.

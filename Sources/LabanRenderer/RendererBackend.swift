@@ -132,10 +132,13 @@ extension GestureZoomRenderable {
 /// (`MTLDrawable.presentedTime`, 0 when the compositor dropped it).
 public struct ZoomDisplayedSample: Equatable, Sendable {
   public var callbackTime: Double
+  /// The display link's `targetPresentationTimestamp` for this present.
+  public var targetTime: Double
   public var presentedTime: Double
 
-  public init(callbackTime: Double, presentedTime: Double) {
+  public init(callbackTime: Double, targetTime: Double, presentedTime: Double) {
     self.callbackTime = callbackTime
+    self.targetTime = targetTime
     self.presentedTime = presentedTime
   }
 }
