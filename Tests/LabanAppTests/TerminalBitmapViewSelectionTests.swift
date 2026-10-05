@@ -908,6 +908,51 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       "a right press forwarded under mouse tracking must clear the local selection")
   }
 
+  func testAltScreenEntryClearsSelection() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    // A fullscreen app swaps to the alternate screen and paints its own text
+    // into the cells the primary-screen selection covered. The selection's
+    // rows now point at unrelated alt-screen content, so it must go.
+    session.write(Array("\u{1B}[?1049h\u{1B}[Hgamma delta".utf8))
+    session.poll()
+    XCTAssertEqual(session.viewportState()?.altScreen, true)
+    harness.view.advanceFrame()
+
+    XCTAssertEqual(
+      copyText(from: harness.view), "sentinel",
+      "entering the alternate screen must clear the primary-screen selection")
+  }
+
+  func testSelectionMadeOnAltScreenSurvivesFrames() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("\u{1B}[?1049h\u{1B}[Hgamma delta".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    harness.view.advanceFrame()
+    harness.view.advanceFrame()
+
+    XCTAssertEqual(
+      copyText(from: harness.view), "gamma",
+      "staying on the alternate screen is not a screen swap")
+  }
+
   func testShiftWheelScrollsLocalScrollbackUnderMouseTracking() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }

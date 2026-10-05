@@ -29,6 +29,22 @@ final class HeadlessSelectionInvalidationTests: XCTestCase {
       "a right press forwarded under mouse tracking must clear the local selection")
   }
 
+  func testAltScreenEntryClearsSelection() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "sel-alt-entry")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let sessionId = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+
+    feed(runtime, "alpha bravo\r\n")
+    setSelection(runtime, row: 0, startCol: 0, endCol: 4)
+    XCTAssertNotNil(runtime.selectionBySession[sessionId])
+
+    feed(runtime, "\u{1b}[?1049h\u{1b}[Hgamma delta")
+
+    XCTAssertNil(
+      runtime.selectionBySession[sessionId],
+      "entering the alternate screen must clear the primary-screen selection")
+  }
+
   // MARK: - Helpers
 
   private func feed(_ runtime: HeadlessDebugRuntime, _ text: String) {

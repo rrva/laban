@@ -214,6 +214,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private var selectionAnchor: TerminalSelectionPoint?
+  private var selectionInvalidation = TerminalSelectionInvalidation()
   private var selectionFocus: TerminalSelectionPoint?
 
   /// Grain of the active selection. Set on mouseDown by the click count;
@@ -4531,6 +4532,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
       && !gpuCellCommandFallbackPending
+    if clearSelectionStaleFromAppRepaint(session: session) {
+      renderInvalidated = true
+    }
     let request = TerminalSurfaceFrameRequest(
       frame: captureFrame,
       viewportWidth: bounds.width,
@@ -8921,6 +8925,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     selectionOriginCell = nil
     persistSelectionStateForCurrentTab()
     recordInput(kind: "selection", route: "terminal", command: "clearSelection")
+  }
+
+  /// The app, not Laban, can replace what sits under the focused session's local
+  /// selection (see `TerminalSelectionInvalidation`); drop the selection before
+  /// this frame paints it over unrelated text. True when it cleared, so the
+  /// caller forces a full repaint that erases the old highlight.
+  private func clearSelectionStaleFromAppRepaint(session: Session) -> Bool {
+    guard let vs = session.viewportState() else { return false }
+    let selection = currentTerminalSelection(
+      sessionId: session.id, currentViewportOffset: vs.viewportOffset)
+    guard
+      selectionInvalidation.shouldClear(
+        sessionId: session.id, altScreen: vs.altScreen, selection: selection)
+    else { return false }
+    dismissLocalSelectionForForwardedInput()
+    return true
   }
 
   /// A paste consumes the on-screen selection from the user's point of view:
