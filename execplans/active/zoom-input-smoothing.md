@@ -137,9 +137,17 @@ Add a measurement seam before changing behavior.
 - [ ] Present pacing on the 60 Hz LG: re-measure a fresh Laban launch with the
   LG attached against the minimal repro; the system-side explanation is ruled
   out (see Surprises).
-- [ ] Present link degraded to ~60/s after an external-display unplug:
-  reproduce by unplugging, then find why the rebuilt link keeps the wrong
-  cadence.
+- [x] (2026-10-05) Present link degraded to ~60/s after an external-display
+  unplug: reproduced with a virtual display (`PacingRepro
+  --hold-virtual-display` plus `/window/move-to-display`); link rebuilds do not
+  heal it, a new renderer (new CAMetalLayer) does. Fixed by recreating the
+  renderer one second after display changes settle, plus a
+  `PresentCadenceCheck` that refreshes again (at most twice) if the present
+  link stays under 0.75x the main link once both run. Live: 120/s after
+  removal with the window visible (twice) and minimized during the removal
+  (once); the cadence fallback fired once at ratio 0.18 during a run disturbed
+  by a refocus. The minimal repro never shows the stuck state, so the exact
+  Laban-side trigger is still unknown.
 - [ ] After-trace of real trackpad/wheel zoom on the built-in panel.
 
 ## Validation and Acceptance
@@ -198,6 +206,14 @@ commit restores today's behavior with the trace still available.
   rate pinning recover it. A fresh launch on the same panel gets 120-121
   callbacks/s. Evidence: present-stats rebuilds 9, stallRepairs 1 before the
   restart; 0 after. Separate display-change bug, not zoom specific.
+- Observation: a fully hidden window (behind others, not merely partly
+  covered) gets its display link throttled to ~4 callbacks/s; 99 % covered is
+  not throttled. Measurements taken while the user works in another app must
+  confirm visibility (Laban: `displayLinkReason != notVisible`; repro: the
+  window floats).
+- Observation: ordering out Laban's only window quits the app
+  (`applicationShouldTerminateAfterLastWindowClosed`); the visibility debug
+  endpoint minimizes instead.
 - Observation: the GPU zoom tests in `ContinuousZoomTests` had been skipping
   since renderer swaps became asynchronous; once running, several persisted
   fractional font sizes into the shared xctest defaults domain and broke
