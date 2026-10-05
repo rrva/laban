@@ -134,8 +134,13 @@ Add a measurement seam before changing behavior.
   (9466ce0f), re-touch snap-back fix (8c7be854).
 - [x] (2026-10-05) M2 after-trace on the LG: wheel max per-vsync step 7-8 % ->
   1.7-3 %, fast spins 18-87 % -> 4-10 %, commits 44 -> 23.
-- [ ] Present pacing on 60 Hz external panels (see Surprises): decide a fix.
-- [ ] After-trace on the built-in panel.
+- [ ] Present pacing on the 60 Hz LG: re-measure a fresh Laban launch with the
+  LG attached against the minimal repro; the system-side explanation is ruled
+  out (see Surprises).
+- [ ] Present link degraded to ~60/s after an external-display unplug:
+  reproduce by unplugging, then find why the rebuilt link keeps the wrong
+  cadence.
+- [ ] After-trace of real trackpad/wheel zoom on the built-in panel.
 
 ## Validation and Acceptance
 
@@ -176,6 +181,23 @@ commit restores today's behavior with the trace still available.
   Misses after three consecutive fresh presents: 47 % LG before this plan,
   21 % LG after, 32 % built-in; after a repeated frame 4-5 %. This is not
   zoom specific: any continuous animation (smooth scroll) hits it.
+- Observation (correction, 2026-10-05): the drawable-pool explanation above is
+  wrong. A minimal app (https://github.com/rrva/metal-display-link-pacing)
+  with the same 3-refresh windowed lead and 3 drawables sustains 59-60 fps on
+  the LG and 113-119 fps on the built-in panel, including Laban's shape
+  (offscreen producer, blit on a second queue, present thread, sRGB,
+  screen-sized drawable), fullscreen, Metal capture enabled (`install-app`
+  bundles set `MetalCaptureEnabled`), unpresented drawables, per-frame
+  `isPaused` reads, per-tick `preferredFrameRateRange` writes, and per-frame
+  CA commits. A `sample` of Laban showed the present thread 97 % idle in
+  mach_msg: no lock contention or CPU cost. The LG 40-45 fps cause remains
+  unexplained and must be re-measured with the LG attached.
+- Observation: after the external display is unplugged, Laban's rebuilt present
+  link keeps calling back at ~62/s on the 120 Hz built-in panel while the main
+  CADisplayLink ticks at 120; neither `/config/present-latency` rebuilds nor
+  rate pinning recover it. A fresh launch on the same panel gets 120-121
+  callbacks/s. Evidence: present-stats rebuilds 9, stallRepairs 1 before the
+  restart; 0 after. Separate display-change bug, not zoom specific.
 - Observation: the GPU zoom tests in `ContinuousZoomTests` had been skipping
   since renderer swaps became asynchronous; once running, several persisted
   fractional font sizes into the shared xctest defaults domain and broke
