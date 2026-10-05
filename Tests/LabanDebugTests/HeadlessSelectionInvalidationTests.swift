@@ -45,6 +45,25 @@ final class HeadlessSelectionInvalidationTests: XCTestCase {
       "entering the alternate screen must clear the primary-screen selection")
   }
 
+  func testAppRepaintUnderSelectionClearsItUnderMouseTracking() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "sel-repaint")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let sessionId = try XCTUnwrap(runtime.model.activeTab?.focusedSessionId)
+
+    feed(runtime, "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h\u{1b}[Halpha bravo")
+    setSelection(runtime, row: 0, startCol: 0, endCol: 4)
+    feed(runtime, "\u{1b}[3Hzzzz\u{1b}[Halpha")
+    XCTAssertNotNil(
+      runtime.selectionBySession[sessionId],
+      "a repaint that leaves the selected text unchanged must keep the selection")
+
+    feed(runtime, "\u{1b}[Hgamma")
+
+    XCTAssertNil(
+      runtime.selectionBySession[sessionId],
+      "an app repaint under the selection must clear it while mouse tracking is on")
+  }
+
   // MARK: - Helpers
 
   private func feed(_ runtime: HeadlessDebugRuntime, _ text: String) {

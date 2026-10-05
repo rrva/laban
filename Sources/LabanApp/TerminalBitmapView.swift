@@ -4532,7 +4532,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
       && !gpuCellCommandFallbackPending
-    if clearSelectionStaleFromAppRepaint(session: session) {
+    if clearSelectionStaleFromAppRepaint(activeTab: activeTab, session: session) {
       renderInvalidated = true
     }
     let request = TerminalSurfaceFrameRequest(
@@ -8931,13 +8931,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// selection (see `TerminalSelectionInvalidation`); drop the selection before
   /// this frame paints it over unrelated text. True when it cleared, so the
   /// caller forces a full repaint that erases the old highlight.
-  private func clearSelectionStaleFromAppRepaint(session: Session) -> Bool {
+  private func clearSelectionStaleFromAppRepaint(activeTab: Tab, session: Session) -> Bool {
     guard let vs = session.viewportState() else { return false }
     let selection = currentTerminalSelection(
       sessionId: session.id, currentViewportOffset: vs.viewportOffset)
     guard
       selectionInvalidation.shouldClear(
-        sessionId: session.id, altScreen: vs.altScreen, selection: selection)
+        sessionId: session.id,
+        altScreen: vs.altScreen,
+        mouseTracking: mouseTrackingActive(for: activeTab, session: session),
+        selection: selection,
+        gestureActive: localSelectionMouseGestureActive,
+        selectedText: {
+          selection.map { TerminalSelectionInvalidation.selectedText(of: $0, in: session) } ?? ""
+        })
     else { return false }
     dismissLocalSelectionForForwardedInput()
     return true

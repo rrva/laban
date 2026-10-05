@@ -931,9 +931,18 @@ public final class HeadlessDebugRuntime {
 
     captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: frame))
 
-    if let focused, let vs = model.session(forSessionID: focused)?.viewportState(),
+    if let focused, let session = model.session(forSessionID: focused),
+      let vs = session.viewportState(),
       selectionInvalidation.shouldClear(
-        sessionId: focused, altScreen: vs.altScreen, selection: selectionBySession[focused])
+        sessionId: focused,
+        altScreen: vs.altScreen,
+        mouseTracking: vs.mouseTracking,
+        selection: selectionBySession[focused],
+        selectedText: {
+          selectionBySession[focused].map {
+            TerminalSelectionInvalidation.selectedText(of: $0, in: session)
+          } ?? ""
+        })
     {
       selectionBySession.removeValue(forKey: focused)
     }

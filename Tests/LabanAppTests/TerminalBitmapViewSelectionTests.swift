@@ -953,6 +953,47 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       "staying on the alternate screen is not a screen swap")
   }
 
+  func testAppRepaintUnderSelectionClearsItUnderMouseTracking() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let session = try startMouseTrackingFullscreenApp(in: harness)
+    shiftSelectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    harness.view.advanceFrame()
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    // Shift-drag is the escape hatch for a local selection under mouse
+    // tracking. The app then repaints the selected cells with no wheel or
+    // click involved (Claude Code redraws constantly): the highlight would sit
+    // over different text, so the selection must go.
+    session.write(Array("\u{1B}[Hgamma".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    XCTAssertEqual(
+      copyText(from: harness.view), "sentinel",
+      "an app repaint under the selection must clear it while mouse tracking is on")
+  }
+
+  func testAppRepaintAwayFromSelectionKeepsItUnderMouseTracking() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let session = try startMouseTrackingFullscreenApp(in: harness)
+    shiftSelectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    harness.view.advanceFrame()
+
+    // Repainting other rows, or redrawing the selected cells with the same
+    // text, leaves the highlight over the text it was made on.
+    session.write(Array("\u{1B}[3Hzzzz\u{1B}[Halpha".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    XCTAssertEqual(
+      copyText(from: harness.view), "alpha",
+      "a repaint that leaves the selected text unchanged must keep the selection")
+  }
+
   func testShiftWheelScrollsLocalScrollbackUnderMouseTracking() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
@@ -1126,6 +1167,18 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     session.write(Array("\u{1B}[?1000h\u{1B}[?1006h".utf8))
     session.poll()
     XCTAssertEqual(session.viewportState()?.mouseTracking, true)
+  }
+
+  /// A fullscreen TUI: alternate screen plus SGR mouse tracking, with
+  /// "alpha bravo" painted on row 0.
+  private func startMouseTrackingFullscreenApp(in harness: Harness) throws -> Session {
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("\u{1B}[?1049h\u{1B}[Halpha bravo".utf8))
+    session.poll()
+    enableMouseTracking(in: session)
+    harness.view.advanceFrame()
+    return session
   }
 
   private func enableAltScroll(in session: Session) {
