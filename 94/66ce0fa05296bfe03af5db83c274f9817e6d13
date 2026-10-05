@@ -1,0 +1,24 @@
+Sources/LabanApp/TerminalBitmapView.swift
+  s_df4a39e30a53c5::t_8f93d664f7129c 6745
+  s_df4a39e30a53c5::t_64b7048d9dc7a8 497-498,6658-6666,6693-6711,6744,6746,6757
+Tests/LabanAppTests/TestScrollWheelEvent.swift
+  s_df4a39e30a53c5::t_8f93d664f7129c 11,20-21,30,47
+Tests/LabanAppTests/ContinuousZoomTests.swift
+  s_df4a39e30a53c5::t_405204d26287f8 241-327
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9466ce0fa05296bfe03af5db83c274f9817e6d13",
+  "prompts": {},
+  "sessions": {
+    "s_df4a39e30a53c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a749dfd-65ad-4299-a920-03824fa7296b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
