@@ -115,6 +115,49 @@ final class BugHunt20261005HeadlessTests: XCTestCase {
     }
   }
 
+  // MARK: - #7 fixture load drops the init-time model wiring
+
+  func testBug7_fixtureLoadKeepsOSC52ClipboardWiring() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-bh7-\(UUID().uuidString)")
+    let fixtureRoot = artifacts.appendingPathComponent("fixtures", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    try Data(
+      """
+      {"name": "bh7", "version": 1, "description": "bh7",
+       "initialSize": {"cols": 40, "rows": 8},
+       "steps": [{"op": "writeBytes", "encoding": "utf8", "data": "hi"}],
+       "expect": {"containsText": ["hi"]}}
+      """.utf8
+    ).write(to: fixtureRoot.appendingPathComponent("bh7.fixture.json"))
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil, artifactsURL: artifacts, tempURL: nil,
+      deterministic: true, runId: "bh7", fixtureRootURL: fixtureRoot)
+    XCTAssertNotNil(runtime.model.onClipboardWrite, "precondition: init wires OSC 52")
+
+    let load = runtime.fixtureControl(
+      try JSONSerialization.data(withJSONObject: ["action": "load", "path": "bh7.fixture.json"]))
+    XCTAssertEqual(
+      (try JSONSerialization.jsonObject(with: load.body) as? [String: Any])?["ok"] as? Bool, true)
+
+    // base64("hello") == "aGVsbG8=".
+    feed(runtime, "\u{1B}]52;c;aGVsbG8=\u{07}")
+    let drained = expectation(description: "main queue drained")
+    DispatchQueue.main.async { drained.fulfill() }
+    wait(for: [drained], timeout: 2.0)
+
+    let events =
+      (try JSONSerialization.jsonObject(with: runtime.events(since: 0).body) as? [String: Any])?[
+        "events"] as? [[String: Any]] ?? []
+    let writes = events.filter { $0["kind"] as? String == "clipboard.osc52Write" }
+    XCTExpectFailure("Bug #7: resetFixtureModelUnlocked rebuilds AppModel without callbacks") {
+      XCTAssertNotNil(runtime.model.onClipboardWrite, "fixture load must keep OSC 52 wiring")
+      XCTAssertNotNil(runtime.model.onWorkingDirectoryChange, "fixture load must keep OSC 7 wiring")
+      XCTAssertEqual(writes.count, 1, "an OSC 52 write after fixture load must record an event")
+    }
+  }
+
   // MARK: - Helpers
 
   private func makeRuntime(_ name: String) throws -> (HeadlessDebugRuntime, URL) {
