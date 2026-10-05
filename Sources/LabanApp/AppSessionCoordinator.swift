@@ -30,7 +30,7 @@ struct OptionalSnapshotFailurePolicy {
       return true
     }
     switch sessionError {
-    case .sessionNotFound, .sessionNotRunning, .snapshotFailed:
+    case .sessionNotFound, .sessionNotRunning, .sessionIdInUse, .snapshotFailed:
       return false
     case .createFailed, .writeFailed, .resizeFailed, .protocolError:
       return true

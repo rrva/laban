@@ -441,6 +441,8 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
           throw TerminalSessionClientError.sessionNotFound(sessionId)
         case "sessionNotRunning":
           throw TerminalSessionClientError.sessionNotRunning(sessionId)
+        case "sessionIdInUse":
+          throw TerminalSessionClientError.sessionIdInUse(sessionId)
         case "snapshotFailed", "snapshotRingFailed":
           throw TerminalSessionClientError.snapshotFailed(sessionId)
         default:

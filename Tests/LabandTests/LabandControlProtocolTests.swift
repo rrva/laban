@@ -355,6 +355,59 @@ final class LabandControlProtocolTests: XCTestCase {
     launchedDaemon = nil
   }
 
+  func testCreateSessionRejectsDuplicateLiveLogicalSessionId() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let runId = "laband-dup-\(UUID().uuidString)"
+    let socketPath = ".tmp/\(runId)/laband.sock"
+    let journalPath = ".artifacts/runs/\(runId)/laband"
+    let daemon = try launchDaemon(root: root, socketPath: socketPath, journalPath: journalPath)
+    launchedDaemon = daemon
+
+    let client = try waitForClient(root: root, socketPath: socketPath)
+    defer { client.close() }
+    let logicalSessionId = "dup-\(UUID().uuidString)"
+    let request = TerminalSessionLaunchRequest(
+      executable: "/bin/cat",
+      argv: ["/bin/cat"],
+      cwd: root.path,
+      rows: 24,
+      cols: 80,
+      logicalSessionId: logicalSessionId
+    )
+    let original = try client.createSession(request)
+    let originalChildPid = try XCTUnwrap(original.childPid)
+
+    XCTAssertThrowsError(try client.createSession(request)) { error in
+      guard case TerminalSessionClientError.sessionIdInUse(let id) = error else {
+        return XCTFail("expected sessionIdInUse, got \(error)")
+      }
+      XCTAssertEqual(id, logicalSessionId)
+    }
+
+    let list = try client.listSessions()
+    XCTAssertEqual(list.count, 1)
+    XCTAssertEqual(list.first?.incarnationId, original.incarnationId)
+    XCTAssertEqual(list.first?.childPid, originalChildPid)
+    XCTAssertEqual(list.first?.lifecycleState, .running)
+    XCTAssertEqual(kill(pid_t(originalChildPid), 0), 0, "the live child must survive")
+    try client.writeInput(sessionId: logicalSessionId, bytes: Array("still-alive".utf8))
+    let snapshot = try waitForSnapshotText(
+      client: client, sessionId: logicalSessionId, contains: "still-alive")
+    XCTAssertEqual(snapshot.incarnationId, original.incarnationId)
+
+    // A terminated id is no longer live, so it may be reused.
+    _ = try client.terminate(sessionId: logicalSessionId)
+    let reused = try client.createSession(request)
+    XCTAssertNotEqual(reused.incarnationId, original.incarnationId)
+    XCTAssertEqual(reused.lifecycleState, .running)
+
+    _ = try client.terminate(sessionId: logicalSessionId)
+    try client.shutdownWhenIdle()
+    daemon.waitUntilExit()
+    XCTAssertEqual(daemon.terminationStatus, 0)
+    launchedDaemon = nil
+  }
+
   private func launchDaemon(root: URL, socketPath: String, journalPath: String) throws -> Process {
     let executable = root.appendingPathComponent(".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
