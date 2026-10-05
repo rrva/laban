@@ -1,6 +1,6 @@
 # Laban
 
-**Quit, update or crash Laban. Your shells keep running.**
+**Quit, update, or crash Laban. Your shells continue to run.**
 
 [![Latest release](https://img.shields.io/github/v/release/rrva/laban)](https://github.com/rrva/laban/releases/latest)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)
@@ -8,224 +8,72 @@
 
 <img src="docs/images/laban.png" width="877" alt="Laban with vertical tabs, JSON and git output, and CJK and emoji text">
 
-Laban is a native macOS terminal whose sessions live in a background daemon,
-not the window. Reopen it and you are back in the same tabs, with the same
-running processes and scrollback, and no tmux. Text is drawn from font curves
-on the GPU, on top of Ghostty's VT core.
+Laban is a native macOS terminal. A background daemon keeps your shells, not
+the window. When you open Laban again, you get the same tabs, processes, and
+scrollback. You do not need tmux.
 
-## Why Laban
+## Main features
 
-- **Shells outlive the app.** A small daemon owns your shells. Quit Laban,
-  let it auto-update, or let it crash: your processes keep running, and
-  reopening drops you back where you were, scrollback included. You keep the
-  terminal's own scrollback, selection, and mouse, with no prefix keys. (A
-  reboot still ends them; they are processes, not snapshots.)
-- **Text drawn from font curves.** The default renderer draws glyphs
-  straight from font outlines on the GPU. There is no bitmap atlas to
-  re-bake, so text stays sharp while you zoom and on fractional display
-  scales. Ligatures are on by default. CJK and color emoji stay on the
-  raster path that complex scripts need, and tests hold that line.
-- **A native Mac app.** AppKit, not Electron. Native text input (including
-  layout-specific Option characters), vertical tabs, JetBrains Mono and
-  Selenized (Light or Dark, following system appearance) as defaults.
-- **Chinese, Japanese, and Korean just work.** A CJK-capable font (PingFang,
-  Noto CJK, or Sarasa) is paired with JetBrains Mono automatically and can
-  be overridden in Settings. Double-width cell layout comes from the
-  conformance-tested terminal core, and Pinyin and other IMEs keep their
-  normal candidate window and inline composition.
-- **A modern terminal core.** VT parsing comes from libghostty-vt, Ghostty's
-  terminal core; the rendering, daemons, and app around it are Laban's own.
-  True color, hyperlinks, mouse, synchronized output, Kitty graphics, and
-  modern key protocols all work.
-- **Scriptable when you want it.** Tabs, scrollback, and screenshots are
-  queryable as JSON over a local Unix socket (no TCP port is ever opened),
-  and the bundled `laban` CLI makes that a one-liner. An hour-long Claude
-  Code or Codex run survives a restart, and with your approval the agent can
-  read your session instead of you pasting it. The same terminal also boots
-  headless, so CI can type, wait on conditions, and take screenshots.
+- **Shells continue to run.** Quit Laban, update it, or let it crash. Your
+  processes continue to run. A restart of the Mac stops them.
+- **Agent sessions come back.** Laban finds Claude Code and Codex in your
+  tabs. When Laban opens again, it resumes them.
+- **Images paste over SSH.** Push ⌘V with a screenshot on the clipboard. In
+  an `ssh` session, Laban uploads the image and pastes its path.
+- **Agents can read your terminal.** The `laban` CLI lets an agent read a
+  session, take a screenshot, or suggest a command. Laban asks you first.
+- **Sharp text.** Laban draws text from the font outlines on the GPU. Text
+  stays sharp when you zoom. Ligatures are on by default.
+- **A native Mac app.** Laban uses AppKit, not Electron. It has vertical
+  tabs, split panes, and native text input.
+- **CJK and emoji work.** Laban adds a CJK font to JetBrains Mono. Input
+  methods such as Pinyin work normally.
+- **A modern terminal core.** Laban uses libghostty-vt, the VT core of
+  Ghostty. It supports true color, links, the mouse, Kitty graphics, and
+  modern key protocols.
 
-> **Status: beta.** APIs, scripts, debug endpoints, and on-disk artifact
-> formats change without notice.
+[**All features**](docs/features.md) lists many more features and their
+shortcuts. Some of these features have no menu item.
+
+> **Status: beta.** APIs, scripts, debug endpoints, and file formats can
+> change without notice.
 
 ## Install
 
-Download the notarized `Laban-<version>.dmg` from the
-[latest release](https://github.com/rrva/laban/releases/latest), open it, and
-drag Laban into `/Applications`. Laban updates itself from then on. Requires
-macOS 13 (Ventura) or later.
+1. Download `Laban-<version>.dmg` from the
+   [latest release](https://github.com/rrva/laban/releases/latest).
+2. Open the file.
+3. Drag Laban into `/Applications`.
 
-To build from source instead, read on.
+Laban updates itself after that. Laban needs macOS 13 (Ventura) or later.
 
-## Build
+## Use the `laban` CLI
 
-Prerequisites:
-
-- macOS 13 (Ventura) or later to *run* the app
-- Xcode 26 or later to *build* it. The renderer's glyph fast path uses
-  `Span`/`UTF8Span`, which only exist in the macOS 26 SDK. They are gated at
-  runtime with `@available(macOS 26, *)` and fall back to a legacy path, so the
-  built app still runs on macOS 13, but the symbols must resolve at compile
-  time. Xcode 16.4 (Swift 6.1) and earlier cannot build this tree.
-- [Zig](https://ziglang.org/download/) **0.16.0 exactly**: builds the vendored
-  libghostty-vt VT core. `fetch-libghostty-vt` refuses any other version,
-  because the Ghostty pin does not compile with it.
-- `python3` (ships with macOS): used by `./scripts/build-app` and several
-  `./scripts/check` stages
-- `jq`: used by `./scripts/check` and the debug examples below
-
-Install the tooling, then build:
+The `laban` CLI is in `Laban.app/Contents/MacOS`. To add it to your PATH, run:
 
 ```sh
-# If zig@0.15 is still linked from an older checkout: brew unlink zig@0.15
-brew install zig@0.16 jq
-zig version   # must print exactly 0.16.0
-
-git clone https://github.com/rrva/laban
-cd laban
-./scripts/fetch-libghostty-vt   # one-time: clone + build the pinned libghostty-vt
-./scripts/build-app             # builds LabanApp, laband, labpty into the .app bundle
+laban install-cli
 ```
 
-`build-app` produces a signed bundle at **`.build/laban/Laban.app`**. It signs
-with the team's identity (team `3563RJWBQP`; an `Apple Development` certificate
-if present, else `Developer ID Application`) when your keychain has one, with
-the hardened runtime and `get-task-allow` so debuggers and Instruments can
-attach, and ad-hoc otherwise. `LABAN_CODESIGN_IDENTITY` overrides the identity
-(`-` forces ad-hoc); `LABAN_TEAM_ID` changes the team it looks for.
+To see all the commands, run `laban --help`.
 
-> Always build with `./scripts/build-app`, not a bare `swift build`. The script
-> assembles the `.app` bundle, copies in the `laband`/`labpty` helpers and
-> resources, stamps the git commit into `Info.plist`, and code-signs — none of
-> which a plain `swift build` does.
+## Documentation
 
-The first `fetch-libghostty-vt` takes a couple of minutes; afterward it is a
-no-op until the pin moves, and its output is cached under
-`.external/libghostty-vt/zig-out/`.
-
-## Run
-
-Three ways to run Laban: as a normal windowed terminal, as a one-shot headless
-renderer, or as a live, agent-controllable debug server.
-
-### As a terminal (GUI)
-
-```sh
-open .build/laban/Laban.app
-```
-
-Drag it into `/Applications` if you want it on your dock. (A local build is not
-notarized, and an ad-hoc one is not team-signed either, so the first launch may
-need a right-click → **Open**.)
-
-### Headless, one shot
-
-Render a fixture without a window server and write a screenshot plus a JSON
-result — handy from CI or for a quick visual check:
-
-```sh
-./scripts/run-headless                              # default fixture
-./scripts/run-headless fixtures/colored-boxes.fixture.json
-```
-
-It prints the artifact paths on exit:
-
-```text
-Artifacts: .artifacts/runs/<run-id>
-Screenshot: .artifacts/runs/<run-id>/screenshot.png
-Result:    .artifacts/runs/<run-id>/result.json
-```
-
-## Debugging and agent control
-
-### Using the `laban` CLI
-
-For a running windowed Laban, the bundled `laban` CLI is the everyday way in
-(in `Laban.app/Contents/MacOS`; `laban install-cli` puts a shim on your
-PATH). It discovers the running app's socket and token for you.
-`laban status --json` shows app state, `laban session get-text --screen
---max-lines 40` reads the visible grid, `laban session screenshot` captures
-the window, and `laban propose --purpose "..." -- CMD` submits a command for
-the user to approve in the app; the CLI never types into your session
-directly. Session reads prompt for a one-time in-app approval. `laban --help`
-lists everything.
-
-### Raw HTTP from a headless server
-
-Everything the CLI does rides on an HTTP debug contract you can also drive
-directly, with no window server, from CI, or with plain curl. Start a
-headless debug server:
-
-```sh
-./scripts/run-debug
-```
-
-The first stdout line is readiness JSON. `debugServer` is the path to a Unix
-domain socket, not a TCP URL:
-
-```json
-{"debugServer":"/path/to/laban/.tmp/<run-id>/control.sock","debugToken":"<bearer>","pid":12345,"runId":"manual-debug"}
-```
-
-The server speaks HTTP, but only over that socket: it never binds a TCP port,
-so reach it with `curl --unix-socket` and a dummy `http://localhost` host.
-Every `/debug` request needs `Authorization: Bearer <bearer>`. From there you
-can list capabilities, query state, type input, take screenshots, wait on
-conditions, and capture or replay full sessions:
-
-```sh
-export DEBUG_URL=<debugServer path from readiness line>
-export DEBUG_TOKEN=<token from readiness line>
-AUTH=(--unix-socket "$DEBUG_URL" -H "Authorization: Bearer $DEBUG_TOKEN")
-
-curl "${AUTH[@]}" http://localhost/debug/capabilities | jq
-curl "${AUTH[@]}" http://localhost/debug/state | jq
-
-curl "${AUTH[@]}" -X POST http://localhost/debug/actions \
-  -H 'Content-Type: application/json' \
-  -d '{"action":"typeText","text":"printf ok\n"}'
-
-curl "${AUTH[@]}" -X POST http://localhost/debug/wait \
-  -H 'Content-Type: application/json' \
-  -d '{"timeoutMs":5000,"condition":{"kind":"textVisible","text":"ok"}}'
-```
-
-For repeatable flows, point the scenario runner at a JSON fixture. It boots
-a headless server, executes every step, writes a report, and shuts the
-server down:
-
-```sh
-./scripts/run-debug-script fixtures/debug-script-basic.scenario.json
-```
-
-The agent binary lists every entry point:
-
-```sh
-swift run laban-agent -- --help
-```
-
-The full debug contract — capabilities, fixture format, capture/replay,
-screenshot artifacts, observability — lives in
-[`docs/process/dev-process.md`](docs/process/dev-process.md).
-
-## Verify
-
-Run the unit tests, or the full local gate (schemas, docs, formatting, build,
-tests, runtime smoke test, and a headless end-to-end scenario):
-
-```sh
-./scripts/test     # swift test only
-./scripts/check    # the full local gate; the pre-push hook runs its fast subset
-```
+- [All features](docs/features.md): every feature and shortcut.
+- [Build, run, and test](docs/building.md): build from source, run without a
+  window, and control Laban from scripts.
+- [Contributing](CONTRIBUTING.md): how to change Laban.
+- [Documentation index](docs/README.md): design decisions and process.
 
 ## License
 
-Laban is released under the MIT license; see [`LICENSE`](LICENSE).
+Laban uses the MIT license. See [`LICENSE`](LICENSE).
 
-Third-party components bundled or linked into the distributed app are credited
-in full in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md):
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) lists all third-party
+components in the app:
 
-- libghostty-vt (Ghostty) — MIT licensed (© 2024 Mitchell Hashimoto, Ghostty
-  contributors); fetched at build time into `.external/libghostty-vt/` and
-  statically linked.
-- JetBrains Mono — SIL Open Font License 1.1; see
+- libghostty-vt (Ghostty): MIT license (© 2024 Mitchell Hashimoto, Ghostty
+  contributors). The build gets it into `.external/libghostty-vt/` and links
+  it statically.
+- JetBrains Mono: SIL Open Font License 1.1. See
   [`Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt`](Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt).
