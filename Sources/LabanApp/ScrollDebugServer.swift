@@ -358,6 +358,17 @@ final class ScrollDebugServer {
       return onMain { tv, _, _ in
         Response.json(tv.debugSetPresentLinkFrameLatency(frames))
       }
+    case ("GET", "/window/screen"):
+      return onMain { tv, _, _ in
+        Response.json(tv.debugWindowScreen())
+      }
+    case ("POST", "/window/move-to-display"):
+      guard let id = UInt32(query["id"] ?? "") else {
+        return Response.json(["error": "id must be a display ID"], status: 400)
+      }
+      return onMain { tv, _, _ in
+        Response.json(tv.debugMoveWindow(toDisplayID: id))
+      }
     case ("POST", "/config/drawable-count"):
       guard let count = Int(query["count"] ?? ""), (2...3).contains(count) else {
         return Response.json(["error": "count must be 2 or 3"], status: 400)
@@ -638,6 +649,10 @@ final class ScrollDebugServer {
                                       GET reads it. Not persisted
     POST /config/present-rate[?hz=N]  pin the present link to N Hz (no hz: the
                                       shipped 30-120 range); rebuilds the link
+    GET  /window/screen               the display the terminal window is on
+    POST /window/move-to-display?id=N move the terminal window onto display N
+                                      (reproduce display-change bugs with a
+                                      virtual display)
     POST /config/drawable-count?count=N  Slug layer drawable pool size (2 or 3,
                                       default 3); rebuilds the present link
     POST /config/tab?index=N          select tab N (0-based); use a normal-buffer

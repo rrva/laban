@@ -2076,6 +2076,38 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// display notification can arrive after the pending renderer created its
   /// CAMetalDisplayLink but before `installPendingBackendSwap`; rebuilding only
   /// `backend` would later install the pending renderer with that stale link.
+  /// `/window/screen`: the display the terminal window is on.
+  func debugWindowScreen() -> [String: Any] {
+    guard let screen = window?.screen else { return ["screen": NSNull()] }
+    return [
+      "screen": screen.localizedName,
+      "displayID": currentScreenDisplayID().map { $0 as Any } ?? NSNull(),
+      "maximumFramesPerSecond": screen.maximumFramesPerSecond,
+    ]
+  }
+
+  /// `/window/move-to-display`: move the terminal window onto the display with
+  /// `displayID`, keeping its size where it fits. Lets display-change bugs be
+  /// reproduced against a virtual display without driving the mouse.
+  func debugMoveWindow(toDisplayID displayID: UInt32) -> [String: Any] {
+    guard let window else { return ["ok": false, "error": "no window"] }
+    guard
+      let screen = NSScreen.screens.first(where: {
+        ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+          .uint32Value == displayID
+      })
+    else {
+      return ["ok": false, "error": "no screen with displayID \(displayID)"]
+    }
+    let visible = screen.visibleFrame
+    let size = NSSize(
+      width: min(window.frame.width, visible.width), height: min(window.frame.height, visible.height))
+    window.setFrame(
+      NSRect(origin: NSPoint(x: visible.minX, y: visible.maxY - size.height), size: size),
+      display: true)
+    return ["ok": true, "screen": screen.localizedName]
+  }
+
   /// `/config/drawable-count`: resize the Slug layer's drawable pool, then
   /// rebuild the present link so it binds to the resized pool. Not persisted.
   func debugSetMaximumDrawableCount(_ count: Int) -> [String: Any] {
