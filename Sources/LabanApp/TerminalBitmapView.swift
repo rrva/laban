@@ -2112,17 +2112,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return ["ok": true, "screen": screen.localizedName]
   }
 
-  /// `/window/visibility`: order the terminal window out (fully hidden, as
-  /// macOS sees a covered window) or back in, without changing focus. Lets a
-  /// display change be reproduced while the window is hidden.
+  /// `/window/visibility`: minimize the terminal window (hidden, as the link
+  /// policy sees a covered window) or restore it. Lets a display change be
+  /// reproduced while the window is hidden. Not `orderOut`: Laban quits when
+  /// its last window goes away (`applicationShouldTerminateAfterLastWindowClosed`).
   func debugSetWindowHidden(_ hidden: Bool) -> [String: Any] {
     guard let window else { return ["ok": false, "error": "no window"] }
     if hidden {
-      window.orderOut(nil)
+      window.miniaturize(nil)
     } else {
-      window.orderFrontRegardless()
+      window.deminiaturize(nil)
     }
-    return ["ok": true, "visible": window.isVisible]
+    return ["ok": true, "miniaturized": window.isMiniaturized]
   }
 
   /// `/config/drawable-count`: resize the Slug layer's drawable pool, then
