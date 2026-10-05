@@ -122,10 +122,20 @@ Add a measurement seam before changing behavior.
 
 - [x] (2026-10-05) Baseline measured with 5 ms `/zoom/state` polling on both
   panels (numbers in Context).
-- [ ] M1 present-side trace + `/zoom/trace` + `ZoomTraceSummary` tests.
-- [ ] M1 baseline trace on the installed app: wheel and trackpad, LG and built-in.
-- [ ] M2 spring + wheel coalescing + tuned wheel step.
-- [ ] M2 after-trace on both panels, both devices; compare with baseline.
+- [x] (2026-10-05) M1 present-side trace + `/zoom/trace` + `ZoomTraceSummary`
+  tests (45a8fb46). Extended with GPU time, link policy, on-glass times and
+  display-link target times (db48ac3f, 86d55636, and the commit after it).
+- [x] (2026-10-05) M1 baseline trace on the installed app, wheel and
+  trackpad, LG and built-in.
+- [x] (2026-10-05) GPU zoom tests un-skipped (76085656) and their font-size
+  leak fixed (ea6baa39).
+- [x] (2026-10-05) M2: display link kept running for the whole gesture
+  (bdccaefc), trackpad spring (f430a9db), wheel coalescing + speed cap
+  (9466ce0f), re-touch snap-back fix (8c7be854).
+- [x] (2026-10-05) M2 after-trace on the LG: wheel max per-vsync step 7-8 % ->
+  1.7-3 %, fast spins 18-87 % -> 4-10 %, commits 44 -> 23.
+- [ ] Present pacing on 60 Hz external panels (see Surprises): decide a fix.
+- [ ] After-trace on the built-in panel.
 
 ## Validation and Acceptance
 
@@ -144,3 +154,45 @@ Add a measurement seam before changing behavior.
 Tracing is off unless armed and resets on demand; rerunning a trace is safe.
 All behavior changes are confined to the Cmd+scroll path; reverting the M2
 commit restores today's behavior with the trace still available.
+
+## Surprises & Discoveries
+
+- Observation: trackpad re-touch mid-zoom (`.ended`, `.mayBegin`, `.began`
+  within ~100 ms) restarted the session: `.mayBegin` cancelled the pending
+  commit, so `.began` no longer saw a session in flight and reset the scale
+  over the uncommitted atlas. One frame showed the gesture-start size.
+  Evidence: LG trace, sizes 10.26 -> 8.00 -> 8.35 pt with one-direction input;
+  regression test reproduced 22.1 -> 14.05 pt. Fixed in 8c7be854.
+- Observation: during continuous fresh frames the Slug present link fires on
+  two of every three vsyncs (16.7/33 ms alternation, ~40-45 fresh frames/s on
+  the 60 Hz LG). Evidence (synthetic 120 Hz `/zoom/pinch` stream, 2026-10-05):
+  link policy `zoom` (running), GPU 0.5 ms p50 / 3.7 ms max, frames waiting.
+  Every frame lands exactly on `targetPresentationTimestamp`, which is 49.6 ms
+  (three vsyncs) after the callback whatever `preferredFrameLatency` is (1, 2
+  and 3 measured) and whether the rate range is 30-120 or pinned to 60. A
+  drawable is therefore busy for ~4 vsyncs (3 lead + 1 on glass); with
+  `maximumDrawableCount` 3 that caps fresh presents at 3 per 4 vsyncs, and at
+  2 drawables throughput halves to ~22/s, confirming the pool is the limit.
+  Misses after three consecutive fresh presents: 47 % LG before this plan,
+  21 % LG after, 32 % built-in; after a repeated frame 4-5 %. This is not
+  zoom specific: any continuous animation (smooth scroll) hits it.
+- Observation: the GPU zoom tests in `ContinuousZoomTests` had been skipping
+  since renderer swaps became asynchronous; once running, several persisted
+  fractional font sizes into the shared xctest defaults domain and broke
+  `FontSizeActionTests`. Evidence: 24.08 pt = 14 x (1 + 120 x 0.006).
+
+## Decision Log
+
+- Decision: smooth only Cmd+scroll; pinch keeps direct per-event scale.
+  Rationale: pinch was not measured and its tests assert visual == target per
+  event. Date/Author: 2026-10-05, Claude.
+- Decision: trackpad omega 70 rad/s (2/omega = 29 ms lag), wheel omega 40.
+  Rationale: against a 60 Hz event stream beating on 60 Hz vsync, omega 110
+  leaves a 2.7x per-frame step range, 70 about 1.7x, 60 1.5x at 33 ms lag;
+  smooth scroll already runs at omega 50. Date/Author: 2026-10-05, Claude.
+- Decision: cap wheel zoom by notch spacing (full 7 % step only when 35 ms or
+  more after the previous event) instead of scaling by deltaY. Rationale: the
+  RollerMouse sends deltaY 0.1 per slow notch but 4.5-9.5 per event during
+  spins, with events 5-12 ms apart; a deltaY-proportional step would make
+  spins faster, not slower. Date/Author: 2026-10-05, Claude.
+
