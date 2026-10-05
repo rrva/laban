@@ -1,0 +1,20 @@
+Tests/LabanAppTests/ContinuousZoomTests.swift
+  s_df4a39e30a53c5::t_f5b9e544ed6be3 208,323,379,423,467,510,570,628
+  s_df4a39e30a53c5::t_427d6324a982dc 697-708
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "76085656aaabcd557d340e68451f3647e4fce8d0",
+  "prompts": {},
+  "sessions": {
+    "s_df4a39e30a53c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a749dfd-65ad-4299-a920-03824fa7296b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
