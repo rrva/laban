@@ -1,0 +1,44 @@
+Sources/LabanCore/Persistence/PersistenceStore.swift
+  s_7b23916bfdc11b::t_2294861cbaec1e 51-61
+Tests/LabanCoreTests/PersistenceStoreBaseURLTests.swift
+  s_7b23916bfdc11b::t_a7d603c215ce74 1-18
+Sources/LabanApp/TerminalDrop.swift
+  s_7b23916bfdc11b::t_2294861cbaec1e 155
+Sources/LabanApp/EventLog.swift
+  s_7b23916bfdc11b::t_2294861cbaec1e 28
+  s_7b23916bfdc11b::t_9cdb12f018b8c2 3
+Sources/LabanApp/AppLog.swift
+  s_7b23916bfdc11b::t_9cdb12f018b8c2 3
+  s_7b23916bfdc11b::t_2294861cbaec1e 70
+Sources/LabanControl/ControlAdvertisement.swift
+  s_7b23916bfdc11b::t_2294861cbaec1e 31
+  s_7b23916bfdc11b::t_9cdb12f018b8c2 3
+docs/process/worktree-isolation.md
+  s_7b23916bfdc11b::t_e0de4d8f7c63f2 108-120
+.gitignore
+  s_df4a39e30a53c5::t_ee9ff932b87671 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c5d73e0f9701cde288c513db26c02f8287487dd0",
+  "prompts": {},
+  "sessions": {
+    "s_7b23916bfdc11b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a7cbb33-c588-4896-a620-e8fee428912b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    },
+    "s_df4a39e30a53c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a749dfd-65ad-4299-a920-03824fa7296b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
