@@ -238,6 +238,93 @@ final class ContinuousZoomTests: XCTestCase {
       "the glide lands exactly on the input's scale")
   }
 
+  /// Measured on a RollerMouse Pro: slow notches arrive 160-400 ms apart with
+  /// deltaY 0.1, and each committed separately (a ~20 ms font rebuild per
+  /// notch). A run of notches must glide and commit exactly once, at the size
+  /// all the notches add up to.
+  func testWheelNotchRunGlidesAndCommitsOnce() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    let defaults = UserDefaults.standard
+    let savedSize = defaults.object(forKey: FontAtlas.userFontSizeKey)
+    defer {
+      if let savedSize {
+        defaults.set(savedSize, forKey: FontAtlas.userFontSizeKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+      }
+    }
+    activateRenderer(.slugGlyph, on: harness.view)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("slug backend not active (no GPU in this environment)")
+    }
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    var previous = 1.0
+    var largestFrameStep = 0.0
+    for notch in 0..<6 {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 0.1, modifierFlags: .command,
+          timestamp: 100 + Double(notch) * 0.2))
+      // 0.2 s of 60 Hz frames between notches.
+      for _ in 0..<12 {
+        harness.view.debugAdvanceZoomSpring(by: 1.0 / 60)
+        let scale = harness.view.debugZoomState()["presentationScale"] as! Double
+        largestFrameStep = max(largestFrameStep, abs(scale / previous - 1))
+        previous = scale
+      }
+    }
+    XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 0, "no commit while notches keep coming")
+    XCTAssertLessThan(largestFrameStep, 0.025, "a 7 % notch glides, never lands in one frame")
+
+    let deadline = Date().addingTimeInterval(2)
+    while harness.view.debugZoomState()["gestureActive"] as! Bool, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    }
+    XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 1, "the whole run commits once")
+    XCTAssertEqual(
+      harness.view.debugZoomState()["effectivePointSize"] as! Double, 14 * 1.42, accuracy: 0.01)
+  }
+
+  /// A fast spin arrives as events 5-12 ms apart with deltaY up to ~9.5; at
+  /// 7 % per event a measured spin went 28 pt -> 8 pt in nine frames.
+  func testFastWheelSpinIsSpeedCapped() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    activateRenderer(.slugGlyph, on: harness.view)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("slug backend not active (no GPU in this environment)")
+    }
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    for event in 0..<20 {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 9.5, modifierFlags: .command,
+          timestamp: 100 + Double(event) * 0.005))
+    }
+    // First event a full 7 % step, the other 19 each 5/35 of one.
+    let target = harness.view.debugZoomState()["targetPresentationScale"] as! Double
+    XCTAssertEqual(target, 1 + 0.07 + 19 * 0.07 * 5 / 35, accuracy: 1e-9)
+
+    var previous = 1.0
+    var largestFrameStep = 0.0
+    for _ in 0..<30 {
+      harness.view.debugAdvanceZoomSpring(by: 1.0 / 60)
+      let scale = harness.view.debugZoomState()["presentationScale"] as! Double
+      largestFrameStep = max(largestFrameStep, abs(scale / previous - 1))
+      previous = scale
+    }
+    XCTAssertLessThan(largestFrameStep, 0.08, "measured before the cap: up to 87 % in one frame")
+  }
+
   /// The 60 Hz judder: trackpad events land 1, 1, 0, 2, ... per vsync. Each
   /// vsync must still move the visible size, by a similar amount.
   func testTrackpadCmdScrollStepsEvenlyWhenEventsBeatAgainstVsync() throws {

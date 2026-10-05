@@ -494,6 +494,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// `advanceFrame`; nil at rest and for direct (pinch) input.
   private var zoomSpring: ZoomPresentationSpring?
   private var lastZoomSpringTickAt: TimeInterval?
+  /// `NSEvent.timestamp` of the last notched-wheel zoom event.
+  private var lastWheelZoomEventAt: TimeInterval?
 
   /// `/zoom/trace` recording, off until the first `debugZoomTrace` call arms
   /// it. Inputs and commits are recorded here; per-vsync presents come from
@@ -6653,6 +6655,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Per-notch magnification for a discrete (classic mouse) wheel, sized to
   /// roughly match the keyboard's whole-point step at the default size.
   private static let zoomScrollDiscreteStep: CGFloat = 0.07
+  /// A notch this long or longer after the previous one takes a full step;
+  /// sooner, a proportional share. Caps a fast spin at ~2x the base size per
+  /// second instead of 7 % per event (a measured spin went 28 pt -> 8 pt in
+  /// nine frames).
+  private static let zoomScrollDiscreteFullStepInterval: TimeInterval = 0.035
+  /// Quiet time before a run of wheel notches commits. Measured notch spacing
+  /// is 160-400 ms; with the 0.1 s commit debounce after it, a pause of up to
+  /// ~0.45 s stays one gesture.
+  private static let wheelZoomQuietSeconds: TimeInterval = 0.35
 
   /// Cmd+scroll zoom: the trackpad-pinch-free path for laptops. Vertical scroll
   /// up zooms in; the gesture envelope mirrors the trackpad scroll phases so it
@@ -6679,12 +6690,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // No phase envelope at all → events with no `.began`/`.ended` bookends.
     if event.phase == [] {
       if !precise {
-        // Discrete mouse wheel: a notch is a deliberate, separate step. Commit
-        // each as its own began+ended (only a few per second, so the per-event
-        // commit cost is fine), landing an integer-ladder step.
-        let delta = (raw >= 0 ? 1 : -1) * Self.zoomScrollDiscreteStep
-        applyZoomMagnification(delta: delta, phase: .began)
-        applyZoomMagnification(delta: 0, phase: .ended)
+        // Notched wheel. A run of notches is one gesture that glides
+        // (`.wheel`) and commits once after the run goes quiet: committing per
+        // notch cost a ~20 ms font rebuild for each, because typical notches
+        // land 160-400 ms apart, past the 0.1 s commit debounce. macOS sends
+        // a fast spin as events 5-12 ms apart with accelerated deltaY (0.1
+        // per slow notch, ~4.5-9.5 when spinning), so instead of a fixed step
+        // per event, a step is scaled down by how soon it follows the last
+        // one: the zoom speed is capped at one full step per
+        // `zoomScrollDiscreteFullStepInterval`.
+        let sinceLast = lastWheelZoomEventAt.map { event.timestamp - $0 } ?? .infinity
+        lastWheelZoomEventAt = event.timestamp
+        let share = min(1, max(0, sinceLast) / Self.zoomScrollDiscreteFullStepInterval)
+        let delta = (raw >= 0 ? 1 : -1) * Self.zoomScrollDiscreteStep * CGFloat(share)
+        if zoomGestureBasePointSize == nil {
+          applyZoomMagnification(delta: delta, phase: .began, smoothing: .wheel)
+        } else {
+          applyZoomMagnification(delta: delta, phase: .changed, smoothing: .wheel)
+        }
+        scheduleCoalescedZoomScrollSettle(quietSeconds: Self.wheelZoomQuietSeconds)
         return
       }
       // Phase-less PRECISE stream (e.g. some Magic Mouse configs): dozens of
@@ -6717,7 +6741,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// (Re)arm the quiet-timer that commits a coalesced phase-less Cmd+scroll zoom.
   /// Each scroll event pushes the settle out; when the stream stops for
   /// `coalescedZoomScrollQuietSeconds`, the gesture ends once.
-  private func scheduleCoalescedZoomScrollSettle() {
+  private func scheduleCoalescedZoomScrollSettle(
+    quietSeconds: TimeInterval = TerminalBitmapView.coalescedZoomScrollQuietSeconds
+  ) {
     coalescedZoomScrollSettle?.cancel()
     let work = DispatchWorkItem { [weak self] in
       guard let self else { return }
@@ -6728,7 +6754,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     coalescedZoomScrollSettle = work
     DispatchQueue.main.asyncAfter(
-      deadline: .now() + Self.coalescedZoomScrollQuietSeconds, execute: work)
+      deadline: .now() + quietSeconds, execute: work)
   }
 
   /// How long a phase-less Cmd+scroll stream must be quiet before the coalesced
