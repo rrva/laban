@@ -442,6 +442,52 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  /// Bug #3 (bug-hunt-handoff-2026-10-05): line-grain extension compares the
+  /// origin row and the drag row as if both lived in the same viewport frame.
+  /// Triple-click "line 11", scroll one row toward history while the button is
+  /// held (pointer still on screen row 2, now showing "line 10"): the drag now
+  /// spans two lines of content.
+  func testBug3_lineDragAcrossScrollKeepsBothLines() throws {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+    let session = try XCTUnwrap(harness.model.session(forTab: harness.model.activeTab!.id))
+    session.write(Array((1...12).map { String(format: "line %02d\r\n", $0) }.joined().utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    let press = point(row: 2, col: 0, in: harness)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: press, clickCount: 3))
+    XCTAssertEqual(copyText(from: harness.view), "line 11", "precondition: triple-click")
+
+    scrollOneRowTowardHistory(in: harness, session: session)
+    let copied = copyText(from: harness.view)
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: press, clickCount: 3))
+    XCTExpectFailure("Bug #3: extendLineSelection mixes viewport frames") {
+      XCTAssertEqual(copied, "line 10\nline 11")
+    }
+  }
+
+  /// Bug #3, word grain: same gesture after a double-click on "line".
+  func testBug3_wordDragAcrossScrollKeepsUnionOfWords() throws {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+    let session = try XCTUnwrap(harness.model.session(forTab: harness.model.activeTab!.id))
+    session.write(Array((1...12).map { String(format: "line %02d\r\n", $0) }.joined().utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    let press = point(row: 2, col: 1, in: harness)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: press, clickCount: 2))
+    XCTAssertEqual(copyText(from: harness.view), "line", "precondition: double-click")
+
+    scrollOneRowTowardHistory(in: harness, session: session)
+    let copied = copyText(from: harness.view)
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: press, clickCount: 2))
+    XCTExpectFailure("Bug #3: extendWordSelection mixes viewport frames") {
+      XCTAssertEqual(copied, "line 10\nline")
+    }
+  }
+
   func testScrollWheelInTitlebarStripDoesNotScrollTerminalViewport() throws {
     let harness = try makeHarness(rows: 5, cols: 20)
     defer { harness.restoreRenderer() }
