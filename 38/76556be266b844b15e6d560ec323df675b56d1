@@ -1,0 +1,23 @@
+Sources/LabanRenderer/VectorPresentDisplayLink.swift
+  s_df4a39e30a53c5::t_3a44598f2b7334 209-228,234-239
+Sources/LabanApp/ScrollDebugServer.swift
+  s_df4a39e30a53c5::t_3a44598f2b7334 368-372,639-640
+Sources/LabanApp/TerminalBitmapView.swift
+  s_df4a39e30a53c5::t_3a44598f2b7334 2090-2097
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3876556be266b844b15e6d560ec323df675b56d1",
+  "prompts": {},
+  "sessions": {
+    "s_df4a39e30a53c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a749dfd-65ad-4299-a920-03824fa7296b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
