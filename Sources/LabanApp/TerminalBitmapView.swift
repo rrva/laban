@@ -2112,6 +2112,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return ["ok": true, "screen": screen.localizedName]
   }
 
+  /// `/window/visibility`: order the terminal window out (fully hidden, as
+  /// macOS sees a covered window) or back in, without changing focus. Lets a
+  /// display change be reproduced while the window is hidden.
+  func debugSetWindowHidden(_ hidden: Bool) -> [String: Any] {
+    guard let window else { return ["ok": false, "error": "no window"] }
+    if hidden {
+      window.orderOut(nil)
+    } else {
+      window.orderFrontRegardless()
+    }
+    return ["ok": true, "visible": window.isVisible]
+  }
+
   /// `/config/drawable-count`: resize the Slug layer's drawable pool, then
   /// rebuild the present link so it binds to the resized pool. Not persisted.
   func debugSetMaximumDrawableCount(_ count: Int) -> [String: Any] {

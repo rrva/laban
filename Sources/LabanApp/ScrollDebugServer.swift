@@ -369,6 +369,11 @@ final class ScrollDebugServer {
       return onMain { tv, _, _ in
         Response.json(tv.debugMoveWindow(toDisplayID: id))
       }
+    case ("POST", "/window/visibility"):
+      let hidden = query["hidden"] == "1"
+      return onMain { tv, _, _ in
+        Response.json(tv.debugSetWindowHidden(hidden))
+      }
     case ("POST", "/config/drawable-count"):
       guard let count = Int(query["count"] ?? ""), (2...3).contains(count) else {
         return Response.json(["error": "count must be 2 or 3"], status: 400)
@@ -653,6 +658,8 @@ final class ScrollDebugServer {
     POST /window/move-to-display?id=N move the terminal window onto display N
                                       (reproduce display-change bugs with a
                                       virtual display)
+    POST /window/visibility?hidden=0|1 order the terminal window out or back in
+                                      (hidden as macOS sees a covered window)
     POST /config/drawable-count?count=N  Slug layer drawable pool size (2 or 3,
                                       default 3); rebuilds the present link
     POST /config/tab?index=N          select tab N (0-based); use a normal-buffer
