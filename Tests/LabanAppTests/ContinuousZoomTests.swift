@@ -226,7 +226,55 @@ final class ContinuousZoomTests: XCTestCase {
       harness.view.debugZoomGestureBakeCount, 0,
       "no per-event commit during the burst (commits=\(harness.view.debugZoomGestureBakeCount))")
     XCTAssertGreaterThan(
-      s["visualPointSize"] as! Double, 14.0, "the burst still zooms via the compositor scale")
+      s["targetPresentationScale"] as! Double, 1.0, "the burst retargets the compositor scale")
+    XCTAssertEqual(s["zoomGliding"] as? Bool, true, "the visible scale glides there on the link")
+    for _ in 0..<30 { harness.view.debugAdvanceZoomSpring(by: 1.0 / 60) }
+    let settled = harness.view.debugZoomState()
+    XCTAssertGreaterThan(
+      settled["visualPointSize"] as! Double, 14.0, "the burst still zooms via the compositor scale")
+    XCTAssertEqual(
+      settled["presentationScale"] as! Double,
+      s["targetPresentationScale"] as! Double, accuracy: 1e-9,
+      "the glide lands exactly on the input's scale")
+  }
+
+  /// The 60 Hz judder: trackpad events land 1, 1, 0, 2, ... per vsync. Each
+  /// vsync must still move the visible size, by a similar amount.
+  func testTrackpadCmdScrollStepsEvenlyWhenEventsBeatAgainstVsync() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    activateRenderer(.slugGlyph, on: harness.view)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("slug backend not active (no GPU in this environment)")
+    }
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    func scroll(_ phase: NSEvent.Phase) {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 0, scrollingDeltaY: 2.5,
+          hasPreciseScrollingDeltas: true, modifierFlags: .command, phase: phase))
+    }
+    scroll(.began)
+    var previous = harness.view.debugZoomState()["presentationScale"] as! Double
+    var steps: [Double] = []
+    for count in [1, 1, 0, 2, 1, 0, 2, 1, 1, 0, 2, 1, 1, 1, 0, 2, 1, 1, 0, 2] {
+      for _ in 0..<count { scroll(.changed) }
+      harness.view.debugAdvanceZoomSpring(by: 1.0 / 60)
+      let scale = harness.view.debugZoomState()["presentationScale"] as! Double
+      steps.append(scale / previous - 1)
+      previous = scale
+    }
+    let moving = Array(steps.dropFirst(2))
+    XCTAssertGreaterThan(moving.min()!, 0, "a vsync with no event still moves: \(steps)")
+    XCTAssertLessThan(
+      moving.max()! / moving.min()!, 2.2,
+      "per-vsync steps stay within ~2x of each other, not 0 then 2x: \(steps)")
+    XCTAssertEqual(
+      harness.view.debugZoomGestureBakeCount, 0, "gliding never bakes mid-gesture")
   }
 
   /// Regression for the review's finding #1: a precise scrolling device that
