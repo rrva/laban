@@ -184,6 +184,7 @@ struct DebugMouseActions {
       action: .release, button: mouseButton, at: endPoint, encodingOptions: encodingOptions)
 
     let pressSent = sendMouseEvent(pressEvent, tab: tab, session: session)
+    dismissSelectionForForwardedPress(button: mouseButton, session: session)
     let motionSent =
       pressSent.result == 0
       ? sendMouseEvent(motionEvent, tab: tab, session: session)
@@ -398,6 +399,7 @@ struct DebugMouseActions {
       format: encodingOptions?.format ?? 0
     )
     let pressSent = session.sendMouseCapturingBytes(pressEvent)
+    dismissSelectionForForwardedPress(button: mouseButton, session: session)
     let releaseSent =
       pressSent.result == 0
       ? session.sendMouseCapturingBytes(releaseEvent)
@@ -433,6 +435,15 @@ struct DebugMouseActions {
         activeTabId: tab.id, activeSessionId: tab.focusedSessionId,
         mouseTracking: true, sent: sent
       ))
+  }
+
+  /// Mirrors `TerminalBitmapView`'s forwarded left/right press: a deliberate
+  /// pointer action the app may answer by moving content under the local
+  /// highlight, so the committed selection goes. The app forwards no middle
+  /// press, so neither does this dismissal.
+  private func dismissSelectionForForwardedPress(button: MouseButton, session: Session) {
+    guard button == .left || button == .right else { return }
+    runtime.selectionBySession.removeValue(forKey: session.id)
   }
 
   private static func mouseButton(named name: String?) -> MouseButton {

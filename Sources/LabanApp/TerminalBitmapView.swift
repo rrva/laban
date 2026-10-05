@@ -9393,6 +9393,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     else { return }
     rightMouseGesturePane = (tab.id, pane)
     trackedMouseButton = .right
+    // Same as a forwarded left press: a deliberate pointer action the app may
+    // answer by moving content (tmux's right-click menu scrolls copy-mode)
+    // under the local highlight, so the committed selection goes.
+    dismissLocalSelectionForForwardedInput()
     forwardRightMouse(event, action: .press)
   }
 

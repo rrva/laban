@@ -881,6 +881,33 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       "an alt-scroll wheel must clear the local selection")
   }
 
+  func testForwardedRightPressClearsSelection() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    // A right press forwarded to a mouse-tracking app (tmux's right-click menu
+    // scrolls copy-mode) is the same deliberate pointer action as a forwarded
+    // left press, and may move remote content under the local highlight.
+    enableMouseTracking(in: session)
+    let location = point(row: 0, col: 8, in: harness)
+    harness.view.rightMouseDown(with: mouseEvent(type: .rightMouseDown, at: location))
+    XCTAssertNotNil(harness.view.lastForwardedRightReportForTests)
+    harness.view.rightMouseUp(with: mouseEvent(type: .rightMouseUp, at: location))
+
+    XCTAssertEqual(
+      copyText(from: harness.view), "sentinel",
+      "a right press forwarded under mouse tracking must clear the local selection")
+  }
+
   func testShiftWheelScrollsLocalScrollbackUnderMouseTracking() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
