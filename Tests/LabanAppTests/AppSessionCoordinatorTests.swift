@@ -303,6 +303,38 @@ final class AppSessionCoordinatorTests: XCTestCase {
     process.waitUntilExit()
   }
 
+  func testFailedDaemonLookupPropagatesInsteadOfCreatingOverTheLiveSession() throws {
+    let root = URL(
+      fileURLWithPath: ".tmp/lbn-dup-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let daemon = try FailingLookupLabandDaemon(
+      socketPath: root.appendingPathComponent("s.sock").path)
+    defer { daemon.stop() }
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
+    let coordinator = AppSessionCoordinator(
+      client: try LabandTerminalSessionClient(socketPath: daemon.socketPath),
+      shellLaunch: .passthrough)
+    defer { coordinator.detach() }
+
+    let tab = try XCTUnwrap(model.tabs.first)
+    XCTAssertThrowsError(try coordinator.ensureSession(for: tab, size: size))
+    XCTAssertTrue(daemon.receivedTypes.contains(.attachSession))
+    XCTAssertFalse(
+      daemon.receivedTypes.contains(.createSession),
+      "a lookup that failed for a reason other than sessionNotFound must not fall through to create"
+    )
+  }
+
   func testSweepOrphanedSessionsTerminatesDaemonSessionsNotInKnownTabs() throws {
     let labandURL = URL(fileURLWithPath: ".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
@@ -1208,5 +1240,102 @@ private final class C14DaemonAttachRouter: IntentRouter {
 
   func artifact(_ request: ArtifactRequest) -> ControlResponse? {
     nil
+  }
+}
+
+/// Minimal laband stand-in whose attachSession fails transiently (not
+/// sessionNotFound); records every request type it receives.
+private final class FailingLookupLabandDaemon: @unchecked Sendable {
+  let socketPath: String
+  private let listenFd: Int32
+  private let lock = NSLock()
+  private var types: [LabandRequestType] = []
+
+  var receivedTypes: [LabandRequestType] { lock.withLock { types } }
+
+  init(socketPath: String) throws {
+    self.socketPath = socketPath
+    unlink(socketPath)
+    let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw POSIXError(.EIO) }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(socketPath.utf8CString)
+    guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+      Darwin.close(fd)
+      throw POSIXError(.ENAMETOOLONG)
+    }
+    withUnsafeMutablePointer(to: &addr.sun_path.0) { ptr in
+      for index in 0..<pathBytes.count { ptr.advanced(by: index).pointee = pathBytes[index] }
+    }
+    let bound = withUnsafePointer(to: &addr) { ptr in
+      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+      }
+    }
+    guard bound == 0, Darwin.listen(fd, 8) == 0 else {
+      Darwin.close(fd)
+      throw POSIXError(.EADDRINUSE)
+    }
+    listenFd = fd
+    Thread.detachNewThread { [self] in acceptLoop() }
+  }
+
+  func stop() {
+    Darwin.shutdown(listenFd, SHUT_RDWR)
+    Darwin.close(listenFd)
+    unlink(socketPath)
+  }
+
+  private func acceptLoop() {
+    while true {
+      let client = Darwin.accept(listenFd, nil, nil)
+      guard client >= 0 else { return }
+      Thread.detachNewThread { [self] in serve(client) }
+    }
+  }
+
+  private func serve(_ fd: Int32) {
+    defer { Darwin.close(fd) }
+    while let payload = readFrame(fd),
+      let request = try? JSONDecoder().decode(LabandRequest.self, from: payload)
+    {
+      lock.withLock { types.append(request.type) }
+      let response = LabandResponse.error(
+        requestId: request.requestId,
+        type: request.type,
+        code: request.type == .attachSession ? "daemonBusy" : "notImplemented",
+        message: "fake daemon")
+      guard let data = try? JSONEncoder().encode(response) else { return }
+      let length = UInt32(data.count)
+      var frame = Data([
+        UInt8(length & 0xFF), UInt8((length >> 8) & 0xFF),
+        UInt8((length >> 16) & 0xFF), UInt8((length >> 24) & 0xFF),
+      ])
+      frame.append(data)
+      let written = frame.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, frame.count) }
+      guard written == frame.count else { return }
+    }
+  }
+
+  private func readFrame(_ fd: Int32) -> Data? {
+    guard let header = readExact(fd, 4) else { return nil }
+    let length =
+      Int(header[0]) | Int(header[1]) << 8 | Int(header[2]) << 16 | Int(header[3]) << 24
+    guard length > 0 else { return nil }
+    return readExact(fd, length)
+  }
+
+  private func readExact(_ fd: Int32, _ count: Int) -> Data? {
+    var data = Data(count: count)
+    var offset = 0
+    while offset < count {
+      let n = data.withUnsafeMutableBytes {
+        Darwin.read(fd, $0.baseAddress!.advanced(by: offset), count - offset)
+      }
+      if n <= 0 { return nil }
+      offset += n
+    }
+    return data
   }
 }

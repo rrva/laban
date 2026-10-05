@@ -712,9 +712,16 @@ final class AppSessionCoordinator {
       return cached
     }
 
-    if let existing = try? labandClient.lookupSession(logicalSessionId: tab.focusedSessionId),
-      existing.lifecycleState == .running
-    {
+    // Only a definite sessionNotFound may fall through to create: any other
+    // lookup failure (timeout, transient daemon error) could hide a live
+    // session that createSession would collide with.
+    let existing: LabandSessionInfo?
+    do {
+      existing = try labandClient.lookupSession(logicalSessionId: tab.focusedSessionId)
+    } catch TerminalSessionClientError.sessionNotFound {
+      existing = nil
+    }
+    if let existing, existing.lifecycleState == .running {
       let controlled = try ensureControlLease(existing)
       store(controlled, for: tab)
       attachSnapshotRing(for: controlled.logicalSessionId)
