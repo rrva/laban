@@ -15,6 +15,24 @@ import XCTest
 /// integer `(cols, rows)` actually change — is backend-independent, so the
 /// software backend exercises it faithfully.
 final class ContinuousZoomTests: XCTestCase {
+  /// A committed zoom persists the font size to `UserDefaults.standard`, which
+  /// every xctest process shares on disk. Restore it after each test, or a
+  /// fractional size (e.g. 24.08) leaks into other suites' baselines.
+  private var savedFontSize: Any?
+
+  override func setUp() {
+    super.setUp()
+    savedFontSize = UserDefaults.standard.object(forKey: FontAtlas.userFontSizeKey)
+  }
+
+  override func tearDown() {
+    if let savedFontSize {
+      UserDefaults.standard.set(savedFontSize, forKey: FontAtlas.userFontSizeKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: FontAtlas.userFontSizeKey)
+    }
+    super.tearDown()
+  }
 
   // MARK: - M1: pure size-mapping function
 
@@ -205,7 +223,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -226,7 +244,193 @@ final class ContinuousZoomTests: XCTestCase {
       harness.view.debugZoomGestureBakeCount, 0,
       "no per-event commit during the burst (commits=\(harness.view.debugZoomGestureBakeCount))")
     XCTAssertGreaterThan(
-      s["visualPointSize"] as! Double, 14.0, "the burst still zooms via the compositor scale")
+      s["targetPresentationScale"] as! Double, 1.0, "the burst retargets the compositor scale")
+    XCTAssertEqual(s["zoomGliding"] as? Bool, true, "the visible scale glides there on the link")
+    for _ in 0..<30 { harness.view.debugAdvanceZoomSpring(by: 1.0 / 60) }
+    let settled = harness.view.debugZoomState()
+    XCTAssertGreaterThan(
+      settled["visualPointSize"] as! Double, 14.0, "the burst still zooms via the compositor scale")
+    XCTAssertEqual(
+      settled["presentationScale"] as! Double,
+      s["targetPresentationScale"] as! Double, accuracy: 1e-9,
+      "the glide lands exactly on the input's scale")
+
+    // Let the coalesce timer commit here rather than in a later test.
+    let deadline = Date().addingTimeInterval(2)
+    while harness.view.debugZoomState()["gestureActive"] as! Bool, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    }
+  }
+
+  /// Measured on a RollerMouse Pro: slow notches arrive 160-400 ms apart with
+  /// deltaY 0.1, and each committed separately (a ~20 ms font rebuild per
+  /// notch). A run of notches must glide and commit exactly once, at the size
+  /// all the notches add up to.
+  func testWheelNotchRunGlidesAndCommitsOnce() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    let defaults = UserDefaults.standard
+    let savedSize = defaults.object(forKey: FontAtlas.userFontSizeKey)
+    defer {
+      if let savedSize {
+        defaults.set(savedSize, forKey: FontAtlas.userFontSizeKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+      }
+    }
+    activateRenderer(.slugGlyph, on: harness.view)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("slug backend not active (no GPU in this environment)")
+    }
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    var previous = 1.0
+    var largestFrameStep = 0.0
+    for notch in 0..<6 {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 0.1, modifierFlags: .command,
+          timestamp: 100 + Double(notch) * 0.2))
+      // 0.2 s of 60 Hz frames between notches.
+      for _ in 0..<12 {
+        harness.view.debugAdvanceZoomSpring(by: 1.0 / 60)
+        let scale = harness.view.debugZoomState()["presentationScale"] as! Double
+        largestFrameStep = max(largestFrameStep, abs(scale / previous - 1))
+        previous = scale
+      }
+    }
+    XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 0, "no commit while notches keep coming")
+    XCTAssertLessThan(largestFrameStep, 0.025, "a 7 % notch glides, never lands in one frame")
+
+    let deadline = Date().addingTimeInterval(2)
+    while harness.view.debugZoomState()["gestureActive"] as! Bool, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    }
+    XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 1, "the whole run commits once")
+    XCTAssertEqual(
+      harness.view.debugZoomState()["effectivePointSize"] as! Double, 14 * 1.42, accuracy: 0.01)
+  }
+
+  /// A fast spin arrives as events 5-12 ms apart with deltaY up to ~9.5; at
+  /// 7 % per event a measured spin went 28 pt -> 8 pt in nine frames.
+  func testFastWheelSpinIsSpeedCapped() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    activateRenderer(.slugGlyph, on: harness.view)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("slug backend not active (no GPU in this environment)")
+    }
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    for event in 0..<20 {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 9.5, modifierFlags: .command,
+          timestamp: 100 + Double(event) * 0.005))
+    }
+    // First event a full 7 % step, the other 19 each 5/35 of one.
+    let target = harness.view.debugZoomState()["targetPresentationScale"] as! Double
+    XCTAssertEqual(target, 1 + 0.07 + 19 * 0.07 * 5 / 35, accuracy: 1e-9)
+
+    var previous = 1.0
+    var largestFrameStep = 0.0
+    for _ in 0..<30 {
+      harness.view.debugAdvanceZoomSpring(by: 1.0 / 60)
+      let scale = harness.view.debugZoomState()["presentationScale"] as! Double
+      largestFrameStep = max(largestFrameStep, abs(scale / previous - 1))
+      previous = scale
+    }
+    XCTAssertLessThan(largestFrameStep, 0.08, "measured before the cap: up to 87 % in one frame")
+
+    // Let the run commit here rather than in a later test's run loop.
+    let deadline = Date().addingTimeInterval(2)
+    while harness.view.debugZoomState()["gestureActive"] as! Bool, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    }
+    XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 1)
+  }
+
+  /// Recorded on the LG trace: lifting and re-touching mid-zoom sends `.ended`,
+  /// `.mayBegin`, `.began` within ~100 ms. The visible size must continue from
+  /// where it was, not drop back to the gesture-start size for a frame.
+  func testTrackpadRetouchContinuesZoomInsteadOfSnappingBack() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    activateRenderer(.slugGlyph, on: harness.view)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("slug backend not active (no GPU in this environment)")
+    }
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    func scroll(_ delta: CGFloat, _ phase: NSEvent.Phase) {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 0, scrollingDeltaY: delta,
+          hasPreciseScrollingDeltas: true, modifierFlags: .command, phase: phase))
+    }
+    scroll(5, .began)
+    for _ in 0..<20 { scroll(7, .changed) }
+    scroll(0, .ended)
+    for _ in 0..<30 { harness.view.debugAdvanceZoomSpring(by: 1.0 / 60) }
+    let beforeRetouch = harness.view.debugZoomState()["visualPointSize"] as! Double
+    XCTAssertGreaterThan(beforeRetouch, 14 * 1.5)
+
+    scroll(0, .mayBegin)
+    scroll(3, .began)
+    harness.view.debugAdvanceZoomSpring(by: 1.0 / 60)
+    let afterRetouch = harness.view.debugZoomState()["visualPointSize"] as! Double
+    XCTAssertGreaterThanOrEqual(
+      afterRetouch, beforeRetouch,
+      "re-touch must continue the zoom, not snap to the start size (14 pt)")
+    XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 0, "still one open session")
+  }
+
+  /// The 60 Hz judder: trackpad events land 1, 1, 0, 2, ... per vsync. Each
+  /// vsync must still move the visible size, by a similar amount.
+  func testTrackpadCmdScrollStepsEvenlyWhenEventsBeatAgainstVsync() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    activateRenderer(.slugGlyph, on: harness.view)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("slug backend not active (no GPU in this environment)")
+    }
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    func scroll(_ phase: NSEvent.Phase) {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 0, scrollingDeltaY: 2.5,
+          hasPreciseScrollingDeltas: true, modifierFlags: .command, phase: phase))
+    }
+    scroll(.began)
+    var previous = harness.view.debugZoomState()["presentationScale"] as! Double
+    var steps: [Double] = []
+    for count in [1, 1, 0, 2, 1, 0, 2, 1, 1, 0, 2, 1, 1, 1, 0, 2, 1, 1, 0, 2] {
+      for _ in 0..<count { scroll(.changed) }
+      harness.view.debugAdvanceZoomSpring(by: 1.0 / 60)
+      let scale = harness.view.debugZoomState()["presentationScale"] as! Double
+      steps.append(scale / previous - 1)
+      previous = scale
+    }
+    let moving = Array(steps.dropFirst(2))
+    XCTAssertGreaterThan(moving.min()!, 0, "a vsync with no event still moves: \(steps)")
+    XCTAssertLessThan(
+      moving.max()! / moving.min()!, 2.2,
+      "per-vsync steps stay within ~2x of each other, not 0 then 2x: \(steps)")
+    XCTAssertEqual(
+      harness.view.debugZoomGestureBakeCount, 0, "gliding never bakes mid-gesture")
   }
 
   /// Regression for the review's finding #1: a precise scrolling device that
@@ -320,7 +524,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -376,7 +580,7 @@ final class ContinuousZoomTests: XCTestCase {
         defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
       }
     }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -420,7 +624,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -464,7 +668,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -507,7 +711,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -567,7 +771,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
 
-    harness.view.applyRendererSelection(.slugGlyph)
+    activateRenderer(.slugGlyph, on: harness.view)
     let initial = harness.view.debugZoomState()
     guard initial["backend"] as? String == RendererSelection.slugGlyph.rawValue,
       initial["fractional"] as? Bool == true
@@ -625,7 +829,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
 
-    harness.view.applyRendererSelection(.slugGlyph)
+    activateRenderer(.slugGlyph, on: harness.view)
     harness.write("Slug zoom debug glyphs 0123456789 abcdefghijklmnopqrstuvwxyz\r\n")
     let rendered = harness.view.debugZoomState()
     guard rendered["backend"] as? String == RendererSelection.slugGlyph.rawValue,
@@ -691,6 +895,18 @@ final class ContinuousZoomTests: XCTestCase {
       } else {
         unsetenv("LABAN_RENDERER")
       }
+    }
+  }
+
+  /// A renderer switch installs asynchronously, after the new backend's first
+  /// GPU frame completes and hops back to main. Checking right after
+  /// `applyRendererSelection` still sees the old backend, which made every GPU
+  /// test here skip as if no GPU were present.
+  private func activateRenderer(_ selection: RendererSelection, on view: TerminalBitmapView) {
+    view.applyRendererSelection(selection)
+    let deadline = Date().addingTimeInterval(2)
+    while view.debugZoomState()["backend"] as? String != selection.rawValue, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.01))
     }
   }
 

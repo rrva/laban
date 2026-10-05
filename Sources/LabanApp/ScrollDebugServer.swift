@@ -351,6 +351,27 @@ final class ScrollDebugServer {
         for (k, v) in tv.debugApplySubpixelLayout(layout) { payload[k] = v }
         return Response.json(payload)
       }
+    case ("POST", "/config/present-latency"):
+      guard let frames = Int(query["frames"] ?? ""), (1...3).contains(frames) else {
+        return Response.json(["error": "frames must be 1, 2, or 3"], status: 400)
+      }
+      return onMain { tv, _, _ in
+        Response.json(tv.debugSetPresentLinkFrameLatency(frames))
+      }
+    case ("POST", "/config/drawable-count"):
+      guard let count = Int(query["count"] ?? ""), (2...3).contains(count) else {
+        return Response.json(["error": "count must be 2 or 3"], status: 400)
+      }
+      return onMain { tv, _, _ in
+        Response.json(tv.debugSetMaximumDrawableCount(count))
+      }
+    case ("POST", "/config/present-rate"):
+      let hz = Int(query["hz"] ?? "")
+      return onMain { tv, _, _ in
+        Response.json(tv.debugSetPresentLinkFrameRate(hz))
+      }
+    case ("GET", "/config/present-latency"):
+      return Response.json(["frames": PresentLinkFrameLatency.current])
     case ("POST", "/config/smooth-scroll"):
       let mode = query["mode"] ?? ""
       guard let parsed = VectorSmoothScrollMode(rawValue: mode) else {
@@ -385,6 +406,11 @@ final class ScrollDebugServer {
     case ("GET", "/zoom/state"):
       return onMain { tv, _, _ in
         Response.json(tv.debugZoomState())
+      }
+    case ("GET", "/zoom/trace"):
+      let reset = query["reset"] == "1"
+      return onMain { tv, _, _ in
+        Response.json(tv.debugZoomTrace(reset: reset))
       }
     case ("POST", "/zoom/sweep"):
       // Drive a full synthetic gesture (began → N changed → ended) from `from`
@@ -607,6 +633,13 @@ final class ScrollDebugServer {
                                       rgbStripe|bgrStripe); slug/vector only, reports the
                                       effective layout after the auto-policy resolves
     POST /config/smooth-scroll?mode=M switch vector smooth-scroll mode (fluid|perPhase)
+    POST /config/present-latency?frames=N  rebuild the Slug/Vector present link with N
+                                      frames of Core Animation lead (1-3, default 2);
+                                      GET reads it. Not persisted
+    POST /config/present-rate[?hz=N]  pin the present link to N Hz (no hz: the
+                                      shipped 30-120 range); rebuilds the link
+    POST /config/drawable-count?count=N  Slug layer drawable pool size (2 or 3,
+                                      default 3); rebuilds the present link
     POST /config/tab?index=N          select tab N (0-based); use a normal-buffer
                                       shell tab so scroll bursts hit Laban scrollback
                                       (not a fullscreen alt-screen TUI)
@@ -619,6 +652,10 @@ final class ScrollDebugServer {
                                       presentationScale, cellWidth/Height
     GET  /zoom/state                  live zoom state: visual/atlas point size,
                                       presentationScale, cell metrics, gestureActive
+    GET  /zoom/trace[?reset=1]        zoom inputs, commits (font rebuild ms), and the
+                                      on-screen font size at every present-link vsync
+                                      (Slug), plus per-burst evenness (stillVsyncs,
+                                      p50/max step %); first call arms recording
     POST /zoom/sweep?from=A&to=B&steps=N  drive a whole gesture A→B pt; returns
                                       maxOvershootPt (>0 = glyphs bigger than the
                                       cell), restedPresentationScale, final size

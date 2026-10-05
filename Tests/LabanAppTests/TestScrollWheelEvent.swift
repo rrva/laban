@@ -8,6 +8,7 @@ final class TestScrollWheelEvent: NSEvent {
   private let testModifierFlags: NSEvent.ModifierFlags
   private let testPhase: NSEvent.Phase
   private let testMomentumPhase: NSEvent.Phase
+  private let testTimestamp: TimeInterval
 
   init(
     locationInWindow: NSPoint,
@@ -16,7 +17,8 @@ final class TestScrollWheelEvent: NSEvent {
     hasPreciseScrollingDeltas: Bool = false,
     modifierFlags: NSEvent.ModifierFlags = [],
     phase: NSEvent.Phase = [],
-    momentumPhase: NSEvent.Phase = []
+    momentumPhase: NSEvent.Phase = [],
+    timestamp: TimeInterval = 0
   ) {
     testLocationInWindow = locationInWindow
     testDeltaY = deltaY
@@ -25,6 +27,7 @@ final class TestScrollWheelEvent: NSEvent {
     testModifierFlags = modifierFlags
     testPhase = phase
     testMomentumPhase = momentumPhase
+    testTimestamp = timestamp
     super.init()
   }
 
@@ -41,4 +44,5 @@ final class TestScrollWheelEvent: NSEvent {
   override var modifierFlags: NSEvent.ModifierFlags { testModifierFlags }
   override var phase: NSEvent.Phase { testPhase }
   override var momentumPhase: NSEvent.Phase { testMomentumPhase }
+  override var timestamp: TimeInterval { testTimestamp }
 }

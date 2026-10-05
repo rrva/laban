@@ -110,10 +110,69 @@ public protocol GestureZoomRenderable: AnyObject {
   var supportsFractionalLiveZoom: Bool { get }
   func setGestureZoom(_ factor: CGFloat, anchor: CGPoint)
   var zoomDiagnostics: RendererZoomDiagnostics { get }
+  /// Arm or disarm the zoom present trace (`/zoom/trace`). Disarming clears it.
+  func setZoomPresentTraceEnabled(_ enabled: Bool)
+  /// Samples recorded since the last drain, oldest first.
+  func drainZoomPresentTrace() -> [ZoomPresentSample]
+  /// Rendered frames recorded since the last drain, oldest first.
+  func drainZoomRenderTrace() -> [ZoomRenderSample]
+  /// On-glass times of fresh presents recorded since the last drain.
+  func drainZoomDisplayedTrace() -> [ZoomDisplayedSample]
 }
 
 extension GestureZoomRenderable {
   public var supportsFractionalLiveZoom: Bool { true }
+  public func setZoomPresentTraceEnabled(_ enabled: Bool) {}
+  public func drainZoomPresentTrace() -> [ZoomPresentSample] { [] }
+  public func drainZoomRenderTrace() -> [ZoomRenderSample] { [] }
+  public func drainZoomDisplayedTrace() -> [ZoomDisplayedSample] { [] }
+}
+
+/// A fresh present and when Metal says its drawable reached the screen
+/// (`MTLDrawable.presentedTime`, 0 when the compositor dropped it).
+public struct ZoomDisplayedSample: Equatable, Sendable {
+  public var callbackTime: Double
+  /// The display link's `targetPresentationTimestamp` for this present.
+  public var targetTime: Double
+  public var presentedTime: Double
+
+  public init(callbackTime: Double, targetTime: Double, presentedTime: Double) {
+    self.callbackTime = callbackTime
+    self.targetTime = targetTime
+    self.presentedTime = presentedTime
+  }
+}
+
+/// One rendered frame while a zoom present trace is armed: when its GPU work
+/// completed, how long the GPU spent on it, and the size it was drawn at.
+/// Frames that take longer than a vsync starve the present link of drawables.
+public struct ZoomRenderSample: Equatable, Sendable {
+  public var time: Double
+  public var gpuMs: Double
+  public var visualPointSize: Double
+
+  public init(time: Double, gpuMs: Double, visualPointSize: Double) {
+    self.time = time
+    self.gpuMs = gpuMs
+    self.visualPointSize = visualPointSize
+  }
+}
+
+/// One present-link vsync callback while a zoom present trace is armed: when it
+/// fired (`CACurrentMediaTime`, the same clock as `NSEvent.timestamp`), the
+/// terminal font size on screen after it (atlas point size x gesture zoom), and
+/// whether it put up a new frame or re-showed the previous one. A run of
+/// callbacks with an unchanged size during a zoom is what judder looks like.
+public struct ZoomPresentSample: Equatable, Sendable {
+  public var time: Double
+  public var visualPointSize: Double
+  public var fresh: Bool
+
+  public init(time: Double, visualPointSize: Double, fresh: Bool) {
+    self.time = time
+    self.visualPointSize = visualPointSize
+    self.fresh = fresh
+  }
 }
 
 /// Optional capability for GPU backends whose CAMetalLayer is presented by an

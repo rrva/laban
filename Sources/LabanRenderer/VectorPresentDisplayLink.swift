@@ -185,16 +185,62 @@ struct PresentStallDecision: Equatable {
   }
 }
 
+/// Frames of lead the present link asks Core Animation for
+/// (`CAMetalDisplayLink.preferredFrameLatency`). Links read it when built or
+/// rebuilt; `/config/present-latency` switches it live for A/B pacing runs.
+public enum PresentLinkFrameLatency {
+  private static let lock = NSLock()
+  nonisolated(unsafe) private static var frames = 2
+
+  public static var current: Int {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return frames
+    }
+    set {
+      lock.lock()
+      frames = newValue
+      lock.unlock()
+    }
+  }
+}
+
+/// Debug A/B override for the present link's preferred frame rate (Hz);
+/// nil keeps the shipped 30-120 range preferring 120. `/config/present-rate`.
+public enum PresentLinkFrameRateOverride {
+  private static let lock = NSLock()
+  nonisolated(unsafe) private static var hz: Int?
+
+  public static var current: Int? {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return hz
+    }
+    set {
+      lock.lock()
+      hz = newValue
+      lock.unlock()
+    }
+  }
+}
+
 @available(macOS 14.0, *)
 private func configurePresentLink(
   _ link: CAMetalDisplayLink, delegate: any CAMetalDisplayLinkDelegate
 ) {
   link.delegate = delegate
-  link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+  if let hz = PresentLinkFrameRateOverride.current {
+    link.preferredFrameRateRange = CAFrameRateRange(
+      minimum: Float(hz), maximum: Float(hz), preferred: Float(hz))
+  } else {
+    link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+  }
   // A terminal finishes a frame in ~1–2 ms, but live scroll traces can still
   // miss whole present callbacks with latency 1. Give Core Animation one more
   // frame of scheduling slack so the display-link presenter holds 120 Hz.
-  link.preferredFrameLatency = 2
+  link.preferredFrameLatency = Float(PresentLinkFrameLatency.current)
   // Start paused; `notifyContentUpdated()` unpauses on the first rendered frame.
   link.isPaused = true
 }
@@ -220,6 +266,9 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// latest target and presents. Return value is advisory (stats only): the link's
   /// run state is controlled externally via `setRunning(_:)`, not by this result.
   var onPresent: ((any CAMetalDrawable) -> Bool)?
+  /// `targetPresentationTimestamp` of the update being handled, set just before
+  /// `onPresent` runs. Present thread only.
+  private(set) var currentUpdateTargetPresentationTimestamp: CFTimeInterval = 0
 
   /// Present-side cadence stats: intervals (ms) between successive callbacks that
   /// actually presented a frame, sampled while the link is active. This is the
@@ -700,6 +749,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     // on vsyncs where content did not re-render (a presented frame stays on screen
     // until replaced; re-presenting is a ~0.05 ms blit). The link only fires while
     // the host policy says active — `setRunning(false)` parks it when idle.
+    currentUpdateTargetPresentationTimestamp = update.targetPresentationTimestamp
     let presented = onPresent?(update.drawable) ?? false
     statsLock.lock()
     callbackCount += 1

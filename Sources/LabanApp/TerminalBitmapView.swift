@@ -490,6 +490,26 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var zoomGestureCommitSettle: DispatchWorkItem?
   private static let zoomGestureCommitQuietSeconds: TimeInterval = 0.1
 
+  /// Glide toward the latest smoothed (Cmd+scroll) zoom input, advanced by
+  /// `advanceFrame`; nil at rest and for direct (pinch) input.
+  private var zoomSpring: ZoomPresentationSpring?
+  private var lastZoomSpringTickAt: TimeInterval?
+  /// `NSEvent.timestamp` of the last notched-wheel zoom event.
+  private var lastWheelZoomEventAt: TimeInterval?
+
+  /// `/zoom/trace` recording, off until the first `debugZoomTrace` call arms
+  /// it. Inputs and commits are recorded here; per-vsync presents come from
+  /// the renderer (`GestureZoomRenderable.drainZoomPresentTrace`).
+  private var zoomTraceArmed = false
+  private var zoomTraceInputs: [ZoomTraceInput] = []
+  private var zoomTraceCommits: [ZoomTraceCommit] = []
+  private var zoomTracePresents: [ZoomPresentSample] = []
+  private var zoomTraceRenders: [ZoomRenderSample] = []
+  private var zoomTraceDisplayed: [ZoomDisplayedSample] = []
+  /// Display-link run decisions (`displayLinkPolicyState`) as they change.
+  private var zoomTraceLinkPolicy: [(time: Double, shouldRun: Bool, reason: String)] = []
+  private static let zoomTraceCapacity = 16384
+
   /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
   /// `applyFontSize`. The reflow-throttling gate asserts this advances once per
   /// distinct `(cols, rows)` pair a continuous gesture sweeps, not once per
@@ -1512,15 +1532,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   ///
   /// `scale == 1` (or gesture end) clears the zoom. Classic/software backends
   /// have no projection hook and are unaffected (their pinch rounds per step).
+  /// A direct set cancels any glide in flight (`zoomSpring`).
   func setGestureZoomPresentationScale(_ scale: CGFloat) {
+    zoomSpring = nil
+    if applyGestureZoomPresentationScale(scale) {
+      invalidateRenderAndWake()
+    }
+  }
+
+  /// Push `scale` into the renderer without waking a frame: the display-link
+  /// tick that advances `zoomSpring` is already producing one. False when the
+  /// backend has no projection hook.
+  @discardableResult
+  private func applyGestureZoomPresentationScale(_ scale: CGFloat) -> Bool {
     let resolved = scale.isFinite && scale > 0 ? scale : 1
     debugGestureZoomScale = resolved
-    guard let zoomable = fractionalZoomBackend else { return }
+    guard let zoomable = fractionalZoomBackend else { return false }
     // Anchor at the surface centre, in device pixels (y-up from bottom-left).
     let anchor = CGPoint(x: CGFloat(lastPixelWidth) / 2, y: CGFloat(lastPixelHeight) / 2)
     zoomable.setGestureZoom(resolved, anchor: anchor)
     renderInvalidated = true
-    invalidateRenderAndWake()
+    return true
+  }
+
+  /// Display-link tick: move the glide one frame toward the input's scale.
+  private func advanceZoomSpring() {
+    guard var spring = zoomSpring else {
+      lastZoomSpringTickAt = nil
+      return
+    }
+    let now = ProcessInfo.processInfo.systemUptime
+    // Same 1/30 s clamp as the scroll spring: a stalled main thread resumes
+    // the glide instead of skipping to its end.
+    let dt = min(1.0 / 30.0, max(0, now - (lastZoomSpringTickAt ?? now)))
+    lastZoomSpringTickAt = now
+    spring.advance(by: dt)
+    applyGestureZoomPresentationScale(CGFloat(spring.displayedScale))
+    zoomSpring = spring.isSettled ? nil : spring
+  }
+
+  /// Test seam: advance the zoom glide by `dt` as a display-link tick would.
+  func debugAdvanceZoomSpring(by dt: TimeInterval) {
+    lastZoomSpringTickAt = ProcessInfo.processInfo.systemUptime - dt
+    advanceZoomSpring()
   }
 
   private func installFrameCompletionHook() {
@@ -2022,6 +2076,33 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// display notification can arrive after the pending renderer created its
   /// CAMetalDisplayLink but before `installPendingBackendSwap`; rebuilding only
   /// `backend` would later install the pending renderer with that stale link.
+  /// `/config/drawable-count`: resize the Slug layer's drawable pool, then
+  /// rebuild the present link so it binds to the resized pool. Not persisted.
+  func debugSetMaximumDrawableCount(_ count: Int) -> [String: Any] {
+    guard let slug = backend as? SlugGlyphRenderer else {
+      return ["ok": false, "error": "slug renderer not active"]
+    }
+    slug.debugSetMaximumDrawableCount(count)
+    rebuildPresentLinksAfterDisplayChange()
+    return ["ok": true, "count": slug.layer.maximumDrawableCount]
+  }
+
+  /// `/config/present-rate`: rebuild the present links pinned to `hz`, or back
+  /// to the shipped range for nil. Not persisted.
+  func debugSetPresentLinkFrameRate(_ hz: Int?) -> [String: Any] {
+    PresentLinkFrameRateOverride.current = hz
+    rebuildPresentLinksAfterDisplayChange()
+    return ["ok": true, "hz": hz.map { $0 as Any } ?? "default"]
+  }
+
+  /// `/config/present-latency`: rebuild the present links with `frames` of
+  /// Core Animation lead, for A/B pacing runs. Not persisted.
+  func debugSetPresentLinkFrameLatency(_ frames: Int) -> [String: Any] {
+    PresentLinkFrameLatency.current = frames
+    rebuildPresentLinksAfterDisplayChange()
+    return ["ok": true, "frames": PresentLinkFrameLatency.current]
+  }
+
   private func rebuildPresentLinksAfterDisplayChange() {
     (backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
     (pendingBackendSwap?.backend as? DisplayLinkPresentingRenderer)?.rebuildPresentLink()
@@ -3103,6 +3184,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       maximum: Float(TerminalIdlePolicy.activeDisplayLinkFramesPerSecond),
       preferred: Float(policy.preferredFramesPerSecond))
     link.isPaused = !policy.shouldRun
+    if zoomTraceArmed,
+      zoomTraceLinkPolicy.last.map({ $0.shouldRun != policy.shouldRun || $0.reason != policy.reason })
+        ?? true
+    {
+      appendZoomTrace(
+        &zoomTraceLinkPolicy,
+        (ProcessInfo.processInfo.systemUptime, policy.shouldRun, policy.reason))
+    }
     setSafetyNetArmed(!policy.shouldRun)
     // Renderer-owned CAMetalDisplayLink present threads ride the SAME
     // animate-or-park policy as the main tick, so they spin only while the
@@ -3206,7 +3295,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // scroll animation.
     let preciseScrollStreamActive =
       windowVisibleToUser && preciseScrollStreamActiveUntil > now
-    let scrollLinkActive = scrollAnimating || sidebarScrollAnimating || preciseScrollStreamActive
+    // A zoom gesture is motion too. Parked between zoom events, the present
+    // link needs a wake per event and misses vsyncs: on a 60 Hz panel 38 % of
+    // trackpad-zoom frames stayed up for 33 ms or longer.
+    let zoomActive = windowVisibleToUser && (zoomGestureBasePointSize != nil || zoomSpring != nil)
+    let scrollLinkActive =
+      scrollAnimating || sidebarScrollAnimating || preciseScrollStreamActive || zoomActive
     let shouldRun = TerminalIdlePolicy.displayLinkShouldRun(
       windowVisibleToUser: windowVisibleToUser,
       scrollAnimating: scrollLinkActive,
@@ -3230,6 +3324,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       reason = "sidebarScroll"
     } else if preciseScrollStreamActive {
       reason = "preciseScroll"
+    } else if zoomActive {
+      reason = "zoom"
     } else if attentionAnimating {
       reason = "attention"
     } else if terminalOutputActive {
@@ -3693,6 +3789,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       lastScrollTickAt = nil
     }
     self.scrollAnimating = scrollAnimating
+    advanceZoomSpring()
 
     let renderInvalidatedBeforePreviewUpdate = renderInvalidated
     var remoteFrame: LabandSnapshotFrame?
@@ -6295,6 +6392,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case cancelled
   }
 
+  /// How zoom input reaches the screen. `.direct` sets the presentation scale
+  /// per event (pinch). The others glide toward it on the display link
+  /// (`ZoomPresentationSpring`); Cmd+scroll uses them.
+  enum ZoomSmoothing {
+    case direct
+    case trackpad
+    case wheel
+
+    var omega: Double? {
+      switch self {
+      case .direct: nil
+      case .trackpad: ZoomPresentationSpring.trackpadOmega
+      case .wheel: ZoomPresentationSpring.wheelOmega
+      }
+    }
+  }
+
   /// Pure size-mapping: a pinch scales *relative* size, so the target is
   /// `base * (1 + accumulatedMagnification)`, clamped to the zoom range.
   /// Fractional for the vector backend (`fractional == true`); rounded to the
@@ -6386,7 +6500,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// gesture envelope. The live frames apply without persisting; the terminating
   /// frame persists the final size once. Reflow is throttled to integer
   /// grid-boundary crossings so a continuous gesture does not spam SIGWINCH.
-  func applyZoomMagnification(delta: CGFloat, phase: ZoomGesturePhase) {
+  func applyZoomMagnification(
+    delta: CGFloat, phase: ZoomGesturePhase, smoothing: ZoomSmoothing = .direct
+  ) {
     let terminating = phase == .ended || phase == .cancelled
     // A terminating event with no gesture in flight (e.g. a duplicate `.ended`,
     // or `.ended` after the renderer was switched away) is a no-op: committing
@@ -6408,12 +6524,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let resumingDebouncedSession = zoomGestureCommitSettle != nil
     zoomGestureCommitSettle?.cancel()
     zoomGestureCommitSettle = nil
+    // Any uncommitted session is still open, not only one with a commit pending:
+    // a trackpad re-touch sends `.ended`, then `.mayBegin` (which cancels the
+    // pending commit above as a `.changed`), then `.began`. Restarting there
+    // reset the scale to 1 over the uncommitted base atlas, so one frame showed
+    // the gesture-start size (10.3 pt -> 8.0 pt) and the zoom so far was lost.
+    // Continuing cannot stack transforms: the scale is always derived from the
+    // session's base and accumulator.
+    let sessionOpen = resumingDebouncedSession || zoomGestureBasePointSize != nil
 
-    if phase == .began && !resumingDebouncedSession {
-      // Clear any scale left by a prior gesture that did not deliver `.ended`
-      // (rare, but a back-to-back `.began` must start from identity, not stack
-      // transforms).
+    if phase == .began && !sessionOpen {
+      // Nothing uncommitted: start from identity.
       if debugGestureZoomScale != 1 { setGestureZoomPresentationScale(1) }
+      zoomSpring = nil
       zoomGestureBasePointSize = fontAtlas.pointSize
       zoomGestureAccumulatedMagnification = 0
       debugZoomGestureFrameCount = 0
@@ -6450,7 +6573,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         accumulatedMagnification: zoomGestureAccumulatedMagnification,
         minimum: FontAtlas.zoomMinimumPointSize,
         maximum: FontAtlas.zoomMaximumPointSize)
-      setGestureZoomPresentationScale(liveTarget / base)
+      if let omega = smoothing.omega {
+        // Input only moves the target; `advanceFrame` glides the visible scale
+        // there one vsync at a time, so frames step evenly however events
+        // land against vsync.
+        if zoomSpring?.omega != omega {
+          zoomSpring = ZoomPresentationSpring(omega: omega, scale: Double(debugGestureZoomScale))
+          lastZoomSpringTickAt = ProcessInfo.processInfo.systemUptime
+        }
+        zoomSpring?.retarget(scale: Double(liveTarget / base))
+        if displayLinkIsTicking {
+          updateDisplayLinkRunState()
+        } else {
+          invalidateRenderAndWake()
+        }
+      } else {
+        setGestureZoomPresentationScale(liveTarget / base)
+      }
     } else if !fractional {
       // Non-vector backends have no resident atlas to scale; keep the prior
       // behavior (apply the rounded ladder size live).
@@ -6502,6 +6641,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   ///    draw at the old size while freshly-baked ones draw at the new size. So
   ///    the fallback atlases must be rebuilt to the target size BEFORE the frame.
   private func commitZoomGestureEnd(target: CGFloat, fractional: Bool) {
+    // The bake lands the exact target; a glide still in flight would keep
+    // moving the scale over the freshly baked size.
+    zoomSpring = nil
     guard target != fontAtlas.pointSize || debugGestureZoomScale != 1 else {
       // Nothing moved (no-op gesture): just drop any residual scale.
       setGestureZoomPresentationScale(1)
@@ -6509,6 +6651,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return
     }
     debugZoomGestureBakeCount += 1
+    let commitStart = ProcessInfo.processInfo.systemUptime
+    defer {
+      if zoomTraceArmed {
+        let end = ProcessInfo.processInfo.systemUptime
+        appendZoomTrace(
+          &zoomTraceCommits,
+          ZoomTraceCommit(
+            time: commitStart, durationMs: (end - commitStart) * 1000,
+            pointSize: Double(fontAtlas.pointSize)))
+      }
+    }
     // Clear the projection zoom WITHOUT waking a render — `applyFontSize` below
     // produces the single commit frame, so the reset and the atlas swap are
     // atomic (no intermediate small-text frame).
@@ -6547,11 +6700,32 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Per-notch magnification for a discrete (classic mouse) wheel, sized to
   /// roughly match the keyboard's whole-point step at the default size.
   private static let zoomScrollDiscreteStep: CGFloat = 0.07
+  /// A notch this long or longer after the previous one takes a full step;
+  /// sooner, a proportional share. Caps a fast spin at ~2x the base size per
+  /// second instead of 7 % per event (a measured spin went 28 pt -> 8 pt in
+  /// nine frames).
+  private static let zoomScrollDiscreteFullStepInterval: TimeInterval = 0.035
+  /// Quiet time before a run of wheel notches commits. Measured notch spacing
+  /// is 160-400 ms; with the 0.1 s commit debounce after it, a pause of up to
+  /// ~0.45 s stays one gesture.
+  private static let wheelZoomQuietSeconds: TimeInterval = 0.35
 
   /// Cmd+scroll zoom: the trackpad-pinch-free path for laptops. Vertical scroll
   /// up zooms in; the gesture envelope mirrors the trackpad scroll phases so it
   /// reuses the same accumulate/commit machinery as `magnify(with:)`.
   private func handleZoomScroll(_ event: NSEvent) {
+    if zoomTraceArmed {
+      let source =
+        event.momentumPhase != [] ? "momentum"
+        : !event.hasPreciseScrollingDeltas ? "wheel"
+        : event.phase == [] ? "phaseless" : "precise"
+      appendZoomTrace(
+        &zoomTraceInputs,
+        ZoomTraceInput(
+          time: event.timestamp, source: source, deltaY: Double(event.deltaY),
+          scrollingDeltaY: Double(event.scrollingDeltaY), phase: event.phase.rawValue,
+          momentumPhase: event.momentumPhase.rawValue))
+    }
     // Ignore inertial momentum so the zoom stops the instant the fingers lift.
     guard event.momentumPhase == [] else { return }
 
@@ -6561,12 +6735,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // No phase envelope at all → events with no `.began`/`.ended` bookends.
     if event.phase == [] {
       if !precise {
-        // Discrete mouse wheel: a notch is a deliberate, separate step. Commit
-        // each as its own began+ended (only a few per second, so the per-event
-        // commit cost is fine), landing an integer-ladder step.
-        let delta = (raw >= 0 ? 1 : -1) * Self.zoomScrollDiscreteStep
-        applyZoomMagnification(delta: delta, phase: .began)
-        applyZoomMagnification(delta: 0, phase: .ended)
+        // Notched wheel. A run of notches is one gesture that glides
+        // (`.wheel`) and commits once after the run goes quiet: committing per
+        // notch cost a ~20 ms font rebuild for each, because typical notches
+        // land 160-400 ms apart, past the 0.1 s commit debounce. macOS sends
+        // a fast spin as events 5-12 ms apart with accelerated deltaY (0.1
+        // per slow notch, ~4.5-9.5 when spinning), so instead of a fixed step
+        // per event, a step is scaled down by how soon it follows the last
+        // one: the zoom speed is capped at one full step per
+        // `zoomScrollDiscreteFullStepInterval`.
+        let sinceLast = lastWheelZoomEventAt.map { event.timestamp - $0 } ?? .infinity
+        lastWheelZoomEventAt = event.timestamp
+        let share = min(1, max(0, sinceLast) / Self.zoomScrollDiscreteFullStepInterval)
+        let delta = (raw >= 0 ? 1 : -1) * Self.zoomScrollDiscreteStep * CGFloat(share)
+        if zoomGestureBasePointSize == nil {
+          applyZoomMagnification(delta: delta, phase: .began, smoothing: .wheel)
+        } else {
+          applyZoomMagnification(delta: delta, phase: .changed, smoothing: .wheel)
+        }
+        scheduleCoalescedZoomScrollSettle(quietSeconds: Self.wheelZoomQuietSeconds)
         return
       }
       // Phase-less PRECISE stream (e.g. some Magic Mouse configs): dozens of
@@ -6577,9 +6764,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let delta = CGFloat(raw) * Self.zoomScrollMagnificationPerPoint
       guard delta != 0 else { return }
       if zoomGestureBasePointSize == nil {
-        applyZoomMagnification(delta: delta, phase: .began)
+        applyZoomMagnification(delta: delta, phase: .began, smoothing: .trackpad)
       } else {
-        applyZoomMagnification(delta: delta, phase: .changed)
+        applyZoomMagnification(delta: delta, phase: .changed, smoothing: .trackpad)
       }
       scheduleCoalescedZoomScrollSettle()
       return
@@ -6593,13 +6780,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case .cancelled: phase = .cancelled
     default: phase = .changed
     }
-    applyZoomMagnification(delta: delta, phase: phase)
+    applyZoomMagnification(delta: delta, phase: phase, smoothing: .trackpad)
   }
 
   /// (Re)arm the quiet-timer that commits a coalesced phase-less Cmd+scroll zoom.
   /// Each scroll event pushes the settle out; when the stream stops for
   /// `coalescedZoomScrollQuietSeconds`, the gesture ends once.
-  private func scheduleCoalescedZoomScrollSettle() {
+  private func scheduleCoalescedZoomScrollSettle(
+    quietSeconds: TimeInterval = TerminalBitmapView.coalescedZoomScrollQuietSeconds
+  ) {
     coalescedZoomScrollSettle?.cancel()
     let work = DispatchWorkItem { [weak self] in
       guard let self else { return }
@@ -6610,7 +6799,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     coalescedZoomScrollSettle = work
     DispatchQueue.main.asyncAfter(
-      deadline: .now() + Self.coalescedZoomScrollQuietSeconds, execute: work)
+      deadline: .now() + quietSeconds, execute: work)
   }
 
   /// How long a phase-less Cmd+scroll stream must be quiet before the coalesced
@@ -6709,6 +6898,68 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// `cellWidth`/`cellHeight` are the integer grid the renderer lays glyphs into;
   /// a glyph baked for `visualPointSize` that overflows the cell baked for
   /// `atlasPointSize` is exactly the overflow symptom.
+  private func appendZoomTrace<T>(_ ring: inout [T], _ value: T) {
+    if ring.count >= Self.zoomTraceCapacity {
+      ring.removeFirst(ring.count - Self.zoomTraceCapacity + 1)
+    }
+    ring.append(value)
+  }
+
+  /// `/zoom/trace`: arms recording on first call (and re-arms a renderer that
+  /// was swapped since), then returns everything recorded since the last
+  /// reset plus a per-burst evenness summary. Presents come only from a
+  /// renderer with a present link (Slug); otherwise `presents` stays empty.
+  func debugZoomTrace(reset: Bool) -> [String: Any] {
+    zoomTraceArmed = true
+    fractionalZoomBackend?.setZoomPresentTraceEnabled(true)
+    for sample in fractionalZoomBackend?.drainZoomPresentTrace() ?? [] {
+      appendZoomTrace(&zoomTracePresents, sample)
+    }
+    for sample in fractionalZoomBackend?.drainZoomRenderTrace() ?? [] {
+      appendZoomTrace(&zoomTraceRenders, sample)
+    }
+    for sample in fractionalZoomBackend?.drainZoomDisplayedTrace() ?? [] {
+      appendZoomTrace(&zoomTraceDisplayed, sample)
+    }
+    let summary = ZoomTraceSummary(
+      inputs: zoomTraceInputs, presents: zoomTracePresents, commits: zoomTraceCommits)
+    let payload: [String: Any] = [
+      "now": ProcessInfo.processInfo.systemUptime,
+      "bursts": summary.json,
+      "inputs": zoomTraceInputs.map {
+        [
+          "t": $0.time, "source": $0.source, "deltaY": $0.deltaY,
+          "scrollingDeltaY": $0.scrollingDeltaY, "phase": $0.phase,
+          "momentumPhase": $0.momentumPhase,
+        ] as [String: Any]
+      },
+      "commits": zoomTraceCommits.map {
+        ["t": $0.time, "durationMs": $0.durationMs, "pointSize": $0.pointSize]
+      },
+      "presents": zoomTracePresents.map {
+        ["t": $0.time, "size": $0.visualPointSize, "fresh": $0.fresh] as [String: Any]
+      },
+      "renders": zoomTraceRenders.map {
+        ["t": $0.time, "gpuMs": $0.gpuMs, "size": $0.visualPointSize]
+      },
+      "displayed": zoomTraceDisplayed.map {
+        ["callbackT": $0.callbackTime, "targetT": $0.targetTime, "presentedT": $0.presentedTime]
+      },
+      "linkPolicy": zoomTraceLinkPolicy.map {
+        ["t": $0.time, "shouldRun": $0.shouldRun, "reason": $0.reason] as [String: Any]
+      },
+    ]
+    if reset {
+      zoomTraceInputs.removeAll()
+      zoomTraceCommits.removeAll()
+      zoomTracePresents.removeAll()
+      zoomTraceRenders.removeAll()
+      zoomTraceDisplayed.removeAll()
+      zoomTraceLinkPolicy.removeAll()
+    }
+    return payload
+  }
+
   func debugZoomState() -> [String: Any] {
     let atlasPointSize = Double(fontAtlas.pointSize)
     let scale = Double(debugGestureZoomScale)
@@ -6726,6 +6977,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       "backend": backend.rendererStatus.effectiveRenderer,
       "fractional": backendSupportsFractionalLiveZoom,
       "gestureActive": zoomGestureBasePointSize != nil,
+      "zoomGliding": zoomSpring != nil,
+      "targetPresentationScale": zoomSpring?.targetScale ?? scale,
+      "displayLinkReason": displayLinkPolicyState().reason,
       "gridReflowCount": debugGridReflowCount,
       // Diagnostic for the "some glyphs wrong size" bug: the distinct font point
       // sizes drawn in the last frame (should be one terminal size, plus the
