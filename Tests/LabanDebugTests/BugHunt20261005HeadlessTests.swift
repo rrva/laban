@@ -158,6 +158,26 @@ final class BugHunt20261005HeadlessTests: XCTestCase {
     }
   }
 
+  // MARK: - #9 advanceFrames has no ceiling
+
+  func testBug9_advanceFramesRejectsCountAboveCeiling() throws {
+    let (runtime, artifacts) = try makeRuntime("bh9")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    // advanceTime rejects > 60_000 ms "so a typo cannot" wedge the run; the
+    // handoff proposes the same style of ceiling (10_000) for advanceFrames.
+    // Just above that keeps this test bounded on the buggy code.
+    let start = Date()
+    let response = runtime.applyAction(Data(#"{"action":"advanceFrames","count":10001}"#.utf8))
+    let elapsed = Date().timeIntervalSince(start)
+    print("bug9: advanceFrames(10001) status=\(response.status) elapsed=\(elapsed)s")
+    XCTExpectFailure("Bug #9: advanceFrames clamps only to >= 1 and renders every frame") {
+      XCTAssertEqual(
+        response.status, 400,
+        "an advanceFrames count above the ceiling must be rejected, not rendered "
+          + "(took \(elapsed)s holding the runtime lock)")
+    }
+  }
+
   // MARK: - Helpers
 
   private func makeRuntime(_ name: String) throws -> (HeadlessDebugRuntime, URL) {
