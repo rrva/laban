@@ -2105,7 +2105,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     let visible = screen.visibleFrame
     let size = NSSize(
-      width: min(window.frame.width, visible.width), height: min(window.frame.height, visible.height))
+      width: min(window.frame.width, visible.width),
+      height: min(window.frame.height, visible.height))
     window.setFrame(
       NSRect(origin: NSPoint(x: visible.minX, y: visible.maxY - size.height), size: size),
       display: true)
@@ -2216,8 +2217,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     debugPresentCadenceRefreshCount += 1
     EventLog.shared.log(
       "render.presentCadence.rendererRefresh",
-      ["renderer": activeRendererSelection.rawValue, "ratio": ratio,
-       "screen": window?.screen?.localizedName ?? ""])
+      [
+        "renderer": activeRendererSelection.rawValue, "ratio": ratio,
+        "screen": window?.screen?.localizedName ?? "",
+      ])
     beginPendingBackendSwap(to: activeRendererSelection)
   }
 
@@ -3305,7 +3308,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       preferred: Float(policy.preferredFramesPerSecond))
     link.isPaused = !policy.shouldRun
     if zoomTraceArmed,
-      zoomTraceLinkPolicy.last.map({ $0.shouldRun != policy.shouldRun || $0.reason != policy.reason })
+      zoomTraceLinkPolicy.last.map({
+        $0.shouldRun != policy.shouldRun || $0.reason != policy.reason
+      })
         ?? true
     {
       appendZoomTrace(
@@ -6836,9 +6841,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func handleZoomScroll(_ event: NSEvent) {
     if zoomTraceArmed {
       let source =
-        event.momentumPhase != [] ? "momentum"
-        : !event.hasPreciseScrollingDeltas ? "wheel"
-        : event.phase == [] ? "phaseless" : "precise"
+        event.momentumPhase != []
+        ? "momentum"
+        : !event.hasPreciseScrollingDeltas
+          ? "wheel"
+          : event.phase == [] ? "phaseless" : "precise"
       appendZoomTrace(
         &zoomTraceInputs,
         ZoomTraceInput(
