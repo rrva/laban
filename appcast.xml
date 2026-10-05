@@ -3,6 +3,34 @@
     <channel>
         <title>Laban</title>
         <item>
+            <title>0.8.5</title>
+            <pubDate>Mon, 05 Oct 2026 19:46:19 +0200</pubDate>
+            <sparkle:version>1791222224</sparkle:version>
+            <sparkle:shortVersionString>0.8.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[## Changed
+
+- **Smoother Cmd+scroll zoom.** Zooming with Cmd and the trackpad or mouse wheel now glides in even steps at every screen refresh instead of following each input event. The difference is largest on 60 Hz external displays, where trackpad zoom used to stall on some frames and jump on others.
+  - A notched mouse wheel glides each notch instead of jumping 7 % in one frame, and a fast spin no longer races to the size limit.
+  - A run of wheel notches resizes the terminal once, when you stop, instead of after every notch, which removes a short hitch per notch.
+- New app icon, with a larger prompt and keys so it stays legible at Dock and Finder sizes.
+
+## Fixed
+
+- Lifting and re-touching the trackpad in the middle of a Cmd+scroll zoom no longer snaps the text back to the size it started at for a frame.
+- After an external display is disconnected, Laban no longer stays stuck at that display's refresh rate on the built-in screen (for example 60 Hz on a 120 Hz MacBook Pro panel) until it is restarted.
+]]></description>
+            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.5/Laban-0.8.5.zip" length="21955237" type="application/octet-stream" sparkle:edSignature="2XKs94DEtmo0gSZTtVBDrb7+LFaamhY0Fkjo19ktENiBasIgHGw3ZqNvJ4fK+iYvqzRsEKhy9fFn3tCzGAHEBg=="/>
+            <sparkle:deltas>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.5/Laban1791222224-1791143888.delta" sparkle:deltaFrom="1791143888" length="3894146" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="NGKQ/JDXL8ZsTtl9XPCRy9nTlxri/xa94bUdeVcwhgwv1/yQu1KnM/4qEvA07LwKhMfd+fImTrBlOdXaQqXABQ=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.5/Laban1791222224-1791140982.delta" sparkle:deltaFrom="1791140982" length="3896462" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="TNskAIBb1aJXlC2rTE+EbarkBNr6YQhxxAOA8prrRnf4+v321Az+b+SY4xaEd5IYxgC+WLJJEtXguqdcZImBAA=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.5/Laban1791222224-1791107097.delta" sparkle:deltaFrom="1791107097" length="4333066" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="qG5uf912DdOD7JsueBZ5XPK1Vu5AhsAiwgF54mnnXWHxBkQQ+jDpwdL8SOjRX0eVKi16TDbmDKiFmBycOl+jCA=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.5/Laban1791222224-1790539201.delta" sparkle:deltaFrom="1790539201" length="6249442" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="BzLMfs53gNIY2JAISMGozCXekUrIEa2ZZ0KdUMZNRm3PjMqcHxa+xk8pCaUT8xEnX5zZnHnwFDXlmdvO/X3fCQ=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.5/Laban1791222224-1790250962.delta" sparkle:deltaFrom="1790250962" length="8138998" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="SJltpvEvGazH5ESypQBT7+Kro7R4x4Nxb4fU+nrao2MmyJul1tRzIVC1HQfvKuT1AJstkUu52WDAgLxyrmv8CQ=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>0.8.4</title>
             <pubDate>Sun, 04 Oct 2026 22:00:38 +0200</pubDate>
             <sparkle:version>1791143888</sparkle:version>
@@ -50,48 +78,6 @@
                 <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban1791140982-1791107097.delta" sparkle:deltaFrom="1791107097" length="2293222" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="n5PSUV4GEWCZmTlxYXzoPhp7QJLyVrgAE1qgN4BFOk4TPgdjXkBE1/gdLu1YP7wQVBFI+KgOZtsr8ETdZNQgBQ=="/>
                 <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban1791140982-1790539201.delta" sparkle:deltaFrom="1790539201" length="4363018" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="luN+KZ+9SKfN1o7cQoTFdciTCD87KJZLqbMwazNuAQnBNH1lUMZSYhg1DxnrBHZfj1RnyxG89lCA6jYRQKwmBA=="/>
                 <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban1791140982-1790250962.delta" sparkle:deltaFrom="1790250962" length="6269366" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="l+z0nfosaYnNQe7Qa2tU9CSSQVCuqOhyPPWEzu7Wd2QVMJ0O8lazoA4kQRMh7WslYnZrVJRgLuemVRauWfmVAg=="/>
-            </sparkle:deltas>
-        </item>
-        <item>
-            <title>0.8.2</title>
-            <pubDate>Sun, 04 Oct 2026 11:47:19 +0200</pubDate>
-            <sparkle:version>1791107097</sparkle:version>
-            <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[## New
-
-- **Split panes.** ⌘D splits right and ⌘⇧D splits down, nested in any combination. Drag a divider to resize, or double-click it to equalize. ⌘⌥Arrows move focus between panes, ⌘⌃Arrows nudge a divider, ⌘⌃= equalizes, and ⌘⇧Return zooms the focused pane. Layouts survive restarts.
-  - ⌘W now closes the focused pane (and the tab when it is the last one). ⌘⌥W always closes the tab.
-- **Paste screenshots into SSH sessions.** With an image on the clipboard, ⌘V in a pane running `ssh` uploads it to the same host and pastes the remote path, so Claude Code and Codex on the remote can see it. The first upload to each host asks for consent.
-- **Kitty clipboard protocol.** Programs that enable Kitty paste events (OSC 5522), such as `kitten clipboard`, can now read pasted images and text.
-- **Right-to-left text.** Arabic and Hebrew are shown in visual order, and Arabic letters join.
-- **Font ligatures** are on by default for programming fonts that have them.
-- OSC 52 copies from remote programs now show a confirmation toast.
-
-## Faster
-
-- Text rendering takes roughly half the GPU time it did, and much less with subpixel antialiasing. Steady-state frames no longer allocate.
-- Scrolling the sidebar is smooth.
-
-## Fixed
-
-- Restarting Laban no longer replays old OSC 52 copies over your clipboard or re-posts old notifications.
-- The character under a block cursor stays visible, and the cursor covers both columns of a wide character.
-- Box-drawing lines, braille and sextants join seamlessly between cells.
-- Text weight matches macOS rendering in both light and dark themes.
-- Fonts without bold or italic faces get synthesized bold and italic.
-- Underlines sit at the font's metrics, skip descenders, and keep dashed and dotted patterns continuous across color changes.
-- Combining marks and Indic clusters draw every glyph, and zero-width characters no longer shift the rest of the line.
-- Emoji and CJK keep drawing in long sessions instead of disappearing once the glyph atlas fills, and memory for glyph outlines is bounded.
-- Oversized fallback glyphs stay inside their cells, and single-width emoji no longer cover the next character.
-- `.otf` fonts draw curves accurately at large sizes.
-- Panes below a split no longer lose two rows to empty space under the titlebar.
-]]></description>
-            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.2/Laban-0.8.2.zip" length="21557813" type="application/octet-stream" sparkle:edSignature="gvCdf0WwQw2zXoJQe+afQMKloJShMPibFcZV4EKBntJVCwD7iylCxxn1HZoe+9qZu3uesHJFqiblV1QkUKKrDg=="/>
-            <sparkle:deltas>
-                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.2/Laban1791107097-1790539201.delta" sparkle:deltaFrom="1790539201" length="4152670" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="uRcsbrskXlREHnmUpHsAx69QiZHT9IccSgDs9NlkMNnW86F81Yzq4xwDzR/PKYqt5COZasmvfv+pTN+LBS0xAg=="/>
-                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.2/Laban1791107097-1790250962.delta" sparkle:deltaFrom="1790250962" length="6065530" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="E6+zDKn4b+O3YgB3mzAKi4DwC1QPmgXSpfJiujyLIqONKF7xCh2ln4boyjS5EFXqa7V8uXHkr4hymtOKJ0cYAQ=="/>
             </sparkle:deltas>
         </item>
     </channel>
