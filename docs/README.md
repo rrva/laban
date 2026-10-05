@@ -5,6 +5,8 @@ durable detail here.
 
 ## Product
 
+- `features.md` - every user-visible feature and shortcut.
+- `building.md` - build from source, headless runs, and the debug contract.
 - `product/mvp.md` - first usable product boundary.
 - `product/spec.md` - long-term terminal product behavior.
 
