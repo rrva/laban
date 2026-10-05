@@ -1,0 +1,21 @@
+Sources/LabanApp/TerminalBitmapView.swift
+  s_df4a39e30a53c5::t_48eb38d45f98ac 2079-2110
+Sources/LabanApp/ScrollDebugServer.swift
+  s_df4a39e30a53c5::t_48eb38d45f98ac 361-371,652-655
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e068a62b2f60b6ed7eea2c8cf61df89f658c350e",
+  "prompts": {},
+  "sessions": {
+    "s_df4a39e30a53c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a749dfd-65ad-4299-a920-03824fa7296b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
