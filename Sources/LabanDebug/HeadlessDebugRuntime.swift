@@ -685,9 +685,15 @@ public final class HeadlessDebugRuntime {
     guard let client = terminalSessionClient else { return }
     if terminalClientSessionInfoById[tab.focusedSessionId] != nil { return }
     let remoteSessionId = terminalClientLogicalSessionId(for: tab)
-    if let existing = try? client.attachSession(logicalSessionId: remoteSessionId),
-      existing.lifecycleState == .running
-    {
+    // Parity with AppSessionCoordinator: only sessionNotFound may fall through
+    // to create; another lookup failure could hide a live session.
+    let existing: LabandSessionInfo?
+    do {
+      existing = try client.attachSession(logicalSessionId: remoteSessionId)
+    } catch TerminalSessionClientError.sessionNotFound {
+      existing = nil
+    }
+    if let existing, existing.lifecycleState == .running {
       terminalClientSessionInfoById[tab.focusedSessionId] = existing
       pendingAgentRestoreCandidatesBySession.removeValue(forKey: tab.focusedSessionId)
       attachSnapshotRingIfAvailable(client: client, localSessionId: tab.focusedSessionId)
