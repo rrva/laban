@@ -386,6 +386,11 @@ final class ScrollDebugServer {
       return onMain { tv, _, _ in
         Response.json(tv.debugZoomState())
       }
+    case ("GET", "/zoom/trace"):
+      let reset = query["reset"] == "1"
+      return onMain { tv, _, _ in
+        Response.json(tv.debugZoomTrace(reset: reset))
+      }
     case ("POST", "/zoom/sweep"):
       // Drive a full synthetic gesture (began → N changed → ended) from `from`
       // to `to` pt and report the worst visual-vs-target overshoot seen at any
@@ -619,6 +624,10 @@ final class ScrollDebugServer {
                                       presentationScale, cellWidth/Height
     GET  /zoom/state                  live zoom state: visual/atlas point size,
                                       presentationScale, cell metrics, gestureActive
+    GET  /zoom/trace[?reset=1]        zoom inputs, commits (font rebuild ms), and the
+                                      on-screen font size at every present-link vsync
+                                      (Slug), plus per-burst evenness (stillVsyncs,
+                                      p50/max step %); first call arms recording
     POST /zoom/sweep?from=A&to=B&steps=N  drive a whole gesture A→B pt; returns
                                       maxOvershootPt (>0 = glyphs bigger than the
                                       cell), restedPresentationScale, final size

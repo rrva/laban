@@ -778,6 +778,19 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   /// already presented" — a post-resize republish always carries a version
   /// one greater than anything seen before, so it is never wrongly skipped.
   private var lastPresentedFrameVersion: UInt64 = 0
+  /// Visual point size (atlas size x gesture zoom) the latest published frame
+  /// was encoded at. Guarded by `presentTargetLock`, like the target itself.
+  private var publishedVisualPointSize: Double?
+  /// Visual point size of the frame currently on screen. Present thread only,
+  /// like `lastPresentedFrameVersion`.
+  private var presentedVisualPointSize: Double?
+  /// Opt-in zoom present trace (`setZoomPresentTraceEnabled`): one sample per
+  /// present-link callback. Written on the present thread, drained on main;
+  /// both fields guarded by `zoomPresentTraceLock`.
+  private let zoomPresentTraceLock = NSLock()
+  private var zoomPresentTraceEnabled = false
+  private var zoomPresentTrace: [ZoomPresentSample] = []
+  private static let zoomPresentTraceCapacity = 8192
   private var presentQueue: MTLCommandQueue?
   /// Serializes render frames so only one is in flight on `queue` at a time.
   /// `MetalRenderer` and `VectorGlyphRenderer` get the same contract through
@@ -2441,11 +2454,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     let completion = onFrameCompleted
     if #available(macOS 14.0, *), presentDisplayLink != nil {
+      let visualPointSize = Double(fontAtlas.pointSize) * Double(gestureZoom)
       // `frameInFlight` is non-Sendable but thread-safe; see its declaration.
       commandBuffer.addCompletedHandler { [weak self, frameInFlight] _ in
         _ = retainedBuffers
         if self?.presentsToLayer == true {
-          self?.publishLatestTarget(target)
+          self?.publishLatestTarget(target, visualPointSize: visualPointSize)
         }
         completion?()
         frameInFlight.signal()
@@ -4306,6 +4320,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     presentTargetLock.lock()
     let target = latestPresentedTarget
     let version = publishedFrameVersion
+    let visualPointSize = publishedVisualPointSize
     presentTargetLock.unlock()
     guard let target,
       target.width == drawable.texture.width,
@@ -4317,6 +4332,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       // (rather than a span, since nothing is encoded) so traces can tally
       // skips directly instead of inferring them from repeated `v=` values.
       signposter.emitEvent("slug.presentSkip", "v=\(version, privacy: .public)")
+      recordZoomPresentSample(visualPointSize: presentedVisualPointSize, fresh: false)
       return false
     }
     guard let presentQueue,
@@ -4334,12 +4350,43 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
     commandBuffer.present(drawable)
     commandBuffer.commit()
+    presentedVisualPointSize = visualPointSize
+    recordZoomPresentSample(visualPointSize: visualPointSize, fresh: true)
     return true
   }
 
-  private func publishLatestTarget(_ target: MTLTexture) {
+  public func setZoomPresentTraceEnabled(_ enabled: Bool) {
+    zoomPresentTraceLock.lock()
+    zoomPresentTraceEnabled = enabled
+    if !enabled { zoomPresentTrace.removeAll() }
+    zoomPresentTraceLock.unlock()
+  }
+
+  public func drainZoomPresentTrace() -> [ZoomPresentSample] {
+    zoomPresentTraceLock.lock()
+    defer { zoomPresentTraceLock.unlock() }
+    let samples = zoomPresentTrace
+    zoomPresentTrace.removeAll(keepingCapacity: true)
+    return samples
+  }
+
+  /// Present thread. One lock and a branch per vsync while the trace is off.
+  private func recordZoomPresentSample(visualPointSize: Double?, fresh: Bool) {
+    guard let visualPointSize else { return }
+    zoomPresentTraceLock.lock()
+    defer { zoomPresentTraceLock.unlock() }
+    guard zoomPresentTraceEnabled else { return }
+    if zoomPresentTrace.count >= Self.zoomPresentTraceCapacity {
+      zoomPresentTrace.removeFirst(zoomPresentTrace.count - Self.zoomPresentTraceCapacity + 1)
+    }
+    zoomPresentTrace.append(
+      ZoomPresentSample(time: CACurrentMediaTime(), visualPointSize: visualPointSize, fresh: fresh))
+  }
+
+  private func publishLatestTarget(_ target: MTLTexture, visualPointSize: Double) {
     presentTargetLock.lock()
     latestPresentedTarget = target
+    publishedVisualPointSize = visualPointSize
     publishedFrameVersion &+= 1
     let version = publishedFrameVersion
     presentTargetLock.unlock()

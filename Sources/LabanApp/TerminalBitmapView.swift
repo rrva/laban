@@ -490,6 +490,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var zoomGestureCommitSettle: DispatchWorkItem?
   private static let zoomGestureCommitQuietSeconds: TimeInterval = 0.1
 
+  /// `/zoom/trace` recording, off until the first `debugZoomTrace` call arms
+  /// it. Inputs and commits are recorded here; per-vsync presents come from
+  /// the renderer (`GestureZoomRenderable.drainZoomPresentTrace`).
+  private var zoomTraceArmed = false
+  private var zoomTraceInputs: [ZoomTraceInput] = []
+  private var zoomTraceCommits: [ZoomTraceCommit] = []
+  private var zoomTracePresents: [ZoomPresentSample] = []
+  private static let zoomTraceCapacity = 16384
+
   /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
   /// `applyFontSize`. The reflow-throttling gate asserts this advances once per
   /// distinct `(cols, rows)` pair a continuous gesture sweeps, not once per
@@ -6509,6 +6518,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return
     }
     debugZoomGestureBakeCount += 1
+    let commitStart = ProcessInfo.processInfo.systemUptime
+    defer {
+      if zoomTraceArmed {
+        let end = ProcessInfo.processInfo.systemUptime
+        appendZoomTrace(
+          &zoomTraceCommits,
+          ZoomTraceCommit(
+            time: commitStart, durationMs: (end - commitStart) * 1000,
+            pointSize: Double(fontAtlas.pointSize)))
+      }
+    }
     // Clear the projection zoom WITHOUT waking a render — `applyFontSize` below
     // produces the single commit frame, so the reset and the atlas swap are
     // atomic (no intermediate small-text frame).
@@ -6552,6 +6572,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// up zooms in; the gesture envelope mirrors the trackpad scroll phases so it
   /// reuses the same accumulate/commit machinery as `magnify(with:)`.
   private func handleZoomScroll(_ event: NSEvent) {
+    if zoomTraceArmed {
+      let source =
+        event.momentumPhase != [] ? "momentum"
+        : !event.hasPreciseScrollingDeltas ? "wheel"
+        : event.phase == [] ? "phaseless" : "precise"
+      appendZoomTrace(
+        &zoomTraceInputs,
+        ZoomTraceInput(
+          time: event.timestamp, source: source, deltaY: Double(event.deltaY),
+          scrollingDeltaY: Double(event.scrollingDeltaY), phase: event.phase.rawValue,
+          momentumPhase: event.momentumPhase.rawValue))
+    }
     // Ignore inertial momentum so the zoom stops the instant the fingers lift.
     guard event.momentumPhase == [] else { return }
 
@@ -6709,6 +6741,50 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// `cellWidth`/`cellHeight` are the integer grid the renderer lays glyphs into;
   /// a glyph baked for `visualPointSize` that overflows the cell baked for
   /// `atlasPointSize` is exactly the overflow symptom.
+  private func appendZoomTrace<T>(_ ring: inout [T], _ value: T) {
+    if ring.count >= Self.zoomTraceCapacity {
+      ring.removeFirst(ring.count - Self.zoomTraceCapacity + 1)
+    }
+    ring.append(value)
+  }
+
+  /// `/zoom/trace`: arms recording on first call (and re-arms a renderer that
+  /// was swapped since), then returns everything recorded since the last
+  /// reset plus a per-burst evenness summary. Presents come only from a
+  /// renderer with a present link (Slug); otherwise `presents` stays empty.
+  func debugZoomTrace(reset: Bool) -> [String: Any] {
+    zoomTraceArmed = true
+    fractionalZoomBackend?.setZoomPresentTraceEnabled(true)
+    for sample in fractionalZoomBackend?.drainZoomPresentTrace() ?? [] {
+      appendZoomTrace(&zoomTracePresents, sample)
+    }
+    let summary = ZoomTraceSummary(
+      inputs: zoomTraceInputs, presents: zoomTracePresents, commits: zoomTraceCommits)
+    let payload: [String: Any] = [
+      "now": ProcessInfo.processInfo.systemUptime,
+      "bursts": summary.json,
+      "inputs": zoomTraceInputs.map {
+        [
+          "t": $0.time, "source": $0.source, "deltaY": $0.deltaY,
+          "scrollingDeltaY": $0.scrollingDeltaY, "phase": $0.phase,
+          "momentumPhase": $0.momentumPhase,
+        ] as [String: Any]
+      },
+      "commits": zoomTraceCommits.map {
+        ["t": $0.time, "durationMs": $0.durationMs, "pointSize": $0.pointSize]
+      },
+      "presents": zoomTracePresents.map {
+        ["t": $0.time, "size": $0.visualPointSize, "fresh": $0.fresh] as [String: Any]
+      },
+    ]
+    if reset {
+      zoomTraceInputs.removeAll()
+      zoomTraceCommits.removeAll()
+      zoomTracePresents.removeAll()
+    }
+    return payload
+  }
+
   func debugZoomState() -> [String: Any] {
     let atlasPointSize = Double(fontAtlas.pointSize)
     let scale = Double(debugGestureZoomScale)

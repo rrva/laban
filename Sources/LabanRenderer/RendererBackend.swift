@@ -110,10 +110,33 @@ public protocol GestureZoomRenderable: AnyObject {
   var supportsFractionalLiveZoom: Bool { get }
   func setGestureZoom(_ factor: CGFloat, anchor: CGPoint)
   var zoomDiagnostics: RendererZoomDiagnostics { get }
+  /// Arm or disarm the zoom present trace (`/zoom/trace`). Disarming clears it.
+  func setZoomPresentTraceEnabled(_ enabled: Bool)
+  /// Samples recorded since the last drain, oldest first.
+  func drainZoomPresentTrace() -> [ZoomPresentSample]
 }
 
 extension GestureZoomRenderable {
   public var supportsFractionalLiveZoom: Bool { true }
+  public func setZoomPresentTraceEnabled(_ enabled: Bool) {}
+  public func drainZoomPresentTrace() -> [ZoomPresentSample] { [] }
+}
+
+/// One present-link vsync callback while a zoom present trace is armed: when it
+/// fired (`CACurrentMediaTime`, the same clock as `NSEvent.timestamp`), the
+/// terminal font size on screen after it (atlas point size x gesture zoom), and
+/// whether it put up a new frame or re-showed the previous one. A run of
+/// callbacks with an unchanged size during a zoom is what judder looks like.
+public struct ZoomPresentSample: Equatable, Sendable {
+  public var time: Double
+  public var visualPointSize: Double
+  public var fresh: Bool
+
+  public init(time: Double, visualPointSize: Double, fresh: Bool) {
+    self.time = time
+    self.visualPointSize = visualPointSize
+    self.fresh = fresh
+  }
 }
 
 /// Optional capability for GPU backends whose CAMetalLayer is presented by an
