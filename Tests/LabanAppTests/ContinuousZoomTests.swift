@@ -205,7 +205,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -320,7 +320,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -376,7 +376,7 @@ final class ContinuousZoomTests: XCTestCase {
         defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
       }
     }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -420,7 +420,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -464,7 +464,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -507,7 +507,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
+    activateRenderer(.vectorGlyph, on: harness.view)
     guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
       throw XCTSkip("vector backend not active (no GPU in this environment)")
     }
@@ -567,7 +567,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
 
-    harness.view.applyRendererSelection(.slugGlyph)
+    activateRenderer(.slugGlyph, on: harness.view)
     let initial = harness.view.debugZoomState()
     guard initial["backend"] as? String == RendererSelection.slugGlyph.rawValue,
       initial["fractional"] as? Bool == true
@@ -625,7 +625,7 @@ final class ContinuousZoomTests: XCTestCase {
     }
     defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
 
-    harness.view.applyRendererSelection(.slugGlyph)
+    activateRenderer(.slugGlyph, on: harness.view)
     harness.write("Slug zoom debug glyphs 0123456789 abcdefghijklmnopqrstuvwxyz\r\n")
     let rendered = harness.view.debugZoomState()
     guard rendered["backend"] as? String == RendererSelection.slugGlyph.rawValue,
@@ -691,6 +691,18 @@ final class ContinuousZoomTests: XCTestCase {
       } else {
         unsetenv("LABAN_RENDERER")
       }
+    }
+  }
+
+  /// A renderer switch installs asynchronously, after the new backend's first
+  /// GPU frame completes and hops back to main. Checking right after
+  /// `applyRendererSelection` still sees the old backend, which made every GPU
+  /// test here skip as if no GPU were present.
+  private func activateRenderer(_ selection: RendererSelection, on view: TerminalBitmapView) {
+    view.applyRendererSelection(selection)
+    let deadline = Date().addingTimeInterval(2)
+    while view.debugZoomState()["backend"] as? String != selection.rawValue, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.01))
     }
   }
 
