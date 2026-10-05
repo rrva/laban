@@ -504,6 +504,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var zoomTraceInputs: [ZoomTraceInput] = []
   private var zoomTraceCommits: [ZoomTraceCommit] = []
   private var zoomTracePresents: [ZoomPresentSample] = []
+  private var zoomTraceRenders: [ZoomRenderSample] = []
+  /// Display-link run decisions (`displayLinkPolicyState`) as they change.
+  private var zoomTraceLinkPolicy: [(time: Double, shouldRun: Bool, reason: String)] = []
   private static let zoomTraceCapacity = 16384
 
   /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
@@ -3153,6 +3156,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       maximum: Float(TerminalIdlePolicy.activeDisplayLinkFramesPerSecond),
       preferred: Float(policy.preferredFramesPerSecond))
     link.isPaused = !policy.shouldRun
+    if zoomTraceArmed,
+      zoomTraceLinkPolicy.last.map({ $0.shouldRun != policy.shouldRun || $0.reason != policy.reason })
+        ?? true
+    {
+      appendZoomTrace(
+        &zoomTraceLinkPolicy,
+        (ProcessInfo.processInfo.systemUptime, policy.shouldRun, policy.reason))
+    }
     setSafetyNetArmed(!policy.shouldRun)
     // Renderer-owned CAMetalDisplayLink present threads ride the SAME
     // animate-or-park policy as the main tick, so they spin only while the
@@ -6870,6 +6881,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     for sample in fractionalZoomBackend?.drainZoomPresentTrace() ?? [] {
       appendZoomTrace(&zoomTracePresents, sample)
     }
+    for sample in fractionalZoomBackend?.drainZoomRenderTrace() ?? [] {
+      appendZoomTrace(&zoomTraceRenders, sample)
+    }
     let summary = ZoomTraceSummary(
       inputs: zoomTraceInputs, presents: zoomTracePresents, commits: zoomTraceCommits)
     let payload: [String: Any] = [
@@ -6888,11 +6902,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       "presents": zoomTracePresents.map {
         ["t": $0.time, "size": $0.visualPointSize, "fresh": $0.fresh] as [String: Any]
       },
+      "renders": zoomTraceRenders.map {
+        ["t": $0.time, "gpuMs": $0.gpuMs, "size": $0.visualPointSize]
+      },
+      "linkPolicy": zoomTraceLinkPolicy.map {
+        ["t": $0.time, "shouldRun": $0.shouldRun, "reason": $0.reason] as [String: Any]
+      },
     ]
     if reset {
       zoomTraceInputs.removeAll()
       zoomTraceCommits.removeAll()
       zoomTracePresents.removeAll()
+      zoomTraceRenders.removeAll()
+      zoomTraceLinkPolicy.removeAll()
     }
     return payload
   }

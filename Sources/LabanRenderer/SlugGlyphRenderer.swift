@@ -790,6 +790,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private let zoomPresentTraceLock = NSLock()
   private var zoomPresentTraceEnabled = false
   private var zoomPresentTrace: [ZoomPresentSample] = []
+  private var zoomRenderTrace: [ZoomRenderSample] = []
   private static let zoomPresentTraceCapacity = 8192
   private var presentQueue: MTLCommandQueue?
   /// Serializes render frames so only one is in flight on `queue` at a time.
@@ -2456,11 +2457,14 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     if #available(macOS 14.0, *), presentDisplayLink != nil {
       let visualPointSize = Double(fontAtlas.pointSize) * Double(gestureZoom)
       // `frameInFlight` is non-Sendable but thread-safe; see its declaration.
-      commandBuffer.addCompletedHandler { [weak self, frameInFlight] _ in
+      commandBuffer.addCompletedHandler { [weak self, frameInFlight] buffer in
         _ = retainedBuffers
         if self?.presentsToLayer == true {
           self?.publishLatestTarget(target, visualPointSize: visualPointSize)
         }
+        self?.recordZoomRenderSample(
+          gpuMs: (buffer.gpuEndTime - buffer.gpuStartTime) * 1000,
+          visualPointSize: visualPointSize)
         completion?()
         frameInFlight.signal()
       }
@@ -4358,7 +4362,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   public func setZoomPresentTraceEnabled(_ enabled: Bool) {
     zoomPresentTraceLock.lock()
     zoomPresentTraceEnabled = enabled
-    if !enabled { zoomPresentTrace.removeAll() }
+    if !enabled {
+      zoomPresentTrace.removeAll()
+      zoomRenderTrace.removeAll()
+    }
     zoomPresentTraceLock.unlock()
   }
 
@@ -4368,6 +4375,26 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let samples = zoomPresentTrace
     zoomPresentTrace.removeAll(keepingCapacity: true)
     return samples
+  }
+
+  public func drainZoomRenderTrace() -> [ZoomRenderSample] {
+    zoomPresentTraceLock.lock()
+    defer { zoomPresentTraceLock.unlock() }
+    let samples = zoomRenderTrace
+    zoomRenderTrace.removeAll(keepingCapacity: true)
+    return samples
+  }
+
+  /// GPU completion handler thread.
+  private func recordZoomRenderSample(gpuMs: Double, visualPointSize: Double) {
+    zoomPresentTraceLock.lock()
+    defer { zoomPresentTraceLock.unlock() }
+    guard zoomPresentTraceEnabled else { return }
+    if zoomRenderTrace.count >= Self.zoomPresentTraceCapacity {
+      zoomRenderTrace.removeFirst(zoomRenderTrace.count - Self.zoomPresentTraceCapacity + 1)
+    }
+    zoomRenderTrace.append(
+      ZoomRenderSample(time: CACurrentMediaTime(), gpuMs: gpuMs, visualPointSize: visualPointSize))
   }
 
   /// Present thread. One lock and a branch per vsync while the trace is off.

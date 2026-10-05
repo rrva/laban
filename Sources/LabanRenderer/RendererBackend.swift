@@ -114,12 +114,30 @@ public protocol GestureZoomRenderable: AnyObject {
   func setZoomPresentTraceEnabled(_ enabled: Bool)
   /// Samples recorded since the last drain, oldest first.
   func drainZoomPresentTrace() -> [ZoomPresentSample]
+  /// Rendered frames recorded since the last drain, oldest first.
+  func drainZoomRenderTrace() -> [ZoomRenderSample]
 }
 
 extension GestureZoomRenderable {
   public var supportsFractionalLiveZoom: Bool { true }
   public func setZoomPresentTraceEnabled(_ enabled: Bool) {}
   public func drainZoomPresentTrace() -> [ZoomPresentSample] { [] }
+  public func drainZoomRenderTrace() -> [ZoomRenderSample] { [] }
+}
+
+/// One rendered frame while a zoom present trace is armed: when its GPU work
+/// completed, how long the GPU spent on it, and the size it was drawn at.
+/// Frames that take longer than a vsync starve the present link of drawables.
+public struct ZoomRenderSample: Equatable, Sendable {
+  public var time: Double
+  public var gpuMs: Double
+  public var visualPointSize: Double
+
+  public init(time: Double, gpuMs: Double, visualPointSize: Double) {
+    self.time = time
+    self.gpuMs = gpuMs
+    self.visualPointSize = visualPointSize
+  }
 }
 
 /// One present-link vsync callback while a zoom present trace is armed: when it
