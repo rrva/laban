@@ -505,6 +505,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var zoomTraceCommits: [ZoomTraceCommit] = []
   private var zoomTracePresents: [ZoomPresentSample] = []
   private var zoomTraceRenders: [ZoomRenderSample] = []
+  private var zoomTraceDisplayed: [ZoomDisplayedSample] = []
   /// Display-link run decisions (`displayLinkPolicyState`) as they change.
   private var zoomTraceLinkPolicy: [(time: Double, shouldRun: Bool, reason: String)] = []
   private static let zoomTraceCapacity = 16384
@@ -2075,6 +2076,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// display notification can arrive after the pending renderer created its
   /// CAMetalDisplayLink but before `installPendingBackendSwap`; rebuilding only
   /// `backend` would later install the pending renderer with that stale link.
+  /// `/config/drawable-count`: resize the Slug layer's drawable pool, then
+  /// rebuild the present link so it binds to the resized pool. Not persisted.
+  func debugSetMaximumDrawableCount(_ count: Int) -> [String: Any] {
+    guard let slug = backend as? SlugGlyphRenderer else {
+      return ["ok": false, "error": "slug renderer not active"]
+    }
+    slug.debugSetMaximumDrawableCount(count)
+    rebuildPresentLinksAfterDisplayChange()
+    return ["ok": true, "count": slug.layer.maximumDrawableCount]
+  }
+
   /// `/config/present-latency`: rebuild the present links with `frames` of
   /// Core Animation lead, for A/B pacing runs. Not persisted.
   func debugSetPresentLinkFrameLatency(_ frames: Int) -> [String: Any] {
@@ -6898,6 +6910,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     for sample in fractionalZoomBackend?.drainZoomRenderTrace() ?? [] {
       appendZoomTrace(&zoomTraceRenders, sample)
     }
+    for sample in fractionalZoomBackend?.drainZoomDisplayedTrace() ?? [] {
+      appendZoomTrace(&zoomTraceDisplayed, sample)
+    }
     let summary = ZoomTraceSummary(
       inputs: zoomTraceInputs, presents: zoomTracePresents, commits: zoomTraceCommits)
     let payload: [String: Any] = [
@@ -6919,6 +6934,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       "renders": zoomTraceRenders.map {
         ["t": $0.time, "gpuMs": $0.gpuMs, "size": $0.visualPointSize]
       },
+      "displayed": zoomTraceDisplayed.map {
+        ["callbackT": $0.callbackTime, "presentedT": $0.presentedTime]
+      },
       "linkPolicy": zoomTraceLinkPolicy.map {
         ["t": $0.time, "shouldRun": $0.shouldRun, "reason": $0.reason] as [String: Any]
       },
@@ -6928,6 +6946,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       zoomTraceCommits.removeAll()
       zoomTracePresents.removeAll()
       zoomTraceRenders.removeAll()
+      zoomTraceDisplayed.removeAll()
       zoomTraceLinkPolicy.removeAll()
     }
     return payload

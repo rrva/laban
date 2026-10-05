@@ -791,6 +791,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var zoomPresentTraceEnabled = false
   private var zoomPresentTrace: [ZoomPresentSample] = []
   private var zoomRenderTrace: [ZoomRenderSample] = []
+  private var zoomDisplayedTrace: [ZoomDisplayedSample] = []
   private static let zoomPresentTraceCapacity = 8192
   private var presentQueue: MTLCommandQueue?
   /// Serializes render frames so only one is in flight on `queue` at a time.
@@ -1303,6 +1304,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       drawable.texture.height == target.height
     else { return }
     encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
+    if zoomPresentTraceArmed {
+      let callbackTime = CACurrentMediaTime()
+      drawable.addPresentedHandler { [weak self] presented in
+        self?.recordZoomDisplayedSample(
+          callbackTime: callbackTime, presentedTime: presented.presentedTime)
+      }
+    }
     commandBuffer.present(drawable)
     commandBuffer.commit()
     fallbackPresentedCount += 1
@@ -4352,6 +4360,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       "slug.present", "v=\(version, privacy: .public)")
     defer { signposter.endInterval("slug.present", spanState) }
     encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
+    if zoomPresentTraceArmed {
+      let callbackTime = CACurrentMediaTime()
+      drawable.addPresentedHandler { [weak self] presented in
+        self?.recordZoomDisplayedSample(
+          callbackTime: callbackTime, presentedTime: presented.presentedTime)
+      }
+    }
     commandBuffer.present(drawable)
     commandBuffer.commit()
     presentedVisualPointSize = visualPointSize
@@ -4365,6 +4380,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     if !enabled {
       zoomPresentTrace.removeAll()
       zoomRenderTrace.removeAll()
+      zoomDisplayedTrace.removeAll()
     }
     zoomPresentTraceLock.unlock()
   }
@@ -4383,6 +4399,37 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let samples = zoomRenderTrace
     zoomRenderTrace.removeAll(keepingCapacity: true)
     return samples
+  }
+
+  public func drainZoomDisplayedTrace() -> [ZoomDisplayedSample] {
+    zoomPresentTraceLock.lock()
+    defer { zoomPresentTraceLock.unlock() }
+    let samples = zoomDisplayedTrace
+    zoomDisplayedTrace.removeAll(keepingCapacity: true)
+    return samples
+  }
+
+  private var zoomPresentTraceArmed: Bool {
+    zoomPresentTraceLock.lock()
+    defer { zoomPresentTraceLock.unlock() }
+    return zoomPresentTraceEnabled
+  }
+
+  /// Drawable presented-handler thread.
+  private func recordZoomDisplayedSample(callbackTime: Double, presentedTime: Double) {
+    zoomPresentTraceLock.lock()
+    defer { zoomPresentTraceLock.unlock() }
+    guard zoomPresentTraceEnabled else { return }
+    if zoomDisplayedTrace.count >= Self.zoomPresentTraceCapacity {
+      zoomDisplayedTrace.removeFirst(zoomDisplayedTrace.count - Self.zoomPresentTraceCapacity + 1)
+    }
+    zoomDisplayedTrace.append(
+      ZoomDisplayedSample(callbackTime: callbackTime, presentedTime: presentedTime))
+  }
+
+  /// Debug A/B (`/config/drawable-count`): resize the layer's drawable pool.
+  public func debugSetMaximumDrawableCount(_ count: Int) {
+    layer.maximumDrawableCount = count
   }
 
   /// GPU completion handler thread.

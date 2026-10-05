@@ -116,6 +116,8 @@ public protocol GestureZoomRenderable: AnyObject {
   func drainZoomPresentTrace() -> [ZoomPresentSample]
   /// Rendered frames recorded since the last drain, oldest first.
   func drainZoomRenderTrace() -> [ZoomRenderSample]
+  /// On-glass times of fresh presents recorded since the last drain.
+  func drainZoomDisplayedTrace() -> [ZoomDisplayedSample]
 }
 
 extension GestureZoomRenderable {
@@ -123,6 +125,19 @@ extension GestureZoomRenderable {
   public func setZoomPresentTraceEnabled(_ enabled: Bool) {}
   public func drainZoomPresentTrace() -> [ZoomPresentSample] { [] }
   public func drainZoomRenderTrace() -> [ZoomRenderSample] { [] }
+  public func drainZoomDisplayedTrace() -> [ZoomDisplayedSample] { [] }
+}
+
+/// A fresh present and when Metal says its drawable reached the screen
+/// (`MTLDrawable.presentedTime`, 0 when the compositor dropped it).
+public struct ZoomDisplayedSample: Equatable, Sendable {
+  public var callbackTime: Double
+  public var presentedTime: Double
+
+  public init(callbackTime: Double, presentedTime: Double) {
+    self.callbackTime = callbackTime
+    self.presentedTime = presentedTime
+  }
 }
 
 /// One rendered frame while a zoom present trace is armed: when its GPU work

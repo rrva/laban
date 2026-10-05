@@ -358,6 +358,13 @@ final class ScrollDebugServer {
       return onMain { tv, _, _ in
         Response.json(tv.debugSetPresentLinkFrameLatency(frames))
       }
+    case ("POST", "/config/drawable-count"):
+      guard let count = Int(query["count"] ?? ""), (2...3).contains(count) else {
+        return Response.json(["error": "count must be 2 or 3"], status: 400)
+      }
+      return onMain { tv, _, _ in
+        Response.json(tv.debugSetMaximumDrawableCount(count))
+      }
     case ("GET", "/config/present-latency"):
       return Response.json(["frames": PresentLinkFrameLatency.current])
     case ("POST", "/config/smooth-scroll"):
@@ -624,6 +631,8 @@ final class ScrollDebugServer {
     POST /config/present-latency?frames=N  rebuild the Slug/Vector present link with N
                                       frames of Core Animation lead (1-3, default 2);
                                       GET reads it. Not persisted
+    POST /config/drawable-count?count=N  Slug layer drawable pool size (2 or 3,
+                                      default 3); rebuilds the present link
     POST /config/tab?index=N          select tab N (0-based); use a normal-buffer
                                       shell tab so scroll bursts hit Laban scrollback
                                       (not a fullscreen alt-screen TUI)
