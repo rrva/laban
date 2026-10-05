@@ -1,0 +1,38 @@
+Sources/LabanApp/ZoomPresentationSpring.swift
+  s_df4a39e30a53c5::t_e4bddb25fa132a 1-14,20-57
+  s_df4a39e30a53c5::t_033a4b7599c004 15-19
+Tests/LabanAppTests/ZoomPresentationSpringTests.swift
+  s_df4a39e30a53c5::t_8f4be52d73d99c 1-77
+Tests/LabanAppTests/ContinuousZoomTests.swift
+  s_df4a39e30a53c5::t_2e89dbbdd8bbe0 229-273,276-277
+  s_df4a39e30a53c5::t_033a4b7599c004 274-275
+Sources/LabanApp/TerminalBitmapView.swift
+  s_df4a39e30a53c5::t_b5f20a2f783bf6 6891-6892
+  s_df4a39e30a53c5::t_b66c342796879c 6597-6599
+  s_df4a39e30a53c5::t_8d4830781233e2 6492
+  s_df4a39e30a53c5::t_3f0431586abe08 3751
+  s_df4a39e30a53c5::t_0eb8ef0a9315c3 1532-1534,1538-1541,1544,1549
+  s_df4a39e30a53c5::t_7af2ea3e66edb8 6529-6545
+  s_df4a39e30a53c5::t_63b31bfde5cc50 1529,1531,1535-1537,1550-1571
+  s_df4a39e30a53c5::t_d24cf129828212 6354-6370
+  s_df4a39e30a53c5::t_cbd01dba08de7c 6698,6700,6714
+  s_df4a39e30a53c5::t_4563bb69065b1b 3260
+  s_df4a39e30a53c5::t_31f8e0714f811e 493-497
+  s_df4a39e30a53c5::t_86ece144fbce1d 6462-6464
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f430a9db7c48f2aaa31a314ed769249804304aca",
+  "prompts": {},
+  "sessions": {
+    "s_df4a39e30a53c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a749dfd-65ad-4299-a920-03824fa7296b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
