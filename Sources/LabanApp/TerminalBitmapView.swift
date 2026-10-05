@@ -3215,7 +3215,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // scroll animation.
     let preciseScrollStreamActive =
       windowVisibleToUser && preciseScrollStreamActiveUntil > now
-    let scrollLinkActive = scrollAnimating || sidebarScrollAnimating || preciseScrollStreamActive
+    // A zoom gesture is motion too. Parked between zoom events, the present
+    // link needs a wake per event and misses vsyncs: on a 60 Hz panel 38 % of
+    // trackpad-zoom frames stayed up for 33 ms or longer.
+    let zoomActive = windowVisibleToUser && zoomGestureBasePointSize != nil
+    let scrollLinkActive =
+      scrollAnimating || sidebarScrollAnimating || preciseScrollStreamActive || zoomActive
     let shouldRun = TerminalIdlePolicy.displayLinkShouldRun(
       windowVisibleToUser: windowVisibleToUser,
       scrollAnimating: scrollLinkActive,
@@ -3239,6 +3244,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       reason = "sidebarScroll"
     } else if preciseScrollStreamActive {
       reason = "preciseScroll"
+    } else if zoomActive {
+      reason = "zoom"
     } else if attentionAnimating {
       reason = "attention"
     } else if terminalOutputActive {
@@ -6802,6 +6809,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       "backend": backend.rendererStatus.effectiveRenderer,
       "fractional": backendSupportsFractionalLiveZoom,
       "gestureActive": zoomGestureBasePointSize != nil,
+      "displayLinkReason": displayLinkPolicyState().reason,
       "gridReflowCount": debugGridReflowCount,
       // Diagnostic for the "some glyphs wrong size" bug: the distinct font point
       // sizes drawn in the last frame (should be one terminal size, plus the
