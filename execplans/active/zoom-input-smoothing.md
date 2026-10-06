@@ -134,9 +134,15 @@ Add a measurement seam before changing behavior.
   (9466ce0f), re-touch snap-back fix (8c7be854).
 - [x] (2026-10-05) M2 after-trace on the LG: wheel max per-vsync step 7-8 % ->
   1.7-3 %, fast spins 18-87 % -> 4-10 %, commits 44 -> 23.
-- [ ] Present pacing on the 60 Hz LG: re-measure a fresh Laban launch with the
-  LG attached against the minimal repro; the system-side explanation is ruled
-  out (see Surprises).
+- [x] (2026-10-06) Present pacing on the 60 Hz LG re-measured after a fresh
+  plug-in (0.8.5 logged a renderer refresh 1.1 s after the window moved to the
+  LG): release 0.8.5 and the capture-enabled development build both hold
+  59.5-60.2 fresh frames/s with 2-4 % missed refreshes, so the 2026-10-05
+  40-45 fps ceiling does not reproduce and was not caused by Metal capture or
+  profile build settings. Cause unproven; most likely a stuck present
+  state from that day's display history (sleep, lid, rebuilds), cleared by the
+  replug. If it recurs, measure it in place with the visibility-gated
+  synthetic zoom (`/zoom/pinch` at 120 Hz plus `/zoom/trace`).
 - [x] (2026-10-05) Present link degraded to ~60/s after an external-display
   unplug: reproduced with a virtual display (`PacingRepro
   --hold-virtual-display` plus `/window/move-to-display`); link rebuilds do not
