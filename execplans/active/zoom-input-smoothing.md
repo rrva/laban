@@ -143,6 +143,14 @@ Add a measurement seam before changing behavior.
   state from that day's display history (sleep, lid, rebuilds), cleared by the
   replug. If it recurs, measure it in place with the visibility-gated
   synthetic zoom (`/zoom/pinch` at 120 Hz plus `/zoom/trace`).
+- [x] (2026-10-06) Trigger found: start Laban on the 120 Hz built-in panel,
+  then close the lid so macOS forces the window onto the 60 Hz LG. 0.8.4 (no
+  fix): present link 39.8-40/s against main 60/s (66 %), the 2026-10-05
+  signature. 0.8.5: stuck at 40/s until its display-change renderer refresh,
+  then 60/s. That refresh came 6.4 s after the lid closed only because the
+  test's synthetic pinch kept a zoom gesture open (the refresh waits out
+  gestures); in normal use it lands ~1 s after the change. A fresh launch
+  directly on the LG and virtual-display removal never reproduce it.
 - [x] (2026-10-05) Present link degraded to ~60/s after an external-display
   unplug: reproduced with a virtual display (`PacingRepro
   --hold-virtual-display` plus `/window/move-to-display`); link rebuilds do not
