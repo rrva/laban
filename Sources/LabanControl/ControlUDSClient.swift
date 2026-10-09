@@ -93,25 +93,36 @@ public enum ControlUDSClient {
     }
     try sendAll(fd: fd, data: payload)
 
+    // Once a response is lost (EOF, reset, timeout, garbage) the connection's
+    // framing is gone: a late response would be read as the answer to the
+    // NEXT request. Poison the connection so any reuse fails loudly instead,
+    // and throw so the caller can treat the peer as lost (issue #37).
+    func lost(_ error: ControlUDSClientError) -> ControlUDSClientError {
+      Darwin.shutdown(fd, SHUT_RDWR)
+      return error
+    }
+
+    let headerTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
     var raw = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
-    while raw.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) == nil && raw.count < 64 * 1024 {
+    while raw.range(of: headerTerminator) == nil {
+      guard raw.count < 64 * 1024 else { throw lost(.malformedResponse) }
       let n = recv(fd, &buffer, buffer.count, 0)
       if n < 0 && errno == EINTR { continue }
-      guard n > 0 else { break }
+      guard n > 0 else { throw lost(Self.receiveFailure(n: n, errno: errno)) }
       raw.append(contentsOf: buffer[0..<n])
     }
 
-    guard let headerEnd = raw.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A]))?.upperBound,
+    guard let headerEnd = raw.range(of: headerTerminator)?.upperBound,
       let headerString = String(data: raw[0..<headerEnd], encoding: .utf8),
       let statusLine = headerString.components(separatedBy: "\r\n").first
     else {
-      return (-1, Data())
+      throw lost(.malformedResponse)
     }
 
     let parts = statusLine.split(separator: " ")
     guard parts.count >= 2, let status = Int(parts[1]) else {
-      return (-1, Data())
+      throw lost(.malformedResponse)
     }
 
     var contentLength = 0
@@ -128,11 +139,18 @@ public enum ControlUDSClient {
       let need = min(contentLength - bodyData.count, buffer.count)
       let n = recv(fd, &buffer, need, 0)
       if n < 0 && errno == EINTR { continue }
-      guard n > 0 else { break }
+      guard n > 0 else { throw lost(Self.receiveFailure(n: n, errno: errno)) }
       bodyData.append(contentsOf: buffer[0..<n])
     }
 
     return (status, bodyData)
+  }
+
+  private static func receiveFailure(n: Int, errno: Int32) -> ControlUDSClientError {
+    if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return .responseTimedOut
+    }
+    return .connectionClosedBeforeResponse
   }
 
   /// Redeems a C14 attach bootstrap and leaves the connection open for session-scoped reads.
@@ -143,13 +161,20 @@ public enum ControlUDSClient {
   ) throws -> (fd: Int32, sessionID: String) {
     let fd = try connect(socketPath: socketPath)
     let body = Data(#"{"bootstrap":"\#(bootstrap)"}"#.utf8)
-    let (status, responseBody) = try request(
-      fd: fd,
-      method: "POST",
-      path: LabanControlServer.sessionAttachPath,
-      body: body,
-      timeout: timeout,
-      keepConnectionOpen: true)
+    let status: Int
+    let responseBody: Data
+    do {
+      (status, responseBody) = try request(
+        fd: fd,
+        method: "POST",
+        path: LabanControlServer.sessionAttachPath,
+        body: body,
+        timeout: timeout,
+        keepConnectionOpen: true)
+    } catch {
+      Darwin.close(fd)
+      throw error
+    }
     switch status {
     case 200:
       break
@@ -195,9 +220,22 @@ public enum ControlUDSClientError: Error, Equatable, CustomStringConvertible, Lo
   case pathTooLong
   case attachRedeemFailed(status: Int)
   case attachTooEarly
+  /// The peer closed or reset the connection before a complete HTTP response
+  /// arrived.
+  case connectionClosedBeforeResponse
+  /// The receive timeout expired before a complete HTTP response arrived.
+  case responseTimedOut
+  /// The peer sent bytes that do not parse as an HTTP response.
+  case malformedResponse
 
   public var description: String {
     switch self {
+    case .connectionClosedBeforeResponse:
+      return "the Laban control connection closed before a response arrived"
+    case .responseTimedOut:
+      return "the Laban control request timed out before a response arrived"
+    case .malformedResponse:
+      return "the Laban control connection returned a malformed response"
     case .socketFailed:
       return "failed to open the Laban control socket"
     case .pathTooLong:
