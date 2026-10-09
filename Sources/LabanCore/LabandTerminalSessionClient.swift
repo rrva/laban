@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 public final class LabandTerminalSessionClient: TerminalSessionClient {
   public let transportMode = "laband"
@@ -17,6 +18,10 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   private var leasesBySession: [String: LabandLeaseInfo] = [:]
   private let leaseRenewalQueue = DispatchQueue(label: "laband-lease-renewal")
   private var leaseRenewalTimer: DispatchSourceTimer?
+  private static let log = Logger(subsystem: "com.rrva.laban", category: "laband-client")
+  private static let leaseErrorCodes: Set<String> = [
+    "leaseRequired", "staleLease", "leaseNotHeld", "leaseExpired",
+  ]
 
   public init(
     socketPath: String,
@@ -445,6 +450,12 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
           throw TerminalSessionClientError.sessionIdInUse(sessionId)
         case "snapshotFailed", "snapshotRingFailed":
           throw TerminalSessionClientError.snapshotFailed(sessionId)
+        case let code where Self.leaseErrorCodes.contains(code):
+          // The daemon rejected our lease, so the cached one is dead: drop it
+          // so renewal stops retrying it and the caller re-acquires.
+          leasesBySession.removeValue(forKey: sessionId)
+          throw TerminalSessionClientError.leaseLost(
+            sessionId: sessionId, reason: "\(code): \(responseError.message)")
         default:
           throw TerminalSessionClientError.protocolError(
             "\(responseError.code): \(responseError.message)")
@@ -494,7 +505,13 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
         : 0
       let renewMargin = max(ttl / 3, 1_000_000_000)
       if lease.expiresAtMonoNs <= now + renewMargin {
-        _ = try? renewLease(sessionId: lease.sessionId)
+        do {
+          _ = try renewLease(sessionId: lease.sessionId)
+        } catch {
+          Self.log.error(
+            "laband lease renewal failed for \(lease.sessionId, privacy: .public): \(String(describing: error), privacy: .public)"
+          )
+        }
       }
     }
   }

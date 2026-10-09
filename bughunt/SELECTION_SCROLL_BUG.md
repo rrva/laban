@@ -1,5 +1,32 @@
 # Selection stays pinned while a mouse-tracking app scrolls
 
+## Status
+
+Fixed. Laban drops the local selection whenever the app, not Laban, can have
+moved content under it, in both `TerminalBitmapView` and
+`HeadlessDebugRuntime` (except the wheel arms, see below):
+
+- **Forwarded wheel / alt-scroll** clears it (`dismissLocalSelectionForForwardedInput`).
+  Tests: `testWheelScrollClearsSelectionWhenMouseTrackingIsActive`,
+  `testAltScrollWheelClearsSelection`. The headless wheel paths do not yet
+  mirror this (bug-hunt 2026-10-05 #6).
+- **Forwarded left or right press** clears it (tmux's right-click menu scrolls
+  copy-mode). Tests: `testClickClearsSelectionWhenMouseTrackingIsActive`,
+  `testForwardedRightPressClearsSelection`.
+- **Primary/alternate screen swap** (either direction) clears it.
+  Test: `testAltScreenEntryClearsSelection`.
+- **App repaint under the selection**: with mouse tracking on (a selection
+  exists there only via Shift-drag), each frame compares the selected cells'
+  text with the text on the frame the selection last changed and clears it on
+  a difference. Identical repaints and repaints of other rows keep it.
+  Per-row dirty bits were not used: they mean "may have changed" and are set
+  wholesale by full redraws, which would drop the selection on every identical
+  redraw. Tests: `testAppRepaintUnderSelectionClearsItUnderMouseTracking`,
+  `testAppRepaintAwayFromSelectionKeepsItUnderMouseTracking`.
+
+Shared decision: `Sources/LabanCore/TerminalSelectionInvalidation.swift`;
+headless parity: `Tests/LabanDebugTests/HeadlessSelectionInvalidationTests.swift`.
+
 ## Symptom
 
 In a fullscreen TUI (e.g. Claude Code), drag-select some text, then scroll the

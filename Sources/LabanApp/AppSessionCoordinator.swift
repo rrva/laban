@@ -30,7 +30,7 @@ struct OptionalSnapshotFailurePolicy {
       return true
     }
     switch sessionError {
-    case .sessionNotFound, .sessionNotRunning, .sessionIdInUse, .snapshotFailed:
+    case .sessionNotFound, .sessionNotRunning, .sessionIdInUse, .snapshotFailed, .leaseLost:
       return false
     case .createFailed, .writeFailed, .resizeFailed, .protocolError:
       return true
@@ -457,7 +457,16 @@ final class AppSessionCoordinator {
     guard let labandClient else { return }
     let info = try ensureLabandSession(for: tab, size: size)
     snapshotGenerationMonitor?.boost(sessionId: info.logicalSessionId)
-    try labandClient.writeInput(sessionId: info.logicalSessionId, bytes: bytes)
+    do {
+      try labandClient.writeInput(sessionId: info.logicalSessionId, bytes: bytes)
+    } catch TerminalSessionClientError.leaseLost(_, let reason) {
+      // The warm cache still says running, so without this the tab would
+      // keep rendering output while every keystroke fails on the dead lease.
+      AppLog.app.notice(
+        "laband lease lost for \(info.logicalSessionId) (\(reason)); re-acquiring")
+      let controlled = try reacquireControlLease(for: tab)
+      try labandClient.writeInput(sessionId: controlled.logicalSessionId, bytes: bytes)
+    }
     session?.captureInput(bytes)
     if let refreshed = try? labandClient.lookupSession(logicalSessionId: info.logicalSessionId) {
       store(refreshed, for: tab)
@@ -1256,6 +1265,14 @@ final class AppSessionCoordinator {
       sessionId: info.logicalSessionId,
       holderClientId: labandClient.clientIdentifier
     )
+  }
+
+  private func reacquireControlLease(for tab: Tab) throws -> LabandSessionInfo {
+    guard let labandClient else { throw TerminalSessionClientError.sessionNotFound(tab.id) }
+    let current = try labandClient.lookupSession(logicalSessionId: tab.focusedSessionId)
+    let controlled = try ensureControlLease(current)
+    store(controlled, for: tab)
+    return controlled
   }
 
   private func store(_ info: LabandSessionInfo, for tab: Tab) {

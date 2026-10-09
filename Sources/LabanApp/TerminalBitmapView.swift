@@ -214,6 +214,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private var selectionAnchor: TerminalSelectionPoint?
+  private var selectionInvalidation = TerminalSelectionInvalidation()
   private var selectionFocus: TerminalSelectionPoint?
 
   /// Grain of the active selection. Set on mouseDown by the click count;
@@ -2105,7 +2106,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     let visible = screen.visibleFrame
     let size = NSSize(
-      width: min(window.frame.width, visible.width), height: min(window.frame.height, visible.height))
+      width: min(window.frame.width, visible.width),
+      height: min(window.frame.height, visible.height))
     window.setFrame(
       NSRect(origin: NSPoint(x: visible.minX, y: visible.maxY - size.height), size: size),
       display: true)
@@ -2216,8 +2218,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     debugPresentCadenceRefreshCount += 1
     EventLog.shared.log(
       "render.presentCadence.rendererRefresh",
-      ["renderer": activeRendererSelection.rawValue, "ratio": ratio,
-       "screen": window?.screen?.localizedName ?? ""])
+      [
+        "renderer": activeRendererSelection.rawValue, "ratio": ratio,
+        "screen": window?.screen?.localizedName ?? "",
+      ])
     beginPendingBackendSwap(to: activeRendererSelection)
   }
 
@@ -3305,7 +3309,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       preferred: Float(policy.preferredFramesPerSecond))
     link.isPaused = !policy.shouldRun
     if zoomTraceArmed,
-      zoomTraceLinkPolicy.last.map({ $0.shouldRun != policy.shouldRun || $0.reason != policy.reason })
+      zoomTraceLinkPolicy.last.map({
+        $0.shouldRun != policy.shouldRun || $0.reason != policy.reason
+      })
         ?? true
     {
       appendZoomTrace(
@@ -4531,6 +4537,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
       && !gpuCellCommandFallbackPending
+    if clearSelectionStaleFromAppRepaint(activeTab: activeTab, session: session) {
+      renderInvalidated = true
+    }
     let request = TerminalSurfaceFrameRequest(
       frame: captureFrame,
       viewportWidth: bounds.width,
@@ -6836,9 +6845,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func handleZoomScroll(_ event: NSEvent) {
     if zoomTraceArmed {
       let source =
-        event.momentumPhase != [] ? "momentum"
-        : !event.hasPreciseScrollingDeltas ? "wheel"
-        : event.phase == [] ? "phaseless" : "precise"
+        event.momentumPhase != []
+        ? "momentum"
+        : !event.hasPreciseScrollingDeltas
+          ? "wheel"
+          : event.phase == [] ? "phaseless" : "precise"
       appendZoomTrace(
         &zoomTraceInputs,
         ZoomTraceInput(
@@ -8923,6 +8934,29 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     recordInput(kind: "selection", route: "terminal", command: "clearSelection")
   }
 
+  /// The app, not Laban, can replace what sits under the focused session's local
+  /// selection (see `TerminalSelectionInvalidation`); drop the selection before
+  /// this frame paints it over unrelated text. True when it cleared, so the
+  /// caller forces a full repaint that erases the old highlight.
+  private func clearSelectionStaleFromAppRepaint(activeTab: Tab, session: Session) -> Bool {
+    guard let vs = session.viewportState() else { return false }
+    let selection = currentTerminalSelection(
+      sessionId: session.id, currentViewportOffset: vs.viewportOffset)
+    guard
+      selectionInvalidation.shouldClear(
+        sessionId: session.id,
+        altScreen: vs.altScreen,
+        mouseTracking: mouseTrackingActive(for: activeTab, session: session),
+        selection: selection,
+        gestureActive: localSelectionMouseGestureActive,
+        selectedText: {
+          selection.map { TerminalSelectionInvalidation.selectedText(of: $0, in: session) } ?? ""
+        })
+    else { return false }
+    dismissLocalSelectionForForwardedInput()
+    return true
+  }
+
   /// A paste consumes the on-screen selection from the user's point of view:
   /// they selected, copied, and pasted, so the highlight has done its job and
   /// leaving it painted reads as stale. Scrub it the way a forwarded click does
@@ -9393,6 +9427,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     else { return }
     rightMouseGesturePane = (tab.id, pane)
     trackedMouseButton = .right
+    // Same as a forwarded left press: a deliberate pointer action the app may
+    // answer by moving content (tmux's right-click menu scrolls copy-mode)
+    // under the local highlight, so the committed selection goes.
+    dismissLocalSelectionForForwardedInput()
     forwardRightMouse(event, action: .press)
   }
 
