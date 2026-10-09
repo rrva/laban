@@ -62,6 +62,16 @@ final class ControlAttachProxyUpstreamLossTests: XCTestCase {
     XCTAssertTrue(lost.value, "onUpstreamLost must fire when the upstream closes")
   }
 
+  func testProductionUpstreamTimeoutOutlastsTheSlowestLegitimateHandler() {
+    // A timeout loses the upstream and terminates the agent child, so it must
+    // only fire on a dead app. `/debug/window-screenshot` may wait 5 s on each
+    // of two ScreenCaptureKit bridges before answering 503 on its own.
+    let slowestLegitimateHandlerSeconds: TimeInterval = 2 * 5
+    XCTAssertGreaterThan(
+      ProxyLimits.production.upstreamResponseTimeoutSeconds,
+      slowestLegitimateHandlerSeconds * 2)
+  }
+
   func testProxyNeverHandsALateUpstreamResponseToTheNextClient() throws {
     let upstream = try ScriptedUpstream { index, path in
       .respond(delay: index == 0 ? 0.8 : 0, body: #"{"answer":"\#(path)"}"#)
