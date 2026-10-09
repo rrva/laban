@@ -28,8 +28,10 @@ struct ProxyLimits: Equatable {
   let clientIdleSeconds: TimeInterval
   let heartbeatIntervalSeconds: TimeInterval
   /// How long one forwarded request may wait for the upstream response. A
-  /// request that exceeds it loses the upstream (issue #37).
-  var upstreamResponseTimeoutSeconds: TimeInterval = 5
+  /// request that exceeds it loses the upstream (issue #37), which terminates
+  /// the agent child, so it must outlast the app's slowest legitimate handler
+  /// (window screenshots wait up to 5 s on each of two capture bridges).
+  var upstreamResponseTimeoutSeconds: TimeInterval = 30
 
   static let production = ProxyLimits(
     maxLineBytes: 64 * 1024,
