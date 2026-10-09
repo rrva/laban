@@ -4,6 +4,7 @@ import LabanTerminalCore
 public enum TerminalSessionClientError: Error, CustomStringConvertible {
   case sessionNotFound(String)
   case sessionNotRunning(String)
+  case sessionIdInUse(String)
   case createFailed(String)
   case writeFailed(String)
   case resizeFailed(String)
@@ -18,6 +19,7 @@ public enum TerminalSessionClientError: Error, CustomStringConvertible {
     switch self {
     case .sessionNotFound(let id): return "session not found: \(id)"
     case .sessionNotRunning(let id): return "session is not running: \(id)"
+    case .sessionIdInUse(let id): return "session id is already in use by a live session: \(id)"
     case .createFailed(let message): return "session create failed: \(message)"
     case .writeFailed(let id): return "session input write failed: \(id)"
     case .resizeFailed(let id): return "session resize failed: \(id)"

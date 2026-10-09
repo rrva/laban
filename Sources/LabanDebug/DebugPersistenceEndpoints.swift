@@ -144,17 +144,28 @@ extension HeadlessDebugRuntime {
         let injection = RestoreShellInjection(command: candidate.command)
         let size = model.terminalAreaSize
         do {
-          let info = try client.createSession(
-            TerminalSessionLaunchRequest(
-              executable: injection.shellPath,
-              argv: injection.argv,
-              cwd: candidate.launchCwd,
-              environmentPatch: candidateEnvironmentPatch(
-                candidate,
-                extra: request.environmentPatch ?? [:]),
-              rows: Int(size.rows),
-              cols: Int(size.cols),
-              logicalSessionId: tabId))
+          // Attach first: a session still live under this id must be adopted,
+          // never replaced — creating over it would kill its child.
+          let live: LabandSessionInfo?
+          do {
+            let existing = try client.attachSession(logicalSessionId: tabId)
+            live = existing.lifecycleState == .running ? existing : nil
+          } catch TerminalSessionClientError.sessionNotFound {
+            live = nil
+          }
+          let info =
+            try live
+            ?? client.createSession(
+              TerminalSessionLaunchRequest(
+                executable: injection.shellPath,
+                argv: injection.argv,
+                cwd: candidate.launchCwd,
+                environmentPatch: candidateEnvironmentPatch(
+                  candidate,
+                  extra: request.environmentPatch ?? [:]),
+                rows: Int(size.rows),
+                cols: Int(size.cols),
+                logicalSessionId: tabId))
           terminalClientSessionInfoById[tab.focusedSessionId] = info
           attachSnapshotRingIfAvailable(client: client, localSessionId: tab.focusedSessionId)
           pendingAgentRestoreCandidatesBySession.removeValue(forKey: tabId)
@@ -163,7 +174,7 @@ extension HeadlessDebugRuntime {
             AgentRestoreSelectionResult(
               tabId: tabId,
               ok: true,
-              message: "restore launched",
+              message: live == nil ? "restore launched" : "attached live session",
               logicalSessionId: info.logicalSessionId,
               incarnationId: info.incarnationId))
         } catch {

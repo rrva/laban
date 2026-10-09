@@ -323,6 +323,9 @@ private final class LabandDaemon {
   private let leaseTimeoutNs: UInt64
   private let lock = NSLock()
   private var sessions: [String: ManagedLabandSession] = [:]
+  /// Logical ids whose createSession is spawning; reserved so a concurrent
+  /// create of the same id is rejected before it can overwrite the winner.
+  private var creatingSessionIds: Set<String> = []
   var onShutdown: (() -> Void)?
 
   init(journalPath: String) throws {
@@ -445,6 +448,31 @@ private final class LabandDaemon {
       (launchArgv?.first ?? executable ?? "shell").split(separator: "/").last.map(String.init)
       ?? "shell"
 
+    let logicalSessionId =
+      request.logicalSessionId?.isEmpty == false ? request.logicalSessionId! : UUID().uuidString
+    // Mirror labpty's LABPTY_E_SESSION_ID_IN_USE: replacing a live entry would
+    // dealloc it, closing its PTY and SIGHUPing the child the caller wanted.
+    // A terminated/exited/dead id may be reused.
+    let reserved = lock.withLock { () -> Bool in
+      if creatingSessionIds.contains(logicalSessionId) { return false }
+      if let existing = sessions[logicalSessionId],
+        existing.lifecycleState == .running, existing.session != nil
+      {
+        return false
+      }
+      creatingSessionIds.insert(logicalSessionId)
+      return true
+    }
+    guard reserved else {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "sessionIdInUse",
+        message: "logicalSessionId \(logicalSessionId) already identifies a live session"
+      )
+    }
+    defer { _ = lock.withLock { creatingSessionIds.remove(logicalSessionId) } }
+
     do {
       var size = LabanTerminalSize()
       size.rows = Int32(rows)
@@ -455,8 +483,6 @@ private final class LabandDaemon {
         environment: request.environmentPatch ?? [:],
         launchArgv: launchArgv
       )
-      let logicalSessionId =
-        request.logicalSessionId?.isEmpty == false ? request.logicalSessionId! : UUID().uuidString
       let managed = ManagedLabandSession(
         logicalSessionId: logicalSessionId,
         incarnationId: UUID().uuidString,
