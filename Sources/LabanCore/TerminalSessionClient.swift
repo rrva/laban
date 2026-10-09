@@ -9,6 +9,10 @@ public enum TerminalSessionClientError: Error, CustomStringConvertible {
   case resizeFailed(String)
   case snapshotFailed(String)
   case protocolError(String)
+  /// The daemon no longer accepts this client's lease for the session
+  /// (expired, revoked, or taken by another client). Retryable after the
+  /// caller re-acquires control of the session.
+  case leaseLost(sessionId: String, reason: String)
 
   public var description: String {
     switch self {
@@ -19,6 +23,7 @@ public enum TerminalSessionClientError: Error, CustomStringConvertible {
     case .resizeFailed(let id): return "session resize failed: \(id)"
     case .snapshotFailed(let id): return "session snapshot failed: \(id)"
     case .protocolError(let message): return "laband protocol error: \(message)"
+    case .leaseLost(let id, let reason): return "session lease lost for \(id): \(reason)"
     }
   }
 }

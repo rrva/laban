@@ -303,6 +303,125 @@ final class AppSessionCoordinatorTests: XCTestCase {
     process.waitUntilExit()
   }
 
+  func testInputRecoversAfterAnotherClientTakesTheLease() throws {
+    try assertInputRecoversAfterLeaseLoss(leaseTTLMilliseconds: nil) { socketPath, sessionId in
+      let thief = try LabandTerminalSessionClient(socketPath: socketPath, autoRenewLeases: false)
+      defer { thief.close() }
+      let stolen = try thief.transferLease(
+        sessionId: sessionId, holderClientId: thief.clientIdentifier)
+      XCTAssertEqual(stolen.leaseHolder, thief.clientIdentifier)
+    }
+  }
+
+  func testInputRecoversAfterTheLeaseExpiresDuringAStall() throws {
+    // A 250 ms TTL with renewal off stands in for a daemon stall that
+    // outlasts the lease: the daemon revokes it on the next request.
+    try assertInputRecoversAfterLeaseLoss(leaseTTLMilliseconds: 250) { _, _ in
+      usleep(450_000)
+    }
+  }
+
+  private func assertInputRecoversAfterLeaseLoss(
+    leaseTTLMilliseconds: Int?,
+    loseLease: (_ socketPath: String, _ sessionId: String) throws -> Void
+  ) throws {
+    let labandURL = URL(fileURLWithPath: ".build/debug/laband")
+    guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
+      throw XCTSkip("laband binary is not built")
+    }
+
+    let root = URL(
+      fileURLWithPath: ".tmp/lbn-lease-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    let socketPath = root.appendingPathComponent("s.sock").path
+    let journalURL = root.appendingPathComponent("journal", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let process = Process()
+    process.executableURL = labandURL
+    process.arguments = ["--socket", socketPath, "--journal", journalURL.path]
+    if let leaseTTLMilliseconds {
+      var environment = ProcessInfo.processInfo.environment
+      environment["LABAN_LABAND_LEASE_TTL_MS"] = String(leaseTTLMilliseconds)
+      process.environment = environment
+    }
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    let sessionId = "lease-tab"
+    let seedClient = try waitForClient(socketPath: socketPath)
+    let seed = try seedClient.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/cat",
+        argv: ["/bin/cat"],
+        cwd: FileManager.default.homeDirectoryForCurrentUser.path,
+        rows: 24,
+        cols: 80,
+        logicalSessionId: sessionId
+      ))
+    _ = try seedClient.detachSession(sessionId: seed.logicalSessionId)
+    seedClient.close()
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.fixture(size: size, sessionID: context.sessionID)
+      })
+    model.replaceTabs(
+      from: WorkspaceState(
+        windows: [
+          WindowState(
+            id: "main-window",
+            selectedTabId: sessionId,
+            tabs: [
+              TabState(
+                id: sessionId,
+                cwd: FileManager.default.homeDirectoryForCurrentUser.path,
+                launchCommand: "cat",
+                lastActiveAt: Date())
+            ])
+        ]))
+
+    let coordinatorClient = try LabandTerminalSessionClient(
+      socketPath: socketPath, autoRenewLeases: false)
+    let coordinator = AppSessionCoordinator(
+      client: coordinatorClient,
+      shellLaunch: .passthrough,
+      cwdBySessionId: [sessionId: FileManager.default.homeDirectoryForCurrentUser.path]
+    )
+    defer { coordinator.detach() }
+
+    let tab = try XCTUnwrap(model.tabs.first)
+    try coordinator.write(Array("before-loss".utf8), to: tab, size: size)
+    _ = try waitForSnapshotText(coordinator: coordinator, tab: tab, size: size, text: "before-loss")
+
+    try loseLease(socketPath, sessionId)
+
+    // The tab still holds warm cached session info; the keystroke must
+    // re-acquire the lease instead of failing on every press.
+    try coordinator.write(Array("after-loss".utf8), to: tab, size: size)
+    _ = try waitForSnapshotText(coordinator: coordinator, tab: tab, size: size, text: "after-loss")
+    XCTAssertEqual(
+      coordinator.sessionInfo(for: tab)?.leaseHolder, coordinatorClient.clientIdentifier)
+
+    let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    _ = try? cleanupClient.terminate(sessionId: sessionId)
+    _ = try? cleanupClient.shutdownWhenIdle()
+    cleanupClient.close()
+    process.waitUntilExit()
+  }
+
   func testSweepOrphanedSessionsTerminatesDaemonSessionsNotInKnownTabs() throws {
     let labandURL = URL(fileURLWithPath: ".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
