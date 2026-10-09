@@ -27,6 +27,9 @@ struct ProxyLimits: Equatable {
   let maxQueueDepth: Int
   let clientIdleSeconds: TimeInterval
   let heartbeatIntervalSeconds: TimeInterval
+  /// How long one forwarded request may wait for the upstream response. A
+  /// request that exceeds it loses the upstream (issue #37).
+  var upstreamResponseTimeoutSeconds: TimeInterval = 5
 
   static let production = ProxyLimits(
     maxLineBytes: 64 * 1024,
@@ -409,13 +412,32 @@ final class ControlAttachProxyServer {
   private func forwardRequest(_ request: LiveControlAttachRequest) throws
     -> LiveControlAttachResponse
   {
+    // A lost upstream stays lost: its framing is gone, so a queued request
+    // must not be written to it (it could read a stale late response).
+    guard !stateLock.withLock({ upstreamLost }) else {
+      throw ControlAttachProxyError.upstreamLost
+    }
     let body = request.body.flatMap { Data($0.utf8) }
-    let (status, responseBody) = try ControlUDSClient.request(
-      fd: upstreamFD,
-      method: request.method ?? "GET",
-      path: request.path,
-      body: body,
-      keepConnectionOpen: true)
+    let status: Int
+    let responseBody: Data
+    do {
+      (status, responseBody) = try ControlUDSClient.request(
+        fd: upstreamFD,
+        method: request.method ?? "GET",
+        path: request.path,
+        body: body,
+        timeout: limits.upstreamResponseTimeoutSeconds,
+        keepConnectionOpen: true)
+    } catch {
+      // EOF, reset, timeout, malformed reply, or a failed send: the upstream
+      // connection can never be trusted again. Shut it down (the broker owns
+      // and closes the descriptor; shutdown keeps its number from being
+      // reused under the stdin loop that shares it) and report the loss so
+      // `laban agent run` terminates its child.
+      Darwin.shutdown(upstreamFD, SHUT_RDWR)
+      markUpstreamLost()
+      throw error
+    }
     return LiveControlAttachResponse(
       path: request.path,
       status: status,
@@ -588,6 +610,8 @@ enum ControlAttachProxyError: Error, Equatable {
   case bindFailed
   case listenFailed
   case socketPathTooLong
+  /// The held upstream connection was lost earlier; nothing more is forwarded.
+  case upstreamLost
 }
 
 extension NSLocking {

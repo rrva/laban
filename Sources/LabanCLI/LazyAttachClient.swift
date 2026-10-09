@@ -87,13 +87,23 @@ enum LazyAttachClient {
       intendedRequest: intendedRequest)
 
     let payload = try JSONEncoder().encode(request)
-    let (status, responseData) = try ControlUDSClient.request(
-      socketPath: record.url,
-      method: "POST",
-      path: LabanControlServer.lazyAttachRequestPath,
-      token: record.token,
-      body: payload,
-      timeout: 45)
+    let status: Int
+    let responseData: Data
+    do {
+      (status, responseData) = try ControlUDSClient.request(
+        socketPath: record.url,
+        method: "POST",
+        path: LabanControlServer.lazyAttachRequestPath,
+        token: record.token,
+        body: payload,
+        timeout: 45)
+    } catch ControlUDSClientError.responseTimedOut {
+      throw LazyAttachClientError.timeout("\(ControlUDSClientError.responseTimedOut)")
+    } catch ControlUDSClientError.connectionClosedBeforeResponse {
+      throw LazyAttachClientError.controlPlaneUnavailable
+    } catch ControlUDSClientError.malformedResponse {
+      throw LazyAttachClientError.malformedResponse
+    }
 
     guard (200..<300).contains(status) else {
       let message = String(data: responseData, encoding: .utf8) ?? ""
