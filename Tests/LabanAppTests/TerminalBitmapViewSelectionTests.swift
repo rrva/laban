@@ -442,6 +442,60 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  /// Triple-click a line, then scroll one row toward history while the button
+  /// is held: the pointer now sits on the previous line, so the line-grain
+  /// selection must span both lines of content (issue #36).
+  func testLineDragAcrossWheelScrollSelectsBothLines() throws {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+    let session = try writeNumberedLines(12, in: harness)
+
+    let press = point(row: 2, col: 0, in: harness)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: press, clickCount: 3))
+    XCTAssertEqual(copyText(from: harness.view), "line 11", "precondition: triple-click")
+
+    scrollTowardHistory(rows: 1, in: harness, session: session)
+    let copied = copyText(from: harness.view)
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: press, clickCount: 3))
+    XCTAssertEqual(copied, "line 10\nline 11")
+  }
+
+  /// Double-click a word, then scroll one row toward history while the button
+  /// is held: the word-grain selection must be the union of the origin word and
+  /// the word now under the pointer (issue #36).
+  func testWordDragAcrossWheelScrollSelectsUnionOfWords() throws {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+    let session = try writeNumberedLines(12, in: harness)
+
+    let press = point(row: 2, col: 1, in: harness)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: press, clickCount: 2))
+    XCTAssertEqual(copyText(from: harness.view), "line", "precondition: double-click")
+
+    scrollTowardHistory(rows: 1, in: harness, session: session)
+    let copied = copyText(from: harness.view)
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: press, clickCount: 2))
+    XCTAssertEqual(copied, "line 10\nline")
+  }
+
+  /// Same gesture, but the scroll pushes the origin word out of the viewport:
+  /// the selection must still end at the origin word's end, not at the
+  /// clicked column.
+  func testWordDragKeepsWholeOriginWordAfterItScrollsOffscreen() throws {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+    let session = try writeNumberedLines(12, in: harness)
+
+    let press = point(row: 2, col: 1, in: harness)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: press, clickCount: 2))
+    XCTAssertEqual(copyText(from: harness.view), "line", "precondition: double-click")
+
+    scrollTowardHistory(rows: 3, in: harness, session: session)
+    let copied = copyText(from: harness.view)
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: press, clickCount: 2))
+    XCTAssertEqual(copied, "line 08\nline 09\nline 10\nline")
+  }
+
   func testScrollWheelInTitlebarStripDoesNotScrollTerminalViewport() throws {
     let harness = try makeHarness(rows: 5, cols: 20)
     defer { harness.restoreRenderer() }
@@ -1216,6 +1270,37 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       - CGFloat(tabIndex) * producer.rowHeight
     let point = NSPoint(x: SidebarLayout.defaultWidth - 10, y: rowTop - 8)
     harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: point))
+  }
+
+  private func writeNumberedLines(_ count: Int, in harness: Harness) throws -> Session {
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array((1...count).map { String(format: "line %02d\r\n", $0) }.joined().utf8))
+    session.poll()
+    harness.view.advanceFrame()
+    return session
+  }
+
+  /// Scrolls `rows` wheel steps toward history, one row per step.
+  private func scrollTowardHistory(rows: Int, in harness: Harness, session: Session) {
+    func offset() -> Int { session.viewportState()?.viewportOffset ?? 0 }
+    func wheel(_ deltaY: CGFloat) {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: point(row: 2, col: 0, in: harness), deltaY: deltaY))
+    }
+    let start = offset()
+    scrollOneRowTowardHistory(in: harness, session: session)
+    let historyStep = offset() - start
+    for _ in 1..<rows {
+      let before = offset()
+      wheel(1)
+      if offset() - before != historyStep {
+        if offset() != before { wheel(-1) }
+        wheel(-1)
+      }
+    }
+    XCTAssertEqual(offset(), start + historyStep * rows, "expected \(rows) rows toward history")
   }
 
   private func scrollOneRowTowardHistory(in harness: Harness, session: Session) {
