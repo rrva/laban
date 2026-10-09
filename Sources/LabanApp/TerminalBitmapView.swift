@@ -228,6 +228,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// from this origin to the current drag cell, in the chosen grain —
   /// without remembering the origin we'd lose it the moment a drag fires.
   private var selectionOriginCell: TerminalSelectionPoint?
+  /// Word bounds of the double-clicked word, recorded at click time so a
+  /// word-grain drag keeps the whole origin word after it scrolls out of the
+  /// viewport. Only trusted while `origin` still equals `selectionOriginCell`.
+  private var selectionOriginWord: (origin: TerminalSelectionPoint, start: Int, end: Int)?
   private struct PendingHyperlinkClick {
     var uri: String
     var downPoint: NSPoint
@@ -9574,6 +9578,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func selectWordAt(_ pt: NSPoint) {
     let p = clampedSelectionPoint(at: pt)
     let bounds = wordBoundsAt(row: p.row, col: p.col)
+    selectionOriginWord = (p, bounds.start, bounds.end)
     selectionAnchor = TerminalSelectionPoint(
       row: p.row, col: bounds.start, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
     selectionFocus = TerminalSelectionPoint(
@@ -9625,41 +9630,61 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
+  /// Word-grain drag: the union of the origin word and the word under the
+  /// drag point. The two points can be captured at different viewport
+  /// offsets (wheel or edge autoscroll mid-drag), so both are compared as
+  /// absolute buffer rows (`row + viewportOffsetAtCapture`) and the result is
+  /// stamped with the drag's offset.
   private func extendWordSelection(to drag: TerminalSelectionPoint) {
     guard let orig = selectionOriginCell else {
       selectionFocus = drag
       return
     }
     let cols = currentCols()
-    let origBounds = wordBoundsAt(row: orig.row, col: orig.col)
+    let offset = drag.viewportOffsetAtCapture
+    let origBounds = originWordBounds(orig, currentViewportOffset: offset)
     let dragBounds = wordBoundsAt(row: drag.row, col: drag.col)
-    let origStartLin = orig.row * cols + origBounds.start
-    let origEndLin = orig.row * cols + origBounds.end
-    let dragStartLin = drag.row * cols + dragBounds.start
-    let dragEndLin = drag.row * cols + dragBounds.end
-    let startLin = min(origStartLin, dragStartLin)
-    let endLin = max(origEndLin, dragEndLin)
+    let origAbsRow = orig.row + orig.viewportOffsetAtCapture
+    let dragAbsRow = drag.row + offset
+    let startLin = min(origAbsRow * cols + origBounds.start, dragAbsRow * cols + dragBounds.start)
+    let endLin = max(origAbsRow * cols + origBounds.end, dragAbsRow * cols + dragBounds.end)
     selectionAnchor = TerminalSelectionPoint(
-      row: startLin / cols, col: startLin % cols,
-      viewportOffsetAtCapture: orig.viewportOffsetAtCapture)
+      row: startLin / cols - offset, col: startLin % cols, viewportOffsetAtCapture: offset)
     selectionFocus = TerminalSelectionPoint(
-      row: endLin / cols, col: endLin % cols,
-      viewportOffsetAtCapture: drag.viewportOffsetAtCapture)
+      row: endLin / cols - offset, col: endLin % cols, viewportOffsetAtCapture: offset)
   }
 
+  /// Word bounds of the origin cell, read from the row it occupies in the
+  /// current viewport. Once a drag scrolls the origin out of view the bounds
+  /// recorded at click time stand in, so the origin word is never truncated.
+  private func originWordBounds(
+    _ orig: TerminalSelectionPoint, currentViewportOffset offset: Int
+  ) -> (start: Int, end: Int) {
+    let visibleRow = orig.visibleRow(currentViewportOffset: offset)
+    if visibleRow >= 0, visibleRow < selectionGeometry().rows {
+      return wordBoundsAt(row: visibleRow, col: orig.col)
+    }
+    if let recorded = selectionOriginWord, recorded.origin == orig {
+      return (recorded.start, recorded.end)
+    }
+    return (orig.col, orig.col)
+  }
+
+  /// Line-grain drag: every line from the origin line to the drag line,
+  /// compared in absolute buffer rows like `extendWordSelection`.
   private func extendLineSelection(to drag: TerminalSelectionPoint) {
     guard let orig = selectionOriginCell else {
       selectionFocus = drag
       return
     }
     let cols = currentCols()
-    let topRow = min(orig.row, drag.row)
-    let bottomRow = max(orig.row, drag.row)
+    let offset = drag.viewportOffsetAtCapture
+    let origAbsRow = orig.row + orig.viewportOffsetAtCapture
+    let dragAbsRow = drag.row + offset
     selectionAnchor = TerminalSelectionPoint(
-      row: topRow, col: 0, viewportOffsetAtCapture: orig.viewportOffsetAtCapture)
+      row: min(origAbsRow, dragAbsRow) - offset, col: 0, viewportOffsetAtCapture: offset)
     selectionFocus = TerminalSelectionPoint(
-      row: bottomRow, col: cols - 1,
-      viewportOffsetAtCapture: drag.viewportOffsetAtCapture)
+      row: max(origAbsRow, dragAbsRow) - offset, col: cols - 1, viewportOffsetAtCapture: offset)
   }
 
   /// libghostty's authoritative viewport offset for the active session,
