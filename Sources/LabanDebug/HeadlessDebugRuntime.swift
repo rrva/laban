@@ -78,6 +78,8 @@ public final class HeadlessDebugRuntime {
   var lastDrawStats = DrawStats()
   var debugClipboard: String = ""
   var selectionBySession: [Session.ID: TerminalSelection] = [:]
+  /// Mirrors `TerminalBitmapView`'s app-repaint selection invalidation.
+  var selectionInvalidation = TerminalSelectionInvalidation()
   /// The divider drag in flight, if any. While it is set the pane tree is untouched;
   /// only `commitDividerDrag()` changes it, once, like the GUI's mouse-up.
   var dividerDrag: PaneDividerDrag?
@@ -928,6 +930,22 @@ public final class HeadlessDebugRuntime {
     terminalPollMs += elapsedMs(since: timer)
 
     captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: frame))
+
+    if let focused, let session = model.session(forSessionID: focused),
+      let vs = session.viewportState(),
+      selectionInvalidation.shouldClear(
+        sessionId: focused,
+        altScreen: vs.altScreen,
+        mouseTracking: vs.mouseTracking,
+        selection: selectionBySession[focused],
+        selectedText: {
+          selectionBySession[focused].map {
+            TerminalSelectionInvalidation.selectedText(of: $0, in: session)
+          } ?? ""
+        })
+    {
+      selectionBySession.removeValue(forKey: focused)
+    }
 
     timer = monotonicNow()
     let activeSelection = model.activeTab.flatMap { selectionBySession[$0.focusedSessionId] }

@@ -214,6 +214,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private var selectionAnchor: TerminalSelectionPoint?
+  private var selectionInvalidation = TerminalSelectionInvalidation()
   private var selectionFocus: TerminalSelectionPoint?
 
   /// Grain of the active selection. Set on mouseDown by the click count;
@@ -4536,6 +4537,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       && frameProbe == nil
       && metalRenderer?.effectiveRendererMode == .gpuDriven
       && !gpuCellCommandFallbackPending
+    if clearSelectionStaleFromAppRepaint(activeTab: activeTab, session: session) {
+      renderInvalidated = true
+    }
     let request = TerminalSurfaceFrameRequest(
       frame: captureFrame,
       viewportWidth: bounds.width,
@@ -8930,6 +8934,29 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     recordInput(kind: "selection", route: "terminal", command: "clearSelection")
   }
 
+  /// The app, not Laban, can replace what sits under the focused session's local
+  /// selection (see `TerminalSelectionInvalidation`); drop the selection before
+  /// this frame paints it over unrelated text. True when it cleared, so the
+  /// caller forces a full repaint that erases the old highlight.
+  private func clearSelectionStaleFromAppRepaint(activeTab: Tab, session: Session) -> Bool {
+    guard let vs = session.viewportState() else { return false }
+    let selection = currentTerminalSelection(
+      sessionId: session.id, currentViewportOffset: vs.viewportOffset)
+    guard
+      selectionInvalidation.shouldClear(
+        sessionId: session.id,
+        altScreen: vs.altScreen,
+        mouseTracking: mouseTrackingActive(for: activeTab, session: session),
+        selection: selection,
+        gestureActive: localSelectionMouseGestureActive,
+        selectedText: {
+          selection.map { TerminalSelectionInvalidation.selectedText(of: $0, in: session) } ?? ""
+        })
+    else { return false }
+    dismissLocalSelectionForForwardedInput()
+    return true
+  }
+
   /// A paste consumes the on-screen selection from the user's point of view:
   /// they selected, copied, and pasted, so the highlight has done its job and
   /// leaving it painted reads as stale. Scrub it the way a forwarded click does
@@ -9400,6 +9427,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     else { return }
     rightMouseGesturePane = (tab.id, pane)
     trackedMouseButton = .right
+    // Same as a forwarded left press: a deliberate pointer action the app may
+    // answer by moving content (tmux's right-click menu scrolls copy-mode)
+    // under the local highlight, so the committed selection goes.
+    dismissLocalSelectionForForwardedInput()
     forwardRightMouse(event, action: .press)
   }
 
