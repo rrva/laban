@@ -230,11 +230,14 @@ private struct ManagedLabandSessionState {
 /// Lock order: `LabandDaemon.lock` may be held while taking a session's lock
 /// (`listSessions`, the `createSession` id reservation), never the reverse.
 /// The session lock is a leaf: code holding it never takes the daemon lock,
-/// another session's lock, or the journal lock, and never stops a runner or
-/// polls the PTY. Read with `current` (a consistent copy) and write with
-/// `update`, which applies a multi-field change atomically.
+/// another session's lock, or the journal lock, and never blocks (it does not
+/// stop a runner, poll the PTY, or touch files). Read with `current` (a
+/// consistent copy) and write with `update`, which applies a multi-field
+/// change atomically. `ringCreationLock` only serializes snapshot-ring
+/// creation; it is taken before the session lock, never while holding it.
 private final class ManagedLabandSession {
   private let lock = NSLock()
+  private let ringCreationLock = NSLock()
   let logicalSessionId: String
   let incarnationId: String
   let commandDisplayName: String
@@ -333,6 +336,32 @@ private final class ManagedLabandSession {
 
   func attachedClientCount() -> Int {
     lock.withLock { attachedClientIds.count }
+  }
+
+  /// Return the session's snapshot-ring writer, creating it with `make` the
+  /// first time. Returns nil when the session is not running, both before
+  /// and after creation, so a terminate racing an attach cannot leave a new
+  /// writer on a terminated session.
+  ///
+  /// `make` creates, truncates and maps the ring file, so it runs outside the
+  /// session lock and a runner publishing a snapshot never waits on that
+  /// file I/O. `ringCreationLock` keeps two attaches from each creating a
+  /// writer: both would open the same path, and the second would truncate
+  /// the ring the first had already handed out.
+  func snapshotRingWriter(
+    make: (_ rows: Int, _ cols: Int) throws -> LabandSnapshotRingWriter
+  ) rethrows -> LabandSnapshotRingWriter? {
+    try ringCreationLock.withLock {
+      let existing = current
+      guard existing.liveSession != nil else { return nil }
+      if let writer = existing.ringWriter { return writer }
+      let writer = try make(existing.rows, existing.cols)
+      return lock.withLock { () -> LabandSnapshotRingWriter? in
+        guard state.liveSession != nil else { return nil }
+        state.ringWriter = writer
+        return writer
+      }
+    }
   }
 
   /// Clear the lease when `shouldRevoke` accepts it; returns whether it did.
@@ -803,16 +832,15 @@ private final class LabandDaemon {
     guard let managed = lookup(request) else {
       return missingSession(request)
     }
-    guard managed.isLive else {
-      return .error(
-        requestId: request.requestId,
-        type: request.type,
-        code: "sessionNotRunning",
-        message: "session is not running"
-      )
-    }
     do {
-      let writer = try ensureSnapshotRing(managed)
+      guard let writer = try ensureSnapshotRing(managed) else {
+        return .error(
+          requestId: request.requestId,
+          type: request.type,
+          code: "sessionNotRunning",
+          message: "session is not running"
+        )
+      }
       // Ring creation can fail (for example when its backing directory is
       // unavailable). Do not retain the caller as an attached client until
       // the resource it asked for actually exists: failed clients do not
@@ -1401,19 +1429,13 @@ private final class LabandDaemon {
     )
   }
 
+  /// The session's snapshot-ring writer, or nil when the session is not
+  /// running.
   private func ensureSnapshotRing(_ managed: ManagedLabandSession) throws
-    -> LabandSnapshotRingWriter
+    -> LabandSnapshotRingWriter?
   {
-    // Create the ring under the session lock so two concurrent
-    // attachSnapshotRing requests cannot each create a writer for one path.
-    // Writer creation is file I/O only; it takes no other lock.
-    try managed.update { state in
-      if let writer = state.ringWriter {
-        return writer
-      }
-      let writer = try makeSnapshotRingWriter(managed, rows: state.rows, cols: state.cols)
-      state.ringWriter = writer
-      return writer
+    try managed.snapshotRingWriter { rows, cols in
+      try makeSnapshotRingWriter(managed, rows: rows, cols: cols)
     }
   }
 
