@@ -7,7 +7,8 @@
  * unset and instead scans the raw PTY output stream for these in parallel with
  * libghostty — the same observe-and-act pattern as osc133.c / tab_status.c —
  * and:
- *   - replies to `OSC 10 ; ?` / `OSC 11 ; ?` / `OSC 12 ; ?` when no color is
+ *   - replies to `OSC 10 ; ?` / `OSC 11 ; ?` / `OSC 12 ; ?` (and chained
+ *     `OSC 10 ; ? ; ?` forms) when no color is
  *     configured (libghostty answers configured colors itself), so an agent
  *     TUI (e.g. Codex) can always match its theme to Laban's window;
  *   - delivers `OSC 9 ; <text>` to the registered notification callback;
@@ -38,7 +39,8 @@
  * configured color WITHOUT touching render-state dirtiness (unlike reading
  * GHOSTTY_RENDER_STATE_DATA_COLORS, which would steal frames from the
  * renderer). */
-static void respond_osc_color_query(LabanSession *s, int osc_number) {
+static void respond_osc_color_query(
+    LabanSession *s, int osc_number, int bel_terminated) {
     GhosttyColorRgb rgb;
     GhosttyResult r;
     if (osc_number == 10) {
@@ -63,13 +65,15 @@ static void respond_osc_color_query(LabanSession *s, int osc_number) {
     uint8_t v = (osc_number == 11) ? bg : fg;
     rgb.r = rgb.g = rgb.b = v;
 
-    /* xterm canonical reply: ESC ] <n> ; rgb:RRRR/GGGG/BBBB ESC \
-     * Each 8-bit channel is widened to 16-bit by repetition (c -> cc). Codex's
-     * parser accepts both 2- and 4-hex forms with BEL or ST; use 4-hex + ST. */
+    /* xterm canonical reply: ESC ] <n> ; rgb:RRRR/GGGG/BBBB <terminator>
+     * Each 8-bit channel is widened to 16-bit by repetition (c -> cc). Like
+     * libghostty, echo the query's own terminator (BEL or ST): an app that
+     * queried with BEL may wait for BEL. */
     char buf[48];
     int n = snprintf(buf, sizeof(buf),
-                     "\x1b]%d;rgb:%02x%02x/%02x%02x/%02x%02x\x1b\\",
-                     osc_number, rgb.r, rgb.r, rgb.g, rgb.g, rgb.b, rgb.b);
+                     "\x1b]%d;rgb:%02x%02x/%02x%02x/%02x%02x%s",
+                     osc_number, rgb.r, rgb.r, rgb.g, rgb.g, rgb.b, rgb.b,
+                     bel_terminated ? "\x07" : "\x1b\\");
     if (n > 0 && (size_t)n < sizeof(buf)) {
         laban_write_terminal_response(s, (const uint8_t *)buf, (size_t)n);
     }
@@ -366,17 +370,37 @@ static void dispatch_kitty_notify(LabanSession *s, const char *payload, size_t l
         (const uint8_t *)joined, out);
 }
 
+/* `bel_terminated` says whether the OSC ended in BEL (else ST), so a reply
+ * can echo the query's terminator. */
 static void dispatch_osc_host(
-    LabanSession *s, int osc_number, const char *payload, size_t len) {
+    LabanSession *s, int osc_number, const char *payload, size_t len,
+    int bel_terminated) {
     if (osc_number == 7) {
         dispatch_osc7(s, payload, len);
         return;
     }
     if (osc_number == 10 || osc_number == 11 || osc_number == 12) {
-        /* Query form is a lone '?'. Sets ("rgb:...", "#rrggbb") belong to
-         * libghostty and must be ignored here. */
-        if (len >= 1 && payload[0] == '?') {
-            respond_osc_color_query(s, osc_number);
+        /* xterm: each ';'-separated param addresses the next dynamic color,
+         * so `OSC 10;?;?` queries 10 then 11 (never past 12). A param that
+         * is exactly '?' is a query (as in libghostty's parser); anything
+         * else is a set ("rgb:...", "#rrggbb"), which belongs to libghostty
+         * and only advances the index here. respond_osc_color_query stays
+         * silent for a color libghostty has already answered.
+         * With colors only partly configured, libghostty has already replied
+         * for the whole sequence by the time this runs, so the fallback's
+         * replies come after its: `11;?;?` with 11 unset and 12 set replies
+         * 12 before 11. */
+        int color = osc_number;
+        size_t start = 0;
+        while (color <= 12) {
+            const char *semi = memchr(payload + start, ';', len - start);
+            size_t end = semi ? (size_t)(semi - payload) : len;
+            if (end - start == 1 && payload[start] == '?') {
+                respond_osc_color_query(s, color, bel_terminated);
+            }
+            if (!semi) break;
+            start = end + 1;
+            color++;
         }
         return;
     }
@@ -522,7 +546,9 @@ void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t 
                 if (sc->osc_number == 52) {
                     if (!sc->osc52_overflow) dispatch_osc52(s);
                 } else if (!sc->payload_overflow) {
-                    dispatch_osc_host(s, sc->osc_number, sc->payload, sc->payload_len);
+                    dispatch_osc_host(
+                        s, sc->osc_number, sc->payload, sc->payload_len,
+                        /* bel_terminated */ 1);
                 }
                 sc->state = OH_NORMAL;
             } else if (b == 0x1B) {
@@ -544,7 +570,9 @@ void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t 
                 if (sc->osc_number == 52) {
                     if (!sc->osc52_overflow) dispatch_osc52(s);
                 } else if (!sc->payload_overflow) {
-                    dispatch_osc_host(s, sc->osc_number, sc->payload, sc->payload_len);
+                    dispatch_osc_host(
+                        s, sc->osc_number, sc->payload, sc->payload_len,
+                        /* bel_terminated */ 0);
                 }
                 sc->state = OH_NORMAL;
             } else if (b == ']') {
