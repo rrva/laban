@@ -112,7 +112,6 @@ final class ControlAttachProxyUpstreamLossTests: XCTestCase {
   ) throws -> LiveControlAttachResponse? {
     let fd = try ControlUDSClient.connect(socketPath: proxy.socketPath)
     defer { Darwin.close(fd) }
-    try ControlFD.setNoSigPipe(fd)
     let line = Data(#"{"method":"GET","path":"\#(path)"}"#.utf8) + Data([0x0A])
     _ = line.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, $0.count, 0) }
     var buffer = [UInt8](repeating: 0, count: 4096)
