@@ -7202,6 +7202,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let moved = model.nudgeDivider(inTab: tabId, path: path, towardsSecond: towardsSecond)
     if moved {
       paneGeometryChanged()
+      // Refresh the splitters now so the one VoiceOver is on reads its new value and
+      // frame, then announce the change on that element.
+      _ = paneSplitterElements()
+      if let element = paneSplitterCache[PaneSplitterKey(tabId: tabId, path: path)] {
+        NSAccessibility.post(element: element, notification: .valueChanged)
+      }
       NSAccessibility.post(element: self, notification: .layoutChanged)
     }
     return moved

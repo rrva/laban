@@ -1724,6 +1724,50 @@ extension AppModelTests {
       (48 + 36 + 4 + 0.5) / 481, accuracy: 1e-9)
   }
 
+  /// Splits along `axis` twice with the app's window insets, nesting the second split in
+  /// the outer split's second side (A / (B / C)) or first side ((A / C) / B), then drags
+  /// the outer divider to both extremes. The nested split keeps its fraction meanwhile.
+  private func assertNestedSplitKeepsEveryPaneAtMinimum(
+    axis: PaneAxis, nestInSecond: Bool, file: StaticString = #filePath, line: UInt = #line
+  ) throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    let open: (Session.ID, LabanTerminalSize, String?) throws -> Session = { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    let insets = TerminalSurfaceInsets(top: 36, left: 14, bottom: 8, right: 8)
+    let area = CGRect(x: 200, y: 0, width: 720, height: 481)
+    model.resizePanes(in: area, insets: insets, cellWidth: 8, cellHeight: 16)
+    let b = try model.splitPane(inTab: tab.id, axis: axis, openSession: open)
+    model.focusPane(inTab: tab.id, sessionId: nestInSecond ? b : tab.focusedSessionId)
+    let c = try model.splitPane(inTab: tab.id, axis: axis, openSession: open)
+    for fraction in [0.99, 0.01] {
+      try model.setSplitFraction(inTab: tab.id, path: [], fraction: fraction)
+      for id in [tab.focusedSessionId, b, c] {
+        let size = model.paneSize(for: id, in: tab.id)
+        if axis == .horizontal {
+          XCTAssertGreaterThanOrEqual(
+            Int(size.rows), AppModel.minimumPaneRows, "fraction \(fraction)", file: file,
+            line: line)
+        } else {
+          XCTAssertGreaterThanOrEqual(
+            Int(size.cols), AppModel.minimumPaneColumns, "fraction \(fraction)", file: file,
+            line: line)
+        }
+      }
+    }
+  }
+
+  func testNestedDownSplitsKeepEveryPaneAtMinimumRows() throws {
+    try assertNestedSplitKeepsEveryPaneAtMinimum(axis: .horizontal, nestInSecond: true)
+    try assertNestedSplitKeepsEveryPaneAtMinimum(axis: .horizontal, nestInSecond: false)
+  }
+
+  func testNestedRightSplitsKeepEveryPaneAtMinimumColumns() throws {
+    try assertNestedSplitKeepsEveryPaneAtMinimum(axis: .vertical, nestInSecond: true)
+    try assertNestedSplitKeepsEveryPaneAtMinimum(axis: .vertical, nestInSecond: false)
+  }
+
   func testPaneInsetsKeepWindowInsetsOnlyAtWindowEdges() {
     let window = TerminalSurfaceInsets(top: 36, left: 14, bottom: 8, right: 8)
     let area = CGRect(x: 200, y: 0, width: 720, height: 481)

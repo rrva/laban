@@ -182,9 +182,21 @@ final class PaneTreeTests: XCTestCase {
 
   func testMinimumExtentSumsAlongAxisAndMaxesAcross() {
     let tree = stackedBetweenColumns  // A | ((B / C) | D)
-    XCTAssertEqual(tree.minimumExtent(along: .vertical, leafMinimum: 10, dividerWidth: 1), 32)
+    // The root holds 0.5, so its second side ((B / C) | D, 21 wide) needs 21 of 43.
+    XCTAssertEqual(tree.minimumExtent(along: .vertical, leafMinimum: 10, dividerWidth: 1), 43)
     XCTAssertEqual(tree.minimumExtent(along: .horizontal, leafMinimum: 3, dividerWidth: 1), 7)
     XCTAssertEqual(first.minimumExtent(along: .vertical, leafMinimum: 10, dividerWidth: 1), 10)
+  }
+
+  func testMinimumSplitExtentFollowsTheFixedFractionsFloor() {
+    // Unequal sides at 0.5: 56 + 60 + 1 = 117 would cut 58 / 58 and leave the second short.
+    XCTAssertEqual(
+      PaneTree.minimumSplitExtent(first: 56, second: 60, fraction: 0.5, dividerWidth: 1), 121)
+    XCTAssertEqual(
+      PaneTree.minimumSplitExtent(first: 10, second: 10, fraction: 0.5, dividerWidth: 1), 21)
+    // A lopsided split needs room for its small share to reach the minimum.
+    XCTAssertEqual(
+      PaneTree.minimumSplitExtent(first: 10, second: 10, fraction: 0.25, dividerWidth: 1), 40)
   }
 
   func testFractionRangeKeepsBothSidesAboveMinimum() throws {

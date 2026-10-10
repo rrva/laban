@@ -438,15 +438,17 @@ final class TerminalBitmapViewDividerTests: XCTestCase {
     let element = try XCTUnwrap(splitters().first)
     let frameBefore = element.accessibilityFrameInParentSpace()
     XCTAssertTrue(element.accessibilityPerformIncrement())
-    let after = try XCTUnwrap(splitters().first)
-    // VoiceOver keeps focus on the element it is interacting with only if it survives.
-    XCTAssertTrue(after === element, "an increment updates the splitter in place")
+    // VoiceOver reads the element it is on straight after the action, without asking the
+    // view for its children again: value and frame must already be current.
     let divider = try XCTUnwrap(harness.dividers.first)
     XCTAssertEqual(
-      (after.accessibilityValue() as? NSNumber)?.doubleValue ?? -1, divider.fraction * 100,
+      (element.accessibilityValue() as? NSNumber)?.doubleValue ?? -1, divider.fraction * 100,
       accuracy: 0.5)
-    XCTAssertGreaterThan(after.accessibilityFrameInParentSpace().midX, frameBefore.midX)
-    XCTAssertEqual(after.accessibilityFrameInParentSpace().midX, divider.rect.midX, accuracy: 0.5)
+    XCTAssertGreaterThan(element.accessibilityFrameInParentSpace().midX, frameBefore.midX)
+    XCTAssertEqual(
+      element.accessibilityFrameInParentSpace().midX, divider.rect.midX, accuracy: 0.5)
+    // VoiceOver keeps focus on the element it is interacting with only if it survives.
+    XCTAssertTrue(splitters().first === element, "an increment updates the splitter in place")
 
     // The screen frame follows the window: it is derived from the parent, not cached.
     let window = NSWindow(

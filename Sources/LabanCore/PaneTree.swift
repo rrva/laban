@@ -284,7 +284,7 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
   ) -> CGFloat {
     switch self {
     case .leaf: return leafMinimum(atStart, atEnd)
-    case .split(let splitAxis, _, let first, let second):
+    case .split(let splitAxis, let fraction, let first, let second):
       let along = splitAxis == axis
       let a = first.minimumExtent(
         along: axis, atStart: atStart, atEnd: along ? false : atEnd,
@@ -292,8 +292,32 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
       let b = second.minimumExtent(
         along: axis, atStart: along ? false : atStart, atEnd: atEnd,
         dividerWidth: dividerWidth, leafMinimum: leafMinimum)
-      return along ? a + b + dividerWidth : max(a, b)
+      guard along else { return max(a, b) }
+      return Self.minimumSplitExtent(
+        first: a, second: b, fraction: fraction, dividerWidth: dividerWidth)
     }
+  }
+
+  /// The smallest whole-pixel extent at which a split held at `fraction` gives its first
+  /// side at least `first` and its second side at least `second`. Moving an outer divider
+  /// keeps this split's fraction, so the cut is `partition`'s floor at that fraction, not
+  /// wherever both sides would fit; with unequal minimums `first + second + divider` can
+  /// leave one side short.
+  static func minimumSplitExtent(
+    first: CGFloat, second: CGFloat, fraction: Double, dividerWidth: CGFloat
+  ) -> CGFloat {
+    let share = CGFloat(fraction.isFinite ? clampFraction(fraction) : 0.5)
+    let divider = max(0, dividerWidth)
+    func fits(_ extent: CGFloat) -> Bool {
+      let cut = floor(extent * share)
+      return cut >= first && extent - cut - min(divider, extent - cut) >= second
+    }
+    // Both bounds are necessary, and each side's size never shrinks as the extent
+    // grows a whole pixel, so the first extent that fits from here is the smallest.
+    // The second side gains a pixel at least every 1 / (1 - share) pixels: a few steps.
+    var extent = max(0, ceil(max(first + second + divider, share > 0 ? first / share : 0)))
+    while !fits(extent) { extent += 1 }
+    return extent
   }
 
   /// The fractions at which the split at `path` keeps both sides at or above their
