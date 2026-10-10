@@ -182,9 +182,21 @@ final class PaneTreeTests: XCTestCase {
 
   func testMinimumExtentSumsAlongAxisAndMaxesAcross() {
     let tree = stackedBetweenColumns  // A | ((B / C) | D)
-    XCTAssertEqual(tree.minimumExtent(along: .vertical, leafMinimum: 10, dividerWidth: 1), 32)
+    // The root holds 0.5, so its second side ((B / C) | D, 21 wide) needs 21 of 43.
+    XCTAssertEqual(tree.minimumExtent(along: .vertical, leafMinimum: 10, dividerWidth: 1), 43)
     XCTAssertEqual(tree.minimumExtent(along: .horizontal, leafMinimum: 3, dividerWidth: 1), 7)
     XCTAssertEqual(first.minimumExtent(along: .vertical, leafMinimum: 10, dividerWidth: 1), 10)
+  }
+
+  func testMinimumSplitExtentFollowsTheFixedFractionsFloor() {
+    // Unequal sides at 0.5: 56 + 60 + 1 = 117 would cut 58 / 58 and leave the second short.
+    XCTAssertEqual(
+      PaneTree.minimumSplitExtent(first: 56, second: 60, fraction: 0.5, dividerWidth: 1), 121)
+    XCTAssertEqual(
+      PaneTree.minimumSplitExtent(first: 10, second: 10, fraction: 0.5, dividerWidth: 1), 21)
+    // A lopsided split needs room for its small share to reach the minimum.
+    XCTAssertEqual(
+      PaneTree.minimumSplitExtent(first: 10, second: 10, fraction: 0.25, dividerWidth: 1), 40)
   }
 
   func testFractionRangeKeepsBothSidesAboveMinimum() throws {
@@ -214,6 +226,28 @@ final class PaneTreeTests: XCTestCase {
       stackedBetweenColumns.fractionRange(
         at: [], in: area, minimumWidth: 100, minimumHeight: 30, dividerWidth: 1))
     XCTAssertEqual(deep.upperBound, (1000.0 - 1 - 201) / 1000, accuracy: 1e-9)
+  }
+
+  func testFractionRangeChargesTheWindowEdgeReserveOnlyToPanesAtTheEdge() throws {
+    let area = CGRect(x: 0, y: 0, width: 1000, height: 600)
+    // Only a pane whose top touches the window's top edge pays a 20 pixel reserve.
+    let leafMinimum: (PaneAxis, Bool, Bool) -> CGFloat = { axis, atStart, _ in
+      axis == .horizontal ? 30 + (atStart ? 20 : 0) : 100
+    }
+    let stacked = PaneTree.split(
+      axis: .horizontal, fraction: 0.5, first: .leaf(sessionId: "top"),
+      second: .split(
+        axis: .horizontal, fraction: 0.5, first: .leaf(sessionId: "middle"),
+        second: .leaf(sessionId: "bottom")))
+    let root = try XCTUnwrap(
+      stacked.fractionRange(at: [], in: area, dividerWidth: 1, leafMinimum: leafMinimum))
+    XCTAssertEqual(root.lowerBound, 50.0 / 600, accuracy: 1e-9)
+    XCTAssertEqual(root.upperBound, (600.0 - 1 - 61) / 600, accuracy: 1e-9)
+    // The inner split's container starts below the root divider: no reserve at all.
+    let inner = try XCTUnwrap(
+      stacked.fractionRange(at: [.second], in: area, dividerWidth: 1, leafMinimum: leafMinimum))
+    XCTAssertEqual(inner.lowerBound, 30.0 / 299, accuracy: 1e-9)
+    XCTAssertEqual(inner.upperBound, (299.0 - 1 - 30) / 299, accuracy: 1e-9)
   }
 
   func testNudgeTargetFindsNearestEnclosingSplitOnThatSide() {

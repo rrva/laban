@@ -4593,9 +4593,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       effectiveRendererIsSlug: backend is SlugGlyphRenderer,
       hoverPreviewEnabled: HoverPreviewSettings.enabled,
       deferHoverPreviewUpdate: deferHoverPreviewUpdate,
-      panes: activeTab.visibleLayout(
-        in: CGRect(x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: h)
-      ).map {
+      panes: activeTab.visibleLayout(in: paneAreaRect).map {
         TerminalSurfacePaneRequest(
           sessionId: $0.sessionId, rect: $0.rect,
           isFocused: $0.sessionId == activeTab.focusedSessionId,
@@ -7154,21 +7152,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return (super.accessibilityChildren() ?? []) + splitters
   }
 
-  /// Rebuilt whenever the divider geometry changes so no stale element survives a layout
-  /// change; reused while it is unchanged so VoiceOver keeps its focus.
+  /// One element per divider, keyed by tab and path: a divider that moves keeps its
+  /// element (VoiceOver keeps focus) and only its value, orientation and frame change.
+  /// The frame is in the view's space, so the screen frame follows the window.
   func paneSplitterElements() -> [PaneSplitterAccessibilityElement] {
     guard sessionCoordinator?.usesRemoteSnapshots != true, let tab = model.activeTab else {
-      paneSplitterCache = ([], [])
+      paneSplitterCache = [:]
       return []
     }
     let dividers = tab.visibleDividers(in: paneAreaRect)
-    let signature = dividers.map { PaneSplitterSignature(divider: $0, tabId: tab.id) }
-    if paneSplitterCache.signature == signature { return paneSplitterCache.elements }
+    var cache: [PaneSplitterKey: PaneSplitterAccessibilityElement] = [:]
     let elements = dividers.map { divider -> PaneSplitterAccessibilityElement in
-      let element = PaneSplitterAccessibilityElement()
-      element.setAccessibilityRole(.splitter)
-      element.setAccessibilityLabel(L10n.tr("Pane divider"))
-      element.setAccessibilityParent(self)
+      let key = PaneSplitterKey(tab: tab, divider: divider)
+      let element = paneSplitterCache[key] ?? makePaneSplitterElement(for: key)
       element.setAccessibilityOrientation(divider.axis == .vertical ? .vertical : .horizontal)
       element.setAccessibilityValue(NSNumber(value: (divider.fraction * 100).rounded()))
       // The 1 pixel line is too thin to target: use the mouse grab zone.
@@ -7176,27 +7172,47 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         divider.axis == .vertical
         ? divider.rect.insetBy(dx: -Self.dividerGrabZone, dy: 0)
         : divider.rect.insetBy(dx: 0, dy: -Self.dividerGrabZone)
-      let windowRect = convert(grab, to: nil)
-      element.setAccessibilityFrame(window?.convertToScreen(windowRect) ?? windowRect)
-      let tabId = tab.id
-      let path = divider.path
-      // Increment grows the first pane (divider towards second); decrement shrinks it.
-      element.onIncrement = { [weak self] in
-        self?.nudgeDivider(tabId: tabId, path: path, towardsSecond: true) ?? false
-      }
-      element.onDecrement = { [weak self] in
-        self?.nudgeDivider(tabId: tabId, path: path, towardsSecond: false) ?? false
-      }
+      element.setAccessibilityFrameInParentSpace(grab)
+      cache[key] = element
       return element
     }
-    paneSplitterCache = (signature, elements)
+    paneSplitterCache = cache
     return elements
   }
 
-  private func nudgeDivider(tabId: Tab.ID, path: PanePath, towardsSecond: Bool) -> Bool {
-    let moved = model.nudgeDivider(inTab: tabId, path: path, towardsSecond: towardsSecond)
+  private func makePaneSplitterElement(for key: PaneSplitterKey) -> PaneSplitterAccessibilityElement
+  {
+    let element = PaneSplitterAccessibilityElement()
+    element.setAccessibilityRole(.splitter)
+    element.setAccessibilityLabel(L10n.tr("Pane divider"))
+    element.setAccessibilityParent(self)
+    // Increment grows the first pane (divider towards second); decrement shrinks it.
+    element.onIncrement = { [weak self] in
+      self?.nudgeDivider(key, towardsSecond: true) ?? false
+    }
+    element.onDecrement = { [weak self] in
+      self?.nudgeDivider(key, towardsSecond: false) ?? false
+    }
+    return element
+  }
+
+  /// Moves the divider `key` names, but only while the split at its path is still that
+  /// divider: an element VoiceOver kept from before a pane closed must not move another.
+  private func nudgeDivider(_ key: PaneSplitterKey, towardsSecond: Bool) -> Bool {
+    guard let tab = model.activeTab, tab.id == key.tabId,
+      let divider = tab.visibleDividers(in: paneAreaRect).first(where: { $0.path == key.path }),
+      PaneSplitterKey(tab: tab, divider: divider) == key
+    else { return false }
+    let moved = model.nudgeDivider(
+      inTab: key.tabId, path: key.path, towardsSecond: towardsSecond)
     if moved {
       paneGeometryChanged()
+      // Refresh the splitters now so the one VoiceOver is on reads its new value and
+      // frame, then announce the change on that element.
+      _ = paneSplitterElements()
+      if let element = paneSplitterCache[key] {
+        NSAccessibility.post(element: element, notification: .valueChanged)
+      }
       NSAccessibility.post(element: self, notification: .layoutChanged)
     }
     return moved
@@ -9011,8 +9027,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// window edge, a small padding on edges that face a divider.
   private func contentInsets(forPane rect: CGRect) -> NSEdgeInsets {
     let window = Self.contentInsets
-    let area = CGRect(
-      x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+    let area = paneAreaRect
     let insets = TerminalSurfaceInsets(
       top: window.top, left: window.left, bottom: window.bottom, right: window.right
     ).forPane(rect, in: area)
@@ -9027,7 +9042,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   var focusedPaneRect: CGRect {
-    let area = terminalAreaRect
+    let area = paneAreaRect
     guard sessionCoordinator?.usesRemoteSnapshots != true, let tab = model.activeTab else {
       return area
     }
@@ -9041,10 +9056,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return focusedPaneRect.contains(point)
         ? PaneRect(sessionId: tab.focusedSessionId, rect: focusedPaneRect) : nil
     }
-    return tab.visibleLayout(
-      in: CGRect(
-        x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
-    ).first { $0.rect.contains(point) }
+    return tab.visibleLayout(in: paneAreaRect).first { $0.rect.contains(point) }
   }
 
   override func mouseDown(with event: NSEvent) {
@@ -9504,8 +9516,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// a pane focused by this very click.
   private func paneRows(for rect: CGRect) -> Int {
     guard activeTabIsSplit, let tab = model.activeTab else { return lastRows }
-    let area = CGRect(
-      x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+    let area = paneAreaRect
     guard let pane = tab.visibleLayout(in: area).first(where: { $0.rect == rect }) else {
       return lastRows
     }
@@ -9550,8 +9561,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func session(forPane paneRect: CGRect?) -> Session? {
     guard let tab = model.activeTab else { return nil }
     if let paneRect, activeTabIsSplit {
-      let area = CGRect(
-        x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+      let area = paneAreaRect
       if let pane = tab.visibleLayout(in: area).first(where: { $0.rect == paneRect }) {
         return model.session(forSessionID: pane.sessionId)
       }
@@ -10287,12 +10297,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   static let dividerGrabZone: CGFloat = 3
 
   private var dividerDrag: PaneDividerDrag?
-  private var paneSplitterCache:
-    (signature: [PaneSplitterSignature], elements: [PaneSplitterAccessibilityElement]) = ([], [])
+  private var paneSplitterCache: [PaneSplitterKey: PaneSplitterAccessibilityElement] = [:]
 
+  /// The rect panes are laid out in: the terminal area truncated the way `AppModel`
+  /// sizes panes, so drawing, hit tests and the model's minimums all use one layout.
   private var paneAreaRect: CGRect {
-    CGRect(
-      x: sidebarWidth, y: 0, width: max(0, bounds.width - sidebarWidth), height: bounds.height)
+    let insets = Self.contentInsets
+    return TerminalSurfaceInsets(
+      top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right
+    ).layoutArea(terminalAreaRect)
   }
 
   private static func cursorStyle(for axis: PaneAxis) -> TerminalHoverCursorStyle {

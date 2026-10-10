@@ -75,14 +75,38 @@ public struct TerminalSurfaceInsets: Equatable, Sendable {
   /// window insets, so only a top pane reserves the titlebar strip; edges that face a
   /// divider keep at most `dividerPadding`. A pane filling the area gets `self`.
   public func forPane(_ pane: CGRect, in area: CGRect) -> TerminalSurfaceInsets {
-    func edge(_ window: CGFloat, atWindowEdge: Bool) -> CGFloat {
-      atWindowEdge ? window : min(window, Self.dividerPadding)
-    }
-    return TerminalSurfaceInsets(
-      top: edge(top, atWindowEdge: pane.maxY >= area.maxY),
-      left: edge(left, atWindowEdge: pane.minX <= area.minX),
-      bottom: edge(bottom, atWindowEdge: pane.minY <= area.minY),
-      right: edge(right, atWindowEdge: pane.maxX >= area.maxX))
+    TerminalSurfaceInsets(
+      top: Self.edge(top, atWindowEdge: pane.maxY >= area.maxY),
+      left: Self.edge(left, atWindowEdge: pane.minX <= area.minX),
+      bottom: Self.edge(bottom, atWindowEdge: pane.minY <= area.minY),
+      right: Self.edge(right, atWindowEdge: pane.maxX >= area.maxX))
+  }
+
+  /// The rect panes are laid out in for the terminal `area` with these window insets:
+  /// the grid area inside the insets truncated to whole pixels, plus the insets.
+  /// `AppModel` sizes the panes in exactly this area, so every caller that lays panes
+  /// out (view, renderer, hit tests) must use it too, or a fractional view size cuts a
+  /// pane up to a pixel short of the size the model checked.
+  public func layoutArea(_ area: CGRect) -> CGRect {
+    CGRect(
+      x: area.minX, y: area.minY,
+      width: floor(max(0, area.width - left - right)) + left + right,
+      height: floor(max(0, area.height - top - bottom)) + top + bottom)
+  }
+
+  /// The inset a pane keeps on one edge: the window inset at the window edge, at most
+  /// `dividerPadding` where the edge faces a divider.
+  public static func edge(_ window: CGFloat, atWindowEdge: Bool) -> CGFloat {
+    atWindowEdge ? window : min(window, dividerPadding)
+  }
+
+  /// The insets a pane pays along `axis` (left plus right, or top plus bottom) when its
+  /// first side (left or top) and second side (right or bottom) do or do not touch the
+  /// window edge. Matches `forPane`, so minimum-size checks agree with the layout.
+  public func extent(along axis: PaneAxis, atStart: Bool, atEnd: Bool) -> CGFloat {
+    axis == .vertical
+      ? Self.edge(left, atWindowEdge: atStart) + Self.edge(right, atWindowEdge: atEnd)
+      : Self.edge(top, atWindowEdge: atStart) + Self.edge(bottom, atWindowEdge: atEnd)
   }
 }
 
@@ -1069,9 +1093,10 @@ public final class TerminalSurfaceController {
     _ request: TerminalSurfaceFrameRequest, tab: Tab,
     snapshotCommandsHook: SnapshotCommandsHook?
   ) -> TerminalSurfaceFrame? {
-    let area = CGRect(
-      x: sidebarWidth, y: 0, width: max(0, request.viewportWidth - sidebarWidth),
-      height: request.viewportHeight)
+    let area = request.insets.layoutArea(
+      CGRect(
+        x: sidebarWidth, y: 0, width: max(0, request.viewportWidth - sidebarWidth),
+        height: request.viewportHeight))
     let layout = tab.visibleLayout(in: area)
     let panes =
       request.panes.isEmpty
