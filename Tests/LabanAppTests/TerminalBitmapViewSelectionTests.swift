@@ -496,6 +496,117 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     XCTAssertEqual(copied, "line 08\nline 09\nline 10\nline")
   }
 
+  /// Double-click a word, then hold the drag below the content bottom with the
+  /// pointer inside another word: every 20 Hz autoscroll step must re-extend in
+  /// word grain to the row it scrolled in, so a copy mid-autoscroll ends on a
+  /// whole word of the newest row (issue #43).
+  func testDragEdgeAutoscrollKeepsWordGrain() throws {
+    let drag = try copyDuringEdgeAutoscroll(
+      clickCount: 2, initialSelection: "alpha", downward: true)
+    assertGrewByScrolledRows(drag)
+    XCTAssertTrue(
+      drag.during.hasSuffix("alpha bravo"),
+      "autoscroll must keep the word grain; copied: \(drag.during.debugDescription)")
+  }
+
+  /// Triple-click variant: autoscroll steps must keep whole lines (issue #43).
+  func testDragEdgeAutoscrollKeepsLineGrain() throws {
+    let drag = try copyDuringEdgeAutoscroll(
+      clickCount: 3, initialSelection: "l13 alpha bravo", downward: true)
+    assertGrewByScrolledRows(drag)
+    XCTAssertTrue(
+      drag.during.hasSuffix("alpha bravo"),
+      "autoscroll must keep the line grain; copied: \(drag.during.debugDescription)")
+  }
+
+  /// Upward mirror: double-click near the bottom and hold the drag above the
+  /// content top inside "alpha"; the selection must start on a whole word of
+  /// the row each autoscroll step scrolls in (issue #43).
+  func testDragEdgeAutoscrollUpwardKeepsWordGrain() throws {
+    let drag = try copyDuringEdgeAutoscroll(
+      clickCount: 2, initialSelection: "bravo", downward: false)
+    assertGrewByScrolledRows(drag)
+    XCTAssertTrue(
+      drag.during.hasPrefix("alpha bravo\n"),
+      "autoscroll must keep the word grain; copied: \(drag.during.debugDescription)")
+  }
+
+  private struct EdgeAutoscrollDrag {
+    var beforeTick: String
+    var during: String
+    var scrolledRows: Int
+  }
+
+  /// The selection must have grown by exactly the rows autoscroll brought in,
+  /// so it reaches the newest row rather than staying where the drag left it.
+  private func assertGrewByScrolledRows(
+    _ drag: EdgeAutoscrollDrag, file: StaticString = #filePath, line: UInt = #line
+  ) {
+    func lines(_ text: String) -> Int {
+      text.split(separator: "\n", omittingEmptySubsequences: false).count
+    }
+    XCTAssertGreaterThan(
+      drag.scrolledRows, 0, "precondition: autoscroll moved", file: file, line: line)
+    XCTAssertEqual(
+      lines(drag.during), lines(drag.beforeTick) + drag.scrolledRows,
+      "selection must extend to the scrolled-in row; "
+        + "before: \(drag.beforeTick.debugDescription), "
+        + "during: \(drag.during.debugDescription)",
+      file: file, line: line)
+  }
+
+  /// Fills 30 "lNN alpha bravo" lines and clicks `clickCount` times: downward
+  /// scrolls into history and clicks "alpha" on row 1, then drags below the
+  /// content bottom inside "bravo"; upward stays at the bottom, clicks "bravo"
+  /// on row 3, then drags above the content top inside "alpha". Returns the
+  /// selection copied before and during autoscroll and the rows scrolled.
+  private func copyDuringEdgeAutoscroll(
+    clickCount: Int, initialSelection: String, downward: Bool
+  ) throws -> EdgeAutoscrollDrag {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+    let session = try XCTUnwrap(harness.model.session(forTab: harness.model.activeTab!.id))
+    session.write(
+      Array((1...30).map { String(format: "l%02d alpha bravo\r\n", $0) }.joined().utf8))
+    session.poll()
+    harness.view.advanceFrame()
+    func offset() -> Int? { session.viewportState()?.viewportOffset }
+    if downward {
+      let bottomOffset = try XCTUnwrap(offset())
+      scrollTowardHistory(rows: 15, in: harness, session: session)
+      XCTAssertLessThan(
+        try XCTUnwrap(offset()), bottomOffset,
+        "precondition: viewport scrolled into history so bottom-edge autoscroll can move")
+    }
+
+    // "alpha" spans cols 4...8 and "bravo" cols 10...14.
+    let press = point(row: downward ? 1 : 3, col: downward ? 5 : 12, in: harness)
+    harness.view.mouseDown(
+      with: mouseEvent(type: .leftMouseDown, at: press, clickCount: clickCount))
+    XCTAssertEqual(copyText(from: harness.view), initialSelection, "precondition: multi-click")
+
+    var edge = point(row: downward ? harness.rows - 1 : 0, col: downward ? 12 : 5, in: harness)
+    edge.y = downward ? -5 : harness.view.bounds.height - 1
+    harness.view.mouseDragged(
+      with: mouseEvent(type: .leftMouseDragged, at: edge, clickCount: clickCount))
+    let beforeTick = try XCTUnwrap(copyText(from: harness.view))
+    XCTAssertTrue(
+      downward ? beforeTick.hasSuffix("bravo") : beforeTick.hasPrefix("alpha"),
+      "precondition: drag keeps grain: \(beforeTick.debugDescription)")
+
+    // Pump the run loop until the 20 Hz autoscroll timer has moved the viewport.
+    let offsetBeforeTicks = try XCTUnwrap(offset())
+    let deadline = Date().addingTimeInterval(2)
+    while offset() == offsetBeforeTicks, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+    let scrolledRows = abs(try XCTUnwrap(offset()) - offsetBeforeTicks)
+    let during = try XCTUnwrap(copyText(from: harness.view))
+    harness.view.mouseUp(
+      with: mouseEvent(type: .leftMouseUp, at: edge, clickCount: clickCount))
+    return EdgeAutoscrollDrag(beforeTick: beforeTick, during: during, scrolledRows: scrolledRows)
+  }
+
   func testScrollWheelInTitlebarStripDoesNotScrollTerminalViewport() throws {
     let harness = try makeHarness(rows: 5, cols: 20)
     defer { harness.restoreRenderer() }
