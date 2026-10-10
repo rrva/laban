@@ -908,19 +908,22 @@ public final class AppModel {
   }
 
   /// The fraction range and container extent (in layout pixels) for the split at
-  /// `path`, honouring the 10 by 3 cell minimum plus the pane insets.
+  /// `path`, honouring the 10 by 3 cell minimum plus each pane's own insets: only a
+  /// pane at the window's top edge pays the titlebar strip.
   private func splitFractionBounds(
     in tab: Tab, path: PanePath
   ) -> (range: ClosedRange<Double>, extent: CGFloat, divider: PaneDivider)? {
     let area = terminalAreaRect
+    let insets = paneInsets
+    let minimumWidth = CGFloat(Self.minimumPaneColumns) * CGFloat(currentSize.cell_width)
+    let minimumHeight = CGFloat(Self.minimumPaneRows) * CGFloat(currentSize.cell_height)
     guard let divider = tab.panes.dividers(in: area).first(where: { $0.path == path }),
       let range = tab.panes.fractionRange(
-        at: path, in: area,
-        minimumWidth: CGFloat(Self.minimumPaneColumns) * CGFloat(currentSize.cell_width)
-          + paneInsets.left + paneInsets.right,
-        minimumHeight: CGFloat(Self.minimumPaneRows) * CGFloat(currentSize.cell_height)
-          + paneInsets.top + paneInsets.bottom,
-        dividerWidth: 1)
+        at: path, in: area, dividerWidth: 1,
+        leafMinimum: { axis, atStart, atEnd in
+          (axis == .vertical ? minimumWidth : minimumHeight)
+            + insets.extent(along: axis, atStart: atStart, atEnd: atEnd)
+        })
     else { return nil }
     let extent = divider.axis == .vertical ? divider.container.width : divider.container.height
     return (range, extent, divider)

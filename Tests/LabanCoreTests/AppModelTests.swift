@@ -1701,6 +1701,29 @@ extension AppModelTests {
     XCTAssertEqual(below.pixel_width, 720 - 14 - 8)
   }
 
+  func testDownSplitLowerPaneShrinksToMinimumRowsWithoutTitlebarReserve() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    let lower = try model.splitPane(inTab: tab.id, axis: .horizontal) { id, size, _ in
+      try Session.fixture(size: size, sessionID: id)
+    }
+    let insets = TerminalSurfaceInsets(top: 36, left: 14, bottom: 8, right: 8)
+    model.resizePanes(
+      in: CGRect(x: 200, y: 0, width: 720, height: 481), insets: insets,
+      cellWidth: 8, cellHeight: 16)
+    // The lower pane never shows the titlebar strip, so its minimum is 3 rows plus a
+    // divider padding and the window bottom: 48 + 4 + 8 = 60 pixels, not 48 + 36 + 8.
+    try model.setSplitFraction(inTab: tab.id, path: [], fraction: 0.99)
+    XCTAssertEqual(Int(model.paneSize(for: lower, in: tab.id).rows), AppModel.minimumPaneRows)
+    // The top pane still keeps the titlebar strip on top of its 3 rows.
+    try model.setSplitFraction(inTab: tab.id, path: [], fraction: 0.01)
+    XCTAssertEqual(
+      Int(model.paneSize(for: tab.focusedSessionId, in: tab.id).rows), AppModel.minimumPaneRows)
+    XCTAssertEqual(
+      try XCTUnwrap(model.clampedSplitFraction(inTab: tab.id, path: [], fraction: 0)),
+      (48 + 36 + 4 + 0.5) / 481, accuracy: 1e-9)
+  }
+
   func testPaneInsetsKeepWindowInsetsOnlyAtWindowEdges() {
     let window = TerminalSurfaceInsets(top: 36, left: 14, bottom: 8, right: 8)
     let area = CGRect(x: 200, y: 0, width: 720, height: 481)

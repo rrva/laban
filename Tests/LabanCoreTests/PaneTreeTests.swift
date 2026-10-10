@@ -216,6 +216,28 @@ final class PaneTreeTests: XCTestCase {
     XCTAssertEqual(deep.upperBound, (1000.0 - 1 - 201) / 1000, accuracy: 1e-9)
   }
 
+  func testFractionRangeChargesTheWindowEdgeReserveOnlyToPanesAtTheEdge() throws {
+    let area = CGRect(x: 0, y: 0, width: 1000, height: 600)
+    // Only a pane whose top touches the window's top edge pays a 20 pixel reserve.
+    let leafMinimum: (PaneAxis, Bool, Bool) -> CGFloat = { axis, atStart, _ in
+      axis == .horizontal ? 30 + (atStart ? 20 : 0) : 100
+    }
+    let stacked = PaneTree.split(
+      axis: .horizontal, fraction: 0.5, first: .leaf(sessionId: "top"),
+      second: .split(
+        axis: .horizontal, fraction: 0.5, first: .leaf(sessionId: "middle"),
+        second: .leaf(sessionId: "bottom")))
+    let root = try XCTUnwrap(
+      stacked.fractionRange(at: [], in: area, dividerWidth: 1, leafMinimum: leafMinimum))
+    XCTAssertEqual(root.lowerBound, 50.0 / 600, accuracy: 1e-9)
+    XCTAssertEqual(root.upperBound, (600.0 - 1 - 61) / 600, accuracy: 1e-9)
+    // The inner split's container starts below the root divider: no reserve at all.
+    let inner = try XCTUnwrap(
+      stacked.fractionRange(at: [.second], in: area, dividerWidth: 1, leafMinimum: leafMinimum))
+    XCTAssertEqual(inner.lowerBound, 30.0 / 299, accuracy: 1e-9)
+    XCTAssertEqual(inner.upperBound, (299.0 - 1 - 30) / 299, accuracy: 1e-9)
+  }
+
   func testNudgeTargetFindsNearestEnclosingSplitOnThatSide() {
     let tree = stackedBetweenColumns  // A | ((B / C) | D)
     XCTAssertEqual(tree.nudgeTarget(for: "left", direction: .right), [])
