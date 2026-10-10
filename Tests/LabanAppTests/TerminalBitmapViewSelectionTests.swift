@@ -496,6 +496,69 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     XCTAssertEqual(copied, "line 08\nline 09\nline 10\nline")
   }
 
+  /// Double-click a word, then hold the drag below the content bottom with the
+  /// pointer inside another word: every 20 Hz autoscroll step must re-extend in
+  /// word grain, so a copy mid-autoscroll ends on a whole word (issue #43).
+  func testDragEdgeAutoscrollKeepsWordGrain() throws {
+    let copied = try copyDuringBottomEdgeAutoscroll(clickCount: 2, initialSelection: "alpha")
+    XCTAssertTrue(
+      copied.hasSuffix("bravo"),
+      "autoscroll must keep the word grain; copied: \(copied.debugDescription)")
+  }
+
+  /// Triple-click variant: autoscroll steps must keep whole lines (issue #43).
+  func testDragEdgeAutoscrollKeepsLineGrain() throws {
+    let copied = try copyDuringBottomEdgeAutoscroll(
+      clickCount: 3, initialSelection: "l13 alpha bravo")
+    XCTAssertTrue(
+      copied.hasSuffix("alpha bravo"),
+      "autoscroll must keep the line grain; copied: \(copied.debugDescription)")
+  }
+
+  /// Scrolls into history, clicks `clickCount` times on "alpha" in row 1, drags
+  /// below the content bottom inside "bravo", lets the autoscroll pump tick,
+  /// and returns the selection copied while autoscroll is running.
+  private func copyDuringBottomEdgeAutoscroll(
+    clickCount: Int, initialSelection: String
+  ) throws -> String {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+    let session = try XCTUnwrap(harness.model.session(forTab: harness.model.activeTab!.id))
+    session.write(
+      Array((1...30).map { String(format: "l%02d alpha bravo\r\n", $0) }.joined().utf8))
+    session.poll()
+    harness.view.advanceFrame()
+    let bottomOffset = try XCTUnwrap(session.viewportState()?.viewportOffset)
+    scrollTowardHistory(rows: 15, in: harness, session: session)
+    XCTAssertLessThan(
+      try XCTUnwrap(session.viewportState()?.viewportOffset), bottomOffset,
+      "precondition: viewport scrolled into history so bottom-edge autoscroll can move")
+
+    // "alpha" spans cols 4...8 on row 1.
+    let press = point(row: 1, col: 5, in: harness)
+    harness.view.mouseDown(
+      with: mouseEvent(type: .leftMouseDown, at: press, clickCount: clickCount))
+    XCTAssertEqual(copyText(from: harness.view), initialSelection, "precondition: multi-click")
+
+    // Drag below the content bottom with the pointer inside "bravo" (cols 10...14).
+    var below = point(row: harness.rows - 1, col: 12, in: harness)
+    below.y = -5
+    harness.view.mouseDragged(
+      with: mouseEvent(type: .leftMouseDragged, at: below, clickCount: clickCount))
+    let beforeTick = try XCTUnwrap(copyText(from: harness.view))
+    XCTAssertTrue(beforeTick.hasSuffix("bravo"), "precondition: drag keeps grain: \(beforeTick)")
+
+    let offsetBeforeTicks = session.viewportState()?.viewportOffset
+    RunLoop.current.run(until: Date().addingTimeInterval(0.12))
+    XCTAssertNotEqual(
+      session.viewportState()?.viewportOffset, offsetBeforeTicks,
+      "precondition: autoscroll ticks fired and moved the viewport")
+    let duringAutoscroll = try XCTUnwrap(copyText(from: harness.view))
+    harness.view.mouseUp(
+      with: mouseEvent(type: .leftMouseUp, at: below, clickCount: clickCount))
+    return duringAutoscroll
+  }
+
   func testScrollWheelInTitlebarStripDoesNotScrollTerminalViewport() throws {
     let harness = try makeHarness(rows: 5, cols: 20)
     defer { harness.restoreRenderer() }
