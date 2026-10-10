@@ -5,7 +5,16 @@ public enum ControlUDSClient {
   public static func connect(socketPath: String) throws -> Int32 {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw ControlUDSClientError.socketFailed }
-    try ControlFD.setCloseOnExec(fd)
+    do {
+      try ControlFD.setCloseOnExec(fd)
+      // Before connect, not after: a server may answer and close the moment
+      // it accepts (the agent proxy's 403/429 rejections), and Darwin refuses
+      // setsockopt on a socket whose peer has closed (EINVAL).
+      try ControlFD.setNoSigPipe(fd)
+    } catch {
+      Darwin.close(fd)
+      throw error
+    }
 
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)

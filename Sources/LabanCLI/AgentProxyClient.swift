@@ -54,11 +54,7 @@ enum AgentProxyClient {
     encoder.outputFormatting = [.sortedKeys]
     let payload = try encoder.encode(request)
     let line = payload + Data([0x0A])
-    try sendAll(fd: fd, data: line)
-
-    guard let raw = try readLine(fd: fd, maxBytes: maxResponseBytes) else {
-      throw AgentProxyClientError.invalidResponse
-    }
+    let raw = try sendThenReadLine(fd: fd, data: line)
     return try JSONDecoder().decode(AgentProxyResponse.self, from: raw)
   }
 
@@ -71,10 +67,7 @@ enum AgentProxyClient {
     while let line = Swift.readLine(strippingNewline: false) {
       let trimmed = line.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
       guard !trimmed.isEmpty else { continue }
-      try sendAll(fd: fd, data: Data((trimmed + "\n").utf8))
-      guard let raw = try readLine(fd: fd, maxBytes: maxResponseBytes) else {
-        throw AgentProxyClientError.invalidResponse
-      }
+      let raw = try sendThenReadLine(fd: fd, data: Data((trimmed + "\n").utf8))
       guard let text = String(data: raw, encoding: .utf8) else {
         throw AgentProxyClientError.invalidResponse
       }
@@ -174,9 +167,9 @@ enum AgentProxyClient {
 
   private static func connect(proxyURL: String) throws -> Int32 {
     do {
-      let fd = try ControlUDSClient.connect(socketPath: proxyURL)
-      try ControlFD.setNoSigPipe(fd)
-      return fd
+      // `connect` returns the socket already SIGPIPE-safe; setting it again
+      // here would fail with EINVAL whenever the proxy rejects and closes first.
+      return try ControlUDSClient.connect(socketPath: proxyURL)
     } catch let error as NSError where error.domain == NSPOSIXErrorDomain {
       throw AgentProxyClientError.connectionFailed(Int32(error.code))
     } catch {
@@ -184,18 +177,38 @@ enum AgentProxyClient {
     }
   }
 
-  private static func sendAll(fd: Int32, data: Data) throws {
-    try data.withUnsafeBytes { raw in
-      guard let base = raw.baseAddress else { return }
+  /// Sends one request line and reads the proxy's response line. The proxy
+  /// rejects a forbidden peer, a busy proxy, or an oversized line by writing
+  /// its error response and closing without reading the request, so the send
+  /// can fail with EPIPE while that response sits in the receive buffer. The
+  /// response, not the broken pipe, is the answer the caller needs.
+  private static func sendThenReadLine(fd: Int32, data: Data) throws -> Data {
+    if let sendErrno = sendAll(fd: fd, data: data) {
+      guard sendErrno == EPIPE,
+        let raw = try readLine(fd: fd, maxBytes: maxResponseBytes)
+      else {
+        throw AgentProxyClientError.sendFailed
+      }
+      return raw
+    }
+    guard let raw = try readLine(fd: fd, maxBytes: maxResponseBytes) else {
+      throw AgentProxyClientError.invalidResponse
+    }
+    return raw
+  }
+
+  /// Returns nil once every byte is sent, else the errno that stopped it.
+  private static func sendAll(fd: Int32, data: Data) -> Int32? {
+    data.withUnsafeBytes { raw -> Int32? in
+      guard let base = raw.baseAddress else { return nil }
       var sent = 0
       while sent < raw.count {
         let n = Darwin.send(fd, base.advanced(by: sent), raw.count - sent, 0)
         if n < 0 && errno == EINTR { continue }
-        guard n > 0 else {
-          throw AgentProxyClientError.sendFailed
-        }
+        guard n > 0 else { return n < 0 ? errno : EIO }
         sent += n
       }
+      return nil
     }
   }
 
