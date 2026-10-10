@@ -37,7 +37,7 @@ enum LabanArgumentError: Error, Equatable {
 struct LabanArgumentParser {
   /// Commands that take no flags beyond the shared ones parsed in `parse`.
   /// `session`, `context`, `wait` and `proposal` hand their remaining args to
-  /// a subcommand parser that owns its own flags and rejects extras itself.
+  /// a subcommand parser that owns its own flags and checks its extras.
   private static let commandsWithoutSubcommandParser: Set<String> = [
     "discover", "status", "health", "capabilities", "request", "completions",
     "install-cli", "version", "help",
@@ -118,10 +118,14 @@ struct LabanArgumentParser {
 
     // A leftover `-`-prefixed arg is a typo (`status --jsonn`), not a
     // positional argument; skipping it would run the command without it.
-    if commandsWithoutSubcommandParser.contains(command),
-      let unknown = args.first(where: { $0.hasPrefix("-") })
-    {
-      return .failure(.unknownOption(unknown))
+    // `--` ends the options and is dropped.
+    if commandsWithoutSubcommandParser.contains(command) {
+      if let unknown = firstUnknownOption(in: args) {
+        return .failure(.unknownOption(unknown))
+      }
+      if let separator = args.firstIndex(of: "--") {
+        args.remove(at: separator)
+      }
     }
 
     switch command {
@@ -162,6 +166,13 @@ struct LabanArgumentParser {
     }
   }
 
+  /// The first `-`-prefixed arg before any `--` (which ends the options),
+  /// for a parser that has already consumed every flag it knows.
+  private static func firstUnknownOption<C: Collection>(in args: C) -> String?
+  where C.Element == String {
+    args.prefix(while: { $0 != "--" }).first(where: { $0.hasPrefix("-") })
+  }
+
   // MARK: - Subcommand parsers
 
   private static func parseAgent(
@@ -190,6 +201,15 @@ struct LabanArgumentParser {
       return .failure(.missingArgument("session subcommand"))
     }
     let rest = Array(args.dropFirst())
+    switch subcommand {
+    case "state", "proxy", "current", "request":
+      let extras = subcommand == "request" ? Array(rest.dropFirst(2)) : rest
+      if let unknown = firstUnknownOption(in: extras) {
+        return .failure(.unknownOption(unknown))
+      }
+    default:
+      break
+    }
     switch subcommand {
     case "state":
       return .success(.sessionState(json: json))
@@ -322,6 +342,11 @@ struct LabanArgumentParser {
       return .failure(.missingArgument("proposal subcommand"))
     }
     let rest = Array(args.dropFirst())
+    if subcommand == "status" || subcommand == "cancel",
+      let unknown = firstUnknownOption(in: rest.dropFirst())
+    {
+      return .failure(.unknownOption(unknown))
+    }
     switch subcommand {
     case "list":
       guard rest.isEmpty else {

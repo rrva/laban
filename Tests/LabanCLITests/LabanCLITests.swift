@@ -171,6 +171,26 @@ final class LabanCLITests: XCTestCase {
     XCTAssertEqual(error.description, "unknown option: --jsonn")
   }
 
+  /// `--` ends the options: it is accepted, and nothing after it is
+  /// rejected as an unknown option.
+  func testDoubleDashEndsOptions() {
+    XCTAssertEqual(LabanArgumentParser.parse(["status", "--"]).success, .status(json: false))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["status", "--json", "--"]).success, .status(json: true))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["request", "--", "GET", "/debug/health"]).success,
+      .request(method: "GET", path: "/debug/health", body: nil, json: false))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["completions", "--", "-zsh"]).success,
+      .completions(shell: "-zsh"))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["session", "state", "--", "-x"]).success,
+      .sessionState(json: false))
+    XCTAssertEqual(
+      LabanArgumentParser.parse(["proposal", "status", "p1", "--"]).success,
+      .proposalStatus(id: "p1", json: false))
+  }
+
   func testTopLevelCommandsRejectUnknownFlags() {
     let cases: [[String]] = [
       ["discover", "-x"],
@@ -180,6 +200,12 @@ final class LabanCLITests: XCTestCase {
       ["completions", "zsh", "--nope"],
       ["install-cli", "--dryrun"],
       ["version", "--verbos"],
+      ["session", "state", "--jsonn"],
+      ["session", "proxy", "--x"],
+      ["session", "current", "--jsonn"],
+      ["session", "request", "GET", "/debug/health", "--bdy"],
+      ["proposal", "status", "p1", "--jsonn"],
+      ["proposal", "cancel", "p1", "--jsonn"],
     ]
     for args in cases {
       guard case .failure(let error) = LabanArgumentParser.parse(args) else {
