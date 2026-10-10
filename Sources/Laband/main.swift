@@ -190,133 +190,6 @@ private final class LabandLifecycleJournal {
   }
 }
 
-private final class ManagedLabandSession {
-  private let lock = NSLock()
-  let logicalSessionId: String
-  let incarnationId: String
-  let commandDisplayName: String
-  let cwd: String
-  var rows: Int
-  var cols: Int
-  var lifecycleState: LabandLifecycleState = .running
-  var title: String
-  var childPid: Int?
-  var foregroundPid: Int?
-  /// Human-readable foreground-process metadata polled from the daemon-side
-  /// libghostty session. Mirrors `Session.ProcessMetadata`. Not persisted to
-  /// the journal because it is derived from the live foreground PID and is
-  /// cheap to re-derive after replay.
-  var foregroundProcess: String?
-  var foregroundCommand: String?
-  var foregroundArguments: [String]?
-  var foregroundCwd: String?
-  /// Monotonic timestamp (ns) of the last successful foreground-process poll.
-  /// Used to throttle sysctl/proc-table calls — the catalog refresh fires on
-  /// every `sessionInfo()` read, but the actual poll happens at most once per
-  /// `foregroundProcessPollIntervalNs`.
-  var lastForegroundProcessPollMonoNs: UInt64 = 0
-  var session: Session?
-  var runner: SessionRunner?
-  var ringWriter: LabandSnapshotRingWriter?
-  var lease: LabandLeaseInfo?
-  var leaseHolder: String? { lease?.holderClientId }
-  var leaseHistory: [LabandLeaseHistoryEntry] = []
-  private var attachedClientIds: Set<String> = []
-  private var inputSequence: UInt64 = 0
-
-  init(
-    logicalSessionId: String,
-    incarnationId: String,
-    commandDisplayName: String,
-    cwd: String,
-    rows: Int,
-    cols: Int,
-    title: String,
-    session: Session?,
-    lifecycleState: LabandLifecycleState = .running,
-    childPid: Int? = nil,
-    foregroundPid: Int? = nil,
-    foregroundProcess: String? = nil,
-    foregroundCommand: String? = nil,
-    foregroundArguments: [String]? = nil,
-    foregroundCwd: String? = nil,
-    lease: LabandLeaseInfo? = nil,
-    leaseHistory: [LabandLeaseHistoryEntry] = []
-  ) {
-    self.logicalSessionId = logicalSessionId
-    self.incarnationId = incarnationId
-    self.commandDisplayName = commandDisplayName
-    self.cwd = cwd
-    self.rows = rows
-    self.cols = cols
-    self.title = title
-    self.lifecycleState = lifecycleState
-    self.childPid = childPid
-    self.foregroundPid = foregroundPid
-    self.foregroundProcess = foregroundProcess
-    self.foregroundCommand = foregroundCommand
-    self.foregroundArguments = foregroundArguments
-    self.foregroundCwd = foregroundCwd
-    self.session = session
-    self.lease = lease
-    self.leaseHistory = leaseHistory
-  }
-
-  func recordInput() -> UInt64 {
-    lock.withLock {
-      inputSequence &+= 1
-      if inputSequence == 0 { inputSequence = 1 }
-      return inputSequence
-    }
-  }
-
-  func currentInputSequence() -> UInt64 {
-    lock.withLock { inputSequence }
-  }
-
-  func attachClient(_ clientId: String?) {
-    guard let clientId, !clientId.isEmpty else { return }
-    lock.withLock {
-      _ = attachedClientIds.insert(clientId)
-    }
-  }
-
-  func detachClient(_ clientId: String?) {
-    guard let clientId, !clientId.isEmpty else { return }
-    lock.withLock {
-      _ = attachedClientIds.remove(clientId)
-    }
-  }
-
-  func isClientAttached(_ clientId: String?) -> Bool {
-    guard let clientId, !clientId.isEmpty else { return false }
-    return lock.withLock { attachedClientIds.contains(clientId) }
-  }
-
-  func detachAllClients() {
-    lock.withLock {
-      attachedClientIds.removeAll()
-    }
-  }
-
-  func attachedClientCount() -> Int {
-    lock.withLock { attachedClientIds.count }
-  }
-
-  func publishSnapshot(ptyDrainMonoNs: UInt64 = LabandSnapshotRingLayout.monotonicNanoseconds()) {
-    guard let ringWriter, lifecycleState == .running, let session, let snapshot = session.snapshot()
-    else { return }
-    defer { laban_snapshot_destroy(snapshot) }
-    let inputSeq = currentInputSequence()
-    try? ringWriter.publish(
-      snapshot: UnsafePointer(snapshot),
-      inputSeqApplied: inputSeq,
-      echoAckSeq: inputSeq,
-      ptyDrainMonoNs: ptyDrainMonoNs
-    )
-  }
-}
-
 private final class LabandDaemon {
   private let journalPath: String
   private let journal: LabandLifecycleJournal
@@ -455,9 +328,7 @@ private final class LabandDaemon {
     // A terminated/exited/dead id may be reused.
     let reserved = lock.withLock { () -> Bool in
       if creatingSessionIds.contains(logicalSessionId) { return false }
-      if let existing = sessions[logicalSessionId],
-        existing.lifecycleState == .running, existing.session != nil
-      {
+      if let existing = sessions[logicalSessionId], existing.isLive {
         return false
       }
       creatingSessionIds.insert(logicalSessionId)
@@ -494,16 +365,17 @@ private final class LabandDaemon {
         session: session
       )
       managed.attachClient(request.clientId)
-      managed.runner = session.makeRunner(onDirty: { [weak managed] in
+      let runner = session.makeRunner(onDirty: { [weak managed] in
         managed?.publishSnapshot()
       })
-      managed.runner?.start()
+      managed.update { $0.runner = runner }
+      runner?.start()
       refreshProcessMetadata(managed)
       do {
         try appendJournal(event: .sessionCreated, managed: managed)
       } catch {
-        managed.runner?.stop()
-        managed.session?.close()
+        runner?.stop()
+        session.close()
         return .error(
           requestId: request.requestId,
           type: request.type,
@@ -520,8 +392,8 @@ private final class LabandDaemon {
         do {
           try appendJournal(event: .leaseGranted, managed: managed)
         } catch {
-          managed.runner?.stop()
-          managed.session?.close()
+          runner?.stop()
+          session.close()
           return .error(
             requestId: request.requestId,
             type: request.type,
@@ -568,8 +440,9 @@ private final class LabandDaemon {
       return missingSession(request)
     }
     managed.detachClient(request.clientId)
-    if let clientId = request.clientId, managed.lease?.holderClientId == clientId {
-      revokeLease(managed, now: LabandSnapshotRingLayout.monotonicNanoseconds())
+    if let clientId = request.clientId,
+      managed.revokeLease(where: { $0.holderClientId == clientId })
+    {
       do {
         try appendJournal(event: .leaseRevoked, managed: managed)
       } catch {
@@ -608,7 +481,7 @@ private final class LabandDaemon {
     guard let managed = lookup(request) else {
       return missingSession(request)
     }
-    guard managed.lifecycleState == .running, let session = managed.session else {
+    guard let session = managed.liveSession else {
       return .error(
         requestId: request.requestId,
         type: request.type,
@@ -665,7 +538,7 @@ private final class LabandDaemon {
     guard let managed = lookup(request) else {
       return missingSession(request)
     }
-    guard managed.lifecycleState == .running, let session = managed.session else {
+    guard let session = managed.liveSession else {
       return .error(
         requestId: request.requestId,
         type: request.type,
@@ -721,7 +594,7 @@ private final class LabandDaemon {
     guard let managed = lookup(request) else {
       return missingSession(request)
     }
-    guard managed.lifecycleState == .running, let session = managed.session else {
+    guard let session = managed.liveSession else {
       return .error(
         requestId: request.requestId,
         type: request.type,
@@ -761,16 +634,15 @@ private final class LabandDaemon {
     guard let managed = lookup(request) else {
       return missingSession(request)
     }
-    guard managed.lifecycleState == .running, managed.session != nil else {
-      return .error(
-        requestId: request.requestId,
-        type: request.type,
-        code: "sessionNotRunning",
-        message: "session is not running"
-      )
-    }
     do {
-      let writer = try ensureSnapshotRing(managed)
+      guard let writer = try ensureSnapshotRing(managed) else {
+        return .error(
+          requestId: request.requestId,
+          type: request.type,
+          code: "sessionNotRunning",
+          message: "session is not running"
+        )
+      }
       // Ring creation can fail (for example when its backing directory is
       // unavailable). Do not retain the caller as an attached client until
       // the resource it asked for actually exists: failed clients do not
@@ -806,7 +678,7 @@ private final class LabandDaemon {
         type: request.type,
         code: "snapshotFailed",
         message: "failed to capture session snapshot",
-        retryable: managed.lifecycleState == .running
+        retryable: managed.current.lifecycleState == .running
       )
     }
     return LabandResponse(
@@ -821,7 +693,7 @@ private final class LabandDaemon {
     guard let managed = lookup(request) else {
       return missingSession(request)
     }
-    guard managed.lifecycleState == .running, let session = managed.session else {
+    guard let session = managed.liveSession else {
       return .error(
         requestId: request.requestId,
         type: request.type,
@@ -832,12 +704,13 @@ private final class LabandDaemon {
     if let denial = validateLease(request, managed: managed) {
       return denial
     }
-    let rows = max(1, request.rows ?? managed.rows)
-    let cols = max(1, request.cols ?? managed.cols)
+    let currentSize = managed.update { ($0.rows, $0.cols) }
+    let rows = max(1, request.rows ?? currentSize.0)
+    let cols = max(1, request.cols ?? currentSize.1)
     var size = LabanTerminalSize()
     size.rows = Int32(rows)
     size.cols = Int32(cols)
-    guard session.resize(size) == 0 else {
+    guard managed.resize(rows: rows, cols: cols, apply: { session.resize(size) == 0 }) else {
       return .error(
         requestId: request.requestId,
         type: request.type,
@@ -845,8 +718,6 @@ private final class LabandDaemon {
         message: "failed to resize session"
       )
     }
-    managed.rows = rows
-    managed.cols = cols
     managed.publishSnapshot()
     return LabandResponse(
       requestId: request.requestId,
@@ -871,13 +742,20 @@ private final class LabandDaemon {
         message: String(describing: error)
       )
     }
-    managed.runner?.stop()
-    managed.runner = nil
-    managed.session?.close()
-    managed.session = nil
-    managed.ringWriter = nil
+    // Detach the PTY under the session lock, then stop and close it outside:
+    // stopping the runner waits for its thread, whose onDirty callback takes
+    // the session lock to publish a snapshot.
+    let (runner, session) = managed.update { state in
+      let detached = (state.runner, state.session)
+      state.runner = nil
+      state.session = nil
+      state.ringWriter = nil
+      state.lifecycleState = .terminated
+      return detached
+    }
+    runner?.stop()
+    session?.close()
     managed.detachAllClients()
-    managed.lifecycleState = .terminated
     do {
       try appendJournal(event: .sessionTerminated, managed: managed)
     } catch {
@@ -900,7 +778,7 @@ private final class LabandDaemon {
     guard let managed = lookup(request) else {
       return missingSession(request)
     }
-    _ = managed.session?.markRendered()
+    _ = managed.current.session?.markRendered()
     return LabandResponse(
       requestId: request.requestId,
       type: request.type,
@@ -930,21 +808,17 @@ private final class LabandDaemon {
       )
     }
     let now = LabandSnapshotRingLayout.monotonicNanoseconds()
-    var event: LabandJournalEvent = managed.lease == nil ? .leaseGranted : .leaseTransferred
+    var event: LabandJournalEvent =
+      managed.current.lease == nil ? .leaseGranted : .leaseTransferred
     if let revoked = revokeExpiredLeaseIfNeeded(managed, now: now, request: request) {
       if !revoked.ok { return revoked }
       event = .leaseGranted
     }
-    let priorLease = managed.lease
-    let priorHistoryCount = managed.leaseHistory.count
-    grantLease(to: holder, managed: managed, now: now)
+    let grant = grantLease(to: holder, managed: managed, now: now)
     do {
       try appendJournal(event: event, managed: managed)
     } catch {
-      managed.lease = priorLease
-      if managed.leaseHistory.count > priorHistoryCount {
-        managed.leaseHistory.removeLast(managed.leaseHistory.count - priorHistoryCount)
-      }
+      managed.rollBackLeaseGrant(grant)
       return .error(
         requestId: request.requestId,
         type: request.type,
@@ -968,7 +842,8 @@ private final class LabandDaemon {
       return denial
     }
     let now = LabandSnapshotRingLayout.monotonicNanoseconds()
-    managed.lease?.expiresAtMonoNs = now + leaseTimeoutNs
+    let expiresAtMonoNs = now + leaseTimeoutNs
+    managed.update { $0.lease?.expiresAtMonoNs = expiresAtMonoNs }
     return LabandResponse(
       requestId: request.requestId,
       type: request.type,
@@ -992,7 +867,7 @@ private final class LabandDaemon {
         retryable: true
       )
     }
-    guard let lease = managed.lease else {
+    guard let lease = managed.current.lease else {
       return .error(
         requestId: request.requestId,
         type: request.type,
@@ -1038,8 +913,7 @@ private final class LabandDaemon {
     now: UInt64,
     request: LabandRequest
   ) -> LabandResponse? {
-    guard let lease = managed.lease, lease.expiresAtMonoNs <= now else { return nil }
-    revokeLease(managed, now: now)
+    guard managed.revokeLease(where: { $0.expiresAtMonoNs <= now }) else { return nil }
     do {
       try appendJournal(event: .leaseRevoked, managed: managed)
       return LabandResponse(requestId: request.requestId, type: request.type, ok: true)
@@ -1053,40 +927,19 @@ private final class LabandDaemon {
     }
   }
 
+  @discardableResult
   private func grantLease(
     to holder: String,
     managed: ManagedLabandSession,
     now: UInt64
-  ) {
-    let previousEpoch = managed.lease?.epoch ?? managed.leaseHistory.compactMap(\.epoch).max() ?? 0
-    let lease = LabandLeaseInfo(
-      leaseId: UUID().uuidString,
-      sessionId: managed.logicalSessionId,
-      holderClientId: holder,
-      epoch: previousEpoch + 1,
-      grantedAtMonoNs: now,
-      expiresAtMonoNs: now + leaseTimeoutNs
-    )
-    managed.lease = lease
-    managed.leaseHistory.append(
-      LabandLeaseHistoryEntry(
-        leaseHolder: holder,
-        grantedAtMonoNs: lease.grantedAtMonoNs,
-        leaseId: lease.leaseId,
-        epoch: lease.epoch,
-        expiresAtMonoNs: lease.expiresAtMonoNs
-      ))
-  }
-
-  private func revokeLease(_ managed: ManagedLabandSession, now _: UInt64) {
-    managed.lease = nil
+  ) -> ManagedLabandSession.LeaseGrant {
+    managed.grantLease(to: holder, now: now, timeoutNs: leaseTimeoutNs)
   }
 
   private func revokeExpiredLeaseForCatalog(_ managed: ManagedLabandSession) {
-    guard managed.lifecycleState == .running, managed.session != nil else { return }
+    guard managed.isLive else { return }
     let now = LabandSnapshotRingLayout.monotonicNanoseconds()
-    guard let lease = managed.lease, lease.expiresAtMonoNs <= now else { return }
-    revokeLease(managed, now: now)
+    guard managed.revokeLease(where: { $0.expiresAtMonoNs <= now }) else { return }
     try? appendJournal(event: .leaseRevoked, managed: managed)
   }
 
@@ -1099,8 +952,7 @@ private final class LabandDaemon {
     for attachment in attachments {
       guard let managed = lock.withLock({ sessions[attachment.sessionKey] }) else { continue }
       managed.detachClient(attachment.clientId)
-      if managed.lease?.holderClientId == attachment.clientId {
-        revokeLease(managed, now: LabandSnapshotRingLayout.monotonicNanoseconds())
+      if managed.revokeLease(where: { $0.holderClientId == attachment.clientId }) {
         try? appendJournal(event: .leaseRevoked, managed: managed)
       }
     }
@@ -1108,7 +960,7 @@ private final class LabandDaemon {
 
   private func shutdownWhenIdle(_ request: LabandRequest) -> LabandResponse {
     let liveCount = lock.withLock {
-      sessions.values.filter { $0.lifecycleState == .running && $0.session != nil }.count
+      sessions.values.filter(\.isLive).count
     }
     guard liveCount == 0 else {
       return .error(
@@ -1143,25 +995,32 @@ private final class LabandDaemon {
   private static let foregroundProcessPollIntervalNs: UInt64 = 1_000_000_000
 
   private func refreshProcessMetadata(_ managed: ManagedLabandSession) {
-    guard managed.lifecycleState == .running, let session = managed.session else { return }
     let now = LabandSnapshotRingLayout.monotonicNanoseconds()
-    if managed.lastForegroundProcessPollMonoNs != 0,
-      now &- managed.lastForegroundProcessPollMonoNs < Self.foregroundProcessPollIntervalNs
-    {
-      return
+    let due = managed.update { state -> Session? in
+      guard let session = state.liveSession else { return nil }
+      if state.lastForegroundProcessPollMonoNs != 0,
+        now &- state.lastForegroundProcessPollMonoNs < Self.foregroundProcessPollIntervalNs
+      {
+        return nil
+      }
+      return session
     }
-    guard let metadata = session.processMetadata() else { return }
-    managed.lastForegroundProcessPollMonoNs = now
-    managed.childPid = metadata.childPid
-    managed.foregroundPid = metadata.foregroundPid
-    // Forward the human-readable strings too — without them the app's sidebar
-    // can only show "Tab N" in background-session mode because the local
-    // fixture `Session` has no PTY to inspect. None of these are persisted to
-    // the journal; they re-derive on the next snapshot poll after a restart.
-    managed.foregroundProcess = metadata.foregroundProcess
-    managed.foregroundCommand = metadata.foregroundCommand
-    managed.foregroundArguments = metadata.foregroundArguments
-    managed.foregroundCwd = metadata.cwd
+    // Poll outside the session lock: it is a leaf and must not wrap sysctl.
+    guard let session = due, let metadata = session.processMetadata() else { return }
+    managed.update { state in
+      state.lastForegroundProcessPollMonoNs = now
+      state.childPid = metadata.childPid
+      state.foregroundPid = metadata.foregroundPid
+      // Forward the human-readable strings too — without them the app's
+      // sidebar can only show "Tab N" in background-session mode because the
+      // local fixture `Session` has no PTY to inspect. None of these are
+      // persisted to the journal; they re-derive on the next snapshot poll
+      // after a restart.
+      state.foregroundProcess = metadata.foregroundProcess
+      state.foregroundCommand = metadata.foregroundCommand
+      state.foregroundArguments = metadata.foregroundArguments
+      state.foregroundCwd = metadata.cwd
+    }
   }
 
   private func replayJournal() {
@@ -1183,8 +1042,9 @@ private final class LabandDaemon {
           foregroundPid: record.foregroundPid,
           lease: leaseInfo(from: record)
         )
-        if let lease = restored[record.logicalSessionId]?.lease {
-          restored[record.logicalSessionId]?.leaseHistory.append(
+        restored[record.logicalSessionId]?.update { state in
+          guard let lease = state.lease else { return }
+          state.leaseHistory.append(
             LabandLeaseHistoryEntry(
               leaseHolder: lease.holderClientId,
               grantedAtMonoNs: lease.grantedAtMonoNs,
@@ -1197,25 +1057,29 @@ private final class LabandDaemon {
         guard let managed = restored[record.logicalSessionId],
           let lease = leaseInfo(from: record)
         else { continue }
-        managed.lease = lease
-        managed.leaseHistory.append(
-          LabandLeaseHistoryEntry(
-            leaseHolder: lease.holderClientId,
-            grantedAtMonoNs: lease.grantedAtMonoNs,
-            leaseId: lease.leaseId,
-            epoch: lease.epoch,
-            expiresAtMonoNs: lease.expiresAtMonoNs
-          ))
+        managed.update { state in
+          state.lease = lease
+          state.leaseHistory.append(
+            LabandLeaseHistoryEntry(
+              leaseHolder: lease.holderClientId,
+              grantedAtMonoNs: lease.grantedAtMonoNs,
+              leaseId: lease.leaseId,
+              epoch: lease.epoch,
+              expiresAtMonoNs: lease.expiresAtMonoNs
+            ))
+        }
       case .leaseRevoked:
-        restored[record.logicalSessionId]?.lease = nil
+        restored[record.logicalSessionId]?.update { $0.lease = nil }
       case .terminateRequested, .sessionTerminated:
         guard let managed = restored[record.logicalSessionId] else { continue }
-        managed.lifecycleState = record.lifecycleState
-        managed.session = nil
-        managed.runner = nil
-        managed.ringWriter = nil
-        managed.childPid = record.childPid ?? managed.childPid
-        managed.foregroundPid = record.foregroundPid ?? managed.foregroundPid
+        managed.update { state in
+          state.lifecycleState = record.lifecycleState
+          state.session = nil
+          state.runner = nil
+          state.ringWriter = nil
+          state.childPid = record.childPid ?? state.childPid
+          state.foregroundPid = record.foregroundPid ?? state.foregroundPid
+        }
       }
     }
     sessions = restored
@@ -1235,6 +1099,7 @@ private final class LabandDaemon {
   }
 
   private func appendJournal(event: LabandJournalEvent, managed: ManagedLabandSession) throws {
+    let state = managed.current
     try journal.append(
       LabandJournalRecord(
         version: 1,
@@ -1243,18 +1108,18 @@ private final class LabandDaemon {
         event: event,
         logicalSessionId: managed.logicalSessionId,
         incarnationId: managed.incarnationId,
-        childPid: managed.childPid,
-        foregroundPid: managed.foregroundPid,
+        childPid: state.childPid,
+        foregroundPid: state.foregroundPid,
         cwd: managed.cwd,
         commandDisplayName: managed.commandDisplayName,
-        title: managed.title,
-        rows: managed.rows,
-        cols: managed.cols,
-        lifecycleState: managed.lifecycleState,
-        leaseHolder: managed.leaseHolder,
-        leaseId: managed.lease?.leaseId,
-        leaseEpoch: managed.lease?.epoch,
-        leaseExpiresAtMonoNs: managed.lease?.expiresAtMonoNs
+        title: state.title,
+        rows: state.rows,
+        cols: state.cols,
+        lifecycleState: state.lifecycleState,
+        leaseHolder: state.leaseHolder,
+        leaseId: state.lease?.leaseId,
+        leaseEpoch: state.lease?.epoch,
+        leaseExpiresAtMonoNs: state.lease?.expiresAtMonoNs
       ))
   }
 
@@ -1264,50 +1129,47 @@ private final class LabandDaemon {
     // sees an up-to-date `foregroundCommand` (claude / vim / make / ...)
     // without needing a separate poll cycle.
     refreshProcessMetadata(managed)
+    let state = managed.current
     return LabandSessionInfo(
       logicalSessionId: managed.logicalSessionId,
       incarnationId: managed.incarnationId,
-      childPid: managed.childPid,
-      foregroundPid: managed.foregroundPid,
+      childPid: state.childPid,
+      foregroundPid: state.foregroundPid,
       daemonProcessPid: Int(ProcessInfo.processInfo.processIdentifier),
       cwd: managed.cwd,
       commandDisplayName: managed.commandDisplayName,
-      title: managed.title,
-      rows: managed.rows,
-      cols: managed.cols,
-      lifecycleState: managed.lifecycleState,
+      title: state.title,
+      rows: state.rows,
+      cols: state.cols,
+      lifecycleState: state.lifecycleState,
       attachedClientCount: managed.attachedClientCount(),
-      leaseHolder: managed.leaseHolder,
-      lease: managed.lease,
-      leaseHistory: managed.leaseHistory,
+      leaseHolder: state.leaseHolder,
+      lease: state.lease,
+      leaseHistory: state.leaseHistory,
       transportMode: "control-json",
-      foregroundProcess: managed.foregroundProcess,
-      foregroundCommand: managed.foregroundCommand,
-      foregroundArguments: managed.foregroundArguments,
-      foregroundCwd: managed.foregroundCwd
+      foregroundProcess: state.foregroundProcess,
+      foregroundCommand: state.foregroundCommand,
+      foregroundArguments: state.foregroundArguments,
+      foregroundCwd: state.foregroundCwd
     )
   }
 
   private func snapshotResponse(_ managed: ManagedLabandSession) -> LabandSnapshotResponse? {
-    guard managed.lifecycleState == .running, let session = managed.session,
-      let snap = session.snapshot()
-    else { return nil }
+    // Read the resize generation before taking the snapshot: a resize that
+    // lands in between makes this snapshot's size stale.
+    let resizeGeneration = managed.current.resizeGeneration
+    guard let session = managed.liveSession, let snap = session.snapshot() else { return nil }
     defer { laban_snapshot_destroy(snap) }
     let snapshot = snap.pointee
-    let title = snapshot.title.map { String(cString: $0) } ?? managed.title
-    managed.title = title.isEmpty ? managed.commandDisplayName : title
-    managed.rows = Int(snapshot.rows)
-    managed.cols = Int(snapshot.cols)
+    let (title, state) = managed.recordSnapshot(
+      title: snapshot.title.map { String(cString: $0) },
+      rows: Int(snapshot.rows),
+      cols: Int(snapshot.cols),
+      childExited: snapshot.status == 1 || snapshot.status == 2,
+      resizeGeneration: resizeGeneration
+    )
     let visible = TerminalSnapshotText.visibleText(from: UnsafePointer(snap), mode: .fullGrid)
     let cells = snapshotCells(snapshot)
-    let state: LabandLifecycleState
-    switch snapshot.status {
-    case 1, 2:
-      state = .exited
-      managed.lifecycleState = .exited
-    default:
-      state = managed.lifecycleState
-    }
     return LabandSnapshotResponse(
       logicalSessionId: managed.logicalSessionId,
       incarnationId: managed.incarnationId,
@@ -1316,7 +1178,7 @@ private final class LabandDaemon {
       cursorRow: Int(snapshot.cursor_row),
       cursorCol: Int(snapshot.cursor_col),
       cursorVisible: snapshot.cursor_visible != 0,
-      title: managed.title,
+      title: title,
       lifecycleState: state,
       exitStatus: snapshot.status == 0 ? nil : Int(snapshot.exit_status),
       dirty: snapshot.dirty != 0,
@@ -1335,28 +1197,35 @@ private final class LabandDaemon {
     )
   }
 
+  /// The session's snapshot-ring writer, or nil when the session is not
+  /// running.
   private func ensureSnapshotRing(_ managed: ManagedLabandSession) throws
-    -> LabandSnapshotRingWriter
+    -> LabandSnapshotRingWriter?
   {
-    if let writer = managed.ringWriter {
-      return writer
+    try managed.snapshotRingWriter { rows, cols in
+      try makeSnapshotRingWriter(managed, rows: rows, cols: cols)
     }
-    let maxRows = max(managed.rows, 128)
-    let maxCols = max(managed.cols, 512)
+  }
+
+  private func makeSnapshotRingWriter(
+    _ managed: ManagedLabandSession,
+    rows: Int,
+    cols: Int
+  ) throws -> LabandSnapshotRingWriter {
+    let maxRows = max(rows, 128)
+    let maxCols = max(cols, 512)
     let ringsDir = URL(fileURLWithPath: journalPath).appendingPathComponent(
       "snapshot-rings", isDirectory: true)
     let name =
       "\(hexHash(managed.logicalSessionId))-\(hexHash(managed.incarnationId)).lbndss"
     let path = ringsDir.appendingPathComponent(name).path
-    let writer = try LabandSnapshotRingWriter(
+    return try LabandSnapshotRingWriter(
       path: path,
       logicalSessionId: managed.logicalSessionId,
       incarnationId: managed.incarnationId,
       maxRows: maxRows,
       maxCols: maxCols
     )
-    managed.ringWriter = writer
-    return writer
   }
 
   private func hexHash(_ value: String) -> String {
