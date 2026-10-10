@@ -465,6 +465,64 @@ final class TerminalBitmapViewDividerTests: XCTestCase {
     XCTAssertTrue(splitters().first === element)
   }
 
+  func testAccessibilitySplitterIsNotHandedToADifferentDivider() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+    let left = harness.focused
+    harness.view.splitPaneRight(nil)
+    harness.view.splitPaneDown(nil)
+    harness.view.advanceFrame()
+
+    func splitters() -> [NSAccessibilityElement] {
+      (harness.view.accessibilityChildren() ?? []).compactMap {
+        ($0 as? NSAccessibilityElement).flatMap { $0.accessibilityRole() == .splitter ? $0 : nil }
+      }
+    }
+    // Root [] is the vertical divider between the left column and the stacked panes.
+    let root = try XCTUnwrap(splitters().first)
+    XCTAssertEqual(root.accessibilityOrientation(), .vertical)
+    harness.model.focusPane(inTab: harness.tab.id, sessionId: left)
+    harness.view.closePane(nil)
+    harness.view.advanceFrame()
+    // The horizontal divider now sits at path []: it is another divider, so VoiceOver must
+    // not find it under the element it had focused for the vertical one.
+    let now = try XCTUnwrap(splitters().first)
+    XCTAssertEqual(splitters().count, 1)
+    XCTAssertEqual(now.accessibilityOrientation(), .horizontal)
+    XCTAssertFalse(now === root, "a different divider gets a fresh element")
+    // The element VoiceOver may still hold no longer moves anything.
+    let before = try XCTUnwrap(fraction(harness))
+    XCTAssertFalse(root.accessibilityPerformIncrement())
+    XCTAssertEqual(try XCTUnwrap(fraction(harness)), before)
+  }
+
+  func testPaneLayoutAgreesWithModelAtFractionalViewHeight() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+    // A height with a fractional pixel: the model sizes panes in whole pixels.
+    harness.view.setFrameSize(
+      NSSize(width: harness.view.frame.width, height: harness.view.frame.height + 0.6))
+    harness.view.advanceFrame()
+    let upper = harness.focused
+    harness.view.splitPaneDown(nil)
+    harness.view.advanceFrame()
+    let lower = harness.focused
+    XCTAssertNotEqual(upper, lower)
+    let insets = TerminalBitmapView.contentInsets
+    let pad = TerminalSurfaceInsets.dividerPadding
+    for fraction in [0.5, 0.99, 0.01] {
+      try harness.model.setSplitFraction(inTab: harness.tab.id, path: [], fraction: fraction)
+      harness.view.advanceFrame()
+      for (id, verticalInsets) in [(upper, insets.top + pad), (lower, pad + insets.bottom)] {
+        harness.model.focusPane(inTab: harness.tab.id, sessionId: id)
+        let drawn = harness.view.focusedPaneRect.height - verticalInsets
+        XCTAssertEqual(
+          drawn, CGFloat(harness.model.terminalSize(for: id).pixel_height),
+          "fraction \(fraction): the view draws the pane the model sized")
+      }
+    }
+  }
+
   private func menuItem(_ direction: PaneDirection) -> NSMenuItem {
     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     item.representedObject = direction.rawValue

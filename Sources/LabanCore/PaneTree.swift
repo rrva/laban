@@ -257,7 +257,7 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
   }
 
   /// The subtree at `path`, or nil if the path leaves the tree.
-  func subtree(at path: PanePath) -> PaneTree? {
+  public func subtree(at path: PanePath) -> PaneTree? {
     guard let side = path.first else { return self }
     guard case .split(_, _, let first, let second) = self else { return nil }
     return (side == .first ? first : second).subtree(at: Array(path.dropFirst()))

@@ -82,6 +82,18 @@ public struct TerminalSurfaceInsets: Equatable, Sendable {
       right: Self.edge(right, atWindowEdge: pane.maxX >= area.maxX))
   }
 
+  /// The rect panes are laid out in for the terminal `area` with these window insets:
+  /// the grid area inside the insets truncated to whole pixels, plus the insets.
+  /// `AppModel` sizes the panes in exactly this area, so every caller that lays panes
+  /// out (view, renderer, hit tests) must use it too, or a fractional view size cuts a
+  /// pane up to a pixel short of the size the model checked.
+  public func layoutArea(_ area: CGRect) -> CGRect {
+    CGRect(
+      x: area.minX, y: area.minY,
+      width: floor(max(0, area.width - left - right)) + left + right,
+      height: floor(max(0, area.height - top - bottom)) + top + bottom)
+  }
+
   /// The inset a pane keeps on one edge: the window inset at the window edge, at most
   /// `dividerPadding` where the edge faces a divider.
   public static func edge(_ window: CGFloat, atWindowEdge: Bool) -> CGFloat {
@@ -1081,9 +1093,10 @@ public final class TerminalSurfaceController {
     _ request: TerminalSurfaceFrameRequest, tab: Tab,
     snapshotCommandsHook: SnapshotCommandsHook?
   ) -> TerminalSurfaceFrame? {
-    let area = CGRect(
-      x: sidebarWidth, y: 0, width: max(0, request.viewportWidth - sidebarWidth),
-      height: request.viewportHeight)
+    let area = request.insets.layoutArea(
+      CGRect(
+        x: sidebarWidth, y: 0, width: max(0, request.viewportWidth - sidebarWidth),
+        height: request.viewportHeight))
     let layout = tab.visibleLayout(in: area)
     let panes =
       request.panes.isEmpty

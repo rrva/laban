@@ -2179,7 +2179,7 @@ public final class AppModel {
           width: max(0, area.width - insets.left - insets.right),
           height: max(0, area.height - insets.top - insets.bottom)), cellWidth: cellWidth,
         cellHeight: cellHeight)
-      let layout = tab.visibleLayout(in: area)
+      let layout = tab.visibleLayout(in: insets.layoutArea(area))
       resizeTabLayoutsUnlocked()
       return layout
     }
