@@ -424,6 +424,45 @@ final class TerminalBitmapViewDividerTests: XCTestCase {
     XCTAssertTrue(splitters().isEmpty, "a zoomed tab has no dividers to expose")
   }
 
+  func testAccessibilitySplitterKeepsIdentityAcrossIncrements() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+    harness.view.splitPaneRight(nil)
+    harness.view.advanceFrame()
+
+    func splitters() -> [NSAccessibilityElement] {
+      (harness.view.accessibilityChildren() ?? []).compactMap {
+        ($0 as? NSAccessibilityElement).flatMap { $0.accessibilityRole() == .splitter ? $0 : nil }
+      }
+    }
+    let element = try XCTUnwrap(splitters().first)
+    let frameBefore = element.accessibilityFrameInParentSpace()
+    XCTAssertTrue(element.accessibilityPerformIncrement())
+    let after = try XCTUnwrap(splitters().first)
+    // VoiceOver keeps focus on the element it is interacting with only if it survives.
+    XCTAssertTrue(after === element, "an increment updates the splitter in place")
+    let divider = try XCTUnwrap(harness.dividers.first)
+    XCTAssertEqual(
+      (after.accessibilityValue() as? NSNumber)?.doubleValue ?? -1, divider.fraction * 100,
+      accuracy: 0.5)
+    XCTAssertGreaterThan(after.accessibilityFrameInParentSpace().midX, frameBefore.midX)
+    XCTAssertEqual(after.accessibilityFrameInParentSpace().midX, divider.rect.midX, accuracy: 0.5)
+
+    // The screen frame follows the window: it is derived from the parent, not cached.
+    let window = NSWindow(
+      contentRect: NSRect(x: 100, y: 100, width: 400, height: 300), styleMask: [.borderless],
+      backing: .buffered, defer: true)
+    window.isReleasedWhenClosed = false
+    window.contentView?.addSubview(harness.view)
+    defer { harness.view.removeFromSuperview() }
+    let screenBefore = try XCTUnwrap(splitters().first).accessibilityFrame()
+    window.setFrameOrigin(NSPoint(x: 300, y: 250))
+    let screenAfter = element.accessibilityFrame()
+    XCTAssertEqual(screenAfter.minX - screenBefore.minX, 200, accuracy: 0.5)
+    XCTAssertEqual(screenAfter.minY - screenBefore.minY, 150, accuracy: 0.5)
+    XCTAssertTrue(splitters().first === element)
+  }
+
   private func menuItem(_ direction: PaneDirection) -> NSMenuItem {
     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     item.representedObject = direction.rawValue

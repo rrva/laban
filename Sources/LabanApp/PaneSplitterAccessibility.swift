@@ -1,20 +1,12 @@
 import AppKit
 import LabanCore
 
-/// What identifies a splitter element: when none of it changes the cached element is
-/// still accurate.
-struct PaneSplitterSignature: Equatable {
+/// What identifies a splitter element across layout changes: the divider's place in its
+/// tab. Moving the divider or the window updates the element in place, so VoiceOver keeps
+/// its focus through every increment.
+struct PaneSplitterKey: Hashable {
   let tabId: Tab.ID
   let path: PanePath
-  let rect: CGRect
-  let fraction: Double
-
-  init(divider: PaneDivider, tabId: Tab.ID) {
-    self.tabId = tabId
-    self.path = divider.path
-    self.rect = divider.rect
-    self.fraction = divider.fraction
-  }
 }
 
 /// A pane divider as a VoiceOver `splitter`. The terminal is one view with no per-pane

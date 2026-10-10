@@ -7154,21 +7154,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     return (super.accessibilityChildren() ?? []) + splitters
   }
 
-  /// Rebuilt whenever the divider geometry changes so no stale element survives a layout
-  /// change; reused while it is unchanged so VoiceOver keeps its focus.
+  /// One element per divider, keyed by tab and path: a divider that moves keeps its
+  /// element (VoiceOver keeps focus) and only its value, orientation and frame change.
+  /// The frame is in the view's space, so the screen frame follows the window.
   func paneSplitterElements() -> [PaneSplitterAccessibilityElement] {
     guard sessionCoordinator?.usesRemoteSnapshots != true, let tab = model.activeTab else {
-      paneSplitterCache = ([], [])
+      paneSplitterCache = [:]
       return []
     }
     let dividers = tab.visibleDividers(in: paneAreaRect)
-    let signature = dividers.map { PaneSplitterSignature(divider: $0, tabId: tab.id) }
-    if paneSplitterCache.signature == signature { return paneSplitterCache.elements }
+    var cache: [PaneSplitterKey: PaneSplitterAccessibilityElement] = [:]
     let elements = dividers.map { divider -> PaneSplitterAccessibilityElement in
-      let element = PaneSplitterAccessibilityElement()
-      element.setAccessibilityRole(.splitter)
-      element.setAccessibilityLabel(L10n.tr("Pane divider"))
-      element.setAccessibilityParent(self)
+      let key = PaneSplitterKey(tabId: tab.id, path: divider.path)
+      let element = paneSplitterCache[key] ?? makePaneSplitterElement(for: key)
       element.setAccessibilityOrientation(divider.axis == .vertical ? .vertical : .horizontal)
       element.setAccessibilityValue(NSNumber(value: (divider.fraction * 100).rounded()))
       // The 1 pixel line is too thin to target: use the mouse grab zone.
@@ -7176,21 +7174,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         divider.axis == .vertical
         ? divider.rect.insetBy(dx: -Self.dividerGrabZone, dy: 0)
         : divider.rect.insetBy(dx: 0, dy: -Self.dividerGrabZone)
-      let windowRect = convert(grab, to: nil)
-      element.setAccessibilityFrame(window?.convertToScreen(windowRect) ?? windowRect)
-      let tabId = tab.id
-      let path = divider.path
-      // Increment grows the first pane (divider towards second); decrement shrinks it.
-      element.onIncrement = { [weak self] in
-        self?.nudgeDivider(tabId: tabId, path: path, towardsSecond: true) ?? false
-      }
-      element.onDecrement = { [weak self] in
-        self?.nudgeDivider(tabId: tabId, path: path, towardsSecond: false) ?? false
-      }
+      element.setAccessibilityFrameInParentSpace(grab)
+      cache[key] = element
       return element
     }
-    paneSplitterCache = (signature, elements)
+    paneSplitterCache = cache
     return elements
+  }
+
+  private func makePaneSplitterElement(for key: PaneSplitterKey) -> PaneSplitterAccessibilityElement
+  {
+    let element = PaneSplitterAccessibilityElement()
+    element.setAccessibilityRole(.splitter)
+    element.setAccessibilityLabel(L10n.tr("Pane divider"))
+    element.setAccessibilityParent(self)
+    // Increment grows the first pane (divider towards second); decrement shrinks it.
+    element.onIncrement = { [weak self] in
+      self?.nudgeDivider(tabId: key.tabId, path: key.path, towardsSecond: true) ?? false
+    }
+    element.onDecrement = { [weak self] in
+      self?.nudgeDivider(tabId: key.tabId, path: key.path, towardsSecond: false) ?? false
+    }
+    return element
   }
 
   private func nudgeDivider(tabId: Tab.ID, path: PanePath, towardsSecond: Bool) -> Bool {
@@ -10287,8 +10292,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   static let dividerGrabZone: CGFloat = 3
 
   private var dividerDrag: PaneDividerDrag?
-  private var paneSplitterCache:
-    (signature: [PaneSplitterSignature], elements: [PaneSplitterAccessibilityElement]) = ([], [])
+  private var paneSplitterCache: [PaneSplitterKey: PaneSplitterAccessibilityElement] = [:]
 
   private var paneAreaRect: CGRect {
     CGRect(
