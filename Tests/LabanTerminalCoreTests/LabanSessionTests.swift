@@ -3613,7 +3613,7 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array("\u{1b}]11;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
-      "\u{1b}]11;rgb:0000/0000/0000\u{1b}\\",
+      "\u{1b}]11;rgb:0000/0000/0000\u{07}",
       "dark scheme with no configured color must report a black background")
 
     XCTAssertEqual(
@@ -3621,7 +3621,7 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array("\u{1b}]11;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
-      "\u{1b}]11;rgb:ffff/ffff/ffff\u{1b}\\",
+      "\u{1b}]11;rgb:ffff/ffff/ffff\u{07}",
       "light scheme with no configured color must report a white background")
   }
 
@@ -3640,20 +3640,28 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array("\u{1b}]10;?;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
-      "\u{1b}]10;rgb:ffff/ffff/ffff\u{1b}\\\u{1b}]11;rgb:0000/0000/0000\u{1b}\\",
+      "\u{1b}]10;rgb:ffff/ffff/ffff\u{07}\u{1b}]11;rgb:0000/0000/0000\u{07}",
       "OSC 10;?;? must answer foreground then background")
+
+    // Each reply echoes the query's own terminator, as libghostty's do: an
+    // app that queried with BEL may wait for BEL.
+    writeBytes(session, Array("\u{1b}]10;?;?\u{1b}\\".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]10;rgb:ffff/ffff/ffff\u{1b}\\\u{1b}]11;rgb:0000/0000/0000\u{1b}\\",
+      "an ST-terminated OSC 10;?;? must get ST-terminated replies")
 
     writeBytes(session, Array("\u{1b}]11;?;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
-      "\u{1b}]11;rgb:0000/0000/0000\u{1b}\\\u{1b}]12;rgb:ffff/ffff/ffff\u{1b}\\",
+      "\u{1b}]11;rgb:0000/0000/0000\u{07}\u{1b}]12;rgb:ffff/ffff/ffff\u{07}",
       "OSC 11;?;? must answer background then cursor")
 
     // Indices past 12 are not dynamic colors this responder serves.
     writeBytes(session, Array("\u{1b}]12;?;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
-      "\u{1b}]12;rgb:ffff/ffff/ffff\u{1b}\\",
+      "\u{1b}]12;rgb:ffff/ffff/ffff\u{07}",
       "OSC 12;?;? must answer only the cursor color")
 
     // Only a param that is exactly `?` is a query, as in libghostty's parser.
@@ -3775,7 +3783,7 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array("\u{1b}]12;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
-      "\u{1b}]12;rgb:ffff/ffff/ffff\u{1b}\\",
+      "\u{1b}]12;rgb:ffff/ffff/ffff\u{07}",
       "dark scheme with no configured cursor color must report a white cursor")
 
     XCTAssertEqual(
@@ -3783,7 +3791,7 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array("\u{1b}]12;?\u{07}".utf8))
     XCTAssertEqual(
       String(bytes: drainResponse(session), encoding: .utf8),
-      "\u{1b}]12;rgb:0000/0000/0000\u{1b}\\",
+      "\u{1b}]12;rgb:0000/0000/0000\u{07}",
       "light scheme with no configured cursor color must report a black cursor")
   }
 
