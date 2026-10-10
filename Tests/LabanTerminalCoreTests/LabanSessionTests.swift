@@ -3625,6 +3625,72 @@ final class LabanSessionTests: XCTestCase {
       "light scheme with no configured color must report a white background")
   }
 
+  /// Issue #52: xterm treats each extra `?` param as a query for the next
+  /// dynamic color (`OSC 10;?;?` asks for foreground AND background). With no
+  /// colors configured the fallback used to answer only the first.
+  func testOSCDynamicColorMultiQueryFallbackAnswersEveryChainedQuery() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_DARK)), 0)
+
+    writeBytes(session, Array("\u{1b}]10;?;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]10;rgb:ffff/ffff/ffff\u{1b}\\\u{1b}]11;rgb:0000/0000/0000\u{1b}\\",
+      "OSC 10;?;? must answer foreground then background")
+
+    writeBytes(session, Array("\u{1b}]11;?;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]11;rgb:0000/0000/0000\u{1b}\\\u{1b}]12;rgb:ffff/ffff/ffff\u{1b}\\",
+      "OSC 11;?;? must answer background then cursor")
+
+    // Indices past 12 are not dynamic colors this responder serves.
+    writeBytes(session, Array("\u{1b}]12;?;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]12;rgb:ffff/ffff/ffff\u{1b}\\",
+      "OSC 12;?;? must answer only the cursor color")
+
+    // A non-query param still advances the index: `10;rgb:..;?` sets 10 and
+    // queries 11, and the set itself is libghostty's.
+    writeBytes(session, Array("\u{1b}]10;#1a2b3c;?\u{07}".utf8))
+    let mixed = String(bytes: drainResponse(session), encoding: .utf8) ?? ""
+    XCTAssertTrue(
+      mixed.contains("\u{1b}]11;rgb:"),
+      "the chained 11 query must be answered; got \(mixed.debugDescription)")
+    XCTAssertFalse(
+      mixed.contains("\u{1b}]10;"),
+      "the 10 set must not produce a reply; got \(mixed.debugDescription)")
+  }
+
+  func testOSCDynamicColorMultiQueryLeavesConfiguredColorsToLibghostty() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_DARK)), 0)
+
+    // Foreground configured, background not: libghostty answers 10, the
+    // fallback answers only 11, and nothing is answered twice.
+    writeBytes(session, Array("\u{1b}]10;#1a2b3c\u{07}".utf8))
+    _ = drainResponse(session)
+    writeBytes(session, Array("\u{1b}]10;?;?\u{07}".utf8))
+    let reply = String(bytes: drainResponse(session), encoding: .utf8) ?? ""
+    XCTAssertEqual(
+      reply.components(separatedBy: "\u{1b}]10;rgb:1a1a/2b2b/3c3c").count - 1, 1,
+      "the configured foreground must be answered exactly once; got \(reply.debugDescription)")
+    XCTAssertEqual(
+      reply.components(separatedBy: "\u{1b}]11;rgb:").count - 1, 1,
+      "the unconfigured background must be answered exactly once; got \(reply.debugDescription)")
+  }
+
   func testOSCCursorColorQueryEchoesEffectiveCursorColor() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

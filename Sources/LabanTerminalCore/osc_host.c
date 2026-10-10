@@ -7,7 +7,8 @@
  * unset and instead scans the raw PTY output stream for these in parallel with
  * libghostty — the same observe-and-act pattern as osc133.c / tab_status.c —
  * and:
- *   - replies to `OSC 10 ; ?` / `OSC 11 ; ?` / `OSC 12 ; ?` when no color is
+ *   - replies to `OSC 10 ; ?` / `OSC 11 ; ?` / `OSC 12 ; ?` (and chained
+ *     `OSC 10 ; ? ; ?` forms) when no color is
  *     configured (libghostty answers configured colors itself), so an agent
  *     TUI (e.g. Codex) can always match its theme to Laban's window;
  *   - delivers `OSC 9 ; <text>` to the registered notification callback;
@@ -373,10 +374,23 @@ static void dispatch_osc_host(
         return;
     }
     if (osc_number == 10 || osc_number == 11 || osc_number == 12) {
-        /* Query form is a lone '?'. Sets ("rgb:...", "#rrggbb") belong to
-         * libghostty and must be ignored here. */
-        if (len >= 1 && payload[0] == '?') {
-            respond_osc_color_query(s, osc_number);
+        /* xterm: each ';'-separated param addresses the next dynamic color,
+         * so `OSC 10;?;?` queries 10 then 11 (never past 12). A '?' param is
+         * a query; anything else is a set ("rgb:...", "#rrggbb"), which
+         * belongs to libghostty and only advances the index here.
+         * respond_osc_color_query stays silent for a color libghostty has
+         * already answered. */
+        int color = osc_number;
+        size_t start = 0;
+        while (color <= 12) {
+            const char *semi = memchr(payload + start, ';', len - start);
+            size_t end = semi ? (size_t)(semi - payload) : len;
+            if (end > start && payload[start] == '?') {
+                respond_osc_color_query(s, color);
+            }
+            if (!semi) break;
+            start = end + 1;
+            color++;
         }
         return;
     }
