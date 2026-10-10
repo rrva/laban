@@ -229,7 +229,8 @@ public final class HeadlessDebugRuntime {
     backgroundImageScaling: TerminalBackgroundImageScaling = .default,
     applyTransparencyToExplicitCellBackgrounds: Bool = false,
     restorePersistedState: Bool = true,
-    restoreOnLaunchEnabled: @escaping () -> Bool = { true }
+    restoreOnLaunchEnabled: @escaping () -> Bool = { true },
+    fontDefaults: UserDefaults = .standard
   ) throws {
     self.runId = runId
     self.artifactsURL = artifactsURL
@@ -270,7 +271,11 @@ public final class HeadlessDebugRuntime {
 
     // Parity with MainWindowController: honor the persisted font size
     // (UserDefaults `LabanFontSize`) instead of hardcoding the default.
-    let fa = FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize)
+    // `fontDefaults` lets a test pin the font: under `swift test` the standard
+    // domain is the on-disk `com.apple.dt.xctest.tool` domain, which every
+    // concurrent test process (including other checkouts' gates) shares.
+    let fa = FontAtlas(
+      pointSize: FontAtlas.terminalPointSize(from: fontDefaults), defaults: fontDefaults)
     let cs = fa.cellSize
     self.fontAtlas = fa
     self.cellWidth = Int(cs.width)

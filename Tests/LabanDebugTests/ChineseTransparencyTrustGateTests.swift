@@ -20,6 +20,17 @@ final class ChineseTransparencyTrustGateTests: XCTestCase {
     var exercised: [RendererSelection] = []
     var referenceGeometry: [CJKRunGeometry]?
 
+    // Pin the font. Each renderer gets its own runtime, and a runtime reads
+    // the user's font name and size when it is built. Under `swift test` the
+    // standard defaults are the on-disk `com.apple.dt.xctest.tool` domain,
+    // shared with every concurrent test process, so a zoom or font-size test
+    // in another checkout's gate could change the cell height between two
+    // runtimes here and fail the geometry comparison for a reason that has
+    // nothing to do with renderers or opacity.
+    let fontSuiteName = "laban-cjk-trust-gate-\(getpid())-\(UUID().uuidString)"
+    let fontDefaults = try XCTUnwrap(UserDefaults(suiteName: fontSuiteName))
+    defer { fontDefaults.removePersistentDomain(forName: fontSuiteName) }
+
     for selection in RendererSelection.allCases {
       if selection != .software, MTLCreateSystemDefaultDevice() == nil { continue }
       if !selection.isAvailableOnCurrentOS { continue }
@@ -35,7 +46,8 @@ final class ChineseTransparencyTrustGateTests: XCTestCase {
         tempURL: nil,
         deterministic: true,
         runId: "chinese-transparency-\(selection.rawValue)",
-        rendererSelection: selection)
+        rendererSelection: selection,
+        fontDefaults: fontDefaults)
       runtime.rendererBackend.waitForFrameCompletion = true
 
       let render = try object(runtime.renderState())

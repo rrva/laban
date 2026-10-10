@@ -142,6 +142,15 @@ already does.
 
   Measured potential if solved: `LabanDebugTests` runs 14-18s under
   `--parallel` versus 30-37s serial.
+- [x] (2026-10-10) First slice of the headless-runtime injection Milestone 3b
+  needs: `HeadlessDebugRuntime(fontDefaults:)` supplies the font name and
+  size. The shared domain is shared across *checkouts* too, so even the
+  sequential shard is not isolated when several worktrees run `scripts/check`
+  at once: `ChineseTransparencyTrustGateTests` built one runtime at 14 pt and
+  the next at ~15 pt (cell height 19 vs 20, a row-pitch mismatch) while
+  another gate's zoom/font-size tests wrote `LabanFontSize`. It now pins the
+  font through a private suite, and `FontSizeActionTests
+  .testRuntimeReadsPersistedFontSize` no longer writes the shared domain.
 - [ ] Superseded, kept for context: renderer-level injection. `VectorGlyphGammaTests` (fails
   3/3 under `--parallel`) writes `VectorTextWeightSettings.defaultsKey` and
   `LabanVectorPresentDisplayLink` *so that the renderer under test reads them*,
