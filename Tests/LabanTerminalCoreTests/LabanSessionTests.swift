@@ -3656,6 +3656,16 @@ final class LabanSessionTests: XCTestCase {
       "\u{1b}]12;rgb:ffff/ffff/ffff\u{1b}\\",
       "OSC 12;?;? must answer only the cursor color")
 
+    // Only a param that is exactly `?` is a query, as in libghostty's parser.
+    writeBytes(session, Array("\u{1b}]10;?x;?\u{07}".utf8))
+    let strict = String(bytes: drainResponse(session), encoding: .utf8) ?? ""
+    XCTAssertFalse(
+      strict.contains("\u{1b}]10;"),
+      "`?x` is not a query and must not be answered; got \(strict.debugDescription)")
+    XCTAssertTrue(
+      strict.contains("\u{1b}]11;rgb:"),
+      "the exact `?` after it must still be answered; got \(strict.debugDescription)")
+
     // A non-query param still advances the index: `10;rgb:..;?` sets 10 and
     // queries 11, and the set itself is libghostty's.
     writeBytes(session, Array("\u{1b}]10;#1a2b3c;?\u{07}".utf8))

@@ -375,17 +375,21 @@ static void dispatch_osc_host(
     }
     if (osc_number == 10 || osc_number == 11 || osc_number == 12) {
         /* xterm: each ';'-separated param addresses the next dynamic color,
-         * so `OSC 10;?;?` queries 10 then 11 (never past 12). A '?' param is
-         * a query; anything else is a set ("rgb:...", "#rrggbb"), which
-         * belongs to libghostty and only advances the index here.
-         * respond_osc_color_query stays silent for a color libghostty has
-         * already answered. */
+         * so `OSC 10;?;?` queries 10 then 11 (never past 12). A param that
+         * is exactly '?' is a query (as in libghostty's parser); anything
+         * else is a set ("rgb:...", "#rrggbb"), which belongs to libghostty
+         * and only advances the index here. respond_osc_color_query stays
+         * silent for a color libghostty has already answered.
+         * With colors only partly configured, libghostty has already replied
+         * for the whole sequence by the time this runs, so the fallback's
+         * replies come after its: `11;?;?` with 11 unset and 12 set replies
+         * 12 before 11. */
         int color = osc_number;
         size_t start = 0;
         while (color <= 12) {
             const char *semi = memchr(payload + start, ';', len - start);
             size_t end = semi ? (size_t)(semi - payload) : len;
-            if (end > start && payload[start] == '?') {
+            if (end - start == 1 && payload[start] == '?') {
                 respond_osc_color_query(s, color);
             }
             if (!semi) break;
