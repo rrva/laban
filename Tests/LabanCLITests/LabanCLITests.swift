@@ -160,6 +160,39 @@ final class LabanCLITests: XCTestCase {
     XCTAssertEqual(error, .unknownCommand("serve"))
   }
 
+  /// Issue #49: `laban status --jsonn` used to parse as plain `status` and
+  /// exit 0 without JSON, because the top-level parser skipped unknown args.
+  func testTopLevelCommandRejectsMisspelledFlag() {
+    guard case .failure(let error) = LabanArgumentParser.parse(["status", "--jsonn"]) else {
+      XCTFail("`status --jsonn` must be rejected")
+      return
+    }
+    XCTAssertEqual(error, .unknownOption("--jsonn"))
+    XCTAssertEqual(error.description, "unknown option: --jsonn")
+  }
+
+  func testTopLevelCommandsRejectUnknownFlags() {
+    let cases: [[String]] = [
+      ["discover", "-x"],
+      ["health", "--verbose"],
+      ["capabilities", "--jsn"],
+      ["request", "GET", "/debug/health", "--bdy", "{}"],
+      ["completions", "zsh", "--nope"],
+      ["install-cli", "--dryrun"],
+      ["version", "--verbos"],
+    ]
+    for args in cases {
+      guard case .failure(let error) = LabanArgumentParser.parse(args) else {
+        XCTFail("\(args) must be rejected")
+        continue
+      }
+      guard case .unknownOption = error else {
+        XCTFail("\(args): expected unknownOption, got \(error)")
+        continue
+      }
+    }
+  }
+
   func testParseRequestMissingArguments() {
     guard case .failure(let error) = LabanArgumentParser.parse(["request", "GET"]) else {
       XCTFail("expected failure")

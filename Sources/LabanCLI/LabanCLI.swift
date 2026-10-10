@@ -1047,6 +1047,8 @@ extension LabanArgumentError: CustomStringConvertible {
     switch self {
     case .unknownCommand(let command):
       return "unknown command: \(command)"
+    case .unknownOption(let option):
+      return "unknown option: \(option)"
     case .missingArgument(let argument):
       return "missing argument: \(argument)"
     }

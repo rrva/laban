@@ -30,10 +30,19 @@ enum LabanCommand: Equatable {
 
 enum LabanArgumentError: Error, Equatable {
   case unknownCommand(String)
+  case unknownOption(String)
   case missingArgument(String)
 }
 
 struct LabanArgumentParser {
+  /// Commands that take no flags beyond the shared ones parsed in `parse`.
+  /// `session`, `context`, `wait` and `proposal` hand their remaining args to
+  /// a subcommand parser that owns its own flags and rejects extras itself.
+  private static let commandsWithoutSubcommandParser: Set<String> = [
+    "discover", "status", "health", "capabilities", "request", "completions",
+    "install-cli", "version", "help",
+  ]
+
   static func parse(_ arguments: [String]) -> Result<LabanCommand, LabanArgumentError> {
     var args = Array(arguments)
     guard !args.isEmpty else { return .success(.help) }
@@ -105,6 +114,14 @@ struct LabanArgumentParser {
       default:
         i += 1
       }
+    }
+
+    // A leftover `-`-prefixed arg is a typo (`status --jsonn`), not a
+    // positional argument; skipping it would run the command without it.
+    if commandsWithoutSubcommandParser.contains(command),
+      let unknown = args.first(where: { $0.hasPrefix("-") })
+    {
+      return .failure(.unknownOption(unknown))
     }
 
     switch command {
