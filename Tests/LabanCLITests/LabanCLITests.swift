@@ -181,6 +181,9 @@ final class LabanCLITests: XCTestCase {
       LabanArgumentParser.parse(["request", "--", "GET", "/debug/health"]).success,
       .request(method: "GET", path: "/debug/health", body: nil, json: false))
     XCTAssertEqual(
+      LabanArgumentParser.parse(["session", "request", "--", "GET", "/debug/health"]).success,
+      .sessionRequest(method: "GET", path: "/debug/health", body: nil, json: false))
+    XCTAssertEqual(
       LabanArgumentParser.parse(["completions", "--", "-zsh"]).success,
       .completions(shell: "-zsh"))
     XCTAssertEqual(

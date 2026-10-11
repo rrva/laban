@@ -200,7 +200,11 @@ struct LabanArgumentParser {
     guard let subcommand = args.first else {
       return .failure(.missingArgument("session subcommand"))
     }
-    let rest = Array(args.dropFirst())
+    var rest = Array(args.dropFirst())
+    // `--` ends the options, as at the top level: `session request -- GET /p`.
+    if subcommand == "request", let separator = rest.firstIndex(of: "--") {
+      rest.remove(at: separator)
+    }
     switch subcommand {
     case "state", "proxy", "current", "request":
       let extras = subcommand == "request" ? Array(rest.dropFirst(2)) : rest
