@@ -2,21 +2,39 @@ import Foundation
 import LabanTerminalCore
 
 public final class InProcessTerminalSessionClient: TerminalSessionClient {
+  /// One session's catalog entry. Calls on this client may come from any
+  /// thread, so the mutable fields live in `State` and are only read through
+  /// `current` (a consistent copy) and written through `update`, both under
+  /// the session's lock — the same discipline laband applies. The session
+  /// lock is a leaf: nothing that blocks (stopping the runner, PTY calls)
+  /// runs under it. `resizeLock` serializes resizes and is taken before the
+  /// session lock, never while holding it.
   private final class ManagedSession {
+    struct State {
+      var rows: Int
+      var cols: Int
+      var lifecycleState: LabandLifecycleState = .running
+      var title: String
+      var childPid: Int?
+      var foregroundPid: Int?
+      var session: Session?
+      var runner: SessionRunner?
+      var leaseHolder: String?
+      var leaseHistory: [LabandLeaseHistoryEntry] = []
+      /// Bumped by every recorded resize, so a snapshot taken before a
+      /// resize can tell that its size is stale.
+      var resizeGeneration: UInt64 = 0
+
+      var liveSession: Session? { lifecycleState == .running ? session : nil }
+    }
+
     let logicalSessionId: String
     let incarnationId: String
     let commandDisplayName: String
     let cwd: String
-    var rows: Int
-    var cols: Int
-    var lifecycleState: LabandLifecycleState = .running
-    var title: String
-    var childPid: Int?
-    var foregroundPid: Int?
-    var session: Session?
-    var runner: SessionRunner?
-    var leaseHolder: String?
-    var leaseHistory: [LabandLeaseHistoryEntry] = []
+    private let lock = NSLock()
+    private let resizeLock = NSLock()
+    private var state: State
 
     init(
       logicalSessionId: String,
@@ -31,10 +49,29 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
       self.incarnationId = incarnationId
       self.commandDisplayName = commandDisplayName
       self.cwd = cwd
-      self.rows = rows
-      self.cols = cols
-      self.title = commandDisplayName
-      self.session = session
+      self.state = State(rows: rows, cols: cols, title: commandDisplayName, session: session)
+    }
+
+    var current: State { lock.withLock { state } }
+
+    var liveSession: Session? { lock.withLock { state.liveSession } }
+
+    @discardableResult
+    func update<T>(_ body: (inout State) throws -> T) rethrows -> T {
+      try lock.withLock { try body(&state) }
+    }
+
+    /// Resize the PTY with `apply` and record the size, one resize at a time.
+    func resize(rows: Int, cols: Int, apply: () -> Bool) -> Bool {
+      resizeLock.withLock {
+        guard apply() else { return false }
+        update { state in
+          state.rows = rows
+          state.cols = cols
+          state.resizeGeneration &+= 1
+        }
+        return true
+      }
     }
   }
 
@@ -47,8 +84,9 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
   deinit {
     lock.withLock {
       for managed in sessions.values {
-        managed.runner?.stop()
-        managed.session?.close()
+        let state = managed.current
+        state.runner?.stop()
+        state.session?.close()
       }
       sessions.removeAll()
     }
@@ -98,8 +136,9 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
       cols: cols,
       session: session
     )
-    managed.runner = session.makeRunner(onDirty: {})
-    managed.runner?.start()
+    let runner = session.makeRunner(onDirty: {})
+    managed.update { $0.runner = runner }
+    runner?.start()
     refreshProcessMetadata(managed)
     lock.withLock {
       sessions[logicalSessionId] = managed
@@ -134,7 +173,7 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)
     }
-    guard managed.lifecycleState == .running, let session = managed.session else {
+    guard let session = managed.liveSession else {
       throw TerminalSessionClientError.sessionNotRunning(sessionId)
     }
     guard bytes.isEmpty || session.write(bytes) >= 0 else {
@@ -146,17 +185,18 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)
     }
-    guard managed.lifecycleState == .running, let session = managed.session else {
+    guard let session = managed.liveSession else {
       throw TerminalSessionClientError.sessionNotRunning(sessionId)
     }
     var size = LabanTerminalSize()
     size.rows = Int32(max(1, rows))
     size.cols = Int32(max(1, cols))
-    guard session.resize(size) == 0 else {
+    guard
+      managed.resize(
+        rows: Int(size.rows), cols: Int(size.cols), apply: { session.resize(size) == 0 })
+    else {
       throw TerminalSessionClientError.resizeFailed(sessionId)
     }
-    managed.rows = Int(size.rows)
-    managed.cols = Int(size.cols)
     return sessionInfo(managed)
   }
 
@@ -169,9 +209,10 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)
     }
-    guard managed.lifecycleState == .running, let session = managed.session,
-      let pointer = session.snapshot()
-    else {
+    // Read the resize generation before taking the snapshot: a resize that
+    // lands in between makes this snapshot's size stale.
+    let before = managed.current
+    guard let session = before.liveSession, let pointer = session.snapshot() else {
       throw TerminalSessionClientError.snapshotFailed(sessionId)
     }
     defer { laban_snapshot_destroy(pointer) }
@@ -179,12 +220,16 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
       logicalSessionId: managed.logicalSessionId,
       incarnationId: managed.incarnationId,
       snapshot: UnsafePointer(pointer),
-      lifecycleState: managed.lifecycleState
+      lifecycleState: before.lifecycleState
     )
-    managed.title = snapshot.title.isEmpty ? managed.commandDisplayName : snapshot.title
-    managed.rows = snapshot.rows
-    managed.cols = snapshot.cols
-    managed.lifecycleState = snapshot.lifecycleState
+    managed.update { state in
+      state.title = snapshot.title.isEmpty ? managed.commandDisplayName : snapshot.title
+      if state.resizeGeneration == before.resizeGeneration {
+        state.rows = snapshot.rows
+        state.cols = snapshot.cols
+      }
+      state.lifecycleState = snapshot.lifecycleState
+    }
     return snapshot
   }
 
@@ -192,7 +237,7 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)
     }
-    guard managed.lifecycleState == .running, let session = managed.session else {
+    guard let session = managed.liveSession else {
       throw TerminalSessionClientError.sessionNotRunning(sessionId)
     }
     guard session.scrollViewport(deltaRows: deltaRows) == 0 else {
@@ -205,19 +250,19 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)
     }
-    _ = managed.session?.markRendered()
+    _ = managed.current.session?.markRendered()
   }
 
   public func transferLease(sessionId: String, holderClientId: String) throws -> LabandSessionInfo {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)
     }
-    managed.leaseHolder = holderClientId
-    managed.leaseHistory.append(
-      LabandLeaseHistoryEntry(
-        leaseHolder: holderClientId,
-        grantedAtMonoNs: DispatchTime.now().uptimeNanoseconds
-      ))
+    let grantedAtMonoNs = DispatchTime.now().uptimeNanoseconds
+    managed.update { state in
+      state.leaseHolder = holderClientId
+      state.leaseHistory.append(
+        LabandLeaseHistoryEntry(leaseHolder: holderClientId, grantedAtMonoNs: grantedAtMonoNs))
+    }
     return sessionInfo(managed)
   }
 
@@ -226,11 +271,15 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
       throw TerminalSessionClientError.sessionNotFound(sessionId)
     }
     refreshProcessMetadata(managed)
-    managed.runner?.stop()
-    managed.runner = nil
-    managed.session?.close()
-    managed.session = nil
-    managed.lifecycleState = .terminated
+    let (runner, session) = managed.update { state in
+      let detached = (state.runner, state.session)
+      state.runner = nil
+      state.session = nil
+      state.lifecycleState = .terminated
+      return detached
+    }
+    runner?.stop()
+    session?.close()
     return sessionInfo(managed)
   }
 
@@ -239,28 +288,30 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
   }
 
   private func refreshProcessMetadata(_ managed: ManagedSession) {
-    guard managed.lifecycleState == .running, let metadata = managed.session?.processMetadata()
-    else { return }
-    managed.childPid = metadata.childPid
-    managed.foregroundPid = metadata.foregroundPid
+    guard let metadata = managed.liveSession?.processMetadata() else { return }
+    managed.update { state in
+      state.childPid = metadata.childPid
+      state.foregroundPid = metadata.foregroundPid
+    }
   }
 
   private func sessionInfo(_ managed: ManagedSession) -> LabandSessionInfo {
-    LabandSessionInfo(
+    let state = managed.current
+    return LabandSessionInfo(
       logicalSessionId: managed.logicalSessionId,
       incarnationId: managed.incarnationId,
-      childPid: managed.childPid,
-      foregroundPid: managed.foregroundPid,
+      childPid: state.childPid,
+      foregroundPid: state.foregroundPid,
       daemonProcessPid: Int(ProcessInfo.processInfo.processIdentifier),
       cwd: managed.cwd,
       commandDisplayName: managed.commandDisplayName,
-      title: managed.title,
-      rows: managed.rows,
-      cols: managed.cols,
-      lifecycleState: managed.lifecycleState,
+      title: state.title,
+      rows: state.rows,
+      cols: state.cols,
+      lifecycleState: state.lifecycleState,
       attachedClientCount: 0,
-      leaseHolder: managed.leaseHolder,
-      leaseHistory: managed.leaseHistory,
+      leaseHolder: state.leaseHolder,
+      leaseHistory: state.leaseHistory,
       transportMode: transportMode
     )
   }

@@ -206,7 +206,7 @@ let package = Package(
     ),
     .testTarget(
       name: "LabandTests",
-      dependencies: ["LabanCore", "LabanTerminalCore"]
+      dependencies: ["LabanCore", "LabanTerminalCore", "Laband"]
     ),
     .testTarget(
       name: "LabptyTests",
