@@ -119,7 +119,7 @@ final class ControlAttachProxyServerTests: XCTestCase {
     defer { Darwin.close(clientFD) }
 
     let request = Data(#"{"method":"GET","path":"/debug/state"}"#.utf8) + Data([0x0A])
-    try sendAll(fd: clientFD, data: request)
+    try sendAllExpectingRejection(fd: clientFD, data: request)
 
     let received = try readAvailable(fd: clientFD, timeout: 1.0)
     guard let newline = received.firstIndex(of: 0x0A) else {
@@ -154,7 +154,7 @@ final class ControlAttachProxyServerTests: XCTestCase {
     defer { Darwin.close(clientFD) }
 
     let request = Data(#"{"method":"GET","path":"/debug/state"}"#.utf8) + Data([0x0A])
-    try sendAll(fd: clientFD, data: request)
+    try sendAllExpectingRejection(fd: clientFD, data: request)
 
     let response = try readLineJSON(fd: clientFD, timeout: 1.0)
     XCTAssertEqual(response?.status, 403)
@@ -505,7 +505,7 @@ final class ControlAttachProxyServerTests: XCTestCase {
 
     let oversized = Data(
       repeating: UInt8(ascii: "x"), count: ControlAttachProxyServer.maxLineBytes + 1)
-    try sendAll(fd: clientFD, data: oversized)
+    try sendAllExpectingRejection(fd: clientFD, data: oversized)
 
     let response = try readLineJSON(fd: clientFD, timeout: 1.0)
     XCTAssertEqual(response?.status, 413)
@@ -609,10 +609,24 @@ private func readLine(fd: Int32) throws -> Data? {
   return nil
 }
 
+/// `ControlUDSClient.connect` sets SO_NOSIGPIPE before connecting. Setting it
+/// again here would fail with EINVAL whenever the proxy has already rejected
+/// and closed the connection, which is exactly what the rejection tests provoke.
 private func connectNoSigPipe(socketPath: String) throws -> Int32 {
-  let fd = try ControlUDSClient.connect(socketPath: socketPath)
-  try ControlFD.setNoSigPipe(fd)
-  return fd
+  try ControlUDSClient.connect(socketPath: socketPath)
+}
+
+/// Sends a request to a proxy that is expected to reject the connection. The
+/// proxy writes its error response and closes without reading the request (it
+/// rejects a peer at accept time, and an oversized line before its last byte),
+/// so EPIPE here is the proxy behaving correctly, not a test failure. Its
+/// response is still in the receive buffer for the caller to read.
+private func sendAllExpectingRejection(fd: Int32, data: Data) throws {
+  do {
+    try sendAll(fd: fd, data: data)
+  } catch let error as POSIXError where error.code == .EPIPE {
+    return
+  }
 }
 
 private func readAvailable(fd: Int32, timeout: TimeInterval) throws -> Data {

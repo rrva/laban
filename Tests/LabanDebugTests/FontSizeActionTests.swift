@@ -79,13 +79,19 @@ final class FontSizeActionTests: XCTestCase {
   }
 
   func testRuntimeReadsPersistedFontSize() throws {
-    UserDefaults.standard.set(20.0, forKey: FontAtlas.userFontSizeKey)
-    defer { UserDefaults.standard.removeObject(forKey: FontAtlas.userFontSizeKey) }
+    // A private, process-unique suite: writing the key to
+    // `UserDefaults.standard` would leak into every concurrent test process
+    // through the shared `com.apple.dt.xctest.tool` domain.
+    let suiteName = "laban-fontsize-\(getpid())-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defaults.set(20.0, forKey: FontAtlas.userFontSizeKey)
 
-    let (runtime, artifacts) = try makeRuntime()
+    let (runtime, artifacts) = try makeRuntime(fontDefaults: defaults)
     defer { try? FileManager.default.removeItem(at: artifacts) }
 
     XCTAssertEqual(Double(runtime.fontAtlas.pointSize), 20)
+    XCTAssertEqual(runtime.cellHeight, Int(FontAtlas(pointSize: 20, fontName: nil).cellSize.height))
   }
 
   func testCommandZoomChordsDriveFontSize() throws {
@@ -112,7 +118,9 @@ final class FontSizeActionTests: XCTestCase {
       Double(runtime.fontAtlas.pointSize), Double(FontAtlas.defaultTerminalPointSize))
   }
 
-  private func makeRuntime() throws -> (HeadlessDebugRuntime, URL) {
+  private func makeRuntime(
+    fontDefaults: UserDefaults = .standard
+  ) throws -> (HeadlessDebugRuntime, URL) {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-fontsize-\(UUID().uuidString)")
     let runtime = try HeadlessDebugRuntime(
@@ -120,7 +128,8 @@ final class FontSizeActionTests: XCTestCase {
       artifactsURL: artifacts,
       tempURL: nil,
       deterministic: true,
-      runId: "font-size-tests"
+      runId: "font-size-tests",
+      fontDefaults: fontDefaults
     )
     return (runtime, artifacts)
   }
