@@ -10299,9 +10299,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var dividerDrag: PaneDividerDrag?
   private var paneSplitterCache: [PaneSplitterKey: PaneSplitterAccessibilityElement] = [:]
 
-  /// The rect panes are laid out in: the terminal area truncated the way `AppModel`
-  /// sizes panes, so drawing, hit tests and the model's minimums all use one layout.
+  /// The rect panes are laid out in, matching the render path in use. Several visible
+  /// panes render in the terminal area truncated the way `AppModel` sizes panes, so
+  /// drawing, hit tests and the model's minimums share one layout. One visible pane
+  /// (unsplit, zoomed, or remote) renders on the whole terminal area, grid placed from
+  /// the full bounds height, so its geometry must use that rect.
   private var paneAreaRect: CGRect {
+    guard sessionCoordinator?.usesRemoteSnapshots != true,
+      (model.activeTab?.visiblePaneCount ?? 0) > 1
+    else { return terminalAreaRect }
     let insets = Self.contentInsets
     return TerminalSurfaceInsets(
       top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right

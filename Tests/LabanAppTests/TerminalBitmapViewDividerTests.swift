@@ -523,6 +523,38 @@ final class TerminalBitmapViewDividerTests: XCTestCase {
     }
   }
 
+  func testSinglePaneGeometryMatchesTheDrawnGridAtFractionalViewHeight() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+    harness.view.setFrameSize(
+      NSSize(width: harness.view.frame.width, height: harness.view.frame.height + 0.6))
+    harness.view.advanceFrame()
+
+    // One visible pane renders on the whole view (full bounds height), so the IME caret,
+    // mouse and selection geometry must use that same rect, unsplit or zoomed.
+    func assertCaretOnDrawnGrid(_ label: String) throws {
+      let session = try XCTUnwrap(harness.model.session(forTab: harness.tab.id))
+      let snap = try XCTUnwrap(session.snapshot())
+      defer { laban_snapshot_destroy(snap) }
+      let insets = TerminalBitmapView.contentInsets
+      let drawn = TerminalTextInputGeometry.cursorRect(
+        rows: Int(snap.pointee.rows), cursorRow: Int(snap.pointee.cursor_row),
+        cursorCol: Int(snap.pointee.cursor_col), sidebarWidth: harness.sidebarWidth,
+        cellWidth: harness.cellWidth, cellHeight: harness.cellHeight,
+        boundsHeight: harness.view.bounds.height, insets: insets)
+      let caret = harness.view.firstRect(
+        forCharacterRange: NSRange(location: 0, length: 0), actualRange: nil)
+      XCTAssertEqual(caret.minY, drawn.minY, accuracy: 0.001, label)
+      XCTAssertEqual(caret.minX, drawn.minX, accuracy: 0.001, label)
+      XCTAssertEqual(harness.view.focusedPaneRect, harness.view.terminalAreaRect, label)
+    }
+    try assertCaretOnDrawnGrid("unsplit")
+    harness.view.splitPaneDown(nil)
+    harness.view.togglePaneZoom(nil)
+    harness.view.advanceFrame()
+    try assertCaretOnDrawnGrid("zoomed")
+  }
+
   private func menuItem(_ direction: PaneDirection) -> NSMenuItem {
     let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     item.representedObject = direction.rawValue
