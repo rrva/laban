@@ -1,0 +1,26 @@
+Package.swift
+  s_6df3fd0f698b32::t_2202a6d341af34 126
+scripts/build-app
+  s_6df3fd0f698b32::t_32d6f418216324 175-179,183-184,186-189,193
+  s_6df3fd0f698b32::t_251de56dd43e4d 185
+  s_6df3fd0f698b32::t_2202a6d341af34 311-312
+  s_6df3fd0f698b32::t_e15367ca124549 180-181,190
+Sources/LabanApp/Resources/AppIcon.icon/icon.json
+  s_6df3fd0f698b32::t_3987f461e56e3d 1-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9733c77fec8af254f84c95290e22b9957309d6fb",
+  "prompts": {},
+  "sessions": {
+    "s_6df3fd0f698b32": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbf5ad9f-e039-465f-8cf2-92585631d9eb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
