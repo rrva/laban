@@ -172,11 +172,25 @@ for product in LabanApp laban-agent laband labpty laban; do
   fi
 done
 
-# Copy app icon into bundle
+# Compile the app icon into the bundle. The Icon Composer source gives the
+# system full-bleed art to mask itself; macOS 26+ otherwise boxes the legacy
+# pre-rounded icns inside a grey squircle. actool emits Assets.car (read via
+# CFBundleIconName) plus a gridded AppIcon.icns for older systems. Without
+# actool (Command Line Tools only), fall back to the committed icns.
+# actool resolves relative paths against its own cwd, so pass absolute ones.
+icon_src="${repo_root}/Sources/LabanApp/Resources/AppIcon.icon"
 icon="Sources/LabanApp/Resources/AppIcon.icns"
-if [ -f "$icon" ]; then
+icon_plist=$(mktemp -t laban-icon-plist)
+if [ -d "$icon_src" ] && xcrun --find actool >/dev/null 2>&1 &&
+  xcrun actool "$icon_src" --compile "$(cd "${bundle_dir}/Resources" && pwd)" \
+    --app-icon AppIcon --platform macosx --minimum-deployment-target 13.0 \
+    --output-partial-info-plist "$icon_plist" >/dev/null; then
+  :
+elif [ -f "$icon" ]; then
+  printf 'build-app: actool unavailable or failed; using legacy AppIcon.icns\n' >&2
   cp -f "$icon" "${bundle_dir}/Resources/AppIcon.icns"
 fi
+rm -f "$icon_plist"
 
 # Copy SwiftPM-emitted resource bundles next to the binary into the
 # .app's Contents/Resources/. LabanRenderer locates them via
@@ -293,6 +307,8 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <key>CFBundleVersion</key>
     <string>$(xml_escape "$build_number")</string>
     <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
