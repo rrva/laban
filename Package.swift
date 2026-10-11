@@ -123,6 +123,7 @@ let package = Package(
         "LabanCore", "LabanRenderer", "LabanTerminalCore", "LabanControl",
         .product(name: "Sparkle", package: "Sparkle"),
       ],
+      exclude: ["Resources/AppIcon.icon"],
       resources: [
         .copy("Resources/AppIcon.icns"),
         .process("Resources/Localizable.xcstrings"),
