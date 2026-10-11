@@ -1,19 +1,22 @@
 import AppKit
 import LabanCore
 
-/// What identifies a splitter element: when none of it changes the cached element is
-/// still accurate.
-struct PaneSplitterSignature: Equatable {
+/// What identifies a splitter element: the divider's place in its tab plus the split it
+/// belongs to (its axis and the panes on either side). Moving the divider or the window
+/// keeps the key, so the element is updated in place and VoiceOver keeps its focus. A
+/// structural change that hands the path to another split (closing a pane shifts paths)
+/// changes the key, so that divider gets a fresh element instead of the old one.
+struct PaneSplitterKey: Hashable {
   let tabId: Tab.ID
   let path: PanePath
-  let rect: CGRect
-  let fraction: Double
+  let axis: PaneAxis
+  let leaves: [Session.ID]
 
-  init(divider: PaneDivider, tabId: Tab.ID) {
-    self.tabId = tabId
-    self.path = divider.path
-    self.rect = divider.rect
-    self.fraction = divider.fraction
+  init(tab: Tab, divider: PaneDivider) {
+    tabId = tab.id
+    path = divider.path
+    axis = divider.axis
+    leaves = tab.panes.subtree(at: divider.path)?.leafSessionIds() ?? []
   }
 }
 

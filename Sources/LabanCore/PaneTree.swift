@@ -257,7 +257,7 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
   }
 
   /// The subtree at `path`, or nil if the path leaves the tree.
-  func subtree(at path: PanePath) -> PaneTree? {
+  public func subtree(at path: PanePath) -> PaneTree? {
     guard let side = path.first else { return self }
     guard case .split(_, _, let first, let second) = self else { return nil }
     return (side == .first ? first : second).subtree(at: Array(path.dropFirst()))
@@ -269,14 +269,55 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
   public func minimumExtent(
     along axis: PaneAxis, leafMinimum: CGFloat, dividerWidth: CGFloat
   ) -> CGFloat {
+    minimumExtent(
+      along: axis, atStart: false, atEnd: false, dividerWidth: dividerWidth,
+      leafMinimum: { _, _ in leafMinimum })
+  }
+
+  /// The smallest extent this subtree needs along `axis` when a leaf's minimum depends on
+  /// whether it touches the window edge. `atStart` and `atEnd` say whether the subtree's
+  /// first side (left or top) and second side (right or bottom) lie on the window edge;
+  /// `leafMinimum` gets the same two facts for each leaf.
+  public func minimumExtent(
+    along axis: PaneAxis, atStart: Bool, atEnd: Bool, dividerWidth: CGFloat,
+    leafMinimum: (_ atStart: Bool, _ atEnd: Bool) -> CGFloat
+  ) -> CGFloat {
     switch self {
-    case .leaf: return leafMinimum
-    case .split(let splitAxis, _, let first, let second):
-      let a = first.minimumExtent(along: axis, leafMinimum: leafMinimum, dividerWidth: dividerWidth)
+    case .leaf: return leafMinimum(atStart, atEnd)
+    case .split(let splitAxis, let fraction, let first, let second):
+      let along = splitAxis == axis
+      let a = first.minimumExtent(
+        along: axis, atStart: atStart, atEnd: along ? false : atEnd,
+        dividerWidth: dividerWidth, leafMinimum: leafMinimum)
       let b = second.minimumExtent(
-        along: axis, leafMinimum: leafMinimum, dividerWidth: dividerWidth)
-      return splitAxis == axis ? a + b + dividerWidth : max(a, b)
+        along: axis, atStart: along ? false : atStart, atEnd: atEnd,
+        dividerWidth: dividerWidth, leafMinimum: leafMinimum)
+      guard along else { return max(a, b) }
+      return Self.minimumSplitExtent(
+        first: a, second: b, fraction: fraction, dividerWidth: dividerWidth)
     }
+  }
+
+  /// The smallest whole-pixel extent at which a split held at `fraction` gives its first
+  /// side at least `first` and its second side at least `second`. Moving an outer divider
+  /// keeps this split's fraction, so the cut is `partition`'s floor at that fraction, not
+  /// wherever both sides would fit; with unequal minimums `first + second + divider` can
+  /// leave one side short.
+  static func minimumSplitExtent(
+    first: CGFloat, second: CGFloat, fraction: Double, dividerWidth: CGFloat
+  ) -> CGFloat {
+    let share = CGFloat(fraction.isFinite ? clampFraction(fraction) : 0.5)
+    let divider = max(0, dividerWidth)
+    func fits(_ extent: CGFloat) -> Bool {
+      let cut = floor(extent * share)
+      return cut >= first && extent - cut - min(divider, extent - cut) >= second
+    }
+    // Both bounds are necessary, and each side's size never shrinks as the extent
+    // grows a whole pixel, so the first extent that fits from here is the smallest.
+    // The second side gains a pixel at least every 1 / (1 - share) pixels: a few steps.
+    var extent = max(0, ceil(max(first + second + divider, share > 0 ? first / share : 0)))
+    while !fits(extent) { extent += 1 }
+    return extent
   }
 
   /// The fractions at which the split at `path` keeps both sides at or above their
@@ -287,6 +328,18 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
     at path: PanePath, in rect: CGRect, minimumWidth: CGFloat, minimumHeight: CGFloat,
     dividerWidth: CGFloat
   ) -> ClosedRange<Double>? {
+    fractionRange(
+      at: path, in: rect, dividerWidth: dividerWidth,
+      leafMinimum: { axis, _, _ in axis == .vertical ? minimumWidth : minimumHeight })
+  }
+
+  /// `fractionRange` for leaves whose minimum extent along the split's axis depends on
+  /// whether their first side (left or top) and second side (right or bottom) touch the
+  /// edge of `rect`, as a top pane that keeps the titlebar strip does.
+  public func fractionRange(
+    at path: PanePath, in rect: CGRect, dividerWidth: CGFloat,
+    leafMinimum: (_ axis: PaneAxis, _ atStart: Bool, _ atEnd: Bool) -> CGFloat
+  ) -> ClosedRange<Double>? {
     guard
       let divider = dividers(in: rect, dividerWidth: dividerWidth).first(where: { $0.path == path }
       ),
@@ -295,11 +348,17 @@ public indirect enum PaneTree: Equatable, Codable, Sendable {
     let vertical = axis == .vertical
     let extent = Double(vertical ? divider.container.width : divider.container.height)
     guard extent > 0 else { return 0.5...0.5 }
-    let leafMinimum = vertical ? minimumWidth : minimumHeight
+    // y grows upward: a horizontal split's first (top) side is the container's high-y end.
+    let container = divider.container
+    let atStart = vertical ? container.minX <= rect.minX : container.maxY >= rect.maxY
+    let atEnd = vertical ? container.maxX >= rect.maxX : container.minY <= rect.minY
+    let leaf = { (start: Bool, end: Bool) in leafMinimum(axis, start, end) }
     let firstMinimum = Double(
-      first.minimumExtent(along: axis, leafMinimum: leafMinimum, dividerWidth: dividerWidth))
+      first.minimumExtent(
+        along: axis, atStart: atStart, atEnd: false, dividerWidth: dividerWidth, leafMinimum: leaf))
     let secondMinimum = Double(
-      second.minimumExtent(along: axis, leafMinimum: leafMinimum, dividerWidth: dividerWidth))
+      second.minimumExtent(
+        along: axis, atStart: false, atEnd: atEnd, dividerWidth: dividerWidth, leafMinimum: leaf))
     let low = firstMinimum / extent
     let high = (extent - Double(dividerWidth) - secondMinimum) / extent
     let clampedLow = Self.clampFraction(low)
