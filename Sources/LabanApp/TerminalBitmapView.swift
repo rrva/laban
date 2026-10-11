@@ -10076,9 +10076,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     selectionOriginCell = nil
   }
 
-  /// Step the viewport one row in `dragAutoscrollDirection` and re-clamp
-  /// the focus to the (new) edge cell. The selection tail is anchored to
-  /// scroll position, so it grows naturally as we scroll.
+  /// Step the viewport one row in `dragAutoscrollDirection` and re-extend
+  /// the selection to the (new) edge cell in the active grain, so a word or
+  /// line drag held past the edge keeps whole words or lines.
   private func dragAutoscrollTick() {
     guard dragAutoscrollDirection != 0,
       let activeTab = model.activeTab,
@@ -10108,7 +10108,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     displayedScrollRows = Double(appliedScrollRows)
     targetScrollRows = displayedScrollRows
     if let pt = lastDragPoint {
-      selectionFocus = clampedSelectionPoint(at: pt)
+      extendSelection(to: pt)
     }
     // The 20 Hz autoscroll pump must paint each step itself: with a parked
     // link there is no other frame source while the pointer holds still past
