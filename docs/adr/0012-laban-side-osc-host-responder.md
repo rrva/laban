@@ -46,8 +46,9 @@ before a query later in the chunk reads it back. It:
   written through the existing `laban_write_terminal_response` reply path. When
   no colour is configured it synthesises a black/white pair from the session's
   light/dark `color_scheme` so the querying app always gets a usable answer. The
-  reply uses the xterm `rgb:RRRR/GGGG/BBBB` form, ST-terminated; Codex's parser
-  accepts 2- or 4-hex with BEL or ST.
+  reply uses the xterm `rgb:RRRR/GGGG/BBBB` form, terminated the way the query
+  was (BEL or ST, as libghostty does); Codex's parser accepts 2- or 4-hex with
+  BEL or ST. Chained queries (`OSC 10;?;?`) get one reply per `?`, up to colour 12.
 - delivers `OSC 9;<text>` to a new `LabanOSCNotificationCallback`
   (`laban_session_set_osc_notification_callback`), excluding ConEmu progress
   reports (`OSC 9;4;…`). `Session.onOSCNotification` re-exposes it in Swift;
