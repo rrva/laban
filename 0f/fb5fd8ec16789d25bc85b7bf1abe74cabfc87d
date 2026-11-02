@@ -1,0 +1,19 @@
+scripts/gen-localizable-xcstrings.py
+  s_42283e0c01727c::t_681ee035f84fad 16,18-19,21-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0ffb5fd8ec16789d25bc85b7bf1abe74cabfc87d",
+  "prompts": {},
+  "sessions": {
+    "s_42283e0c01727c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8a78f07-8a27-47a2-88dd-db194a05c7d4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
