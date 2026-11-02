@@ -3,6 +3,47 @@
     <channel>
         <title>Laban</title>
         <item>
+            <title>0.8.6</title>
+            <pubDate>Mon, 02 Nov 2026 22:13:00 +0100</pubDate>
+            <sparkle:version>1793653830</sparkle:version>
+            <sparkle:shortVersionString>0.8.6</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[## Changed
+
+- The app icon now ships as an Icon Composer asset, so macOS 26 and later mask it correctly instead of drawing it inside a grey frame.
+
+## Fixed
+
+- **Selection**
+  - Word and line drag selections stay on the right text when the view scrolls during the drag, and keep their word or line steps while a drag autoscrolls past the top or bottom edge.
+  - A selection is now cleared when the app could change the text under it: a switch between the primary and alternate screen, a forwarded right click, or an app repaint under a Shift-drag selection while mouse tracking is on.
+  - The caret, mouse hits and selection now line up with the drawn text when one pane fills a view whose height is not a whole number of pixels.
+- **Split panes**
+  - Panes below or beside a divider can shrink to the minimum size. Only the top panes reserve room for the titlebar strip.
+  - When an outer divider moves, every pane of a nested split in the same direction stays at or above the minimum size.
+  - VoiceOver pane splitters keep working after each step and after the window moves, and they announce each step right away.
+- **Sessions**
+  - A tab that loses its session lease gets it back, so it keeps accepting keystrokes.
+  - Restoring or opening a session never replaces a session that is still running. If Laban cannot look up the session, it reports an error instead of starting a new session over it.
+  - Clients that connect at the same time can no longer leave a session's state half-updated, and an older request can no longer overwrite newer session state.
+- **Terminal**
+  - When no colors are configured, Laban now answers every color query in a chained OSC 10/11/12 request, not only the first. Each reply ends with the same terminator as the query (BEL or ST).
+- **Command line**
+  - A misspelled flag such as `--jsno` now fails with an error. Before, the command ran as if the flag was not there. `--` ends option parsing on all subcommands.
+- **Agent proxy**
+  - A slow control request no longer kills the agent. If the upstream connection is lost or answers late, the proxy returns 502 and never sends a late reply to the wrong request.
+]]></description>
+            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.6/Laban-0.8.6.zip" length="23636225" type="application/octet-stream" sparkle:edSignature="VObh+aUO1dePj47a9mzqWM3F7HtI09pU295H6nBRrU9zXt8uoLHZ1QsFCV1tC61jCEMkrvt39Gc0WgCcqCrfCw=="/>
+            <sparkle:deltas>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.6/Laban1793653830-1791222224.delta" sparkle:deltaFrom="1791222224" length="4775042" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="LKqMeSY6pzPFkIDQcReDi0PUQwkeVr6adh1cWiqk0woaojF1x39OS6liwS6upXIdBthaFBbu7WJuwc7/bXtpBg=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.6/Laban1793653830-1791143888.delta" sparkle:deltaFrom="1791143888" length="6851810" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="ltHKTKjXaWBVQj8fqNPQXKcyAzBp4CG3YjlLgevuzQhQ1KcyQ715zzuGjnc3XpfPjXdFypH0ii7GKQJ4QMPSBg=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.6/Laban1793653830-1791140982.delta" sparkle:deltaFrom="1791140982" length="6851110" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="Yjtc2gkJ7RYabPchhw2qy3gEEj2zQgHQzNLus9kvthFkJvM8nmb86iB/2ehE5uI2TY49QMPj26IMe2M4XqzsCA=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.6/Laban1793653830-1791107097.delta" sparkle:deltaFrom="1791107097" length="7195626" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="jYHHgrxv2bpzAhDXYIJ4GuQmM9YdtnJshdEjAtyOMI5KYaJRiB2tNBooDRCrIr1d0Kgd2Ufj850M97rS7bEqDw=="/>
+                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.6/Laban1793653830-1790539201.delta" sparkle:deltaFrom="1790539201" length="8997194" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="lCHrlat9a+g6iEGQs0uc8BoEIQls51qZNYiuWRE5kfvR63uqRRSCGRl9ynsjd8NsB4TKPuqac6oiPID0jfF5CQ=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>0.8.5</title>
             <pubDate>Mon, 05 Oct 2026 19:46:19 +0200</pubDate>
             <sparkle:version>1791222224</sparkle:version>
@@ -47,37 +88,6 @@
                 <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.4/Laban1791143888-1791107097.delta" sparkle:deltaFrom="1791107097" length="2293394" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="fvCi9jdi04xOVfjIwKrM/qGnwVCnze96MI8+gOxJ76IsHHhLPEkoH/InZuYKWVLWvZC8/g62EHHOWXwB48GeAw=="/>
                 <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.4/Laban1791143888-1790539201.delta" sparkle:deltaFrom="1790539201" length="4364458" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="5qjjqcVmjmnpk4Rmk9lYiOELD+TvqqNEucdStLWFeFJEixMdkwosj1GffeJo3doqbgLBlMzqwgMY2W4xLFFtAg=="/>
                 <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.4/Laban1791143888-1790250962.delta" sparkle:deltaFrom="1790250962" length="6270754" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="ssoZsmhq5eLV7s8+EUeG4UMWxH2wTWas3nsQr7bHzOd3kVsKpL1g4ya3AnKQxmBQJTbiFjZ47X5IT17RPwuHCQ=="/>
-            </sparkle:deltas>
-        </item>
-        <item>
-            <title>0.8.3</title>
-            <pubDate>Sun, 04 Oct 2026 21:12:04 +0200</pubDate>
-            <sparkle:version>1791140982</sparkle:version>
-            <sparkle:shortVersionString>0.8.3</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[## New
-
-- **Ask before closing a running program.** Closing a pane, tab, or window, or quitting, now asks first when a program other than the shell is running, and names what will be ended ("vim is running and will be ended"). A pane at its shell prompt closes without asking. Closing a tab, window, or the app lists every busy pane in one dialog. Coding agents such as Claude Code and Codex are recognized, and the dialog says when one is in the middle of working.
-  - Settings → "Ask before closing": When a program is running (default), Always, or Never, plus an editable list of programs that count as idle (shells, `tmux`, `screen`).
-  - Quitting with background sessions and restore-on-launch on doesn't ask, because your sessions come back on the next launch.
-
-## Changed
-
-- **New sessions use grapheme-cluster width by default** (DEC mode 2027). A ZWJ emoji such as a technologist or a farmer now takes two columns instead of four. This keeps the screen aligned in programs that assume cluster width without asking for it, including Claude Code's fullscreen view, where a stale "Jump to bottom" pill or jumbled lines could otherwise appear. Choose "Legacy width" under Settings → Unicode width to restore the previous behavior; programs can still switch the mode themselves.
-
-## Fixed
-
-- Curly underlines now break around descenders (g, j, p, q, y), like the other underline styles.
-- An Indic conjunct split across two cells draws as one cluster, and later text on the line keeps its columns.
-- Thai SARA AM and clusters with Prepend characters no longer shift the rest of their row one column left.
-- A one-column emoji next to a blank cell draws at full two-column size instead of shrinking.
-]]></description>
-            <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban-0.8.3.zip" length="21734473" type="application/octet-stream" sparkle:edSignature="lX2OxV4Z8ibrGYXh1bm3FbxtMqEO71zzSkD1Y/QJp3yrCfDB8BJyGrCWTXUDD8jy/yKU7Uf7oHwcx82pIOa2AA=="/>
-            <sparkle:deltas>
-                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban1791140982-1791107097.delta" sparkle:deltaFrom="1791107097" length="2293222" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="n5PSUV4GEWCZmTlxYXzoPhp7QJLyVrgAE1qgN4BFOk4TPgdjXkBE1/gdLu1YP7wQVBFI+KgOZtsr8ETdZNQgBQ=="/>
-                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban1791140982-1790539201.delta" sparkle:deltaFrom="1790539201" length="4363018" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="luN+KZ+9SKfN1o7cQoTFdciTCD87KJZLqbMwazNuAQnBNH1lUMZSYhg1DxnrBHZfj1RnyxG89lCA6jYRQKwmBA=="/>
-                <enclosure url="https://github.com/rrva/laban/releases/download/v0.8.3/Laban1791140982-1790250962.delta" sparkle:deltaFrom="1790250962" length="6269366" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="l+z0nfosaYnNQe7Qa2tU9CSSQVCuqOhyPPWEzu7Wd2QVMJ0O8lazoA4kQRMh7WslYnZrVJRgLuemVRauWfmVAg=="/>
             </sparkle:deltas>
         </item>
     </channel>
