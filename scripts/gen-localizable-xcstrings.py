@@ -13,12 +13,16 @@ OUT = REPO / "Sources/LabanApp/Resources/Localizable.xcstrings"
 
 LOCALES = ("zh-Hans", "zh-Hant", "ja", "ko", "fr", "es", "hi", "ru", "de", "pt-BR", "it")
 
-from importlib.machinery import SourceFileLoader
+import importlib.util
 
-_supplement_mod = SourceFileLoader(
+# exec_module, not SourceFileLoader.load_module: Python 3.15 removed load_module.
+_supplement_spec = importlib.util.spec_from_file_location(
     "localizable_supplement",
-    str(REPO / "scripts/localizable-supplement-de-pt-it.py"),
-).load_module()
+    REPO / "scripts/localizable-supplement-de-pt-it.py",
+)
+assert _supplement_spec is not None and _supplement_spec.loader is not None
+_supplement_mod = importlib.util.module_from_spec(_supplement_spec)
+_supplement_spec.loader.exec_module(_supplement_mod)
 SUPPLEMENT_DE_PT_IT: dict[str, dict[str, str]] = _supplement_mod.SUPPLEMENT_DE_PT_IT
 
 FOCUS_STATUS_USAGE_DESCRIPTION = (
