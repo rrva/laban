@@ -1,0 +1,25 @@
+Sources/LabanTerminalCore/include/LabanTerminalCore.h
+  s_ce2b1682d8904a::t_cb4abeacf6d401 658-662
+Sources/LabanTerminalCore/osc_host.c
+  s_ce2b1682d8904a::t_3a3d234f2ba647 524-537,559,634,649-652,663-667
+Sources/LabanTerminalCore/session_internal.h
+  s_ce2b1682d8904a::t_ac84bcbe7cfc99 224-226
+Tests/LabanTerminalCoreTests/LabanSessionTests.swift
+  s_ce2b1682d8904a::t_27dbd896fa804e 3947-3988,4635
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "30c2187b115c7665f45ef5ac977b4c8ac9592ddd",
+  "prompts": {},
+  "sessions": {
+    "s_ce2b1682d8904a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "733f4d26-2f20-4a29-857c-8a54aa0c9abb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
