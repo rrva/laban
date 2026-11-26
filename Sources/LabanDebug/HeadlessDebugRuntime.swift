@@ -540,6 +540,12 @@ public final class HeadlessDebugRuntime {
       self?.recordWorkingDirectoryEvent(tabId: tabId, cwd: cwd)
     }
 
+    // OSC 7501 parity: every change to a pane's program-status records is on
+    // the event stream (the records themselves are in tab state).
+    model.onProgramStatusChange = { [weak self] tabId, summary in
+      self?.recordProgramStatusEvent(tabId: tabId, summary: summary)
+    }
+
     cjkFontSettingsObserver = NotificationCenter.default.addObserver(
       forName: CJKFontSettings.didChangeNotification,
       object: nil,

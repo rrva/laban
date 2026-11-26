@@ -79,6 +79,7 @@ public final class Session {
   private var captureCallbackUserdata: UnsafeMutableRawPointer?
   private var tabStatusCallbackUserdata: UnsafeMutableRawPointer?
   private var progressCallbackUserdata: UnsafeMutableRawPointer?
+  private var programStatusCallbackUserdata: UnsafeMutableRawPointer?
   private var bellCallbackUserdata: UnsafeMutableRawPointer?
   private var oscNotificationCallbackUserdata: UnsafeMutableRawPointer?
   private var clipboardCallbackUserdata: UnsafeMutableRawPointer?
@@ -523,6 +524,17 @@ public final class Session {
     }
   }
 
+  /// Set once per Session at the call site (AppModel) to receive validated
+  /// OSC 7501 program-status reports (see `ProgramStatus.swift`). Reports the
+  /// protocol says to ignore never arrive. Fires on the same thread that
+  /// drove `poll()`.
+  public var onProgramStatus: ((ProgramStatusReport) -> Void)? {
+    didSet {
+      callbackState.setProgramStatusHandler(onProgramStatus)
+      updateProgramStatusCallback()
+    }
+  }
+
   public func close() {
     handleLock.lock()
     defer { handleLock.unlock() }
@@ -532,6 +544,7 @@ public final class Session {
       clearCaptureCallback(handle: h)
       clearTabStatusCallback(handle: h)
       clearProgressCallback(handle: h)
+      clearProgramStatusCallback(handle: h)
       clearBellCallback(handle: h)
       clearOSCNotificationCallback(handle: h)
       clearClipboardCallbacks(handle: h)
@@ -1643,6 +1656,22 @@ public final class Session {
     }
   }
 
+  private func updateProgramStatusCallback() {
+    guard !isClosed, let h = handle else { return }
+    if callbackState.hasProgramStatusHandler {
+      if programStatusCallbackUserdata == nil {
+        programStatusCallbackUserdata = Unmanaged.passRetained(callbackState).toOpaque()
+      }
+      laban_session_set_program_status_callback(
+        h,
+        sessionProgramStatusCallback,
+        programStatusCallbackUserdata
+      )
+    } else {
+      clearProgramStatusCallback(handle: h)
+    }
+  }
+
   private func updateBellCallback() {
     guard !isClosed, let h = handle else { return }
     if callbackState.hasBellHandler {
@@ -1719,6 +1748,14 @@ public final class Session {
     }
   }
 
+  private func clearProgramStatusCallback(handle h: OpaquePointer) {
+    laban_session_set_program_status_callback(h, nil, nil)
+    if let userdata = programStatusCallbackUserdata {
+      Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
+      programStatusCallbackUserdata = nil
+    }
+  }
+
   private func clearBellCallback(handle h: OpaquePointer) {
     laban_session_set_bell_callback(h, nil, nil)
     if let userdata = bellCallbackUserdata {
@@ -1767,6 +1804,7 @@ private final class SessionCallbackState {
   private var captureFrame = 0
   private var tabStatusHandler: ((Session.TabStatusUpdate) -> Void)?
   private var progressHandler: ((Session.ProgressUpdate) -> Void)?
+  private var programStatusHandler: ((ProgramStatusReport) -> Void)?
   private var bellHandler: ((UInt64) -> Void)?
   private var oscNotificationHandler: ((String) -> Void)?
   private var clipboardWriteHandler: ((Data) -> Void)?
@@ -1853,6 +1891,24 @@ private final class SessionCallbackState {
     lock.lock()
     tabStatusHandler = handler
     lock.unlock()
+  }
+
+  var hasProgramStatusHandler: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return programStatusHandler != nil
+  }
+
+  func setProgramStatusHandler(_ handler: ((ProgramStatusReport) -> Void)?) {
+    lock.lock()
+    programStatusHandler = handler
+    lock.unlock()
+  }
+
+  func programStatusTarget() -> ((ProgramStatusReport) -> Void)? {
+    lock.lock()
+    defer { lock.unlock() }
+    return programStatusHandler
   }
 
   func setProgressHandler(_ handler: ((Session.ProgressUpdate) -> Void)?) {
@@ -2093,6 +2149,20 @@ private let sessionProgressCallback:
       percent: percent >= 0 ? Int(percent) : nil
     )
     state.progressTarget()?(update)
+  }
+
+private let sessionProgramStatusCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?,
+    UnsafePointer<UInt8>?,
+    Int
+  ) -> Void = { userdata, payload, len in
+    guard let userdata, let payload, len > 0 else { return }
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
+    guard let target = state.programStatusTarget(),
+      let report = ProgramStatusReport.parse(UnsafeBufferPointer(start: payload, count: len))
+    else { return }
+    target(report)
   }
 
 private let sessionCaptureCallback:

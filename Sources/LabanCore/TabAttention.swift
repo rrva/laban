@@ -48,7 +48,11 @@ public enum TabAttentionClassifier {
     {
       return .needsAction
     }
-    if m.notification != nil { return .done }
+    // OSC 7501: a blocked program needs the user; a finished one is ready.
+    // A failed one (`error`) is not an attention level, like a failed command.
+    let programState = m.programStatus?.summary?.state
+    if programState == .blocked { return .needsAction }
+    if m.notification != nil || programState == .done { return .done }
     if m.unseenOutput || m.bellAttention { return .passive }
     return .none
   }

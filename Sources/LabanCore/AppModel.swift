@@ -240,6 +240,12 @@ public final class AppModel {
   /// `Session.onWorkingDirectory` stays owned by AppModel.
   public var onWorkingDirectoryChange: ((Tab.ID, String) -> Void)?
 
+  /// Broadcast on the main queue whenever a pane's OSC 7501 program-status
+  /// records change, with the pane's summary record (nil once it holds
+  /// none). The sidebar reads the records from tab metadata; this hook is for
+  /// observers that want the change itself — chiefly the debug event stream.
+  public var onProgramStatusChange: ((Tab.ID, ProgramStatusRecord?) -> Void)?
+
   /// Optional logger invoked for each tab that fails to spawn during
   /// `replaceTabs(from:)`. Production wires this to `AppLog` so
   /// restore failures don't disappear silently.
@@ -2452,6 +2458,11 @@ public final class AppModel {
     var result = tab
     for id in tab.allSessionIds where id != tab.focusedSessionId {
       guard let pane = paneMetadata[id] else { continue }
+      // The row stands for the whole tab: when the focused pane reports no
+      // OSC 7501 status, show a sibling pane's.
+      if result.titleMetadata.programStatus == nil {
+        result.titleMetadata.programStatus = pane.programStatus
+      }
       result.titleMetadata.unseenOutput = result.titleMetadata.unseenOutput || pane.unseenOutput
       result.titleMetadata.bellAttention = result.titleMetadata.bellAttention || pane.bellAttention
       result.titleMetadata.agent.awaitingInput =
@@ -2483,6 +2494,9 @@ public final class AppModel {
       metadata.unseenOutput = false
       metadata.bellAttention = false
       metadata.notification = nil
+      // OSC 7501 done/error mean "ready, not yet seen": the user is here now.
+      metadata.programStatus?.dropSeenResults()
+      if metadata.programStatus?.isEmpty == true { metadata.programStatus = nil }
       metadata.agentStatus.indicatorColor = nil
       metadata.lastCommandExitCode = nil
     }
@@ -2499,6 +2513,7 @@ public final class AppModel {
   private func attachSessionCallbacks(session: Session, tabId: Tab.ID) {
     attachTabStatus(session: session, tabId: tabId)
     attachProgress(session: session, tabId: tabId)
+    attachProgramStatus(session: session, tabId: tabId)
     attachBellAttention(session: session, tabId: tabId)
     attachOSCNotification(session: session, tabId: tabId)
     attachClipboard(session: session, tabId: tabId)
@@ -2563,6 +2578,18 @@ public final class AppModel {
     withModelLock {
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return }
       _tabs[idx].titleMetadata.shellPhase = state.phase
+      // A new prompt (OSC 133 A) means the program that reported is gone:
+      // its OSC 7501 working/blocked/idle records go with it.
+      if state.phase == .atPrompt {
+        _tabs[idx].titleMetadata.programStatus?.dropLiveRecords()
+        // On the tab the user is watching, the result was seen as it printed.
+        if isTabFrontmost?(tabId) == true {
+          _tabs[idx].titleMetadata.programStatus?.dropSeenResults()
+        }
+        if _tabs[idx].titleMetadata.programStatus?.isEmpty == true {
+          _tabs[idx].titleMetadata.programStatus = nil
+        }
+      }
       // The failed-command dot is an attention signal for *background* tabs:
       // it tells you a tab you weren't watching finished a command non-zero.
       // A command that finishes while you're already on the tab earns no dot
@@ -2628,6 +2655,89 @@ public final class AppModel {
       return true
     }
     if changed { notifySurfaceStateChanged() }
+  }
+
+  /// Subscribe to OSC 7501 program-status reports. Same main-queue hop as
+  /// `attachTabStatus` and for the same lock-inversion reason.
+  private func attachProgramStatus(session: Session, tabId: Tab.ID) {
+    let sessionId = session.id
+    session.onProgramStatus = { [weak self] report in
+      DispatchQueue.main.async { [weak self] in
+        self?.withPaneMetadata(sessionId: sessionId, tabId: tabId) {
+          self?.applyProgramStatusReport(report, forTab: tabId)
+        }
+      }
+    }
+  }
+
+  /// Fold one OSC 7501 report into the pane's records. The sidebar line,
+  /// marker and attention level all derive from the records' summary; a
+  /// banner is raised only on the edge into `blocked`, `done` or `error`
+  /// (or a new message while blocked), so a program rewriting the same state
+  /// cannot spam notifications — the dedupe key and the attention policy
+  /// bound the rest.
+  private func applyProgramStatusReport(_ report: ProgramStatusReport, forTab tabId: Tab.ID) {
+    let result: (changed: Bool, summary: ProgramStatusRecord?, event: AttentionNotificationEvent?) =
+      withModelLock {
+        guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else {
+          return (false, nil, nil)
+        }
+        var records = _tabs[idx].titleMetadata.programStatus ?? ProgramStatusRecords()
+        let before = records.summary
+        guard records.apply(report) else { return (false, before, nil) }
+        _tabs[idx].titleMetadata.programStatus = records.isEmpty ? nil : records
+        let tab = _tabs[idx]
+        let after = records.summary
+        var event: AttentionNotificationEvent?
+        if let after, after.state != before?.state || after.message != before?.message,
+          let category = Self.programStatusCategory(after.state),
+          notificationSuppressionDeadline.map({ Date() >= $0 }) ?? true
+        {
+          let body = Self.programStatusBody(after)
+          event = AttentionNotificationEvent(
+            tabId: tab.id,
+            source: .osc,
+            category: category,
+            title: tab.titleMetadata.displayTitle,
+            body: body,
+            dedupeKey: "programStatus:\(tab.id):\(after.state.rawValue):\(body)")
+        }
+        return (true, after, event)
+      }
+    guard result.changed else { return }
+    notifySurfaceStateChanged()
+    onProgramStatusChange?(tabId, result.summary)
+    if let event = result.event { broadcastAttentionNotification(event) }
+  }
+
+  private static func programStatusCategory(_ state: ProgramStatusState)
+    -> AttentionNotificationCategory?
+  {
+    switch state {
+    case .blocked: return .needsAction
+    case .done, .error: return .completion
+    case .idle, .working: return nil
+    }
+  }
+
+  /// Banner text for a program-status record: the program's own message,
+  /// prefixed by its `app` id so the user can tell who is asking, or a
+  /// generic line when it sent none.
+  static func programStatusBody(_ record: ProgramStatusRecord) -> String {
+    let text: String
+    if let message = record.message {
+      text = message
+    } else {
+      switch (record.state, record.kind) {
+      case (.blocked, .permission): text = "Needs your permission"
+      case (.blocked, .question): text = "Has a question for you"
+      case (.blocked, .auth): text = "Needs you to sign in"
+      case (.blocked, nil): text = "Needs your input"
+      case (.error, _): text = "Failed"
+      default: text = "Finished"
+      }
+    }
+    return record.app.map { "\($0): \(text)" } ?? text
   }
 
   private func attachBellAttention(session: Session, tabId: Tab.ID) {
@@ -3017,9 +3127,11 @@ public final class AppModel {
   /// window and is now looking at it. Wired to the app becoming active.
   public func markActiveTabNotificationSeen() {
     let changed: Bool = withModelLock {
-      guard let idx = _tabs.firstIndex(where: { $0.isActive }),
-        tabWithPaneAttention(_tabs[idx]).titleMetadata.notification != nil
-      else { return false }
+      guard let idx = _tabs.firstIndex(where: { $0.isActive }) else { return false }
+      let merged = tabWithPaneAttention(_tabs[idx]).titleMetadata
+      let unseenResult =
+        merged.programStatus?.records.contains { $0.state == .done || $0.state == .error } ?? false
+      guard merged.notification != nil || unseenResult else { return false }
       acknowledgePaneAttention(at: idx)
       return true
     }

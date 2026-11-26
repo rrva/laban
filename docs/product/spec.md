@@ -45,6 +45,10 @@ Wrap the terminal library's `NSView`/`UIView` in a representable adapter. Crucia
 
 To know whether the shell is at a prompt, running a command, or just exited, parse OSC 133 markers (`\e]133;A\a`, `\e]133;C\a`, `\e]133;D;<exit>\a`) out of the byte stream as it arrives. Do this with a small streaming parser that buffers partial sequences across reads. Inject the markers without making users edit their dotfiles by overlaying environment variables that point the shell at a wrapper rc-directory you generated — for zsh it's `ZDOTDIR`, bash uses `--rcfile`/`BASH_ENV`, fish uses an `XDG_CONFIG_HOME` overlay. The wrapper scripts source the user's real rc files and then append a tiny `precmd`/`PROMPT_COMMAND`/`fish_prompt` snippet that emits the markers. Surface the parsed events as a state machine (idle → at-prompt → running → finished) and feed it into the UI for status indicators and bell badges.
 
+### Program status (OSC 7501)
+
+Shell markers say that a command runs; they do not say what the program is doing. Programs that implement the Program Status Protocol (OSC 7501, revision 0.4) say it themselves: `ESC ] 7501 ; state=<idle|working|done|blocked|error>[:key=value…] ST`, with an optional base64 one-line message, a progress percentage, the kind of block (permission, question, auth), and an `id` path for programs that report several units of work. Answer the feature query `ESC ] 7501 ; ? ST` on the pty so programs can detect support. Keep one set of records per pane, show the most urgent record in the sidebar, treat `blocked` as needs-action attention and `done` as a completion, and route both through the existing attention notifications. Follow the protocol's lifetime rules: `working` and `blocked` end with the process or at the next prompt; `done` and `error` stay until the user has looked at the tab. Message text is untrusted: refuse control characters, never interpret it as markup, and strip invisible formatting characters before showing it outside the grid. See ADR 0041.
+
 ## 8. Focus as a single window-scoped enum
 
 Define a flat enum of focus targets (`sidebar | inspector | empty | pane(ID)`) and bind one of these to the framework's focus-state property at the window-scene level. Each focusable view declares `.focused(state, equals: someCase)`. This gives you keyboard focus routing across heterogeneous content with one source of truth.
@@ -526,7 +530,8 @@ Codex, Gemini CLI, Aider, opencode, matched on `argv[0]` or, for script
 launches such as `node …/claude`, `argv[1]`), or pane metadata names an agent,
 the dialog distinguishes:
 
-- **working**: OSC 9;4 progress is showing for the pane. The dialog says the
+- **working**: OSC 9;4 progress is showing for the pane, or the pane reports
+  OSC 7501 `working`. The dialog says the
   agent is working and will be interrupted.
 - **waiting**: no progress is showing; the agent is at its own input or
   awaiting the user. The dialog uses the running-program wording.

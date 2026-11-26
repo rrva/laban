@@ -317,6 +317,12 @@ final class TabMetadataSynchronizer {
     tabs[idx].titleMetadata.agentStatus = TabAgentStatus()
     tabs[idx].titleMetadata.agent.awaitingInput = false
     tabs[idx].titleMetadata.progress = nil
+    // OSC 7501: working/blocked/idle records die with the program; done and
+    // error stay until the user has seen them.
+    tabs[idx].titleMetadata.programStatus?.dropLiveRecords()
+    if tabs[idx].titleMetadata.programStatus?.isEmpty == true {
+      tabs[idx].titleMetadata.programStatus = nil
+    }
     return true
   }
 

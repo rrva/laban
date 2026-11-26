@@ -27,6 +27,30 @@ public struct WindowResponse: Encodable {
   }
 }
 
+/// A pane's OSC 7501 program status: the summary record the sidebar shows
+/// (its fields, with `app` resolved through inheritance) plus every stored
+/// record, least recently updated first. A record's `id` is its path; the
+/// root record's is empty.
+public struct ProgramStatusResponse: Encodable {
+  public var state: String
+  public var kind: String?
+  public var progress: Int?
+  public var app: String?
+  public var title: String?
+  public var message: String?
+  public var records: [ProgramStatusRecord]
+
+  public init(summary: ProgramStatusRecord, records: [ProgramStatusRecord]) {
+    self.state = summary.state.rawValue
+    self.kind = summary.kind?.rawValue
+    self.progress = summary.progress
+    self.app = summary.app
+    self.title = summary.title
+    self.message = summary.message
+    self.records = records
+  }
+}
+
 public struct TabResponse: Encodable {
   public var id: String
   public var index: Int
@@ -49,6 +73,9 @@ public struct TabResponse: Encodable {
   public var process: TabProcessMetadata
   public var agent: TabAgentMetadata
   public var progress: TabProgress?
+  /// OSC 7501 program status of the focused pane, else of the first sibling
+  /// pane that has one; absent when no pane holds a record.
+  public var programStatus: ProgramStatusResponse?
   public var active: Bool
   public var status: String
   public var panes: PaneTree
@@ -79,6 +106,7 @@ public struct TabResponse: Encodable {
     process: TabProcessMetadata,
     agent: TabAgentMetadata,
     progress: TabProgress?,
+    programStatus: ProgramStatusResponse? = nil,
     active: Bool,
     status: String,
     sessionId: String,
@@ -107,6 +135,7 @@ public struct TabResponse: Encodable {
     self.process = process
     self.agent = agent
     self.progress = progress
+    self.programStatus = programStatus
     self.active = active
     self.status = status
     self.panes = panes ?? .leaf(sessionId: sessionId)

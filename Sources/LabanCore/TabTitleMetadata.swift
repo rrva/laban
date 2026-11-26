@@ -193,6 +193,9 @@ public struct TabTitleMetadata: Codable, Equatable {
   public var agentStatus: TabAgentStatus
   /// Live OSC 9;4 progress, or nil when none is active.
   public var progress: TabProgress?
+  /// OSC 7501 program-status records for this pane, or nil when it holds
+  /// none. Runtime UI state, like `progress`.
+  public var programStatus: ProgramStatusRecords?
   public var activityState: TabActivityState
   public var unseenOutput: Bool
   public var bellAttention: Bool
@@ -219,6 +222,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     agent: TabAgentMetadata = TabAgentMetadata(),
     agentStatus: TabAgentStatus = TabAgentStatus(),
     progress: TabProgress? = nil,
+    programStatus: ProgramStatusRecords? = nil,
     activityState: TabActivityState = .running,
     unseenOutput: Bool = false,
     bellAttention: Bool = false,
@@ -237,6 +241,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     self.agent = agent
     self.agentStatus = agentStatus
     self.progress = progress
+    self.programStatus = programStatus
     self.activityState = activityState
     self.unseenOutput = unseenOutput
     self.bellAttention = bellAttention

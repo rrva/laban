@@ -51,6 +51,9 @@ To open the settings, select **Laban → Settings** or push ⌘,.
 - The sidebar shows a progress bar when a program sends OSC 9;4 progress.
 - A program can set a colored dot and a status text in the sidebar with
   OSC 21337. An "awaiting" status makes the tab pulse.
+- A program can report its status with OSC 7501 (Program Status Protocol).
+  The sidebar shows what the program does and its message. A blocked program
+  makes the tab pulse. A finished program marks the tab until you look at it.
 
 ## Split panes
 
@@ -138,6 +141,8 @@ To open the settings, select **Laban → Settings** or push ⌘,.
 - Laban shows a macOS notification when a tab needs your action, when a task
   completes, or when a program rings the bell.
 - Programs can send notifications with OSC 9, OSC 777, or OSC 99.
+- A program that reports "blocked", "done", or "error" with OSC 7501 also
+  causes a notification.
 - Laban does not show a notification for the tab that you look at.
 - Click a notification to go to its tab.
 - To select the notifications that you get, use Settings → Notifications.

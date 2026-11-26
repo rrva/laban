@@ -3875,6 +3875,75 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(sink.events.map { $0.percent }, [42, -1, 80, 100, -1])
   }
 
+  /// OSC 7501 feature query: the session answers `?` itself, echoing the
+  /// query's terminator, with no callback registered and nothing from any
+  /// report in the reply.
+  func testOSC7501QueryRepliesWithQueryTerminator() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1b}]7501;state=working:app=brew\u{07}".utf8))
+    XCTAssertEqual(drainResponse(session), [], "a report must not produce a reply")
+
+    writeBytes(session, Array("\u{1b}]7501;?\u{1b}\\".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8), "\u{1b}]7501;?\u{1b}\\")
+
+    writeBytes(session, Array("\u{1b}]7501;?\u{07}".utf8))
+    XCTAssertEqual(String(bytes: drainResponse(session), encoding: .utf8), "\u{1b}]7501;?\u{07}")
+
+    // The reply lands before the DA1 reply to a `CSI c` sent right after the
+    // query: that order is how a program tells support from no support.
+    writeBytes(session, Array("\u{1b}]7501;?\u{1b}\\\u{1b}[c".utf8))
+    let both = String(bytes: drainResponse(session), encoding: .utf8) ?? ""
+    XCTAssertTrue(both.hasPrefix("\u{1b}]7501;?\u{1b}\\\u{1b}[?"), "got \(both.debugDescription)")
+  }
+
+  /// OSC 7501 reports reach the callback unparsed; the query does not; an
+  /// over-long report is dropped; RIS arrives as a clear-everything report.
+  func testOSC7501ReportsReachCallbackUnparsed() {
+    final class Sink {
+      var payloads: [String] = []
+    }
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = Sink()
+    XCTAssertEqual(
+      laban_session_set_program_status_callback(
+        session,
+        { ud, payload, len in
+          guard let ud, let payload else { return }
+          let sink = Unmanaged<Sink>.fromOpaque(ud).takeUnretainedValue()
+          sink.payloads.append(
+            String(decoding: UnsafeBufferPointer(start: payload, count: len), as: UTF8.self))
+        },
+        Unmanaged.passUnretained(sink).toOpaque()),
+      0)
+
+    writeBytes(session, Array("\u{1b}]7501;state=working:progress=40\u{07}".utf8))
+    // Split across reads, ST-terminated.
+    writeBytes(session, Array("\u{1b}]7501;state=blo".utf8))
+    writeBytes(session, Array("cked:kind=auth\u{1b}\\".utf8))
+    writeBytes(session, Array("\u{1b}]7501;?\u{07}".utf8))
+    _ = drainResponse(session)
+    writeBytes(
+      session,
+      Array("\u{1b}]7501;state=idle:app=\(String(repeating: "a", count: 5000))\u{07}".utf8))
+    writeBytes(session, Array("\u{1b}]75010;state=idle\u{07}".utf8))  // a different OSC
+    writeBytes(session, Array("\u{1b}c".utf8))
+
+    XCTAssertEqual(
+      sink.payloads,
+      ["state=working:progress=40", "state=blocked:kind=auth", "state=clear"])
+  }
+
   /// Spec 9.15: kitty OSC 99 chunks sharing an id assemble into one
   /// notification, delivered through the same callback as OSC 9.
   func testKittyNotificationAssemblesChunksAndDeliversOnce() {

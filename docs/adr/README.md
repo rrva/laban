@@ -49,3 +49,4 @@ Write a new ADR when a change establishes durable architectural policy, reverses
 - [0038: Slug text blends in gamma space](0038-slug-text-blends-in-gamma-space.md)
 - [0039: Clipboard image upload over SSH](0039-clipboard-image-upload-over-ssh.md)
 - [0040: Kitty clipboard paste events (OSC 5522)](0040-kitty-clipboard-paste-events.md)
+- [0041: OSC 7501 program status](0041-osc-7501-program-status.md)

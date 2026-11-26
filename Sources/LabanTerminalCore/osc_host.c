@@ -15,7 +15,9 @@
  *   - bridges `OSC 52 ; <Pc> ; <Pd>` to the macOS clipboard (set base64 /
  *     answer a `?` read query — write always on, read opt-in); and
  *   - adopts `OSC 7 ; file://<host>/<path>` (local host only) as the session's
- *     authoritative cwd and delivers it to the working-directory callback.
+ *     authoritative cwd and delivers it to the working-directory callback; and
+ *   - answers the `OSC 7501 ; ?` program-status feature query and delivers
+ *     OSC 7501 reports to the program-status callback.
  *
  * Every byte still flows unchanged into libghostty: this scanner owns the
  * ghostty_terminal_vt_write for chunks it scans (capture.c), flushing bytes
@@ -370,6 +372,33 @@ static void dispatch_kitty_notify(LabanSession *s, const char *payload, size_t l
         (const uint8_t *)joined, out);
 }
 
+/* OSC 7501 — Program Status Protocol (spec revision 0.4).
+ * `ESC ] 7501 ; ? ST` is the feature query: answer `ESC ] 7501 ; ? ST`,
+ * echoing the query's terminator. A bare `?` reply advertises exactly the
+ * spec's fixed state and kind lists, which are the ones Laban accepts. The
+ * reply is unconditional (no callback needed) and carries nothing from any
+ * report. Every other payload is a report (`key=value:key=value`), handed
+ * unparsed to the callback: validation, base64 and the record store belong
+ * to the Swift bridge, as with the OSC 52 payload. */
+static void dispatch_program_status(
+    LabanSession *s, const char *payload, size_t len, int bel_terminated) {
+    while (len > 0 && (payload[0] == ' ' || payload[0] == '\t')) { payload++; len--; }
+    while (len > 0 && (payload[len - 1] == ' ' || payload[len - 1] == '\t')) len--;
+    if (len == 1 && payload[0] == '?') {
+        static const uint8_t reply_bel[] = "\x1b]7501;?\x07";
+        static const uint8_t reply_st[] = "\x1b]7501;?\x1b\\";
+        if (bel_terminated) {
+            laban_write_terminal_response(s, reply_bel, sizeof(reply_bel) - 1);
+        } else {
+            laban_write_terminal_response(s, reply_st, sizeof(reply_st) - 1);
+        }
+        return;
+    }
+    if (len == 0 || !s->program_status_callback) return;
+    s->program_status_callback(
+        s->program_status_userdata, (const uint8_t *)payload, len);
+}
+
 /* `bel_terminated` says whether the OSC ended in BEL (else ST), so a reply
  * can echo the query's terminator. */
 static void dispatch_osc_host(
@@ -421,6 +450,10 @@ static void dispatch_osc_host(
     }
     if (osc_number == 99) {
         dispatch_kitty_notify(s, payload, len);
+        return;
+    }
+    if (osc_number == 7501) {
+        dispatch_program_status(s, payload, len, bel_terminated);
         return;
     }
     if (osc_number == 777) {
@@ -476,7 +509,7 @@ static int parse_osc_number(const char *num, size_t len) {
 
 static int osc_host_interesting(int n) {
     return n == 7 || n == 9 || n == 10 || n == 11 || n == 12 || n == 52 ||
-           n == 99 || n == 777;
+           n == 99 || n == 777 || n == 7501;
 }
 
 /* Write any not-yet-flushed bytes [*flushed, upto) into the VT parser. */
@@ -509,6 +542,15 @@ void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t 
             } else if (b == 0x1B) {
                 sc->state = OH_AFTER_ESC;
             } else {
+                /* RIS (ESC c, full reset) removes every OSC 7501 record;
+                 * delivered as the report that clears them all. */
+                if (b == 'c' && s->program_status_callback) {
+                    static const uint8_t clear_all[] = "state=clear";
+                    flush_vt_pending(s, bytes, i + 1, &flushed);
+                    s->program_status_callback(
+                        s->program_status_userdata, clear_all,
+                        sizeof(clear_all) - 1);
+                }
                 sc->state = OH_NORMAL;
             }
             break;
@@ -636,6 +678,18 @@ int laban_session_set_progress_callback(
     SESSION_LOCK(s);
     s->progress_callback = callback;
     s->progress_userdata = userdata;
+    return 0;
+}
+
+int laban_session_set_program_status_callback(
+    LabanSession *s,
+    LabanProgramStatusCallback callback,
+    void *userdata
+) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    s->program_status_callback = callback;
+    s->program_status_userdata = userdata;
     return 0;
 }
 

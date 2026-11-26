@@ -190,8 +190,10 @@ typedef struct {
  *     libghostty parses it but the handler is a no-op, so Laban replies here
  *     with the theme's effective fg/bg (Codex probes this to match its theme).
  *   - OSC 9;<text>         -> desktop notification (e.g. Codex turn-complete).
- *     Delivered to osc_notification_callback. ConEmu progress (OSC 9;4;...) is
- *     skipped.
+ *     Delivered to osc_notification_callback. ConEmu progress (OSC 9;4;...)
+ *     goes to progress_callback instead.
+ *   - OSC 7501;...         -> Program Status Protocol: the `?` feature query
+ *     is answered here; reports go to program_status_callback.
  *   - OSC 52;<Pc>;<Pd>     -> clipboard set (Pd base64) / query (Pd '?').
  *     Bridged to the macOS clipboard via osc_clipboard_{write,read}_callback so
  *     a program reached over SSH can copy to / read from the host pasteboard.
@@ -218,7 +220,10 @@ typedef enum {
  * `file://host/path` cwd report can approach a percent-encoded PATH_MAX, so the
  * inline payload is sized to hold a realistic file:// URL. (Clipboard data is
  * far larger and uses the separate osc52_buf below, not this buffer.) */
-#define OSC_HOST_PAYLOAD_MAX 2048
+/* An OSC 7501 program-status report is capped by its spec at 4096 bytes for
+ * the whole sequence, so the buffer holds exactly that; a longer payload sets
+ * the overflow flag and is dropped, which is the spec's rule. */
+#define OSC_HOST_PAYLOAD_MAX 4096
 
 /* OSC 52 clipboard payloads can be large (Codex caps copies at 100 KB raw, so
  * ~133 KB base64), far past the inline OSC_HOST_PAYLOAD_MAX. They accumulate in
@@ -405,6 +410,10 @@ struct LabanSession {
 
     LabanProgressCallback progress_callback;
     void *progress_userdata;
+
+    /* OSC 7501 program-status reports (osc_host.c), delivered unparsed. */
+    LabanProgramStatusCallback program_status_callback;
+    void *program_status_userdata;
 
     /* Kitty OSC 99 notification assembly (osc_host.c): chunks sharing the
      * same i=<id> accumulate title/body until a chunk arrives without d=0. */
