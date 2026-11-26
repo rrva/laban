@@ -648,6 +648,33 @@ int laban_session_set_progress_callback(
 );
 
 /*
+ * OSC 7501 Program Status Protocol (spec revision 0.4) —
+ * `ESC ] 7501 ; key=value:key=value BEL/ST`.
+ *
+ * The feature query `ESC ] 7501 ; ? BEL/ST` is answered by the session itself
+ * (`ESC ] 7501 ; ?` with the query's own terminator), whether or not a
+ * callback is registered. Every other OSC 7501 payload is a report and is
+ * delivered here unparsed and unvalidated: `payload` is the bytes between
+ * `7501;` and the terminator, at most 4095 of them (a longer report is
+ * dropped). A full reset (RIS, `ESC c`) is delivered as the payload
+ * `state=clear`, which removes every record. The pointer is valid only for
+ * the duration of the call. Fires on whichever thread drove
+ * `laban_session_poll` / `laban_session_feed_output`, with the session lock
+ * held. Pass NULL for `callback` to disable.
+ */
+typedef void (*LabanProgramStatusCallback)(
+    void *userdata,
+    const uint8_t *payload,
+    size_t len
+);
+
+int laban_session_set_program_status_callback(
+    LabanSession *session,
+    LabanProgramStatusCallback callback,
+    void *userdata
+);
+
+/*
  * OSC 52 clipboard bridge — `ESC ] 52 ; <Pc> ; <Pd> BEL/ST`.
  *
  * libghostty-vt parses OSC 52 (as `clipboard_contents`) but its VT-only C API

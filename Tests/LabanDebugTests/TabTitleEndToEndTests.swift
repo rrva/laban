@@ -331,6 +331,33 @@ final class TabTitleEndToEndTests: XCTestCase {
     XCTAssertNil(tab.progressState)
   }
 
+  /// OSC 7501 program status reaches tab state from a real shell, raises
+  /// needs-action attention on a background tab while blocked, and a
+  /// `working` record does not outlive the program.
+  func testProgramStatusReachesTabAndDiesWithTheProgram() throws {
+    let harness = try TitleHarness(runId: "title-e2e-program-status")
+    defer { harness.tearDown() }
+
+    // "Pushing image" in base64.
+    try harness.type(
+      "printf '\\033]7501;state=working:progress=40:msg=UHVzaGluZyBpbWFnZQ==\\033\\\\'\n")
+    var tab = try harness.waitForTabState { $0.programState == "working" }
+    XCTAssertEqual(tab.programMessage, "Pushing image")
+    XCTAssertEqual(tab.programProgress, 40)
+
+    try harness.type("printf '\\033]7501;state=blocked:kind=permission\\007'\n")
+    try harness.newTab()
+    tab = try harness.waitForTabState { $0.programState == "blocked" }
+    XCTAssertEqual(tab.attention, "needsAction")
+    XCTAssertNil(tab.programMessage, "a report replaces its record completely")
+
+    let events = harness.runtime.events(since: 0)
+    XCTAssertEqual(events.status, 200)
+    XCTAssertTrue(
+      String(decoding: events.body, as: UTF8.self).contains("program.status"),
+      "program-status changes are on the debug event stream")
+  }
+
   /// Spec 9.13: a raw BEL on a background tab earns a quiet marker.
   func testRawBellMarksBackgroundTabPassive() throws {
     let harness = try TitleHarness(runId: "title-e2e-bell")
@@ -480,6 +507,9 @@ final class TitleHarness {
     var awaitingInput: Bool?
     var progressState: String?
     var progressPercent: Int?
+    var programState: String?
+    var programMessage: String?
+    var programProgress: Int?
   }
 
   init(runId: String) throws {
@@ -544,6 +574,7 @@ final class TitleHarness {
     let process = tab["process"] as? [String: Any]
     let agent = tab["agent"] as? [String: Any]
     let progress = tab["progress"] as? [String: Any]
+    let program = tab["programStatus"] as? [String: Any]
     return TabState(
       displayTitle: tab["displayTitle"] as? String,
       titleSource: tab["titleSource"] as? String,
@@ -552,7 +583,10 @@ final class TitleHarness {
       attention: tab["attention"] as? String,
       awaitingInput: agent?["awaitingInput"] as? Bool,
       progressState: progress?["state"] as? String,
-      progressPercent: progress?["percent"] as? Int
+      progressPercent: progress?["percent"] as? Int,
+      programState: program?["state"] as? String,
+      programMessage: program?["message"] as? String,
+      programProgress: program?["progress"] as? Int
     )
   }
 

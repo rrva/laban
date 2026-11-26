@@ -318,7 +318,8 @@ public struct SidebarProducer {
       // `resolved.infoLines`, so sizing the row from `infoLines` alone
       // undercounts the rendered lines and the surplus line drops below the
       // row edge into the next tab. Size off the stack that is actually drawn.
-      let displayLines = Self.displayLines(for: tab, resolved: resolved)
+      let displayLines = Self.displayLines(
+        for: tab, resolved: resolved, maxScalars: infoMaxScalars)
 
       // Vertical layout: title + the info-line stack, centered inside the
       // fixed quad-height row. Centering keeps geometry stable across status
@@ -395,6 +396,10 @@ public struct SidebarProducer {
           if let hex = agentStatus.indicatorColor, let color = Self.parseHexColor(hex) {
             // An agent that explicitly pushed a colour (OSC 21337) owns the slot.
             appendGlyph(slot, "●", color, bg)
+          } else if meta.programStatus?.summary?.state == .error {
+            // OSC 7501 `error`: failed and stopped — a steady red dot, like
+            // a failed command.
+            appendGlyph(slot, "●", Theme.current.red, bg)
           } else if let shellColor = Self.shellPhaseIndicatorColor(meta) {
             // A failed last command: a steady red dot — it finished, it is not
             // waiting on the user, so it does not earn the needsAction pulse.
@@ -743,7 +748,7 @@ public struct SidebarProducer {
   /// Kept separate from rendering so `hitTest()` can compute the same
   /// vertical geometry and keep the close target aligned with the glyph.
   private static func displayLines(
-    for tab: Tab, resolved: ResolvedTabTitle
+    for tab: Tab, resolved: ResolvedTabTitle, maxScalars: Int
   ) -> [(String, UInt32)] {
     let meta = tab.titleMetadata
     let agentStatus = meta.agentStatus
@@ -763,7 +768,13 @@ public struct SidebarProducer {
         ?? Theme.current.fg0
       displayLines.append((st, color))
     }
-    if let progress = meta.progress {
+    let programLine = meta.programStatus?.summary.flatMap {
+      Self.programStatusDisplayLine($0, maxScalars: maxScalars)
+    }
+    if let programLine { displayLines.append(programLine) }
+    // An OSC 7501 line already says what the program is doing; a second
+    // OSC 9;4 line from the same program would only repeat it.
+    if programLine == nil, let progress = meta.progress {
       displayLines.append(Self.progressDisplayLine(progress))
     }
     for line in resolved.infoLines.prefix(max(0, 3 - displayLines.count)) {
@@ -788,7 +799,8 @@ public struct SidebarProducer {
       maxTitleScalars: titleMaxScalars,
       maxSubtitleScalars: titleMaxScalars
     )
-    let displayLines = Self.displayLines(for: tab, resolved: resolved)
+    let displayLines = Self.displayLines(
+      for: tab, resolved: resolved, maxScalars: titleMaxScalars)
     let drawnLines = 1 + displayLines.count
     let edgePad: CGFloat = 4
     let stackHeight = CGFloat(drawnLines) * cellHeight
@@ -819,6 +831,49 @@ public struct SidebarProducer {
       let color = progress.state == .error ? Theme.current.red : Theme.current.fg0
       return ("\(bar) \(percent)%", color)
     }
+  }
+
+  /// One sidebar line for a pane's OSC 7501 summary record, or nil for
+  /// `idle` (a program at rest earns no line). The message is the program's
+  /// own text, already stripped of control and invisible formatting
+  /// characters by `ProgramStatusReport.parse`; it is shown as plain text and
+  /// cut to the row's width.
+  static func programStatusDisplayLine(_ record: ProgramStatusRecord, maxScalars: Int)
+    -> (String, UInt32)?
+  {
+    let text: String
+    let color: UInt32
+    switch record.state {
+    case .idle:
+      return nil
+    case .working:
+      let label = record.message ?? "working…"
+      if let percent = record.progress {
+        let bar = progressDisplayLine(TabProgress(state: .determinate, percent: percent)).0
+        text = record.message == nil ? bar : "\(bar) \(label)"
+      } else {
+        text = label
+      }
+      color = Theme.current.fg0
+    case .blocked:
+      let fallback: String
+      switch record.kind {
+      case .permission: fallback = "needs permission"
+      case .question: fallback = "has a question"
+      case .auth: fallback = "needs sign-in"
+      case nil: fallback = "needs input"
+      }
+      text = record.message ?? fallback
+      color = Theme.current.attention
+    case .done:
+      text = record.message.map { "✓ \($0)" } ?? "done"
+      color = Theme.current.cursor
+    case .error:
+      text = record.message.map { "✗ \($0)" } ?? "failed"
+      color = Theme.current.red
+    }
+    let limit = max(1, maxScalars)
+    return (text.count > limit ? String(text.prefix(limit - 1)) + "…" : text, color)
   }
 
   static func parseHexColor(_ raw: String) -> UInt32? {

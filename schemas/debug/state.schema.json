@@ -326,6 +326,56 @@
             }
           }
         },
+        "programStatus": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["state", "records"],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": ["idle", "working", "done", "blocked", "error"]
+            },
+            "kind": {
+              "type": ["string", "null"],
+              "enum": ["permission", "question", "auth", null]
+            },
+            "progress": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "maximum": 100
+            },
+            "app": { "type": ["string", "null"] },
+            "title": { "type": ["string", "null"] },
+            "message": { "type": ["string", "null"] },
+            "records": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "state"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "state": {
+                    "type": "string",
+                    "enum": ["idle", "working", "done", "blocked", "error"]
+                  },
+                  "kind": {
+                    "type": ["string", "null"],
+                    "enum": ["permission", "question", "auth", null]
+                  },
+                  "progress": {
+                    "type": ["integer", "null"],
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "app": { "type": ["string", "null"] },
+                  "title": { "type": ["string", "null"] },
+                  "message": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        },
         "active": {
           "type": "boolean"
         },

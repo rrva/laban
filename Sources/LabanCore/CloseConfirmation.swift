@@ -105,7 +105,8 @@ public struct PaneCloseInput: Equatable, Sendable {
   /// nil when the pane has no inspectable process (fixture sessions, a
   /// session whose shell pid is not known yet).
   public var foreground: ForegroundProcess?
-  /// OSC 9;4 progress is showing for this pane.
+  /// OSC 9;4 progress is showing for this pane, or it reports OSC 7501
+  /// `working`.
   public var progressActive: Bool
   /// Pane metadata names a coding agent (agent status, OSC 21337 agent name).
   public var agentNamed: Bool
@@ -352,7 +353,8 @@ public enum CloseConfirmation {
         exited: exited,
         shellPid: pid,
         foreground: pid.flatMap(probe),
-        progressActive: metadata.progress.map { $0.state != .error } ?? false,
+        progressActive: metadata.progress.map { $0.state != .error } ?? false
+          || metadata.programStatus?.summary?.state == .working,
         agentNamed: metadata.agent.agentName != nil)
       return evaluate(input, safeList: safeList)
     }

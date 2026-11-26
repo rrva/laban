@@ -536,6 +536,12 @@ public enum ControlStateProjections {
     let redactTitles = redaction == .sessionObserveSummary
     let agent = redactSensitiveMetadata ? TabAgentMetadata() : metadata.agent
     let progress = redactSensitiveMetadata ? nil : metadata.progress
+    let programStatus =
+      redactSensitiveMetadata
+      ? nil
+      : metadata.programStatus.flatMap { records in
+        records.summary.map { ProgramStatusResponse(summary: $0, records: records.records) }
+      }
     return TabResponse(
       id: tab.id,
       index: index,
@@ -558,6 +564,7 @@ public enum ControlStateProjections {
       process: redactTitles ? TabProcessMetadata() : metadata.process,
       agent: agent,
       progress: progress,
+      programStatus: programStatus,
       active: tab.isActive,
       status: status,
       sessionId: tab.focusedSessionId,

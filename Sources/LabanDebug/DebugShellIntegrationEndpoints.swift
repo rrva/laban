@@ -95,4 +95,21 @@ extension HeadlessDebugRuntime {
         ))
     }
   }
+
+  /// Record a change to a pane's OSC 7501 program-status records on the event
+  /// stream so `GET /debug/events` shows it. Wired to
+  /// `AppModel.onProgramStatusChange`. `text` is the summary record's state,
+  /// or `clear` once the pane holds no record.
+  func recordProgramStatusEvent(tabId: String, summary: ProgramStatusRecord?) {
+    let sessionId = model.tabs.first { $0.id == tabId }?.focusedSessionId
+    withRuntimeLock {
+      appendEvent(
+        EventEntry(
+          kind: "program.status",
+          tabId: tabId,
+          sessionId: sessionId,
+          text: summary?.state.rawValue ?? "clear"
+        ))
+    }
+  }
 }

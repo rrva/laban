@@ -143,6 +143,60 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(events.count, 2, "OSC 9;4 progress must not emit attention events")
   }
 
+  /// OSC 7501: reports become the pane's program status; `blocked` raises a
+  /// needs-action event once, `done` a completion event, and looking at the
+  /// tab retires the finished result.
+  func testOSC7501ProgramStatusDrivesTabStateAndAttention() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("initial tab must have a session")
+      return
+    }
+    var events: [AttentionNotificationEvent] = []
+    model.onAttentionNotification = { events.append($0) }
+    var changes: [ProgramStatusState?] = []
+    model.onProgramStatusChange = { _, summary in changes.append(summary?.state) }
+    func feed(_ payload: String) {
+      session.feedOutput(Array("\u{1b}]7501;\(payload)\u{1b}\\".utf8))
+      pumpMainQueue()
+    }
+    func metadata() -> TabTitleMetadata { model.tabs.first { $0.id == tabId }!.titleMetadata }
+    func b64(_ text: String) -> String { Data(text.utf8).base64EncodedString() }
+
+    feed("state=working:app=brew:progress=40:msg=\(b64("Installing updates"))")
+    XCTAssertEqual(metadata().programStatus?.summary?.state, .working)
+    XCTAssertEqual(metadata().programStatus?.summary?.progress, 40)
+    XCTAssertTrue(events.isEmpty, "working is not an attention event")
+
+    feed("state=blocked:kind=auth:app=brew:msg=\(b64("Password required"))")
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events.last?.category, .needsAction)
+    XCTAssertEqual(events.last?.body, "brew: Password required")
+    XCTAssertEqual(
+      TabAttentionClassifier.classify(metadata(), isActive: false), .needsAction)
+    feed("state=blocked:kind=auth:app=brew:msg=\(b64("Password required"))")
+    XCTAssertEqual(events.count, 1, "re-sending the same state must not raise another event")
+
+    feed("state=bogus")
+    feed("state=done:msg=\(b64("a\nb"))")
+    XCTAssertEqual(
+      metadata().programStatus?.summary?.state, .blocked, "invalid reports are ignored")
+
+    feed("state=done:app=brew:msg=\(b64("Upgraded 12 packages"))")
+    XCTAssertEqual(events.count, 2)
+    XCTAssertEqual(events.last?.category, .completion)
+    XCTAssertEqual(TabAttentionClassifier.classify(metadata(), isActive: false), .done)
+    XCTAssertEqual(changes, [.working, .blocked, .done])
+
+    model.markActiveTabNotificationSeen()
+    XCTAssertNil(metadata().programStatus, "a seen result is retired")
+
+    feed("state=working:id=a")
+    feed("state=clear")
+    XCTAssertNil(metadata().programStatus)
+  }
+
   func testClaudeWaitingForInputNotificationIsInformational() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
