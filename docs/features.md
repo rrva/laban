@@ -128,6 +128,34 @@ To open the settings, select **Laban → Settings** or push ⌘,.
 - A program can copy text to the Mac clipboard with OSC 52, also over SSH.
   Laban shows a message when this occurs.
 
+### Copy from tmux
+
+- A selection that you copy in tmux goes to the Mac clipboard, also over SSH.
+  This works with the default tmux configuration. To let programs that run
+  in tmux (for example vim) also copy to the Mac clipboard, put this line in
+  your tmux configuration:
+
+  ```
+  set -g set-clipboard on
+  ```
+
+- Laban shows one message for each copy. If you see two messages for one
+  selection, tmux copied the text two times. This occurs when a mouse binding
+  copies the selection but stays in copy mode, for example:
+
+  ```
+  bind -T copy-mode-vi MouseDragEnd1Pane send -X copy-selection-no-clear
+  ```
+
+  Enter then copies the same text again before it leaves copy mode. To leave
+  copy mode and not copy again, push `q`. Or change Enter, and add a key that
+  copies a selection made with the keyboard:
+
+  ```
+  bind -T copy-mode-vi Enter send -X cancel
+  bind -T copy-mode-vi y send -X copy-selection-and-cancel
+  ```
+
 ## Export
 
 - Push ⌘E to save the last 10 seconds of the tab as an asciinema cast.
