@@ -642,6 +642,18 @@ public final class Session {
     return try body()
   }
 
+  /// Run `body` with OSC 7501 program-status reports dropped (RIS included,
+  /// which arrives as a clear-all report). Wrap `feedOutput` in this for
+  /// replayed history whose reports are already folded into a
+  /// `ProgramStatusSeed`, and for the synthetic RIS a reader feeds after a
+  /// byte-ring overflow, which is not the program resetting anything.
+  @discardableResult
+  public func withProgramStatusSuppressed<T>(_ body: () throws -> T) rethrows -> T {
+    callbackState.beginProgramStatusSuppression()
+    defer { callbackState.endProgramStatusSuppression() }
+    return try body()
+  }
+
   /// Drain terminal responses (CPR, DA, OSC 10/11 color replies, ...) the VT
   /// parser generated while consuming output. For a PTY-backed session the C
   /// layer already wrote these to the PTY and this buffer is inspection-only;
@@ -1816,6 +1828,7 @@ private final class SessionCallbackState {
   // one-shot host side effects (clipboard, notifications) resolve to no
   // handler, so replayed historical output cannot re-run them.
   private var hostEffectsSuppressionDepth = 0
+  private var programStatusSuppressionDepth = 0
 
   init(sessionId: Session.ID) {
     self.sessionId = sessionId
@@ -1887,6 +1900,18 @@ private final class SessionCallbackState {
     lock.unlock()
   }
 
+  func beginProgramStatusSuppression() {
+    lock.lock()
+    programStatusSuppressionDepth += 1
+    lock.unlock()
+  }
+
+  func endProgramStatusSuppression() {
+    lock.lock()
+    programStatusSuppressionDepth -= 1
+    lock.unlock()
+  }
+
   func setTabStatusHandler(_ handler: ((Session.TabStatusUpdate) -> Void)?) {
     lock.lock()
     tabStatusHandler = handler
@@ -1908,7 +1933,7 @@ private final class SessionCallbackState {
   func programStatusTarget() -> ((ProgramStatusReport) -> Void)? {
     lock.lock()
     defer { lock.unlock() }
-    return programStatusHandler
+    return programStatusSuppressionDepth > 0 ? nil : programStatusHandler
   }
 
   func setProgressHandler(_ handler: ((Session.ProgressUpdate) -> Void)?) {

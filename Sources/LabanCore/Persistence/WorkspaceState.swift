@@ -319,6 +319,12 @@ public struct PaneState: Codable, Equatable {
   /// Claude/Codex process.
   public var shellPid: Int?
   public var agent: AgentInfo?
+  /// OSC 7501 program-status records when the snapshot was written, and the
+  /// byte-ring offset they are current to (see `ProgramStatusSeed`). Both
+  /// absent in state written before OSC 7501 support, or when the pane had no
+  /// labpty reader yet.
+  public var programStatus: ProgramStatusRecords?
+  public var programStatusOffset: UInt64?
 
   public init(
     sessionId: String,
@@ -331,7 +337,9 @@ public struct PaneState: Codable, Equatable {
     processStatus: PersistedProcessStatus? = nil,
     exitCode: Int? = nil,
     shellPid: Int? = nil,
-    agent: AgentInfo? = nil
+    agent: AgentInfo? = nil,
+    programStatus: ProgramStatusRecords? = nil,
+    programStatusOffset: UInt64? = nil
   ) {
     self.sessionId = sessionId
     self.cwd = cwd
@@ -344,5 +352,13 @@ public struct PaneState: Codable, Equatable {
     self.exitCode = exitCode
     self.shellPid = shellPid
     self.agent = agent
+    self.programStatus = programStatus
+    self.programStatusOffset = programStatusOffset
+  }
+
+  /// The seed a restored reader starts from, or nil for state written without
+  /// an offset (the replay then rebuilds the records on its own).
+  public var programStatusSeed: ProgramStatusSeed? {
+    programStatusOffset.map { ProgramStatusSeed(records: programStatus, offset: $0) }
   }
 }

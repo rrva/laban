@@ -206,6 +206,88 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(changes, [.working, .blocked, .done, nil, .working, nil, .working, nil])
   }
 
+  /// OSC 7501 across a restart: the workspace snapshot carries each pane's
+  /// records and the byte-ring offset they are current to; the restored
+  /// model hands that seed to the pane's first labpty reader, once.
+  func testOSC7501ProgramStatusIsSavedAndSeededOnRestore() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    let session = try XCTUnwrap(model.session(forTab: tabId))
+    session.feedOutput(Array("\u{1b}]7501;state=blocked:kind=permission:app=claude\u{07}".utf8))
+    pumpMainQueue()
+    model.noteOutputParsed(throughOffset: 4_096, forSession: session.id)
+
+    let state = model.snapshotForPersistence(windowId: "window")
+    let pane = try XCTUnwrap(state.windows.first?.tabs.first?.resolvedPaneStates.first)
+    XCTAssertEqual(pane.programStatus?.summary?.state, .blocked)
+    XCTAssertEqual(pane.programStatusOffset, 4_096)
+    let decoded = try JSONDecoder().decode(
+      WorkspaceState.self, from: JSONEncoder().encode(state))
+    XCTAssertEqual(decoded, state, "the records and offset survive the state file")
+
+    let restored = try makeModel()
+    restored.replaceTabs(from: decoded)
+    let restoredSession = try XCTUnwrap(restored.session(forTab: restored.tabs[0].id))
+    let seed = try XCTUnwrap(restored.takeProgramStatusSeed(forSession: restoredSession.id))
+    XCTAssertEqual(seed.offset, 4_096)
+    XCTAssertEqual(seed.records?.summary?.app, "claude")
+    XCTAssertNil(
+      restored.takeProgramStatusSeed(forSession: restoredSession.id),
+      "the restored seed is taken once; no reader has parsed anything yet")
+
+    restored.applyProgramStatusSeed(seed.records, forSession: restoredSession.id)
+    XCTAssertEqual(restored.tabs[0].titleMetadata.programStatus?.summary?.state, .blocked)
+  }
+
+  /// A reader replaying the byte ring from its start feeds the history the
+  /// seed covers with reports suppressed, so a result the user has already
+  /// looked at does not come back; reports after the seed's offset apply.
+  func testOSC7501ReplayedHistoryDoesNotBringBackSeenResults() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    let session = try XCTUnwrap(model.session(forTab: tabId))
+    let message = Data("Pushed".utf8).base64EncodedString()
+    let done = Array("\u{1b}]7501;state=done:msg=\(message)\u{07}".utf8)
+    session.feedOutput(done)
+    pumpMainQueue()
+    XCTAssertEqual(model.tabs[0].titleMetadata.programStatus?.summary?.state, .done)
+    model.markActiveTabNotificationSeen()
+    XCTAssertNil(model.tabs[0].titleMetadata.programStatus)
+    model.noteOutputParsed(throughOffset: UInt64(done.count), forSession: session.id)
+
+    // The live seed: records as of the previous reader's offset.
+    let seed = try XCTUnwrap(model.takeProgramStatusSeed(forSession: session.id))
+    XCTAssertNil(seed.records)
+    let later = Array("\u{1b}]7501;state=working:id=push\u{07}".utf8)
+    let ring = done + later
+    let split = seed.historyByteCount(readByteCount: ring.count, endOffset: UInt64(ring.count))
+    XCTAssertEqual(split, done.count)
+
+    session.withProgramStatusSuppressed { _ = session.feedOutput(Array(ring[..<split])) }
+    pumpMainQueue()
+    model.applyProgramStatusSeed(seed.records, forSession: session.id)
+    session.feedOutput(Array(ring[split...]))
+    pumpMainQueue()
+    let records = try XCTUnwrap(model.tabs[0].titleMetadata.programStatus)
+    XCTAssertEqual(records.records.map(\.state), [.working], "the seen done stays gone")
+  }
+
+  /// A parser reset the reader feeds after a byte-ring overflow is not the
+  /// program's reset: under suppression it leaves the records alone.
+  func testOSC7501SuppressedResetKeepsRecords() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    let session = try XCTUnwrap(model.session(forTab: tabId))
+    session.feedOutput(Array("\u{1b}]7501;state=working\u{07}".utf8))
+    pumpMainQueue()
+    session.withProgramStatusSuppressed { _ = session.feedOutput([0x1B, 0x63]) }
+    pumpMainQueue()
+    XCTAssertEqual(model.tabs[0].titleMetadata.programStatus?.summary?.state, .working)
+    session.feedOutput([0x1B, 0x63])
+    pumpMainQueue()
+    XCTAssertNil(model.tabs[0].titleMetadata.programStatus, "a program's own reset still clears")
+  }
+
   func testClaudeWaitingForInputNotificationIsInformational() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id

@@ -35,10 +35,22 @@ pulsing ◆, and a notification appears.
 - [x] (2026-11-25) Sidebar line and error dot; attention classifier; close confirmation.
 - [x] (2026-11-25) Debug state (`programStatus` on a tab), `program.status` event, schema.
 - [x] (2026-11-25) Tests at four layers; docs (`docs/features.md`, `docs/product/spec.md`, ADR 0041).
+- [x] (2026-11-26) Follow-ups from review: RIS inside unfinished strings, every change announced, malformed ids, close dialog (PR #71).
+- [x] (2026-11-26) Keep records across a restart without replayed history re-applying seen results (`ProgramStatusSeed`, ADR 0041 decision 7).
 - [ ] Look at the sidebar rendering in the visible app (not yet done; see Validation).
 - [ ] Move this plan to `execplans/completed/` when the change merges.
 
 ## Decision Log
+
+- Decision: a restart restores records from the saved workspace, and the
+  reattach replay feeds the history those records cover with reports
+  suppressed (split at the saved byte-ring offset), then the rest live.
+  Rationale: the replay alone rebuilt live states but also brought back
+  `done`/`error` results the user had already looked at. Seeding without
+  the split would let replayed OSC 133 prompts drop the restored records.
+  The offset is advanced on the main queue after each feed, so the records
+  are exactly current to it when the workspace is saved.
+  Date/Author: 2026-11-26, Claude.
 
 - Decision: C delivers the raw payload; Swift validates it.
   Rationale: the rules need UTF-8 validation and Unicode general-category

@@ -228,6 +228,20 @@ final class ProgramStatusTests: XCTestCase {
     XCTAssertFalse(r.records.contains { $0.id == "r1" }, "r1 was the least recently updated")
     XCTAssertTrue(r.records.contains { $0.id == "r0" })
   }
+
+  /// A seed splits a replayed read at its offset: the history before it is
+  /// already in the seed's records.
+  func testSeedSplitsReplayedReadAtItsOffset() {
+    let seed = ProgramStatusSeed(records: nil, offset: 1_000)
+    XCTAssertEqual(seed.historyByteCount(readByteCount: 1_000, endOffset: 1_500), 500)
+    XCTAssertEqual(seed.historyByteCount(readByteCount: 300, endOffset: 1_000), 300, "all history")
+    XCTAssertEqual(seed.historyByteCount(readByteCount: 300, endOffset: 900), 300, "seed past end")
+    XCTAssertEqual(seed.historyByteCount(readByteCount: 200, endOffset: 1_500), 0, "ring wrapped")
+    XCTAssertEqual(seed.historyByteCount(readByteCount: 500, endOffset: 1_500), 0, "starts at seed")
+    XCTAssertEqual(
+      ProgramStatusSeed(records: nil, offset: 0).historyByteCount(
+        readByteCount: 10, endOffset: 10), 0)
+  }
 }
 
 extension ProgramStatusRecords {
