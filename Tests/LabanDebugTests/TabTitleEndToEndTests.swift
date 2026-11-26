@@ -344,14 +344,18 @@ final class TabTitleEndToEndTests: XCTestCase {
     // harness shell's own integration) ends it.
     try harness.type(
       "printf '\\033]7501;state=working:progress=40:msg=UHVzaGluZyBpbWFnZQ==\\033\\\\'; "
-        + "sleep 2; printf '\\033]133;A\\007'\n")
+        + "sleep 3; printf '\\033]133;A\\007'\n")
     var tab = try harness.waitForTabState { $0.programState == "working" }
     XCTAssertEqual(tab.programMessage, "Pushing image")
     XCTAssertEqual(tab.programProgress, 40)
     tab = try harness.waitForTabState(timeout: 6.0) { $0.programState == nil }
     XCTAssertNil(tab.programState, "a working record does not outlive the program")
 
-    try harness.type("printf '\\033]7501;state=blocked:kind=permission\\007'; sleep 30\n")
+    // A working record with a message, then `blocked` with none on the same
+    // (root) record: the second report must replace the first completely.
+    try harness.type(
+      "printf '\\033]7501;state=working:msg=UHVzaGluZyBpbWFnZQ==\\007'; "
+        + "printf '\\033]7501;state=blocked:kind=permission\\007'; sleep 30\n")
     try harness.newTab()
     tab = try harness.waitForTabState { $0.programState == "blocked" }
     XCTAssertEqual(tab.attention, "needsAction")
