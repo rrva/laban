@@ -1,0 +1,39 @@
+Sources/LabanApp/AppSessionCoordinator.swift
+  s_ce2b1682d8904a::t_d8eb06bfe6760d 215-219,822-829,863-875,1455-1463,1499-1502,1505-1507,1646-1647,1649-1652,1657-1658,1670-1671,1674,1676-1691,1693-1694,1719
+Sources/LabanApp/MainWindowController.swift
+  s_ce2b1682d8904a::t_aa89518f0211e0 491
+Sources/LabanCore/AppModel.swift
+  s_ce2b1682d8904a::t_4faa647da83655 255-263,1404,1501-1503,1606-1660,1771-1772
+Sources/LabanCore/Persistence/WorkspaceState.swift
+  s_ce2b1682d8904a::t_fb73f39bba8638 322-327,340-342,355-362
+Sources/LabanCore/ProgramStatus.swift
+  s_ce2b1682d8904a::t_008dcd98601cca 317-344
+Sources/LabanCore/Session.swift
+  s_ce2b1682d8904a::t_6046cb175730c5 645-656,1831,1903-1914,1936
+Tests/LabanCoreTests/AppModelTests.swift
+  s_ce2b1682d8904a::t_0d2f83cbdefe51 209-290
+Tests/LabanCoreTests/ProgramStatusTests.swift
+  s_ce2b1682d8904a::t_a43a76cb9dc1b3 231-244
+docs/adr/0041-osc-7501-program-status.md
+  s_ce2b1682d8904a::t_e6385523c9de1d 64-73
+docs/features.md
+  s_ce2b1682d8904a::t_59948e7fcd7125 57
+execplans/active/osc-7501-program-status.md
+  s_ce2b1682d8904a::t_2ca940fc9f9ee7 38-39,45-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f6f577d07efe1feb01e781c63950b1e73d348b24",
+  "prompts": {},
+  "sessions": {
+    "s_ce2b1682d8904a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "733f4d26-2f20-4a29-857c-8a54aa0c9abb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
