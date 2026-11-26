@@ -1,0 +1,27 @@
+Sources/LabanCore/CloseConfirmation.swift
+  s_ce2b1682d8904a::t_3ce32b2dfff8f0 245-252,364
+Sources/LabanCore/ProgramStatus.swift
+  s_ce2b1682d8904a::t_f50f1039c6f4ac 88-93
+Tests/LabanCoreTests/CloseConfirmationTests.swift
+  s_ce2b1682d8904a::t_07374064cf0da2 298-313
+Tests/LabanCoreTests/ProgramStatusTests.swift
+  s_ce2b1682d8904a::t_0c623bbe887266 57-61
+Tests/LabanDebugTests/TabTitleEndToEndTests.swift
+  s_ce2b1682d8904a::t_9856470882b053 341-344,346-347,351-352,354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d44cd9fcfb8f7437286c703867d5b182c8d3659f",
+  "prompts": {},
+  "sessions": {
+    "s_ce2b1682d8904a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "733f4d26-2f20-4a29-857c-8a54aa0c9abb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
