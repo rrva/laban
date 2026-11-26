@@ -127,6 +127,10 @@ public struct ControlAttachApprovalRequest: Sendable {
   /// rather than one intent's sensitivity. Defaults to `false` so existing
   /// non-family construction sites (tests) are unaffected.
   public let grantsSessionReadFamily: Bool
+  /// For a spawn request (a sandboxed caller opening a terminal): the command
+  /// and directory the new terminal would run, so the dialog shows them.
+  public let spawnCommand: String?
+  public let spawnDirectory: String?
 
   public init(
     id: String,
@@ -140,7 +144,9 @@ public struct ControlAttachApprovalRequest: Sendable {
     capabilities: [String],
     canPersist: Bool,
     persistenceDisabledReason: String?,
-    grantsSessionReadFamily: Bool = false
+    grantsSessionReadFamily: Bool = false,
+    spawnCommand: String? = nil,
+    spawnDirectory: String? = nil
   ) {
     self.id = id
     self.principalDisplayName = principalDisplayName
@@ -153,6 +159,8 @@ public struct ControlAttachApprovalRequest: Sendable {
     self.capabilities = capabilities
     self.canPersist = canPersist
     self.persistenceDisabledReason = persistenceDisabledReason
+    self.spawnCommand = spawnCommand
+    self.spawnDirectory = spawnDirectory
     self.grantsSessionReadFamily = grantsSessionReadFamily
   }
 }

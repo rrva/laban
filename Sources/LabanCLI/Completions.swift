@@ -28,6 +28,9 @@ private let zshCompletions = """
       'wait:Block until a bound-session condition is true'
       'propose:Propose a command for user review'
       'proposal:List, inspect, or cancel command proposals'
+      'new:Open a new tab running a command'
+      'split:Split your pane right or down, running a command'
+      'run:Run a command in a new terminal, optionally waiting for its exit status'
     )
     _describe -t commands 'laban command' commands
   }
@@ -40,7 +43,7 @@ private let bashCompletions = """
     local cur prev words cword
     _init_completion || return
 
-    local commands="discover status health capabilities request completions version install-cli session context wait propose proposal"
+    local commands="discover status health capabilities request completions version install-cli session context wait propose proposal new split run"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
       COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
@@ -107,6 +110,9 @@ private let fishCompletions = """
   complete -c laban -n '__fish_use_subcommand' -a 'wait' -d 'Block until a bound-session condition is true'
   complete -c laban -n '__fish_use_subcommand' -a 'propose' -d 'Propose a command for user review'
   complete -c laban -n '__fish_use_subcommand' -a 'proposal' -d 'List, inspect, or cancel command proposals'
+  complete -c laban -n '__fish_use_subcommand' -a 'new' -d 'Open a new tab running a command'
+  complete -c laban -n '__fish_use_subcommand' -a 'split' -d 'Split your pane right or down, running a command'
+  complete -c laban -n '__fish_use_subcommand' -a 'run' -d 'Run a command in a new terminal'
 
   complete -c laban -n '__fish_seen_subcommand_from discover status health capabilities' -l json
   complete -c laban -n '__fish_seen_subcommand_from request' -l body -r

@@ -332,6 +332,21 @@ final class MainWindowController: NSWindowController {
         sessionCoordinator: sessionCoordForAttach,
         model: model)
     }
+    // The default tab AppModel.init() created predates the hook above, so its
+    // shell was never registered and every `laban` lazy-attach request from the
+    // first tab of a fresh launch was refused as outside every session.
+    for (tab, session) in model.allSessions() {
+      Self.registerAttachShell(
+        tabId: tab.id,
+        session: session,
+        launchCoordinator: controlLaunchCoordinator,
+        sessionCoordinator: sessionCoordForAttach)
+      Self.scheduleAttachShellRetries(
+        tabId: tab.id, sessionId: session.id,
+        launchCoordinator: controlLaunchCoordinator,
+        sessionCoordinator: sessionCoordForAttach,
+        model: model)
+    }
     let priorTabClosedForControl = model.onSessionClosed
     model.onSessionClosed = { tabId, sessionId in
       priorTabClosedForControl?(tabId, sessionId)
@@ -729,6 +744,10 @@ final class MainWindowController: NSWindowController {
       guard let window = controller?.window else { return false }
       window.orderFrontRegardless()
       return true
+    }
+    liveRouter.bindSpawnHandler { [weak controller] plan in
+      guard let view = controller?.terminalView else { throw AppError.tabNotFound }
+      return try view.openControlSpawn(plan)
     }
     liveRouter.bindTransparencyControl(
       state: { [weak controller] in

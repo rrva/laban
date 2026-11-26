@@ -6032,7 +6032,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   @discardableResult
-  private func createTabPreservingSelection() throws -> Tab {
+  /// A non-empty `argv` or a `cwd` opens a command tab (`laban new`/`run`).
+  private func createTabPreservingSelection(
+    runningArgv argv: [String] = [], cwd: String? = nil
+  ) throws -> Tab {
     syncSelectionStateToActiveTab()
     persistSelectionStateForCurrentTab()
     // Invalidate the generation cache so a newly-created (or recycled)
@@ -6040,7 +6043,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // work to be incorrectly skipped on the first tick after creation.
     surfaceController.invalidateSessionSyncCache()
     let previousActiveTabId = model.activeTab?.id
-    let tab = try model.createTab()
+    let tab =
+      argv.isEmpty && cwd == nil
+      ? try model.createTab() : try model.createTab(runningArgv: argv, cwd: cwd)
+    if let cwd { sessionCoordinator?.setLaunchCwd(cwd, forSession: tab.focusedSessionId) }
     do {
       try sessionCoordinator?.ensureSession(
         for: tab,
@@ -10183,6 +10189,61 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         forTab: tab.id, note: "pane.split.failed", text: String(describing: error))
     }
     invalidateRenderAndWake()
+  }
+
+  /// Opens the tab or split a control-plane caller asked for (`laban new`,
+  /// `laban split`, `laban run`). A split divides the caller's own pane. The
+  /// new terminal carries an "Opened by a program" notice so the user can tell
+  /// it apart from one they opened (ADR 0024, Amendment 2026-11-26).
+  func openControlSpawn(_ plan: ControlSpawnPlan) throws -> ControlSpawnResponse {
+    let notice = ControlSpawnRouting.noticeText(argv: plan.argv)
+    guard let axis = plan.placement.paneAxis else {
+      let previous = model.activeTab?.id
+      if plan.focus { discardMarkedComposition() }
+      let tab = try createTabPreservingSelection(runningArgv: plan.argv, cwd: plan.cwd)
+      if let label = plan.label { try? model.renameTab(tab.id, title: label) }
+      _ = model.postTabNotice(forTab: tab.id, note: "control.spawn", text: notice)
+      if !plan.focus, let previous {
+        model.selectTab(previous)
+        restoreSelectionState(for: model.activeTab?.focusedSessionId)
+      }
+      invalidateRenderAndWake()
+      return ControlSpawnResponse(tabID: tab.id, sessionID: tab.focusedSessionId, placement: .tab)
+    }
+    guard let anchor = plan.anchorSessionID,
+      let tab = model.tabs.first(where: { $0.allSessionIds.contains(anchor) })
+    else { throw AppModel.PaneError.unknownSession }
+    if sessionCoordinator?.usesRemoteSnapshots == true {
+      throw AppModel.PaneError.unsupportedBackend
+    }
+    let isActiveTab = model.activeTab?.id == tab.id
+    if isActiveTab && plan.focus {
+      persistSelectionStateForCurrentTab()
+      discardMarkedComposition()
+    }
+    let id = try model.splitPane(
+      inTab: tab.id, axis: axis, anchor: anchor, focusNewPane: plan.focus
+    ) { id, size, cwd in
+      let launchCwd = plan.cwd ?? cwd
+      let session = try model.makePaneSession(
+        id: id, inTab: tab.id, size: size, cwd: launchCwd, argv: plan.argv)
+      let target = Tab(
+        id: tab.id, position: tab.position, title: tab.title, isActive: isActiveTab,
+        sessionId: id)
+      do {
+        if let launchCwd { sessionCoordinator?.setLaunchCwd(launchCwd, forSession: id) }
+        try sessionCoordinator?.ensureSession(for: target, session: session, size: size)
+      } catch {
+        sessionCoordinator?.terminate(tab: target)
+        session.close()
+        throw error
+      }
+      return session
+    }
+    _ = model.postPaneNotice(forSession: id, note: "control.spawn", text: notice)
+    if isActiveTab && plan.focus { paneFocusChanged() }
+    invalidateRenderAndWake()
+    return ControlSpawnResponse(tabID: tab.id, sessionID: id, placement: plan.placement)
   }
 
   @objc func closePane(_ sender: Any?) {

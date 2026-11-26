@@ -106,6 +106,8 @@ public enum DebugActionIntentID {
     "proposalList",
     "proposalGet",
     "proposalCancel",
+    "spawnTab",
+    "spawnSplit",
     "mouseWheel",
     "mouseDrag",
     "click",
@@ -126,6 +128,8 @@ public enum DebugActionIntentID {
     case "pane.split", "pane.close", "pane.focus", "pane.resize", "pane.equalize", "pane.zoom":
       return action
     case "newTab": return "tab.new"
+    case "spawnTab": return "session.spawnTab"
+    case "spawnSplit": return "session.spawnSplit"
     case "closeTab": return "tab.close"
     case "selectTab": return "tab.select"
     case "setTabTitle": return "tab.title.set"

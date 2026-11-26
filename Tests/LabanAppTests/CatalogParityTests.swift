@@ -38,6 +38,8 @@ final class CatalogParityTests: XCTestCase {
     "commandProposal.list",
     "commandProposal.get",
     "commandProposal.cancel",
+    "session.spawnTab",
+    "session.spawnSplit",
     "debug.discovery",
     "debug.capabilities",
     "debug.health",

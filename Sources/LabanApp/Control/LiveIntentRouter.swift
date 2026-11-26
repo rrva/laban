@@ -93,6 +93,8 @@ final class LiveIntentRouter: IntentRouter {
     ((String, TerminalBackgroundImageScaling) throws -> Void)?
   private var removeBackgroundImageHandler: (() -> Void)?
   private var fixtureWindowFocusHandler: (() -> Bool)?
+  private var spawnHandler: ((ControlSpawnPlan) throws -> ControlSpawnResponse)?
+  private var spawnRateLimiter = ControlSpawnRateLimiter()
   weak var proposalPresenter: CommandProposalReviewPresenting?
 
   init(
@@ -189,6 +191,12 @@ final class LiveIntentRouter: IntentRouter {
     }
   }
 
+  /// Opens the tab or split a validated `session.spawnTab`/`session.spawnSplit`
+  /// request asks for. Bound by the window controller, which owns the view.
+  func bindSpawnHandler(_ handler: @escaping (ControlSpawnPlan) throws -> ControlSpawnResponse) {
+    performOnMain { self.spawnHandler = handler }
+  }
+
   func bindTransparencyControl(
     state: @escaping () -> TerminalTransparencyDebugResponse?,
     setBackground: @escaping (Double, Double?, Bool, TerminalBackdropStyle?) -> Void,
@@ -222,6 +230,9 @@ final class LiveIntentRouter: IntentRouter {
           return scrollViewportAction(body: input.body, scopedSessionID: input.scopedSessionID)
         case "command.propose":
           return commandProposeAction(body: input.body, scopedSessionID: input.scopedSessionID)
+        case "session.spawnTab", "session.spawnSplit":
+          return spawnAction(
+            intentID: input.intentID, body: input.body, scopedSessionID: input.scopedSessionID)
         case "commandProposal.list":
           return commandProposalListAction(scopedSessionID: input.scopedSessionID)
         case "commandProposal.get":
@@ -357,6 +368,9 @@ final class LiveIntentRouter: IntentRouter {
         return scrollViewportAction(body: input.body, scopedSessionID: input.scopedSessionID)
       case "command.propose":
         return commandProposeAction(body: input.body, scopedSessionID: input.scopedSessionID)
+      case "session.spawnTab", "session.spawnSplit":
+        return spawnAction(
+          intentID: input.intentID, body: input.body, scopedSessionID: input.scopedSessionID)
       case "commandProposal.list":
         return commandProposalListAction(scopedSessionID: input.scopedSessionID)
       case "commandProposal.get":
@@ -649,6 +663,49 @@ final class LiveIntentRouter: IntentRouter {
     return response
   }
 
+  private func spawnAction(intentID: String, body: Data, scopedSessionID: String?)
+    -> ControlResponse
+  {
+    guard let model = model else { return .error(500, "model released") }
+    let plan: ControlSpawnPlan
+    switch ControlSpawnRouting.plan(
+      intentID: intentID,
+      body: body,
+      scopedSessionID: scopedSessionID,
+      activeSessionID: model.activeTab?.focusedSessionId)
+    {
+    case .failure(let rejection):
+      return .error(rejection.status, rejection.reason)
+    case .success(let value):
+      plan = value
+    }
+    if let anchor = plan.anchorSessionID,
+      !model.tabs.contains(where: { $0.allSessionIds.contains(anchor) })
+    {
+      return .error(409, "caller session is not open")
+    }
+    guard let spawnHandler else { return .error(503, "spawn unavailable") }
+    guard spawnRateLimiter.admit() else { return .error(429, "too many new terminals") }
+    do {
+      let response = try spawnHandler(plan)
+      EventLog.shared.log(
+        "control.spawn",
+        [
+          "placement": plan.placement.rawValue,
+          "command": ControlSpawnRouting.commandLine(plan.argv),
+          "callerSessionID": scopedSessionID ?? "",
+          "sessionID": response.sessionID,
+        ])
+      return json(response)
+    } catch AppModel.PaneError.tooSmall {
+      return .error(409, "not enough room to split this pane")
+    } catch AppModel.PaneError.unsupportedBackend {
+      return .error(409, "this terminal backend cannot split panes")
+    } catch {
+      return .error(500, "could not open terminal: \(error)")
+    }
+  }
+
   private func commandProposalListAction(scopedSessionID: String?) -> ControlResponse {
     guard let model = model else { return .error(500, "model released") }
     return CommandProposalRouting.handleList(
@@ -884,6 +941,8 @@ final class LiveIntentRouter: IntentRouter {
   private static let guiDebugActionNames: [String: String] = [
     "terminal.scrollViewport": "scrollViewport",
     "command.propose": "propose",
+    "session.spawnTab": "spawnTab",
+    "session.spawnSplit": "spawnSplit",
     "transparency.setBackground": "setBackgroundTransparency",
     "transparency.diagnostics.reset": "resetTransparencyDiagnostics",
     "transparency.reduceTransparencyOverride.set": "setReduceTransparencyOverride",

@@ -53,8 +53,11 @@ final class ControlPlaneInvariantTests: XCTestCase {
     // "asserted at the minting path" half of I1: the allowlist itself can
     // never point at an actuation capability, regardless of what the
     // `ControlTokenTier.approvedSession` enum case could structurally hold.
+    // `.spawn` opens a new tab or pane running a command the caller chose; it
+    // never writes bytes into an existing session (ADR 0024, Amendment
+    // 2026-11-26), so it is not actuation in the I1 sense.
     let nonActuatingCapabilities: Set<Capability> = [
-      .observe, .observeSensitive, .navigate, .propose,
+      .observe, .observeSensitive, .navigate, .propose, .spawn,
     ]
     for entry in ControlLazyAttachAllowlist.entries {
       guard let descriptor = IntentCatalog.all.descriptor(id: entry.intentID) else {
@@ -255,7 +258,14 @@ final class ControlPlaneInvariantTests: XCTestCase {
     // Every capability an approvedSession token could carry for an
     // allowlisted (server-mintable) route must already be inside what
     // sessionObserve grants.
-    for entry in ControlLazyAttachAllowlist.entries {
+    // The in-session spawn entries are the deliberate exception: `.spawn` is
+    // reachable only through lazy attach (which checks for a sandbox), never
+    // through a session-observe broker credential.
+    for entry in ControlLazyAttachAllowlist.entries where !entry.requiresApproval {
+      XCTAssertEqual(IntentCatalog.all.descriptor(id: entry.intentID)?.requiredCapability, .spawn)
+      XCTAssertFalse(sessionObserveGrants.contains(.spawn))
+    }
+    for entry in ControlLazyAttachAllowlist.entries where entry.requiresApproval {
       guard let descriptor = IntentCatalog.all.descriptor(id: entry.intentID) else {
         XCTFail("lazy allowlist entry \(entry.cliCommand) has no catalog descriptor")
         continue

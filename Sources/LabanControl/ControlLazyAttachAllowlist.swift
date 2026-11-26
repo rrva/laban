@@ -16,6 +16,12 @@ public enum ControlLazyAttachAllowlist {
     public let intentID: String
     public let routeID: String
     public let persistable: Bool
+    /// False only for the in-session spawn intents (ADR 0024, Amendment
+    /// 2026-11-26): a process that the server proves is running inside a Laban
+    /// session may open a tab or split its own pane without a dialog, because
+    /// the new terminal is visible and the caller could already run the same
+    /// command itself. Every read keeps the approval dialog.
+    public let requiresApproval: Bool
 
     public init(
       cliCommand: String,
@@ -23,7 +29,8 @@ public enum ControlLazyAttachAllowlist {
       path: String,
       intentID: String,
       routeID: String,
-      persistable: Bool
+      persistable: Bool,
+      requiresApproval: Bool = true
     ) {
       self.cliCommand = cliCommand
       self.method = method
@@ -31,6 +38,7 @@ public enum ControlLazyAttachAllowlist {
       self.intentID = intentID
       self.routeID = routeID
       self.persistable = persistable
+      self.requiresApproval = requiresApproval
     }
   }
 
@@ -133,6 +141,22 @@ public enum ControlLazyAttachAllowlist {
       intentID: "commandProposal.cancel",
       routeID: "POST /debug/actions",
       persistable: true),
+    Entry(
+      cliCommand: "session.spawnTab",
+      method: "POST",
+      path: "/debug/actions",
+      intentID: "session.spawnTab",
+      routeID: "POST /debug/actions",
+      persistable: false,
+      requiresApproval: false),
+    Entry(
+      cliCommand: "session.spawnSplit",
+      method: "POST",
+      path: "/debug/actions",
+      intentID: "session.spawnSplit",
+      routeID: "POST /debug/actions",
+      persistable: false,
+      requiresApproval: false),
   ]
 
   public static func entry(cliCommand: String) -> Entry? {

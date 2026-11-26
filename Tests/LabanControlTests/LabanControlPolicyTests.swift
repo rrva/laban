@@ -245,7 +245,10 @@ final class LabanControlPolicyTests: XCTestCase {
       [.observe, .observeSensitive, .navigate, .propose])
     XCTAssertEqual(
       LabanControlPolicy.grants(for: .fixture),
-      [.fixture, .observe, .observeSensitive, .navigate, .propose, .diagnosticControl, .input])
+      [
+        .fixture, .observe, .observeSensitive, .navigate, .propose, .spawn, .diagnosticControl,
+        .input,
+      ])
   }
 
   func testNoDescriptorRequiresClipboardCapability() {

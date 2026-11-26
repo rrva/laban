@@ -52,6 +52,8 @@ public struct LabanControlPolicy: Sendable {
     case .appObserve:
       return [.observe]
     case .sessionObserve:
+      // No `.spawn`: a broker credential cannot tell whether the process
+      // asking runs in a sandbox. Spawns go through lazy attach, which checks.
       return [.observe, .observeSensitive, .navigate, .propose]
     case .approvedSession(_, _, let capabilities, _):
       // Approval records and lazy-attach requests can never mint diagnostic
@@ -62,7 +64,8 @@ public struct LabanControlPolicy: Sendable {
       return Set(capabilities).subtracting([.diagnosticControl])
     case .fixture:
       return [
-        .fixture, .observe, .observeSensitive, .navigate, .propose, .diagnosticControl, .input,
+        .fixture, .observe, .observeSensitive, .navigate, .propose, .spawn, .diagnosticControl,
+        .input,
       ]
     }
   }

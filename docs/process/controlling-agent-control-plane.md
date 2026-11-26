@@ -19,6 +19,9 @@ surface; do not assume headless-only actions exist in the live app.
 - Phase 2 does not allow live PTY input, key injection, mouse injection,
   clipboard writes, tab switching, or cross-app control. Use command proposals
   for commands the user may choose to run.
+- Agents may open new terminals (a tab, or a split of their own pane) that run
+  a command they choose: `laban new`, `laban split`, `laban run [--wait]`. See
+  "Opening terminals" below. They still cannot type into any terminal.
 
 ## Security rules for agents
 
@@ -408,12 +411,53 @@ agent must treat them as unavailable unless a future lease explicitly grants
 them:
 
 - `typeText`, `key`, mouse actions, paste/copy, clipboard mutation.
-- `newTab`, `closeTab`, `selectTab`, tab movement, window resize.
+- `newTab`, `closeTab`, `selectTab`, tab movement, window resize. (Use
+  `spawnTab`/`spawnSplit` to open a terminal; see "Opening terminals".)
 - `find.start`, `find.step`, `find.stop` as live control actions.
 - Capture, replay, fixture, render-trace, pixel-probe, and legacy renderer-only
   screenshot artifact writes unless running the headless/debug fixture surface.
   The exact-grant `/debug/window-screenshot` route is the sole live full-window
   screenshot exception.
+
+## Opening terminals
+
+`laban new`, `laban split` and `laban run` open a terminal that runs a command
+(ADR 0024, Amendment 2026-11-26). From inside a Laban session there is no
+dialog: the server proves the caller descends from that session's shell. From outside every
+session the request is refused with `403 notDescendantOfRegisteredSession`.
+Spawns always use lazy attach, even under `laban agent run`: the broker's
+session credential does not carry `spawn`, because only lazy attach checks
+whether the caller is sandboxed.
+
+```sh
+id=$(laban split --down -- npm test -- --watch)  # split your own pane, print its session id
+laban new --label logs --no-focus -- tail -f log/dev.log
+laban run --wait -- make check; echo "make exited $?"
+```
+
+- No command after `--` means the login shell. The working directory defaults
+  to the caller's; `--cwd DIR` overrides it. The CLI resolves the command the
+  way your shell would (a bare name on your `PATH`, `./x` against the
+  directory) and exits 127 when it is not found, because the terminal starts
+  it with `execve` and no PATH search.
+- `--label NAME` names a new tab; a split refuses it.
+- A sandboxed caller (Seatbelt, App Sandbox) gets the approval dialog instead:
+  the new terminal would run outside its sandbox.
+- `split` always divides the caller's own pane (`--right` by default, or
+  `--down`), never the focused one. `--no-focus` leaves focus where it is.
+- `--json` prints `{"ok","tabID","sessionID","placement"}`; `run --wait --json`
+  adds `exitStatus`. `run --wait` exits with the command's status (128+N when
+  a signal such as Ctrl-C killed it), or 1 when the terminal closed before the
+  command finished.
+- Wire shape: `POST /debug/actions` with `{"action":"spawnTab"|"spawnSplit",
+  "argv":[...],"cwd":"/abs","label":"...","focus":true,"direction":"right"|"down"}`
+  (intents `session.spawnTab` / `session.spawnSplit`, capability `spawn`).
+- Refusals: `400` bad argv, cwd, label or direction; `409` the caller's pane is
+  gone or too small to split; `413` argv or label too large; `429` more than 20
+  terminals in 10 seconds.
+- The new terminal shows "Opened by a program: <command>" in the sidebar. The
+  caller cannot read the new terminal's content: reads stay scoped to the
+  caller's own session.
 
 ## Command proposals
 

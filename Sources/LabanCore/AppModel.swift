@@ -754,9 +754,13 @@ public final class AppModel {
   public static let minimumPaneColumns = 10
   public static let minimumPaneRows = 3
 
+  /// Splits `anchor` (default: the tab's focused pane). A control-plane spawn
+  /// passes the caller's own pane as the anchor and may keep focus where it is.
   @discardableResult
   public func splitPane(
     inTab tabId: Tab.ID, axis: PaneAxis = .vertical,
+    anchor: Session.ID? = nil,
+    focusNewPane: Bool = true,
     openSession: (Session.ID, LabanTerminalSize, String?) throws -> Session
   ) throws -> Session.ID {
     var unzoomedByCommand = false
@@ -766,7 +770,8 @@ public final class AppModel {
       }
       let old = _tabs[idx]
       let id = UUID().uuidString
-      guard let tree = old.panes.splitting(leaf: old.focusedSessionId, axis: axis, newSessionId: id)
+      let leaf = anchor ?? old.focusedSessionId
+      guard let tree = old.panes.splitting(leaf: leaf, axis: axis, newSessionId: id)
       else { throw PaneError.notALeaf }
       // Measure both halves before spawning anything so a refused split leaves the
       // tree, the registry and the zoom state untouched.
@@ -777,7 +782,7 @@ public final class AppModel {
       // to measure; the view resizes the panes when it lays the tab out.
       let measurable = currentSize.pixel_width > 0 && currentSize.pixel_height > 0
       for pane in newRects
-      where measurable && (pane.sessionId == id || pane.sessionId == old.focusedSessionId) {
+      where measurable && (pane.sessionId == id || pane.sessionId == leaf) {
         let measured = Self.size(rect: pane.rect, cellWidth: cellWidth, cellHeight: cellHeight)
         guard pane.rect.width >= CGFloat(Self.minimumPaneColumns * cellWidth),
           pane.rect.height >= CGFloat(Self.minimumPaneRows * cellHeight),
@@ -787,8 +792,8 @@ public final class AppModel {
       let rect = newRects.first { $0.sessionId == id }!.rect
       let size = Self.size(rect: rect, cellWidth: cellWidth, cellHeight: cellHeight)
       let cwd =
-        old.titleMetadata.workspace.cwd
-        ?? sessionRegistry.session(id: old.focusedSessionId)?.processMetadata()?.cwd
+        (leaf == old.focusedSessionId ? old.titleMetadata.workspace.cwd : nil)
+        ?? sessionRegistry.session(id: leaf)?.processMetadata()?.cwd
       let session: Session
       do { session = try openSession(id, size, cwd) } catch {
         throw PaneError.daemonRefused(String(describing: error))
@@ -813,7 +818,7 @@ public final class AppModel {
       transcriptDelegate?.attachTranscriptWriter(to: session, sessionId: id)
       onSessionCreated?(tabId, session)
       recordSessionCreated(sessionId: id, tabId: tabId)
-      focusPane(inTab: tabId, sessionId: id)
+      if focusNewPane { focusPane(inTab: tabId, sessionId: id) }
       return id
     }
     if unzoomedByCommand { onSessionsReplaced?() }
@@ -822,12 +827,18 @@ public final class AppModel {
   }
 
   /// Use the same launch factory and control environment as new tabs.
+  /// A non-empty `argv` runs that command instead of the login shell, through
+  /// the same `commandSessionFactory` command tabs use.
   public func makePaneSession(
-    id: Session.ID, inTab tabId: Tab.ID, size: LabanTerminalSize, cwd: String?
+    id: Session.ID, inTab tabId: Tab.ID, size: LabanTerminalSize, cwd: String?,
+    argv: [String] = []
   ) throws -> Session {
     let context = launchContext(tabId: tabId, sessionId: id)
     let session: Session
-    if let cwd, let factory = newTabSessionFactory {
+    if !argv.isEmpty, let factory = commandSessionFactory {
+      session = try factory(size, cwd.map { resolveRestoredCwd($0).cwd }, argv, context)
+      launchArgvBySession[id] = argv
+    } else if let cwd, let factory = newTabSessionFactory {
       session = try factory(size, resolveRestoredCwd(cwd).cwd, context)
     } else {
       session = try sessionFactory(size, context)
@@ -1714,6 +1725,34 @@ public final class AppModel {
     guard changed else { return false }
     notifyWorkspaceMutation()
     _ = recordTabJournalNote(tabId: tabId, note: note, text: text)
+    return true
+  }
+
+  /// Like `postTabNotice`, but on one pane: an unfocused pane keeps the notice
+  /// in its own metadata, so it shows when the user focuses that pane.
+  @discardableResult
+  public func postPaneNotice(
+    forSession sessionId: Session.ID, note: String, text: String
+  ) -> Bool {
+    let target: (tabId: Tab.ID, focused: Bool)? = withModelLock {
+      guard let tab = _tabs.first(where: { $0.allSessionIds.contains(sessionId) }) else {
+        return nil
+      }
+      return (tab.id, tab.focusedSessionId == sessionId)
+    }
+    guard let target else { return false }
+    if target.focused { return postTabNotice(forTab: target.tabId, note: note, text: text) }
+    withModelLock {
+      guard let tab = _tabs.first(where: { $0.id == target.tabId }) else { return }
+      var metadata = paneMetadata[sessionId] ?? .fallback(position: tab.position, active: false)
+      let prior = metadata.notification
+      metadata.notification = TabNotification(
+        text: text, urgent: prior?.urgent ?? false, count: (prior?.count ?? 0) + 1,
+        isNotice: true)
+      paneMetadata[sessionId] = metadata
+    }
+    notifyWorkspaceMutation()
+    _ = recordTabJournalNote(tabId: target.tabId, note: note, text: text)
     return true
   }
 
