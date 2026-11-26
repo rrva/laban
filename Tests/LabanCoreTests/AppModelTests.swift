@@ -191,10 +191,19 @@ final class AppModelTests: XCTestCase {
 
     model.markActiveTabNotificationSeen()
     XCTAssertNil(metadata().programStatus, "a seen result is retired")
+    XCTAssertEqual(changes, [.working, .blocked, .done, nil], "retiring a seen result is a change")
 
     feed("state=working:id=a")
     feed("state=clear")
     XCTAssertNil(metadata().programStatus)
+    XCTAssertEqual(changes, [.working, .blocked, .done, nil, .working, nil])
+
+    // A new prompt (OSC 133 A) ends the program's live records: also a change.
+    feed("state=working:app=brew")
+    session.feedOutput(Array("\u{1b}]133;A\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertNil(metadata().programStatus)
+    XCTAssertEqual(changes, [.working, .blocked, .done, nil, .working, nil, .working, nil])
   }
 
   func testClaudeWaitingForInputNotificationIsInformational() throws {
