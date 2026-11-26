@@ -1,0 +1,21 @@
+Sources/LabanCore/AppModel.swift
+  s_ce2b1682d8904a::t_c97878e88f02fd 245-248,251-254,1530,1545,1567-1593,2115,2614-2616,2642,2644-2645,2748
+Tests/LabanCoreTests/AppModelTests.swift
+  s_ce2b1682d8904a::t_799df24e7393f8 194,199-206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4518250bb388dab54213373be7af2abf0a7237a0",
+  "prompts": {},
+  "sessions": {
+    "s_ce2b1682d8904a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "733f4d26-2f20-4a29-857c-8a54aa0c9abb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
