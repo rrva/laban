@@ -3944,6 +3944,48 @@ final class LabanSessionTests: XCTestCase {
       ["state=working:progress=40", "state=blocked:kind=auth", "state=clear"])
   }
 
+  /// libghostty resets on `ESC c` even when the ESC interrupts an unfinished
+  /// OSC or DCS/APC body, so the program-status records must clear there too.
+  func testOSC7501ClearsOnRISInsideUnfinishedStrings() {
+    final class Sink {
+      var payloads: [String] = []
+    }
+    for prefix in [
+      "\u{1b}]0;title", "\u{1b}]7501;state=work", "\u{1b}]52;c;", "\u{1b}Pq#0",
+      "\u{1b}Ptmux;\u{1b}", "\u{1b}_Gabc",
+    ] {
+      guard let session = makeFixtureSession() else {
+        XCTFail("laban_session_create returned non-zero")
+        return
+      }
+      defer { laban_session_destroy(session) }
+      let sink = Sink()
+      XCTAssertEqual(
+        laban_session_set_program_status_callback(
+          session,
+          { ud, payload, len in
+            guard let ud, let payload else { return }
+            let sink = Unmanaged<Sink>.fromOpaque(ud).takeUnretainedValue()
+            sink.payloads.append(
+              String(decoding: UnsafeBufferPointer(start: payload, count: len), as: UTF8.self))
+          },
+          Unmanaged.passUnretained(sink).toOpaque()),
+        0)
+      writeBytes(session, Array("HELLO\r\n".utf8))
+      writeBytes(session, Array((prefix + "\u{1b}c").utf8))
+      writeBytes(session, Array("WORLD".utf8))
+      XCTAssertEqual(sink.payloads, ["state=clear"], "prefix \(prefix.debugDescription)")
+
+      // The terminal itself reset, so the clear matches what the user sees.
+      var snap: UnsafeMutablePointer<LabanSnapshot>?
+      XCTAssertEqual(laban_session_snapshot(session, &snap), 0)
+      let text = snap.map { visibleText(from: UnsafePointer($0)) } ?? ""
+      if let snap { laban_snapshot_destroy(snap) }
+      XCTAssertFalse(text.contains("HELLO"), "prefix \(prefix.debugDescription)")
+      XCTAssertTrue(text.contains("WORLD"), "prefix \(prefix.debugDescription)")
+    }
+  }
+
   /// Spec 9.15: kitty OSC 99 chunks sharing an id assemble into one
   /// notification, delivered through the same callback as OSC 9.
   func testKittyNotificationAssemblesChunksAndDeliversOnce() {

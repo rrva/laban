@@ -521,6 +521,20 @@ static void flush_vt_pending(LabanSession *s, const uint8_t *bytes,
     }
 }
 
+/* RIS (ESC c, full reset) removes every OSC 7501 record; delivered as the
+ * report that clears them all. libghostty resets on ESC c wherever the ESC
+ * falls, including inside an unfinished OSC or DCS/APC/PM/SOS body (an ESC
+ * there aborts the string), so every after-ESC state calls this on 'c'. The
+ * reset bytes are flushed first so the callback runs after the VT reset. */
+static void deliver_ris_clear(
+    LabanSession *s, const uint8_t *bytes, size_t i, size_t *flushed) {
+    static const uint8_t clear_all[] = "state=clear";
+    if (!s->program_status_callback) return;
+    flush_vt_pending(s, bytes, i + 1, flushed);
+    s->program_status_callback(
+        s->program_status_userdata, clear_all, sizeof(clear_all) - 1);
+}
+
 void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (!s) return;
     LabanOSCHostScanner *sc = &s->osc_host_scanner;
@@ -542,15 +556,7 @@ void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t 
             } else if (b == 0x1B) {
                 sc->state = OH_AFTER_ESC;
             } else {
-                /* RIS (ESC c, full reset) removes every OSC 7501 record;
-                 * delivered as the report that clears them all. */
-                if (b == 'c' && s->program_status_callback) {
-                    static const uint8_t clear_all[] = "state=clear";
-                    flush_vt_pending(s, bytes, i + 1, &flushed);
-                    s->program_status_callback(
-                        s->program_status_userdata, clear_all,
-                        sizeof(clear_all) - 1);
-                }
+                if (b == 'c') deliver_ris_clear(s, bytes, i, &flushed);
                 sc->state = OH_NORMAL;
             }
             break;
@@ -625,6 +631,7 @@ void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t 
             } else if (b == 0x1B) {
                 sc->state = OH_AFTER_ESC;
             } else {
+                if (b == 'c') deliver_ris_clear(s, bytes, i, &flushed);
                 sc->state = OH_NORMAL;
             }
             break;
@@ -639,7 +646,10 @@ void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t 
             else if (b == ']') { sc->num_len = 0; sc->state = OH_OSC_NUM; }
             else if (b == 'P' || b == 'X' || b == '^' || b == '_') sc->state = OH_STRING;
             else if (b == 0x1B) sc->state = OH_AFTER_ESC;
-            else sc->state = OH_NORMAL;
+            else {
+                if (b == 'c') deliver_ris_clear(s, bytes, i, &flushed);
+                sc->state = OH_NORMAL;
+            }
             break;
         case OH_STRING:
             /* DCS/SOS/PM/APC body: jump to its BEL/ESC terminator. */
@@ -650,6 +660,11 @@ void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t 
         case OH_STRING_AFTER_ESC:
             if (b == '\\') sc->state = OH_NORMAL;        /* ST */
             else if (b == 0x1B) { /* stay; another ESC */ }
+            else if (b == 'c') {
+                /* libghostty aborts the string and resets on ESC c here too. */
+                deliver_ris_clear(s, bytes, i, &flushed);
+                sc->state = OH_NORMAL;
+            }
             else sc->state = OH_STRING;
             break;
         }

@@ -221,8 +221,9 @@ typedef enum {
  * inline payload is sized to hold a realistic file:// URL. (Clipboard data is
  * far larger and uses the separate osc52_buf below, not this buffer.) */
 /* An OSC 7501 program-status report is capped by its spec at 4096 bytes for
- * the whole sequence, so the buffer holds exactly that; a longer payload sets
- * the overflow flag and is dropped, which is the spec's rule. */
+ * the whole sequence (4088 payload bytes). The buffer keeps one byte for a
+ * NUL, so it holds payloads up to 4094 bytes; a longer one sets the overflow
+ * flag and is dropped. The Swift parser enforces the spec's exact cap. */
 #define OSC_HOST_PAYLOAD_MAX 4096
 
 /* OSC 52 clipboard payloads can be large (Codex caps copies at 100 KB raw, so
