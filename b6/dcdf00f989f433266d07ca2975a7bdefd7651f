@@ -1,0 +1,19 @@
+Tests/LabanDebugTests/TabTitleEndToEndTests.swift
+  s_ce2b1682d8904a::t_87f9d7013f8a72 347,354-358
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b6dcdf00f989f433266d07ca2975a7bdefd7651f",
+  "prompts": {},
+  "sessions": {
+    "s_ce2b1682d8904a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "733f4d26-2f20-4a29-857c-8a54aa0c9abb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
