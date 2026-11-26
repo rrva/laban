@@ -212,6 +212,11 @@ final class AppSessionCoordinator {
   /// when daemon `childPid` becomes available.
   var onTabMetadataRefreshed: ((AppModel) -> Void)?
 
+  /// Receives OSC 7501 seeds and parsed offsets from labpty readers, so the
+  /// program status survives a restart without replayed history bringing
+  /// back results the user has seen. Only main-queue calls reach it.
+  weak var programStatusModel: AppModel?
+
   private static let labptyWakeFallbackPollMilliseconds = 1_000
   private static let labptyActivePollMilliseconds = 8
   // 500 ms, not 50 ms: parking and unparking costs a cross-process RPC to the
@@ -814,6 +819,14 @@ final class AppSessionCoordinator {
     let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
     let outputWakeAvailable = ensureLabptyOutputWake()
     let tabId = tab.focusedSessionId
+    let programStatusSeed: ProgramStatusSeed?
+    if isReattach {
+      programStatusSeed = programStatusModel?.takeProgramStatusSeed(forSession: tabId)
+    } else {
+      // A new process: the saved live records described a program that is gone.
+      programStatusModel?.discardProgramStatusSeed(forSession: tabId)
+      programStatusSeed = nil
+    }
     let feed = LabptyParserFeed(
       ptyHandle: descriptor.ptyHandle,
       reader: reader,
@@ -846,6 +859,19 @@ final class AppSessionCoordinator {
         } catch {
           // Backpressure: keep the chunk queued and retry on the next pump.
           return false
+        }
+      },
+      programStatusSeed: programStatusSeed,
+      // Both hop to main after the feed, behind the callbacks the fed bytes
+      // queued there, so the model sees them in stream order.
+      onProgramStatusSeed: { [weak self] records in
+        DispatchQueue.main.async {
+          self?.programStatusModel?.applyProgramStatusSeed(records, forSession: tabId)
+        }
+      },
+      onParsed: { [weak self] offset in
+        DispatchQueue.main.async {
+          self?.programStatusModel?.noteOutputParsed(throughOffset: offset, forSession: tabId)
         }
       })
     labptyFeedBySessionId[tab.focusedSessionId] = feed
@@ -1426,6 +1452,15 @@ private final class LabptyParserFeed {
   private let onOverflow: @Sendable () -> Void
   private let onResponse: @Sendable ([UInt8]) -> Void
   private let onQueuedOutput: @Sendable ([UInt8]) -> Bool
+  // OSC 7501 state for the catch-up read: the records as of a byte-ring
+  // offset (from the saved workspace or the previous reader). History before
+  // that offset is fed with reports suppressed, then the seed is installed,
+  // then the rest is fed live. Consumed by the first read; queue-confined.
+  private var programStatusSeed: ProgramStatusSeed?
+  private let onProgramStatusSeed: @Sendable (ProgramStatusRecords?) -> Void
+  // The parser has consumed the ring through this offset (see
+  // `AppModel.noteOutputParsed`).
+  private let onParsed: @Sendable (UInt64) -> Void
   private let queue: DispatchQueue
   private let timer: DispatchSourceTimer
   private let lock = NSLock()
@@ -1461,9 +1496,15 @@ private final class LabptyParserFeed {
     onDirty: @escaping @Sendable (Session.ID) -> Void,
     onOverflow: @escaping @Sendable () -> Void,
     onResponse: @escaping @Sendable ([UInt8]) -> Void,
-    onQueuedOutput: @escaping @Sendable ([UInt8]) -> Bool
+    onQueuedOutput: @escaping @Sendable ([UInt8]) -> Bool,
+    programStatusSeed: ProgramStatusSeed? = nil,
+    onProgramStatusSeed: @escaping @Sendable (ProgramStatusRecords?) -> Void = { _ in },
+    onParsed: @escaping @Sendable (UInt64) -> Void = { _ in }
   ) {
     self.ptyHandle = ptyHandle
+    self.programStatusSeed = catchUpGrid != nil ? programStatusSeed : nil
+    self.onProgramStatusSeed = onProgramStatusSeed
+    self.onParsed = onParsed
     self.reader = reader
     self.session = session
     self.catchUpResponseSuppressionPending = catchUpGrid != nil
@@ -1602,12 +1643,19 @@ private final class LabptyParserFeed {
         AppLog.app.info(
           "labpty byte ring join repaint from window tail for pty handle \(self.ptyHandle)")
       }
-      _ = session.feedOutput([0x1B, 0x63])
+      // A parser reset, not the program's: keep its OSC 7501 records.
+      session.withProgramStatusSuppressed { _ = session.feedOutput([0x1B, 0x63]) }
     }
+    // The seed belongs to the catch-up read only; take it now so an empty
+    // catch-up read still installs it.
+    let seed = catchUpRead ? programStatusSeed : nil
+    programStatusSeed = nil
     // Exhausted byte-ring confirmation retries deliberately return no bytes:
     // the uncertain range was dropped, but the RIS above still changed parser
     // and render state and must become visible immediately.
     guard !result.bytes.isEmpty else {
+      if let seed { onProgramStatusSeed(seed.records) }
+      onParsed(result.newOffset)
       onDirty(session.id)
       return
     }
@@ -1619,13 +1667,34 @@ private final class LabptyParserFeed {
     // drop them. An overflow read is NOT suppressed here: its window tail
     // starts past `lastOffset`, so every byte in it is new and a copy or
     // notification in it is live.
-    let feed: () -> Void = {
+    let feedBytes: (Data) -> Void = { bytes in
+      guard !bytes.isEmpty else { return }
       if catchUpRead, let catchUpGrid = self.catchUpGrid {
         self.session.feedOutput(
-          Array(result.bytes), writtenAtCols: catchUpGrid.cols, rows: catchUpGrid.rows)
+          Array(bytes), writtenAtCols: catchUpGrid.cols, rows: catchUpGrid.rows)
       } else {
-        _ = self.session.feedOutput(Array(result.bytes))
+        _ = self.session.feedOutput(Array(bytes))
       }
+    }
+    // OSC 7501: history the seed already covers must not re-apply its
+    // reports (that would bring back results the user has seen); the seed's
+    // records go in after it, then the newer bytes are fed live.
+    let feed: () -> Void = {
+      guard let seed else {
+        feedBytes(result.bytes)
+        return
+      }
+      let history = seed.historyByteCount(
+        readByteCount: result.bytes.count, endOffset: result.newOffset)
+      // One regrid for the whole read (a seed exists only for a catch-up read
+      // with its PTY grid), split at the seed's byte: the history is parsed
+      // with reports suppressed, the seed is queued to main at the split,
+      // ahead of the callbacks the newer bytes queue.
+      let grid = self.catchUpGrid ?? (cols: 0, rows: 0)
+      self.session.feedOutput(
+        Array(result.bytes), writtenAtCols: grid.cols, rows: grid.rows,
+        suppressingProgramStatusFor: history,
+        atSplit: { self.onProgramStatusSeed(seed.records) })
     }
     if catchUpRead {
       session.withHostEffectsSuppressed(feed)
@@ -1650,6 +1719,7 @@ private final class LabptyParserFeed {
     // read replayed historical bytes, whose queries were answered (or
     // abandoned) long ago; forwarding those replies is the post-restart
     // garbage-input bug.
+    onParsed(result.newOffset)
     let responses = session.drainResponse()
     if !responses.isEmpty && !replayRead {
       onResponse(responses)

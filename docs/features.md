@@ -54,6 +54,7 @@ To open the settings, select **Laban → Settings** or push ⌘,.
 - A program can report its status with OSC 7501 (Program Status Protocol).
   The sidebar shows what the program does and its message. A blocked program
   makes the tab pulse. A finished program marks the tab until you look at it.
+  The status stays when you restart Laban.
 
 ## Split panes
 

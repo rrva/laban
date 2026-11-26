@@ -488,6 +488,7 @@ final class MainWindowController: NSWindowController {
         return session
       }
     }
+    sessionCoordinator?.programStatusModel = model
     sessionCoordinator?.argvProvider = { [weak model] _, sessionId in
       model?.launchArgv(forSession: sessionId)
     }

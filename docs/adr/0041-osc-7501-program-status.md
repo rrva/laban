@@ -61,6 +61,16 @@ and its C API has no unknown-OSC callback.
    the root record and warns about the overwrite that causes. Laban keeps
    OSC 9;4 as `TabProgress`; when a pane has an OSC 7501 line, the sidebar
    shows that line instead of the OSC 9;4 line.
+7. **Records survive a restart; replayed history does not re-apply.** The
+   workspace state saves each pane's records with the labpty byte-ring
+   offset they are current to (`ProgramStatusSeed`). A reader that replays
+   the ring from its start feeds the bytes before that offset with reports
+   suppressed, installs the saved records, then feeds the rest live. So a
+   status set while Laban was closed still arrives, and a `done` or `error`
+   the user already looked at does not come back. A reader that replaces a
+   live one seeds from the model's current records the same way, and the
+   synthetic RIS a reader feeds after a ring overflow leaves records alone.
+   (Amended 2026-11-26.)
 
 ## Consequences
 

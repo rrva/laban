@@ -252,6 +252,15 @@ public final class AppModel {
   /// `publishProgramStatusChanges` can diff whatever path changed them.
   private var announcedProgramStatus: [Session.ID: ProgramStatusRecords] = [:]
 
+  /// Per pane, how many bytes of its labpty byte ring the parser has consumed
+  /// with every resulting callback already applied to the model (see
+  /// `noteOutputParsed`). The program-status records are current to it.
+  private var parsedOutputOffsetBySession: [Session.ID: UInt64] = [:]
+
+  /// Seeds from the restored workspace, waiting for each pane's first labpty
+  /// read (`takeProgramStatusSeed`).
+  private var restoredProgramStatusSeeds: [Session.ID: ProgramStatusSeed] = [:]
+
   /// Optional logger invoked for each tab that fails to spawn during
   /// `replaceTabs(from:)`. Production wires this to `AppLog` so
   /// restore failures don't disappear silently.
@@ -1392,6 +1401,7 @@ public final class AppModel {
         launchCommandBySession[session.id] = pane.launchCommand
         agentBySession[session.id] = pane.agent
         cwdFallbackAppliedBySession[session.id] = fallback
+        restoredProgramStatusSeeds[session.id] = pane.programStatusSeed
         var metadata = TabTitleMetadata.fallback(position: position, active: isActive)
         metadata.workspace = TabWorkspaceMetadata(cwd: cwd)
         paneMetadata[session.id] = metadata
@@ -1488,7 +1498,9 @@ public final class AppModel {
             repoFingerprint: RepoFingerprint.fingerprint(cwd: cwd),
             processStatus: processStatus, exitCode: exitCode,
             shellPid: session?.processMetadata()?.childPid,
-            agent: agentBySession[id])
+            agent: agentBySession[id],
+            programStatus: metadata?.programStatus,
+            programStatusOffset: parsedOutputOffsetBySession[id])
         }
         let flat =
           panes.first(where: { $0.sessionId == tab.id }) ?? panes.first(where: {
@@ -1589,6 +1601,72 @@ public final class AppModel {
       return changes
     }
     for (tabId, summary) in changes { onProgramStatusChange?(tabId, summary) }
+  }
+
+  /// The pane's reader has fed the parser through stream `offset`. Call on
+  /// the main queue, after the feed, so every main-queue callback those bytes
+  /// produced has been applied before the offset moves: the records are then
+  /// exactly current to it, which is what makes a saved seed sound.
+  public func noteOutputParsed(throughOffset offset: UInt64, forSession sessionId: Session.ID) {
+    withModelLock {
+      parsedOutputOffsetBySession[sessionId] = offset
+      // A reader has read: the live records and this offset supersede the
+      // restored seed.
+      restoredProgramStatusSeeds.removeValue(forKey: sessionId)
+    }
+  }
+
+  /// The seed for a reader about to replay the pane's byte ring from its
+  /// start: the restored workspace's until a reader has read (a reader that
+  /// stops before its first read leaves it for the next), or else the live
+  /// records at the offset the previous reader reached. Nil when neither is
+  /// known; the replay then rebuilds the records on its own.
+  public func takeProgramStatusSeed(forSession sessionId: Session.ID) -> ProgramStatusSeed? {
+    withModelLock {
+      if let restored = restoredProgramStatusSeeds[sessionId] {
+        return restored
+      }
+      guard let offset = parsedOutputOffsetBySession[sessionId] else { return nil }
+      let records =
+        _tabs.first(where: { $0.focusedSessionId == sessionId }).map {
+          $0.titleMetadata.programStatus
+        } ?? paneMetadata[sessionId]?.programStatus
+      return ProgramStatusSeed(records: records, offset: offset)
+    }
+  }
+
+  /// Drop a pending restored seed: the pane got a new process, so its saved
+  /// live records describe a program that is gone.
+  public func discardProgramStatusSeed(forSession sessionId: Session.ID) {
+    withModelLock {
+      restoredProgramStatusSeeds.removeValue(forKey: sessionId)
+      // Offsets in the new process's ring start again from zero.
+      parsedOutputOffsetBySession.removeValue(forKey: sessionId)
+    }
+  }
+
+  /// Install a seed's records once the replayed history before its offset
+  /// has been fed (with reports suppressed). Call on the main queue after
+  /// that feed, so the history's prompt and exit callbacks, already queued,
+  /// run first and cannot drop what the seed restores. Raises no
+  /// notification: these are not new reports.
+  public func applyProgramStatusSeed(
+    _ records: ProgramStatusRecords?, forSession sessionId: Session.ID
+  ) {
+    guard let tabId = withModelLock({ _tabs.first { $0.panes.contains(sessionId) }?.id }) else {
+      return
+    }
+    _ = withModelLock { restoredProgramStatusSeeds.removeValue(forKey: sessionId) }
+    var changed = false
+    withPaneMetadata(sessionId: sessionId, tabId: tabId) {
+      withModelLock {
+        guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        let seeded = records?.isEmpty == false ? records : nil
+        changed = _tabs[idx].titleMetadata.programStatus != seeded
+        _tabs[idx].titleMetadata.programStatus = seeded
+      }
+      if changed { notifySurfaceStateChanged() }
+    }
   }
 
   public func recordAttentionNotificationDecision(_ decision: AttentionNotificationDecision) {
@@ -1701,6 +1779,8 @@ public final class AppModel {
     launchEnvironmentBySession.removeValue(forKey: id)
     agentBySession.removeValue(forKey: id)
     cwdFallbackAppliedBySession.removeValue(forKey: id)
+    parsedOutputOffsetBySession.removeValue(forKey: id)
+    restoredProgramStatusSeeds.removeValue(forKey: id)
   }
 
   public func closeTab(_ tabId: Tab.ID) throws {

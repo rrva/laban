@@ -922,15 +922,27 @@ int laban_session_feed_output(LabanSession *s, const uint8_t *bytes, size_t len)
 
 int laban_session_feed_output_at_grid(LabanSession *s, const uint8_t *bytes, size_t len,
                                       uint16_t cols, uint16_t rows) {
+    return laban_session_feed_output_at_grid_split(s, bytes, len, cols, rows, len, NULL, NULL);
+}
+
+int laban_session_feed_output_at_grid_split(LabanSession *s, const uint8_t *bytes, size_t len,
+                                            uint16_t cols, uint16_t rows, size_t split,
+                                            void (*at_split)(void *), void *userdata) {
     if (!s) return -1;
-    if (len == 0) return 0;
+    if (len == 0) {
+        if (at_split) at_split(userdata);
+        return 0;
+    }
     if (!bytes) return -1;
     SESSION_LOCK(s);
     bool regrid = cols > 0 && rows > 0 && s->cols > 0 && s->rows > 0 &&
                   (cols != s->cols || rows != s->rows) &&
                   ghostty_terminal_resize(s->terminal, cols, rows,
                                           s->cell_width, s->cell_height) == GHOSTTY_SUCCESS;
-    laban_vt_write_capture(s, bytes, len);
+    if (split > len) split = len;
+    if (split > 0) laban_vt_write_capture(s, bytes, split);
+    if (at_split) at_split(userdata);
+    if (split < len) laban_vt_write_capture(s, bytes + split, len - split);
     if (regrid) {
         ghostty_terminal_resize(s->terminal, s->cols, s->rows,
                                 s->cell_width, s->cell_height);

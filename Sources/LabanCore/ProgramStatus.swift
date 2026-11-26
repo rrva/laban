@@ -314,3 +314,31 @@ public struct ProgramStatusRecords: Codable, Equatable, Sendable {
     return result
   }
 }
+
+/// A pane's OSC 7501 records as of one point in its output stream: what they
+/// were after the parser had consumed `offset` bytes of the pane's labpty
+/// byte ring. Saved with the workspace so a restart keeps the status, and
+/// used when a reader replays retained output from the start of the ring:
+/// the replayed history before `offset` is already folded into `records`,
+/// so its reports must not be applied again. Replaying them would bring back
+/// `done` and `error` results the user has since looked at.
+public struct ProgramStatusSeed: Equatable, Sendable {
+  public var records: ProgramStatusRecords?
+  public var offset: UInt64
+
+  public init(records: ProgramStatusRecords?, offset: UInt64) {
+    self.records = records
+    self.offset = offset
+  }
+
+  /// Where a replayed read splits: bytes before the returned index are
+  /// history covered by this seed, the rest are new. The read's bytes end at
+  /// stream offset `endOffset`. A seed older than the read's first byte (the
+  /// ring wrapped) covers none of it; one past its end covers all of it.
+  public func historyByteCount(readByteCount: Int, endOffset: UInt64) -> Int {
+    let count = UInt64(readByteCount)
+    let start = endOffset >= count ? endOffset - count : 0
+    guard offset > start else { return 0 }
+    return Int(min(offset - start, count))
+  }
+}

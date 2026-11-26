@@ -754,6 +754,99 @@ final class LabanAppTests: XCTestCase {
         """)
   }
 
+  /// OSC 7501 across a restart: a `done` the user saw before quitting sits in
+  /// the retained byte ring. The reattach replay must not bring it back (the
+  /// saved seed covers that history), while a report after the saved offset
+  /// still applies.
+  func testReattachedLabptySessionKeepsSeenProgramStatusResultsGone() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-7501")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let tabId = "replay-7501-tab"
+    // "HIST" and "LATER" in base64.
+    let command = [
+      "/bin/sh", "-c",
+      """
+      printf '\\033]7501;state=done:msg=SElTVA==\\007HIST\\r\\n'
+      sleep 2
+      printf '\\033]7501;state=working:id=later:msg=TEFURVI=\\007LIVE\\r\\n'
+      exec cat
+      """,
+    ]
+
+    let seedClient = try waitForLabptyClient(socketPath: socketPath)
+    let seedDescriptor = try seedClient.openSession(
+      LabptyOpenSessionRequest(
+        rows: UInt32(size.rows),
+        cols: UInt32(size.cols),
+        outputRingCapacity: UInt64(LabptyByteRingLayout.minimumOutputRingCapacity),
+        argv: command,
+        cwd: FileManager.default.currentDirectoryPath,
+        logicalSessionId: tabId))
+    let reader = try LabptyByteRingReader(path: seedDescriptor.byteRingShmPath)
+    try waitForByteRingOffset(reader, atLeast: 37)
+    // What a previous app life had parsed and saved: the done was seen, so no
+    // records, current to this offset.
+    let savedOffset = reader.outputWriteOffset()
+    seedClient.close()
+
+    let model = try AppModel(
+      initialSize: size,
+      sessionFactory: { size, context in
+        try Session.parserOnly(size: size, sessionID: context.sessionID)
+      })
+    let cwd = FileManager.default.currentDirectoryPath
+    model.replaceTabs(
+      from: WorkspaceState(
+        windows: [
+          WindowState(
+            id: "main-window",
+            selectedTabId: tabId,
+            tabs: [
+              TabState(
+                id: tabId, cwd: cwd, launchCommand: "/bin/sh", lastActiveAt: Date(),
+                paneStates: [
+                  PaneState(
+                    sessionId: tabId, cwd: cwd, launchCommand: "/bin/sh",
+                    programStatus: nil, programStatusOffset: savedOffset)
+                ])
+            ])
+        ]))
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdBySessionId: [tabId: cwd])
+    coordinator.programStatusModel = model
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+
+    _ = try coordinator.ensureSession(for: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "LIVE")
+    var records: [ProgramStatusRecord] = []
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+      records = model.activeTab?.titleMetadata.programStatus?.records ?? []
+      if !records.isEmpty { break }
+    }
+    XCTAssertEqual(records.map(\.id), ["later"], "the seen done stays gone; records=\(records)")
+    XCTAssertEqual(records.first?.message, "LATER")
+  }
+
   func testReattachedLabptySessionReplaysAtThePtyGridBeforeTheWindowResize() throws {
     let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-replay-grid")
     defer { try? FileManager.default.removeItem(at: root) }
