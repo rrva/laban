@@ -168,6 +168,9 @@ public enum ControlSpawnRouting {
 
     var label: String?
     if let raw = request.label {
+      guard placement == .tab else {
+        return .failure(Rejection(status: 400, reason: "label applies to new tabs only"))
+      }
       guard raw.utf8.count <= maxLabelBytes else {
         return .failure(Rejection(status: 413, reason: "label too large"))
       }
@@ -215,9 +218,21 @@ public enum ControlSpawnRouting {
       && isDirectory.boolValue
   }
 
-  /// The notice shown on the new tab so the user can tell a program opened it.
+  /// `laban run --wait` runs `/bin/sh -c <script> laban-run <status-dir> COMMAND...`
+  /// so it can record the exit status. `$0` is this marker.
+  public static let runWrapperName = "laban-run"
+
+  /// The command the user would recognize: past the `laban run --wait` wrapper.
+  public static func displayArgv(_ argv: [String]) -> [String] {
+    if argv.count >= 6, argv[0] == "/bin/sh", argv[1] == "-c", argv[3] == runWrapperName {
+      return Array(argv[5...])
+    }
+    return argv
+  }
+
+  /// The notice shown on the new terminal so the user can tell a program opened it.
   public static func noticeText(argv: [String]) -> String {
-    var what = argv.first.map { ($0 as NSString).lastPathComponent } ?? "shell"
+    var what = displayArgv(argv).first.map { ($0 as NSString).lastPathComponent } ?? "shell"
     if containsUnsafeScalar(what) || what.utf8.count > maxLabelBytes { what = "command" }
     return "Opened by a program: \(what)"
   }
@@ -229,12 +244,14 @@ public struct ControlSpawnRateLimiter: Sendable {
   public static let window: TimeInterval = 10
   public static let limit = 20
 
-  private var admitted: [Date] = []
+  /// Monotonic seconds (`ProcessInfo.systemUptime`), so a wall-clock jump
+  /// cannot block spawning or reset the window.
+  private var admitted: [TimeInterval] = []
 
   public init() {}
 
-  public mutating func admit(now: Date = Date()) -> Bool {
-    admitted.removeAll { now.timeIntervalSince($0) >= Self.window }
+  public mutating func admit(now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+    admitted.removeAll { now - $0 >= Self.window }
     guard admitted.count < Self.limit else { return false }
     admitted.append(now)
     return true

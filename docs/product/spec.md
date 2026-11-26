@@ -444,9 +444,10 @@ opens a new tab, `laban split [--right|--down] [-- COMMAND]` splits the
 caller's own pane, and `laban run [--wait] -- COMMAND` runs a command in a new
 tab and, with `--wait`, exits with its status. Each runs the login shell when no
 command is given, starts in the caller's working directory unless `--cwd`
-says otherwise, accepts `--label` and `--no-focus`, and prints the new session
-id (`--json` prints the whole response). Inside a Laban session no dialog
-appears; outside one the request is refused. The new terminal carries an
+says otherwise, accepts `--no-focus` (and `--label` for a new tab), and prints
+the new session id (`--json` prints the whole response). Inside a Laban session
+no dialog appears, unless the caller is sandboxed; outside one the request is
+refused. The new terminal carries an
 "Opened by a program" notice. Typing into an existing session (`send`,
 `send-key`) stays deferred to the leased mode above. See ADR 0024, Amendment
 (2026-11-26).

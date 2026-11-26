@@ -434,12 +434,19 @@ laban run --wait -- make check; echo "make exited $?"
 ```
 
 - No command after `--` means the login shell. The working directory defaults
-  to the caller's; `--cwd DIR` overrides it.
+  to the caller's; `--cwd DIR` overrides it. The CLI resolves the command the
+  way your shell would (a bare name on your `PATH`, `./x` against the
+  directory) and exits 127 when it is not found, because the terminal starts
+  it with `execve` and no PATH search.
+- `--label NAME` names a new tab; a split refuses it.
+- A sandboxed caller (Seatbelt, App Sandbox) gets the approval dialog instead:
+  the new terminal would run outside its sandbox.
 - `split` always divides the caller's own pane (`--right` by default, or
   `--down`), never the focused one. `--no-focus` leaves focus where it is.
 - `--json` prints `{"ok","tabID","sessionID","placement"}`; `run --wait --json`
-  adds `exitStatus`. `run --wait` exits with the command's status, or 1 when
-  the terminal closed before the command finished.
+  adds `exitStatus`. `run --wait` exits with the command's status (128+N when
+  a signal such as Ctrl-C killed it), or 1 when the terminal closed before the
+  command finished.
 - Wire shape: `POST /debug/actions` with `{"action":"spawnTab"|"spawnSplit",
   "argv":[...],"cwd":"/abs","label":"...","focus":true,"direction":"right"|"down"}`
   (intents `session.spawnTab` / `session.spawnSplit`, capability `spawn`).

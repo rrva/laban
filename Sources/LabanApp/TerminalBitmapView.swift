@@ -6032,7 +6032,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   @discardableResult
-  private func createTabPreservingSelection() throws -> Tab {
+  /// A non-empty `argv` or a `cwd` opens a command tab (`laban new`/`run`).
+  private func createTabPreservingSelection(
+    runningArgv argv: [String] = [], cwd: String? = nil
+  ) throws -> Tab {
     syncSelectionStateToActiveTab()
     persistSelectionStateForCurrentTab()
     // Invalidate the generation cache so a newly-created (or recycled)
@@ -6040,7 +6043,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // work to be incorrectly skipped on the first tick after creation.
     surfaceController.invalidateSessionSyncCache()
     let previousActiveTabId = model.activeTab?.id
-    let tab = try model.createTab()
+    let tab =
+      argv.isEmpty && cwd == nil
+      ? try model.createTab() : try model.createTab(runningArgv: argv, cwd: cwd)
+    if let cwd { sessionCoordinator?.setLaunchCwd(cwd, forSession: tab.focusedSessionId) }
     do {
       try sessionCoordinator?.ensureSession(
         for: tab,
@@ -10192,27 +10198,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   func openControlSpawn(_ plan: ControlSpawnPlan) throws -> ControlSpawnResponse {
     let notice = ControlSpawnRouting.noticeText(argv: plan.argv)
     guard let axis = plan.placement.paneAxis else {
-      persistSelectionStateForCurrentTab()
       let previous = model.activeTab?.id
-      let tab = try model.createTab(runningArgv: plan.argv, cwd: plan.cwd)
-      if let cwd = plan.cwd {
-        sessionCoordinator?.setLaunchCwd(cwd, forSession: tab.focusedSessionId)
-      }
-      do {
-        try sessionCoordinator?.ensureSession(
-          for: tab, session: model.session(forTab: tab.id), size: model.terminalAreaSize)
-      } catch {
-        sessionCoordinator?.terminate(tab: tab)
-        try? model.closeTab(tab.id)
-        throw error
-      }
+      let tab = try createTabPreservingSelection(runningArgv: plan.argv, cwd: plan.cwd)
       if let label = plan.label { try? model.renameTab(tab.id, title: label) }
       _ = model.postTabNotice(forTab: tab.id, note: "control.spawn", text: notice)
       if !plan.focus, let previous {
         model.selectTab(previous)
         restoreSelectionState(for: previous)
       }
-      ensureSidebarTabVisible(tab.id, animated: true)
       invalidateRenderAndWake()
       return ControlSpawnResponse(tabID: tab.id, sessionID: tab.focusedSessionId, placement: .tab)
     }
@@ -10246,7 +10239,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       }
       return session
     }
-    _ = model.postTabNotice(forTab: tab.id, note: "control.spawn", text: notice)
+    _ = model.postPaneNotice(forSession: id, note: "control.spawn", text: notice)
     if isActiveTab && plan.focus { paneFocusChanged() }
     invalidateRenderAndWake()
     return ControlSpawnResponse(tabID: tab.id, sessionID: id, placement: plan.placement)

@@ -80,6 +80,71 @@ final class SpawnCommandTests: XCTestCase {
     XCTAssertEqual(result.stdout, "S-NEW")
   }
 
+  func testBareCommandsResolveOnTheCallersPath() {
+    let executables: Set<String> = ["/opt/tools/bin/npm", "/work/repo/scripts/build.sh"]
+    let exists = { (path: String) in executables.contains(path) }
+    XCTAssertEqual(
+      SpawnCommand.resolveExecutable(
+        "npm", path: "/usr/bin:/opt/tools/bin", directory: "/work/repo", isExecutable: exists),
+      "/opt/tools/bin/npm")
+    XCTAssertEqual(
+      SpawnCommand.resolveExecutable(
+        "./scripts/build.sh", path: nil, directory: "/work/repo", isExecutable: exists),
+      "/work/repo/scripts/build.sh")
+    XCTAssertNil(
+      SpawnCommand.resolveExecutable(
+        "nope", path: "/usr/bin", directory: "/work/repo", isExecutable: exists))
+  }
+
+  func testUnknownCommandExits127WithoutAskingTheApp() throws {
+    var asked = false
+    let result = try SpawnCommand.perform(
+      options: SpawnOptions(placement: "right", argv: ["no-such-tool"]),
+      agentProxyRequest: { _, _ in
+        asked = true
+        return (200, "")
+      },
+      lazyAttachRequest: { _, _, _, _, _ in
+        asked = true
+        return (200, "")
+      },
+      agentProxyURL: nil,
+      currentDirectory: "/tmp",
+      environmentPath: "/usr/bin",
+      isExecutable: { _ in false })
+    XCTAssertEqual(result.exitCode, 127)
+    XCTAssertEqual(result.stderr, "laban: command not found: no-such-tool")
+    XCTAssertFalse(asked)
+  }
+
+  func testSendsTheResolvedPath() throws {
+    var sentBody: String?
+    _ = try SpawnCommand.perform(
+      options: SpawnOptions(placement: "tab", argv: ["npm", "test"]),
+      agentProxyRequest: { _, _ in (500, "") },
+      lazyAttachRequest: { _, _, _, _, body in
+        sentBody = body
+        return (200, #"{"ok":true,"placement":"tab","sessionID":"S","tabID":"T"}"#)
+      },
+      agentProxyURL: nil,
+      currentDirectory: "/work",
+      environmentPath: "/opt/bin",
+      isExecutable: { $0 == "/opt/bin/npm" })
+    let request = try JSONDecoder().decode(
+      ControlSpawnRequest.self, from: Data(try XCTUnwrap(sentBody).utf8))
+    XCTAssertEqual(request.argv, ["/opt/bin/npm", "test"])
+  }
+
+  func testLabelIsForTabsAndFlagValuesAreNotSwallowed() {
+    XCTAssertEqual(
+      parse("split", "--label", "x"),
+      .failure(.unknownOption("--label (applies to new tabs only)")))
+    XCTAssertEqual(
+      parse("run", "--down", "--label", "x", "--", "true"),
+      .failure(.unknownOption("--label (applies to new tabs only)")))
+    XCTAssertEqual(parse("new", "--cwd", "--json"), .failure(.missingArgument("--cwd")))
+  }
+
   func testRefusalNamesTheServerReason() {
     let result = SpawnCommand.result(
       status: 409, body: #"{"error":"not enough room to split this pane"}"#, json: false)
@@ -121,6 +186,22 @@ final class RunWaitTests: XCTestCase {
     XCTAssertEqual(mode as? Int, 0o700)
   }
 
+  /// Ctrl-C in the spawned terminal kills the command; the wrapper survives
+  /// and records 130 instead of dying with it.
+  func testCommandKilledBySignalIsRecordedAs128PlusSignal() throws {
+    let waiter = RunWaiter()
+    let directory = try waiter.makeStatusDirectory()
+    defer { waiter.removeStatusDirectory(directory) }
+    let process = Process()
+    let argv = RunWaiter.wrappedArgv(
+      ["/bin/sh", "-c", "kill -INT $$"], statusDirectory: directory)
+    process.executableURL = URL(fileURLWithPath: argv[0])
+    process.arguments = Array(argv.dropFirst())
+    try process.run()
+    process.waitUntilExit()
+    XCTAssertEqual(waiter.wait(statusDirectory: directory), .exited(130))
+  }
+
   func testClosedTerminalWithoutStatusIsReported() {
     var waiter = RunWaiter()
     waiter.readFile = { $0.hasSuffix("/pid") ? "4242" : nil }
@@ -159,7 +240,9 @@ final class RunWaitTests: XCTestCase {
       },
       agentProxyURL: nil,
       currentDirectory: "/tmp",
-      waiter: waiter)
+      waiter: waiter,
+      environmentPath: "/usr/bin",
+      isExecutable: { _ in true })
     XCTAssertEqual(result.exitCode, 7)
     let request = try JSONDecoder().decode(
       ControlSpawnRequest.self, from: Data(try XCTUnwrap(sentBody).utf8))

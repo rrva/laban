@@ -30,14 +30,51 @@ enum SpawnCommand {
       .standardizingPath
   }
 
+  /// The terminal starts the command with `execve`, which does no PATH search
+  /// and resolves a relative path against Laban's directory, not the caller's.
+  /// So resolve `argv[0]` here, the way the caller's shell would: a name with
+  /// a `/` against `directory`, a bare name on the caller's `PATH`.
+  static func resolveExecutable(
+    _ name: String, path: String?, directory: String,
+    isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+  ) -> String? {
+    if name.contains("/") {
+      let full = resolvedDirectory(name, currentDirectory: directory)
+      return isExecutable(full) ? full : nil
+    }
+    for entry in (path ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":") {
+      let dir =
+        entry.isEmpty
+        ? directory : resolvedDirectory(String(entry), currentDirectory: directory)
+      let candidate = (dir as NSString).appendingPathComponent(name)
+      if isExecutable(candidate) { return candidate }
+    }
+    return nil
+  }
+
   static func perform(
     options: SpawnOptions,
     agentProxyRequest: AgentProxyRequest,
     lazyAttachRequest: LazyAttachRequestHandler,
     agentProxyURL: String?,
     currentDirectory: String,
-    waiter: RunWaiter = RunWaiter()
+    waiter: RunWaiter = RunWaiter(),
+    environmentPath: String? = ProcessInfo.processInfo.environment["PATH"],
+    isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
   ) throws -> LabanCLIResult {
+    var options = options
+    if let name = options.argv.first {
+      guard
+        let resolved = resolveExecutable(
+          name, path: environmentPath,
+          directory: resolvedDirectory(options.cwd, currentDirectory: currentDirectory),
+          isExecutable: isExecutable)
+      else {
+        return LabanCLIResult(
+          exitCode: 127, stdout: "", stderr: "laban: command not found: \(name)")
+      }
+      options.argv[0] = resolved
+    }
     guard options.wait else {
       return try request(
         options: options, agentProxyRequest: agentProxyRequest,
@@ -49,7 +86,7 @@ enum SpawnCommand {
     var wrapped = options
     wrapped.argv = RunWaiter.wrappedArgv(options.argv, statusDirectory: statusDirectory)
     // The terminal runs the wrapper shell; name the tab after the real command.
-    if wrapped.label == nil, let first = options.argv.first {
+    if wrapped.label == nil, wrapped.placement == "tab", let first = options.argv.first {
       let name = String((first as NSString).lastPathComponent.prefix(64))
       if !ControlSpawnRouting.containsUnsafeScalar(name) { wrapped.label = name }
     }

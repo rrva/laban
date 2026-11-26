@@ -81,6 +81,8 @@ public final class LabanControlServer {
 
   var processTreeInspector: any ControlProcessTreeInspecting = ControlProcessTreeInspector()
   var codeSigningInspector: any ControlCodeSigningInspecting = ControlCodeSigningInspector()
+  /// Test seam for `ControlSandboxCheck.isSandboxed`.
+  public var isSandboxed: @Sendable (pid_t) -> Bool = ControlSandboxCheck.isSandboxed
   public var approvalStore: ControlAttachApprovalStore
   public weak var approvalDelegate: (any ControlAttachApprovalDelegate)?
   let lazyAttachApprovalTimeout: TimeInterval

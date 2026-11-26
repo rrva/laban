@@ -446,7 +446,7 @@ struct LabanArgumentParser {
 
     for name in ["--label", "--cwd"] {
       let (value, remaining) = extractStringOption(named: name, from: rest)
-      if remaining.count != rest.count && (value ?? "").isEmpty {
+      if remaining.count != rest.count && ((value ?? "").isEmpty || value!.hasPrefix("--")) {
         return .failure(.missingArgument(name))
       }
       rest = remaining
@@ -466,6 +466,10 @@ struct LabanArgumentParser {
       }
     }
     if let direction { options.placement = direction }
+    // A label names a new tab; a split pane has no title of its own.
+    if options.label != nil && options.placement != "tab" {
+      return .failure(.unknownOption("--label (applies to new tabs only)"))
+    }
     return .success(.spawn(options))
   }
 

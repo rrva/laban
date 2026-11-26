@@ -65,6 +65,43 @@ final class LazyAttachInSessionSpawnTests: XCTestCase {
     XCTAssertEqual(delegate.promptCount, 0)
   }
 
+  func testSandboxedCallerGetsTheDialogInstead() throws {
+    let router = SpawnSpyRouter()
+    let (server, socketPath, token) = try makeServer(router: router, registerShell: true)
+    defer { server.stop() }
+    server.isSandboxed = { _ in true }
+    let delegate = CountingApprovalDelegate()
+    server.setApprovalDelegate(delegate)
+
+    let (status, _) = try lazyAttach(
+      socketPath: socketPath, appObserveToken: token, cliCommand: "session.spawnTab",
+      body: #"{"action":"spawnTab","argv":["/bin/sh"]}"#)
+
+    XCTAssertEqual(delegate.promptCount, 1, "a sandboxed agent must not open a terminal silently")
+    XCTAssertEqual(status, 403, "the fake delegate denies")
+    XCTAssertNil(router.lastAction)
+  }
+
+  func testInSessionSpawnCannotNameAnotherSession() throws {
+    let router = SpawnSpyRouter()
+    let (server, socketPath, token) = try makeServer(router: router, registerShell: true)
+    defer { server.stop() }
+    server.setApprovalDelegate(CountingApprovalDelegate())
+
+    let (status, body) = try lazyAttach(
+      socketPath: socketPath, appObserveToken: token, cliCommand: "session.spawnSplit",
+      body: #"{"action":"spawnSplit","sessionID":"other","targetSessionID":"other"}"#)
+
+    let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+    let downstream = json?["downstreamStatus"] as? Int
+    XCTAssertTrue(
+      status == 403 || downstream == 403,
+      "naming another session is refused: \(status) \(String(decoding: body, as: UTF8.self))")
+    if router.lastAction != nil {
+      XCTAssertEqual(router.lastAction?.scopedSessionID, "s1")
+    }
+  }
+
   func testReadsStillAskForApproval() throws {
     let router = SpawnSpyRouter()
     let (server, socketPath, token) = try makeServer(router: router, registerShell: true)
@@ -109,6 +146,7 @@ final class LazyAttachInSessionSpawnTests: XCTestCase {
       ),
     ])
     let server = LabanControlServer(router: router, surface: .headless, processTreeInspector: tree)
+    server.isSandboxed = { _ in false }
     let start = try server.start()
     if registerShell { server.registerAttachShellPID(sessionID: "s1", shellPID: 50) }
     return (server, start.socketPath, start.appObserveToken)

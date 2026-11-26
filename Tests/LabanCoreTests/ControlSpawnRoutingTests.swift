@@ -61,6 +61,7 @@ final class ControlSpawnRoutingTests: XCTestCase {
       ("session.spawnTab", #"{"action":"spawnTab","label":"a‮b"}"#, 400),
       ("session.spawnTab", #"{"action":"spawnTab","argv":"make"}"#, 400),
       ("terminal.typeText", #"{"action":"typeText"}"#, 400),
+      ("session.spawnSplit", #"{"action":"spawnSplit","label":"x"}"#, 400),
     ]
     for (intent, body, status) in cases {
       guard case .failure(let rejection) = plan(intent, body) else {
@@ -88,16 +89,20 @@ final class ControlSpawnRoutingTests: XCTestCase {
       "Opened by a program: make")
     XCTAssertEqual(ControlSpawnRouting.noticeText(argv: []), "Opened by a program: shell")
     XCTAssertEqual(
+      ControlSpawnRouting.noticeText(
+        argv: ["/bin/sh", "-c", "script", "laban-run", "/tmp/d", "/usr/bin/make", "test"]),
+      "Opened by a program: make", "run --wait names the wrapped command, not sh")
+    XCTAssertEqual(
       ControlSpawnRouting.noticeText(argv: ["evil\u{1b}[2J"]), "Opened by a program: command")
   }
 
   func testRateLimiterCapsBurstsAndRecovers() {
     var limiter = ControlSpawnRateLimiter()
-    let start = Date(timeIntervalSince1970: 1000)
+    let start: TimeInterval = 1000
     for _ in 0..<ControlSpawnRateLimiter.limit {
       XCTAssertTrue(limiter.admit(now: start))
     }
-    XCTAssertFalse(limiter.admit(now: start.addingTimeInterval(1)))
-    XCTAssertTrue(limiter.admit(now: start.addingTimeInterval(ControlSpawnRateLimiter.window)))
+    XCTAssertFalse(limiter.admit(now: start + 1))
+    XCTAssertTrue(limiter.admit(now: start + ControlSpawnRateLimiter.window))
   }
 }

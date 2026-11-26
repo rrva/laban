@@ -186,11 +186,13 @@ server**.
 The observe-first amendment deferred "driving the terminal". That bundled two
 different powers. **Driving** means writing bytes into a session that already
 exists: typing, keys, paste, mouse. **Spawning** means opening a *new* tab, or a
-new pane next to the caller's own, that runs a command the caller chose. Only
-driving is a sandbox escape: it can type into the user's shell or press Enter
-on another agent's permission prompt. Spawning gives a process nothing it could
-not already do. It can run the same command itself, and a new terminal is more
-visible than a background child. Ragnar decided on 2026-11-26 to ship spawning
+new pane next to the caller's own, that runs a command the caller chose.
+Driving can type into the user's shell or press Enter on another agent's
+permission prompt. Spawning gives an *unsandboxed* process nothing it could not
+already do: it can run the same command itself, and a new terminal is more
+visible than a background child. A *sandboxed* process is different: the new
+terminal runs as Laban's child, outside the sandbox, so for it a spawn is an
+escape, and it keeps the dialog (below). Ragnar decided on 2026-11-26 to ship spawning
 (`laban new`, `laban split`, `laban run [--wait]`) and keep driving deferred.
 
 - **New capability `.spawn`** for two intents, `session.spawnTab` and
@@ -206,6 +208,10 @@ visible than a background child. Ragnar decided on 2026-11-26 to ship spawning
   `approvedSession` tier and routes. Nothing is persisted. A process outside
   every Laban session gets `403 notDescendantOfRegisteredSession`, as before.
   Every *read* keeps its dialog.
+- **Sandboxed callers get the dialog.** If the requester or any process between
+  it and the session shell is sandboxed (`sandbox_check(pid, NULL,
+  SANDBOX_FILTER_NONE)`; an error counts as sandboxed), the spawn takes the
+  ordinary one-time approval dialog instead, never remembered.
 - **Visible and audited.** The new terminal shows a tab notice, "Opened by a
   program: `<command>`", in the sidebar and the tab journal. The request arms
   the agent-attached indicator and is audited as an in-session auto-approval
@@ -213,8 +219,8 @@ visible than a background child. Ragnar decided on 2026-11-26 to ship spawning
   the command name.
 - **Bounded.** At most 20 spawns per 10 seconds app-wide (`429`). `argv` is at
   most 256 words / 64 KiB. `cwd` must be an existing absolute directory. A
-  label is at most 128 bytes and refuses control and invisible formatting
-  characters.
+  label names a new tab only, is at most 128 bytes, and refuses control and
+  invisible formatting characters.
 - **Still deferred:** `send`/`send-key`, any write into an existing session,
   reading the content of a spawned session (the caller can read only its own
   session, so a spawner cannot read the pane it opened), and cross-session

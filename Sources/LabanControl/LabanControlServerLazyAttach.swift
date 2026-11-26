@@ -198,8 +198,12 @@ extension LabanControlServer {
 
     // In-session spawn (ADR 0024, Amendment 2026-11-26): the ancestry proof
     // above is the credential. Open the tab or split without a dialog, scoped
-    // to this one request, and audit it like an auto-approved attach.
-    if allowlistMatch?.requiresApproval == false {
+    // to this one request, and audit it like an auto-approved attach. A
+    // sandboxed requester takes the dialog path below instead: the new
+    // terminal would run outside its sandbox.
+    if allowlistMatch?.requiresApproval == false,
+      !chainIsSandboxed(peerPID: peerPID, shellPID: shellIdentity.shellPID)
+    {
       guard revalidateLazyAttachContext(context, clientFD: clientFD, body: bodyData ?? Data())
       else {
         reportLazyAttachDeny(sessionID: sessionID, reason: "sessionChanged")
@@ -302,7 +306,8 @@ extension LabanControlServer {
     pendingLazyAttachRequests[pendingRequestID] = context
     lazyAttachLock.unlock()
 
-    reportLazyAttachRequest(sessionID: sessionID, intentID: resolvedIntentID)
+    reportLazyAttachRequest(
+      sessionID: sessionID, intentID: resolvedIntentID, capability: descriptor.requiredCapability)
 
     let delegate = approvalDelegate
     let verifiedDisplayName =
@@ -468,6 +473,21 @@ extension LabanControlServer {
       sessionID: sessionID,
       approval: effectiveDecision == .alwaysAllowSignedIdentity ? "always" : "once",
       downstream: downstream)
+  }
+
+  /// True when the requester or any process between it and its session shell
+  /// runs in a sandbox. The shell itself is Laban's child and is not checked.
+  func chainIsSandboxed(peerPID: pid_t, shellPID: pid_t) -> Bool {
+    var current: pid_t? = peerPID
+    var hops = 0
+    while let pid = current, pid > 1, pid != shellPID {
+      if isSandboxed(pid) { return true }
+      hops += 1
+      // The ancestry walk above already proved the chain; a runaway walk is a bug.
+      if hops > 64 { return true }
+      current = processTreeInspector.parentPID(of: pid)
+    }
+    return current != shellPID
   }
 
   func approvedLazyAttachTier(
@@ -757,11 +777,12 @@ extension LabanControlServer {
 
   func reportLazyAttachRequest(
     sessionID: String,
-    intentID: String
+    intentID: String,
+    capability: Capability = .observeSensitive
   ) {
     let context = ControlSecurityContext(
       intentID: intentID,
-      capability: .observeSensitive,
+      capability: capability,
       surface: surface,
       sessionID: sessionID)
     securityObserver?.didAttachRequest(context)

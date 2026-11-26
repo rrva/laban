@@ -36,6 +36,24 @@ final class AppModelSpawnSplitTests: XCTestCase {
       "the new pane sits under the caller's pane, not under the focused one")
   }
 
+  func testNoticeOnAnUnfocusedPaneBelongsToThatPane() throws {
+    let model = try AppModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    let caller = tab.focusedSessionId
+    let spawned = try model.splitPane(inTab: tab.id, anchor: caller, focusNewPane: false) {
+      id, size, _ in try fixture(id, size)
+    }
+    XCTAssertTrue(
+      model.postPaneNotice(
+        forSession: spawned, note: "control.spawn", text: "Opened by a program: x"))
+    XCTAssertEqual(
+      model.tabProjection(forSession: spawned)?.titleMetadata.notification?.text,
+      "Opened by a program: x", "the notice belongs to the new pane")
+    XCTAssertNil(
+      model.tabProjection(forSession: caller)?.titleMetadata.notification,
+      "the caller's pane is not marked")
+  }
+
   func testPaneSessionWithArgvUsesTheCommandFactory() throws {
     let model = try AppModel()
     var factoryArgv: [String]?

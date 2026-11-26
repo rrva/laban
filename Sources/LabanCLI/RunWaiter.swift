@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LabanCore
 
 /// `laban run --wait`: the command runs in a new terminal the app owns, so the
 /// CLI cannot `waitpid` it. Instead the command is wrapped in `/bin/sh`, which
@@ -15,13 +16,16 @@ struct RunWaiter {
 
   /// Arguments after the script: `$0` is a display name, `$1` the status
   /// directory, the rest the user's command, word for word.
+  /// `trap :` keeps the wrapper alive when Ctrl-C kills the command, so a
+  /// signal death is recorded as 128+N. A `:` handler (unlike `''`) resets on
+  /// exec, so the command itself still gets the signal.
   static let script = """
-    d=$1; shift; printf '%s' "$$" > "$d/pid"; "$@"; rc=$?; \
-    printf '%s' "$rc" > "$d/status.tmp" && mv "$d/status.tmp" "$d/status"; exit $rc
+    trap : INT QUIT; d=$1; shift; printf '%s' "$$" > "$d/pid.tmp" && mv "$d/pid.tmp" "$d/pid"; \
+    "$@"; rc=$?; printf '%s' "$rc" > "$d/status.tmp" && mv "$d/status.tmp" "$d/status"; exit $rc
     """
 
   static func wrappedArgv(_ argv: [String], statusDirectory: String) -> [String] {
-    ["/bin/sh", "-c", script, "laban-run", statusDirectory] + argv
+    ["/bin/sh", "-c", script, ControlSpawnRouting.runWrapperName, statusDirectory] + argv
   }
 
   var pollInterval: TimeInterval = 0.1

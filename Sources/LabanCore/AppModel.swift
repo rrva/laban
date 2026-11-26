@@ -745,9 +745,9 @@ public final class AppModel {
   public static let minimumPaneColumns = 10
   public static let minimumPaneRows = 3
 
-  @discardableResult
   /// Splits `anchor` (default: the tab's focused pane). A control-plane spawn
   /// passes the caller's own pane as the anchor and may keep focus where it is.
+  @discardableResult
   public func splitPane(
     inTab tabId: Tab.ID, axis: PaneAxis = .vertical,
     anchor: Session.ID? = nil,
@@ -1647,6 +1647,34 @@ public final class AppModel {
     guard changed else { return false }
     notifyWorkspaceMutation()
     _ = recordTabJournalNote(tabId: tabId, note: note, text: text)
+    return true
+  }
+
+  /// Like `postTabNotice`, but on one pane: an unfocused pane keeps the notice
+  /// in its own metadata, so it shows when the user focuses that pane.
+  @discardableResult
+  public func postPaneNotice(
+    forSession sessionId: Session.ID, note: String, text: String
+  ) -> Bool {
+    let target: (tabId: Tab.ID, focused: Bool)? = withModelLock {
+      guard let tab = _tabs.first(where: { $0.allSessionIds.contains(sessionId) }) else {
+        return nil
+      }
+      return (tab.id, tab.focusedSessionId == sessionId)
+    }
+    guard let target else { return false }
+    if target.focused { return postTabNotice(forTab: target.tabId, note: note, text: text) }
+    withModelLock {
+      guard let tab = _tabs.first(where: { $0.id == target.tabId }) else { return }
+      var metadata = paneMetadata[sessionId] ?? .fallback(position: tab.position, active: false)
+      let prior = metadata.notification
+      metadata.notification = TabNotification(
+        text: text, urgent: prior?.urgent ?? false, count: (prior?.count ?? 0) + 1,
+        isNotice: true)
+      paneMetadata[sessionId] = metadata
+    }
+    notifyWorkspaceMutation()
+    _ = recordTabJournalNote(tabId: target.tabId, note: note, text: text)
     return true
   }
 

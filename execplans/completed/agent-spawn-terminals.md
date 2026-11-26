@@ -40,6 +40,11 @@ No dialog appears. A process outside every Laban session is refused.
   so every `laban` session command from it was refused.
 - [x] ADR 0024 amendment, spec §24 amendment, agent control guide.
 - [x] End-to-end run in an isolated dev build (see Validation).
+- [x] Fresh-context review (FAIL) addressed: the CLI resolves argv[0] on the
+  caller's PATH; sandboxed callers get the dialog; `run --wait` records 128+N on
+  a signal; labels are refused for splits; the notice names the wrapped command
+  and sits on the new pane; the tab path reuses `createTabPreservingSelection`;
+  monotonic rate-limit clock.
 
 ## Surprises & Discoveries
 
@@ -53,6 +58,13 @@ No dialog appears. A process outside every Laban session is refused.
   session reports `exited(code: 0)`), so `run --wait` cannot ask the app for it.
 
 ## Decision Log
+
+- The terminal starts argv with `execve` (no PATH search, relative paths against
+  Laban's directory), so the CLI resolves `argv[0]` the way the caller's shell
+  would and exits 127 itself. The first end-to-end run missed this because every
+  command was either absent or wrapped in `/bin/sh`.
+- A sandboxed caller keeps the dialog: the new terminal runs outside its sandbox,
+  so for it a spawn is an escape (`ControlSandboxCheck`, fail closed).
 
 - Spawning is not driving. Opening a new terminal never writes bytes into an
   existing session, and the caller could run the same command itself, so it gets

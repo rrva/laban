@@ -48,7 +48,8 @@ struct DebugSpawnActions {
       } catch {
         return jsonError("could not open terminal: \(error)", status: 500)
       }
-      _ = runtime.model.postTabNotice(forTab: tab.id, note: "control.spawn", text: notice)
+      _ = runtime.model.postPaneNotice(
+        forSession: response.sessionID, note: "control.spawn", text: notice)
     } else {
       let previous = runtime.model.activeTab?.id
       do {
