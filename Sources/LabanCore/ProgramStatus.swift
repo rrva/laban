@@ -85,7 +85,12 @@ public struct ProgramStatusReport: Equatable, Sendable {
       let value = trim(pair[pair.index(after: eq)...])
       guard !key.isEmpty, key.allSatisfy({ $0 >= 0x61 && $0 <= 0x7A }) else { continue }
       guard key.count <= maxKeyBytes else { return nil }
-      guard value.allSatisfy(isValueByte) else { continue }
+      guard value.allSatisfy(isValueByte) else {
+        // A malformed `id` still names a record: treating it as absent would
+        // retarget the report at the root (and a clear at every record).
+        if key.elementsEqual("id".utf8) { return nil }
+        continue
+      }
       values[String(decoding: key, as: UTF8.self)] = Array(value)
     }
 

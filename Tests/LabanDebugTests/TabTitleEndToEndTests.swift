@@ -338,14 +338,24 @@ final class TabTitleEndToEndTests: XCTestCase {
     let harness = try TitleHarness(runId: "title-e2e-program-status")
     defer { harness.tearDown() }
 
-    // "Pushing image" in base64.
+    // "Pushing image" in base64. The command parks in `sleep` so the record
+    // is observable however the shell is integrated, then a new prompt
+    // (OSC 133 A, sent explicitly so the test does not depend on the
+    // harness shell's own integration) ends it.
     try harness.type(
-      "printf '\\033]7501;state=working:progress=40:msg=UHVzaGluZyBpbWFnZQ==\\033\\\\'\n")
+      "printf '\\033]7501;state=working:progress=40:msg=UHVzaGluZyBpbWFnZQ==\\033\\\\'; "
+        + "sleep 3; printf '\\033]133;A\\007'\n")
     var tab = try harness.waitForTabState { $0.programState == "working" }
     XCTAssertEqual(tab.programMessage, "Pushing image")
     XCTAssertEqual(tab.programProgress, 40)
+    tab = try harness.waitForTabState(timeout: 6.0) { $0.programState == nil }
+    XCTAssertNil(tab.programState, "a working record does not outlive the program")
 
-    try harness.type("printf '\\033]7501;state=blocked:kind=permission\\007'\n")
+    // A working record with a message, then `blocked` with none on the same
+    // (root) record: the second report must replace the first completely.
+    try harness.type(
+      "printf '\\033]7501;state=working:msg=UHVzaGluZyBpbWFnZQ==\\007'; "
+        + "printf '\\033]7501;state=blocked:kind=permission\\007'; sleep 30\n")
     try harness.newTab()
     tab = try harness.waitForTabState { $0.programState == "blocked" }
     XCTAssertEqual(tab.attention, "needsAction")

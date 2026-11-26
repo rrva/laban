@@ -242,9 +242,15 @@ public final class AppModel {
 
   /// Broadcast on the main queue whenever a pane's OSC 7501 program-status
   /// records change, with the pane's summary record (nil once it holds
-  /// none). The sidebar reads the records from tab metadata; this hook is for
-  /// observers that want the change itself — chiefly the debug event stream.
+  /// none). Every change counts: a report, and the records dropped at the next
+  /// prompt, at process exit, or once the user has seen a result. The sidebar
+  /// reads the records from tab metadata; this hook is for observers that
+  /// want the change itself — chiefly the debug event stream.
   public var onProgramStatusChange: ((Tab.ID, ProgramStatusRecord?) -> Void)?
+
+  /// Records last announced through `onProgramStatusChange`, per pane, so
+  /// `publishProgramStatusChanges` can diff whatever path changed them.
+  private var announcedProgramStatus: [Session.ID: ProgramStatusRecords] = [:]
 
   /// Optional logger invoked for each tab that fails to spawn during
   /// `replaceTabs(from:)`. Production wires this to `AppLog` so
@@ -1521,6 +1527,7 @@ public final class AppModel {
       return
     }
     recordTabJournal()
+    publishProgramStatusChanges()
     onWorkspaceMutation?()
     onSurfaceStateChanged?()
   }
@@ -1535,6 +1542,7 @@ public final class AppModel {
       return
     }
     recordTabJournal()
+    publishProgramStatusChanges()
     onSurfaceStateChanged?()
   }
 
@@ -1554,6 +1562,33 @@ public final class AppModel {
     for entry in entries {
       captureSink.record(entry.captureEvent(sessionId: sessionByTab[entry.tabId]))
     }
+  }
+
+  /// Announces every pane whose OSC 7501 records differ from what
+  /// `onProgramStatusChange` last saw. Hooked into the same notify funnels as
+  /// the tab journal, so a change made by any path (a report, a prompt, an
+  /// exit, a seen result) is announced once, without each path remembering
+  /// to. A pane that closed is forgotten silently.
+  private func publishProgramStatusChanges() {
+    guard paneProjectionDepth == 0, onProgramStatusChange != nil else { return }
+    let changes: [(Tab.ID, ProgramStatusRecord?)] = withModelLock {
+      var changes: [(Tab.ID, ProgramStatusRecord?)] = []
+      var live = Set<Session.ID>()
+      for tab in _tabs {
+        for id in tab.allSessionIds {
+          live.insert(id)
+          let records =
+            id == tab.focusedSessionId
+            ? tab.titleMetadata.programStatus : paneMetadata[id]?.programStatus
+          guard announcedProgramStatus[id] != records else { continue }
+          announcedProgramStatus[id] = records
+          changes.append((tab.id, records?.summary))
+        }
+      }
+      announcedProgramStatus = announcedProgramStatus.filter { live.contains($0.key) }
+      return changes
+    }
+    for (tabId, summary) in changes { onProgramStatusChange?(tabId, summary) }
   }
 
   public func recordAttentionNotificationDecision(_ decision: AttentionNotificationDecision) {
@@ -2077,6 +2112,7 @@ public final class AppModel {
       // local path syncs inside the frame loop), so journal them directly and
       // check for awaiting-input title transitions.
       recordTabJournal()
+      publishProgramStatusChanges()
       detectAwaitMarkerTransitions()
     }
     return result
@@ -2575,8 +2611,9 @@ public final class AppModel {
   /// Fold the latest OSC 133 phase + command exit code into the tab's
   /// metadata so the sidebar can render a status indicator.
   private func applyShellIntegration(_ state: ShellIntegrationState, forTab tabId: Tab.ID) {
-    withModelLock {
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return }
+    let programStatusChanged: Bool = withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      let programStatusBefore = _tabs[idx].titleMetadata.programStatus
       _tabs[idx].titleMetadata.shellPhase = state.phase
       // A new prompt (OSC 133 A) means the program that reported is gone:
       // its OSC 7501 working/blocked/idle records go with it.
@@ -2602,7 +2639,10 @@ public final class AppModel {
       _tabs[idx].titleMetadata.lastCommandExitCode =
         metadataSync.resolveFailedCommandDot(
           forTab: _tabs[idx].focusedSessionId, state: state, isActive: _tabs[idx].isActive)
+      return _tabs[idx].titleMetadata.programStatus != programStatusBefore
     }
+    // Dropped program-status records change the sidebar line and attention.
+    if programStatusChanged { notifySurfaceStateChanged() }
   }
 
   /// Subscribe to OSC 21337 tab-status pushes from the session and fold
@@ -2705,8 +2745,8 @@ public final class AppModel {
         return (true, after, event)
       }
     guard result.changed else { return }
+    // Also announces the change through `onProgramStatusChange`.
     notifySurfaceStateChanged()
-    onProgramStatusChange?(tabId, result.summary)
     if let event = result.event { broadcastAttentionNotification(event) }
   }
 

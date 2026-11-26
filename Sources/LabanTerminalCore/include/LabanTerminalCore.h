@@ -655,9 +655,11 @@ int laban_session_set_progress_callback(
  * (`ESC ] 7501 ; ?` with the query's own terminator), whether or not a
  * callback is registered. Every other OSC 7501 payload is a report and is
  * delivered here unparsed and unvalidated: `payload` is the bytes between
- * `7501;` and the terminator, at most 4095 of them (a longer report is
- * dropped). A full reset (RIS, `ESC c`) is delivered as the payload
- * `state=clear`, which removes every record. The pointer is valid only for
+ * `7501;` and the terminator, at most 4094 of them (a longer report is
+ * dropped). The spec's own cap is lower, 4088 payload bytes (4096 for the
+ * whole sequence), and is enforced by the Swift parser, not here. A full
+ * reset (RIS, `ESC c`, even inside an unfinished OSC or DCS body) is
+ * delivered as the payload `state=clear`, which removes every record. The pointer is valid only for
  * the duration of the call. Fires on whichever thread drove
  * `laban_session_poll` / `laban_session_feed_output`, with the session lock
  * held. Pass NULL for `callback` to disable.

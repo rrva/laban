@@ -295,4 +295,20 @@ final class CloseConfirmationTests: XCTestCase {
     }
     return nil
   }
+
+  /// OSC 7501: any `working` record counts as work in progress, including
+  /// one under a blocked root, which outranks it in the summary.
+  func testProgramStatusWorkingRecordCountsAsProgress() {
+    var metadata = TabTitleMetadata.fallback(position: 1, active: true)
+    XCTAssertFalse(CloseConfirmation.progressActive(metadata))
+    var records = ProgramStatusRecords()
+    records.apply(ProgramStatusReport(action: .set(.working), id: "build"))
+    records.apply(ProgramStatusReport(action: .set(.blocked)))
+    metadata.programStatus = records
+    XCTAssertEqual(records.summary?.state, .blocked)
+    XCTAssertTrue(CloseConfirmation.progressActive(metadata))
+    records.apply(ProgramStatusReport(action: .clear, id: "build"))
+    metadata.programStatus = records
+    XCTAssertFalse(CloseConfirmation.progressActive(metadata), "blocked alone is not working")
+  }
 }

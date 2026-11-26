@@ -242,6 +242,14 @@ public enum CloseConfirmation {
       busy: true, .foregroundProcess, program: name.isEmpty ? nil : name, agentState: agentState)
   }
 
+  /// Whether a pane reports work in progress: live OSC 9;4 progress, or any
+  /// OSC 7501 `working` record. Any record counts, not just the summary,
+  /// which ranks `blocked` above `working` and would hide a working subtask.
+  static func progressActive(_ metadata: TabTitleMetadata) -> Bool {
+    if let progress = metadata.progress, progress.state != .error { return true }
+    return metadata.programStatus?.records.contains { $0.state == .working } ?? false
+  }
+
   /// Shells: on the safe list they stand for "at the prompt", which holds only
   /// for the pane's own shell process.
   static let shellNames: Set<String> = [
@@ -353,8 +361,7 @@ public enum CloseConfirmation {
         exited: exited,
         shellPid: pid,
         foreground: pid.flatMap(probe),
-        progressActive: metadata.progress.map { $0.state != .error } ?? false
-          || metadata.programStatus?.summary?.state == .working,
+        progressActive: progressActive(metadata),
         agentNamed: metadata.agent.agentName != nil)
       return evaluate(input, safeList: safeList)
     }

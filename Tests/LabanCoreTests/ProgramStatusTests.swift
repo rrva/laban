@@ -54,6 +54,11 @@ final class ProgramStatusTests: XCTestCase {
     XCTAssertNil(parse("state=working:id=build//test"), "empty segment")
     XCTAssertNil(parse("state=working:id=/build"))
     XCTAssertNil(parse("state=working:id=a,b"), "an invalid id never falls back to the root")
+    // Bytes outside the value alphabet must not make `id` look absent either:
+    // that would retarget the report at the root, and a clear at everything.
+    XCTAssertNil(parse("state=done:id=build#1"))
+    XCTAssertNil(parse("state=clear:id=my task"))
+    XCTAssertNil(parse("state=clear:id=bygg\u{e5}"))
     XCTAssertNil(parse("state=working:id=" + String(repeating: "s", count: 33)))
     XCTAssertNotNil(parse("state=working:id=a/b/c/d/e/f/g/h"))
     XCTAssertNil(parse("state=working:id=a/b/c/d/e/f/g/h/i"), "nine levels deep")
