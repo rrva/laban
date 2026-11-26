@@ -196,6 +196,37 @@ extension LabanControlServer {
       maxDataSensitivity: resolvedSensitivity,
       allowedSideEffectClasses: [sideEffectClass])
 
+    // In-session spawn (ADR 0024, Amendment 2026-11-26): the ancestry proof
+    // above is the credential. Open the tab or split without a dialog, scoped
+    // to this one request, and audit it like an auto-approved attach.
+    if allowlistMatch?.requiresApproval == false {
+      guard revalidateLazyAttachContext(context, clientFD: clientFD, body: bodyData ?? Data())
+      else {
+        reportLazyAttachDeny(sessionID: sessionID, reason: "sessionChanged")
+        return .error(409, "sessionChanged")
+      }
+      let inSessionTier = approvedLazyAttachTier(
+        sessionID: sessionID,
+        approvalID: "in-session-\(approvalID)",
+        context: context,
+        grantsSessionReadFamily: false)
+      reportLazyAttachAutoApproved(
+        sessionID: sessionID,
+        approvalID: "in-session-\(approvalID)",
+        intentID: resolvedIntentID,
+        capability: descriptor.requiredCapability)
+      let downstream = route(
+        method: method,
+        path: path,
+        query: Self.parseQueryString(queryString),
+        body: bodyData ?? Data(),
+        tokenTier: inSessionTier)
+      return lazyAttachResponse(
+        sessionID: sessionID,
+        approval: "inSession",
+        downstream: downstream)
+    }
+
     let matchingRecord = approvalStore.findMatching(
       principal: principalWithSigning,
       sessionID: sessionID,
@@ -713,11 +744,12 @@ extension LabanControlServer {
   func reportLazyAttachAutoApproved(
     sessionID: String,
     approvalID: String,
-    intentID: String
+    intentID: String,
+    capability: Capability = .observeSensitive
   ) {
     let context = ControlSecurityContext(
       intentID: intentID,
-      capability: .observeSensitive,
+      capability: capability,
       surface: surface,
       sessionID: sessionID)
     securityObserver?.didAttachAutoApprove(context, approvalID: approvalID)

@@ -36,6 +36,7 @@ enum DebugAction: Decodable {
   case dropFiles(DropFilesActionRequest)
   case scrollViewport(ScrollViewportActionRequest)
   case propose(CommandProposeRequest)
+  case spawn(String, ControlSpawnRequest)
   case proposalList(CommandProposalRefRequest)
   case proposalGet(CommandProposalRefRequest)
   case proposalCancel(CommandProposalRefRequest)
@@ -128,6 +129,8 @@ enum DebugAction: Decodable {
       self = .scrollViewport(try ScrollViewportActionRequest(from: decoder))
     case "propose":
       self = .propose(try CommandProposeRequest(from: decoder))
+    case "spawnTab", "spawnSplit":
+      self = .spawn(action, try ControlSpawnRequest(from: decoder))
     case "proposalList":
       self = .proposalList(try CommandProposalRefRequest(from: decoder))
     case "proposalGet":
@@ -238,6 +241,8 @@ extension DebugAction {
       return legacyIntent(action: "scrollViewport")
     case .propose:
       return legacyIntent(action: "propose")
+    case .spawn(let action, _):
+      return legacyIntent(action: action)
     case .proposalList:
       return legacyIntent(action: "proposalList")
     case .proposalGet:

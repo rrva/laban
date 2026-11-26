@@ -5,6 +5,10 @@ public enum Capability: String, Codable, CaseIterable, Sendable {
   case observeSensitive
   case navigate
   case propose
+  /// Open a new tab, or split the caller's own pane, running a command the
+  /// caller chose. Never writes bytes into an existing session (ADR 0024,
+  /// Amendment 2026-11-26).
+  case spawn
   /// Whole-app mutation used only by explicitly environment-gated diagnostic
   /// fixtures. It is deliberately distinct from `.fixture` so GUI-safe
   /// diagnostic descriptors do not relax the catalog's ban on GUI fixture
@@ -719,6 +723,11 @@ public struct IntentCatalog: Sendable {
 
   private static let guiObserve = IntentDescriptor.Availability(gui: true, headless: true)
   private static let guiOnly = IntentDescriptor.Availability(gui: true, headless: false)
+  private static let spawnRisk = IntentDescriptor.Risk(
+    level: .medium,
+    reason:
+      "Starts a program the caller chose in a new, visible terminal; "
+      + "it cannot type into an existing session.")
   private static let headlessOnly = IntentDescriptor.Availability(gui: false, headless: true)
 
   private static let starterDescriptors: [IntentDescriptor] = [
@@ -1034,6 +1043,30 @@ public struct IntentCatalog: Sendable {
       availability: guiObserve,
       inputSchema: CommandProposeRequest.jsonSchema,
       outputSchema: CommandProposeResponse.jsonSchema),
+    descriptor(
+      id: "session.spawnTab",
+      category: "session",
+      summary:
+        "Open a new tab running a command (or the login shell); never writes into an existing session.",
+      requiredCapability: .spawn,
+      dataSensitivity: .nonSensitiveState,
+      sideEffects: .init(lifecycle: true),
+      risk: spawnRisk,
+      availability: guiObserve,
+      inputSchema: ControlSpawnRequest.jsonSchema,
+      outputSchema: ControlSpawnResponse.jsonSchema),
+    descriptor(
+      id: "session.spawnSplit",
+      category: "session",
+      summary:
+        "Split the caller's own pane right or down, running a command (or the login shell) in it.",
+      requiredCapability: .spawn,
+      dataSensitivity: .nonSensitiveState,
+      sideEffects: .init(lifecycle: true),
+      risk: spawnRisk,
+      availability: guiObserve,
+      inputSchema: ControlSpawnRequest.jsonSchema,
+      outputSchema: ControlSpawnResponse.jsonSchema),
     descriptor(
       id: "commandProposal.list",
       category: "command",

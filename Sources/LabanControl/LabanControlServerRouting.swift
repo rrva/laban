@@ -207,7 +207,7 @@ extension LabanControlServer {
   ) -> ControlResponse {
     switch intentID {
     case "fixture.windowFocus", "terminal.scrollViewport", "command.propose",
-      "commandProposal.list",
+      "session.spawnTab", "session.spawnSplit", "commandProposal.list",
       "commandProposal.get", "commandProposal.cancel", "transparency.setBackground",
       "transparency.diagnostics.reset", "transparency.reduceTransparencyOverride.set",
       "transparency.nativeFullScreen.set", "transparency.backgroundSource.set",

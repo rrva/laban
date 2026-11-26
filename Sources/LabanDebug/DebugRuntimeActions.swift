@@ -105,6 +105,9 @@ extension HeadlessDebugRuntime {
       return DebugFindActions(runtime: self).stop(request)
     case .scrollViewport(let request):
       return DebugViewportActions(runtime: self).scrollViewport(request)
+    case .spawn(let action, let request):
+      return DebugSpawnActions(runtime: self).spawn(
+        action: action, request: request, scopedSessionID: scopedSessionID)
     case .propose(let request):
       return DebugCommandProposalActions(runtime: self).propose(
         request, scopedSessionID: scopedSessionID)

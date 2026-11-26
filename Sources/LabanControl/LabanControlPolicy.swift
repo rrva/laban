@@ -52,7 +52,7 @@ public struct LabanControlPolicy: Sendable {
     case .appObserve:
       return [.observe]
     case .sessionObserve:
-      return [.observe, .observeSensitive, .navigate, .propose]
+      return [.observe, .observeSensitive, .navigate, .propose, .spawn]
     case .approvedSession(_, _, let capabilities, _):
       // Approval records and lazy-attach requests can never mint diagnostic
       // whole-app authority, even if a forged/stale serialized capability
@@ -62,7 +62,8 @@ public struct LabanControlPolicy: Sendable {
       return Set(capabilities).subtracting([.diagnosticControl])
     case .fixture:
       return [
-        .fixture, .observe, .observeSensitive, .navigate, .propose, .diagnosticControl, .input,
+        .fixture, .observe, .observeSensitive, .navigate, .propose, .spawn, .diagnosticControl,
+        .input,
       ]
     }
   }

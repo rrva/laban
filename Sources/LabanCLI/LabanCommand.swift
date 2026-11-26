@@ -20,12 +20,28 @@ enum LabanCommand: Equatable {
   case waitPrompt(timeoutSeconds: Double, json: Bool)
   case waitCommandFinished(timeoutSeconds: Double, json: Bool)
   case propose(purpose: String, command: [String])
+  case spawn(SpawnOptions)
   case proposalList(json: Bool)
   case proposalStatus(id: String, json: Bool)
   case proposalCancel(id: String, json: Bool)
   case waitProposal(id: String, state: String, timeoutSeconds: Double, json: Bool)
   case version(verbose: Bool, json: Bool, selfTest: Bool)
   case help
+}
+
+/// `laban new` / `laban split` / `laban run`: open a terminal running
+/// `argv` (empty means the login shell) through `session.spawnTab` or
+/// `session.spawnSplit`.
+struct SpawnOptions: Equatable {
+  /// `tab`, `right`, or `down` (`ControlSpawnPlacement` raw values).
+  var placement: String
+  var argv: [String] = []
+  var cwd: String?
+  var label: String?
+  var focus = true
+  var json = false
+  /// `laban run --wait`: block until the command exits and exit with its status.
+  var wait = false
 }
 
 enum LabanArgumentError: Error, Equatable {
@@ -62,6 +78,12 @@ struct LabanArgumentParser {
       return parseAgent(args: args)
     case "propose":
       return parsePropose(args: args)
+    case "new":
+      return parseSpawn(args: args, placement: "tab")
+    case "split":
+      return parseSpawn(args: args, placement: "right")
+    case "run":
+      return parseSpawn(args: args, placement: "tab", isRun: true)
     default:
       break
     }
@@ -399,6 +421,52 @@ struct LabanArgumentParser {
     }
 
     return .success(.propose(purpose: purpose, command: commandPart))
+  }
+
+  /// `new|split [--right|--down] [--label NAME] [--cwd DIR] [--no-focus]
+  /// [--json] [-- COMMAND [ARG ...]]`, and `run [--wait] [--right|--down] ...
+  /// -- COMMAND [ARG ...]` (a new tab unless a direction is given; COMMAND is
+  /// required). Everything after `--` is the command, word for word.
+  static func parseSpawn(
+    args: [String],
+    placement: String,
+    isRun: Bool = false
+  ) -> Result<LabanCommand, LabanArgumentError> {
+    let separator = args.firstIndex(of: "--")
+    var options = SpawnOptions(placement: placement)
+    if let separator {
+      options.argv = Array(args[(args.index(after: separator))...])
+    }
+    if (separator != nil || isRun) && options.argv.isEmpty {
+      return .failure(.missingArgument(separator == nil ? "-- COMMAND" : "COMMAND"))
+    }
+    var rest = Array(args[..<(separator ?? args.endIndex)])
+    let allowsDirection = placement != "tab" || isRun
+    var direction: String?
+
+    for name in ["--label", "--cwd"] {
+      let (value, remaining) = extractStringOption(named: name, from: rest)
+      if remaining.count != rest.count && (value ?? "").isEmpty {
+        return .failure(.missingArgument(name))
+      }
+      rest = remaining
+      if name == "--label" { options.label = value } else { options.cwd = value }
+    }
+
+    for arg in rest {
+      switch arg {
+      case "--json": options.json = true
+      case "--wait" where isRun: options.wait = true
+      case "--no-focus": options.focus = false
+      case "--right" where allowsDirection && direction == nil,
+        "--down" where allowsDirection && direction == nil:
+        direction = String(arg.dropFirst(2))
+      case "--help", "-h": return .success(.help)
+      default: return .failure(.unknownOption(arg))
+      }
+    }
+    if let direction { options.placement = direction }
+    return .success(.spawn(options))
   }
 
   // MARK: - Helpers

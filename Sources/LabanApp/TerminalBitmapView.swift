@@ -10185,6 +10185,73 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     invalidateRenderAndWake()
   }
 
+  /// Opens the tab or split a control-plane caller asked for (`laban new`,
+  /// `laban split`, `laban run`). A split divides the caller's own pane. The
+  /// new terminal carries an "Opened by a program" notice so the user can tell
+  /// it apart from one they opened (ADR 0024, Amendment 2026-11-26).
+  func openControlSpawn(_ plan: ControlSpawnPlan) throws -> ControlSpawnResponse {
+    let notice = ControlSpawnRouting.noticeText(argv: plan.argv)
+    guard let axis = plan.placement.paneAxis else {
+      persistSelectionStateForCurrentTab()
+      let previous = model.activeTab?.id
+      let tab = try model.createTab(runningArgv: plan.argv, cwd: plan.cwd)
+      if let cwd = plan.cwd {
+        sessionCoordinator?.setLaunchCwd(cwd, forSession: tab.focusedSessionId)
+      }
+      do {
+        try sessionCoordinator?.ensureSession(
+          for: tab, session: model.session(forTab: tab.id), size: model.terminalAreaSize)
+      } catch {
+        sessionCoordinator?.terminate(tab: tab)
+        try? model.closeTab(tab.id)
+        throw error
+      }
+      if let label = plan.label { try? model.renameTab(tab.id, title: label) }
+      _ = model.postTabNotice(forTab: tab.id, note: "control.spawn", text: notice)
+      if !plan.focus, let previous {
+        model.selectTab(previous)
+        restoreSelectionState(for: previous)
+      }
+      ensureSidebarTabVisible(tab.id, animated: true)
+      invalidateRenderAndWake()
+      return ControlSpawnResponse(tabID: tab.id, sessionID: tab.focusedSessionId, placement: .tab)
+    }
+    guard let anchor = plan.anchorSessionID,
+      let tab = model.tabs.first(where: { $0.allSessionIds.contains(anchor) })
+    else { throw AppModel.PaneError.unknownSession }
+    if sessionCoordinator?.usesRemoteSnapshots == true {
+      throw AppModel.PaneError.unsupportedBackend
+    }
+    let isActiveTab = model.activeTab?.id == tab.id
+    if isActiveTab && plan.focus {
+      persistSelectionStateForCurrentTab()
+      discardMarkedComposition()
+    }
+    let id = try model.splitPane(
+      inTab: tab.id, axis: axis, anchor: anchor, focusNewPane: plan.focus
+    ) { id, size, cwd in
+      let launchCwd = plan.cwd ?? cwd
+      let session = try model.makePaneSession(
+        id: id, inTab: tab.id, size: size, cwd: launchCwd, argv: plan.argv)
+      let target = Tab(
+        id: tab.id, position: tab.position, title: tab.title, isActive: isActiveTab,
+        sessionId: id)
+      do {
+        if let launchCwd { sessionCoordinator?.setLaunchCwd(launchCwd, forSession: id) }
+        try sessionCoordinator?.ensureSession(for: target, session: session, size: size)
+      } catch {
+        sessionCoordinator?.terminate(tab: target)
+        session.close()
+        throw error
+      }
+      return session
+    }
+    _ = model.postTabNotice(forTab: tab.id, note: "control.spawn", text: notice)
+    if isActiveTab && plan.focus { paneFocusChanged() }
+    invalidateRenderAndWake()
+    return ControlSpawnResponse(tabID: tab.id, sessionID: id, placement: plan.placement)
+  }
+
   @objc func closePane(_ sender: Any?) {
     guard let tab = model.activeTab, tab.allSessionIds.count > 1 else { return }
     let sessionId = tab.focusedSessionId

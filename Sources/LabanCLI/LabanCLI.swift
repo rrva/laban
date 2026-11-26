@@ -377,6 +377,14 @@ enum LabanCLI {
         ])
       }
 
+    case .spawn(let options):
+      return try SpawnCommand.perform(
+        options: options,
+        agentProxyRequest: agentProxyRequest,
+        lazyAttachRequest: lazyAttachRequest,
+        agentProxyURL: agentProxyURL,
+        currentDirectory: FileManager.default.currentDirectoryPath)
+
     case .propose(let purpose, let command):
       return try performSessionRequest(
         agentProxyRequest: agentProxyRequest,
@@ -543,7 +551,7 @@ enum LabanCLI {
     return formatResponse(status: status, body: Data(responseBody.utf8), json: json)
   }
 
-  private static func agentProxyURLFromEnvironment(override: String?) -> String? {
+  static func agentProxyURLFromEnvironment(override: String?) -> String? {
     if let override, !override.isEmpty { return override }
     guard let url = ProcessInfo.processInfo.environment[ControlEnvironmentKeys.agentControlURL],
       !url.isEmpty
@@ -985,6 +993,19 @@ let usageText = """
                                      Show one proposal's state (requires LABAN_AGENT_CONTROL_URL).
       proposal cancel PROPOSAL_ID --json
                                      Cancel a pending proposal (requires LABAN_AGENT_CONTROL_URL).
+
+    Open terminals (no dialog when run inside a Laban session):
+      new [--label NAME] [--cwd DIR] [--no-focus] [--json] [-- COMMAND [ARG ...]]
+                                     Open a new tab running COMMAND (default: your login
+                                     shell) in DIR (default: the current directory).
+                                     Prints the new session id.
+      split [--right|--down] [--label NAME] [--cwd DIR] [--no-focus] [--json]
+            [-- COMMAND [ARG ...]]   Split your own pane (default --right) and run COMMAND
+                                     in the new pane. Prints the new session id.
+      run [--wait] [--right|--down] [--label NAME] [--cwd DIR] [--no-focus] [--json]
+          -- COMMAND [ARG ...]       Run COMMAND in a new tab (or a split with --right or
+                                     --down). With --wait, block until it exits and exit
+                                     with its status.
 
     Agent context:
       context --json [--max-lines N] Print bound session identity, shell phase, and a

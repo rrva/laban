@@ -73,6 +73,12 @@ public enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(
       name: "propose",
       summary: "Propose a command for user review; never writes PTY bytes."),
+    DebugDiscoveryControl(
+      name: "spawnTab",
+      summary: "Open a new tab running a command (or the login shell)."),
+    DebugDiscoveryControl(
+      name: "spawnSplit",
+      summary: "Split the caller's own pane right or down, running a command."),
     DebugDiscoveryControl(name: "setTabTitle", summary: "Set a manual tab title."),
     DebugDiscoveryControl(name: "freezeTabTitle", summary: "Freeze or unfreeze title updates."),
     DebugDiscoveryControl(name: "clearTabTitle", summary: "Clear the manual tab title."),

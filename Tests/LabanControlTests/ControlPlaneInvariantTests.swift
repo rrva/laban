@@ -53,8 +53,11 @@ final class ControlPlaneInvariantTests: XCTestCase {
     // "asserted at the minting path" half of I1: the allowlist itself can
     // never point at an actuation capability, regardless of what the
     // `ControlTokenTier.approvedSession` enum case could structurally hold.
+    // `.spawn` opens a new tab or pane running a command the caller chose; it
+    // never writes bytes into an existing session (ADR 0024, Amendment
+    // 2026-11-26), so it is not actuation in the I1 sense.
     let nonActuatingCapabilities: Set<Capability> = [
-      .observe, .observeSensitive, .navigate, .propose,
+      .observe, .observeSensitive, .navigate, .propose, .spawn,
     ]
     for entry in ControlLazyAttachAllowlist.entries {
       guard let descriptor = IntentCatalog.all.descriptor(id: entry.intentID) else {

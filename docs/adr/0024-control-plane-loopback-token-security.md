@@ -4,8 +4,9 @@ Date: 2026-06-20
 
 ## Status
 
-Accepted; **amended 2026-06-20** (observe-first for Phase 2) **and 2026-06-21**
-(transport → Unix domain socket) — see "Amendment" below. The original two-tier
+Accepted; **amended 2026-06-20** (observe-first for Phase 2), **2026-06-21**
+(transport → Unix domain socket) **and 2026-11-26** (in-session spawn) — see
+"Amendment" below. The original two-tier
 *control* token model is superseded by two *observe* tiers plus a deferred lease; all
 input/clipboard actuation and cross-tab authority move to a future Terminal-Lease /
 Computer-Use ADR. **The loopback-TCP transport + `Host`/`Origin` validation in
@@ -179,6 +180,47 @@ harden the agent-attach handshake (the redeemer's pid/uid can be checked). A nam
 was rejected (FIFOs aren't connection-oriented on macOS); a custom protocol was rejected
 (no security gain over HTTP-over-UDS). This **migrates the shipped Phase-0/1 loopback-TCP
 server**.
+
+### Amendment (2026-11-26): Agents may open terminals; they still may not drive them
+
+The observe-first amendment deferred "driving the terminal". That bundled two
+different powers. **Driving** means writing bytes into a session that already
+exists: typing, keys, paste, mouse. **Spawning** means opening a *new* tab, or a
+new pane next to the caller's own, that runs a command the caller chose. Only
+driving is a sandbox escape: it can type into the user's shell or press Enter
+on another agent's permission prompt. Spawning gives a process nothing it could
+not already do. It can run the same command itself, and a new terminal is more
+visible than a background child. Ragnar decided on 2026-11-26 to ship spawning
+(`laban new`, `laban split`, `laban run [--wait]`) and keep driving deferred.
+
+- **New capability `.spawn`** for two intents, `session.spawnTab` and
+  `session.spawnSplit` (`POST /debug/actions`, actions `spawnTab` /
+  `spawnSplit`). Neither writes PTY input (`sideEffects.ptyInput == false`). A
+  split always divides the **caller's own pane**. A scoped caller can never name
+  another session. Granted to the session-observe tier (agents under `laban
+  agent run`) and to `.fixture`, never to app-observe.
+- **No dialog inside a session.** Lazy attach already proves, before any dialog,
+  that the requester is a same-uid descendant of a registered session's shell
+  (process ancestry + start time + audit token). That proof is the credential
+  for the two spawn intents. The server mints a one-request, request-exact
+  `approvedSession` tier and routes. Nothing is persisted. A process outside
+  every Laban session gets `403 notDescendantOfRegisteredSession`, as before.
+  Every *read* keeps its dialog.
+- **Visible and audited.** The new terminal shows a tab notice, "Opened by a
+  program: `<command>`", in the sidebar and the tab journal. The request arms
+  the agent-attached indicator and is audited as an in-session auto-approval
+  (`approval: inSession`). The app logs `control.spawn` with the placement and
+  the command name.
+- **Bounded.** At most 20 spawns per 10 seconds app-wide (`429`). `argv` is at
+  most 256 words / 64 KiB. `cwd` must be an existing absolute directory. A
+  label is at most 128 bytes and refuses control and invisible formatting
+  characters.
+- **Still deferred:** `send`/`send-key`, any write into an existing session,
+  reading the content of a spawned session (the caller can read only its own
+  session, so a spawner cannot read the pane it opened), and cross-session
+  targeting.
+- The master toggle still governs everything: control server off means no
+  spawning.
 
 ## Consequences
 
