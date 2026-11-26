@@ -1,0 +1,20 @@
+docs/features.md
+  s_d7d4de75c25b12::t_85a5be3c54608a 131-132,136-150,153-155,157-158
+  s_d7d4de75c25b12::t_a5e7af8ed35948 133-135,151-152,156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "abda114289cb6aa6a95d5890362e6d172d98d865",
+  "prompts": {},
+  "sessions": {
+    "s_d7d4de75c25b12": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae3ec7e7-eeed-43c5-83b4-5657b5062713",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
