@@ -16,10 +16,10 @@ final class ControlSpawnRoutingTests: XCTestCase {
   func testTabRunsArgvInTheGivenDirectory() throws {
     let result = try plan(
       "session.spawnTab",
-      #"{"action":"spawnTab","argv":["make","test"],"cwd":"/tmp","label":" build ","focus":false}"#
+      #"{"action":"spawnTab","argv":["/usr/bin/make","test"],"cwd":"/tmp","label":" build ","focus":false}"#
     ).get()
     XCTAssertEqual(result.placement, .tab)
-    XCTAssertEqual(result.argv, ["make", "test"])
+    XCTAssertEqual(result.argv, ["/usr/bin/make", "test"])
     XCTAssertEqual(result.cwd, "/tmp")
     XCTAssertEqual(result.label, "build")
     XCTAssertFalse(result.focus)
@@ -57,6 +57,8 @@ final class ControlSpawnRoutingTests: XCTestCase {
       ("session.spawnTab", #"{"action":"spawnTab","cwd":"relative/dir"}"#, 400),
       ("session.spawnTab", #"{"action":"spawnTab","cwd":"/missing"}"#, 400),
       ("session.spawnTab", #"{"action":"spawnTab","argv":[""]}"#, 400),
+      ("session.spawnTab", #"{"action":"spawnTab","argv":["make"]}"#, 400),
+      ("session.spawnTab", #"{"action":"spawnTab","argv":["./build.sh"]}"#, 400),
       ("session.spawnTab", #"{"action":"spawnTab","label":"a\u001b[31mb"}"#, 400),
       ("session.spawnTab", #"{"action":"spawnTab","label":"a‮b"}"#, 400),
       ("session.spawnTab", #"{"action":"spawnTab","argv":"make"}"#, 400),
@@ -73,7 +75,7 @@ final class ControlSpawnRoutingTests: XCTestCase {
   }
 
   func testOversizedArgvIsRefused() {
-    let argv = Array(repeating: "x", count: ControlSpawnRouting.maxArgvCount + 1)
+    let argv = Array(repeating: "/x", count: ControlSpawnRouting.maxArgvCount + 1)
     let body = String(
       data: try! JSONEncoder().encode(ControlSpawnRequest(action: "spawnTab", argv: argv)),
       encoding: .utf8)!
@@ -94,6 +96,20 @@ final class ControlSpawnRoutingTests: XCTestCase {
       "Opened by a program: make", "run --wait names the wrapped command, not sh")
     XCTAssertEqual(
       ControlSpawnRouting.noticeText(argv: ["evil\u{1b}[2J"]), "Opened by a program: command")
+  }
+
+  func testCommandLineShowsWhatWillRunSafely() {
+    XCTAssertEqual(
+      ControlSpawnRouting.commandLine(["/bin/sh", "-c", "curl x | sh"]),
+      "/bin/sh -c 'curl x | sh'")
+    XCTAssertEqual(
+      ControlSpawnRouting.commandLine(
+        ["/bin/sh", "-c", "s", "laban-run", "/tmp/d", "/usr/bin/make", "it's"]),
+      #"/usr/bin/make 'it'\''s'"#)
+    XCTAssertEqual(ControlSpawnRouting.commandLine(["/bin/echo", "a\u{1b}b"]), "/bin/echo a?b")
+    XCTAssertEqual(ControlSpawnRouting.commandLine([]), "login shell")
+    XCTAssertEqual(
+      ControlSpawnRouting.commandLine(["/x", String(repeating: "y", count: 400)]).count, 301)
   }
 
   func testRateLimiterCapsBurstsAndRecovers() {

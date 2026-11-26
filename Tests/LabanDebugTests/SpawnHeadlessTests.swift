@@ -29,7 +29,7 @@ final class SpawnHeadlessTests: XCTestCase {
     let first = try XCTUnwrap(runtime.model.activeTab)
     let response = try apply(
       runtime,
-      ["action": "spawnTab", "argv": ["make", "test"], "label": "tests", "focus": false],
+      ["action": "spawnTab", "argv": ["/usr/bin/make", "test"], "label": "tests", "focus": false],
       scoped: first.focusedSessionId)
     XCTAssertEqual(response.status, 200)
     let decoded = try JSONDecoder().decode(ControlSpawnResponse.self, from: response.body)

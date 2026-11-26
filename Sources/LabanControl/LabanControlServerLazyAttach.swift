@@ -331,6 +331,9 @@ extension LabanControlServer {
       grantsSessionReadFamily
       ? ControlSessionObserveFamily.capabilities.map(\Capability.rawValue).sorted()
       : capabilities.map(\Capability.rawValue).sorted()
+    let spawnDetails =
+      descriptor.requiredCapability == .spawn
+      ? ControlSpawnRouting.approvalDetails(body: bodyData ?? Data()) : nil
     let request = ControlAttachApprovalRequest(
       id: approvalID,
       principalDisplayName: verifiedDisplayName,
@@ -343,7 +346,9 @@ extension LabanControlServer {
       capabilities: approvalCapabilities,
       canPersist: canPersist,
       persistenceDisabledReason: persistenceDisabledReason,
-      grantsSessionReadFamily: grantsSessionReadFamily)
+      grantsSessionReadFamily: grantsSessionReadFamily,
+      spawnCommand: spawnDetails?.command,
+      spawnDirectory: spawnDetails?.directory)
 
     let semaphore = DispatchSemaphore(value: 0)
     let approvalResult = LazyApprovalResult()

@@ -145,6 +145,28 @@ final class SpawnCommandTests: XCTestCase {
     XCTAssertEqual(parse("new", "--cwd", "--json"), .failure(.missingArgument("--cwd")))
   }
 
+  func testSpawnSkipsTheBrokerSoTheServerCanCheckForASandbox() {
+    var usedLazyAttach = false
+    let result = LabanCLI.run(
+      command: .spawn(SpawnOptions(placement: "tab", argv: ["/bin/sh"])),
+      agentProxyRequest: { _, _ in
+        XCTFail("spawns must not go through the broker")
+        return (500, "")
+      },
+      lazyAttachRequest: { _, _, _, _, _ in
+        usedLazyAttach = true
+        return (200, #"{"ok":true,"placement":"tab","sessionID":"S","tabID":"T"}"#)
+      },
+      agentProxyURL: "unix:///tmp/proxy.sock")
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertTrue(usedLazyAttach)
+  }
+
+  func testDirectoriesAreNotCommands() {
+    XCTAssertFalse(SpawnCommand.isExecutableFile("/usr/bin"))
+    XCTAssertTrue(SpawnCommand.isExecutableFile("/bin/sh"))
+  }
+
   func testRefusalNamesTheServerReason() {
     let result = SpawnCommand.result(
       status: 409, body: #"{"error":"not enough room to split this pane"}"#, json: false)

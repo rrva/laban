@@ -148,8 +148,10 @@ public enum ControlSpawnRouting {
     else {
       return .failure(Rejection(status: 413, reason: "argv too large"))
     }
-    if let first = argv.first, first.isEmpty {
-      return .failure(Rejection(status: 400, reason: "argv[0] is empty"))
+    // The terminal starts argv with execve: no PATH search, and a relative
+    // path would resolve against Laban's directory. The CLI resolves it.
+    if let first = argv.first, !first.hasPrefix("/") {
+      return .failure(Rejection(status: 400, reason: "argv[0] must be an absolute path"))
     }
     guard !argv.contains(where: { $0.utf8.contains(0) }) else {
       return .failure(Rejection(status: 400, reason: "argv contains NUL"))
@@ -228,6 +230,30 @@ public enum ControlSpawnRouting {
       return Array(argv[5...])
     }
     return argv
+  }
+
+  /// The command as one line for the approval dialog and the audit log:
+  /// past the `run --wait` wrapper, words with spaces quoted, unsafe characters
+  /// replaced, capped at `limit` characters.
+  public static func commandLine(_ argv: [String], limit: Int = 300) -> String {
+    let words = displayArgv(argv)
+    guard !words.isEmpty else { return "login shell" }
+    let line = words.map { word -> String in
+      let clean = String(
+        String.UnicodeScalarView(
+          word.unicodeScalars.map { containsUnsafeScalar(String($0)) ? "?" : $0 }))
+      return clean.contains(where: { $0 == " " || $0 == "\"" || $0 == "'" })
+        ? "'" + clean.replacingOccurrences(of: "'", with: "'\\''") + "'" : clean
+    }.joined(separator: " ")
+    return line.count > limit ? String(line.prefix(limit)) + "…" : line
+  }
+
+  /// What a spawn request body would run, for the approval dialog.
+  public static func approvalDetails(body: Data) -> (command: String, directory: String?)? {
+    guard let request = try? JSONDecoder().decode(ControlSpawnRequest.self, from: body) else {
+      return nil
+    }
+    return (commandLine(request.argv ?? []), request.cwd)
   }
 
   /// The notice shown on the new terminal so the user can tell a program opened it.

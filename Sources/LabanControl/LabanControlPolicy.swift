@@ -52,7 +52,9 @@ public struct LabanControlPolicy: Sendable {
     case .appObserve:
       return [.observe]
     case .sessionObserve:
-      return [.observe, .observeSensitive, .navigate, .propose, .spawn]
+      // No `.spawn`: a broker credential cannot tell whether the process
+      // asking runs in a sandbox. Spawns go through lazy attach, which checks.
+      return [.observe, .observeSensitive, .navigate, .propose]
     case .approvedSession(_, _, let capabilities, _):
       // Approval records and lazy-attach requests can never mint diagnostic
       // whole-app authority, even if a forged/stale serialized capability

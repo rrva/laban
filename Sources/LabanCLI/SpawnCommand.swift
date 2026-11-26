@@ -36,7 +36,7 @@ enum SpawnCommand {
   /// a `/` against `directory`, a bare name on the caller's `PATH`.
   static func resolveExecutable(
     _ name: String, path: String?, directory: String,
-    isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    isExecutable: (String) -> Bool = SpawnCommand.isExecutableFile
   ) -> String? {
     if name.contains("/") {
       let full = resolvedDirectory(name, currentDirectory: directory)
@@ -52,6 +52,14 @@ enum SpawnCommand {
     return nil
   }
 
+  /// An executable regular file, as the shell's lookup requires (a directory
+  /// with the x bit is not a command).
+  static func isExecutableFile(_ path: String) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+      && !isDirectory.boolValue && FileManager.default.isExecutableFile(atPath: path)
+  }
+
   static func perform(
     options: SpawnOptions,
     agentProxyRequest: AgentProxyRequest,
@@ -60,7 +68,7 @@ enum SpawnCommand {
     currentDirectory: String,
     waiter: RunWaiter = RunWaiter(),
     environmentPath: String? = ProcessInfo.processInfo.environment["PATH"],
-    isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    isExecutable: (String) -> Bool = SpawnCommand.isExecutableFile
   ) throws -> LabanCLIResult {
     var options = options
     if let name = options.argv.first {
@@ -123,14 +131,10 @@ enum SpawnCommand {
   ) throws -> LabanCLIResult {
     let body = requestBody(options: options, currentDirectory: currentDirectory)
     let cliCommand = options.placement == "tab" ? "session.spawnTab" : "session.spawnSplit"
-    let (status, responseBody): (Int, String)
-    if let proxyURL = LabanCLI.agentProxyURLFromEnvironment(override: agentProxyURL) {
-      (status, responseBody) = try agentProxyRequest(
-        proxyURL, AgentProxyEnvelope(method: "POST", path: "/debug/actions", body: body))
-    } else {
-      (status, responseBody) = try lazyAttachRequest(
-        cliCommand, "POST", "/debug/actions", [:], body)
-    }
+    // Always lazy attach, even under `laban agent run`: only that path checks
+    // whether the caller runs in a sandbox (ADR 0024, Amendment 2026-11-26).
+    let (status, responseBody) = try lazyAttachRequest(
+      cliCommand, "POST", "/debug/actions", [:], body)
     return result(status: status, body: responseBody, json: options.json)
   }
 

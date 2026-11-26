@@ -10199,12 +10199,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let notice = ControlSpawnRouting.noticeText(argv: plan.argv)
     guard let axis = plan.placement.paneAxis else {
       let previous = model.activeTab?.id
+      if plan.focus { discardMarkedComposition() }
       let tab = try createTabPreservingSelection(runningArgv: plan.argv, cwd: plan.cwd)
       if let label = plan.label { try? model.renameTab(tab.id, title: label) }
       _ = model.postTabNotice(forTab: tab.id, note: "control.spawn", text: notice)
       if !plan.focus, let previous {
         model.selectTab(previous)
-        restoreSelectionState(for: previous)
+        restoreSelectionState(for: model.activeTab?.focusedSessionId)
       }
       invalidateRenderAndWake()
       return ControlSpawnResponse(tabID: tab.id, sessionID: tab.focusedSessionId, placement: .tab)

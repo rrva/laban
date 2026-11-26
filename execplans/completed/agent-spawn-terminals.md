@@ -45,6 +45,12 @@ No dialog appears. A process outside every Laban session is refused.
   a signal; labels are refused for splits; the notice names the wrapped command
   and sits on the new pane; the tab path reuses `createTabPreservingSelection`;
   monotonic rate-limit clock.
+- [x] Second review (FAIL) addressed: `.spawn` is no longer on the
+  session-observe broker tier and the CLI always lazy-attaches, so a sandboxed
+  agent under `laban agent run` also gets the dialog; that dialog names the
+  sandbox escape and shows the command and directory; the server requires an
+  absolute `argv[0]`; `--no-focus` restores the right selection; a focused new
+  tab discards IME composition; directories are not commands.
 
 ## Surprises & Discoveries
 
@@ -100,8 +106,8 @@ stream, agent skill setup, and a program-status read are separate work.
 - `Sources/LabanCore/Intents/IntentCatalog.swift`: `.spawn`, the two descriptors.
 - `Sources/LabanControl/ControlLazyAttachAllowlist.swift` and
   `LabanControlServerLazyAttach.swift`: the no-dialog branch.
-- `Sources/LabanControl/LabanControlPolicy.swift`: session-observe and fixture
-  tiers grant `.spawn`.
+- `Sources/LabanControl/LabanControlPolicy.swift`: only the fixture tier
+  tier grants `.spawn` directly; lazy attach mints it per request.
 - `Sources/LabanApp/Control/LiveIntentRouter.swift`, `TerminalBitmapView.swift`
   (`openControlSpawn`), `MainWindowController.swift` (binding, first-tab
   registration).

@@ -92,6 +92,18 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
       let content = Self.dialogContent(for: request)
       alert.messageText = content.title
       alert.accessoryView = makeAdaptiveDetailsView(for: content, request: request, alert: alert)
+    } else if let command = request.spawnCommand {
+      // Only a sandboxed caller reaches this dialog for a spawn: inside a
+      // session an unsandboxed caller opens terminals without asking.
+      let who =
+        request.principalIsVerified
+        ? request.principalDisplayName : "unverified \(request.principalDisplayName)"
+      alert.messageText = "Allow \(who) to open a terminal outside its sandbox?"
+      alert.informativeText =
+        "It runs in a sandbox. The new terminal would run this command as you, "
+        + "outside the sandbox:\n\n\(command)"
+        + (request.spawnDirectory.map { "\n\nin \($0)" } ?? "")
+      alert.accessoryView = makeDetailsView(for: request)
     } else if request.dataSensitivity == "screenshot" {
       let content = Self.windowScreenshotDialogContent(for: request)
       alert.messageText = content.title
@@ -661,6 +673,7 @@ final class ControlAttachApprovalPresenter: ControlAttachApprovalDelegate, @unch
     // 2026-07-11).
     case "navigate": return "Scroll this session's viewport"
     case "propose": return "Propose commands"
+    case "spawn": return "Open a terminal running a command"
     case "input": return "Send input"
     case "fixture": return "Use fixture controls"
     default: return raw

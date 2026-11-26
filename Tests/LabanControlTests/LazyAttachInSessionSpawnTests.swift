@@ -78,7 +78,24 @@ final class LazyAttachInSessionSpawnTests: XCTestCase {
       body: #"{"action":"spawnTab","argv":["/bin/sh"]}"#)
 
     XCTAssertEqual(delegate.promptCount, 1, "a sandboxed agent must not open a terminal silently")
+    XCTAssertEqual(delegate.lastRequest?.spawnCommand, "/bin/sh", "the dialog shows the command")
     XCTAssertEqual(status, 403, "the fake delegate denies")
+    XCTAssertNil(router.lastAction)
+  }
+
+  func testASandboxedProcessBetweenCallerAndShellAlsoGetsTheDialog() throws {
+    let router = SpawnSpyRouter()
+    let (server, socketPath, token) = try makeServer(router: router, registerShell: true)
+    defer { server.stop() }
+    server.isSandboxed = { $0 == 60 }
+    let delegate = CountingApprovalDelegate()
+    server.setApprovalDelegate(delegate)
+
+    _ = try lazyAttach(
+      socketPath: socketPath, appObserveToken: token, cliCommand: "session.spawnTab",
+      body: #"{"action":"spawnTab"}"#)
+
+    XCTAssertEqual(delegate.promptCount, 1)
     XCTAssertNil(router.lastAction)
   }
 
@@ -136,9 +153,14 @@ final class LazyAttachInSessionSpawnTests: XCTestCase {
     let peerPID = pid_t(ProcessInfo.processInfo.processIdentifier)
     let tree = SpawnFakeProcessTree(tree: [
       peerPID: (
-        parent: 50,
+        parent: 60,
         identity: ControlProcessIdentity(
           pid: peerPID, startTime: Date(), executablePath: "/usr/local/bin/laban")
+      ),
+      60: (
+        parent: 50,
+        identity: ControlProcessIdentity(
+          pid: 60, startTime: Date(), executablePath: "/usr/local/bin/codex")
       ),
       50: (
         parent: 1,
@@ -187,14 +209,19 @@ final class LazyAttachInSessionSpawnTests: XCTestCase {
 private final class CountingApprovalDelegate: ControlAttachApprovalDelegate, @unchecked Sendable {
   private let lock = NSLock()
   private var count = 0
+  private var _last: ControlAttachApprovalRequest?
 
   var promptCount: Int { lock.withLock { count } }
+  var lastRequest: ControlAttachApprovalRequest? { lock.withLock { _last } }
 
   func requestControlAttachApproval(
     _ request: ControlAttachApprovalRequest,
     completion: @escaping @Sendable (ControlAttachApprovalDecision) -> Void
   ) {
-    lock.withLock { count += 1 }
+    lock.withLock {
+      count += 1
+      _last = request
+    }
     completion(.deny)
   }
 }

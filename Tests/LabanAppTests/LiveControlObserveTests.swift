@@ -589,7 +589,7 @@ final class LiveControlObserveTests: XCTestCase {
       try JSONSerialization.jsonObject(with: sessionDiscoveryData) as? [String: Any]
     let actions = try XCTUnwrap(sessionDiscoveryJSON?["actions"] as? [[String: Any]])
     let actionNames = Set(actions.compactMap { $0["name"] as? String })
-    XCTAssertEqual(actionNames, ["propose", "scrollViewport", "spawnTab", "spawnSplit"])
+    XCTAssertEqual(actionNames, ["propose", "scrollViewport"])
     let sessionEndpoints = try XCTUnwrap(
       sessionDiscoveryJSON?["endpoints"] as? [[String: Any]])
     let sessionPaths = Set(sessionEndpoints.compactMap { $0["path"] as? String })

@@ -423,9 +423,11 @@ them:
 
 `laban new`, `laban split` and `laban run` open a terminal that runs a command
 (ADR 0024, Amendment 2026-11-26). From inside a Laban session there is no
-dialog: the server proves the caller descends from that session's shell. Under
-`laban agent run` the broker's session credential covers it. From outside every
+dialog: the server proves the caller descends from that session's shell. From outside every
 session the request is refused with `403 notDescendantOfRegisteredSession`.
+Spawns always use lazy attach, even under `laban agent run`: the broker's
+session credential does not carry `spawn`, because only lazy attach checks
+whether the caller is sandboxed.
 
 ```sh
 id=$(laban split --down -- npm test -- --watch)  # split your own pane, print its session id

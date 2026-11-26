@@ -199,8 +199,9 @@ escape, and it keeps the dialog (below). Ragnar decided on 2026-11-26 to ship sp
   `session.spawnSplit` (`POST /debug/actions`, actions `spawnTab` /
   `spawnSplit`). Neither writes PTY input (`sideEffects.ptyInput == false`). A
   split always divides the **caller's own pane**. A scoped caller can never name
-  another session. Granted to the session-observe tier (agents under `laban
-  agent run`) and to `.fixture`, never to app-observe.
+  another session. Reachable only through lazy attach (and `.fixture`), never
+  through app-observe or a session-observe broker credential: a broker
+  credential cannot tell whether the process asking runs in a sandbox.
 - **No dialog inside a session.** Lazy attach already proves, before any dialog,
   that the requester is a same-uid descendant of a registered session's shell
   (process ancestry + start time + audit token). That proof is the credential
@@ -211,7 +212,10 @@ escape, and it keeps the dialog (below). Ragnar decided on 2026-11-26 to ship sp
 - **Sandboxed callers get the dialog.** If the requester or any process between
   it and the session shell is sandboxed (`sandbox_check(pid, NULL,
   SANDBOX_FILTER_NONE)`; an error counts as sandboxed), the spawn takes the
-  ordinary one-time approval dialog instead, never remembered.
+  one-time approval dialog instead, never remembered. The dialog says the
+  terminal would run outside the sandbox and shows the command and directory.
+  The server accepts only an absolute `argv[0]`; the CLI resolves bare names on
+  the caller's `PATH`.
 - **Visible and audited.** The new terminal shows a tab notice, "Opened by a
   program: `<command>`", in the sidebar and the tab journal. The request arms
   the agent-attached indicator and is audited as an in-session auto-approval

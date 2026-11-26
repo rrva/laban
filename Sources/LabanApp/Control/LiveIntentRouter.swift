@@ -692,9 +692,7 @@ final class LiveIntentRouter: IntentRouter {
         "control.spawn",
         [
           "placement": plan.placement.rawValue,
-          "command": ControlSpawnRouting.displayArgv(plan.argv).first.map {
-            ($0 as NSString).lastPathComponent
-          } ?? "",
+          "command": ControlSpawnRouting.commandLine(plan.argv),
           "callerSessionID": scopedSessionID ?? "",
           "sessionID": response.sessionID,
         ])
@@ -887,7 +885,6 @@ final class LiveIntentRouter: IntentRouter {
         || capability == .observeSensitive
         || capability == .navigate
         || capability == .propose
-        || capability == .spawn
     case .none:
       return true
     }

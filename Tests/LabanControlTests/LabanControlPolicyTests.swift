@@ -242,7 +242,7 @@ final class LabanControlPolicyTests: XCTestCase {
     XCTAssertEqual(LabanControlPolicy.grants(for: .appObserve), [.observe])
     XCTAssertEqual(
       LabanControlPolicy.grants(for: .sessionObserve(sessionID: "s1")),
-      [.observe, .observeSensitive, .navigate, .propose, .spawn])
+      [.observe, .observeSensitive, .navigate, .propose])
     XCTAssertEqual(
       LabanControlPolicy.grants(for: .fixture),
       [
