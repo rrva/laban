@@ -231,12 +231,22 @@ final class AppModelTests: XCTestCase {
     let seed = try XCTUnwrap(restored.takeProgramStatusSeed(forSession: restoredSession.id))
     XCTAssertEqual(seed.offset, 4_096)
     XCTAssertEqual(seed.records?.summary?.app, "claude")
-    XCTAssertNil(
-      restored.takeProgramStatusSeed(forSession: restoredSession.id),
-      "the restored seed is taken once; no reader has parsed anything yet")
+    XCTAssertEqual(
+      restored.takeProgramStatusSeed(forSession: restoredSession.id), seed,
+      "a reader that stopped before reading leaves the restored seed for the next")
 
     restored.applyProgramStatusSeed(seed.records, forSession: restoredSession.id)
     XCTAssertEqual(restored.tabs[0].titleMetadata.programStatus?.summary?.state, .blocked)
+    XCTAssertNil(
+      restored.takeProgramStatusSeed(forSession: restoredSession.id),
+      "once installed, the restored seed is spent; no reader has parsed yet")
+    restored.noteOutputParsed(throughOffset: 5_000, forSession: restoredSession.id)
+    XCTAssertEqual(
+      restored.takeProgramStatusSeed(forSession: restoredSession.id)?.offset, 5_000)
+    restored.discardProgramStatusSeed(forSession: restoredSession.id)
+    XCTAssertNil(
+      restored.takeProgramStatusSeed(forSession: restoredSession.id),
+      "a new process starts a new ring; the old offset must not seed it")
   }
 
   /// A reader replaying the byte ring from its start feeds the history the

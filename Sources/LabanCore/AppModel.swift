@@ -1608,16 +1608,22 @@ public final class AppModel {
   /// produced has been applied before the offset moves: the records are then
   /// exactly current to it, which is what makes a saved seed sound.
   public func noteOutputParsed(throughOffset offset: UInt64, forSession sessionId: Session.ID) {
-    withModelLock { parsedOutputOffsetBySession[sessionId] = offset }
+    withModelLock {
+      parsedOutputOffsetBySession[sessionId] = offset
+      // A reader has read: the live records and this offset supersede the
+      // restored seed.
+      restoredProgramStatusSeeds.removeValue(forKey: sessionId)
+    }
   }
 
   /// The seed for a reader about to replay the pane's byte ring from its
-  /// start: the restored workspace's, once, or else the live records at the
-  /// offset the previous reader reached. Nil when neither is known; the
-  /// replay then rebuilds the records on its own.
+  /// start: the restored workspace's until a reader has read (a reader that
+  /// stops before its first read leaves it for the next), or else the live
+  /// records at the offset the previous reader reached. Nil when neither is
+  /// known; the replay then rebuilds the records on its own.
   public func takeProgramStatusSeed(forSession sessionId: Session.ID) -> ProgramStatusSeed? {
     withModelLock {
-      if let restored = restoredProgramStatusSeeds.removeValue(forKey: sessionId) {
+      if let restored = restoredProgramStatusSeeds[sessionId] {
         return restored
       }
       guard let offset = parsedOutputOffsetBySession[sessionId] else { return nil }
@@ -1632,7 +1638,11 @@ public final class AppModel {
   /// Drop a pending restored seed: the pane got a new process, so its saved
   /// live records describe a program that is gone.
   public func discardProgramStatusSeed(forSession sessionId: Session.ID) {
-    _ = withModelLock { restoredProgramStatusSeeds.removeValue(forKey: sessionId) }
+    withModelLock {
+      restoredProgramStatusSeeds.removeValue(forKey: sessionId)
+      // Offsets in the new process's ring start again from zero.
+      parsedOutputOffsetBySession.removeValue(forKey: sessionId)
+    }
   }
 
   /// Install a seed's records once the replayed history before its offset
@@ -1646,6 +1656,7 @@ public final class AppModel {
     guard let tabId = withModelLock({ _tabs.first { $0.panes.contains(sessionId) }?.id }) else {
       return
     }
+    _ = withModelLock { restoredProgramStatusSeeds.removeValue(forKey: sessionId) }
     var changed = false
     withPaneMetadata(sessionId: sessionId, tabId: tabId) {
       withModelLock {

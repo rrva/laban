@@ -1684,14 +1684,17 @@ private final class LabptyParserFeed {
         feedBytes(result.bytes)
         return
       }
-      let split =
-        result.bytes.startIndex
-        + seed.historyByteCount(readByteCount: result.bytes.count, endOffset: result.newOffset)
-      self.session.withProgramStatusSuppressed {
-        feedBytes(result.bytes[result.bytes.startIndex..<split])
-      }
-      self.onProgramStatusSeed(seed.records)
-      feedBytes(result.bytes[split...])
+      let history = seed.historyByteCount(
+        readByteCount: result.bytes.count, endOffset: result.newOffset)
+      // One regrid for the whole read (a seed exists only for a catch-up read
+      // with its PTY grid), split at the seed's byte: the history is parsed
+      // with reports suppressed, the seed is queued to main at the split,
+      // ahead of the callbacks the newer bytes queue.
+      let grid = self.catchUpGrid ?? (cols: 0, rows: 0)
+      self.session.feedOutput(
+        Array(result.bytes), writtenAtCols: grid.cols, rows: grid.rows,
+        suppressingProgramStatusFor: history,
+        atSplit: { self.onProgramStatusSeed(seed.records) })
     }
     if catchUpRead {
       session.withHostEffectsSuppressed(feed)

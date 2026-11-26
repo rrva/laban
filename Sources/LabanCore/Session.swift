@@ -626,6 +626,37 @@ public final class Session {
     }
   }
 
+  /// Feeds replayed output at its PTY grid, as `feedOutput(_:writtenAtCols:rows:)`
+  /// does, with OSC 7501 reports suppressed for the first `historyCount`
+  /// bytes (the history a `ProgramStatusSeed` already covers). `atSplit` runs
+  /// once at that byte, inside the same regrid and with the session lock
+  /// held, so the history and the rest are not reflowed apart; it must not
+  /// call back into this session.
+  @discardableResult
+  public func feedOutput(
+    _ bytes: [UInt8], writtenAtCols cols: Int, rows: Int,
+    suppressingProgramStatusFor historyCount: Int, atSplit: @escaping () -> Void
+  ) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    let split = ProgramStatusFeedSplit(state: callbackState, atSplit: atSplit)
+    callbackState.beginProgramStatusSuppression()
+    defer { split.fire() }
+    guard !isClosed, let h = handle else { return -1 }
+    let context = Unmanaged.passUnretained(split).toOpaque()
+    return withExtendedLifetime(split) {
+      bytes.withUnsafeBytes { buf in
+        laban_session_feed_output_at_grid_split(
+          h, buf.bindMemory(to: UInt8.self).baseAddress, bytes.count,
+          UInt16(clamping: cols), UInt16(clamping: rows), max(0, historyCount),
+          { userdata in
+            guard let userdata else { return }
+            Unmanaged<ProgramStatusFeedSplit>.fromOpaque(userdata).takeUnretainedValue().fire()
+          }, context)
+      }
+    }
+  }
+
   /// Run `body` with the one-shot host side effects of parsed output — OSC 52
   /// clipboard writes and read queries, OSC 9 notifications — dropped. Wrap
   /// `feedOutput` in this when the bytes are a replay of output that was
@@ -1806,6 +1837,26 @@ public final class Session {
       Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
       shellIntegrationCallbackUserdata = nil
     }
+  }
+}
+
+/// The split point of `Session.feedOutput(_:writtenAtCols:rows:suppressingProgramStatusFor:atSplit:)`:
+/// ends the OSC 7501 suppression and runs the caller's hook, exactly once.
+private final class ProgramStatusFeedSplit {
+  let state: SessionCallbackState
+  let atSplit: () -> Void
+  var done = false
+
+  init(state: SessionCallbackState, atSplit: @escaping () -> Void) {
+    self.state = state
+    self.atSplit = atSplit
+  }
+
+  func fire() {
+    guard !done else { return }
+    done = true
+    state.endProgramStatusSuppression()
+    atSplit()
   }
 }
 

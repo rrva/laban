@@ -800,6 +800,19 @@ int laban_session_feed_output_at_grid(LabanSession *session, const uint8_t *byte
                                       uint16_t cols, uint16_t rows);
 
 /*
+ * As laban_session_feed_output_at_grid, but calls `at_split(userdata)` once
+ * after the first `split` bytes are parsed and before the rest, inside the
+ * same regrid and with the session lock held (a `split` past `len` calls it
+ * after all of them). A reattach uses it to stop suppressing callbacks for
+ * replayed history at an exact byte without reflowing in between. `at_split`
+ * must not call back into the session.
+ */
+int laban_session_feed_output_at_grid_split(LabanSession *session, const uint8_t *bytes,
+                                            size_t len, uint16_t cols, uint16_t rows,
+                                            size_t split, void (*at_split)(void *),
+                                            void *userdata);
+
+/*
  * Feed captured PTY output bytes directly into the VT parser during replay.
  * This is intentionally named for replay so callers do not confuse terminal
  * byte replay with user input written to a live child process.

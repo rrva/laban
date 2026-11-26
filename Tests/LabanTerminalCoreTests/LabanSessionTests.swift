@@ -3986,6 +3986,43 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  /// A replay split at a byte (OSC 7501 history vs newer output) must parse
+  /// as one regrid: the same screen as an unsplit feed, with the hook called
+  /// once at the split. (Two separate at-grid feeds would reflow to the
+  /// session grid and back in between.)
+  func testFeedAtGridSplitParsesAsOneRegrid() {
+    // zsh's PROMPT_SP: a mark, padding to the right margin (wrap pending),
+    // then a carriage return that relies on that pending wrap.
+    let first = Array(("%" + String(repeating: " ", count: 79)).utf8)
+    let rest = Array(" \r\u{1b}[K$ ok".utf8)
+    func screen(_ feed: (OpaquePointer) -> Void) -> String {
+      guard let session = makeFixtureSession(rows: 24, cols: 40) else {
+        XCTFail("laban_session_create returned non-zero")
+        return ""
+      }
+      defer { laban_session_destroy(session) }
+      feed(session)
+      var snap: UnsafeMutablePointer<LabanSnapshot>?
+      XCTAssertEqual(laban_session_snapshot(session, &snap), 0)
+      defer { if let snap { laban_snapshot_destroy(snap) } }
+      return snap.map { visibleText(from: UnsafePointer($0)) } ?? ""
+    }
+    let bytes = first + rest
+    let whole = screen { s in
+      _ = laban_session_feed_output_at_grid(s, bytes, bytes.count, 80, 24)
+    }
+    final class Hook { var calls = 0 }
+    let hook = Hook()
+    let split = screen { s in
+      _ = laban_session_feed_output_at_grid_split(
+        s, bytes, bytes.count, 80, 24, first.count,
+        { ud in Unmanaged<Hook>.fromOpaque(ud!).takeUnretainedValue().calls += 1 },
+        Unmanaged.passUnretained(hook).toOpaque())
+    }
+    XCTAssertEqual(split, whole)
+    XCTAssertEqual(hook.calls, 1)
+  }
+
   /// Spec 9.15: kitty OSC 99 chunks sharing an id assemble into one
   /// notification, delivered through the same callback as OSC 9.
   func testKittyNotificationAssemblesChunksAndDeliversOnce() {
