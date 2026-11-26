@@ -1,0 +1,31 @@
+Sources/LabanApp/AppSessionCoordinator.swift
+  s_ce2b1682d8904a::t_c165aa5582ff92 1687-1697
+Sources/LabanCore/AppModel.swift
+  s_ce2b1682d8904a::t_60bd4f6a541d88 1611-1616,1620-1623,1626,1641-1645,1659
+Sources/LabanCore/Session.swift
+  s_ce2b1682d8904a::t_8a82ffb8a66d54 629-659,1843-1862
+Sources/LabanTerminalCore/include/LabanTerminalCore.h
+  s_ce2b1682d8904a::t_4b153ac5f4f2bf 802-814
+Sources/LabanTerminalCore/session_lifecycle.c
+  s_ce2b1682d8904a::t_e9f1edb80f39eb 925-930,932-935,942-945
+Tests/LabanCoreTests/AppModelTests.swift
+  s_ce2b1682d8904a::t_6effed758044ed 234-236,240-249
+Tests/LabanTerminalCoreTests/LabanSessionTests.swift
+  s_ce2b1682d8904a::t_6a085b7ed473d0 3989-4025
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6726eb93534077fbd76d477d487d4209064a2117",
+  "prompts": {},
+  "sessions": {
+    "s_ce2b1682d8904a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "733f4d26-2f20-4a29-857c-8a54aa0c9abb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ragnar Rova <ragnar.rova@gmail.com>"
+    }
+  }
+}
